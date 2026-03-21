@@ -2,6 +2,10 @@
 
 Conversational knowledge base builder for the Alert Triage System, powered by Claude AI.
 
+
+
+
+
 ## Quick Start
 
 ### Local Development
@@ -18,13 +22,13 @@ Open [http://localhost:3000](http://localhost:3000)
 1. Push this repo to GitHub
 2. Import to Vercel
 3. Add environment variables:
-   - `ANTHROPIC_API_KEY`
-   - `SERVICE_ACCOUNT_EMAIL`
-   - `SERVICE_ACCOUNT_PROJECT_ID`
-   - `SERVICE_ACCOUNT_PRIVATE_KEY_ID`
-   - `SERVICE_ACCOUNT_PRIVATE_KEY`
-   - `SERVICE_ACCOUNT_CLIENT_ID`
 
+   * `ANTHROPIC\_API\_KEY`
+   * `SERVICE\_ACCOUNT\_EMAIL`
+   * `SERVICE\_ACCOUNT\_PROJECT\_ID`
+   * `SERVICE\_ACCOUNT\_PRIVATE\_KEY\_ID`
+   * `SERVICE\_ACCOUNT\_PRIVATE\_KEY`
+   * `SERVICE\_ACCOUNT\_CLIENT\_ID`
 4. Deploy!
 
 ## How It Works
@@ -32,10 +36,10 @@ Open [http://localhost:3000](http://localhost:3000)
 The interview guides you through 6 stages:
 
 1. **System Overview** - Basic setup understanding
-2. **Data Flow & Integration** - How data moves between systems
-3. **Sheet Structure & Fields** - Column names and meanings
-4. **Matching & Reconciliation** - How matching rules work
-5. **Alert Patterns & Edge Cases** - Common scenarios
+2. **Data Flow \& Integration** - How data moves between systems
+3. **Sheet Structure \& Fields** - Column names and meanings
+4. **Matching \& Reconciliation** - How matching rules work
+5. **Alert Patterns \& Edge Cases** - Common scenarios
 6. **Action Templates** - Resolving each alert type
 
 Each stage may have follow-up questions for clarification. At the end, a Google Doc is created with your structured knowledge base.
@@ -45,22 +49,23 @@ Each stage may have follow-up questions for clarification. At the end, a Google 
 Copy `.env.local.example` to `.env.local` and fill in:
 
 ```
-ANTHROPIC_API_KEY=your-api-key
-SERVICE_ACCOUNT_EMAIL=your-service-account-email
-SERVICE_ACCOUNT_PROJECT_ID=automation-commander
-SERVICE_ACCOUNT_PRIVATE_KEY_ID=your-key-id
-SERVICE_ACCOUNT_PRIVATE_KEY=your-private-key
-SERVICE_ACCOUNT_CLIENT_ID=your-client-id
+ANTHROPIC\_API\_KEY=your-api-key
+SERVICE\_ACCOUNT\_EMAIL=your-service-account-email
+SERVICE\_ACCOUNT\_PROJECT\_ID=automation-commander
+SERVICE\_ACCOUNT\_PRIVATE\_KEY\_ID=your-key-id
+SERVICE\_ACCOUNT\_PRIVATE\_KEY=your-private-key
+SERVICE\_ACCOUNT\_CLIENT\_ID=your-client-id
 ```
 
 ## Tech Stack
 
-- Next.js 14
-- React 18
-- Anthropic Claude API
-- Google Docs API
-- Vercel deployment
+* Next.js 14
+* React 18
+* Anthropic Claude API
+* Google Docs API
+* Vercel deployment
 
 ## License
 
 Private project
+

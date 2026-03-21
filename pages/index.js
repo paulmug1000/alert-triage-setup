@@ -241,15 +241,15 @@ export default function SetupInterview() {
               Your knowledge base has been created and saved to Google Docs.
             </p>
             {knowledgeBaseUrl && (
-              
-                href={knowledgeBaseUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={styles.completionButton}
-              >
-                View Knowledge Base
-              </a>
-            )}
+  
+    href={knowledgeBaseUrl}
+    target="_blank"
+    rel="noopener noreferrer"
+    style={styles.completionButton}
+  >
+    View Knowledge Base
+  </a>
+)}
           </div>
         )}
       </div>

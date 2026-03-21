@@ -251,7 +251,7 @@ export default async function handler(req, res) {
       }
 
       // Save updated session to Redis
-      await kvClient.set(`session:${sessionId}`, JSON.stringify(session), { ex: 86400 }); // 24 hour expiry
+      await redisClient.setEx(`session:${sessionId}`, 86400, JSON.stringify(session)); // 24 hour expiry
 
       return res.status(200).json({
         success: true,

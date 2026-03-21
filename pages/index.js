@@ -136,13 +136,18 @@ export default function SetupInterview() {
   return (
     <div style={styles.container}>
       <style>{`
-        * {
-          box-sizing: border-box;
+        @keyframes slideIn {
+          from {
+            opacity: 0;
+            transform: translateY(10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
         }
-        body {
-          margin: 0;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-          background: #0f172a;
+        @keyframes spin {
+          to { transform: rotate(360deg); }
         }
       `}</style>
 
@@ -241,15 +246,18 @@ export default function SetupInterview() {
               Your knowledge base has been created and saved to Google Docs.
             </p>
             {knowledgeBaseUrl && (
-  
-    href={knowledgeBaseUrl}
-    target="_blank"
-    rel="noopener noreferrer"
-    style={styles.completionButton}
-  >
-    View Knowledge Base
-  </a>
-)}
+              <a
+                href={knowledgeBaseUrl}
+                rel="noopener noreferrer"
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.open(knowledgeBaseUrl, "_blank");
+                }}
+                style={styles.completionButton}
+              >
+                View Knowledge Base
+              </a>
+            )}
           </div>
         )}
       </div>
@@ -391,8 +399,6 @@ const styles = {
     fontSize: "0.875rem",
     fontFamily: "inherit",
     resize: "none",
-    fontFamily:
-      "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif",
   },
   button: {
     background: "linear-gradient(90deg, #2563eb 0%, #06b6d4 100%)",
@@ -433,5 +439,6 @@ const styles = {
     padding: "0.75rem 2rem",
     borderRadius: "0.5rem",
     fontWeight: "600",
+    cursor: "pointer",
   },
 };

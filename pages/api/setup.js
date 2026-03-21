@@ -1,10 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { google } from "googleapis";
+import redis from "@vercel/kv";
 
 const anthropic = new Anthropic();
 
-// In-memory session storage (use database in production)
-const sessions = new Map();
+// Use Vercel KV (Redis) for session storage
+const kvClient = redis;
 
 const INTERVIEW_STAGES = [
   {
@@ -185,7 +186,7 @@ export default async function handler(req, res) {
         responses: {},
         knowledge: {},
       };
-      sessions.set(newSessionId, session);
+      await kvClient.set(`session:${newSessionId}`, JSON.stringify(session), { ex: 86400 }); // 24 hour expiry
 
       const question = await generateQuestion(INTERVIEW_STAGES[0], {});
 
@@ -200,10 +201,12 @@ export default async function handler(req, res) {
     }
 
     if (action === "answer") {
-      const session = sessions.get(sessionId);
-      if (!session) {
+      const sessionJson = await kvClient.get(`session:${sessionId}`);
+      if (!sessionJson) {
         return res.status(404).json({ error: "Session not found" });
       }
+
+      const session = JSON.parse(sessionJson);
 
       const stageKey = INTERVIEW_STAGES[stage].id;
       session.responses[stageKey] = answer;
@@ -229,7 +232,7 @@ export default async function handler(req, res) {
         if (nextStage >= INTERVIEW_STAGES.length) {
           // Interview complete - save knowledge base
           const docUrl = await saveKnowledgeToGoogleDoc(session.knowledge);
-          sessions.delete(sessionId);
+          await kvClient.delete(`session:${sessionId}`);
           isInterviewComplete = true;
 
           return res.status(200).json({
@@ -242,6 +245,9 @@ export default async function handler(req, res) {
         nextQuestion = await generateQuestion(INTERVIEW_STAGES[nextStage], session.knowledge);
         session.stage = nextStage;
       }
+
+      // Save updated session to Redis
+      await kvClient.set(`session:${sessionId}`, JSON.stringify(session), { ex: 86400 }); // 24 hour expiry
 
       return res.status(200).json({
         success: true,

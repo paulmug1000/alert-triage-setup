@@ -1,11 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { google } from "googleapis";
-import redis from "@vercel/kv";
+import { createClient } from "redis";
 
 const anthropic = new Anthropic();
 
-// Use Vercel KV (Redis) for session storage
-const kvClient = redis;
+// Create Redis client for session storage
+const redisClient = createClient({
+  url: process.env.REDIS_URL,
+});
+
+redisClient.connect().catch(console.error);
 
 const INTERVIEW_STAGES = [
   {
@@ -186,7 +190,7 @@ export default async function handler(req, res) {
         responses: {},
         knowledge: {},
       };
-      await kvClient.set(`session:${newSessionId}`, JSON.stringify(session), { ex: 86400 }); // 24 hour expiry
+      await redisClient.setEx(`session:${newSessionId}`, 86400, JSON.stringify(session)); // 24 hour expiry
 
       const question = await generateQuestion(INTERVIEW_STAGES[0], {});
 
@@ -201,7 +205,7 @@ export default async function handler(req, res) {
     }
 
     if (action === "answer") {
-      const sessionJson = await kvClient.get(`session:${sessionId}`);
+      const sessionJson = await redisClient.get(`session:${sessionId}`);
       if (!sessionJson) {
         return res.status(404).json({ error: "Session not found" });
       }
@@ -232,7 +236,7 @@ export default async function handler(req, res) {
         if (nextStage >= INTERVIEW_STAGES.length) {
           // Interview complete - save knowledge base
           const docUrl = await saveKnowledgeToGoogleDoc(session.knowledge);
-          await kvClient.delete(`session:${sessionId}`);
+          await redisClient.del(`session:${sessionId}`);
           isInterviewComplete = true;
 
           return res.status(200).json({

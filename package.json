@@ -8,13 +8,13 @@
     "start": "next start",
     "lint": "next lint"
   },
-  "dependencies": {
-    "next": "^14.0.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "@vercel/kv": "^0.2.0",
-    "@anthropic-ai/sdk": "^0.16.0",
-    "googleapis": "^118.0.0",
-    "google-auth-library": "^9.0.0"
+"dependencies": {
+  "next": "^14.0.0",
+  "react": "^18.2.0",
+  "react-dom": "^18.2.0",
+  "@anthropic-ai/sdk": "^0.16.0",
+  "googleapis": "^118.0.0",
+  "google-auth-library": "^9.0.0",
+  "redis": "^4.6.0"
   }
 }

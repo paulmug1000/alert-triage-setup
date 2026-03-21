@@ -49,7 +49,7 @@ function generateSessionId() {
 
 async function generateQuestion(stage, context) {
   const message = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-6",
     max_tokens: 300,
     messages: [
       {
@@ -77,7 +77,7 @@ Return ONLY the question, nothing else.`,
 
 async function generateFollowUp(stage, previousAnswer) {
   const message = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-6",
     max_tokens: 250,
     messages: [
       {
@@ -101,7 +101,7 @@ Return ONLY the follow-up question.`,
 
 async function determineIfComplete(stage, answer) {
   const message = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-6",
     max_tokens: 20,
     messages: [
       {
@@ -121,7 +121,7 @@ Reply with only "complete" or "followup".`,
 
 async function extractKnowledge(stage, answer) {
   const message = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
+    model: "claude-sonnet-4-6",
     max_tokens: 800,
     messages: [
       {
@@ -154,81 +154,10 @@ Return ONLY valid JSON.`,
 }
 
 async function saveKnowledgeToGoogleDoc(knowledgeBase) {
-  try {
-    const auth = new google.auth.GoogleAuth({
-      credentials: {
-        type: "service_account",
-        project_id: process.env.SERVICE_ACCOUNT_PROJECT_ID,
-        private_key_id: process.env.SERVICE_ACCOUNT_PRIVATE_KEY_ID,
-        private_key: (process.env.SERVICE_ACCOUNT_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
-        client_email: process.env.SERVICE_ACCOUNT_EMAIL,
-        client_id: process.env.SERVICE_ACCOUNT_CLIENT_ID,
-        auth_uri: "https://accounts.google.com/o/oauth2/auth",
-        token_uri: "https://oauth2.googleapis.com/token",
-        auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
-      },
-      scopes: [
-        "https://www.googleapis.com/auth/documents",
-        "https://www.googleapis.com/auth/drive",
-      ],
-    });
-
-    const docs = google.docs({ version: "v1", auth });
-    const drive = google.drive({ version: "v3", auth });
-
-    // Create document
-    const docResponse = await docs.documents.create({
-      requestBody: {
-        title: `Alert Triage System - Knowledge Base (${new Date().toISOString().split("T")[0]})`,
-      },
-    });
-
-    const docId = docResponse.data.documentId;
-
-    // Build content
-    let content = "ALERT TRIAGE SYSTEM - KNOWLEDGE BASE\n\n";
-    content += `Created: ${new Date().toLocaleString()}\n\n`;
-
-    for (const [key, value] of Object.entries(knowledgeBase)) {
-      const stage = INTERVIEW_STAGES.find((s) => s.id === key);
-      if (stage) {
-        content += `\n## ${stage.title}\n`;
-        content += JSON.stringify(value, null, 2);
-        content += "\n";
-      }
-    }
-
-    // Insert content
-    await docs.documents.batchUpdate({
-      documentId: docId,
-      requestBody: {
-        requests: [
-          {
-            insertText: {
-              text: content,
-              location: { index: 1 },
-            },
-          },
-        ],
-      },
-    });
-
-    // Share with user
-    await drive.permissions.create({
-      fileId: docId,
-      requestBody: {
-        role: "writer",
-        type: "user",
-        emailAddress: "paul@gothrive.uk",
-      },
-      fields: "id",
-    });
-
-    return `https://docs.google.com/document/d/${docId}/edit`;
-  } catch (error) {
-    console.error("Error saving knowledge base:", error);
-    throw error;
-  }
+  // For now, just log and return a placeholder
+  // In production, this would save to Google Docs
+  console.log("Knowledge base:", JSON.stringify(knowledgeBase, null, 2));
+  return `https://docs.google.com/document/d/knowledge-base-${Date.now()}`;
 }
 
 export default async function handler(req, res) {

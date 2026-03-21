@@ -1,9 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { google } from "googleapis";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const anthropic = new Anthropic();
 
 // In-memory session storage (use database in production)
 const sessions = new Map();

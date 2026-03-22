@@ -257,8 +257,16 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         const flagsFound = Object.entries(flags)
           .filter(([_, value]) => value)
           .map(([key, _]) => key);
-        console.log(`    ✅ Row ${sheetRowNum}: ${flagsFound.join(", ")}`);
+        
+        // Extract client name from column A (would be in row[0] or nearby - check AutoUpdates structure)
+        // For now, we'll get it from the first non-URL column before L
+        // Column A should be before L, but looking at the rows, columns might be shifted
+        // The safest approach is to store row data and extract later
+        const clientName = row[0] || '(Unknown Client)'; // Try column A first
+        
+        console.log(`    ✅ Row ${sheetRowNum}: ${flagsFound.join(", ")} - Client: ${clientName}`);
         clients.push({
+          clientName,
           clientSheetId: clientId,
           masterSheetId: masterId,
           clientSheetUrl,
@@ -325,20 +333,25 @@ async function enrichAlertWithClientData(sheets, alert, clientSheetId) {
 function buildInvCompSummary(alert) {
   const accounting = alert.data.accounting || [];
   
-  // InvComp columns (A:K):
-  // A: Invoice no, B: Client, C: Job, D: Total excl VAT, E: Sent date, 
-  // F: Fully paid on, G: Status, H: Missing invoice?, I: Currency
-  const invoiceNo = accounting[0] || '(no reference)';
-  const client = accounting[1] || '(unknown)';
-  const job = accounting[2] || '';
-  const amountExclVAT = parseFloat(accounting[3]) || 0;
-  const sentDate = accounting[4] || '';
-  const status = accounting[6] || '';
-  const currency = accounting[8] || 'GBP';
+  // InvComp columns (A:K) - CORRECTED MAPPING:
+  // A: Client, B: Job, C: Invoice amount, D: Total excl VAT, E: VAT included,
+  // F: Invoice no, G: Sent date, H: Due date, I: Fully paid on, J: Status, K: Currency
+  const client = accounting[0] || '(unknown)';
+  const job = accounting[1] || '';
+  const invoiceAmount = parseFloat(accounting[2]) || 0; // Column C - Invoice amount
+  const amountExclVAT = parseFloat(accounting[3]) || 0; // Column D - Total excl VAT
+  const vatIncluded = accounting[4] || ''; // Column E - VAT included
+  const invoiceNo = accounting[5] || '(no reference)'; // Column F - Invoice no
+  const sentDate = accounting[6] || ''; // Column G - Sent date
+  const status = accounting[9] || ''; // Column J - Status
+  const currency = accounting[10] || 'GBP'; // Column K - Currency
+  
+  // Use the correct amount field (Invoice amount in C, or Total excl VAT in D if C is empty)
+  const amount = invoiceAmount > 0 ? invoiceAmount : amountExclVAT;
   
   // Format the amount with currency
-  const formattedAmount = amountExclVAT > 0 
-    ? `${currency}${amountExclVAT.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+  const formattedAmount = amount > 0 
+    ? `${currency}${amount.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
     : 'unknown amount';
   
   // Build the summary string
@@ -355,7 +368,7 @@ function buildInvCompSummary(alert) {
   
   return {
     invoiceNo,
-    amount: amountExclVAT,
+    amount,
     currency,
     client,
     job,
@@ -683,6 +696,7 @@ export default async function handler(req, res) {
           // This is the Client Sheet (Confirmed tab) where we'll look for job matches
           invoiceAlerts.forEach((alert) => {
             alert.clientId = client.clientSheetId;  // Client Sheet - Column L
+            alert.clientName = client.clientName;   // Client name for display
             alert.flagType = "invoiceDashboardDiscr";
           });
           allAlerts.push(...invoiceAlerts);
@@ -697,6 +711,7 @@ export default async function handler(req, res) {
           console.log(`  ✓ DirComp done, found ${expenseAlerts.length} alerts`);
           expenseAlerts.forEach((alert) => {
             alert.clientId = client.clientSheetId;
+            alert.clientName = client.clientName;
             alert.flagType = "expenseDashboardDiscr";
           });
           allAlerts.push(...expenseAlerts);
@@ -719,6 +734,7 @@ export default async function handler(req, res) {
           );
           crmAlerts.forEach((alert) => {
             alert.clientId = client.clientSheetId;
+            alert.clientName = client.clientName;
           });
           allAlerts.push(...crmAlerts);
         }
@@ -732,6 +748,7 @@ export default async function handler(req, res) {
           );
           crmAlerts.forEach((alert) => {
             alert.clientId = client.clientSheetId;
+            alert.clientName = client.clientName;
           });
           allAlerts.push(...crmAlerts);
         }

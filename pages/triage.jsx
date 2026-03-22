@@ -458,7 +458,7 @@ export default function TriageSystem({ onBack }) {
     return (
       <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.title}>Alert Triage</h1>
+          <h1 style={styles.title}>Alert Triage System</h1>
           <p style={styles.subtitle}>Review and resolve financial automation alerts</p>
         </div>
 
@@ -558,20 +558,19 @@ export default function TriageSystem({ onBack }) {
     return (
       <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.title}>Alert Review</h1>
+          <h1 style={styles.title}>Alert Triage System</h1>
           <p style={styles.subtitle}>Alert {progress} of {totalAlerts}</p>
         </div>
 
         <div style={styles.card}>
           <div style={styles.alertHeader}>
-            <h2 style={styles.alertTitle}>{alert.type || "Financial Alert"}</h2>
+            <h2 style={styles.alertTitle}>{alert.clientName || alert.type || "Financial Alert"}</h2>
             <span style={styles.alertCounter}>{progress}/{totalAlerts}</span>
           </div>
 
           {alert.flagType && (
-            <div style={styles.alertMetadata}>
-              <strong>Flag Type:</strong> {alert.flagType}
-              {alert.clientId && <div style={{ marginTop: "4px", fontSize: "12px" }}>Client: {alert.clientId.substring(0, 16)}...</div>}
+            <div style={{ ...styles.alertMetadata, fontSize: "15px", fontWeight: "600", padding: "14px", marginBottom: "16px" }}>
+              {alert.flagType}
             </div>
           )}
 

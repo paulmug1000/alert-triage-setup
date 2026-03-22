@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import Head from "next/head";
 
 export default function TriageSystem({ onBack }) {
   const AUTOMATION_COMMANDER_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
@@ -456,7 +457,11 @@ export default function TriageSystem({ onBack }) {
   // Screen 1: Initial state - show start button
   if (!sessionId && !triageComplete) {
     return (
-      <div style={styles.container}>
+      <>
+        <Head>
+          <title>Alert Triage System</title>
+        </Head>
+        <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
           <p style={styles.subtitle}>Review and resolve financial automation alerts</p>
@@ -491,6 +496,7 @@ export default function TriageSystem({ onBack }) {
           </button>
         )}
       </div>
+      </>
     );
   }
 
@@ -581,7 +587,7 @@ export default function TriageSystem({ onBack }) {
               </h3>
               <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#333" }}>
                 <div><strong>Invoice:</strong> {alert.summary.invoiceNo}</div>
-                <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}</div>
+                <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{alert.summary.vatIncluded && alert.summary.vatIncluded > 0 ? ' + VAT' : ''}</div>
                 <div><strong>Client:</strong> {alert.summary.client}</div>
                 {alert.summary.job && <div><strong>Description:</strong> {alert.summary.job}</div>}
                 {alert.summary.sentDate && <div><strong>Sent:</strong> {alert.summary.sentDate}</div>}

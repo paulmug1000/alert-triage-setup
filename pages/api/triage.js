@@ -180,14 +180,16 @@ function extractSheetIdFromUrl(url) {
 
 async function getClientFlags(sheets, automationCommanderSheetId) {
   try {
-    console.log("🔍 Reading AutoUpdates sheet columns L:HE...");
-    const response = await sheets.spreadsheets.values.get({
+    console.log("🔍 Reading AutoUpdates: Clients from A, URLs from L:M, flags from CW:HE...");
+    
+    // Fetch client names and sheet URLs (A:M)
+    const mainResponse = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!L:HE",
+      range: "AutoUpdates!A2:M1000",
     });
 
-    const rows = response.data.values || [];
-    console.log(`📊 Total rows returned: ${rows.length}`);
+    const rows = mainResponse.data.values || [];
+    console.log(`📊 Total rows: ${rows.length}`);
     
     if (rows.length === 0) {
       console.error("❌ No data in AutoUpdates!");
@@ -195,60 +197,63 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
     }
 
     const clients = [];
-    console.log(`🔄 Checking rows for flags (starting at index 2 = sheet row 3)...`);
 
-    // Start from row 3 (row 1 = headers, row 2 = first client data)
-    for (let i = 2; i < rows.length; i++) {
+    // rows are from A2:M, so:
+    // A (0) = Client name
+    // L (11) = Client sheet URL  
+    // M (12) = Master sheet URL
+    for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
-      const sheetRowNum = i + 1; // Convert array index to sheet row number
+      const sheetRowNum = i + 2; // Row 2 is i=0, so sheet row = i + 2
       
-      if (!row || row.length < 2) {
-        console.log(`  Row ${sheetRowNum}: Empty/too short, skipping`);
+      if (!row || row.length < 13) {
         continue;
       }
 
-      const clientSheetUrl = row[0]; // Column L - Client's actual financial sheet
-      const masterSheetUrl = row[1]; // Column M - Master sheet with comparison sheets
+      const clientName = String(row[0] || "").trim(); // Column A - ACTUAL CLIENT NAME
+      const clientSheetUrl = row[11]; // Column L
+      const masterSheetUrl = row[12]; // Column M
 
-      console.log(`  Row ${sheetRowNum}: URLs=${(clientSheetUrl || "(empty)").substring(0, 40)}, ${(masterSheetUrl || "(empty)").substring(0, 40)}, row has ${row.length} cols`);
-
-      if (!clientSheetUrl || !masterSheetUrl) {
-        console.log(`    → Skipped: Missing URL`);
+      if (!clientName || !clientSheetUrl || !masterSheetUrl) {
         continue;
       }
 
-      // Extract sheet IDs from URLs
-      // clientId = Client Sheet (contains Confirmed tab) - Column L
-      // masterId = Master Sheet (contains InvComp, DirComp, CRMComp) - Column M
+      console.log(`  Row ${sheetRowNum}: ${clientName}`);
+
+      // Extract sheet IDs
       const clientId = extractSheetIdFromUrl(clientSheetUrl);
       const masterId = extractSheetIdFromUrl(masterSheetUrl);
 
       if (!clientId || !masterId) {
-        console.log(`    → Skipped: Could not extract sheet IDs`);
         continue;
       }
 
-      console.log(`    ✓ Valid URLs found`);
-
-      // Extract flags for this client - optimized for speed
+      // Fetch flags for this specific row (separate API call)
+      const flagResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: automationCommanderSheetId,
+        range: `AutoUpdates!CW${sheetRowNum}:HE${sheetRowNum}`,
+      });
+      
+      const flagRow = flagResponse.data.values?.[0] || [];
+      
       const flags = {
-        invoiceDashboardDiscr: String(row[89] || "").toUpperCase() === "TRUE",
-        invoiceAppDiscr: String(row[96] || "").toUpperCase() === "TRUE",
-        crmPipeDashDiscr: String(row[103] || "").toUpperCase() === "TRUE",
-        crmPipeAppDiscr: String(row[110] || "").toUpperCase() === "TRUE",
-        crmConfDashDiscr: String(row[117] || "").toUpperCase() === "TRUE",
-        crmConfAppDiscr: String(row[124] || "").toUpperCase() === "TRUE",
-        crmPipeSkippedBlank: String(row[131] || "").toUpperCase() === "TRUE",
-        crmConfSkippedBlank: String(row[138] || "").toUpperCase() === "TRUE",
-        crmCopiedConfChecked: String(row[145] || "").toUpperCase() === "TRUE",
-        crmCopiedConfUnchecked: String(row[152] || "").toUpperCase() === "TRUE",
-        crmCopiedConfDelete: String(row[159] || "").toUpperCase() === "TRUE",
-        retainerInvoicesCreated: String(row[166] || "").toUpperCase() === "TRUE",
-        expenseDashboardDiscr: String(row[173] || "").toUpperCase() === "TRUE",
-        expenseAppDiscr: String(row[180] || "").toUpperCase() === "TRUE",
-        expenseAdded: String(row[187] || "").toUpperCase() === "TRUE",
-        expenseUnreconGaps: String(row[194] || "").toUpperCase() === "TRUE",
-        invoiceStaleUnsentChanges: String(row[201] || "").toUpperCase() === "TRUE",
+        invoiceDashboardDiscr: String(flagRow[0] || "").toUpperCase() === "TRUE", // CW
+        invoiceAppDiscr: String(flagRow[7] || "").toUpperCase() === "TRUE", // DD
+        crmPipeDashDiscr: String(flagRow[14] || "").toUpperCase() === "TRUE", // DK
+        crmPipeAppDiscr: String(flagRow[21] || "").toUpperCase() === "TRUE", // DR
+        crmConfDashDiscr: String(flagRow[28] || "").toUpperCase() === "TRUE", // DY
+        crmConfAppDiscr: String(flagRow[35] || "").toUpperCase() === "TRUE", // EF
+        crmPipeSkippedBlank: String(flagRow[42] || "").toUpperCase() === "TRUE", // EM
+        crmConfSkippedBlank: String(flagRow[49] || "").toUpperCase() === "TRUE", // ET
+        crmCopiedConfChecked: String(flagRow[56] || "").toUpperCase() === "TRUE", // FA
+        crmCopiedConfUnchecked: String(flagRow[63] || "").toUpperCase() === "TRUE", // FH
+        crmCopiedConfDelete: String(flagRow[70] || "").toUpperCase() === "TRUE", // FO
+        retainerInvoicesCreated: String(flagRow[77] || "").toUpperCase() === "TRUE", // FV
+        expenseDashboardDiscr: String(flagRow[84] || "").toUpperCase() === "TRUE", // GC
+        expenseAppDiscr: String(flagRow[91] || "").toUpperCase() === "TRUE", // GJ
+        expenseAdded: String(flagRow[98] || "").toUpperCase() === "TRUE", // GQ
+        expenseUnreconGaps: String(flagRow[105] || "").toUpperCase() === "TRUE", // GX
+        invoiceStaleUnsentChanges: String(flagRow[112] || "").toUpperCase() === "TRUE", // HE
       };
 
       const hasFlags = Object.values(flags).some(v => v);
@@ -258,13 +263,7 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
           .filter(([_, value]) => value)
           .map(([key, _]) => key);
         
-        // Extract client name from column A (would be in row[0] or nearby - check AutoUpdates structure)
-        // For now, we'll get it from the first non-URL column before L
-        // Column A should be before L, but looking at the rows, columns might be shifted
-        // The safest approach is to store row data and extract later
-        const clientName = row[0] || '(Unknown Client)'; // Try column A first
-        
-        console.log(`    ✅ Row ${sheetRowNum}: ${flagsFound.join(", ")} - Client: ${clientName}`);
+        console.log(`    ✅ ${flagsFound.join(", ")}`);
         clients.push({
           clientName,
           clientSheetId: clientId,
@@ -276,7 +275,7 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
       }
     }
 
-    console.log(`✅ Flag reading complete: Found ${clients.length} clients with flags`);
+    console.log(`✅ Found ${clients.length} clients with flags`);
     return clients;
   } catch (error) {
     console.error("❌ Error getting client flags:", error);
@@ -333,25 +332,32 @@ async function enrichAlertWithClientData(sheets, alert, clientSheetId) {
 function buildInvCompSummary(alert) {
   const accounting = alert.data.accounting || [];
   
-  // InvComp columns (A:K) - CORRECTED MAPPING:
+  // InvComp columns (A:K) - CORRECT MAPPING:
   // A: Client, B: Job, C: Invoice amount, D: Total excl VAT, E: VAT included,
   // F: Invoice no, G: Sent date, H: Due date, I: Fully paid on, J: Status, K: Currency
   const client = accounting[0] || '(unknown)';
   const job = accounting[1] || '';
-  const invoiceAmount = parseFloat(accounting[2]) || 0; // Column C - Invoice amount
-  const amountExclVAT = parseFloat(accounting[3]) || 0; // Column D - Total excl VAT
-  const vatIncluded = accounting[4] || ''; // Column E - VAT included
+  const invoiceAmount = parseFloat(accounting[2]) || 0; // Column C - Invoice amount (not reliable)
+  const totalExclVAT = parseFloat(accounting[3]) || 0; // Column D - Total excl VAT (USE THIS!)
+  const vatIncluded = parseFloat(accounting[4]) || 0; // Column E - VAT included amount
   const invoiceNo = accounting[5] || '(no reference)'; // Column F - Invoice no
   const sentDate = accounting[6] || ''; // Column G - Sent date
   const status = accounting[9] || ''; // Column J - Status
   const currency = accounting[10] || 'GBP'; // Column K - Currency
   
-  // Use the correct amount field (Invoice amount in C, or Total excl VAT in D if C is empty)
-  const amount = invoiceAmount > 0 ? invoiceAmount : amountExclVAT;
+  // Use Total excl VAT (Column D) as the primary amount
+  // This is what the user specified
+  const amount = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
   
-  // Format the amount with currency
+  // Determine VAT indicator
+  let vatSuffix = '';
+  if (vatIncluded && vatIncluded > 0) {
+    vatSuffix = ' + VAT';
+  }
+  
+  // Format the amount with currency and VAT indicator
   const formattedAmount = amount > 0 
-    ? `${currency}${amount.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+    ? `${currency}${amount.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}${vatSuffix}`
     : 'unknown amount';
   
   // Build the summary string
@@ -369,6 +375,7 @@ function buildInvCompSummary(alert) {
   return {
     invoiceNo,
     amount,
+    vatIncluded,
     currency,
     client,
     job,

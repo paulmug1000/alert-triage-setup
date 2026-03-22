@@ -1,63 +1,9 @@
-import React, { useState } from "react";
+import React from "react";
 import TriageSystem from "./triage";
 
 export default function MainMenu() {
-  const [mode, setMode] = useState("menu"); // menu or triage
-
-  if (mode === "triage") {
-    return <TriageSystem onBack={() => setMode("menu")} />;
-  }
-
-  return (
-    <div style={styles.container}>
-      <div style={styles.wrapper}>
-        <div style={styles.header}>
-          <h1 style={styles.title}>Alert Triage System</h1>
-          <p style={styles.subtitle}>
-            AI-powered financial automation alert analysis
-          </p>
-        </div>
-
-        <div style={styles.grid}>
-          {/* Triage Mode */}
-          <div style={styles.card} onClick={() => setMode("triage")}>
-            <div style={styles.cardIcon}>🔍</div>
-            <h2 style={styles.cardTitle}>Alert Triage</h2>
-            <p style={styles.cardDescription}>
-              Review and resolve discrepancies flagged by your automation system.
-              Claude analyzes each alert and suggests the best action.
-            </p>
-            <div style={styles.cardMeta}>
-              <span>Run weekly or as needed</span>
-              <span>Learn from decisions</span>
-            </div>
-            <button style={styles.cardButton}>Start Triage →</button>
-          </div>
-        </div>
-
-        <div style={styles.infoSection}>
-          <h3>How It Works</h3>
-          <ol style={styles.infoList}>
-            <li>
-              <strong>Knowledge Base:</strong> Populated from Phase 1 interview &
-              AIKnowledgeBase sheet
-            </li>
-            <li>
-              <strong>Weekly Triage:</strong> Review alerts flagged by your
-              automation system
-            </li>
-            <li>
-              <strong>Claude Analysis:</strong> AI analyzes each alert with your
-              knowledge base
-            </li>
-            <li>
-              <strong>Learning:</strong> Decisions logged for future improvements
-            </li>
-          </ol>
-        </div>
-      </div>
-    </div>
-  );
+  // Skip menu entirely and go directly to triage
+  return <TriageSystem onBack={() => {}} />;
 }
 
 const styles = {

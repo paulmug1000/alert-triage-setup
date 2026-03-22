@@ -521,8 +521,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { action, automationCommanderSheetId } = req.body;
+    // Handle both POST (req.body) and GET (req.query) requests
+    const action = req.method === "GET" ? req.query.action : req.body.action;
+    const automationCommanderSheetId = req.body.automationCommanderSheetId;
     const sheets = await getSheetsClient();
+
+    console.log(`\n📍 API Request: method=${req.method}, action=${action}`);
 
     if (action === "start_triage") {
       // Get all clients with flags
@@ -673,21 +677,26 @@ export default async function handler(req, res) {
       // Get alerts for a session from Redis
       const { sessionId } = req.query;
       
+      console.log(`\n🔍 get_alerts request: sessionId=${sessionId}`);
+      
       if (!sessionId) {
+        console.error("❌ Missing sessionId in query params");
         res.status(400).json({ success: false, error: "Missing sessionId" });
         return;
       }
 
       try {
+        console.log(`  Looking up triage_alerts:${sessionId} in Redis...`);
         const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
         
         if (!sessionData) {
+          console.error(`❌ Session not found: triage_alerts:${sessionId}`);
           res.status(404).json({ success: false, error: "Session not found" });
           return;
         }
 
         const { alerts, noActionAlerts, clientsWithFlags } = JSON.parse(sessionData);
-        console.log(`📦 Retrieved ${alerts.length} alerts from Redis for session ${sessionId}`);
+        console.log(`✅ Retrieved ${alerts.length} alerts from Redis for session ${sessionId}`);
         
         res.status(200).json({
           success: true,
@@ -696,7 +705,7 @@ export default async function handler(req, res) {
           clientsWithFlags,
         });
       } catch (err) {
-        console.error("Error retrieving alerts:", err);
+        console.error("❌ Error retrieving alerts:", err);
         res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "analyze_alert") {

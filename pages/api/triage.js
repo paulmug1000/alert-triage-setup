@@ -362,22 +362,30 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
 
 async function readInvCompAlerts(sheets, spreadsheetId) {
   try {
+    console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
+    
     // Activate master switch
+    console.log(`  Setting E2 = TRUE in InvComp...`);
     await setMasterSwitch(sheets, spreadsheetId, "InvComp", true);
+    console.log(`  ✓ Master switch set, waiting for calculations...`);
 
     // Read header row (row 5)
+    console.log(`  Reading headers (row 5)...`);
     const headerResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "InvComp!A5:Y5",
     });
     const headers = (headerResponse.data.values || [[]])[0] || [];
+    console.log(`  ✓ Headers read: ${headers.length} columns`);
 
     // Read data rows (row 6 onwards)
+    console.log(`  Reading data (rows 6-1000)...`);
     const dataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "InvComp!A6:Y1000",
     });
     const rows = dataResponse.data.values || [];
+    console.log(`  ✓ Data read: ${rows.length} rows`);
 
     // Columns S-Y are discrepancy flags (indices 18-24)
     const alerts = [];
@@ -406,32 +414,40 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
       }
     }
 
-    console.log(`Found ${alerts.length} invoice alerts in InvComp`);
+    console.log(`  ✓ Processing complete: Found ${alerts.length} invoice alerts`);
     return alerts;
   } catch (error) {
-    console.error("Error reading InvComp alerts:", error);
+    console.error(`❌ Error reading InvComp alerts:`, error);
     return [];
   }
 }
 
 async function readDirCompAlerts(sheets, spreadsheetId) {
   try {
+    console.log(`\n📖 Reading DirComp alerts from ${spreadsheetId}...`);
+    
     // Activate master switch
+    console.log(`  Setting E2 = TRUE in DirComp...`);
     await setMasterSwitch(sheets, spreadsheetId, "DirComp", true);
+    console.log(`  ✓ Master switch set, waiting for calculations...`);
 
     // Read header row (row 5)
+    console.log(`  Reading headers (row 5)...`);
     const headerResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "DirComp!A5:AV5",
     });
     const headers = (headerResponse.data.values || [[]])[0] || [];
+    console.log(`  ✓ Headers read: ${headers.length} columns`);
 
     // Read data rows (row 6 onwards)
+    console.log(`  Reading data (rows 6-1000)...`);
     const dataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "DirComp!A6:AV1000",
     });
     const rows = dataResponse.data.values || [];
+    console.log(`  ✓ Data read: ${rows.length} rows`);
 
     // Columns AO-AV are discrepancy flags (indices 40-47)
     const alerts = [];
@@ -460,25 +476,32 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
       }
     }
 
-    console.log(`Found ${alerts.length} expense alerts in DirComp`);
+    console.log(`  ✓ Processing complete: Found ${alerts.length} expense alerts`);
     return alerts;
   } catch (error) {
-    console.error("Error reading DirComp alerts:", error);
+    console.error(`❌ Error reading DirComp alerts:`, error);
     return [];
   }
 }
 
 async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
   try {
+    console.log(`\n📖 Reading CRMComp alerts (${mode} mode) for ${alertTypes.join(", ")}...`);
+    
     // Set CRM mode
+    console.log(`  Setting B2 = "${mode}" in CRMComp...`);
     await setCRMMode(sheets, spreadsheetId, mode);
+    console.log(`  ✓ Mode set`);
 
     // Activate master switch
+    console.log(`  Setting E2 = TRUE in CRMComp...`);
     await setMasterSwitch(sheets, spreadsheetId, "CRMComp", true);
+    console.log(`  ✓ Master switch set`);
 
     const alerts = [];
 
     for (const alertType of alertTypes) {
+      console.log(`  Processing ${alertType}...`);
       let dataRange, crmDataCols, sheetDataCols, flagCols, flagStartIdx;
 
       if (mode === "Pipeline") {
@@ -551,12 +574,10 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
       }
     }
 
-    console.log(
-      `Found ${alerts.length} CRM alerts in ${mode} mode for ${alertTypes.join(", ")}`
-    );
+    console.log(`  ✓ Processing complete: Found ${alerts.length} CRM alerts in ${mode} mode`);
     return alerts;
   } catch (error) {
-    console.error(`Error reading CRMComp alerts:`, error);
+    console.error(`❌ Error reading CRMComp alerts:`, error);
     return [];
   }
 }

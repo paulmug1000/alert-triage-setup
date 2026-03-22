@@ -938,20 +938,27 @@ export default async function handler(req, res) {
           
           const jobRevenue = parseFloat(totalRevenue) || 0;
           
-          // Invoice ref slots are in AG-AM (columns 32-38)
-          // Invoice amounts are in AP-BH (columns 41-47, approximate)
-          const invRefs = jobRow.slice(32, 39) || [];
-          const invAmounts = jobRow.slice(41, 48) || [];
+          // Invoice structure in Confirmed tab:
+          // Inv 1: Amount at AP (41), Ref at AQ (42)
+          // Inv 2: Amount at AW (48), Ref at AX (49)
+          // Inv 3: Amount at BD (55), Ref at BE (56)
+          // Pattern: amounts at [41, 48, 55, 62, 69, 76, 83, ...], refs at [42, 49, 56, 63, 70, 77, 84, ...]
+          
+          const invoiceAmountIndices = [41, 48, 55, 62, 69, 76, 83];
+          const invoiceRefIndices = [42, 49, 56, 63, 70, 77, 84];
           
           let totalInvoiced = 0;
           
-          // Sum amounts for invoices with VALID references only
-          for (let i = 0; i < invRefs.length; i++) {
-            const ref = String(invRefs[i] || '').trim();
-            const amount = parseFloat(invAmounts[i]) || 0;
+          // Sum amounts for invoices with VALID references (not blank, not MANUAL-INV)
+          for (let i = 0; i < invoiceAmountIndices.length; i++) {
+            const amountIdx = invoiceAmountIndices[i];
+            const refIdx = invoiceRefIndices[i];
             
-            // CRITICAL: Skip blank refs and MANUAL-INV refs
-            if (ref && ref !== '' && !ref.includes('MANUAL-INV')) {
+            const ref = String(jobRow[refIdx] || '').trim();
+            const amount = parseFloat(jobRow[amountIdx]) || 0;
+            
+            // Only count invoices with valid references
+            if (ref && ref !== '' && !ref.includes('MANUAL-INV') && amount > 0) {
               totalInvoiced += amount;
             }
           }
@@ -967,51 +974,59 @@ export default async function handler(req, res) {
         const sentDate = alert.summary?.sentDate || '';
         
         // Build detailed job context for Claude
-        const jobDetailsStr = activeData
+        // CRITICAL FILTER: Only show jobs for the SAME CLIENT as the invoice
+        const jobsForThisClient = activeData.filter(row => {
+          const rowClient = String(row[0] || '').trim();
+          // Match this client, but skip header row
+          return rowClient === invoiceClient && rowClient !== 'Client';
+        });
+        
+        console.log(`  🔍 Looking for jobs matching client: "${invoiceClient}"`);
+        console.log(`  📊 Found ${jobsForThisClient.length} existing jobs for this client`);
+        
+        if (jobsForThisClient.length === 0) {
+          console.log(`  ⚠️ WARNING: No existing jobs found for client "${invoiceClient}" in Confirmed tab`);
+        }
+        
+        const jobDetailsStr = jobsForThisClient
           .map((row, idx) => {
             const client = row[0] || '';
             const jobName = row[1] || '';
-            const totalRevenue = parseFloat(row[5]) || 0;
+            // CRITICAL FIX: Revenue is in AG (index 32), NOT column F (index 5)
+            const totalRevenue = parseFloat(row[32]) || 0;
             
             // Get existing invoice references and amounts
-            const invRefs = row.slice(32, 39) || [];
-            const invAmounts = row.slice(41, 48) || [];
+            // Structure: Inv 1 at [41, 42], Inv 2 at [48, 49], Inv 3 at [55, 56], etc.
+            const invoiceAmountIndices = [41, 48, 55, 62, 69, 76, 83];
+            const invoiceRefIndices = [42, 49, 56, 63, 70, 77, 84];
             
             let invoiceDetails = '';
-            invRefs.forEach((ref, i) => {
-              const r = String(ref || '').trim();
-              const amount = parseFloat(invAmounts[i]) || 0;
-              if (r && r !== '' && !r.includes('MANUAL-INV') && amount > 0) {
-                invoiceDetails += `\n    • ${r}: £${amount.toFixed(2)}`;
+            for (let i = 0; i < invoiceAmountIndices.length; i++) {
+              const amountIdx = invoiceAmountIndices[i];
+              const refIdx = invoiceRefIndices[i];
+              
+              const ref = String(row[refIdx] || '').trim();
+              const amount = parseFloat(row[amountIdx]) || 0;
+              
+              // Only show invoices with valid references (not blank, not MANUAL-INV)
+              if (ref && ref !== '' && !ref.includes('MANUAL-INV') && amount > 0) {
+                invoiceDetails += `\n    • ${ref}: £${amount.toFixed(2)}`;
               }
-            });
+            }
             
             const remaining = calculateRemainingToInvoice(row, totalRevenue);
             const invoiced = totalRevenue - remaining;
             
-            // DEBUG: Log each row's data
-            if (idx < 5) {
-              console.log(`  DEBUG Job Row ${idx + 1}:`, {
-                client,
-                jobName,
-                totalRevenue,
-                invoiced,
-                remaining,
-                invRefsCount: invRefs.filter(r => String(r || '').trim()).length,
-                raw_col_0: row[0],
-                raw_col_1: row[1],
-                raw_col_5: row[5],
-              });
-            }
+            console.log(`  DEBUG Job for ${client}: "${jobName}" Revenue: £${totalRevenue}, Already Invoiced: £${invoiced}, Remaining: £${remaining}`);
             
-            return `Row ${idx + 1}: ${client} | ${jobName}
+            return `Row ${idx + 1}: ${jobName}
     Revenue: £${totalRevenue.toFixed(2)}
     Already Invoiced: £${invoiced.toFixed(2)}${invoiceDetails}
     Remaining to Invoice: £${remaining.toFixed(2)}`;
           })
           .join('\n\n');
         
-        console.log(`\n📊 Job Details String (first 500 chars):\n${jobDetailsStr.substring(0, 500)}`);
+        console.log(`\n📊 Job Details for Claude:\n${jobDetailsStr || '(No jobs found for this client)'}`);
         
         // Improved Claude prompt with better context
         const prompt = `You are a financial advisor helping to resolve an unmatched invoice. Analyze the invoice and suggest the MOST LIKELY matching options.
@@ -1026,29 +1041,60 @@ UNMATCHED INVOICE:
 EXISTING JOBS FOR THIS CLIENT (with invoice history):
 ${jobDetailsStr}
 
-INSTRUCTIONS:
-1. Analyze whether this invoice matches any existing job by:
-   - Client name match
-   - Job description similarity
-   - Amount matching remaining-to-invoice gap
-   - Invoice reference pattern
+CRITICAL INFORMATION ABOUT THE SHEET STRUCTURE:
 
-2. For EACH option, explain:
-   - Which existing job it matches (if any)
-   - What invoices already exist for that job
-   - What the remaining-to-invoice amount is
-   - Whether this invoice fits that gap
-   - Any discrepancies (dates, amounts, descriptions)
+**Understanding Parent and Child Rows:**
 
-3. DO NOT suggest:
-   - Changing job descriptions
-   - Creating jobs with £0.00 revenue
-   - Any actions that don't make business sense
+Each job in the Confirmed tab may have:
+- ONE PARENT ROW: Contains the job's basic information (Client, Job name, Revenue, Start date, End date)
+- ZERO OR MORE CHILD ROWS: Contain additional invoices. Child rows have the SAME Client name and Job name as their parent, but NO Revenue, Start date, or End date
 
-4. Suggest only realistic options (2-3 maximum):
-   - Option 1: Best match to existing job (if applicable)
-   - Option 2: Alternative existing job or create new job
-   - Option 3: Only if truly ambiguous
+To identify a parent row: Has Client name, Job name, Revenue amount, Start date, and End date
+To identify a child row: Has the SAME Client name and Job name as a parent, but Revenue/Start date/End date are blank
+
+**How Invoices Are Organized (by job type):**
+
+PROJECT JOBS:
+- Parent row contains invoices 1-3 (in slots: amount/ref at columns AP/AQ, AW/AX, BD/BE)
+- Child row 1 (if exists) contains invoices 4-6
+- Child row 2 (if exists) contains invoices 7-9
+- Each row has 3 invoice slots
+
+RETAINER JOBS:
+- Mode A (1 invoice total): Parent row has 1 invoice in slot 1, no child rows
+- Mode B (2+ invoices): Parent row has NO invoices, each child row has 1 invoice in slot 1 only
+
+**How to Calculate Remaining to Invoice:**
+1. Find the job's parent row (has Revenue)
+2. Find all child rows with same Client, same Job name, but no Revenue
+3. Sum all invoices from the parent AND all its children (ignore invoices with blank references or "MANUAL-INV" references)
+4. Calculate: Remaining = Parent's Revenue - Total Invoiced Amount
+
+**Analyzing This Invoice:**
+When you analyze the invoice, identify which job it should match to by:
+- Client name match (required)
+- Job description similarity
+- Amount matching the remaining-to-invoice gap (considering parent + all children together)
+- Invoice reference pattern matching existing invoices
+- Date patterns
+
+For your chosen match, explain:
+- Which job (parent row) it matches to
+- Whether it's a project or retainer
+- All existing invoices on that parent + its children
+- The total remaining to invoice after summing all invoices across parent + children
+- Whether this new invoice fits that gap
+- Any discrepancies that need attention
+
+**Do NOT suggest:**
+- Changing job descriptions
+- Creating jobs with £0.00 revenue
+- Any actions that don't make business sense
+
+**Suggest 2-3 realistic options:**
+- Option 1: Best match to existing job (if applicable)
+- Option 2: Alternative job or create new job
+- Option 3: Only if truly ambiguous
 
 Format as JSON array with ONLY these fields:
 {
@@ -1056,7 +1102,7 @@ Format as JSON array with ONLY these fields:
   "title": "Match to [Job Name] - [reason]",
   "jobRow": 5,
   "jobName": "Job Name",
-  "businessLogic": "[Explain why this makes sense. Reference existing invoices, remaining amount, client match, etc.]",
+  "businessLogic": "[Explain why this makes sense. Reference existing invoices on parent and children, total remaining to invoice, client match, etc.]",
   "recommendedActions": [
     "Action 1",
     "Action 2"

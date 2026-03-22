@@ -763,11 +763,11 @@ export default async function handler(req, res) {
         
         const sheets = await getSheetsClient();
         
-        // Fetch Confirmed tab to find last data row
+        // Fetch Confirmed tab - use specific range A1:EP5000 instead of A:EP
         console.log(`  Fetching Confirmed tab from ${alert.clientId.substring(0, 16)}...`);
         const confirmedResponse = await sheets.spreadsheets.values.get({
           spreadsheetId: alert.clientId,
-          range: "Confirmed!A:EP",
+          range: "Confirmed!A1:EP5000",
         });
         
         const confirmedData = confirmedResponse.data.values || [];

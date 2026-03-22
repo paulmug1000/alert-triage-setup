@@ -989,12 +989,29 @@ export default async function handler(req, res) {
             const remaining = calculateRemainingToInvoice(row, totalRevenue);
             const invoiced = totalRevenue - remaining;
             
+            // DEBUG: Log each row's data
+            if (idx < 5) {
+              console.log(`  DEBUG Job Row ${idx + 1}:`, {
+                client,
+                jobName,
+                totalRevenue,
+                invoiced,
+                remaining,
+                invRefsCount: invRefs.filter(r => String(r || '').trim()).length,
+                raw_col_0: row[0],
+                raw_col_1: row[1],
+                raw_col_5: row[5],
+              });
+            }
+            
             return `Row ${idx + 1}: ${client} | ${jobName}
     Revenue: £${totalRevenue.toFixed(2)}
     Already Invoiced: £${invoiced.toFixed(2)}${invoiceDetails}
     Remaining to Invoice: £${remaining.toFixed(2)}`;
           })
           .join('\n\n');
+        
+        console.log(`\n📊 Job Details String (first 500 chars):\n${jobDetailsStr.substring(0, 500)}`);
         
         // Improved Claude prompt with better context
         const prompt = `You are a financial advisor helping to resolve an unmatched invoice. Analyze the invoice and suggest the MOST LIKELY matching options.
@@ -1059,6 +1076,8 @@ Return ONLY the JSON array, no other text.`;
         const responseText = message.content[0].type === "text" ? message.content[0].text : "";
         
         console.log(`  ✅ Options generated`);
+        console.log(`\n📋 Claude was given this prompt:\n${prompt.substring(0, 1000)}...`);
+        console.log(`\n📝 Claude responded with (first 500 chars):\n${responseText.substring(0, 500)}`);
         
         // Parse JSON response - Claude might wrap in ```json ... ```
         let options = [];

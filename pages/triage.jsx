@@ -28,8 +28,11 @@ export default function TriageSystem({ onBack }) {
 
       const data = await response.json();
 
-      if (!response.ok) {
-        setError(data.error || "Failed to start triage");
+      // Check both HTTP status and API success flag
+      if (!response.ok || !data.success) {
+        const errorMsg = data.error || "Failed to start triage";
+        console.error("Triage API error:", errorMsg);
+        setError(errorMsg);
         setIsLoading(false);
         return;
       }
@@ -39,6 +42,7 @@ export default function TriageSystem({ onBack }) {
       setNoActionCount(data.noActionCount || 0);
       setAcknowledgedNoAction(new Set());
 
+      // Only show "complete" if truly no alerts AND we got a valid response
       if ((data.totalAlerts || 0) === 0 && (data.noActionCount || 0) === 0) {
         setTriageComplete(true);
       } else if ((data.totalAlerts || 0) > 0) {

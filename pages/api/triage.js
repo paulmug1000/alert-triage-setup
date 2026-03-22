@@ -86,14 +86,22 @@ const FLAG_NAMES = {
 // ============================================================================
 
 function getGoogleAuth() {
+  // Fix private key encoding - handle multiple formats
+  let privateKey = process.env.SERVICE_ACCOUNT_PRIVATE_KEY || "";
+  
+  if (!privateKey) {
+    console.error("SERVICE_ACCOUNT_PRIVATE_KEY is not set");
+    throw new Error("SERVICE_ACCOUNT_PRIVATE_KEY environment variable not set");
+  }
+  
+  // Replace escaped newlines with actual newlines
+  privateKey = privateKey.replace(/\\n/g, "\n");
+  
   const credentials = {
     type: "service_account",
     project_id: process.env.SERVICE_ACCOUNT_PROJECT_ID,
     private_key_id: process.env.SERVICE_ACCOUNT_PRIVATE_KEY_ID,
-    private_key: (process.env.SERVICE_ACCOUNT_PRIVATE_KEY || "").replace(
-      /\\n/g,
-      "\n"
-    ),
+    private_key: privateKey,
     client_email: process.env.SERVICE_ACCOUNT_EMAIL,
     client_id: process.env.SERVICE_ACCOUNT_CLIENT_ID,
     auth_uri: "https://accounts.google.com/o/oauth2/auth",
@@ -298,7 +306,7 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
     return clients;
   } catch (error) {
     console.error("Error getting client flags:", error);
-    return [];
+    throw error; // Throw instead of silently returning empty
   }
 }
 
@@ -534,10 +542,19 @@ export default async function handler(req, res) {
 
     if (action === "start_triage") {
       // Get all clients with flags
-      const clientsWithFlags = await getClientFlags(
-        sheets,
-        automationCommanderSheetId
-      );
+      let clientsWithFlags;
+      try {
+        clientsWithFlags = await getClientFlags(
+          sheets,
+          automationCommanderSheetId
+        );
+      } catch (err) {
+        console.error("Fatal error reading client flags:", err);
+        return res.status(500).json({
+          success: false,
+          error: `Failed to read automation commander: ${err.message}. Check credentials and sheet access.`,
+        });
+      }
 
       if (clientsWithFlags.length === 0) {
         return res.status(200).json({

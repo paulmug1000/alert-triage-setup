@@ -619,6 +619,20 @@ export default function TriageSystem({ onBack }) {
                             <strong>Job:</strong> {option.jobName} (Row {option.jobRow})
                           </div>
                         )}
+                        {option.facts && typeof option.facts === 'object' && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
+                            <ul style={{ margin: "4px 0 0 16px", paddingLeft: "0", fontSize: "13px", color: "#555" }}>
+                              {option.facts.jobType && <li><strong>Type:</strong> {option.facts.jobType}</li>}
+                              {option.facts.totalRevenue && <li><strong>Total revenue:</strong> £{option.facts.totalRevenue.toLocaleString()}</li>}
+                              {option.facts.startDate && <li><strong>Start date:</strong> {option.facts.startDate}</li>}
+                              {option.facts.endDate && <li><strong>End date:</strong> {option.facts.endDate}</li>}
+                              {option.facts.existingInvoices && <li><strong>Existing invoices:</strong> {option.facts.existingInvoices}</li>}
+                              {option.facts.remainingToInvoice && <li><strong>Left to invoice:</strong> £{option.facts.remainingToInvoice.toLocaleString()}</li>}
+                              {option.facts.invoiceMatchStatus && <li><strong>Match status:</strong> {option.facts.invoiceMatchStatus}</li>}
+                              {option.facts.discrepancies && <li><strong>Discrepancies:</strong> {option.facts.discrepancies}</li>}
+                            </ul>
+                          </div>
+                        )}
                         {option.businessLogic && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
                             <strong>Why this works:</strong>

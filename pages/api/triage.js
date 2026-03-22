@@ -232,90 +232,107 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
       let hasFlags = false;
       const flagsFound = [];
 
-      // CW = invoiceDashboardDiscr (column index 102 from A)
-      const cwValue = String(row[102] || "").toUpperCase();
+      // CW = invoiceDashboardDiscr (column index 89 from L start)
+      const cwValue = String(row[89] || "").toUpperCase();
       flags.invoiceDashboardDiscr = cwValue === "TRUE";
-      if (flags.invoiceDashboardDiscr) { hasFlags = true; flagsFound.push(`CW(idx102)=${cwValue}`); }
+      if (flags.invoiceDashboardDiscr) { hasFlags = true; flagsFound.push(`CW(idx89)=${cwValue}`); }
+      console.log(`      CW(idx89)=${cwValue}`);
 
-      // DD = invoiceAppDiscr (column index 109)
-      const ddValue = String(row[109] || "").toUpperCase();
+      // DD = invoiceAppDiscr (column index 96 from L start)
+      const ddValue = String(row[96] || "").toUpperCase();
       flags.invoiceAppDiscr = ddValue === "TRUE";
-      if (flags.invoiceAppDiscr) { hasFlags = true; flagsFound.push(`DD(idx109)=${ddValue}`); }
+      if (flags.invoiceAppDiscr) { hasFlags = true; flagsFound.push(`DD(idx96)=${ddValue}`); }
+      console.log(`      DD(idx96)=${ddValue}`);
 
-      // DK = crmPipeDashDiscr (column index 116)
-      const dkValue = String(row[116] || "").toUpperCase();
+      // DK = crmPipeDashDiscr (column index 103 from L start)
+      const dkValue = String(row[103] || "").toUpperCase();
       flags.crmPipeDashDiscr = dkValue === "TRUE";
-      if (flags.crmPipeDashDiscr) { hasFlags = true; flagsFound.push(`DK(idx116)=${dkValue}`); }
+      if (flags.crmPipeDashDiscr) { hasFlags = true; flagsFound.push(`DK(idx103)=${dkValue}`); }
+      console.log(`      DK(idx103)=${dkValue}`);
 
-      // DR = crmPipeAppDiscr (column index 123)
-      const drValue = String(row[123] || "").toUpperCase();
+      // DR = crmPipeAppDiscr (column index 110 from L start)
+      const drValue = String(row[110] || "").toUpperCase();
       flags.crmPipeAppDiscr = drValue === "TRUE";
-      if (flags.crmPipeAppDiscr) { hasFlags = true; flagsFound.push(`DR(idx123)=${drValue}`); }
+      if (flags.crmPipeAppDiscr) { hasFlags = true; flagsFound.push(`DR(idx110)=${drValue}`); }
+      console.log(`      DR(idx110)=${drValue}`);
 
-      // DY = crmConfDashDiscr (column index 130)
-      const dyValue = String(row[130] || "").toUpperCase();
+      // DY = crmConfDashDiscr (column index 117 from L start)
+      const dyValue = String(row[117] || "").toUpperCase();
       flags.crmConfDashDiscr = dyValue === "TRUE";
-      if (flags.crmConfDashDiscr) { hasFlags = true; flagsFound.push(`DY(idx130)=${dyValue}`); }
+      if (flags.crmConfDashDiscr) { hasFlags = true; flagsFound.push(`DY(idx117)=${dyValue}`); }
+      console.log(`      DY(idx117)=${dyValue}`);
 
-      // EF = crmConfAppDiscr (column index 137)
-      const efValue = String(row[137] || "").toUpperCase();
+      // EF = crmConfAppDiscr (column index 124 from L start)
+      const efValue = String(row[124] || "").toUpperCase();
       flags.crmConfAppDiscr = efValue === "TRUE";
-      if (flags.crmConfAppDiscr) { hasFlags = true; flagsFound.push(`EF(idx137)=${efValue}`); }
+      if (flags.crmConfAppDiscr) { hasFlags = true; flagsFound.push(`EF(idx124)=${efValue}`); }
+      console.log(`      EF(idx124)=${efValue}`);
 
-      // EM = crmPipeSkippedBlank (column index 144)
-      const emValue = String(row[144] || "").toUpperCase();
+      // EM = crmPipeSkippedBlank (column index 131 from L start)
+      const emValue = String(row[131] || "").toUpperCase();
       flags.crmPipeSkippedBlank = emValue === "TRUE";
-      if (flags.crmPipeSkippedBlank) { hasFlags = true; flagsFound.push(`EM(idx144)=${emValue}`); }
+      if (flags.crmPipeSkippedBlank) { hasFlags = true; flagsFound.push(`EM(idx131)=${emValue}`); }
+      console.log(`      EM(idx131)=${emValue}`);
 
-      // ET = crmConfSkippedBlank (column index 151)
-      const etValue = String(row[151] || "").toUpperCase();
+      // ET = crmConfSkippedBlank (column index 138 from L start)
+      const etValue = String(row[138] || "").toUpperCase();
       flags.crmConfSkippedBlank = etValue === "TRUE";
-      if (flags.crmConfSkippedBlank) { hasFlags = true; flagsFound.push(`ET(idx151)=${etValue}`); }
+      if (flags.crmConfSkippedBlank) { hasFlags = true; flagsFound.push(`ET(idx138)=${etValue}`); }
+      console.log(`      ET(idx138)=${etValue}`);
 
-      // FA = crmCopiedConfChecked (column index 158)
-      const faValue = String(row[158] || "").toUpperCase();
+      // FA = crmCopiedConfChecked (column index 145 from L start)
+      const faValue = String(row[145] || "").toUpperCase();
       flags.crmCopiedConfChecked = faValue === "TRUE";
-      if (flags.crmCopiedConfChecked) { hasFlags = true; flagsFound.push(`FA(idx158)=${faValue}`); }
+      if (flags.crmCopiedConfChecked) { hasFlags = true; flagsFound.push(`FA(idx145)=${faValue}`); }
+      console.log(`      FA(idx145)=${faValue}`);
 
-      // FH = crmCopiedConfUnchecked (column index 165)
-      const fhValue = String(row[165] || "").toUpperCase();
+      // FH = crmCopiedConfUnchecked (column index 152 from L start)
+      const fhValue = String(row[152] || "").toUpperCase();
       flags.crmCopiedConfUnchecked = fhValue === "TRUE";
-      if (flags.crmCopiedConfUnchecked) { hasFlags = true; flagsFound.push(`FH(idx165)=${fhValue}`); }
+      if (flags.crmCopiedConfUnchecked) { hasFlags = true; flagsFound.push(`FH(idx152)=${fhValue}`); }
+      console.log(`      FH(idx152)=${fhValue}`);
 
-      // FO = crmCopiedConfDelete (column index 172)
-      const foValue = String(row[172] || "").toUpperCase();
+      // FO = crmCopiedConfDelete (column index 159 from L start)
+      const foValue = String(row[159] || "").toUpperCase();
       flags.crmCopiedConfDelete = foValue === "TRUE";
-      if (flags.crmCopiedConfDelete) { hasFlags = true; flagsFound.push(`FO(idx172)=${foValue}`); }
+      if (flags.crmCopiedConfDelete) { hasFlags = true; flagsFound.push(`FO(idx159)=${foValue}`); }
+      console.log(`      FO(idx159)=${foValue}`);
 
-      // FV = retainerInvoicesCreated (column index 179)
-      const fvValue = String(row[179] || "").toUpperCase();
+      // FV = retainerInvoicesCreated (column index 140 from L start)
+      const fvValue = String(row[140] || "").toUpperCase();
       flags.retainerInvoicesCreated = fvValue === "TRUE";
-      if (flags.retainerInvoicesCreated) { hasFlags = true; flagsFound.push(`FV(idx179)=${fvValue}`); }
+      if (flags.retainerInvoicesCreated) { hasFlags = true; flagsFound.push(`FV(idx140)=${fvValue}`); }
+      console.log(`      FV(idx140)=${fvValue}`);
 
-      // GC = expenseDashboardDiscr (column index 186)
-      const gcValue = String(row[186] || "").toUpperCase();
+      // GC = expenseDashboardDiscr (column index 173 from L start)
+      const gcValue = String(row[173] || "").toUpperCase();
       flags.expenseDashboardDiscr = gcValue === "TRUE";
-      if (flags.expenseDashboardDiscr) { hasFlags = true; flagsFound.push(`GC(idx186)=${gcValue}`); }
+      if (flags.expenseDashboardDiscr) { hasFlags = true; flagsFound.push(`GC(idx173)=${gcValue}`); }
+      console.log(`      GC(idx173)=${gcValue}`);
 
-      // GJ = expenseAppDiscr (column index 193)
-      const gjValue = String(row[193] || "").toUpperCase();
+      // GJ = expenseAppDiscr (column index 180 from L start)
+      const gjValue = String(row[180] || "").toUpperCase();
       flags.expenseAppDiscr = gjValue === "TRUE";
-      if (flags.expenseAppDiscr) { hasFlags = true; flagsFound.push(`GJ(idx193)=${gjValue}`); }
+      if (flags.expenseAppDiscr) { hasFlags = true; flagsFound.push(`GJ(idx180)=${gjValue}`); }
+      console.log(`      GJ(idx180)=${gjValue}`);
 
-      // GQ = expenseAdded (column index 200)
-      const gqValue = String(row[200] || "").toUpperCase();
+      // GQ = expenseAdded (column index 187 from L start)
+      const gqValue = String(row[187] || "").toUpperCase();
       flags.expenseAdded = gqValue === "TRUE";
-      if (flags.expenseAdded) { hasFlags = true; flagsFound.push(`GQ(idx200)=${gqValue}`); }
+      if (flags.expenseAdded) { hasFlags = true; flagsFound.push(`GQ(idx187)=${gqValue}`); }
+      console.log(`      GQ(idx187)=${gqValue}`);
 
-      // GX = expenseUnreconGaps (column index 207)
-      const gxValue = String(row[207] || "").toUpperCase();
+      // GX = expenseUnreconGaps (column index 194 from L start)
+      const gxValue = String(row[194] || "").toUpperCase();
       flags.expenseUnreconGaps = gxValue === "TRUE";
-      if (flags.expenseUnreconGaps) { hasFlags = true; flagsFound.push(`GX(idx207)=${gxValue}`); }
+      if (flags.expenseUnreconGaps) { hasFlags = true; flagsFound.push(`GX(idx194)=${gxValue}`); }
+      console.log(`      GX(idx194)=${gxValue}`);
 
-      // HE = invoiceStaleUnsentChanges (column index 214)
-      const heValue = String(row[214] || "").toUpperCase();
+      // HE = invoiceStaleUnsentChanges (column index 201 from L start)
+      const heValue = String(row[201] || "").toUpperCase();
       flags.invoiceStaleUnsentChanges = heValue === "TRUE";
-      if (flags.invoiceStaleUnsentChanges) { hasFlags = true; flagsFound.push(`HE(idx214)=${heValue}`); }
+      if (flags.invoiceStaleUnsentChanges) { hasFlags = true; flagsFound.push(`HE(idx201)=${heValue}`); }
+      console.log(`      HE(idx201)=${heValue}`);
 
       if (hasFlags) {
         console.log(`    ✅ HAS FLAGS: ${flagsFound.join(", ")}`);

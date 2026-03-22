@@ -922,6 +922,15 @@ export default async function handler(req, res) {
           
           if (hasData) {
             lastDataRow = row;
+            console.log(`  ✓ Last non-blank row found at index ${lastDataRow} (row ${lastDataRow + 1})`);
+            console.log(`    Data in this row: Client="${rowData[0]}", Job="${rowData[1]}", Revenue=${rowData[32]}`);
+            console.log(`  DEBUG: ALL non-empty cells in row ${lastDataRow + 1}:`);
+            for (let i = 0; i < rowData.length; i++) {
+              if (rowData[i] !== undefined && rowData[i] !== null && rowData[i] !== '') {
+                const val = String(rowData[i]).substring(0, 80);
+                console.log(`    Col ${i}: ${val}`);
+              }
+            }
             break;
           }
         }
@@ -930,6 +939,7 @@ export default async function handler(req, res) {
         
         // Get the active data
         const activeData = confirmedData.slice(0, lastDataRow + 1);
+        console.log(`  📊 Using ${activeData.length} non-blank rows for Claude analysis`);
         
         // Helper: Calculate remaining to invoice for a job row
         // CRITICAL: Only count invoices with valid references (not blank, not MANUAL-INV)

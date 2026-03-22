@@ -1,12 +1,3 @@
-import MainMenu from "./menu";
-
-export default function Index() {
-  return <MainMenu />;
-}
-
-// OLD CODE BELOW - NOW IN interview.jsx
-
-/*
 import React, { useState, useEffect, useRef } from "react";
 
 export default function SetupInterview() {

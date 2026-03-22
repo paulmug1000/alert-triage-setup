@@ -915,8 +915,8 @@ export default async function handler(req, res) {
           // Check if row has data in key columns
           const colsToCheck = [0, 1, 2, 3, 4]; // A-E
           colsToCheck.push(...[32, 33, 34, 35, 36, 37, 38]); // AG-AM
-          colsToCheck.push(...[41, 42, 43, 44, 45, 46, 47]); // AP-BH (approximate)
-          colsToCheck.push(...[73, 74, 75, 76, 77, 78, 79]); // BX-CR (approximate)
+          colsToCheck.push(...[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]); // AP-BH
+          colsToCheck.push(...Array.from({length: 21}, (_, i) => 75 + i)); // BX-CR
           
           const hasData = colsToCheck.some(col => rowData[col]);
           

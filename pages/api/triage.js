@@ -883,16 +883,29 @@ export default async function handler(req, res) {
         const sheets = await getSheetsClient();
         
         // CRITICAL: Fetch Confirmed tab from CLIENT SHEET, not Master Sheet
-        // alert.clientId = Client Sheet (Column L) contains Confirmed tab with job list
-        // DO NOT use masterSheetId here - that would be wrong!
-        // Master Sheet (Column M) has InvComp/DirComp/CRMComp for ALERTS, not for matching
         console.log(`  Fetching Confirmed tab from CLIENT sheet ${alert.clientId.substring(0, 16)}...`);
+        
+        // OPTIMIZATION: Only fetch up to column CR (79) instead of DC
+        // OPTIMIZATION: Estimate actual data range (usually 1-200 rows, not 5000)
+        // Fetch in chunks: first check 1-500, then expand if needed
         const confirmedResponse = await sheets.spreadsheets.values.get({
           spreadsheetId: alert.clientId,  // CLIENT Sheet (Column L)
-          range: "Confirmed!A1:DC5000",
+          range: "Confirmed!A1:CR500",    // Only to CR (79), only 500 rows
         });
         
-        const confirmedData = confirmedResponse.data.values || [];
+        let confirmedData = confirmedResponse.data.values || [];
+        
+        // If we hit the 500 row limit, fetch more (rarely needed)
+        if (confirmedData.length === 500) {
+          console.log(`  Detected 500 rows (likely more data), fetching full range...`);
+          const fullResponse = await sheets.spreadsheets.values.get({
+            spreadsheetId: alert.clientId,
+            range: "Confirmed!A1:CR5000",
+          });
+          confirmedData = fullResponse.data.values || [];
+        }
+        
+        console.log(`  📊 Loaded ${confirmedData.length} rows of job data`);
         
         // Find last non-blank row (checking A-E, AG-AM, AP-BH, BX-CR)
         let lastDataRow = 1;
@@ -946,83 +959,87 @@ export default async function handler(req, res) {
           return Math.max(0, jobRevenue - totalInvoiced);
         }
         
-        // Extract invoice details from alert
-        const invoiceAmount = parseFloat(alert.summary?.amount) || 0;
-        const invoiceRef = alert.summary?.invoiceNo || '(unmatched)';
-        const invoiceClient = alert.summary?.client || '';
-        const invoiceJob = alert.summary?.job || '';
-        const sentDate = alert.summary?.sentDate || '';
-        const status = alert.summary?.status || '';
-        
-        // Build detailed alert summary for display
-        const alertSummaryForDisplay = `
-**Unmatched Invoice:**
-• Invoice: ${invoiceRef}
-• Amount: £${invoiceAmount.toFixed(2)}
-• Client: ${invoiceClient}
-${invoiceJob ? `• Job/Description: ${invoiceJob}` : ''}
-• Sent: ${sentDate}
-• Status: ${status}
-`;
-        
-        // Build Confirmed tab data with better context
-        const confirmedTabStr = activeData
+        // Build detailed job context for Claude
+        const jobDetailsStr = activeData
           .map((row, idx) => {
             const client = row[0] || '';
             const jobName = row[1] || '';
-            const projectCode = row[2] || '';
-            const totalRevenue = parseFloat(row[5]) || 0; // Column F
+            const totalRevenue = parseFloat(row[5]) || 0;
             
-            // Invoice ref slots (AG-AM = cols 32-38)
+            // Get existing invoice references and amounts
             const invRefs = row.slice(32, 39) || [];
-            const validRefs = invRefs.filter(ref => {
+            const invAmounts = row.slice(41, 48) || [];
+            
+            let invoiceDetails = '';
+            invRefs.forEach((ref, i) => {
               const r = String(ref || '').trim();
-              return r && !r.includes('MANUAL-INV');
+              const amount = parseFloat(invAmounts[i]) || 0;
+              if (r && r !== '' && !r.includes('MANUAL-INV') && amount > 0) {
+                invoiceDetails += `\n    • ${r}: £${amount.toFixed(2)}`;
+              }
             });
             
             const remaining = calculateRemainingToInvoice(row, totalRevenue);
+            const invoiced = totalRevenue - remaining;
             
-            return `Row ${idx + 1}: ${client} | ${jobName} | Revenue: £${totalRevenue.toFixed(2)} | Invoiced: £${(totalRevenue - remaining).toFixed(2)} | Remaining: £${remaining.toFixed(2)}`;
+            return `Row ${idx + 1}: ${client} | ${jobName}
+    Revenue: £${totalRevenue.toFixed(2)}
+    Already Invoiced: £${invoiced.toFixed(2)}${invoiceDetails}
+    Remaining to Invoice: £${remaining.toFixed(2)}`;
           })
-          .join('\n');
+          .join('\n\n');
         
-        // New Claude prompt: Think LATERALLY, not just by matching criteria
-        const prompt = `You are a financial business advisor, not a matching algorithm. An invoice has been flagged as not automatically matching to any job, and needs human review.
+        // Improved Claude prompt with better context
+        const prompt = `You are a financial advisor helping to resolve an unmatched invoice. Analyze the invoice and suggest the MOST LIKELY matching options.
 
-${alertSummaryForDisplay}
+UNMATCHED INVOICE:
+• Reference: ${invoiceRef}
+• Amount: £${invoiceAmount.toFixed(2)}
+• Client: ${invoiceClient}
+• Description: ${invoiceJob}
+• Sent: ${sentDate}
 
-EXISTING JOBS IN CLIENT'S SYSTEM (Row | Client | Job | Revenue | Invoiced | Remaining):
-${confirmedTabStr}
+EXISTING JOBS FOR THIS CLIENT (with invoice history):
+${jobDetailsStr}
 
-Your job is to suggest realistic, business-sensible options for handling this invoice. Think about:
-1. Does the amount match any job's remaining invoice gap (even if dates are outside normal tolerance)?
-2. Could this be a continuation or additional work for an existing job?
-3. Should this be a new separate job?
-4. If an invoice amount would exceed a job's revenue, should the revenue be increased?
-5. Are there data quality issues (dates, references) that explain why it didn't auto-match?
+INSTRUCTIONS:
+1. Analyze whether this invoice matches any existing job by:
+   - Client name match
+   - Job description similarity
+   - Amount matching remaining-to-invoice gap
+   - Invoice reference pattern
 
-Generate 2-4 realistic options. For each option, provide:
-- Title (e.g., "Match to existing job X with reasoning")
-- Job name and row (if applicable)
-- Business logic explanation
-- Any data corrections needed (e.g., increase revenue, fix reference)
-- Implementation note
+2. For EACH option, explain:
+   - Which existing job it matches (if any)
+   - What invoices already exist for that job
+   - What the remaining-to-invoice amount is
+   - Whether this invoice fits that gap
+   - Any discrepancies (dates, amounts, descriptions)
 
-Format each option as JSON:
+3. DO NOT suggest:
+   - Changing job descriptions
+   - Creating jobs with £0.00 revenue
+   - Any actions that don't make business sense
+
+4. Suggest only realistic options (2-3 maximum):
+   - Option 1: Best match to existing job (if applicable)
+   - Option 2: Alternative existing job or create new job
+   - Option 3: Only if truly ambiguous
+
+Format as JSON array with ONLY these fields:
 {
   "optionId": 1,
-  "title": "Match to job 'X' - continuation of existing work",
+  "title": "Match to [Job Name] - [reason]",
   "jobRow": 5,
   "jobName": "Job Name",
-  "businessLogic": "This £2,250 invoice appears to be video #3 for the same client, matching the remaining gap in the existing NARF video job despite being dated later than the monthly tolerance.",
+  "businessLogic": "[Explain why this makes sense. Reference existing invoices, remaining amount, client match, etc.]",
   "recommendedActions": [
-    "Match invoice to row 5",
-    "Leave revenue as-is (£2,250 gap matches invoice exactly)"
-  ],
-  "summary": "Clear match based on amount and client, date tolerance can be widened for same-client continuation work."
+    "Action 1",
+    "Action 2"
+  ]
 }
 
-Return ONLY valid JSON array with 2-4 options, no other text.`;
+Return ONLY the JSON array, no other text.`;
 
         const message = await anthropic.messages.create({
           model: "claude-sonnet-4-20250514",

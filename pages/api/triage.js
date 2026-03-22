@@ -1065,33 +1065,48 @@ RETAINER JOBS:
    - Invoice reference pattern
    - Date patterns
 
-2. For each option you suggest:
-   - Identify the parent row number and job name
-   - List all existing invoices on that parent + its children
-   - Calculate total remaining to invoice
-   - Explain whether this invoice fits that gap
-   - Note any discrepancies
+2. For EACH option you suggest, provide ONLY these facts (no narrative):
+   - Parent row number
+   - Job name
+   - Job type (Project or Retainer)
+   - Total revenue
+   - Start/End dates
+   - List of existing invoices with amounts (e.g., "0820 £7,975 + 0821 £5,725")
+   - Total already invoiced
+   - Remaining to invoice
+   - Invoice match status (EXACT MATCH / PARTIAL MATCH / NEW JOB / etc.)
+   - Any discrepancies (date mismatch, amount variance, reference pattern, etc.)
 
-3. DO NOT suggest:
-   - Changing job descriptions
-   - Creating jobs with £0.00 revenue
-   - Any actions that don't make business sense
+3. Suggested actions should be ONLY data corrections or matching decisions:
+   - "Match invoice to row X, slot Y"
+   - "Create new job with revenue £X"
+   - "Investigate if invoices should be combined"
+   - NOT verification or client confirmation steps
 
-4. Suggest 2-3 realistic options:
-   - Option 1: Best match to existing job (if applicable)
-   - Option 2: Alternative job or create new job
-   - Option 3: Only if truly ambiguous
+4. Suggest 3 GENUINELY DIFFERENT options:
+   - Option 1: BEST MATCH (highest confidence match to existing job)
+   - Option 2: ALTERNATIVE MATCH (different existing job that could work)
+   - Option 3: CREATE NEW JOB (if existing jobs don't fit)
 
 Format as JSON array with ONLY these fields:
 {
   "optionId": 1,
-  "title": "Match to [Job Name] - [reason]",
-  "jobRow": 5,
-  "jobName": "Job Name",
-  "businessLogic": "[Explain why this makes sense. Reference parent row, its revenue, existing invoices, and remaining to invoice.]",
+  "title": "Match to [Job Name] - [key reason]",
+  "jobRow": 52,
+  "jobName": "NARF Prize Fund Video",
+  "facts": {
+    "jobType": "Project",
+    "totalRevenue": 15950,
+    "startDate": "3-Mar-26",
+    "endDate": "31-Aug-26",
+    "existingInvoices": "0820 £7,975 + 0821 £5,725 = £13,700",
+    "remainingToInvoice": 2250,
+    "invoiceMatchStatus": "EXACT MATCH",
+    "discrepancies": "Invoice date 20-Mar-26 is before project end, but within project duration"
+  },
   "recommendedActions": [
-    "Action 1",
-    "Action 2"
+    "Match invoice 0822 to row 52, slot 3",
+    "Note: Small £25 variance (£2,250 vs £2,225 remaining)"
   ]
 }
 

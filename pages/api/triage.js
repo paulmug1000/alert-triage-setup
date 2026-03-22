@@ -348,9 +348,13 @@ function buildInvCompSummary(alert) {
   // F: Invoice no, G: Sent date, H: Due date, I: Fully paid on, J: Status, K: Currency
   const client = accounting[0] || '(unknown)';
   const job = accounting[1] || '';
-  const invoiceAmount = parseFloat(accounting[2]) || 0; // Column C - Invoice amount (not reliable)
-  const totalExclVAT = parseFloat(accounting[3]) || 0; // Column D - Total excl VAT (USE THIS!)
-  const vatIncluded = parseFloat(accounting[4]) || 0; // Column E - VAT included amount
+  
+  // CRITICAL FIX: Remove commas from number strings before parsing
+  // Google Sheets returns '2,700.00' but parseFloat('2,700.00') = 2 (stops at comma)
+  const invoiceAmount = parseFloat(String(accounting[2] || '0').replace(/,/g, '')) || 0; // Column C
+  const totalExclVAT = parseFloat(String(accounting[3] || '0').replace(/,/g, '')) || 0; // Column D
+  const vatIncluded = parseFloat(String(accounting[4] || '0').replace(/,/g, '')) || 0; // Column E
+  
   const invoiceNo = accounting[5] || '(no reference)'; // Column F - Invoice no
   const sentDate = accounting[6] || ''; // Column G - Sent date
   const status = accounting[9] || ''; // Column J - Status

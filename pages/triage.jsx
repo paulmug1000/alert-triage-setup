@@ -562,7 +562,11 @@ export default function TriageSystem({ onBack }) {
     const progress = currentAlertIndex + 1;
 
     return (
-      <div style={styles.container}>
+      <>
+        <Head>
+          <title>Alert Triage System</title>
+        </Head>
+        <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
           <p style={styles.subtitle}>Alert {progress} of {totalAlerts}</p>
@@ -706,6 +710,7 @@ export default function TriageSystem({ onBack }) {
           </div>
         </div>
       </div>
+      </>
     );
   }
 

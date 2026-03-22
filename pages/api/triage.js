@@ -1071,11 +1071,11 @@ RETAINER JOBS:
    - Job type (Project or Retainer)
    - Total revenue
    - Start/End dates
-   - List of existing invoices with amounts (e.g., "0820 £7,975 + 0821 £5,725")
+   - List of existing invoices with amounts AND sent dates (e.g., "0820 £7,975 (sent 12-Mar-26) + 0821 £5,725 (sent 20-Mar-26) = £13,700")
    - Total already invoiced
    - Remaining to invoice
    - Invoice match status (EXACT MATCH / PARTIAL MATCH / NEW JOB / etc.)
-   - Any discrepancies (date mismatch, amount variance, reference pattern, etc.)
+   - Any key discrepancies that affect the decision (date issues, amount variance, reference pattern, etc.)
 
 3. Suggested actions should be ONLY data corrections or matching decisions:
    - "Match invoice to row X, slot Y"

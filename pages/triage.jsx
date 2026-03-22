@@ -628,9 +628,13 @@ export default function TriageSystem({ onBack }) {
                               {option.facts.endDate && <li><strong>End date:</strong> {option.facts.endDate}</li>}
                               {option.facts.existingInvoices && <li><strong>Existing invoices:</strong> {option.facts.existingInvoices}</li>}
                               {option.facts.remainingToInvoice && <li><strong>Left to invoice:</strong> £{option.facts.remainingToInvoice.toLocaleString()}</li>}
-                              {option.facts.invoiceMatchStatus && <li><strong>Match status:</strong> {option.facts.invoiceMatchStatus}</li>}
-                              {option.facts.discrepancies && <li><strong>Discrepancies:</strong> {option.facts.discrepancies}</li>}
+                              {option.facts.invoiceMatchStatus && <li><strong>{option.facts.invoiceMatchStatus}</strong></li>}
                             </ul>
+                          </div>
+                        )}
+                        {option.facts && option.facts.discrepancies && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #ddd" }}>
+                            <strong style={{ color: "#d97706" }}>⚠️ {option.facts.discrepancies}</strong>
                           </div>
                         )}
                         {option.businessLogic && (

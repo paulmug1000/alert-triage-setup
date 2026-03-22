@@ -47,12 +47,15 @@ export default function TriageSystem({ onBack }) {
 
       // Only show "complete" if truly no alerts AND we got a valid response
       if ((data.totalAlerts || 0) === 0 && (data.noActionCount || 0) === 0) {
+        console.log("No alerts found, showing complete screen");
         setTriageComplete(true);
       } else if ((data.totalAlerts || 0) > 0) {
         // Show actionable alerts first
+        console.log(`${data.totalAlerts} actionable alerts found, showing actionable screen`);
         setShowNoAction(false);
       } else {
         // Only no-action alerts
+        console.log(`${data.noActionCount} no-action alerts found, showing no-action screen`);
         setShowNoAction(true);
       }
     } catch (err) {

@@ -973,26 +973,15 @@ export default async function handler(req, res) {
         const invoiceJob = alert.summary?.job || '';
         const sentDate = alert.summary?.sentDate || '';
         
-        // Build detailed job context for Claude
-        // CRITICAL FILTER: Only show jobs for the SAME CLIENT as the invoice
-        const jobsForThisClient = activeData.filter(row => {
-          const rowClient = String(row[0] || '').trim();
-          // Match this client, but skip header row
-          return rowClient === invoiceClient && rowClient !== 'Client';
-        });
+        // Build job details from ALL non-blank rows (not filtered by client)
+        // Claude will understand parent/child structure and identify relevant jobs
+        console.log(`  📊 Sending all ${activeData.length} non-blank rows to Claude for analysis`);
         
-        console.log(`  🔍 Looking for jobs matching client: "${invoiceClient}"`);
-        console.log(`  📊 Found ${jobsForThisClient.length} existing jobs for this client`);
-        
-        if (jobsForThisClient.length === 0) {
-          console.log(`  ⚠️ WARNING: No existing jobs found for client "${invoiceClient}" in Confirmed tab`);
-        }
-        
-        const jobDetailsStr = jobsForThisClient
+        const jobDetailsStr = activeData
           .map((row, idx) => {
             const client = row[0] || '';
             const jobName = row[1] || '';
-            // CRITICAL FIX: Revenue is in AG (index 32), NOT column F (index 5)
+            // Revenue is in AG (index 32)
             const totalRevenue = parseFloat(row[32]) || 0;
             
             // Get existing invoice references and amounts
@@ -1017,16 +1006,19 @@ export default async function handler(req, res) {
             const remaining = calculateRemainingToInvoice(row, totalRevenue);
             const invoiced = totalRevenue - remaining;
             
-            console.log(`  DEBUG Job for ${client}: "${jobName}" Revenue: £${totalRevenue}, Already Invoiced: £${invoiced}, Remaining: £${remaining}`);
+            // Only log first few for debugging
+            if (idx < 3) {
+              console.log(`  DEBUG Row ${idx + 1}: Client="${client}", Job="${jobName}", Revenue=£${totalRevenue}`);
+            }
             
-            return `Row ${idx + 1}: ${jobName}
+            return `Row ${idx + 1}: ${client} | ${jobName}
     Revenue: £${totalRevenue.toFixed(2)}
     Already Invoiced: £${invoiced.toFixed(2)}${invoiceDetails}
     Remaining to Invoice: £${remaining.toFixed(2)}`;
           })
           .join('\n\n');
         
-        console.log(`\n📊 Job Details for Claude:\n${jobDetailsStr || '(No jobs found for this client)'}`);
+        console.log(`\n📊 Sending to Claude (first 800 chars):\n${jobDetailsStr.substring(0, 800)}...`);
         
         // Improved Claude prompt with better context
         const prompt = `You are a financial advisor helping to resolve an unmatched invoice. Analyze the invoice and suggest the MOST LIKELY matching options.

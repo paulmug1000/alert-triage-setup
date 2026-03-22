@@ -555,6 +555,8 @@ export default async function handler(req, res) {
 
       // Process each client
       for (const client of clientsWithFlags) {
+        console.log(`\n🔹 Processing client: ${client.masterSheetId}`);
+        
         // Check which actionable flags exist
         const actionableFlags = Object.entries(client.flags)
           .filter(([key, value]) => value && !NO_ACTION_FLAGS.includes(key))
@@ -564,12 +566,17 @@ export default async function handler(req, res) {
           .filter(([key, value]) => value && NO_ACTION_FLAGS.includes(key))
           .map(([key]) => key);
 
+        console.log(`  Actionable flags: ${actionableFlags.join(", ") || "none"}`);
+        console.log(`  No-action flags: ${noActionFlags.join(", ") || "none"}`);
+
         // Read actionable alerts
         if (actionableFlags.includes("invoiceDashboardDiscr")) {
+          console.log(`  Reading InvComp...`);
           const invoiceAlerts = await readInvCompAlerts(
             sheets,
             client.masterSheetId
           );
+          console.log(`  ✓ InvComp done, found ${invoiceAlerts.length} alerts`);
           invoiceAlerts.forEach((alert) => {
             alert.clientId = client.masterSheetId;
             alert.flagType = "invoiceDashboardDiscr";
@@ -578,10 +585,12 @@ export default async function handler(req, res) {
         }
 
         if (actionableFlags.includes("expenseDashboardDiscr")) {
+          console.log(`  Reading DirComp...`);
           const expenseAlerts = await readDirCompAlerts(
             sheets,
             client.masterSheetId
           );
+          console.log(`  ✓ DirComp done, found ${expenseAlerts.length} alerts`);
           expenseAlerts.forEach((alert) => {
             alert.clientId = client.masterSheetId;
             alert.flagType = "expenseDashboardDiscr";
@@ -632,10 +641,16 @@ export default async function handler(req, res) {
             flagColumn: FLAG_COLUMNS[flagKey],
           });
         }
+        
+        console.log(`  ✓ Client processing complete\n`);
       }
+
+      console.log(`📊 All clients processed. Total alerts: ${allAlerts.length}, No-action alerts: ${noActionAlerts.length}`);
+      console.log(`💾 Storing session in Redis...`);
 
       // Store session data in Redis
       const sessionId = Math.random().toString(36).substring(2, 15);
+      console.log(`  Storing ${allAlerts.length} alerts in Redis (session: ${sessionId})...`);
       await redisClient.set(
         `triage_alerts:${sessionId}`,
         JSON.stringify({
@@ -645,7 +660,9 @@ export default async function handler(req, res) {
         }),
         { EX: 86400 }
       );
+      console.log(`  ✓ Redis store complete`);
 
+      console.log(`\n✅ Sending response to frontend...`);
       res.status(200).json({
         success: true,
         sessionId,

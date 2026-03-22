@@ -53,9 +53,9 @@ export default function TriageSystem({ onBack }) {
       setIsAnalyzing(true);
       setClaudeAnalysis("");
       
-      console.log(`🔍 Analyzing alert:`, alert);
+      console.log(`🔍 Generating options for alert:`, alert.flagType);
       
-      // Call API to get Claude analysis
+      // Call API to get matching options
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -68,14 +68,14 @@ export default function TriageSystem({ onBack }) {
       const data = await response.json();
       
       if (!data.success) {
-        setClaudeAnalysis("Error analyzing alert: " + (data.error || "Unknown error"));
+        setClaudeAnalysis("Error generating options: " + (data.error || "Unknown error"));
         return;
       }
       
-      console.log(`✅ Claude analysis complete`);
-      setClaudeAnalysis(data.analysis);
+      console.log(`✅ Options generated:`, data.options?.length || 0);
+      setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
     } catch (err) {
-      setClaudeAnalysis(`Error analyzing alert: ${err.message}`);
+      setClaudeAnalysis(`Error generating options: ${err.message}`);
       console.error(err);
     } finally {
       setIsAnalyzing(false);
@@ -393,6 +393,36 @@ export default function TriageSystem({ onBack }) {
       gap: "12px",
       marginTop: "20px",
     },
+    optionCard: {
+      background: "#f5f5f5",
+      border: "1px solid #ddd",
+      borderRadius: "6px",
+      padding: "12px",
+    },
+    optionTitle: {
+      fontSize: "14px",
+      fontWeight: "600",
+      color: "#0066cc",
+      marginBottom: "8px",
+    },
+    optionDetail: {
+      fontSize: "13px",
+      color: "#333",
+      marginBottom: "6px",
+      lineHeight: "1.4",
+    },
+    optionSummary: {
+      fontSize: "13px",
+      color: "#666",
+      marginTop: "8px",
+      fontStyle: "italic",
+    },
+    decisionButtons: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr",
+      gap: "12px",
+      marginTop: "20px",
+    },
     decisionButton: {
       padding: "12px 16px",
       borderRadius: "6px",
@@ -541,57 +571,86 @@ export default function TriageSystem({ onBack }) {
           {claudeAnalysis && (
             <div>
               <h3 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
-                Claude's Analysis
+                Potential Actions
               </h3>
-              <div style={styles.claudeAnalysis}>
-                {claudeAnalysis.split('\n').map((line, idx) => (
-                  <div key={idx}>{line || <br />}</div>
-                ))}
-              </div>
+              {(() => {
+                try {
+                  const options = JSON.parse(claudeAnalysis);
+                  if (Array.isArray(options)) {
+                    return options.map((option, idx) => (
+                      <div key={idx} style={{ ...styles.optionCard, marginBottom: "16px" }}>
+                        <div style={styles.optionTitle}>
+                          Option {idx + 1}: {option.title}
+                        </div>
+                        {option.jobName && (
+                          <div style={styles.optionDetail}>
+                            <strong>Job:</strong> {option.jobName} (Row {option.jobRow})
+                          </div>
+                        )}
+                        {option.jobStatus && (
+                          <div style={styles.optionDetail}>
+                            <strong>Status:</strong> {option.jobStatus}
+                          </div>
+                        )}
+                        {option.existingInvoices && option.existingInvoices.length > 0 && (
+                          <div style={styles.optionDetail}>
+                            <strong>Existing invoices:</strong>
+                            {option.existingInvoices.map((inv, i) => (
+                              <div key={i} style={{ marginLeft: "16px", fontSize: "13px" }}>
+                                {inv.date} - {inv.amount} ({inv.ref})
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {option.remainingToInvoice && (
+                          <div style={styles.optionDetail}>
+                            <strong>Remaining to invoice:</strong> {option.remainingToInvoice}
+                          </div>
+                        )}
+                        <div style={styles.optionSummary}>{option.summary}</div>
+                        <button
+                          onClick={() => handleAlertDecision("accept_option_" + idx)}
+                          style={{
+                            ...styles.decisionButton,
+                            ...styles.approveButton,
+                            marginTop: "12px",
+                            width: "100%",
+                          }}
+                        >
+                          ✓ Accept Option {idx + 1}
+                        </button>
+                      </div>
+                    ));
+                  }
+                } catch (e) {
+                  // Show as plain text if not JSON
+                  return (
+                    <div style={styles.claudeAnalysis}>
+                      {claudeAnalysis.split('\n').map((line, idx) => (
+                        <div key={idx}>{line || <br />}</div>
+                      ))}
+                    </div>
+                  );
+                }
+              })()}
+              <button
+                onClick={() => handleAlertDecision("reject_all")}
+                style={{
+                  ...styles.decisionButton,
+                  ...styles.rejectButton,
+                  width: "100%",
+                }}
+              >
+                ✗ Reject All Options
+              </button>
             </div>
           )}
 
           {isAnalyzing && (
             <div style={{ ...styles.claudeAnalysis, textAlign: "center", color: "#666" }}>
-              Claude is analyzing this alert...
+              Generating options for this alert...
             </div>
           )}
-
-          <div style={styles.decisionButtons}>
-            <button
-              onClick={() => handleAlertDecision("approve")}
-              disabled={isAnalyzing}
-              style={{
-                ...styles.decisionButton,
-                ...styles.approveButton,
-                opacity: isAnalyzing ? 0.5 : 1,
-              }}
-            >
-              ✓ Approve
-            </button>
-            <button
-              onClick={() => handleAlertDecision("reject")}
-              disabled={isAnalyzing}
-              style={{
-                ...styles.decisionButton,
-                ...styles.rejectButton,
-                opacity: isAnalyzing ? 0.5 : 1,
-              }}
-            >
-              ✗ Reject
-            </button>
-            <button
-              onClick={() => handleAlertDecision("investigate")}
-              disabled={isAnalyzing}
-              style={{
-                ...styles.decisionButton,
-                ...styles.investigateButton,
-                opacity: isAnalyzing ? 0.5 : 1,
-              }}
-            >
-              ⓘ Investigate
-            </button>
-          </div>
 
           <div style={{ marginTop: "16px" }}>
             <button onClick={resetTriage} style={styles.buttonSecondary}>

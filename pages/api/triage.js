@@ -274,6 +274,47 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
 }
 
 // ============================================================================
+// ENRICHMENT: Fetch client data for matching context
+// ============================================================================
+
+async function enrichAlertWithClientData(sheets, alert, clientSheetId) {
+  try {
+    console.log(`  📊 Enriching alert with client data from ${clientSheetId.substring(0, 16)}...`);
+    
+    // Fetch Confirmed tab to get job list and existing invoices
+    const confirmedResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Confirmed!A2:G1000",
+    });
+    
+    const confirmedRows = confirmedResponse.data.values || [];
+    
+    // Extract job context - look for matching jobs
+    const matchingJobs = confirmedRows.filter(row => {
+      if (!row || row.length < 3) return false;
+      const jobName = row[0] || "";
+      const jobAmount = row[2] || "";
+      // Simple match: if alert mentions this job in description
+      return true; // We'll enhance this with Claude later
+    });
+    
+    alert.enrichment = {
+      clientSheetId,
+      potentialJobs: matchingJobs.slice(0, 5), // Top 5 potential matching jobs
+      timestamp: new Date().toISOString(),
+    };
+    
+    console.log(`  ✓ Enriched with ${matchingJobs.length} potential jobs`);
+    return alert;
+  } catch (error) {
+    console.error(`  ⚠️ Could not enrich alert:`, error.message);
+    // Return alert without enrichment - don't fail the whole process
+    alert.enrichment = { error: error.message };
+    return alert;
+  }
+}
+
+// ============================================================================
 // COMPARISON SHEET DATA READING
 // ============================================================================
 
@@ -709,7 +750,7 @@ export default async function handler(req, res) {
         res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "analyze_alert") {
-      // Get Claude's analysis for an alert
+      // Generate matching options for an alert using Confirmed tab data
       const { alert } = req.body;
       
       if (!alert) {
@@ -718,41 +759,119 @@ export default async function handler(req, res) {
       }
 
       try {
-        console.log(`🤖 Getting Claude analysis for alert:`, alert.type);
+        console.log(`\n🤖 Generating options for alert:`, alert.flagType);
         
-        // Build a prompt for Claude to analyze this alert
-        const prompt = `You are an AI assistant helping to triage financial automation alerts. Analyze the following alert and provide a concise recommendation.
+        const sheets = await getSheetsClient();
+        
+        // Fetch Confirmed tab to find last data row
+        console.log(`  Fetching Confirmed tab from ${alert.clientId.substring(0, 16)}...`);
+        const confirmedResponse = await sheets.spreadsheets.values.get({
+          spreadsheetId: alert.clientId,
+          range: "Confirmed!A:EP",
+        });
+        
+        const confirmedData = confirmedResponse.data.values || [];
+        
+        // Find last non-blank row (checking A-E, AG-AM, AP-BH, BX-CR)
+        let lastDataRow = 1;
+        for (let row = confirmedData.length - 1; row > 0; row--) {
+          const rowData = confirmedData[row] || [];
+          
+          // Check if row has data in key columns
+          const colsToCheck = [0, 1, 2, 3, 4]; // A-E
+          colsToCheck.push(...[32, 33, 34, 35, 36, 37, 38]); // AG-AM
+          colsToCheck.push(...[41, 42, 43, 44, 45, 46, 47]); // AP-BH (approximate)
+          colsToCheck.push(...[73, 74, 75, 76, 77, 78, 79]); // BX-CR (approximate)
+          
+          const hasData = colsToCheck.some(col => rowData[col]);
+          
+          if (hasData) {
+            lastDataRow = row;
+            break;
+          }
+        }
+        
+        console.log(`  Last data row: ${lastDataRow + 1}`);
+        
+        // Get the active data
+        const activeData = confirmedData.slice(0, lastDataRow + 1);
+        
+        // Build Claude prompt with alert + Confirmed tab data
+        const confirmedTabStr = activeData
+          .map((row, idx) => {
+            const client = row[0] || '';
+            const jobName = row[1] || '';
+            const projectCode = row[2] || '';
+            // Include invoice ref slots (AG-AM = cols 32-38)
+            const invRefs = row.slice(32, 39).filter(v => v).join(', ') || 'No invoices';
+            return `Row ${idx + 1}: ${client} | ${jobName} | ${projectCode} | Invoices: ${invRefs}`;
+          })
+          .join('\n');
+        
+        const alertStr = `
+Alert Type: ${alert.flagType}
+Invoice/Amount: £${alert.data?.flags?.[0] || '?'}
+Description: ${alert.data?.accounting?.join(' ') || 'Unmatched transaction'}
+`;
+        
+        const prompt = `You are a financial matching expert. An invoice has been flagged as unmatched and needs to be assigned to a job or handled appropriately.
 
-Alert Type: ${alert.type}
-Flag Type: ${alert.flagType || 'Unknown'}
-${alert.data ? `Alert Data: ${JSON.stringify(alert.data, null, 2)}` : ''}
-${alert.flagColumns ? `Flag Columns: ${alert.flagColumns.join(', ')}` : ''}
+UNMATCHED INVOICE:
+${alertStr}
 
-Provide:
-1. A brief summary of what this alert indicates (2-3 sentences)
-2. Potential impact if not addressed
-3. Recommended action
+CONFIRMED JOBS IN SYSTEM (Client | Job Name | Project Code | Existing Invoices):
+${confirmedTabStr}
 
-Keep your response concise and actionable.`;
+Generate 2-3 realistic matching options. For each option, provide:
+1. Option title (e.g., "Add to job X" or "Create new job")
+2. Job details (which row, job name, current status)
+3. Existing invoices (dates and amounts if applicable)
+4. Action summary (1-2 sentences)
+
+Format each option as JSON:
+{
+  "optionId": 1,
+  "title": "Add to job...",
+  "jobRow": 5,
+  "jobName": "...",
+  "jobStatus": "Active/Pending/Completed",
+  "existingInvoices": [{"date": "21/2/26", "amount": "£1,200", "ref": "INV-0820"}],
+  "remainingToInvoice": "£2,250",
+  "summary": "..."
+}
+
+Return ONLY valid JSON array, no other text.`;
 
         const message = await anthropic.messages.create({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 500,
+          max_tokens: 1500,
           messages: [
             { role: "user", content: prompt }
           ],
         });
 
-        const analysis = message.content[0].type === "text" ? message.content[0].text : "";
+        const responseText = message.content[0].type === "text" ? message.content[0].text : "";
         
-        console.log(`✅ Claude analysis complete`);
+        console.log(`  ✅ Options generated`);
+        
+        // Parse JSON response
+        let options = [];
+        try {
+          options = JSON.parse(responseText);
+          if (!Array.isArray(options)) options = [options];
+        } catch (e) {
+          console.error(`  ⚠️ Could not parse Claude response as JSON:`, responseText.substring(0, 100));
+          // Fallback: return raw text
+          options = [{ summary: responseText }];
+        }
         
         res.status(200).json({
           success: true,
-          analysis,
+          options,
+          alertId: alert.rowNumber,
         });
       } catch (err) {
-        console.error("Error analyzing alert:", err);
+        console.error("❌ Error generating options:", err);
         res.status(500).json({ success: false, error: err.message });
       }
     } else {

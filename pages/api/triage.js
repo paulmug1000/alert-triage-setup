@@ -959,6 +959,13 @@ export default async function handler(req, res) {
           return Math.max(0, jobRevenue - totalInvoiced);
         }
         
+        // Extract invoice details from alert
+        const invoiceAmount = parseFloat(alert.summary?.amount) || 0;
+        const invoiceRef = alert.summary?.invoiceNo || '(unmatched)';
+        const invoiceClient = alert.summary?.client || '';
+        const invoiceJob = alert.summary?.job || '';
+        const sentDate = alert.summary?.sentDate || '';
+        
         // Build detailed job context for Claude
         const jobDetailsStr = activeData
           .map((row, idx) => {

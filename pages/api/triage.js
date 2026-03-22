@@ -196,6 +196,16 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
       throw new Error("AutoUpdates sheet appears empty");
     }
 
+    // OPTIMIZATION: Fetch ALL flag columns at once (CW2:HE1000) instead of per-row
+    // This reduces 99 API calls to just 1!
+    console.log(`⏱️ Fetching all flags at once (CW:HE)...`);
+    const flagsResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!CW2:HE1000",
+    });
+    const flagRows = flagsResponse.data.values || [];
+    console.log(`  ✓ Got ${flagRows.length} flag rows`);
+
     const clients = [];
 
     // rows are from A2:M, so:
@@ -214,6 +224,7 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
       const clientSheetUrl = row[11]; // Column L
       const masterSheetUrl = row[12]; // Column M
 
+      // OPTIMIZATION: Skip rows with no client name - no need to check flags
       if (!clientName || !clientSheetUrl || !masterSheetUrl) {
         continue;
       }
@@ -228,13 +239,9 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         continue;
       }
 
-      // Fetch flags for this specific row (separate API call)
-      const flagResponse = await sheets.spreadsheets.values.get({
-        spreadsheetId: automationCommanderSheetId,
-        range: `AutoUpdates!CW${sheetRowNum}:HE${sheetRowNum}`,
-      });
-      
-      const flagRow = flagResponse.data.values?.[0] || [];
+      // Get flags for this row from the pre-fetched data
+      // flagRows array index = i (because we fetched starting from row 2)
+      const flagRow = flagRows[i] || [];
       
       const flags = {
         invoiceDashboardDiscr: String(flagRow[0] || "").toUpperCase() === "TRUE", // CW
@@ -1029,13 +1036,22 @@ Return ONLY valid JSON array with 2-4 options, no other text.`;
         
         console.log(`  ✅ Options generated`);
         
-        // Parse JSON response
+        // Parse JSON response - Claude might wrap in ```json ... ```
         let options = [];
+        let cleanedText = responseText
+          .replace(/```json\n?/g, '')  // Remove ```json markers
+          .replace(/```\n?/g, '')       // Remove ``` markers
+          .trim();
+        
         try {
-          options = JSON.parse(responseText);
+          options = JSON.parse(cleanedText);
           if (!Array.isArray(options)) options = [options];
+          console.log(`  ✅ Parsed ${options.length} options from Claude`);
         } catch (e) {
-          console.error(`  ⚠️ Could not parse Claude response as JSON:`, responseText.substring(0, 100));
+          console.error(`  ⚠️ Could not parse Claude response as JSON`);
+          console.error(`  Raw text (first 200 chars): ${responseText.substring(0, 200)}`);
+          console.error(`  Cleaned text (first 200 chars): ${cleanedText.substring(0, 200)}`);
+          console.error(`  Parse error: ${e.message}`);
           // Fallback: return raw text
           options = [{ summary: responseText }];
         }

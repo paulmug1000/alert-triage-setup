@@ -332,6 +332,17 @@ async function enrichAlertWithClientData(sheets, alert, clientSheetId) {
 function buildInvCompSummary(alert) {
   const accounting = alert.data.accounting || [];
   
+  // DEBUG: Log raw values to understand what we're getting
+  console.log(`DEBUG buildInvCompSummary:`, {
+    raw_accounting: accounting,
+    index_0: accounting[0],
+    index_1: accounting[1],
+    index_2: accounting[2],
+    index_3: accounting[3],
+    index_4: accounting[4],
+    index_5: accounting[5],
+  });
+  
   // InvComp columns (A:K) - CORRECT MAPPING:
   // A: Client, B: Job, C: Invoice amount, D: Total excl VAT, E: VAT included,
   // F: Invoice no, G: Sent date, H: Due date, I: Fully paid on, J: Status, K: Currency
@@ -345,9 +356,14 @@ function buildInvCompSummary(alert) {
   const status = accounting[9] || ''; // Column J - Status
   const currency = accounting[10] || 'GBP'; // Column K - Currency
   
+  console.log(`DEBUG after parsing:`, {
+    client, job, invoiceAmount, totalExclVAT, vatIncluded, invoiceNo, sentDate, status, currency
+  });
+  
   // Use Total excl VAT (Column D) as the primary amount
   // This is what the user specified
   const amount = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
+  console.log(`DEBUG amount decision: totalExclVAT(${totalExclVAT}) > 0 ? totalExclVAT : invoiceAmount = ${amount}`);
   
   // Determine VAT indicator
   let vatSuffix = '';
@@ -415,6 +431,15 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
     });
     const rows = dataResponse.data.values || [];
     console.log(`  ✓ Data read: ${rows.length} rows`);
+    
+    // DEBUG: Log first few rows completely
+    if (rows.length > 0) {
+      console.log(`  DEBUG First 3 data rows (A:Y):`);
+      for (let i = 0; i < Math.min(3, rows.length); i++) {
+        console.log(`    Row ${6 + i}: [${rows[i].slice(0, 11).map((v, idx) => `[${idx}]=${v}`).join(', ')}]`);
+        console.log(`             [Cols S-Y flags]: ${rows[i].slice(18, 25).map((v, idx) => `[${18 + idx}]=${v}`).join(', ')}`);
+      }
+    }
 
     // Columns S-Y are discrepancy flags (indices 18-24)
     const alerts = [];

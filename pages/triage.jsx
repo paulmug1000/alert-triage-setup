@@ -28,6 +28,8 @@ export default function TriageSystem({ onBack }) {
 
       const data = await response.json();
 
+      console.log("📥 Response from /api/triage:", JSON.stringify(data, null, 2));
+
       // Check both HTTP status and API success flag
       if (!response.ok || !data.success) {
         const errorMsg = data.error || "Failed to start triage";
@@ -37,6 +39,7 @@ export default function TriageSystem({ onBack }) {
         return;
       }
 
+      console.log(`Setting state: totalAlerts=${data.totalAlerts}, noActionCount=${data.noActionCount}`);
       setSessionId(data.sessionId);
       setTotalAlerts(data.totalAlerts || 0);
       setNoActionCount(data.noActionCount || 0);

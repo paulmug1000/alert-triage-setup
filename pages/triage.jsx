@@ -377,6 +377,13 @@ export default function TriageSystem({ onBack }) {
       borderRadius: "6px",
       borderLeft: "3px solid #0066cc",
     },
+    alertSummary: {
+      background: "#fff9e6",
+      padding: "14px",
+      borderRadius: "6px",
+      borderLeft: "4px solid #ff9800",
+      marginBottom: "20px",
+    },
     claudeAnalysis: {
       background: "white",
       border: "1px solid #e0e0e0",
@@ -568,6 +575,22 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
+          {alert.summary && (
+            <div style={{ ...styles.alertSummary, marginBottom: "20px" }}>
+              <h3 style={{ fontSize: "13px", fontWeight: "700", marginBottom: "8px", color: "#1a1a1a", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                Unmatched Invoice
+              </h3>
+              <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#333" }}>
+                <div><strong>Invoice:</strong> {alert.summary.invoiceNo}</div>
+                <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}</div>
+                <div><strong>Client:</strong> {alert.summary.client}</div>
+                {alert.summary.job && <div><strong>Description:</strong> {alert.summary.job}</div>}
+                {alert.summary.sentDate && <div><strong>Sent:</strong> {alert.summary.sentDate}</div>}
+                {alert.summary.status && <div><strong>Status:</strong> {alert.summary.status}</div>}
+              </div>
+            </div>
+          )}
+
           {claudeAnalysis && (
             <div>
               <h3 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
@@ -587,6 +610,23 @@ export default function TriageSystem({ onBack }) {
                             <strong>Job:</strong> {option.jobName} (Row {option.jobRow})
                           </div>
                         )}
+                        {option.businessLogic && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
+                            <strong>Why this works:</strong>
+                            <div style={{ marginTop: "4px", color: "#555", fontStyle: "italic" }}>{option.businessLogic}</div>
+                          </div>
+                        )}
+                        {option.recommendedActions && Array.isArray(option.recommendedActions) && option.recommendedActions.length > 0 && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
+                            <strong>Actions:</strong>
+                            <ul style={{ margin: "4px 0 0 16px", paddingLeft: "0" }}>
+                              {option.recommendedActions.map((action, i) => (
+                                <li key={i} style={{ fontSize: "13px", color: "#555" }}>{action}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {/* Fallback for old format fields */}
                         {option.jobStatus && (
                           <div style={styles.optionDetail}>
                             <strong>Status:</strong> {option.jobStatus}
@@ -607,7 +647,9 @@ export default function TriageSystem({ onBack }) {
                             <strong>Remaining to invoice:</strong> {option.remainingToInvoice}
                           </div>
                         )}
-                        <div style={styles.optionSummary}>{option.summary}</div>
+                        {option.summary && !option.businessLogic && (
+                          <div style={styles.optionSummary}>{option.summary}</div>
+                        )}
                         <button
                           onClick={() => handleAlertDecision("accept_option_" + idx)}
                           style={{

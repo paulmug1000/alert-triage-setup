@@ -207,8 +207,8 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         continue;
       }
 
-      const clientSheetUrl = row[0]; // Column L
-      const masterSheetUrl = row[1]; // Column M
+      const clientSheetUrl = row[0]; // Column L - Client's actual financial sheet
+      const masterSheetUrl = row[1]; // Column M - Master sheet with comparison sheets
 
       console.log(`  Row ${sheetRowNum}: URLs=${(clientSheetUrl || "(empty)").substring(0, 40)}, ${(masterSheetUrl || "(empty)").substring(0, 40)}, row has ${row.length} cols`);
 
@@ -217,6 +217,9 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         continue;
       }
 
+      // Extract sheet IDs from URLs
+      // clientId = Client Sheet (contains Confirmed tab) - Column L
+      // masterId = Master Sheet (contains InvComp, DirComp, CRMComp) - Column M
       const clientId = extractSheetIdFromUrl(clientSheetUrl);
       const masterId = extractSheetIdFromUrl(masterSheetUrl);
 
@@ -315,6 +318,54 @@ async function enrichAlertWithClientData(sheets, alert, clientSheetId) {
 }
 
 // ============================================================================
+// ALERT SUMMARY BUILDING
+// ============================================================================
+
+// Build alert summary from InvComp data for display to user
+function buildInvCompSummary(alert) {
+  const accounting = alert.data.accounting || [];
+  
+  // InvComp columns (A:K):
+  // A: Invoice no, B: Client, C: Job, D: Total excl VAT, E: Sent date, 
+  // F: Fully paid on, G: Status, H: Missing invoice?, I: Currency
+  const invoiceNo = accounting[0] || '(no reference)';
+  const client = accounting[1] || '(unknown)';
+  const job = accounting[2] || '';
+  const amountExclVAT = parseFloat(accounting[3]) || 0;
+  const sentDate = accounting[4] || '';
+  const status = accounting[6] || '';
+  const currency = accounting[8] || 'GBP';
+  
+  // Format the amount with currency
+  const formattedAmount = amountExclVAT > 0 
+    ? `${currency}${amountExclVAT.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+    : 'unknown amount';
+  
+  // Build the summary string
+  let summary = `Invoice ${invoiceNo} • ${formattedAmount} • ${client}`;
+  if (job) {
+    summary += ` • ${job}`;
+  }
+  if (sentDate) {
+    summary += ` • Sent ${sentDate}`;
+  }
+  if (status) {
+    summary += ` • ${status}`;
+  }
+  
+  return {
+    invoiceNo,
+    amount: amountExclVAT,
+    currency,
+    client,
+    job,
+    sentDate,
+    status,
+    summary
+  };
+}
+
+// ============================================================================
 // COMPARISON SHEET DATA READING
 // ============================================================================
 
@@ -358,17 +409,22 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
 
       if (hasDiscrepancy) {
         // Include columns A:K (accounting data), M:R (confirmed data), S:Y (flags)
-        alerts.push({
+        const alert = {
           type: "invoice",
           sheetName: "InvComp",
-          rowNumber: 7 + rowIdx, // Row 6 is first data row
+          rowNumber: 6 + rowIdx, // Row 6 is first data row
           data: {
             accounting: row.slice(0, 11), // A:K
             confirmed: row.slice(12, 18), // M:R
             flags: row.slice(18, 25), // S:Y
           },
           flagColumns: headers.slice(18, 25),
-        });
+        };
+        
+        // Add summary for display
+        alert.summary = buildInvCompSummary(alert);
+        
+        alerts.push(alert);
       }
     }
 
@@ -617,13 +673,16 @@ export default async function handler(req, res) {
         // Read actionable alerts
         if (actionableFlags.includes("invoiceDashboardDiscr")) {
           console.log(`  Reading InvComp...`);
+          // IMPORTANT: readInvCompAlerts uses masterSheetId (Master Sheet with InvComp tab)
           const invoiceAlerts = await readInvCompAlerts(
             sheets,
-            client.masterSheetId
+            client.masterSheetId  // Master Sheet - Column M
           );
           console.log(`  ✓ InvComp done, found ${invoiceAlerts.length} alerts`);
+          // CRITICAL: Set clientId to client.clientSheetId for later analysis
+          // This is the Client Sheet (Confirmed tab) where we'll look for job matches
           invoiceAlerts.forEach((alert) => {
-            alert.clientId = client.clientSheetId;
+            alert.clientId = client.clientSheetId;  // Client Sheet - Column L
             alert.flagType = "invoiceDashboardDiscr";
           });
           allAlerts.push(...invoiceAlerts);
@@ -763,10 +822,13 @@ export default async function handler(req, res) {
         
         const sheets = await getSheetsClient();
         
-        // Fetch Confirmed tab - use column DC (actual data extent) instead of EP
-        console.log(`  Fetching Confirmed tab from ${alert.clientId.substring(0, 16)}...`);
+        // CRITICAL: Fetch Confirmed tab from CLIENT SHEET, not Master Sheet
+        // alert.clientId = Client Sheet (Column L) contains Confirmed tab with job list
+        // DO NOT use masterSheetId here - that would be wrong!
+        // Master Sheet (Column M) has InvComp/DirComp/CRMComp for ALERTS, not for matching
+        console.log(`  Fetching Confirmed tab from CLIENT sheet ${alert.clientId.substring(0, 16)}...`);
         const confirmedResponse = await sheets.spreadsheets.values.get({
-          spreadsheetId: alert.clientId,
+          spreadsheetId: alert.clientId,  // CLIENT Sheet (Column L)
           range: "Confirmed!A1:DC5000",
         });
         
@@ -796,55 +858,115 @@ export default async function handler(req, res) {
         // Get the active data
         const activeData = confirmedData.slice(0, lastDataRow + 1);
         
-        // Build Claude prompt with alert + Confirmed tab data
+        // Helper: Calculate remaining to invoice for a job row
+        // CRITICAL: Only count invoices with valid references (not blank, not MANUAL-INV)
+        function calculateRemainingToInvoice(jobRow, totalRevenue) {
+          if (!jobRow || !totalRevenue) return totalRevenue;
+          
+          const jobRevenue = parseFloat(totalRevenue) || 0;
+          
+          // Invoice ref slots are in AG-AM (columns 32-38)
+          // Invoice amounts are in AP-BH (columns 41-47, approximate)
+          const invRefs = jobRow.slice(32, 39) || [];
+          const invAmounts = jobRow.slice(41, 48) || [];
+          
+          let totalInvoiced = 0;
+          
+          // Sum amounts for invoices with VALID references only
+          for (let i = 0; i < invRefs.length; i++) {
+            const ref = String(invRefs[i] || '').trim();
+            const amount = parseFloat(invAmounts[i]) || 0;
+            
+            // CRITICAL: Skip blank refs and MANUAL-INV refs
+            if (ref && ref !== '' && !ref.includes('MANUAL-INV')) {
+              totalInvoiced += amount;
+            }
+          }
+          
+          return Math.max(0, jobRevenue - totalInvoiced);
+        }
+        
+        // Extract invoice details from alert
+        const invoiceAmount = parseFloat(alert.summary?.amount) || 0;
+        const invoiceRef = alert.summary?.invoiceNo || '(unmatched)';
+        const invoiceClient = alert.summary?.client || '';
+        const invoiceJob = alert.summary?.job || '';
+        const sentDate = alert.summary?.sentDate || '';
+        const status = alert.summary?.status || '';
+        
+        // Build detailed alert summary for display
+        const alertSummaryForDisplay = `
+**Unmatched Invoice:**
+• Invoice: ${invoiceRef}
+• Amount: £${invoiceAmount.toFixed(2)}
+• Client: ${invoiceClient}
+${invoiceJob ? `• Job/Description: ${invoiceJob}` : ''}
+• Sent: ${sentDate}
+• Status: ${status}
+`;
+        
+        // Build Confirmed tab data with better context
         const confirmedTabStr = activeData
           .map((row, idx) => {
             const client = row[0] || '';
             const jobName = row[1] || '';
             const projectCode = row[2] || '';
-            // Include invoice ref slots (AG-AM = cols 32-38)
-            const invRefs = row.slice(32, 39).filter(v => v).join(', ') || 'No invoices';
-            return `Row ${idx + 1}: ${client} | ${jobName} | ${projectCode} | Invoices: ${invRefs}`;
+            const totalRevenue = parseFloat(row[5]) || 0; // Column F
+            
+            // Invoice ref slots (AG-AM = cols 32-38)
+            const invRefs = row.slice(32, 39) || [];
+            const validRefs = invRefs.filter(ref => {
+              const r = String(ref || '').trim();
+              return r && !r.includes('MANUAL-INV');
+            });
+            
+            const remaining = calculateRemainingToInvoice(row, totalRevenue);
+            
+            return `Row ${idx + 1}: ${client} | ${jobName} | Revenue: £${totalRevenue.toFixed(2)} | Invoiced: £${(totalRevenue - remaining).toFixed(2)} | Remaining: £${remaining.toFixed(2)}`;
           })
           .join('\n');
         
-        const alertStr = `
-Alert Type: ${alert.flagType}
-Invoice/Amount: £${alert.data?.flags?.[0] || '?'}
-Description: ${alert.data?.accounting?.join(' ') || 'Unmatched transaction'}
-`;
-        
-        const prompt = `You are a financial matching expert. An invoice has been flagged as unmatched and needs to be assigned to a job or handled appropriately.
+        // New Claude prompt: Think LATERALLY, not just by matching criteria
+        const prompt = `You are a financial business advisor, not a matching algorithm. An invoice has been flagged as not automatically matching to any job, and needs human review.
 
-UNMATCHED INVOICE:
-${alertStr}
+${alertSummaryForDisplay}
 
-CONFIRMED JOBS IN SYSTEM (Client | Job Name | Project Code | Existing Invoices):
+EXISTING JOBS IN CLIENT'S SYSTEM (Row | Client | Job | Revenue | Invoiced | Remaining):
 ${confirmedTabStr}
 
-Generate 2-3 realistic matching options. For each option, provide:
-1. Option title (e.g., "Add to job X" or "Create new job")
-2. Job details (which row, job name, current status)
-3. Existing invoices (dates and amounts if applicable)
-4. Action summary (1-2 sentences)
+Your job is to suggest realistic, business-sensible options for handling this invoice. Think about:
+1. Does the amount match any job's remaining invoice gap (even if dates are outside normal tolerance)?
+2. Could this be a continuation or additional work for an existing job?
+3. Should this be a new separate job?
+4. If an invoice amount would exceed a job's revenue, should the revenue be increased?
+5. Are there data quality issues (dates, references) that explain why it didn't auto-match?
+
+Generate 2-4 realistic options. For each option, provide:
+- Title (e.g., "Match to existing job X with reasoning")
+- Job name and row (if applicable)
+- Business logic explanation
+- Any data corrections needed (e.g., increase revenue, fix reference)
+- Implementation note
 
 Format each option as JSON:
 {
   "optionId": 1,
-  "title": "Add to job...",
+  "title": "Match to job 'X' - continuation of existing work",
   "jobRow": 5,
-  "jobName": "...",
-  "jobStatus": "Active/Pending/Completed",
-  "existingInvoices": [{"date": "21/2/26", "amount": "£1,200", "ref": "INV-0820"}],
-  "remainingToInvoice": "£2,250",
-  "summary": "..."
+  "jobName": "Job Name",
+  "businessLogic": "This £2,250 invoice appears to be video #3 for the same client, matching the remaining gap in the existing NARF video job despite being dated later than the monthly tolerance.",
+  "recommendedActions": [
+    "Match invoice to row 5",
+    "Leave revenue as-is (£2,250 gap matches invoice exactly)"
+  ],
+  "summary": "Clear match based on amount and client, date tolerance can be widened for same-client continuation work."
 }
 
-Return ONLY valid JSON array, no other text.`;
+Return ONLY valid JSON array with 2-4 options, no other text.`;
 
         const message = await anthropic.messages.create({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 1500,
+          max_tokens: 2000,
           messages: [
             { role: "user", content: prompt }
           ],

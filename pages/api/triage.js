@@ -122,8 +122,8 @@ async function getSheetsClient() {
 }
 
 async function ensureFreshData(sheets, spreadsheetId, sheetName) {
-  // Wait for Google Sheets to process
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  // Wait for Google Sheets to process (reduced from 2s to 0.5s)
+  await new Promise((resolve) => setTimeout(resolve, 500));
 
   // Dummy read to trigger calculation
   try {
@@ -135,8 +135,8 @@ async function ensureFreshData(sheets, spreadsheetId, sheetName) {
     // Ignore errors on dummy read
   }
 
-  // Wait a bit more
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // Wait a bit more (reduced from 1s to 0.5s)
+  await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
 async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
@@ -669,6 +669,83 @@ export default async function handler(req, res) {
         totalAlerts: allAlerts.length,
         noActionCount: noActionAlerts.length,
       });
+    } else if (action === "get_alerts") {
+      // Get alerts for a session from Redis
+      const { sessionId } = req.query;
+      
+      if (!sessionId) {
+        res.status(400).json({ success: false, error: "Missing sessionId" });
+        return;
+      }
+
+      try {
+        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+        
+        if (!sessionData) {
+          res.status(404).json({ success: false, error: "Session not found" });
+          return;
+        }
+
+        const { alerts, noActionAlerts, clientsWithFlags } = JSON.parse(sessionData);
+        console.log(`📦 Retrieved ${alerts.length} alerts from Redis for session ${sessionId}`);
+        
+        res.status(200).json({
+          success: true,
+          alerts,
+          noActionAlerts,
+          clientsWithFlags,
+        });
+      } catch (err) {
+        console.error("Error retrieving alerts:", err);
+        res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "analyze_alert") {
+      // Get Claude's analysis for an alert
+      const { alert } = req.body;
+      
+      if (!alert) {
+        res.status(400).json({ success: false, error: "Missing alert data" });
+        return;
+      }
+
+      try {
+        console.log(`🤖 Getting Claude analysis for alert:`, alert.type);
+        
+        // Build a prompt for Claude to analyze this alert
+        const prompt = `You are an AI assistant helping to triage financial automation alerts. Analyze the following alert and provide a concise recommendation.
+
+Alert Type: ${alert.type}
+Flag Type: ${alert.flagType || 'Unknown'}
+${alert.data ? `Alert Data: ${JSON.stringify(alert.data, null, 2)}` : ''}
+${alert.flagColumns ? `Flag Columns: ${alert.flagColumns.join(', ')}` : ''}
+
+Provide:
+1. A brief summary of what this alert indicates (2-3 sentences)
+2. Potential impact if not addressed
+3. Recommended action
+
+Keep your response concise and actionable.`;
+
+        const message = await anthropic.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 500,
+          messages: [
+            { role: "user", content: prompt }
+          ],
+        });
+
+        const analysis = message.content[0].type === "text" ? message.content[0].text : "";
+        
+        console.log(`✅ Claude analysis complete`);
+        
+        res.status(200).json({
+          success: true,
+          analysis,
+        });
+      } catch (err) {
+        console.error("Error analyzing alert:", err);
+        res.status(500).json({ success: false, error: err.message });
+      }
     } else {
       res.status(400).json({ error: "Invalid action" });
     }

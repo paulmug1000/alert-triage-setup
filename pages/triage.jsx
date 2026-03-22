@@ -11,6 +11,100 @@ export default function TriageSystem({ onBack }) {
   const [showNoAction, setShowNoAction] = useState(false);
   const [acknowledgedNoAction, setAcknowledgedNoAction] = useState(new Set());
   const [triageComplete, setTriageComplete] = useState(false);
+  const [alerts, setAlerts] = useState([]);
+  const [currentAlertIndex, setCurrentAlertIndex] = useState(0);
+  const [claudeAnalysis, setClaudeAnalysis] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [alertsLoaded, setAlertsLoaded] = useState(false);
+  const [userDecision, setUserDecision] = useState(null);
+
+  const fetchAndAnalyzeAlerts = async (sessionId) => {
+    try {
+      setIsAnalyzing(true);
+      
+      // Fetch alerts from Redis via API
+      const response = await fetch(`/api/triage?action=get_alerts&sessionId=${sessionId}`);
+      const data = await response.json();
+      
+      if (!data.success || !data.alerts) {
+        setError("Failed to load alerts");
+        return;
+      }
+      
+      console.log(`📋 Loaded ${data.alerts.length} alerts from Redis`);
+      setAlerts(data.alerts);
+      setCurrentAlertIndex(0);
+      setAlertsLoaded(true);
+      
+      // Start analyzing the first alert
+      if (data.alerts.length > 0) {
+        await analyzeAlert(data.alerts[0]);
+      }
+    } catch (err) {
+      setError(`Failed to load alerts: ${err.message}`);
+      console.error(err);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const analyzeAlert = async (alert) => {
+    try {
+      setIsAnalyzing(true);
+      setClaudeAnalysis("");
+      
+      console.log(`🔍 Analyzing alert:`, alert);
+      
+      // Call API to get Claude analysis
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "analyze_alert",
+          alert,
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        setClaudeAnalysis("Error analyzing alert: " + (data.error || "Unknown error"));
+        return;
+      }
+      
+      console.log(`✅ Claude analysis complete`);
+      setClaudeAnalysis(data.analysis);
+    } catch (err) {
+      setClaudeAnalysis(`Error analyzing alert: ${err.message}`);
+      console.error(err);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleAlertDecision = async (decision) => {
+    const alert = alerts[currentAlertIndex];
+    
+    console.log(`📝 Recording decision for alert: ${decision}`, alert);
+    
+    try {
+      // TODO: Log decision to TriageLog sheet
+      setUserDecision(decision);
+      
+      // Move to next alert
+      if (currentAlertIndex < alerts.length - 1) {
+        const nextAlert = alerts[currentAlertIndex + 1];
+        setCurrentAlertIndex(currentAlertIndex + 1);
+        setUserDecision(null);
+        await analyzeAlert(nextAlert);
+      } else {
+        // All alerts processed
+        setTriageComplete(true);
+      }
+    } catch (err) {
+      setError(`Failed to record decision: ${err.message}`);
+    }
+  };
 
   const startTriage = async () => {
     try {
@@ -51,8 +145,10 @@ export default function TriageSystem({ onBack }) {
         setTriageComplete(true);
       } else if ((data.totalAlerts || 0) > 0) {
         // Show actionable alerts first
-        console.log(`${data.totalAlerts} actionable alerts found, showing actionable screen`);
+        console.log(`${data.totalAlerts} actionable alerts found, fetching from Redis...`);
         setShowNoAction(false);
+        // Fetch alerts after state is set
+        setTimeout(() => fetchAndAnalyzeAlerts(data.sessionId), 100);
       } else {
         // Only no-action alerts
         console.log(`${data.noActionCount} no-action alerts found, showing no-action screen`);
@@ -92,6 +188,11 @@ export default function TriageSystem({ onBack }) {
     setAcknowledgedNoAction(new Set());
     setTriageComplete(false);
     setError("");
+    setAlerts([]);
+    setCurrentAlertIndex(0);
+    setClaudeAnalysis("");
+    setAlertsLoaded(false);
+    setUserDecision(null);
   };
 
   const styles = {
@@ -241,6 +342,78 @@ export default function TriageSystem({ onBack }) {
       gap: "12px",
       marginTop: "16px",
     },
+    alertCard: {
+      background: "#f9f9f9",
+      border: "1px solid #ddd",
+      borderRadius: "8px",
+      padding: "24px",
+      marginBottom: "20px",
+    },
+    alertHeader: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: "20px",
+      paddingBottom: "16px",
+      borderBottom: "1px solid #e0e0e0",
+    },
+    alertTitle: {
+      fontSize: "18px",
+      fontWeight: "600",
+      color: "#1a1a1a",
+      margin: "0",
+    },
+    alertCounter: {
+      fontSize: "14px",
+      color: "#666",
+      fontWeight: "500",
+    },
+    alertMetadata: {
+      fontSize: "13px",
+      color: "#666",
+      marginBottom: "16px",
+      padding: "12px",
+      background: "white",
+      borderRadius: "6px",
+      borderLeft: "3px solid #0066cc",
+    },
+    claudeAnalysis: {
+      background: "white",
+      border: "1px solid #e0e0e0",
+      borderRadius: "6px",
+      padding: "16px",
+      marginBottom: "20px",
+      lineHeight: "1.6",
+      color: "#333",
+      fontSize: "14px",
+    },
+    decisionButtons: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr",
+      gap: "12px",
+      marginTop: "20px",
+    },
+    decisionButton: {
+      padding: "12px 16px",
+      borderRadius: "6px",
+      border: "none",
+      fontSize: "14px",
+      fontWeight: "600",
+      cursor: "pointer",
+      transition: "all 0.2s",
+    },
+    approveButton: {
+      background: "#4caf50",
+      color: "white",
+    },
+    rejectButton: {
+      background: "#f44336",
+      color: "white",
+    },
+    investigateButton: {
+      background: "#2196f3",
+      color: "white",
+    },
   };
 
   // Screen 1: Initial state - show start button
@@ -313,8 +486,8 @@ export default function TriageSystem({ onBack }) {
     );
   }
 
-  // Screen 3: Actionable alerts pending
-  if (sessionId && !showNoAction && totalAlerts > 0) {
+  // Screen 3a: Alerts loading
+  if (sessionId && !showNoAction && totalAlerts > 0 && !alertsLoaded) {
     return (
       <div style={styles.container}>
         <div style={styles.header}>
@@ -328,27 +501,97 @@ export default function TriageSystem({ onBack }) {
               <p style={styles.statNumber}>{totalAlerts}</p>
               <p style={styles.statLabel}>Alerts to Review</p>
             </div>
-            {noActionCount > 0 && (
-              <div style={styles.stat}>
-                <p style={styles.statNumber}>{noActionCount}</p>
-                <p style={styles.statLabel}>Info-Only Alerts</p>
-              </div>
-            )}
           </div>
 
           <p style={{ color: "#333", marginBottom: "20px" }}>
             Claude is analyzing your {totalAlerts} actionable alert{totalAlerts !== 1 ? "s" : ""} and will provide recommendations.
           </p>
 
-          <p style={{ color: "#666", fontSize: "13px", marginBottom: "20px" }}>
-            Implementation coming next: Each alert will be displayed one at a time with Claude's analysis, and you can approve, reject, or investigate further.
-          </p>
+          <p style={styles.loadingText}>Loading alerts from system...</p>
+        </div>
+      </div>
+    );
+  }
 
-          {noActionCount > 0 && (
-            <button onClick={goToNoAction} style={styles.button}>
-              Skip to Info-Only Alerts →
-            </button>
+  // Screen 3b: Display individual alert with Claude analysis
+  if (sessionId && !showNoAction && alertsLoaded && alerts.length > 0) {
+    const alert = alerts[currentAlertIndex];
+    const progress = currentAlertIndex + 1;
+
+    return (
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <h1 style={styles.title}>Alert Review</h1>
+          <p style={styles.subtitle}>Alert {progress} of {totalAlerts}</p>
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.alertHeader}>
+            <h2 style={styles.alertTitle}>{alert.type || "Financial Alert"}</h2>
+            <span style={styles.alertCounter}>{progress}/{totalAlerts}</span>
+          </div>
+
+          {alert.flagType && (
+            <div style={styles.alertMetadata}>
+              <strong>Flag Type:</strong> {alert.flagType}
+              {alert.clientId && <div style={{ marginTop: "4px", fontSize: "12px" }}>Client: {alert.clientId.substring(0, 16)}...</div>}
+            </div>
           )}
+
+          {claudeAnalysis && (
+            <div>
+              <h3 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
+                Claude's Analysis
+              </h3>
+              <div style={styles.claudeAnalysis}>
+                {claudeAnalysis.split('\n').map((line, idx) => (
+                  <div key={idx}>{line || <br />}</div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {isAnalyzing && (
+            <div style={{ ...styles.claudeAnalysis, textAlign: "center", color: "#666" }}>
+              Claude is analyzing this alert...
+            </div>
+          )}
+
+          <div style={styles.decisionButtons}>
+            <button
+              onClick={() => handleAlertDecision("approve")}
+              disabled={isAnalyzing}
+              style={{
+                ...styles.decisionButton,
+                ...styles.approveButton,
+                opacity: isAnalyzing ? 0.5 : 1,
+              }}
+            >
+              ✓ Approve
+            </button>
+            <button
+              onClick={() => handleAlertDecision("reject")}
+              disabled={isAnalyzing}
+              style={{
+                ...styles.decisionButton,
+                ...styles.rejectButton,
+                opacity: isAnalyzing ? 0.5 : 1,
+              }}
+            >
+              ✗ Reject
+            </button>
+            <button
+              onClick={() => handleAlertDecision("investigate")}
+              disabled={isAnalyzing}
+              style={{
+                ...styles.decisionButton,
+                ...styles.investigateButton,
+                opacity: isAnalyzing ? 0.5 : 1,
+              }}
+            >
+              ⓘ Investigate
+            </button>
+          </div>
 
           <div style={{ marginTop: "16px" }}>
             <button onClick={resetTriage} style={styles.buttonSecondary}>

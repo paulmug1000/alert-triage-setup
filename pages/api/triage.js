@@ -1075,7 +1075,8 @@ RETAINER JOBS:
    - Total already invoiced
    - Remaining to invoice
    - Invoice match status (EXACT MATCH / PARTIAL MATCH / NEW JOB / etc.)
-   - Any key discrepancies that affect the decision (date issues, amount variance, reference pattern, etc.)
+   - **CRITICAL: Explain why this didn't auto-match** - What is the discrepancy or issue that caused the automation to fail? (e.g., "Invoice date is outside normal tolerance", "Amount slightly over remaining", "Invoice reference pattern different", "Project end date is before invoice sent date", etc.)
+   - Only note this if something is genuinely off - there's always SOMETHING that caused the alert
 
 3. Suggested actions should be ONLY data corrections or matching decisions:
    - "Match invoice to row X, slot Y"

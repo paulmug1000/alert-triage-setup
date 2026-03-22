@@ -623,7 +623,7 @@ export default async function handler(req, res) {
           );
           console.log(`  ✓ InvComp done, found ${invoiceAlerts.length} alerts`);
           invoiceAlerts.forEach((alert) => {
-            alert.clientId = client.masterSheetId;
+            alert.clientId = client.clientSheetId;
             alert.flagType = "invoiceDashboardDiscr";
           });
           allAlerts.push(...invoiceAlerts);
@@ -637,7 +637,7 @@ export default async function handler(req, res) {
           );
           console.log(`  ✓ DirComp done, found ${expenseAlerts.length} alerts`);
           expenseAlerts.forEach((alert) => {
-            alert.clientId = client.masterSheetId;
+            alert.clientId = client.clientSheetId;
             alert.flagType = "expenseDashboardDiscr";
           });
           allAlerts.push(...expenseAlerts);
@@ -659,7 +659,7 @@ export default async function handler(req, res) {
             pipelineAlerts
           );
           crmAlerts.forEach((alert) => {
-            alert.clientId = client.masterSheetId;
+            alert.clientId = client.clientSheetId;
           });
           allAlerts.push(...crmAlerts);
         }
@@ -672,7 +672,7 @@ export default async function handler(req, res) {
             confirmedAlerts
           );
           crmAlerts.forEach((alert) => {
-            alert.clientId = client.masterSheetId;
+            alert.clientId = client.clientSheetId;
           });
           allAlerts.push(...crmAlerts);
         }
@@ -763,11 +763,11 @@ export default async function handler(req, res) {
         
         const sheets = await getSheetsClient();
         
-        // Fetch Confirmed tab - use specific range A1:EP5000 instead of A:EP
+        // Fetch Confirmed tab - use column DC (actual data extent) instead of EP
         console.log(`  Fetching Confirmed tab from ${alert.clientId.substring(0, 16)}...`);
         const confirmedResponse = await sheets.spreadsheets.values.get({
           spreadsheetId: alert.clientId,
-          range: "Confirmed!A1:EP5000",
+          range: "Confirmed!A1:DC5000",
         });
         
         const confirmedData = confirmedResponse.data.values || [];

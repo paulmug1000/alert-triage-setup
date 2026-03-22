@@ -1,13 +1,8 @@
 import React, { useState } from "react";
-import InterviewApp from "./interview";
 import TriageSystem from "./triage";
 
 export default function MainMenu() {
-  const [mode, setMode] = useState("menu"); // menu, interview, triage
-
-  if (mode === "interview") {
-    return <InterviewApp onBack={() => setMode("menu")} />;
-  }
+  const [mode, setMode] = useState("menu"); // menu or triage
 
   if (mode === "triage") {
     return <TriageSystem onBack={() => setMode("menu")} />;
@@ -24,21 +19,6 @@ export default function MainMenu() {
         </div>
 
         <div style={styles.grid}>
-          {/* Interview Mode */}
-          <div style={styles.card} onClick={() => setMode("interview")}>
-            <div style={styles.cardIcon}>📝</div>
-            <h2 style={styles.cardTitle}>Knowledge Base Interview</h2>
-            <p style={styles.cardDescription}>
-              Build your system's knowledge base through an interactive interview.
-              This helps Claude understand your matching rules and patterns.
-            </p>
-            <div style={styles.cardMeta}>
-              <span>Complete once</span>
-              <span>Updates over time</span>
-            </div>
-            <button style={styles.cardButton}>Start Interview →</button>
-          </div>
-
           {/* Triage Mode */}
           <div style={styles.card} onClick={() => setMode("triage")}>
             <div style={styles.cardIcon}>🔍</div>
@@ -59,20 +39,19 @@ export default function MainMenu() {
           <h3>How It Works</h3>
           <ol style={styles.infoList}>
             <li>
-              <strong>Interview:</strong> Complete a structured interview about
-              your system (one-time setup, can update later)
+              <strong>Knowledge Base:</strong> Populated from Phase 1 interview &
+              AIKnowledgeBase sheet
             </li>
             <li>
-              <strong>Knowledge Base:</strong> System builds an AI knowledge base
-              from your answers
+              <strong>Weekly Triage:</strong> Review alerts flagged by your
+              automation system
             </li>
             <li>
-              <strong>Triage:</strong> Review weekly alerts flagged by automation
-              with Claude's smart recommendations
+              <strong>Claude Analysis:</strong> AI analyzes each alert with your
+              knowledge base
             </li>
             <li>
-              <strong>Learning:</strong> System learns from your decisions and
-              improves over time
+              <strong>Learning:</strong> Decisions logged for future improvements
             </li>
           </ol>
         </div>

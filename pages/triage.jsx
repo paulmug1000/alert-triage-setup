@@ -1,346 +1,408 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState } from "react";
 
-export default function TriageSystem() {
-  const [mode, setMode] = useState("menu"); // menu, triage, learning
-  const [sessionId, setSessionId] = useState(null);
-  const [alerts, setAlerts] = useState([]);
-  const [currentAlertIndex, setCurrentAlertIndex] = useState(0);
-  const [currentAlert, setCurrentAlert] = useState(null);
-  const [analysis, setAnalysis] = useState(null);
+export default function TriageSystem({ onBack }) {
+  const AUTOMATION_COMMANDER_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+  const [automationCommanderSheetId] = useState(AUTOMATION_COMMANDER_SHEET_ID);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [automationCommanderSheetId, setAutomationCommanderSheetId] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [totalAlerts, setTotalAlerts] = useState(0);
+  const [noActionCount, setNoActionCount] = useState(0);
+  const [showNoAction, setShowNoAction] = useState(false);
+  const [acknowledgedNoAction, setAcknowledgedNoAction] = useState(new Set());
+  const [triageComplete, setTriageComplete] = useState(false);
 
-  // Start triage session
   const startTriage = async () => {
     try {
       setIsLoading(true);
       setError("");
-
-      // Get Automation Commander sheet ID from user
-      if (!automationCommanderSheetId.trim()) {
-        setError("Please enter the Automation Commander Sheet ID");
-        setIsLoading(false);
-        return;
-      }
 
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "start_triage",
-          automationCommanderSheetId: automationCommanderSheetId.trim(),
+          automationCommanderSheetId,
         }),
       });
 
       const data = await response.json();
 
-      if (data.success) {
-        setSessionId(data.sessionId);
-        setAlerts(data.totalAlerts);
-        setMode("triage");
-        setCurrentAlertIndex(0);
-        loadNextAlert(data.sessionId, 0);
-      } else {
+      if (!response.ok) {
         setError(data.error || "Failed to start triage");
+        setIsLoading(false);
+        return;
       }
-    } catch (err) {
-      setError(`Error: ${err.message}`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
-  // Load next alert
-  const loadNextAlert = async (sid, index) => {
-    try {
-      setIsLoading(true);
-      const response = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "get_next_alert",
-          sessionId: sid,
-          alertIndex: index,
-        }),
-      });
+      setSessionId(data.sessionId);
+      setTotalAlerts(data.totalAlerts || 0);
+      setNoActionCount(data.noActionCount || 0);
+      setAcknowledgedNoAction(new Set());
 
-      const data = await response.json();
-
-      if (data.success && data.complete) {
-        setMode("complete");
-      } else if (data.success) {
-        setCurrentAlert(data.alert);
-        setAnalysis(data.analysis);
+      if ((data.totalAlerts || 0) === 0 && (data.noActionCount || 0) === 0) {
+        setTriageComplete(true);
+      } else if ((data.totalAlerts || 0) > 0) {
+        // Show actionable alerts first
+        setShowNoAction(false);
       } else {
-        setError(data.error || "Failed to load alert");
+        // Only no-action alerts
+        setShowNoAction(true);
       }
     } catch (err) {
-      setError(`Error: ${err.message}`);
+      setError(err.message);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Handle user decision
-  const handleDecision = async (action, correction = "") => {
-    try {
-      setIsLoading(true);
+  const toggleAckNoAction = (index) => {
+    const newAcknowledged = new Set(acknowledgedNoAction);
+    if (newAcknowledged.has(index)) {
+      newAcknowledged.delete(index);
+    } else {
+      newAcknowledged.add(index);
+    }
+    setAcknowledgedNoAction(newAcknowledged);
 
-      // Record decision
-      await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "record_decision",
-          sessionId,
-          alertIndex: currentAlertIndex,
-          decision: {
-            action,
-            correction,
-          },
-        }),
-      });
-
-      // Load next alert
-      const nextIndex = currentAlertIndex + 1;
-      setCurrentAlertIndex(nextIndex);
-
-      if (nextIndex >= alerts) {
-        setMode("complete");
-      } else {
-        loadNextAlert(sessionId, nextIndex);
-      }
-    } catch (err) {
-      setError(`Error: ${err.message}`);
-    } finally {
-      setIsLoading(false);
+    // Check if all acknowledged
+    if (newAcknowledged.size === noActionCount) {
+      setTriageComplete(true);
     }
   };
 
-  // Render menu
-  if (mode === "menu") {
+  const goToNoAction = () => {
+    setShowNoAction(true);
+  };
+
+  const resetTriage = () => {
+    setSessionId("");
+    setTotalAlerts(0);
+    setNoActionCount(0);
+    setShowNoAction(false);
+    setAcknowledgedNoAction(new Set());
+    setTriageComplete(false);
+    setError("");
+  };
+
+  const styles = {
+    container: {
+      maxWidth: "900px",
+      margin: "0 auto",
+      padding: "20px",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+    },
+    header: {
+      marginBottom: "30px",
+      textAlign: "center",
+    },
+    title: {
+      fontSize: "28px",
+      fontWeight: "700",
+      color: "#1a1a1a",
+      margin: "0 0 8px 0",
+    },
+    subtitle: {
+      fontSize: "14px",
+      color: "#666",
+      margin: "0",
+    },
+    card: {
+      background: "#fff",
+      border: "1px solid #e0e0e0",
+      borderRadius: "8px",
+      padding: "24px",
+      marginBottom: "20px",
+    },
+    button: {
+      background: "#0066cc",
+      color: "white",
+      border: "none",
+      padding: "12px 24px",
+      borderRadius: "6px",
+      fontSize: "16px",
+      fontWeight: "600",
+      cursor: "pointer",
+      transition: "background 0.2s",
+    },
+    buttonSecondary: {
+      background: "#f0f0f0",
+      color: "#1a1a1a",
+      border: "1px solid #ddd",
+      padding: "10px 16px",
+      borderRadius: "6px",
+      fontSize: "14px",
+      fontWeight: "500",
+      cursor: "pointer",
+    },
+    errorBanner: {
+      background: "#fee",
+      color: "#c00",
+      padding: "12px 16px",
+      borderRadius: "6px",
+      marginBottom: "16px",
+      fontSize: "14px",
+      border: "1px solid #fcc",
+    },
+    successBanner: {
+      background: "#efe",
+      color: "#060",
+      padding: "12px 16px",
+      borderRadius: "6px",
+      marginBottom: "16px",
+      fontSize: "14px",
+      border: "1px solid #cfc",
+    },
+    loadingText: {
+      color: "#666",
+      fontSize: "14px",
+      margin: "16px 0 0 0",
+    },
+    noActionSection: {
+      background: "#f9f9f9",
+      border: "1px solid #ddd",
+      borderRadius: "8px",
+      padding: "20px",
+      marginTop: "20px",
+    },
+    noActionItem: {
+      background: "white",
+      border: "1px solid #e0e0e0",
+      borderRadius: "6px",
+      padding: "16px",
+      marginBottom: "12px",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+    },
+    noActionLabel: {
+      flex: 1,
+    },
+    noActionTitle: {
+      fontWeight: "600",
+      color: "#1a1a1a",
+      marginBottom: "4px",
+    },
+    noActionDesc: {
+      fontSize: "13px",
+      color: "#666",
+    },
+    checkmark: {
+      width: "24px",
+      height: "24px",
+      borderRadius: "4px",
+      border: "2px solid #0066cc",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      cursor: "pointer",
+      marginLeft: "12px",
+      fontSize: "14px",
+      fontWeight: "bold",
+    },
+    checkmarkChecked: {
+      background: "#0066cc",
+      color: "white",
+    },
+    statsBox: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: "16px",
+      marginBottom: "20px",
+    },
+    stat: {
+      background: "#f9f9f9",
+      padding: "16px",
+      borderRadius: "6px",
+      textAlign: "center",
+    },
+    statNumber: {
+      fontSize: "24px",
+      fontWeight: "700",
+      color: "#0066cc",
+      margin: "0 0 4px 0",
+    },
+    statLabel: {
+      fontSize: "13px",
+      color: "#666",
+      margin: "0",
+    },
+    buttonGroup: {
+      display: "flex",
+      gap: "12px",
+      marginTop: "16px",
+    },
+  };
+
+  // Screen 1: Initial state - show start button
+  if (!sessionId && !triageComplete) {
     return (
       <div style={styles.container}>
-        <div style={styles.wrapper}>
-          <h1 style={styles.title}>Alert Triage System</h1>
-          <p style={styles.subtitle}>Review and resolve financial automation discrepancies</p>
+        <div style={styles.header}>
+          <h1 style={styles.title}>Alert Triage</h1>
+          <p style={styles.subtitle}>Review and resolve financial automation alerts</p>
+        </div>
 
-          <div style={styles.card}>
-            <h2>Start Triage Session</h2>
-            <p>Enter your Automation Commander Sheet ID to begin reviewing alerts.</p>
+        <div style={styles.card}>
+          {error && <div style={styles.errorBanner}>{error}</div>}
 
-            <input
-              type="text"
-              placeholder="Enter Automation Commander Sheet ID"
-              value={automationCommanderSheetId}
-              onChange={(e) => setAutomationCommanderSheetId(e.target.value)}
-              style={styles.input}
-              disabled={isLoading}
-            />
+          <p style={{ color: "#333", marginBottom: "20px" }}>
+            This system will review all flagged alerts from your automation commander and help you resolve them with AI assistance.
+          </p>
 
-            {error && <div style={styles.errorBanner}>{error}</div>}
+          <button
+            onClick={startTriage}
+            disabled={isLoading}
+            style={{
+              ...styles.button,
+              opacity: isLoading ? 0.5 : 1,
+            }}
+          >
+            {isLoading ? "Loading Alerts..." : "Start Triage →"}
+          </button>
 
-            <button
-              onClick={startTriage}
-              disabled={isLoading || !automationCommanderSheetId.trim()}
-              style={{
-                ...styles.button,
-                opacity:
-                  isLoading || !automationCommanderSheetId.trim() ? 0.5 : 1,
-              }}
-            >
-              {isLoading ? "Loading..." : "Start Triage →"}
-            </button>
+          {isLoading && (
+            <p style={styles.loadingText}>Scanning automation commander for alerts...</p>
+          )}
+        </div>
+
+        {onBack && (
+          <button onClick={onBack} style={styles.buttonSecondary}>
+            ← Back to Menu
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // Screen 2: Triage complete with no alerts
+  if (triageComplete && totalAlerts === 0 && noActionCount === 0) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <h1 style={styles.title}>✓ All Clear</h1>
+          <p style={styles.subtitle}>No alerts to triage</p>
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.successBanner}>
+            No discrepancies detected. Your financial automation system is running smoothly!
           </div>
 
-          <div style={styles.infoBox}>
-            <h3>What This Does</h3>
-            <p>
-              This system reviews all discrepancies flagged in your Automation
-              Commander and uses AI to suggest matches or corrections.
-            </p>
-            <p>You can approve, reject, or refine each recommendation.</p>
+          <div style={styles.buttonGroup}>
+            <button onClick={resetTriage} style={styles.button}>
+              Run Triage Again
+            </button>
+            {onBack && (
+              <button onClick={onBack} style={styles.buttonSecondary}>
+                ← Back to Menu
+              </button>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  // Render triage
-  if (mode === "triage" && currentAlert) {
+  // Screen 3: Actionable alerts pending
+  if (sessionId && !showNoAction && totalAlerts > 0) {
     return (
       <div style={styles.container}>
-        <div style={styles.wrapper}>
-          <div style={styles.header}>
-            <h1 style={styles.title}>Alert Triage</h1>
-            <div style={styles.progressBar}>
-              <div
-                style={{
-                  ...styles.progressFill,
-                  width: `${((currentAlertIndex + 1) / alerts) * 100}%`,
-                }}
-              />
+        <div style={styles.header}>
+          <h1 style={styles.title}>Actionable Alerts</h1>
+          <p style={styles.subtitle}>Alerts requiring your review and decision</p>
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.statsBox}>
+            <div style={styles.stat}>
+              <p style={styles.statNumber}>{totalAlerts}</p>
+              <p style={styles.statLabel}>Alerts to Review</p>
             </div>
-            <p style={styles.progressText}>
-              Alert {currentAlertIndex + 1} of {alerts}
-            </p>
+            {noActionCount > 0 && (
+              <div style={styles.stat}>
+                <p style={styles.statNumber}>{noActionCount}</p>
+                <p style={styles.statLabel}>Info-Only Alerts</p>
+              </div>
+            )}
           </div>
 
-          {/* Alert Summary */}
-          <div style={styles.alertCard}>
-            <h2 style={styles.alertTitle}>
-              {currentAlert.type.toUpperCase()} Alert - {currentAlert.sheetName}
-            </h2>
-            <p style={styles.alertRow}>
-              <strong>Row:</strong> {currentAlert.rowNumber}
-            </p>
+          <p style={{ color: "#333", marginBottom: "20px" }}>
+            Claude is analyzing your {totalAlerts} actionable alert{totalAlerts !== 1 ? "s" : ""} and will provide recommendations.
+          </p>
 
-            {/* Discrepancies */}
-            <div style={styles.discrepancyBox}>
-              <h3>Discrepancies Detected:</h3>
-              <ul>
-                {currentAlert.discrepancies.map((disc, idx) => (
-                  <li key={idx} style={styles.discrepancyItem}>
-                    {disc}
-                  </li>
-                ))}
-              </ul>
+          <p style={{ color: "#666", fontSize: "13px", marginBottom: "20px" }}>
+            Implementation coming next: Each alert will be displayed one at a time with Claude's analysis, and you can approve, reject, or investigate further.
+          </p>
+
+          {noActionCount > 0 && (
+            <button onClick={goToNoAction} style={styles.button}>
+              Skip to Info-Only Alerts →
+            </button>
+          )}
+
+          <div style={{ marginTop: "16px" }}>
+            <button onClick={resetTriage} style={styles.buttonSecondary}>
+              Start Over
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Screen 4: No-action alerts for acknowledgement
+  if (showNoAction && noActionCount > 0) {
+    const allAcknowledged = acknowledgedNoAction.size === noActionCount;
+
+    return (
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <h1 style={styles.title}>Info-Only Alerts</h1>
+          <p style={styles.subtitle}>These require no action - acknowledge to clear</p>
+        </div>
+
+        <div style={styles.noActionSection}>
+          <h2 style={{ margin: "0 0 16px 0", fontSize: "16px", fontWeight: "600" }}>
+            {acknowledgedNoAction.size} of {noActionCount} Acknowledged
+          </h2>
+
+          {/* TODO: Replace with actual no-action alerts from API response */}
+          <div style={styles.noActionItem}>
+            <div style={styles.noActionLabel}>
+              <div style={styles.noActionTitle}>Invoice app discr</div>
+              <div style={styles.noActionDesc}>No action required - informational only</div>
             </div>
-
-            {/* Key Data */}
-            <div style={styles.dataBox}>
-              <h3>Key Data:</h3>
-              <p>
-                <strong>Client:</strong> {currentAlert.data[0] || "Unknown"}
-              </p>
-              <p>
-                <strong>Amount:</strong> {currentAlert.data[4] || "N/A"}
-              </p>
-              <p>
-                <strong>Date:</strong> {currentAlert.data[5] || "N/A"}
-              </p>
+            <div
+              style={{
+                ...styles.checkmark,
+                ...(acknowledgedNoAction.has(0) ? styles.checkmarkChecked : {}),
+              }}
+              onClick={() => toggleAckNoAction(0)}
+            >
+              {acknowledgedNoAction.has(0) ? "✓" : ""}
             </div>
           </div>
 
-          {/* Claude Analysis */}
-          {analysis && (
-            <div style={styles.analysisCard}>
-              <h2>Claude's Analysis</h2>
-
-              <div style={styles.confidenceBar}>
-                <span>Confidence: {analysis.confidence}%</span>
-                <div style={styles.confidenceBackground}>
-                  <div
-                    style={{
-                      ...styles.confidenceFill,
-                      width: `${analysis.confidence}%`,
-                    }}
-                  />
-                </div>
-              </div>
-
-              <div style={styles.recommendationBox}>
-                <h3>Recommendation: {analysis.recommendation}</h3>
-                <p style={styles.reasoning}>{analysis.reasoning}</p>
-              </div>
-
-              {analysis.suggestedAction && (
-                <div style={styles.actionBox}>
-                  <h3>Suggested Action:</h3>
-                  <p>{analysis.suggestedAction}</p>
-                </div>
-              )}
-
-              {analysis.whyAutomationMissed && (
-                <div style={styles.whyBox}>
-                  <h3>Why Automation Missed This:</h3>
-                  <p>{analysis.whyAutomationMissed}</p>
-                </div>
-              )}
-
-              {analysis.questionsForUser && analysis.questionsForUser.length > 0 && (
-                <div style={styles.questionsBox}>
-                  <h3>Questions for You:</h3>
-                  <ul>
-                    {analysis.questionsForUser.map((q, idx) => (
-                      <li key={idx}>{q}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+          {allAcknowledged && (
+            <div style={styles.successBanner}>
+              All info-only alerts acknowledged. Ready to complete triage!
             </div>
           )}
 
-          {/* User Actions */}
-          <div style={styles.actionButtons}>
-            <button
-              onClick={() => handleDecision("approve")}
-              disabled={isLoading}
-              style={{ ...styles.approveButton, opacity: isLoading ? 0.5 : 1 }}
-            >
-              ✓ Approve
-            </button>
-
-            <button
-              onClick={() => handleDecision("reject")}
-              disabled={isLoading}
-              style={{ ...styles.rejectButton, opacity: isLoading ? 0.5 : 1 }}
-            >
-              ✗ Reject
-            </button>
-
-            <button
-              onClick={() => handleDecision("investigate")}
-              disabled={isLoading}
-              style={{
-                ...styles.investigateButton,
-                opacity: isLoading ? 0.5 : 1,
-              }}
-            >
-              ? Investigate
-            </button>
-
-            <button
-              onClick={() => handleDecision("refine")}
-              disabled={isLoading}
-              style={{ ...styles.refineButton, opacity: isLoading ? 0.5 : 1 }}
-            >
-              ✎ Refine
-            </button>
-          </div>
-
-          {error && <div style={styles.errorBanner}>{error}</div>}
-        </div>
-      </div>
-    );
-  }
-
-  // Render complete
-  if (mode === "complete") {
-    return (
-      <div style={styles.container}>
-        <div style={styles.wrapper}>
-          <div style={styles.completionCard}>
-            <div style={styles.completionIcon}>✓</div>
-            <h1 style={styles.completionTitle}>Triage Complete!</h1>
-            <p style={styles.completionText}>
-              All {alerts} alerts have been reviewed and decisions recorded.
-            </p>
-            <p style={styles.completionSubtext}>
-              Your decisions have been logged to the TriageLog sheet.
-            </p>
-
-            <button
-              onClick={() => {
-                setMode("menu");
-                setSessionId(null);
-                setCurrentAlertIndex(0);
-              }}
-              style={styles.resetButton}
-            >
-              ← Back to Menu
-            </button>
+          <div style={styles.buttonGroup}>
+            {totalAlerts > 0 && (
+              <button onClick={() => setShowNoAction(false)} style={styles.buttonSecondary}>
+                ← Back to Actionable Alerts
+              </button>
+            )}
+            {allAcknowledged && (
+              <button
+                onClick={() => setTriageComplete(true)}
+                style={styles.button}
+              >
+                Complete Triage ✓
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -349,266 +411,3 @@ export default function TriageSystem() {
 
   return null;
 }
-
-const styles = {
-  container: {
-    minHeight: "100vh",
-    background: "linear-gradient(to bottom right, #0f172a, #1e293b, #0f172a)",
-    color: "white",
-    padding: "1rem",
-    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-  },
-  wrapper: {
-    maxWidth: "1000px",
-    margin: "0 auto",
-  },
-  header: {
-    marginBottom: "2rem",
-  },
-  title: {
-    fontSize: "2rem",
-    fontWeight: "700",
-    margin: "0 0 1rem 0",
-    letterSpacing: "-0.02em",
-  },
-  subtitle: {
-    color: "#cbd5e1",
-    fontSize: "0.875rem",
-    margin: "0",
-  },
-  progressBar: {
-    height: "3px",
-    background: "#1e293b",
-    borderRadius: "9999px",
-    overflow: "hidden",
-    marginTop: "1rem",
-  },
-  progressFill: {
-    height: "100%",
-    background: "linear-gradient(90deg, #3b82f6 0%, #06b6d4 100%)",
-    transition: "width 0.5s ease",
-  },
-  progressText: {
-    color: "#94a3b8",
-    fontSize: "0.875rem",
-    margin: "0.5rem 0 0 0",
-  },
-  card: {
-    background: "rgba(30, 41, 59, 0.5)",
-    border: "1px solid rgba(148, 163, 184, 0.2)",
-    borderRadius: "0.75rem",
-    padding: "2rem",
-    marginBottom: "2rem",
-  },
-  alertCard: {
-    background: "rgba(30, 41, 59, 0.5)",
-    border: "1px solid rgba(148, 163, 184, 0.2)",
-    borderRadius: "0.75rem",
-    padding: "1.5rem",
-    marginBottom: "1.5rem",
-  },
-  alertTitle: {
-    fontSize: "1.25rem",
-    fontWeight: "600",
-    color: "#22d3ee",
-    margin: "0 0 1rem 0",
-  },
-  alertRow: {
-    color: "#cbd5e1",
-    margin: "0.5rem 0",
-  },
-  discrepancyBox: {
-    background: "rgba(127, 29, 29, 0.2)",
-    border: "1px solid rgba(239, 68, 68, 0.3)",
-    borderRadius: "0.5rem",
-    padding: "1rem",
-    marginTop: "1rem",
-  },
-  discrepancyItem: {
-    color: "#fca5a5",
-    margin: "0.5rem 0",
-  },
-  dataBox: {
-    background: "rgba(30, 58, 138, 0.2)",
-    border: "1px solid rgba(59, 130, 246, 0.3)",
-    borderRadius: "0.5rem",
-    padding: "1rem",
-    marginTop: "1rem",
-  },
-  analysisCard: {
-    background: "rgba(30, 41, 59, 0.5)",
-    border: "1px solid rgba(148, 163, 184, 0.2)",
-    borderRadius: "0.75rem",
-    padding: "1.5rem",
-    marginBottom: "1.5rem",
-  },
-  confidenceBar: {
-    marginBottom: "1rem",
-  },
-  confidenceBackground: {
-    height: "6px",
-    background: "#1e293b",
-    borderRadius: "9999px",
-    overflow: "hidden",
-    marginTop: "0.5rem",
-  },
-  confidenceFill: {
-    height: "100%",
-    background: "linear-gradient(90deg, #10b981 0%, #06b6d4 100%)",
-  },
-  recommendationBox: {
-    background: "rgba(6, 182, 212, 0.1)",
-    border: "1px solid rgba(6, 182, 212, 0.3)",
-    borderRadius: "0.5rem",
-    padding: "1rem",
-    marginTop: "1rem",
-  },
-  reasoning: {
-    color: "#cbd5e1",
-    margin: "0.5rem 0 0 0",
-  },
-  actionBox: {
-    background: "rgba(59, 130, 246, 0.1)",
-    border: "1px solid rgba(59, 130, 246, 0.3)",
-    borderRadius: "0.5rem",
-    padding: "1rem",
-    marginTop: "1rem",
-  },
-  whyBox: {
-    background: "rgba(168, 85, 247, 0.1)",
-    border: "1px solid rgba(168, 85, 247, 0.3)",
-    borderRadius: "0.5rem",
-    padding: "1rem",
-    marginTop: "1rem",
-  },
-  questionsBox: {
-    background: "rgba(251, 146, 60, 0.1)",
-    border: "1px solid rgba(251, 146, 60, 0.3)",
-    borderRadius: "0.5rem",
-    padding: "1rem",
-    marginTop: "1rem",
-  },
-  input: {
-    width: "100%",
-    background: "#1e293b",
-    color: "white",
-    border: "1px solid #475569",
-    borderRadius: "0.5rem",
-    padding: "0.75rem",
-    fontSize: "0.875rem",
-    marginTop: "1rem",
-    marginBottom: "1rem",
-  },
-  errorBanner: {
-    background: "rgba(127, 29, 29, 0.3)",
-    border: "1px solid rgba(239, 68, 68, 0.5)",
-    borderRadius: "0.5rem",
-    padding: "1rem",
-    color: "#fca5a5",
-    fontSize: "0.875rem",
-    marginTop: "1rem",
-  },
-  button: {
-    background: "linear-gradient(90deg, #2563eb 0%, #06b6d4 100%)",
-    color: "white",
-    border: "none",
-    borderRadius: "0.5rem",
-    padding: "0.75rem 1.5rem",
-    fontWeight: "600",
-    fontSize: "0.875rem",
-    cursor: "pointer",
-    transition: "opacity 0.2s",
-  },
-  actionButtons: {
-    display: "flex",
-    gap: "1rem",
-    marginTop: "2rem",
-    flexWrap: "wrap",
-  },
-  approveButton: {
-    background: "linear-gradient(90deg, #10b981 0%, #059669 100%)",
-    color: "white",
-    border: "none",
-    borderRadius: "0.5rem",
-    padding: "0.75rem 1.5rem",
-    fontWeight: "600",
-    cursor: "pointer",
-    flex: 1,
-    minWidth: "120px",
-  },
-  rejectButton: {
-    background: "linear-gradient(90deg, #ef4444 0%, #dc2626 100%)",
-    color: "white",
-    border: "none",
-    borderRadius: "0.5rem",
-    padding: "0.75rem 1.5rem",
-    fontWeight: "600",
-    cursor: "pointer",
-    flex: 1,
-    minWidth: "120px",
-  },
-  investigateButton: {
-    background: "linear-gradient(90deg, #f59e0b 0%, #d97706 100%)",
-    color: "white",
-    border: "none",
-    borderRadius: "0.5rem",
-    padding: "0.75rem 1.5rem",
-    fontWeight: "600",
-    cursor: "pointer",
-    flex: 1,
-    minWidth: "120px",
-  },
-  refineButton: {
-    background: "linear-gradient(90deg, #8b5cf6 0%, #7c3aed 100%)",
-    color: "white",
-    border: "none",
-    borderRadius: "0.5rem",
-    padding: "0.75rem 1.5rem",
-    fontWeight: "600",
-    cursor: "pointer",
-    flex: 1,
-    minWidth: "120px",
-  },
-  infoBox: {
-    background: "rgba(30, 58, 138, 0.2)",
-    border: "1px solid rgba(59, 130, 246, 0.3)",
-    borderRadius: "0.75rem",
-    padding: "1.5rem",
-    marginTop: "2rem",
-  },
-  completionCard: {
-    background: "rgba(5, 150, 105, 0.1)",
-    border: "1px solid rgba(16, 185, 129, 0.3)",
-    borderRadius: "0.75rem",
-    padding: "2rem",
-    textAlign: "center",
-    marginTop: "2rem",
-  },
-  completionIcon: {
-    fontSize: "3rem",
-    marginBottom: "1rem",
-  },
-  completionTitle: {
-    fontSize: "1.5rem",
-    fontWeight: "700",
-    marginBottom: "0.5rem",
-  },
-  completionText: {
-    color: "#cbd5e1",
-    marginBottom: "0.5rem",
-  },
-  completionSubtext: {
-    color: "#94a3b8",
-    fontSize: "0.875rem",
-    marginBottom: "1.5rem",
-  },
-  resetButton: {
-    background: "linear-gradient(90deg, #2563eb 0%, #06b6d4 100%)",
-    color: "white",
-    border: "none",
-    borderRadius: "0.5rem",
-    padding: "0.75rem 2rem",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-};

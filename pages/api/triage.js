@@ -2,12 +2,12 @@
  * PHASE 2: ALERT TRIAGE SYSTEM
  * Backend API for analyzing financial automation alerts
  * 
- * Handles:
- * 1. Reading discrepancy flags from Automation Commander
- * 2. Fetching alert data from client comparison sheets
- * 3. Passing alerts to Claude for analysis
- * 4. Logging decisions to TriageLog
- * 5. Presenting recommendations to user
+ * Correctly implements:
+ * - Flag columns in row 2 of AutoUpdates (CW, DD, DK, etc.)
+ * - Client URLs in columns L & M (row 3 onwards)
+ * - Comparison sheet data starts at row 6
+ * - CRMComp mode toggle based on which flags are raised
+ * - Proper column ranges for each alert type
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -27,77 +27,64 @@ redisClient.connect().catch(console.error);
 // CONSTANTS & CONFIGURATION
 // ============================================================================
 
-const ALERT_TYPES = {
-  INVOICE: "invoice",
-  EXPENSE: "expense",
-  CRM: "crm",
+const FLAG_COLUMNS = {
+  invoiceDashboardDiscr: "CW",
+  invoiceAppDiscr: "DD",
+  crmPipeDashDiscr: "DK",
+  crmPipeAppDiscr: "DR",
+  crmConfDashDiscr: "DY",
+  crmConfAppDiscr: "EF",
+  crmPipeSkippedBlank: "EM",
+  crmConfSkippedBlank: "ET",
+  crmCopiedConfChecked: "FA",
+  crmCopiedConfUnchecked: "FH",
+  crmCopiedConfDelete: "FO",
+  retainerInvoicesCreated: "FV",
+  expenseDashboardDiscr: "GC",
+  expenseAppDiscr: "GJ",
+  expenseAdded: "GQ",
+  expenseUnreconGaps: "GX",
+  invoiceStaleUnsentChanges: "HE",
 };
 
-const DISCREPANCY_COLUMNS = {
-  invoice: {
-    // InvComp: columns S-Y
-    range: "S5:Y5",
-    flags: [
-      "Missing invoice?",
-      "Client mismatch?",
-      "Inv amt mismatch?",
-      "Sent date mismatch?",
-      "Duplicate inv no?",
-      "Fully paid on mismatch?",
-      "Status mismatch?",
-    ],
-  },
-  expense: {
-    // DirComp: columns AO-AV
-    range: "AO5:AV5",
-    flags: [
-      "Missing cost?",
-      "Duplicate app ID?",
-      "Descr. mismatch?",
-      "Amount mismatch?",
-      "VAT mismatch?",
-      "Rec date mismatch?",
-      "Pay date mismatch?",
-      "Status mismatch?",
-    ],
-  },
-  crm_left: {
-    // CRMComp left section: columns AY-BF
-    range: "AY5:BF5",
-    flags: [
-      "Missing job?",
-      "Client mismatch?",
-      "Job name mismatch?",
-      "Revenue mismatch?",
-      "Direct costs mismatch?",
-      "Start date mismatch?",
-      "End date mismatch?",
-      "% likel. mismatch?",
-    ],
-  },
-  crm_right: {
-    // CRMComp right section: columns FE-FL
-    range: "FE5:FL5",
-    flags: [
-      "Missing job?",
-      "Client mismatch?",
-      "Job name mismatch?",
-      "Revenue mismatch?",
-      "Direct costs mismatch?",
-      "Start date mismatch?",
-      "End date mismatch?",
-      "% likel. mismatch?",
-    ],
-  },
+const NO_ACTION_FLAGS = [
+  "invoiceAppDiscr",
+  "crmPipeSkippedBlank",
+  "crmConfSkippedBlank",
+  "crmCopiedConfChecked",
+  "crmCopiedConfUnchecked",
+  "crmCopiedConfDelete",
+  "retainerInvoicesCreated",
+  "expenseAppDiscr",
+  "expenseAdded",
+  "expenseUnreconGaps",
+  "invoiceStaleUnsentChanges",
+];
+
+const FLAG_NAMES = {
+  invoiceDashboardDiscr: "Invoice dashboard discr",
+  invoiceAppDiscr: "Invoice app discr",
+  crmPipeDashDiscr: "CRM pipe dash discr",
+  crmPipeAppDiscr: "CRM pipe app discr",
+  crmConfDashDiscr: "CRM conf dash discr",
+  crmConfAppDiscr: "CRM conf app discr",
+  crmPipeSkippedBlank: "CRM pipe skipped with blank",
+  crmConfSkippedBlank: "CRM conf skipped with blank",
+  crmCopiedConfChecked: "CRM copied to conf box checked",
+  crmCopiedConfUnchecked: "CRM copied to conf box UNchecked",
+  crmCopiedConfDelete: "CRM copied to conf box DELETE",
+  retainerInvoicesCreated: "Retainer invoices created",
+  expenseDashboardDiscr: "Expense dashboard discr",
+  expenseAppDiscr: "Expense app discr",
+  expenseAdded: "Expense added",
+  expenseUnreconGaps: "Expense unrecon gaps",
+  invoiceStaleUnsentChanges: "Invoice stale unsent changes",
 };
 
 // ============================================================================
 // GOOGLE SHEETS INTEGRATION
 // ============================================================================
 
-/**
- * Get Google Sheets auth with service account credentials
- */
 function getGoogleAuth() {
   const credentials = {
     type: "service_account",
@@ -121,21 +108,13 @@ function getGoogleAuth() {
   });
 }
 
-/**
- * Get Sheets API client
- */
 async function getSheetsClient() {
   const auth = getGoogleAuth();
   return google.sheets({ version: "v4", auth });
 }
 
-/**
- * Apply double flush pattern to ensure calculations complete
- * Since we can't call SpreadsheetApp.flush() from Node.js,
- * we wait and then read a cell to trigger calculation
- */
 async function ensureFreshData(sheets, spreadsheetId, sheetName) {
-  // Wait 2 seconds for Google Sheets to process
+  // Wait for Google Sheets to process
   await new Promise((resolve) => setTimeout(resolve, 2000));
 
   // Dummy read to trigger calculation
@@ -152,336 +131,379 @@ async function ensureFreshData(sheets, spreadsheetId, sheetName) {
   await new Promise((resolve) => setTimeout(resolve, 1000));
 }
 
-/**
- * Set master switch (E2) to TRUE to trigger calculations
- */
-async function activateMasterSwitch(sheets, spreadsheetId, sheetName) {
+async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: `${sheetName}!E2`,
     valueInputOption: "RAW",
     requestBody: {
-      values: [[true]],
+      values: [[value]],
     },
   });
 
-  // Wait and ensure data is fresh
+  // Ensure data is fresh
   await ensureFreshData(sheets, spreadsheetId, sheetName);
 }
 
-/**
- * Check if a discrepancy flag is TRUE for a given type
- */
-function hasDiscrepancy(flagRow, discrepancyType) {
-  if (!flagRow || flagRow.length === 0) return false;
-
-  return flagRow.some((cell) => {
-    const val = String(cell).toUpperCase().trim();
-    return val === "TRUE" || val === 1 || val === "1";
+async function setCRMMode(sheets, spreadsheetId, mode) {
+  // Set B2 in CRMComp to "Pipeline" or "Confirmed"
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: "CRMComp!B2",
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[mode]],
+    },
   });
+
+  // Ensure calculations complete
+  await ensureFreshData(sheets, spreadsheetId, "CRMComp");
 }
 
-/**
- * Read alerts from a comparison sheet
- */
-async function readAlertsFromSheet(sheets, spreadsheetId, sheetName, type) {
-  try {
-    // Activate master switch
-    await activateMasterSwitch(sheets, spreadsheetId, sheetName);
-
-    // Get discrepancy column configuration
-    const config = DISCREPANCY_COLUMNS[type];
-    if (!config) return [];
-
-    // Read flag columns
-    const flagResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${sheetName}!${config.range}`,
-    });
-
-    const flagRow = (flagResponse.data.values || [[]])[0];
-
-    // If no discrepancies, return empty
-    if (!hasDiscrepancy(flagRow, type)) {
-      console.log(`No ${type} discrepancies found in ${sheetName}`);
-      return [];
-    }
-
-    // Read all data rows
-    const dataResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${sheetName}!A6:Z1000`, // Start from row 6 (after headers)
-    });
-
-    const rows = dataResponse.data.values || [];
-
-    // Get column headers
-    const headerResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${sheetName}!A1:Z5`,
-    });
-
-    const headers = (headerResponse.data.values || [])[0] || [];
-
-    // Build alerts array
-    const alerts = [];
-    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
-      const row = rows[rowIdx];
-      if (!row || row.length === 0) continue;
-
-      // Check if this row has any discrepancies
-      const rowFlagStart = config.range.split(":")[0].charCodeAt(0) - "A".charCodeAt(0);
-      const hasRowDiscrepancy = config.flags.some((flagName, flagIdx) => {
-        const cellValue = String(row[rowFlagStart + flagIdx] || "").toUpperCase().trim();
-        return cellValue === "TRUE" || cellValue === "1";
-      });
-
-      if (hasRowDiscrepancy) {
-        alerts.push({
-          type,
-          sheetName,
-          rowNumber: 7 + rowIdx, // Row 6 is first data row in sheet
-          data: row,
-          headers,
-          discrepancyFlags: config.flags,
-          discrepancies: config.flags.filter((flagName, flagIdx) => {
-            const cellValue = String(row[rowFlagStart + flagIdx] || "").toUpperCase().trim();
-            return cellValue === "TRUE" || cellValue === "1";
-          }),
-        });
-      }
-    }
-
-    console.log(`Found ${alerts.length} ${type} alerts in ${sheetName}`);
-    return alerts;
-  } catch (error) {
-    console.error(`Error reading ${type} alerts from ${sheetName}:`, error);
-    return [];
-  }
-}
-
-/**
- * Get list of clients from Automation Commander
- */
-async function getClientList(sheets, automationCommanderSheetId) {
-  try {
-    // Read AutoUpdates tab column L (client sheet URL) and column M (master sheet URL)
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!L:M",
-    });
-
-    const rows = response.data.values || [];
-    const clients = [];
-
-    for (let i = 1; i < rows.length; i++) {
-      const [clientSheetUrl, masterSheetUrl] = rows[i] || [];
-      if (clientSheetUrl && masterSheetUrl) {
-        // Extract sheet IDs from URLs
-        const clientId = extractSheetIdFromUrl(clientSheetUrl);
-        const masterId = extractSheetIdFromUrl(masterSheetUrl);
-
-        if (clientId && masterId) {
-          clients.push({
-            clientSheetId: clientId,
-            masterSheetId: masterId,
-            clientSheetUrl,
-            masterSheetUrl,
-          });
-        }
-      }
-    }
-
-    return clients;
-  } catch (error) {
-    console.error("Error getting client list:", error);
-    return [];
-  }
-}
-
-/**
- * Extract sheet ID from Google Sheets URL
- */
 function extractSheetIdFromUrl(url) {
   if (!url) return null;
   const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   return match ? match[1] : null;
 }
 
-/**
- * Get discrepancy flags from Automation Commander
- */
-async function getDiscrepancyFlags(sheets, automationCommanderSheetId) {
-  try {
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!BN2:BQ2", // Assuming flags are in these columns
-    });
-
-    const [flags] = response.data.values || [[]];
-    return {
-      invoiceDiscrepancies: String(flags[0] || "").toUpperCase() === "TRUE",
-      expenseDiscrepancies: String(flags[1] || "").toUpperCase() === "TRUE",
-      crmDiscrepancies: String(flags[2] || "").toUpperCase() === "TRUE",
-    };
-  } catch (error) {
-    console.error("Error getting discrepancy flags:", error);
-    return {
-      invoiceDiscrepancies: false,
-      expenseDiscrepancies: false,
-      crmDiscrepancies: false,
-    };
-  }
-}
-
-/**
- * Log decision to TriageLog sheet
- */
-async function logDecision(sheets, spreadsheetId, decision) {
-  try {
-    const timestamp = new Date().toISOString();
-    const row = [
-      timestamp,
-      decision.alertType,
-      decision.alertId,
-      decision.client,
-      decision.amount || "",
-      JSON.stringify(decision.claudeRecommendation),
-      decision.userAction || "",
-      decision.userCorrection || "",
-    ];
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: "TriageLog!A:H",
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [row],
-      },
-    });
-  } catch (error) {
-    console.error("Error logging decision:", error);
-  }
-}
-
 // ============================================================================
-// CLAUDE INTEGRATION
+// FLAG READING
 // ============================================================================
 
-/**
- * Fetch AIKnowledgeBase from Automation Commander
- */
-async function getKnowledgeBase(sheets, automationCommanderSheetId) {
+async function getClientFlags(sheets, automationCommanderSheetId) {
   try {
+    // Read AutoUpdates columns L, M and all flag columns
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
-      range: "AIKnowledgeBase!A2:E1000",
+      range: "AutoUpdates!L:HE",
     });
 
     const rows = response.data.values || [];
-    const knowledgeBase = {};
+    const clients = [];
 
-    for (const row of rows) {
-      const [category, subcategory, concept, description] = row;
-      if (!category) continue;
+    // Start from row 3 (row 1 = headers, row 2 = first client data)
+    for (let i = 2; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length < 2) continue;
 
-      if (!knowledgeBase[category]) {
-        knowledgeBase[category] = {};
+      const clientSheetUrl = row[0]; // Column L
+      const masterSheetUrl = row[1]; // Column M
+
+      if (!clientSheetUrl || !masterSheetUrl) continue;
+
+      const clientId = extractSheetIdFromUrl(clientSheetUrl);
+      const masterId = extractSheetIdFromUrl(masterSheetUrl);
+
+      if (!clientId || !masterId) continue;
+
+      // Extract flags for this client
+      const flags = {};
+      let hasFlags = false;
+
+      // CW = invoiceDashboardDiscr (column index 102 from A)
+      flags.invoiceDashboardDiscr =
+        String(row[102] || "").toUpperCase() === "TRUE";
+      if (flags.invoiceDashboardDiscr) hasFlags = true;
+
+      // DD = invoiceAppDiscr (column index 109)
+      flags.invoiceAppDiscr =
+        String(row[109] || "").toUpperCase() === "TRUE";
+      if (flags.invoiceAppDiscr) hasFlags = true;
+
+      // DK = crmPipeDashDiscr (column index 116)
+      flags.crmPipeDashDiscr =
+        String(row[116] || "").toUpperCase() === "TRUE";
+      if (flags.crmPipeDashDiscr) hasFlags = true;
+
+      // DR = crmPipeAppDiscr (column index 123)
+      flags.crmPipeAppDiscr = String(row[123] || "").toUpperCase() === "TRUE";
+      if (flags.crmPipeAppDiscr) hasFlags = true;
+
+      // DY = crmConfDashDiscr (column index 130)
+      flags.crmConfDashDiscr =
+        String(row[130] || "").toUpperCase() === "TRUE";
+      if (flags.crmConfDashDiscr) hasFlags = true;
+
+      // EF = crmConfAppDiscr (column index 137)
+      flags.crmConfAppDiscr = String(row[137] || "").toUpperCase() === "TRUE";
+      if (flags.crmConfAppDiscr) hasFlags = true;
+
+      // EM = crmPipeSkippedBlank (column index 144)
+      flags.crmPipeSkippedBlank =
+        String(row[144] || "").toUpperCase() === "TRUE";
+      if (flags.crmPipeSkippedBlank) hasFlags = true;
+
+      // ET = crmConfSkippedBlank (column index 151)
+      flags.crmConfSkippedBlank =
+        String(row[151] || "").toUpperCase() === "TRUE";
+      if (flags.crmConfSkippedBlank) hasFlags = true;
+
+      // FA = crmCopiedConfChecked (column index 158)
+      flags.crmCopiedConfChecked =
+        String(row[158] || "").toUpperCase() === "TRUE";
+      if (flags.crmCopiedConfChecked) hasFlags = true;
+
+      // FH = crmCopiedConfUnchecked (column index 165)
+      flags.crmCopiedConfUnchecked =
+        String(row[165] || "").toUpperCase() === "TRUE";
+      if (flags.crmCopiedConfUnchecked) hasFlags = true;
+
+      // FO = crmCopiedConfDelete (column index 172)
+      flags.crmCopiedConfDelete =
+        String(row[172] || "").toUpperCase() === "TRUE";
+      if (flags.crmCopiedConfDelete) hasFlags = true;
+
+      // FV = retainerInvoicesCreated (column index 179)
+      flags.retainerInvoicesCreated =
+        String(row[179] || "").toUpperCase() === "TRUE";
+      if (flags.retainerInvoicesCreated) hasFlags = true;
+
+      // GC = expenseDashboardDiscr (column index 186)
+      flags.expenseDashboardDiscr =
+        String(row[186] || "").toUpperCase() === "TRUE";
+      if (flags.expenseDashboardDiscr) hasFlags = true;
+
+      // GJ = expenseAppDiscr (column index 193)
+      flags.expenseAppDiscr = String(row[193] || "").toUpperCase() === "TRUE";
+      if (flags.expenseAppDiscr) hasFlags = true;
+
+      // GQ = expenseAdded (column index 200)
+      flags.expenseAdded = String(row[200] || "").toUpperCase() === "TRUE";
+      if (flags.expenseAdded) hasFlags = true;
+
+      // GX = expenseUnreconGaps (column index 207)
+      flags.expenseUnreconGaps =
+        String(row[207] || "").toUpperCase() === "TRUE";
+      if (flags.expenseUnreconGaps) hasFlags = true;
+
+      // HE = invoiceStaleUnsentChanges (column index 214)
+      flags.invoiceStaleUnsentChanges =
+        String(row[214] || "").toUpperCase() === "TRUE";
+      if (flags.invoiceStaleUnsentChanges) hasFlags = true;
+
+      if (hasFlags) {
+        clients.push({
+          clientSheetId: clientId,
+          masterSheetId: masterId,
+          clientSheetUrl,
+          masterSheetUrl,
+          flags,
+        });
       }
-      if (!knowledgeBase[category][subcategory]) {
-        knowledgeBase[category][subcategory] = [];
-      }
-
-      knowledgeBase[category][subcategory].push({
-        concept,
-        description,
-      });
     }
 
-    return knowledgeBase;
+    console.log(
+      `Found ${clients.length} clients with flags in Automation Commander`
+    );
+    return clients;
   } catch (error) {
-    console.error("Error fetching knowledge base:", error);
-    return {};
+    console.error("Error getting client flags:", error);
+    return [];
   }
 }
 
-/**
- * Analyze alert using Claude
- */
-async function analyzeAlertWithClaude(alert, knowledgeBase) {
-  const systemPrompt = `You are an expert financial automation analyst. Your job is to review financial alerts and recommend actions.
+// ============================================================================
+// COMPARISON SHEET DATA READING
+// ============================================================================
 
-The existing automation system has ALREADY attempted to match this item but failed. Your job is to find patterns and exceptions it missed.
-
-You have access to a knowledge base of matching rules and patterns. Use this to make intelligent recommendations.
-
-When making recommendations, ALWAYS provide:
-1. Your confidence level (0-100%)
-2. Specific recommendation (AUTO_MATCH, REQUEST_CLARIFICATION, NEW_WORK, DATA_ERROR)
-3. Exact reasoning
-4. What the system would need to do if approved
-
-Format your response as JSON.`;
-
-  const userPrompt = `
-Alert Type: ${alert.type}
-Sheet: ${alert.sheetName}
-Row: ${alert.rowNumber}
-
-Discrepancies Detected:
-${alert.discrepancies.join("\n")}
-
-Alert Data:
-${JSON.stringify(alert.data.slice(0, 30))} // First 30 columns
-
-Knowledge Base:
-${JSON.stringify(knowledgeBase)}
-
-Please analyze this alert and provide a recommendation in JSON format with:
-{
-  "confidence": 0-100,
-  "recommendation": "AUTO_MATCH|REQUEST_CLARIFICATION|NEW_WORK|DATA_ERROR|INVESTIGATE",
-  "reasoning": "...",
-  "suggestedAction": "...",
-  "questionsForUser": ["..."],
-  "potentialMatches": [...],
-  "whyAutomationMissed": "..."
-}
-`;
-
+async function readInvCompAlerts(sheets, spreadsheetId) {
   try {
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      messages: [
-        {
-          role: "user",
-          content: userPrompt,
-        },
-      ],
-      system: systemPrompt,
+    // Activate master switch
+    await setMasterSwitch(sheets, spreadsheetId, "InvComp", true);
+
+    // Read header row (row 5)
+    const headerResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "InvComp!A5:Y5",
     });
+    const headers = (headerResponse.data.values || [[]])[0] || [];
 
-    const responseText = message.content[0].text;
+    // Read data rows (row 6 onwards)
+    const dataResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "InvComp!A6:Y1000",
+    });
+    const rows = dataResponse.data.values || [];
 
-    // Extract JSON from response
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+    // Columns S-Y are discrepancy flags (indices 18-24)
+    const alerts = [];
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      const row = rows[rowIdx];
+      if (!row || row.length === 0) continue;
+
+      // Check if any discrepancy flag = "1"
+      const hasDiscrepancy = [18, 19, 20, 21, 22, 23, 24].some(
+        (idx) => String(row[idx] || "").trim() === "1"
+      );
+
+      if (hasDiscrepancy) {
+        // Include columns A:K (accounting data), M:R (confirmed data), S:Y (flags)
+        alerts.push({
+          type: "invoice",
+          sheetName: "InvComp",
+          rowNumber: 7 + rowIdx, // Row 6 is first data row
+          data: {
+            accounting: row.slice(0, 11), // A:K
+            confirmed: row.slice(12, 18), // M:R
+            flags: row.slice(18, 25), // S:Y
+          },
+          flagColumns: headers.slice(18, 25),
+        });
+      }
     }
 
-    return {
-      confidence: 50,
-      recommendation: "INVESTIGATE",
-      reasoning: responseText,
-    };
+    console.log(`Found ${alerts.length} invoice alerts in InvComp`);
+    return alerts;
   } catch (error) {
-    console.error("Error analyzing alert with Claude:", error);
-    return {
-      confidence: 0,
-      recommendation: "INVESTIGATE",
-      reasoning: `Error: ${error.message}`,
-    };
+    console.error("Error reading InvComp alerts:", error);
+    return [];
+  }
+}
+
+async function readDirCompAlerts(sheets, spreadsheetId) {
+  try {
+    // Activate master switch
+    await setMasterSwitch(sheets, spreadsheetId, "DirComp", true);
+
+    // Read header row (row 5)
+    const headerResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "DirComp!A5:AV5",
+    });
+    const headers = (headerResponse.data.values || [[]])[0] || [];
+
+    // Read data rows (row 6 onwards)
+    const dataResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "DirComp!A6:AV1000",
+    });
+    const rows = dataResponse.data.values || [];
+
+    // Columns AO-AV are discrepancy flags (indices 40-47)
+    const alerts = [];
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      const row = rows[rowIdx];
+      if (!row || row.length === 0) continue;
+
+      // Check if any discrepancy flag = "1"
+      const hasDiscrepancy = [40, 41, 42, 43, 44, 45, 46, 47].some(
+        (idx) => String(row[idx] || "").trim() === "1"
+      );
+
+      if (hasDiscrepancy) {
+        // Include columns A:J (accounting data), X:AH (confirmed/outgoings data), AO:AV (flags)
+        alerts.push({
+          type: "expense",
+          sheetName: "DirComp",
+          rowNumber: 7 + rowIdx,
+          data: {
+            accounting: row.slice(0, 10), // A:J
+            confirmed: row.slice(23, 34), // X:AH
+            flags: row.slice(40, 48), // AO:AV
+          },
+          flagColumns: headers.slice(40, 48),
+        });
+      }
+    }
+
+    console.log(`Found ${alerts.length} expense alerts in DirComp`);
+    return alerts;
+  } catch (error) {
+    console.error("Error reading DirComp alerts:", error);
+    return [];
+  }
+}
+
+async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
+  try {
+    // Set CRM mode
+    await setCRMMode(sheets, spreadsheetId, mode);
+
+    // Activate master switch
+    await setMasterSwitch(sheets, spreadsheetId, "CRMComp", true);
+
+    const alerts = [];
+
+    for (const alertType of alertTypes) {
+      let dataRange, crmDataCols, sheetDataCols, flagCols, flagStartIdx;
+
+      if (mode === "Pipeline") {
+        if (alertType === "crmPipeDashDiscr") {
+          // Left section: X:AJ (CRM), AO:AW (Pipeline), AY:BF (flags)
+          dataRange = "CRMComp!X6:BF1000";
+          crmDataCols = [0, 13]; // X:AJ (indices 0-12)
+          sheetDataCols = [14, 24]; // AO:AW (indices 14-23)
+          flagCols = [24, 32]; // AY:BF (indices 24-31)
+          flagStartIdx = 24;
+        } else if (alertType === "crmPipeAppDiscr") {
+          // Right section: EF:EQ (Pipeline), EU:FD (CRM), FE:FL (flags)
+          dataRange = "CRMComp!EF6:FL1000";
+          sheetDataCols = [0, 12]; // EF:EQ (indices 0-11)
+          crmDataCols = [13, 23]; // EU:FD (indices 13-23)
+          flagCols = [24, 32]; // FE:FL (indices 24-31)
+          flagStartIdx = 24;
+        }
+      } else if (mode === "Confirmed") {
+        if (alertType === "crmConfDashDiscr") {
+          // Left section: X:AJ (CRM), AO:AW (Confirmed), AY:BF (flags)
+          dataRange = "CRMComp!X6:BF1000";
+          crmDataCols = [0, 13]; // X:AJ (indices 0-12)
+          sheetDataCols = [14, 24]; // AO:AW (indices 14-23)
+          flagCols = [24, 32]; // AY:BF (indices 24-31)
+          flagStartIdx = 24;
+        } else if (alertType === "crmConfAppDiscr") {
+          // Right section: EF:EQ (Confirmed), EU:FD (CRM), FE:FL (flags)
+          dataRange = "CRMComp!EF6:FL1000";
+          sheetDataCols = [0, 12]; // EF:EQ (indices 0-11)
+          crmDataCols = [13, 23]; // EU:FD (indices 13-23)
+          flagCols = [24, 32]; // FE:FL (indices 24-31)
+          flagStartIdx = 24;
+        }
+      }
+
+      if (!dataRange) continue;
+
+      const dataResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: dataRange,
+      });
+      const rows = dataResponse.data.values || [];
+
+      for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+        const row = rows[rowIdx];
+        if (!row || row.length === 0) continue;
+
+        // Check if any flag = "1"
+        const hasDiscrepancy = [flagStartIdx, flagStartIdx + 1, flagStartIdx + 2,
+          flagStartIdx + 3, flagStartIdx + 4, flagStartIdx + 5,
+          flagStartIdx + 6, flagStartIdx + 7].some(
+          (idx) => String(row[idx] || "").trim() === "1"
+        );
+
+        if (hasDiscrepancy) {
+          alerts.push({
+            type: "crm",
+            alertType,
+            mode,
+            sheetName: "CRMComp",
+            rowNumber: 7 + rowIdx,
+            data: {
+              crmData: row.slice(crmDataCols[0], crmDataCols[1]),
+              sheetData: row.slice(sheetDataCols[0], sheetDataCols[1]),
+              flags: row.slice(flagStartIdx, flagStartIdx + 8),
+            },
+          });
+        }
+      }
+    }
+
+    console.log(
+      `Found ${alerts.length} CRM alerts in ${mode} mode for ${alertTypes.join(", ")}`
+    );
+    return alerts;
+  } catch (error) {
+    console.error(`Error reading CRMComp alerts:`, error);
+    return [];
   }
 }
 
@@ -508,73 +530,118 @@ export default async function handler(req, res) {
 
   try {
     const { action, automationCommanderSheetId } = req.body;
-
     const sheets = await getSheetsClient();
 
     if (action === "start_triage") {
-      // 1. Get discrepancy flags
-      const flags = await getDiscrepancyFlags(sheets, automationCommanderSheetId);
-
-      // 2. Get client list
-      const clients = await getClientList(sheets, automationCommanderSheetId);
-
-      // 3. Get knowledge base
-      const knowledgeBase = await getKnowledgeBase(
+      // Get all clients with flags
+      const clientsWithFlags = await getClientFlags(
         sheets,
         automationCommanderSheetId
       );
 
-      // 4. Fetch alerts from all clients
-      const allAlerts = [];
+      if (clientsWithFlags.length === 0) {
+        return res.status(200).json({
+          success: true,
+          sessionId: "no-alerts",
+          totalAlerts: 0,
+          noActionAlerts: [],
+          actionableAlerts: [],
+        });
+      }
 
-      for (const client of clients) {
-        if (flags.invoiceDiscrepancies) {
-          const invoiceAlerts = await readAlertsFromSheet(
+      const allAlerts = [];
+      const noActionAlerts = [];
+
+      // Process each client
+      for (const client of clientsWithFlags) {
+        // Check which actionable flags exist
+        const actionableFlags = Object.entries(client.flags)
+          .filter(([key, value]) => value && !NO_ACTION_FLAGS.includes(key))
+          .map(([key]) => key);
+
+        const noActionFlags = Object.entries(client.flags)
+          .filter(([key, value]) => value && NO_ACTION_FLAGS.includes(key))
+          .map(([key]) => key);
+
+        // Read actionable alerts
+        if (actionableFlags.includes("invoiceDashboardDiscr")) {
+          const invoiceAlerts = await readInvCompAlerts(
             sheets,
-            client.masterSheetId,
-            "InvComp",
-            "invoice"
+            client.masterSheetId
           );
+          invoiceAlerts.forEach((alert) => {
+            alert.clientId = client.masterSheetId;
+            alert.flagType = "invoiceDashboardDiscr";
+          });
           allAlerts.push(...invoiceAlerts);
         }
 
-        if (flags.expenseDiscrepancies) {
-          const expenseAlerts = await readAlertsFromSheet(
+        if (actionableFlags.includes("expenseDashboardDiscr")) {
+          const expenseAlerts = await readDirCompAlerts(
             sheets,
-            client.masterSheetId,
-            "DirComp",
-            "expense"
+            client.masterSheetId
           );
+          expenseAlerts.forEach((alert) => {
+            alert.clientId = client.masterSheetId;
+            alert.flagType = "expenseDashboardDiscr";
+          });
           allAlerts.push(...expenseAlerts);
         }
 
-        if (flags.crmDiscrepancies) {
-          const crmAlertsLeft = await readAlertsFromSheet(
+        // Handle CRM alerts based on which modes are needed
+        const pipelineAlerts = actionableFlags.filter((f) =>
+          ["crmPipeDashDiscr", "crmPipeAppDiscr"].includes(f)
+        );
+        const confirmedAlerts = actionableFlags.filter((f) =>
+          ["crmConfDashDiscr", "crmConfAppDiscr"].includes(f)
+        );
+
+        if (pipelineAlerts.length > 0) {
+          const crmAlerts = await readCRMCompAlerts(
             sheets,
             client.masterSheetId,
-            "CRMComp",
-            "crm_left"
+            "Pipeline",
+            pipelineAlerts
           );
-          const crmAlertsRight = await readAlertsFromSheet(
+          crmAlerts.forEach((alert) => {
+            alert.clientId = client.masterSheetId;
+          });
+          allAlerts.push(...crmAlerts);
+        }
+
+        if (confirmedAlerts.length > 0) {
+          const crmAlerts = await readCRMCompAlerts(
             sheets,
             client.masterSheetId,
-            "CRMComp",
-            "crm_right"
+            "Confirmed",
+            confirmedAlerts
           );
-          allAlerts.push(...crmAlertsLeft, ...crmAlertsRight);
+          crmAlerts.forEach((alert) => {
+            alert.clientId = client.masterSheetId;
+          });
+          allAlerts.push(...crmAlerts);
+        }
+
+        // Collect "no action" alerts for acknowledgement
+        for (const flagKey of noActionFlags) {
+          noActionAlerts.push({
+            clientId: client.masterSheetId,
+            flagType: flagKey,
+            flagName: FLAG_NAMES[flagKey],
+            flagColumn: FLAG_COLUMNS[flagKey],
+          });
         }
       }
 
-      // Store alerts in Redis session
+      // Store session data in Redis
       const sessionId = Math.random().toString(36).substring(2, 15);
       await redisClient.set(
         `triage_alerts:${sessionId}`,
-        JSON.stringify(allAlerts),
-        { EX: 86400 }
-      );
-      await redisClient.set(
-        `triage_kb:${sessionId}`,
-        JSON.stringify(knowledgeBase),
+        JSON.stringify({
+          alerts: allAlerts,
+          noActionAlerts,
+          clientsWithFlags,
+        }),
         { EX: 86400 }
       );
 
@@ -582,74 +649,7 @@ export default async function handler(req, res) {
         success: true,
         sessionId,
         totalAlerts: allAlerts.length,
-        alertSummary: {
-          invoices: allAlerts.filter((a) => a.type === "invoice").length,
-          expenses: allAlerts.filter((a) => a.type === "expense").length,
-          crm: allAlerts.filter((a) => a.type.includes("crm")).length,
-        },
-      });
-    } else if (action === "get_next_alert") {
-      // Get next alert for review
-      const { sessionId, alertIndex } = req.body;
-
-      const alertsJson = await redisClient.get(`triage_alerts:${sessionId}`);
-      const kbJson = await redisClient.get(`triage_kb:${sessionId}`);
-
-      if (!alertsJson || !kbJson) {
-        return res.status(404).json({ error: "Session not found" });
-      }
-
-      const alerts = JSON.parse(alertsJson);
-      const knowledgeBase = JSON.parse(kbJson);
-
-      if (alertIndex >= alerts.length) {
-        return res.status(200).json({
-          success: true,
-          complete: true,
-          message: "All alerts reviewed",
-        });
-      }
-
-      const alert = alerts[alertIndex];
-
-      // Analyze with Claude
-      const analysis = await analyzeAlertWithClaude(alert, knowledgeBase);
-
-      res.status(200).json({
-        success: true,
-        alert,
-        analysis,
-        progress: {
-          current: alertIndex + 1,
-          total: alerts.length,
-        },
-      });
-    } else if (action === "record_decision") {
-      // Record user's decision
-      const { sessionId, alertIndex, decision } = req.body;
-
-      const alertsJson = await redisClient.get(`triage_alerts:${sessionId}`);
-      if (!alertsJson) {
-        return res.status(404).json({ error: "Session not found" });
-      }
-
-      const alerts = JSON.parse(alertsJson);
-      const alert = alerts[alertIndex];
-
-      // Log to TriageLog
-      await logDecision(sheets, automationCommanderSheetId, {
-        alertType: alert.type,
-        alertId: `${alert.sheetName}-${alert.rowNumber}`,
-        client: alert.data[0] || "Unknown",
-        amount: alert.data[4] || "",
-        claudeRecommendation: alert.analysis,
-        userAction: decision.action,
-        userCorrection: decision.correction || "",
-      });
-
-      res.status(200).json({
-        success: true,
-        message: "Decision recorded",
+        noActionCount: noActionAlerts.length,
       });
     } else {
       res.status(400).json({ error: "Invalid action" });

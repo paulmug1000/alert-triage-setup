@@ -1189,6 +1189,35 @@ Format as JSON array:
 
 Return ONLY JSON, no other text.`;
 
+          // DEBUG: Log the prompt we're sending to Claude
+          console.log(`\n📤 EXPENSE PROMPT TO CLAUDE:`);
+          console.log(`  Client: ${alert.clientName}`);
+          console.log(`  Expense: ${expenseRef} | £${expenseAmount} | ${expenseDescription}`);
+          console.log(`  Confirmed jobs list has ${confirmedJobs.length} entries`);
+          console.log(`  First 5 jobs in list:`);
+          confirmedJobs.slice(0, 5).forEach((job, idx) => {
+            console.log(`    ${idx + 1}. ${job}`);
+          });
+          
+          // Find jobs that match the client name
+          const clientJobMatches = confirmedJobs.filter(job => 
+            job.includes(alert.clientName)
+          );
+          console.log(`  Jobs matching client "${alert.clientName}": ${clientJobMatches.length}`);
+          if (clientJobMatches.length > 0) {
+            console.log(`  Matching jobs:`);
+            clientJobMatches.slice(0, 5).forEach((job, idx) => {
+              console.log(`    ${idx + 1}. ${job}`);
+            });
+          } else {
+            console.log(`  ⚠️ NO JOBS FOUND MATCHING CLIENT "${alert.clientName}"`);
+            console.log(`  Sample jobs from list (first 10):`);
+            confirmedJobs.slice(0, 10).forEach((job, idx) => {
+              const parts = job.split(" | ");
+              console.log(`    ${idx + 1}. Client: "${parts[0]}", Job: "${parts[1]}"`);
+            });
+          }
+
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
             max_tokens: 1500,
@@ -1208,6 +1237,20 @@ Return ONLY JSON, no other text.`;
             options = JSON.parse(cleanedText);
             if (!Array.isArray(options)) options = [options];
             console.log(`  ✅ Parsed ${options.length} expense options from Claude`);
+            
+            // DEBUG: Log Claude's top recommendation
+            if (options.length > 0) {
+              console.log(`\n📥 CLAUDE'S RESPONSE:`);
+              console.log(`  Option 1 (Best): ${options[0].title}`);
+              console.log(`  Match Type: ${options[0].matchType}`);
+              if (options[0].matchType === "job") {
+                console.log(`  Job Name: ${options[0].jobName}`);
+                console.log(`  Reasoning: ${options[0].facts?.reasonForChoice || options[0].facts?.reasoning || ""}`);
+              } else if (options[0].matchType === "category") {
+                console.log(`  Category: ${options[0].category}`);
+                console.log(`  Reasoning: ${options[0].facts?.reasonForChoice || options[0].facts?.reasoning || ""}`);
+              }
+            }
           } catch (e) {
             console.error(`  ⚠️ Could not parse Claude response as JSON`);
             options = [{ summary: responseText }];

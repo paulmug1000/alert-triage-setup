@@ -832,11 +832,11 @@ export default function TriageSystem({ onBack }) {
                         {option.recommendedActions && Array.isArray(option.recommendedActions) && option.recommendedActions.length > 0 && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
                             <strong>Actions:</strong>
-                            <ul style={{ margin: "4px 0 0 16px", paddingLeft: "0" }}>
-                              {option.recommendedActions.map((action, i) => (
-                                <li key={i} style={{ fontSize: "13px", color: "#555" }}>{action}</li>
-                              ))}
-                            </ul>
+                            {option.recommendedActions.map((action, i) => (
+                              <div key={i} style={{ fontSize: "13px", color: "#555", marginTop: i === 0 ? "8px" : "6px", paddingTop: i === 0 ? "8px" : "0", borderTop: i === 0 ? "1px solid #ddd" : "none" }}>
+                                {i === 0 ? <strong style={{ color: "#059669" }}>✓ {action}</strong> : `• ${action}`}
+                              </div>
+                            ))}
                           </div>
                         )}
                         {/* Fallback for old format fields */}

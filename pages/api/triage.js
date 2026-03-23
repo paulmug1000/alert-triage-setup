@@ -1371,11 +1371,36 @@ The Confirmed tab above shows for each job:
 
 **CRITICAL: For recommendedActions, provide exact cell coordinates and values for job allocations:**
 
-Example format for job match:
-"Within the Confirmed tab, Row 232, Slot 1: Write Craig Niven T/A FILDI to cell BX232, write 995 to cell BY232, write 10-Mar-26 to cell CA232, write Received to cell CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to cell CD232"
+**Cell Column Reference for Direct Cost Expense Slots:**
+- Slot 1: BX-CD (columns 75-81)
+  * BX (75): Description
+  * BY (76): Amount
+  * BZ (77): VAT? (Yes/No - based on whether expense includes VAT)
+  * CA (78): Date (Rec Date from DirComp)
+  * CB (79): Days to pay (calculated as: if "Date paid" exists in DirComp, use Date Paid - Rec Date; otherwise default to 30)
+  * CC (80): Status (from DirComp Status column)
+  * CD (81): Transaction ID (from DirComp Transaction ID column)
 
-Example format for category match:
-"Within the Outgoings tab: Write 995 to the Charles Sladdin - Eleven category row in the amount column, add transaction reference INV-FILDI-ELEVEN-003"
+- Slot 2: CE-CK (columns 82-88)
+  * CE (82): Description
+  * CF (83): Amount
+  * CG (84): VAT? (Yes/No)
+  * CH (85): Date (Rec Date)
+  * CI (86): Days to pay
+  * CJ (87): Status
+  * CK (88): Transaction ID
+
+- Slot 3: CL-CR (columns 89-95)
+  * CL (89): Description
+  * CM (90): Amount
+  * CN (91): VAT? (Yes/No)
+  * CO (92): Date (Rec Date)
+  * CP (93): Days to pay
+  * CQ (94): Status
+  * CR (95): Transaction ID
+
+**Example format:**
+"Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write No to BZ232, write 10-Mar-26 to CA232, write 30 to CB232, write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
 
 Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details:
 
@@ -1387,41 +1412,41 @@ Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details
   "jobName": "Job Name (if job match)",
   "category": "Category Name (if category match)",
   "allocationBreakdown": {
-    "jobDirectCostBudget": "£1,995 (the job's TOTAL allocated budget)",
+    "jobDirectCostBudget": "£1,995",
     "allocatedExpenses": [
-      "Slot 1: Vendor Name - £amount - date - (has valid App ID: yes/no)",
-      "Slot 2: Onelink Media Ltd (Press Tech Audit - Jan 26) - £1,000.00 - 23-Jan-26 - (has valid App ID: yes)",
-      "Slot 3: (empty)"
+      "Slot 2: Onelink Media Ltd - £1,000.00 - 23-Jan-26 - (has valid App ID: yes)"
     ],
     "totalAllocated": "£1,000.00",
     "placeholderExpenses": [
       "Slot 1: Craig Niven - £995.00 - 10-Mar-26 - (NO App ID - placeholder)"
     ],
-    "remainingBudget": "£995.00 (£1,995 - £1,000 allocated)",
-    "expenseCanFit": "YES - this £${expenseAmount.toFixed(2)} matches exactly to remaining budget"
+    "remainingBudget": "£995.00",
+    "expenseCanFit": "YES - £995.00 matches remaining budget"
   },
   "matchAnalysis": {
     "matchConfidence": "High/Medium/Low",
-    "vendorAnalysis": "Why this vendor matches this work type",
-    "placeholderMatch": "Is there a placeholder matching this vendor? YES/NO - explain",
-    "budgetFit": "Does the expense fit in remaining budget? YES/NO with amounts",
-    "reasonForChoice": "Why this is the best match",
-    "discrepancies": "Any concerns or issues"
+    "vendorAnalysis": "Craig Niven T/A FILDI matches placeholder 'Craig Niven'",
+    "placeholderMatch": "YES - Row 232 has placeholder 'Craig Niven - £995.00'",
+    "budgetFit": "YES - £995.00 fits in remaining £995.00",
+    "reasonForChoice": "Exact placeholder match on vendor, amount, and remaining budget",
+    "discrepancies": "None"
   },
   "recommendedActions": [
-    "Within the Confirmed tab, Row 232, Slot 1: Write Craig Niven T/A FILDI to cell BX232, write 995 to cell BY232, write 10-Mar-26 to cell CA232, write Received to cell CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to cell CD232",
-    "Verify the expense amount matches the invoice",
-    "Mark this expense as allocated in the source system"
+    "Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write No to BZ232, write 10-Mar-26 to CA232, write 30 to CB232, write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
   ]
 }]
 
 CRITICAL REQUIREMENTS FOR EVERY OPTION:
-1. ALWAYS include complete allocationBreakdown with jobDirectCostBudget, allocatedExpenses list, totalAllocated, placeholderExpenses list, remainingBudget
-2. Show EVERY expense slot (1, 2, 3) - whether allocated, placeholder, or empty
-3. Include vendor name, amount, date, and slot number for EACH expense
-4. Clearly state YES/NO for "has valid App ID" for each expense
-5. Rank options by: (1) Perfect placeholder match (vendor name + remaining budget), (2) Sufficient remaining budget + vendor match, (3) Category fallback
-6. For recommendedActions, include EXACT cell coordinates (column letters + row number) and values to write
+1. ALWAYS include complete allocationBreakdown
+2. In matchAnalysis, keep descriptions SHORT and factual only
+3. For recommendedActions: 
+   - First line: Brief summary of what will happen (e.g., "Insert expense into Slot X, Row Y, Job Name")
+   - Second line: EXACT cell coordinates with all required values (Description, Amount, VAT?, Date, Days to pay, Status, Transaction ID)
+4. For VAT?: Use "Yes" if expense includes VAT (check DirComp), otherwise "No"
+5. For Days to pay: Calculate from DirComp columns (Rec Date col H vs Date Paid if available), default 30
+6. For Status: Use value from DirComp Status column
+7. For Transaction ID: Use DirComp Transaction ID column (NOT Reference column)
+8. Rank options by: (1) Perfect placeholder match, (2) Sufficient budget + vendor match, (3) Category fallback
 
 Return ONLY JSON, no other text.`;
 

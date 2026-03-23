@@ -753,6 +753,7 @@ export default function TriageSystem({ onBack }) {
             ← Back
           </button>
         </div>
+        </div>
       </>
     );
   }
@@ -846,6 +847,7 @@ export default function TriageSystem({ onBack }) {
             ← Back to Clients
           </button>
         </div>
+        </div>
       </>
     );
   }
@@ -885,6 +887,7 @@ export default function TriageSystem({ onBack }) {
               ← Back to Clients
             </button>
           </div>
+        </div>
         </div>
       </>
     );

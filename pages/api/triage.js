@@ -469,23 +469,23 @@ function buildDirCompSummary(alert) {
     index_1: accounting[1],
     index_2: accounting[2],
     index_3: accounting[3],
+    index_4: accounting[4],
+    index_5: accounting[5],
+    index_6: accounting[6],
   });
   
-  // DirComp columns (A:J) based on structure:
-  // A: Expense ref, B: Client, C: Vendor, D: Amount, E: Date, F: Category, G: Status, H: AppID, I: ?, J: ?
-  const expenseRef = accounting[0] || '(unknown)';
-  const client = accounting[1] || '(unknown)';
-  const vendor = accounting[2] || '';
-  
-  // CRITICAL FIX: Remove commas from number strings before parsing
-  const amount = parseFloat(String(accounting[3] || '0').replace(/,/g, '')) || 0; // Column D
-  
-  const date = accounting[4] || '';
-  const category = accounting[5] || '';
-  const status = accounting[6] || '';
+  // DirComp columns (A:J) - CORRECTED MAPPING:
+  // A: Date, B: Description, C: Amount, D: Reference, E: Account name, F: Status, G: Transaction ID, H: ?, I: ?, J: ?
+  const date = accounting[0] || '';
+  const description = accounting[1] || '';
+  const amount = parseFloat(String(accounting[2] || '0').replace(/,/g, '')) || 0; // Column C - Amount
+  const reference = accounting[3] || '';
+  const accountName = accounting[4] || '';
+  const status = accounting[5] || '';
+  const transactionId = accounting[6] || '';
   
   console.log(`DEBUG after parsing:`, {
-    expenseRef, client, vendor, amount, date, category, status
+    date, description, amount, reference, accountName, status, transactionId
   });
   
   // Format the amount
@@ -494,28 +494,25 @@ function buildDirCompSummary(alert) {
     : '£0.00';
   
   // Build the summary string
-  let summary = `Expense ${expenseRef} • ${formattedAmount} • ${client}`;
-  if (vendor) {
-    summary += ` • ${vendor}`;
+  let summary = `Expense ${reference || date} • ${formattedAmount}`;
+  if (description) {
+    summary += ` • ${description}`;
   }
-  if (category) {
-    summary += ` • ${category}`;
+  if (accountName) {
+    summary += ` • ${accountName}`;
   }
   if (date) {
     summary += ` • ${date}`;
   }
-  if (status) {
-    summary += ` • ${status}`;
-  }
   
   return {
-    expenseRef,
+    reference,
     amount,
-    client,
-    vendor,
+    description,
     date,
-    category,
+    accountName,
     status,
+    transactionId,
     summary
   };
 }
@@ -1049,10 +1046,27 @@ export default async function handler(req, res) {
           
           console.log(`  ✓ Loaded ${confirmedData.length} rows from Confirmed`);
           
-          // Build list of jobs for matching
+          // Find last non-blank row (checking all relevant columns)
+          let lastDataRow = 1;
+          for (let row = confirmedData.length - 1; row > 0; row--) {
+            const rowData = confirmedData[row] || [];
+            // Check columns that indicate a job exists: A-E (client/job), AG-AM (revenue/dates), AP-BH (invoices), BX-CR (more invoices)
+            const colsToCheck = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59];
+            const hasData = colsToCheck.some(col => rowData[col]);
+            
+            if (hasData) {
+              lastDataRow = row;
+              break;
+            }
+          }
+          
+          const activeConfirmedData = confirmedData.slice(0, lastDataRow + 1);
+          console.log(`  ✓ Found ${activeConfirmedData.length} non-blank rows in Confirmed`);
+          
+          // Build list of ALL jobs for matching
           const confirmedJobs = [];
-          for (let i = 1; i < Math.min(confirmedData.length, 50); i++) {
-            const row = confirmedData[i] || [];
+          for (let i = 1; i < activeConfirmedData.length; i++) {
+            const row = activeConfirmedData[i] || [];
             const client = row[0] || '';
             const jobName = row[1] || '';
             const revenue = row[32] !== undefined ? row[32] : '';
@@ -1090,14 +1104,13 @@ export default async function handler(req, res) {
           }
           
           // Extract expense details
-          const expenseAmount = parseFloat(alert.summary?.amount) || parseFloat(alert.data?.amount) || 0;
-          const expenseRef = alert.summary?.expenseRef || alert.data?.expenseRef || "(unknown)";
-          const expenseVendor = alert.summary?.vendor || alert.data?.vendor || "";
-          const expenseCategory = alert.summary?.category || alert.data?.category || "";
-          const expenseDate = alert.summary?.date || alert.data?.date || "";
-          const expenseClient = alert.summary?.client || alert.clientName || "";
+          const expenseAmount = parseFloat(alert.summary?.amount) || 0;
+          const expenseRef = alert.summary?.reference || "(unknown)";
+          const expenseDescription = alert.summary?.description || "";
+          const expenseDate = alert.summary?.date || "";
+          const expenseAccountName = alert.summary?.accountName || "";
           
-          console.log(`  📋 Expense details: Ref=${expenseRef}, Amount=${expenseAmount}, Vendor=${expenseVendor}, Category=${expenseCategory}`);
+          console.log(`  📋 Expense details: Ref=${expenseRef}, Amount=${expenseAmount}, Description=${expenseDescription}, Account=${expenseAccountName}`);
 
           
           // Build expense prompt - check BOTH Outgoings categories AND Confirmed jobs
@@ -1107,11 +1120,11 @@ export default async function handler(req, res) {
 
 UNMATCHED EXPENSE:
 • Reference: ${expenseRef}
+• Description: ${expenseDescription}
 • Amount: £${expenseAmount.toFixed(2)}
-• Vendor: ${expenseVendor}
-• Category (from app): ${expenseCategory}
 • Date: ${expenseDate}
-• Client: ${expenseClient}
+• Account Name: ${expenseAccountName}
+• Client: ${alert.clientName || ""}
 
 AVAILABLE OUTGOINGS CATEGORIES (Budget):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
@@ -1210,10 +1223,27 @@ Return ONLY JSON, no other text.`;
           
           console.log(`  ✓ Loaded ${jobsData.length} rows from ${tabName}`);
           
-          // Build list of existing jobs for Claude reference
+          // Find last non-blank row (checking relevant columns)
+          let lastDataRow = 1;
+          for (let row = jobsData.length - 1; row > 0; row--) {
+            const rowData = jobsData[row] || [];
+            // Check columns that indicate a job exists: A-E (client/job), AG-AM (revenue/dates)
+            const colsToCheck = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38];
+            const hasData = colsToCheck.some(col => rowData[col]);
+            
+            if (hasData) {
+              lastDataRow = row;
+              break;
+            }
+          }
+          
+          const activeJobsData = jobsData.slice(0, lastDataRow + 1);
+          console.log(`  ✓ Found ${activeJobsData.length} non-blank rows in ${tabName}`);
+          
+          // Build list of ALL existing jobs for Claude reference
           const existingJobs = [];
-          for (let i = 1; i < Math.min(jobsData.length, 50); i++) {
-            const row = jobsData[i] || [];
+          for (let i = 1; i < activeJobsData.length; i++) {
+            const row = activeJobsData[i] || [];
             const client = row[0] || '';
             const jobName = row[1] || '';
             const revenue = row[32] !== undefined ? row[32] : '';

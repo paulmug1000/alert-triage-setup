@@ -587,15 +587,31 @@ export default function TriageSystem({ onBack }) {
           {alert.summary && (
             <div style={{ ...styles.alertSummary, marginBottom: "20px" }}>
               <h3 style={{ fontSize: "13px", fontWeight: "700", marginBottom: "8px", color: "#1a1a1a", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Unmatched Invoice
+                {alert.type === "expense" ? "Unmatched Expense" : "Unmatched Invoice"}
               </h3>
               <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#333" }}>
-                <div><strong>Invoice:</strong> {alert.summary.invoiceNo}</div>
-                <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{alert.summary.vatIncluded && alert.summary.vatIncluded > 0 ? ' + VAT' : ''}</div>
-                <div><strong>Client:</strong> {alert.summary.client}</div>
-                {alert.summary.job && <div><strong>Description:</strong> {alert.summary.job}</div>}
-                {alert.summary.sentDate && <div><strong>Sent:</strong> {alert.summary.sentDate}</div>}
-                {alert.summary.status && <div><strong>Status:</strong> {alert.summary.status}</div>}
+                {alert.type === "expense" ? (
+                  // Expense display
+                  <>
+                    {alert.summary.reference && <div><strong>Reference:</strong> {alert.summary.reference}</div>}
+                    {alert.summary.description && <div><strong>Description:</strong> {alert.summary.description}</div>}
+                    <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}</div>
+                    {alert.summary.date && <div><strong>Date:</strong> {alert.summary.date}</div>}
+                    {alert.summary.accountName && <div><strong>Account Name:</strong> {alert.summary.accountName}</div>}
+                    {alert.summary.status && <div><strong>Status:</strong> {alert.summary.status}</div>}
+                    {alert.summary.transactionId && <div><strong>Transaction ID:</strong> {alert.summary.transactionId}</div>}
+                  </>
+                ) : (
+                  // Invoice display
+                  <>
+                    <div><strong>Invoice:</strong> {alert.summary.invoiceNo}</div>
+                    <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{alert.summary.vatIncluded && alert.summary.vatIncluded > 0 ? ' + VAT' : ''}</div>
+                    <div><strong>Client:</strong> {alert.summary.client}</div>
+                    {alert.summary.job && <div><strong>Description:</strong> {alert.summary.job}</div>}
+                    {alert.summary.sentDate && <div><strong>Sent:</strong> {alert.summary.sentDate}</div>}
+                    {alert.summary.status && <div><strong>Status:</strong> {alert.summary.status}</div>}
+                  </>
+                )}
               </div>
             </div>
           )}

@@ -272,10 +272,15 @@ export default function TriageSystem({ onBack }) {
     try {
       setCurrentClientAlertIndex(clientAlerts.indexOf(alert));
       setAcceptError("");
+      setIsAnalyzing(true);
+      setClaudeAnalysis(""); // Clear previous analysis
+      
+      // IMPORTANT: Go to analysis screen IMMEDIATELY to show loading state
+      setScreen("triageAnalysis");
       
       console.log(`Analyzing alert: ${alert.sheetName}-${alert.rowNumber}`);
       
-      // Analyze the alert
+      // THEN analyze the alert
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -290,14 +295,16 @@ export default function TriageSystem({ onBack }) {
       
       if (!data.success) {
         setClaudeAnalysis("Error generating options: " + (data.error || "Unknown error"));
+        setIsAnalyzing(false);
         return;
       }
       
       console.log(`Generated ${data.options?.length || 0} options`);
       setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
-      setScreen("triageAnalysis");
+      setIsAnalyzing(false);
     } catch (err) {
       setAcceptError(`Failed to analyze alert: ${err.message}`);
+      setIsAnalyzing(false);
       console.error(err);
     }
   };

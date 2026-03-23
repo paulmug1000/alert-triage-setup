@@ -564,13 +564,14 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
     }
 
     // Columns S-Y are discrepancy flags (indices 18-24)
+    // IGNORE column W (22) which is "Duplicate inv no ?" - only count other discrepancies
     const alerts = [];
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
       const row = rows[rowIdx];
       if (!row || row.length === 0) continue;
 
-      // Check if any discrepancy flag = "1"
-      const hasDiscrepancy = [18, 19, 20, 21, 22, 23, 24].some(
+      // Check if ANY discrepancy flag (EXCEPT W/22 which is "Duplicate inv no ?") = "1"
+      const hasDiscrepancy = [18, 19, 20, 21, 23, 24].some(
         (idx) => String(row[idx] || "").trim() === "1"
       );
 
@@ -631,13 +632,14 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
     console.log(`  ✓ Data read: ${rows.length} rows`);
 
     // Columns AO-AV are discrepancy flags (indices 40-47)
+    // IGNORE column AP (41) which is "Duplicate app ID ?" - only count other discrepancies
     const alerts = [];
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
       const row = rows[rowIdx];
       if (!row || row.length === 0) continue;
 
-      // Check if any discrepancy flag = "1"
-      const hasDiscrepancy = [40, 41, 42, 43, 44, 45, 46, 47].some(
+      // Check if ANY discrepancy flag (EXCEPT AP/41 which is "Duplicate app ID ?") = "1"
+      const hasDiscrepancy = [40, 42, 43, 44, 45, 46, 47].some(
         (idx) => String(row[idx] || "").trim() === "1"
       );
 

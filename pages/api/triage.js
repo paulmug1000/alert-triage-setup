@@ -931,36 +931,256 @@ export default async function handler(req, res) {
         
         // Handle expense alerts (DirComp)
         if (alert.type === "expense" || alert.sheetName === "DirComp") {
-          console.log(`  📊 Expense alert analysis not yet implemented`);
+          console.log(`  📊 Fetching Outgoings tab for expense matching...`);
+          
+          const outgoingsResponse = await sheets.spreadsheets.values.get({
+            spreadsheetId: alert.clientId,
+            range: "Outgoings!A1:Z500",
+          });
+          
+          let outgoingsData = outgoingsResponse.data.values || [];
+          
+          // If we hit the 500 row limit, fetch more
+          if (outgoingsData.length === 500) {
+            console.log(`  Detected 500 rows, fetching full range...`);
+            const fullResponse = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: "Outgoings!A1:Z5000",
+            });
+            outgoingsData = fullResponse.data.values || [];
+          }
+          
+          console.log(`  ✓ Loaded ${outgoingsData.length} rows from Outgoings`);
+          
+          // Find non-blank categories (skip header and empty rows)
+          const categories = [];
+          for (let i = 1; i < Math.min(outgoingsData.length, 100); i++) {
+            const row = outgoingsData[i] || [];
+            const category = String(row[0] || '').trim();
+            if (category && !category.includes('=') && category.length > 0) {
+              categories.push(category);
+            }
+          }
+          
+          console.log(`  ✓ Found ${categories.length} categories`);
+          
+          // Read tolerance values for expenses
+          const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
+          
+          // Read AIKnowledgeBase for expense rules
+          const knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId || alert.automationCommanderSheetId);
+          const kbRules = knowledgeBase
+            .filter(row => row[0] === "EXPENSE_MATCHING")
+            .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
+            .join("\n");
+          
+          // Extract expense details
+          const expenseAmount = parseFloat(alert.summary?.amount) || parseFloat(alert.data?.amount) || 0;
+          const expenseRef = alert.summary?.expenseRef || alert.data?.expenseRef || "(unknown)";
+          const expenseVendor = alert.summary?.vendor || alert.data?.vendor || "";
+          const expenseCategory = alert.summary?.category || alert.data?.category || "";
+          const expenseDate = alert.summary?.date || alert.data?.date || "";
+          
+          // Build expense prompt
+          const expensePrompt = `You are analyzing an unmatched expense that needs reconciliation to the Outgoings budget.
+
+UNMATCHED EXPENSE:
+• Reference: ${expenseRef}
+• Amount: £${expenseAmount.toFixed(2)}
+• Vendor: ${expenseVendor}
+• Category (from app): ${expenseCategory}
+• Date: ${expenseDate}
+• Client: ${alert.clientName || ""}
+
+AVAILABLE OUTGOINGS CATEGORIES:
+${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
+
+MATCHING RULES & TOLERANCES:
+${kbRules || "- Default matching rules apply"}
+- Date tolerance: ±${tolerances.expenseMonthsTolerance} months
+- Amount tolerance: within 5% for same currency, 10% for foreign currency
+
+YOUR TASK:
+1. Determine which Outgoings category this expense belongs in
+2. Consider: vendor name, category hints, amount, date
+3. Suggest 3 options: BEST MATCH, ALTERNATIVE MATCH, NEEDS REVIEW
+
+Format as JSON array:
+[{
+  "optionId": 1,
+  "title": "Match to [Category] - [reason]",
+  "category": "Category Name",
+  "facts": {
+    "matchConfidence": "High/Medium/Low",
+    "reasoning": "Why this category matches",
+    "discrepancies": "Why it didn't auto-match (if any)"
+  },
+  "recommendedActions": ["Action 1", "Action 2"]
+}]
+
+Return ONLY JSON, no other text.`;
+
+          const message = await anthropic.messages.create({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1500,
+            messages: [
+              { role: "user", content: expensePrompt }
+            ],
+          });
+
+          let options = [];
+          const responseText = message.content[0].type === "text" ? message.content[0].text : "";
+          const cleanedText = responseText
+            .replace(/```json/g, "")
+            .replace(/```/g, "")
+            .trim();
+          
+          try {
+            options = JSON.parse(cleanedText);
+            if (!Array.isArray(options)) options = [options];
+            console.log(`  ✅ Parsed ${options.length} expense options from Claude`);
+          } catch (e) {
+            console.error(`  ⚠️ Could not parse Claude response as JSON`);
+            options = [{ summary: responseText }];
+          }
+          
           return res.status(200).json({
             success: true,
-            options: [
-              {
-                optionId: 1,
-                title: "Expense matching - feature coming soon",
-                category: alert.data?.category || "Unknown",
-                facts: { status: "Expense analysis not yet implemented in this version" },
-                recommendedActions: ["Review expense in Outgoings tab manually"]
-              }
-            ],
+            options,
             alertId: alert.rowNumber,
           });
         }
         
         // Handle CRM alerts
         if (alert.type === "crm" || alert.sheetName === "CRMComp") {
-          console.log(`  📊 CRM alert analysis not yet implemented`);
+          console.log(`  📊 Analyzing CRM alert...`);
+          
+          // Determine which tab to match against (Pipeline or Confirmed)
+          const crmMode = await getCRMMatchingMode(sheets, alert.masterSheetId || alert.clientId);
+          console.log(`  Mode: ${crmMode}`);
+          
+          const tabName = crmMode === "Pipeline" ? "Pipeline" : "Confirmed";
+          
+          const jobsResponse = await sheets.spreadsheets.values.get({
+            spreadsheetId: alert.clientId,
+            range: `${tabName}!A1:BH500`,
+          });
+          
+          let jobsData = jobsResponse.data.values || [];
+          
+          // If we hit the 500 row limit, fetch more
+          if (jobsData.length === 500) {
+            console.log(`  Detected 500 rows, fetching full range...`);
+            const fullResponse = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: `${tabName}!A1:BH5000`,
+            });
+            jobsData = fullResponse.data.values || [];
+          }
+          
+          console.log(`  ✓ Loaded ${jobsData.length} rows from ${tabName}`);
+          
+          // Build list of existing jobs for Claude reference
+          const existingJobs = [];
+          for (let i = 1; i < Math.min(jobsData.length, 50); i++) {
+            const row = jobsData[i] || [];
+            const client = row[0] || '';
+            const jobName = row[1] || '';
+            const revenue = row[32] !== undefined ? row[32] : '';
+            const startDate = row[37] || '';
+            const endDate = row[38] || '';
+            
+            if (client && jobName) {
+              existingJobs.push(`Row ${i + 1}: ${client} | ${jobName} | Revenue: ${revenue} | Dates: ${startDate} to ${endDate}`);
+            }
+          }
+          
+          console.log(`  ✓ Built reference list of ${existingJobs.length} jobs`);
+          
+          // Read AIKnowledgeBase for CRM rules
+          const knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId || alert.automationCommanderSheetId);
+          const kbRules = knowledgeBase
+            .filter(row => row[0] === "CRM_MATCHING")
+            .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
+            .join("\n");
+          
+          // Extract CRM details
+          const crmProjectCode = alert.summary?.projectCode || alert.data?.projectCode || "(unknown)";
+          const crmJobName = alert.summary?.jobName || alert.data?.jobName || "";
+          const crmRevenue = parseFloat(alert.summary?.revenue) || parseFloat(alert.data?.revenue) || 0;
+          const crmStartDate = alert.summary?.startDate || alert.data?.startDate || "";
+          const crmEndDate = alert.summary?.endDate || alert.data?.endDate || "";
+          
+          // Build CRM prompt
+          const crmPrompt = `You are analyzing a CRM discrepancy between the Dashboard and CRM system.
+
+UNMATCHED CRM JOB:
+• Project Code: ${crmProjectCode}
+• Client: ${alert.clientName || ""}
+• Job Name: ${crmJobName}
+• Revenue: £${crmRevenue.toFixed(2)}
+• Start Date: ${crmStartDate}
+• End Date: ${crmEndDate}
+• Matching Mode: ${tabName}
+
+EXISTING JOBS IN ${tabName.toUpperCase()} TAB:
+${existingJobs.slice(0, 20).join("\n")}
+${existingJobs.length > 20 ? `... and ${existingJobs.length - 20} more jobs` : ""}
+
+MATCHING RULES:
+${kbRules || "- Default matching rules apply"}
+
+YOUR TASK:
+1. Find the best match in the ${tabName} tab for this CRM job
+2. Consider: Client name, Job name similarity, Revenue, Dates, Project code
+3. Suggest 3 options: BEST MATCH, ALTERNATIVE MATCH, CREATE NEW JOB
+
+Format as JSON array:
+[{
+  "optionId": 1,
+  "title": "Match to [Job Name] in ${tabName} - [reason]",
+  "jobRow": 52,
+  "jobName": "Job Name",
+  "facts": {
+    "matchConfidence": "High/Medium/Low",
+    "matchedClient": "Client Name",
+    "matchedRevenue": 15950,
+    "matchedDates": "3-Mar-26 to 31-Aug-26",
+    "reasoning": "Why this job matches",
+    "discrepancies": "Why it didn't auto-match (if any)"
+  },
+  "recommendedActions": ["Action 1", "Action 2"]
+}]
+
+Return ONLY JSON, no other text.`;
+
+          const message = await anthropic.messages.create({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1500,
+            messages: [
+              { role: "user", content: crmPrompt }
+            ],
+          });
+
+          let options = [];
+          const responseText = message.content[0].type === "text" ? message.content[0].text : "";
+          const cleanedText = responseText
+            .replace(/```json/g, "")
+            .replace(/```/g, "")
+            .trim();
+          
+          try {
+            options = JSON.parse(cleanedText);
+            if (!Array.isArray(options)) options = [options];
+            console.log(`  ✅ Parsed ${options.length} CRM options from Claude`);
+          } catch (e) {
+            console.error(`  ⚠️ Could not parse Claude response as JSON`);
+            options = [{ summary: responseText }];
+          }
+          
           return res.status(200).json({
             success: true,
-            options: [
-              {
-                optionId: 1,
-                title: "CRM matching - feature coming soon",
-                jobName: alert.data?.jobName || "Unknown",
-                facts: { status: "CRM analysis not yet implemented in this version" },
-                recommendedActions: ["Review job in Confirmed/Pipeline tab manually"]
-              }
-            ],
+            options,
             alertId: alert.rowNumber,
           });
         }

@@ -459,6 +459,67 @@ function buildInvCompSummary(alert) {
   };
 }
 
+function buildDirCompSummary(alert) {
+  const accounting = alert.data.accounting || [];
+  
+  // DEBUG: Log raw values
+  console.log(`DEBUG buildDirCompSummary:`, {
+    raw_accounting: accounting,
+    index_0: accounting[0],
+    index_1: accounting[1],
+    index_2: accounting[2],
+    index_3: accounting[3],
+  });
+  
+  // DirComp columns (A:J) based on structure:
+  // A: Expense ref, B: Client, C: Vendor, D: Amount, E: Date, F: Category, G: Status, H: AppID, I: ?, J: ?
+  const expenseRef = accounting[0] || '(unknown)';
+  const client = accounting[1] || '(unknown)';
+  const vendor = accounting[2] || '';
+  
+  // CRITICAL FIX: Remove commas from number strings before parsing
+  const amount = parseFloat(String(accounting[3] || '0').replace(/,/g, '')) || 0; // Column D
+  
+  const date = accounting[4] || '';
+  const category = accounting[5] || '';
+  const status = accounting[6] || '';
+  
+  console.log(`DEBUG after parsing:`, {
+    expenseRef, client, vendor, amount, date, category, status
+  });
+  
+  // Format the amount
+  const formattedAmount = amount > 0 
+    ? `£${amount.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+    : '£0.00';
+  
+  // Build the summary string
+  let summary = `Expense ${expenseRef} • ${formattedAmount} • ${client}`;
+  if (vendor) {
+    summary += ` • ${vendor}`;
+  }
+  if (category) {
+    summary += ` • ${category}`;
+  }
+  if (date) {
+    summary += ` • ${date}`;
+  }
+  if (status) {
+    summary += ` • ${status}`;
+  }
+  
+  return {
+    expenseRef,
+    amount,
+    client,
+    vendor,
+    date,
+    category,
+    status,
+    summary
+  };
+}
+
 // ============================================================================
 // COMPARISON SHEET DATA READING
 // ============================================================================
@@ -579,7 +640,7 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
 
       if (hasDiscrepancy) {
         // Include columns A:J (accounting data), X:AH (confirmed/outgoings data), AO:AV (flags)
-        alerts.push({
+        const alert = {
           type: "expense",
           sheetName: "DirComp",
           rowNumber: 7 + rowIdx,
@@ -589,7 +650,12 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
             flags: row.slice(40, 48), // AO:AV
           },
           flagColumns: headers.slice(40, 48),
-        });
+        };
+        
+        // Add summary for display
+        alert.summary = buildDirCompSummary(alert);
+        
+        alerts.push(alert);
       }
     }
 
@@ -1029,6 +1095,10 @@ export default async function handler(req, res) {
           const expenseVendor = alert.summary?.vendor || alert.data?.vendor || "";
           const expenseCategory = alert.summary?.category || alert.data?.category || "";
           const expenseDate = alert.summary?.date || alert.data?.date || "";
+          const expenseClient = alert.summary?.client || alert.clientName || "";
+          
+          console.log(`  📋 Expense details: Ref=${expenseRef}, Amount=${expenseAmount}, Vendor=${expenseVendor}, Category=${expenseCategory}`);
+
           
           // Build expense prompt - check BOTH Outgoings categories AND Confirmed jobs
           const expensePrompt = `You are analyzing an unmatched expense that needs reconciliation. It could match either:
@@ -1041,7 +1111,7 @@ UNMATCHED EXPENSE:
 • Vendor: ${expenseVendor}
 • Category (from app): ${expenseCategory}
 • Date: ${expenseDate}
-• Client: ${alert.clientName || ""}
+• Client: ${expenseClient}
 
 AVAILABLE OUTGOINGS CATEGORIES (Budget):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}

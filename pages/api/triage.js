@@ -1229,30 +1229,51 @@ export default async function handler(req, res) {
               let totalAllocated = 0;
               let allocatedExpenses = [];
               let placeholderExpenses = [];
+              let allThreeSlots = [];  // For detailed Claude output
               
-              if (exp1Descr && exp1Amt && exp1AppId && !exp1AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
-                const amt1 = parseFloat(String(exp1Amt).replace(/[£$€,]/g, '')) || 0;
-                totalAllocated += amt1;
-                allocatedExpenses.push(`${exp1Descr} £${amt1}`);
-              } else if (exp1Descr && exp1Amt) {
-                // Placeholder: has description/amount but no valid App ID
-                placeholderExpenses.push(`${exp1Descr} (pending) £${exp1Amt}`);
+              // Slot 1
+              if (exp1Descr && exp1Amt) {
+                if (exp1AppId && !exp1AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
+                  const amt1 = parseFloat(String(exp1Amt).replace(/[£$€,]/g, '')) || 0;
+                  totalAllocated += amt1;
+                  allocatedExpenses.push(`${exp1Descr} £${amt1}`);
+                  allThreeSlots.push(`Slot 1: ${exp1Descr} - ${String(exp1Amt)} - ${exp1RecDate} - (has valid App ID: yes)`);
+                } else {
+                  placeholderExpenses.push(`${exp1Descr} (pending) £${exp1Amt}`);
+                  allThreeSlots.push(`Slot 1: ${exp1Descr} - ${String(exp1Amt)} - ${exp1RecDate} - (NO App ID - placeholder)`);
+                }
+              } else {
+                allThreeSlots.push(`Slot 1: (empty)`);
               }
               
-              if (exp2Descr && exp2Amt && exp2AppId && !exp2AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
-                const amt2 = parseFloat(String(exp2Amt).replace(/[£$€,]/g, '')) || 0;
-                totalAllocated += amt2;
-                allocatedExpenses.push(`${exp2Descr} £${amt2}`);
-              } else if (exp2Descr && exp2Amt) {
-                placeholderExpenses.push(`${exp2Descr} (pending) £${exp2Amt}`);
+              // Slot 2
+              if (exp2Descr && exp2Amt) {
+                if (exp2AppId && !exp2AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
+                  const amt2 = parseFloat(String(exp2Amt).replace(/[£$€,]/g, '')) || 0;
+                  totalAllocated += amt2;
+                  allocatedExpenses.push(`${exp2Descr} £${amt2}`);
+                  allThreeSlots.push(`Slot 2: ${exp2Descr} - ${String(exp2Amt)} - ${exp2RecDate} - (has valid App ID: yes)`);
+                } else {
+                  placeholderExpenses.push(`${exp2Descr} (pending) £${exp2Amt}`);
+                  allThreeSlots.push(`Slot 2: ${exp2Descr} - ${String(exp2Amt)} - ${exp2RecDate} - (NO App ID - placeholder)`);
+                }
+              } else {
+                allThreeSlots.push(`Slot 2: (empty)`);
               }
               
-              if (exp3Descr && exp3Amt && exp3AppId && !exp3AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
-                const amt3 = parseFloat(String(exp3Amt).replace(/[£$€,]/g, '')) || 0;
-                totalAllocated += amt3;
-                allocatedExpenses.push(`${exp3Descr} £${amt3}`);
-              } else if (exp3Descr && exp3Amt) {
-                placeholderExpenses.push(`${exp3Descr} (pending) £${exp3Amt}`);
+              // Slot 3
+              if (exp3Descr && exp3Amt) {
+                if (exp3AppId && !exp3AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
+                  const amt3 = parseFloat(String(exp3Amt).replace(/[£$€,]/g, '')) || 0;
+                  totalAllocated += amt3;
+                  allocatedExpenses.push(`${exp3Descr} £${amt3}`);
+                  allThreeSlots.push(`Slot 3: ${exp3Descr} - ${String(exp3Amt)} - ${exp3RecDate} - (has valid App ID: yes)`);
+                } else {
+                  placeholderExpenses.push(`${exp3Descr} (pending) £${exp3Amt}`);
+                  allThreeSlots.push(`Slot 3: ${exp3Descr} - ${String(exp3Amt)} - ${exp3RecDate} - (NO App ID - placeholder)`);
+                }
+              } else {
+                allThreeSlots.push(`Slot 3: (empty)`);
               }
               
               // Calculate remaining
@@ -1267,7 +1288,10 @@ export default async function handler(req, res) {
                 ? ` | Placeholders (pending): ${placeholderExpenses.join(' + ')}`
                 : '';
               
-              return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | DirectCostBudget: ${directCostsBudget} | Allocated: ${allocatedStr} | Remaining: £${remaining.toFixed(2)} | Type: ${projType} | Start: ${startDate} | End: ${endDate}${placeholderStr}`;
+              // Store all three slots for detailed Claude analysis
+              const detailedBreakdown = allThreeSlots.join('\n  ');
+              
+              return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | DirectCostBudget: ${directCostsBudget} | Allocated: ${allocatedStr} | Remaining: £${remaining.toFixed(2)} | Type: ${projType} | Start: ${startDate} | End: ${endDate}${placeholderStr}\n  Expense Slots:\n  ${detailedBreakdown}`;
             })
             .join('\n');
           
@@ -1344,7 +1368,8 @@ The Confirmed tab above shows for each job:
 4. RANK BY: (1) Placeholder match + remaining budget, (2) Vendor match + remaining budget, (3) Category fallback
 5. Suggest 3 GENUINELY DIFFERENT options, properly ranked
 
-Format as JSON array:
+Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details:
+
 [{
   "optionId": 1,
   "title": "Match to [Job Name] - [reason]",
@@ -1352,27 +1377,37 @@ Format as JSON array:
   "jobRow": 52,
   "jobName": "Job Name (if job match)",
   "category": "Category Name (if category match)",
-  "facts": {
+  "allocationBreakdown": {
+    "jobDirectCostBudget": "£1,995 (the job's TOTAL allocated budget)",
+    "allocatedExpenses": [
+      "Slot 1: Vendor Name - £amount - date - (has valid App ID: yes/no)",
+      "Slot 2: Onelink Media Ltd (Press Tech Audit - Jan 26) - £1,000.00 - 23-Jan-26 - (has valid App ID: yes)",
+      "Slot 3: (empty)"
+    ],
+    "totalAllocated": "£1,000.00",
+    "placeholderExpenses": [
+      "Slot 1: Craig Niven - £995.00 - 10-Mar-26 - (NO App ID - placeholder)"
+    ],
+    "remainingBudget": "£995.00 (£1,995 - £1,000 allocated)",
+    "expenseCanFit": "YES - this £${expenseAmount.toFixed(2)} matches exactly to remaining budget"
+  },
+  "matchAnalysis": {
     "matchConfidence": "High/Medium/Low",
     "vendorAnalysis": "Why this vendor matches this work type",
-    "accountCategoryAnalysis": "Why this account category indicates job-specific work",
-    "jobDirectCostBudget": "The job's TOTAL direct cost budget (e.g., £1,995)",
-    "jobAllocatedExpenses": "What's already finalized (e.g., Onelink Media £1,000)",
-    "jobRemainingBudget": "The job's REMAINING available budget after allocated expenses (e.g., £995)",
-    "placeholderContext": "Any pending placeholder expenses that relate to this match (e.g., Craig Niven placeholder £995)",
-    "expenseCanFit": "YES or NO - can this £${expenseAmount.toFixed(2)} expense fit in the remaining budget?",
+    "placeholderMatch": "Is there a placeholder matching this vendor? YES/NO - explain",
+    "budgetFit": "Does the expense fit in remaining budget? YES/NO with amounts",
     "reasonForChoice": "Why this is the best match",
     "discrepancies": "Any concerns or issues"
   },
   "recommendedActions": ["Action 1", "Action 2"]
 }]
 
-CRITICAL REQUIREMENTS:
-- ALWAYS include jobDirectCostBudget, jobAllocatedExpenses, jobRemainingBudget, and expenseCanFit in your facts
-- These are the PRIMARY MATCHING CRITERIA - not just secondary details
-- For each job option, clearly show: Total Budget → Allocated → Remaining = (Budget - Allocated)
-- Check if this £${expenseAmount.toFixed(2)} expense FITS in the remaining budget
-- Rank options by: (1) Perfect placeholder match, (2) Sufficient remaining budget + vendor match, (3) Category fallback
+CRITICAL REQUIREMENTS FOR EVERY OPTION:
+1. ALWAYS include complete allocationBreakdown with jobDirectCostBudget, allocatedExpenses list, totalAllocated, placeholderExpenses list, remainingBudget
+2. Show EVERY expense slot (1, 2, 3) - whether allocated, placeholder, or empty
+3. Include vendor name, amount, date, and slot number for EACH expense
+4. Clearly state YES/NO for "has valid App ID" for each expense
+5. Rank options by: (1) Perfect placeholder match (vendor name + remaining budget), (2) Sufficient remaining budget + vendor match, (3) Category fallback
 
 Return ONLY JSON, no other text.`;
 

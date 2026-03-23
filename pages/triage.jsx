@@ -1,6 +1,21 @@
 import React, { useState } from "react";
 import Head from "next/head";
 
+// Helper function defined OUTSIDE component to prevent re-creation on each render
+function getAlertSummary(alert) {
+  if (alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr") {
+    const inv = alert.summary;
+    return `Invoice #${inv?.invoiceNo || inv?.reference || "?"} - £${inv?.amount?.toFixed(2) || "?"}`;
+  } else if (alert.type === "expense" || alert.flagType === "expenseDashboardDiscr") {
+    const exp = alert.summary;
+    return `${exp?.description || "Expense"} - £${exp?.amount?.toFixed(2) || "?"}`;
+  } else if (alert.type === "crm" || alert.flagType?.includes("crm")) {
+    const crm = alert.data;
+    return `${crm?.projectCode || "Project"} - £${crm?.revenue || "?"}`;
+  }
+  return "Alert";
+}
+
 export default function TriageSystem({ onBack }) {
   const AUTOMATION_COMMANDER_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
   const [automationCommanderSheetId] = useState(AUTOMATION_COMMANDER_SHEET_ID);
@@ -769,37 +784,6 @@ export default function TriageSystem({ onBack }) {
       }
       groupedAlerts[type].push(alert);
     });
-
-    const getAlertSummary = (alert) => {
-      console.log(`\n📍 getAlertSummary called for: ${alert.sheetName}-${alert.rowNumber}`);
-      console.log(`   alert.type: ${alert.type}`);
-      console.log(`   alert.flagType: ${alert.flagType}`);
-      console.log(`   alert.summary: ${JSON.stringify(alert.summary)}`);
-      
-      if (alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr") {
-        const inv = alert.summary;
-        console.log(`   Using invoice path, inv object: ${JSON.stringify(inv)}`);
-        console.log(`   inv?.invoiceNo = ${inv?.invoiceNo}`);
-        console.log(`   inv?.amount = ${inv?.amount}`);
-        const result = `Invoice #${inv?.invoiceNo || inv?.reference || "?"} - £${inv?.amount?.toFixed(2) || "?"}`;
-        console.log(`   Returning: "${result}"`);
-        return result;
-      } else if (alert.type === "expense" || alert.flagType === "expenseDashboardDiscr") {
-        const exp = alert.summary;
-        console.log(`   Using expense path, exp object: ${JSON.stringify(exp)}`);
-        const result = `${exp?.description || "Expense"} - £${exp?.amount?.toFixed(2) || "?"}`;
-        console.log(`   Returning: "${result}"`);
-        return result;
-      } else if (alert.type === "crm" || alert.flagType?.includes("crm")) {
-        const crm = alert.data;
-        console.log(`   Using crm path, crm object: ${JSON.stringify(crm)}`);
-        const result = `${crm?.projectCode || "Project"} - £${crm?.revenue || "?"}`;
-        console.log(`   Returning: "${result}"`);
-        return result;
-      }
-      console.log(`   No matching type, returning "Alert"`);
-      return "Alert";
-    };
 
     return (
       <>

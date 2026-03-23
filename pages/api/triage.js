@@ -1878,14 +1878,21 @@ Return ONLY JSON, no other text.`;
             const projType = row[35] || '';
             const startDate = row[37] || '';
             const endDate = row[38] || '';
+            
+            // Include all invoices, but mark MANUAL-INV entries so Claude knows to exclude them from calculations
             const inv1Amount = row[41] !== undefined ? row[41] : '';
             const inv1Ref = row[42] || '';
+            const inv1Label = (inv1Ref || '').toString().toUpperCase().includes('MANUAL-INV') ? `${inv1Ref} [MANUAL ONLY]` : inv1Ref;
+            
             const inv2Amount = row[48] !== undefined ? row[48] : '';
             const inv2Ref = row[49] || '';
+            const inv2Label = (inv2Ref || '').toString().toUpperCase().includes('MANUAL-INV') ? `${inv2Ref} [MANUAL ONLY]` : inv2Ref;
+            
             const inv3Amount = row[55] !== undefined ? row[55] : '';
             const inv3Ref = row[56] || '';
+            const inv3Label = (inv3Ref || '').toString().toUpperCase().includes('MANUAL-INV') ? `${inv3Ref} [MANUAL ONLY]` : inv3Ref;
             
-            return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | Revenue: ${revenue} | VAT: ${vat} | Type: ${projType} | Start: ${startDate} | End: ${endDate} | Inv1: ${inv1Ref} £${inv1Amount} | Inv2: ${inv2Ref} £${inv2Amount} | Inv3: ${inv3Ref} £${inv3Amount}`;
+            return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | Revenue: ${revenue} | VAT: ${vat} | Type: ${projType} | Start: ${startDate} | End: ${endDate} | Inv1: ${inv1Label} £${inv1Amount} | Inv2: ${inv2Label} £${inv2Amount} | Inv3: ${inv3Label} £${inv3Amount}`;
           })
           .join('\n');
         
@@ -1965,8 +1972,10 @@ RETAINER JOBS:
 **How to Calculate Remaining to Invoice:**
 1. Find the job's parent row (has Revenue)
 2. Find all child rows with same Client, same Job name, but no Revenue
-3. Sum all invoices from the parent AND all its children (ignore invoices with blank references)
-4. Calculate: Remaining = Parent's Revenue - Total Invoiced Amount
+3. Sum all invoices from the parent AND all its children
+4. **CRITICAL**: When summing, ONLY include invoices with real references (NOT marked [MANUAL ONLY])
+5. **IMPORTANT**: Invoices marked [MANUAL ONLY] are planned/scheduled invoices that haven't been issued yet - they show the invoicing plan but should NOT be included in "total already invoiced" calculations
+6. Calculate: Remaining = Parent's Revenue - Total Invoiced Amount (excluding [MANUAL ONLY] invoices)
 
 **Your Task:**
 1. Identify which job (parent row) this invoice should match to, considering client name, job similarity, amount, reference pattern, and dates
@@ -1993,7 +2002,7 @@ Format as JSON array:
     "totalRevenue": 15950,
     "startDate": "3-Mar-26",
     "endDate": "31-Aug-26",
-    "existingInvoices": "0820 £7,975 (sent 12-Mar-26) + 0821 £5,725 (sent 20-Mar-26) = £13,700",
+    "existingInvoices": "0820 £7,975 (sent 12-Mar-26) + 0821 £5,725 (sent 20-Mar-26) = £13,700 (excludes any [MANUAL ONLY] invoices)",
     "remainingToInvoice": 2250,
     "invoiceMatchStatus": "EXACT MATCH",
     "discrepancies": "Why it didn't auto-match"

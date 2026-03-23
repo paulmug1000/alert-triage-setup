@@ -1113,76 +1113,70 @@ export default async function handler(req, res) {
           console.log(`  📋 Expense details: Ref=${expenseRef}, Amount=${expenseAmount}, Description=${expenseDescription}, Account=${expenseAccountName}`);
 
           
-          // Build expense prompt - check BOTH Outgoings categories AND Confirmed jobs
-          const expensePrompt = `You are analyzing an unmatched expense that needs reconciliation. It could match either:
-1. An Outgoings budget category (for indirect/operational costs)
-2. A Confirmed job's direct costs (for job-specific expenses)
+          // Build expense prompt - CORRECTED MATCHING LOGIC
+          // DO NOT try to match by client name (client is YOUR agency, not the end-client in jobs)
+          // Instead match by: vendor name, amount, and account category
+          const expensePrompt = `You are analyzing an unmatched business expense. This expense could match either:
+1. An Outgoings budget category (for indirect/operational costs like office supplies, software, insurance)
+2. A Confirmed job's direct costs (for job-specific vendor expenses like contractors, subcontractors, freelancers, materials)
+
+⚠️ CRITICAL: The "Client" field in the job list refers to END-CLIENTS (like "AH Technology", "National Renal Complement"), NOT the agency. The expense vendor/description will NOT match a client name.
 
 UNMATCHED EXPENSE:
 • Reference: ${expenseRef}
-• Description: ${expenseDescription}
+• Vendor/Description: ${expenseDescription}
 • Amount: £${expenseAmount.toFixed(2)}
 • Date: ${expenseDate}
-• Account Name: ${expenseAccountName}
-• Client: ${alert.clientName || ""}
+• Account Category: ${expenseAccountName}
 
-AVAILABLE OUTGOINGS CATEGORIES (Budget):
+OUTGOINGS CATEGORIES (For General/Operational Expenses):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
 
-AVAILABLE CONFIRMED JOBS (for direct cost matching):
+CONFIRMED JOBS (with end-client names and direct cost budgets):
 ${confirmedJobs.join("\n")}
 
-MATCHING RULES & TOLERANCES:
-${kbRules || "- Default matching rules apply"}
-- Date tolerance: ±${tolerances.expenseMonthsTolerance} months
-- Amount tolerance: within 5% for same currency, 10% for foreign currency
+HOW TO MATCH THIS EXPENSE:
 
-CRITICAL INFORMATION ABOUT CONFIRMED TAB STRUCTURE:
+**For Job-Specific Direct Costs:**
+- Look at ACCOUNT CATEGORY first: "${expenseAccountName}"
+  - Contains "Contractor", "Subcontractor", "Freelancer", "Labour" → Almost certainly job work
+  - Contains "Travel", "Materials", "Equipment", "Software", "Services" → Likely job-specific
+  - Numbered categories (e.g., "321", "401") often represent cost types for jobs
+- Look at VENDOR NAME: "${expenseDescription}"
+  - Is this type of vendor (contractor, supplier, service provider) someone who would work on projects?
+  - Does the amount suggest it's specialist work?
+- Look at AMOUNT: £${expenseAmount.toFixed(2)}
+  - Is this a reasonable project expense amount?
+  - Check if it fits within any job's direct cost budget range
 
-**Understanding Job Structure:**
-The Confirmed tab contains jobs with two types of rows:
-- PARENT ROW: Has Client name, Job name, Revenue amount, Start date, End date, and Direct Costs amount
-- CHILD ROWS (optional): Have the SAME Client and Job name as their parent, but NO Revenue or dates
+**For Outgoings Categories:**
+- Is this a recurring/general business expense (rent, insurance, office supplies, subscriptions)?
+- Would this vendor work for ANY project or is it general operations?
 
-**How Direct Costs Work:**
-- Each job has a "Direct Costs" amount (Column AH in Confirmed tab)
-- This is the total budgeted direct cost for the entire job
-- When a job-specific expense is incurred, it should be matched to the job's direct costs
-- Multiple expenses can be matched to the same job (they all count toward that job's direct costs)
+IMPORTANT MATCHING RULES:
+- If the account category strongly suggests job work (contractors, subcontractors), prioritize matching to jobs
+- Don't try to match vendor name to client names - they won't line up
+- Focus on: account category → vendor type → amount reasonableness
 
-**Matching Logic:**
-1. Look for a job with a MATCHING CLIENT name
-2. The expense description or account name should relate to the job
-3. The expense amount should be reasonable within the job's budget
-4. The expense date should fall within (or near) the job's date range
-
-**Your Task:**
-1. Determine if this expense belongs to:
-   - A Confirmed job's direct costs (job-specific expense)
-   - An Outgoings category (general/operational expense)
-2. Priority matching factors:
-   - CLIENT NAME MATCH (highest priority)
-   - Job description/account relevance
-   - Amount fitting within job budget
-   - Date falling within job timeline
-   - Vendor type matching job needs (e.g., contractors for contractor jobs)
-3. Suggest 3 options: BEST MATCH, ALTERNATIVE MATCH, NEEDS REVIEW
-
-**Important:** Do NOT assume expenses can only match Outgoings categories. If the client name and context match a job perfectly, that is the BEST match even if the expense could theoretically fit multiple Outgoings categories.
+YOUR TASK:
+1. Determine: JOB-SPECIFIC EXPENSE (direct costs) or GENERAL OPERATIONAL expense?
+2. Suggest 3 options with clear reasoning
+3. For job matches: explain why the account/vendor type fits that type of work
 
 Format as JSON array:
 [{
   "optionId": 1,
-  "title": "Match to [Job Name or Category] - [reason]",
+  "title": "Match to [Job Name or Category] - [brief reason]",
   "matchType": "job" or "category",
   "jobRow": 52,
   "jobName": "Job Name (if job match)",
   "category": "Category Name (if category match)",
   "facts": {
     "matchConfidence": "High/Medium/Low",
-    "clientMatch": "How well client name matches",
+    "vendorAnalysis": "What this vendor type tells us",
+    "accountCategoryAnalysis": "Why this account category matters",
     "reasonForChoice": "Why this is the best match",
-    "discrepancies": "Any issues with this match (if any)"
+    "discrepancies": "Any concerns"
   },
   "recommendedActions": ["Action 1", "Action 2"]
 }]
@@ -1191,32 +1185,15 @@ Return ONLY JSON, no other text.`;
 
           // DEBUG: Log the prompt we're sending to Claude
           console.log(`\n📤 EXPENSE PROMPT TO CLAUDE:`);
-          console.log(`  Client: ${alert.clientName}`);
-          console.log(`  Expense: ${expenseRef} | £${expenseAmount} | ${expenseDescription}`);
+          console.log(`  Vendor/Description: ${expenseDescription}`);
+          console.log(`  Amount: £${expenseAmount}`);
+          console.log(`  Account Category: ${expenseAccountName}`);
           console.log(`  Confirmed jobs list has ${confirmedJobs.length} entries`);
-          console.log(`  First 5 jobs in list:`);
-          confirmedJobs.slice(0, 5).forEach((job, idx) => {
+          console.log(`  Matching strategy: vendor type + amount + account category (NOT client name)`);
+          console.log(`  First 3 jobs as reference:`);
+          confirmedJobs.slice(0, 3).forEach((job, idx) => {
             console.log(`    ${idx + 1}. ${job}`);
           });
-          
-          // Find jobs that match the client name
-          const clientJobMatches = confirmedJobs.filter(job => 
-            job.includes(alert.clientName)
-          );
-          console.log(`  Jobs matching client "${alert.clientName}": ${clientJobMatches.length}`);
-          if (clientJobMatches.length > 0) {
-            console.log(`  Matching jobs:`);
-            clientJobMatches.slice(0, 5).forEach((job, idx) => {
-              console.log(`    ${idx + 1}. ${job}`);
-            });
-          } else {
-            console.log(`  ⚠️ NO JOBS FOUND MATCHING CLIENT "${alert.clientName}"`);
-            console.log(`  Sample jobs from list (first 10):`);
-            confirmedJobs.slice(0, 10).forEach((job, idx) => {
-              const parts = job.split(" | ");
-              console.log(`    ${idx + 1}. Client: "${parts[0]}", Job: "${parts[1]}"`);
-            });
-          }
 
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",

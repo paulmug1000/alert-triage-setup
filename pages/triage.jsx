@@ -636,6 +636,93 @@ export default function TriageSystem({ onBack }) {
                             <strong>Job:</strong> {option.jobName} (Row {option.jobRow})
                           </div>
                         )}
+                        {/* CRM matching details */}
+                        {option.matchingDetails && typeof option.matchingDetails === 'object' && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#f5f3ff", borderLeft: "3px solid #7c3aed" }}>
+                            <strong style={{ color: "#5b21b6" }}>CRM Job Matching Details:</strong>
+                            {option.matchingDetails.unmatchedJobSummary && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#333" }}>
+                                <strong>Unmatched Job (CRM):</strong>
+                                <div style={{ marginLeft: "12px", fontSize: "12px", marginTop: "4px" }}>
+                                  {option.matchingDetails.unmatchedJobSummary.projectCode && <div>Code: {option.matchingDetails.unmatchedJobSummary.projectCode}</div>}
+                                  {option.matchingDetails.unmatchedJobSummary.clientName && <div>Client: {option.matchingDetails.unmatchedJobSummary.clientName}</div>}
+                                  {option.matchingDetails.unmatchedJobSummary.jobName && <div>Job: {option.matchingDetails.unmatchedJobSummary.jobName}</div>}
+                                  {option.matchingDetails.unmatchedJobSummary.revenue && <div>Revenue: {option.matchingDetails.unmatchedJobSummary.revenue}</div>}
+                                  {option.matchingDetails.unmatchedJobSummary.startDate && <div>Dates: {option.matchingDetails.unmatchedJobSummary.startDate} → {option.matchingDetails.unmatchedJobSummary.endDate}</div>}
+                                </div>
+                              </div>
+                            )}
+                            {option.matchingDetails.matchedJobDetails && (
+                              <div style={{ marginTop: "8px", fontSize: "13px", color: "#333" }}>
+                                <strong>Matched Job ({option.matchType === 'create_new' ? 'Would Create New' : 'In Sheet'}):</strong>
+                                {option.matchType === 'create_new' ? (
+                                  <div style={{ marginLeft: "12px", fontSize: "12px", marginTop: "4px", color: "#7c3aed" }}>
+                                    Create new job matching the CRM details above
+                                  </div>
+                                ) : (
+                                  <div style={{ marginLeft: "12px", fontSize: "12px", marginTop: "4px" }}>
+                                    {option.matchingDetails.matchedJobDetails.projectCode && <div>Code: {option.matchingDetails.matchedJobDetails.projectCode}</div>}
+                                    {option.matchingDetails.matchedJobDetails.clientName && <div>Client: {option.matchingDetails.matchedJobDetails.clientName}</div>}
+                                    {option.matchingDetails.matchedJobDetails.jobName && <div>Job: {option.matchingDetails.matchedJobDetails.jobName}</div>}
+                                    {option.matchingDetails.matchedJobDetails.revenue && <div>Revenue: {option.matchingDetails.matchedJobDetails.revenue}</div>}
+                                    {option.matchingDetails.matchedJobDetails.startDate && <div>Dates: {option.matchingDetails.matchedJobDetails.startDate} → {option.matchingDetails.matchedJobDetails.endDate}</div>}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {/* CRM match analysis */}
+                        {option.matchAnalysis && typeof option.matchAnalysis === 'object' && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#fef3c7", borderLeft: "3px solid #f59e0b" }}>
+                            <strong style={{ color: "#b45309" }}>Match Analysis:</strong>
+                            {option.matchAnalysis.matchConfidence && (
+                              <div style={{ marginTop: "6px", fontSize: "13px" }}>
+                                <strong>Confidence:</strong> {option.matchAnalysis.matchConfidence}
+                              </div>
+                            )}
+                            {option.matchAnalysis.clientNameMatch && (
+                              <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
+                                <strong>Client Name:</strong> {option.matchAnalysis.clientNameMatch}
+                              </div>
+                            )}
+                            {option.matchAnalysis.jobNameMatch && (
+                              <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
+                                <strong>Job Name:</strong> {option.matchAnalysis.jobNameMatch}
+                              </div>
+                            )}
+                            {option.matchAnalysis.revenueMatch && (
+                              <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
+                                <strong>Revenue:</strong> {option.matchAnalysis.revenueMatch}
+                              </div>
+                            )}
+                            {option.matchAnalysis.dateRangeMatch && (
+                              <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
+                                <strong>Dates:</strong> {option.matchAnalysis.dateRangeMatch}
+                              </div>
+                            )}
+                            {option.matchAnalysis.projectCodeMatch && (
+                              <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
+                                <strong>Project Code:</strong> {option.matchAnalysis.projectCodeMatch}
+                              </div>
+                            )}
+                            {option.matchAnalysis.reasonForChoice && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#555", fontStyle: "italic" }}>
+                                <strong>Why:</strong> {option.matchAnalysis.reasonForChoice}
+                              </div>
+                            )}
+                            {option.matchAnalysis.discrepancies && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#d97706" }}>
+                                <strong>⚠️ Concerns:</strong> {option.matchAnalysis.discrepancies}
+                              </div>
+                            )}
+                            {option.matchAnalysis.whyItDidntAutoMatch && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#666" }}>
+                                <strong>Why no auto-match:</strong> {option.matchAnalysis.whyItDidntAutoMatch}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         {/* NEW FORMAT: Display allocation breakdown for expenses */}
                         {option.allocationBreakdown && typeof option.allocationBreakdown === 'object' && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>

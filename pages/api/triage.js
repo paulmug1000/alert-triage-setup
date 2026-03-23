@@ -1579,7 +1579,7 @@ Return ONLY JSON, no other text.`;
           const crmStartDate = alert.summary?.startDate || alert.data?.startDate || "";
           const crmEndDate = alert.summary?.endDate || alert.data?.endDate || "";
           
-          // Build CRM prompt
+          // Build CRM prompt with detailed matching analysis
           const crmPrompt = `You are analyzing a CRM discrepancy between the Dashboard and CRM system.
 
 UNMATCHED CRM JOB:
@@ -1594,30 +1594,66 @@ UNMATCHED CRM JOB:
 EXISTING JOBS IN ${tabName.toUpperCase()} TAB:
 ${existingJobs.join("\n")}
 
-MATCHING RULES:
+MATCHING RULES & KNOWLEDGE BASE:
 ${kbRules || "- Default matching rules apply"}
 
 YOUR TASK:
-1. Find the best match in the ${tabName} tab for this CRM job
-2. Consider: Client name, Job name similarity, Revenue, Dates, Project code
-3. Suggest 3 options: BEST MATCH, ALTERNATIVE MATCH, CREATE NEW JOB
+1. Find the best matches in the ${tabName} tab for this CRM job
+2. For EACH option, analyze: Client name, Job name similarity, Revenue match, Date range match, Project code
+3. Suggest 3 options: BEST MATCH, ALTERNATIVE, CREATE NEW JOB
+
+For each option, provide detailed matching analysis showing:
+- Why this matches (or why CREATE NEW if no match)
+- Confidence level based on matching criteria
+- Specific details from the matched job
+- Any concerns or discrepancies
+- Recommended actions
 
 Format as JSON array:
 [{
   "optionId": 1,
   "title": "Match to [Job Name] in ${tabName} - [reason]",
+  "matchType": "existing_job" or "create_new",
   "jobRow": 52,
-  "jobName": "Job Name",
-  "facts": {
-    "matchConfidence": "High/Medium/Low",
-    "matchedClient": "Client Name",
-    "matchedRevenue": 15950,
-    "matchedDates": "3-Mar-26 to 31-Aug-26",
-    "reasoning": "Why this job matches",
-    "discrepancies": "Why it didn't auto-match (if any)"
+  "jobName": "Job Name (if matching existing)",
+  "matchingDetails": {
+    "unmatchedJobSummary": {
+      "projectCode": "${crmProjectCode}",
+      "clientName": "${alert.clientName || ""}",
+      "jobName": "${crmJobName}",
+      "revenue": "£${crmRevenue.toFixed(2)}",
+      "startDate": "${crmStartDate}",
+      "endDate": "${crmEndDate}"
+    },
+    "matchedJobDetails": {
+      "row": 52,
+      "clientName": "Client Name from matched job",
+      "jobName": "Job name from matched job",
+      "revenue": "Revenue from matched job",
+      "startDate": "Start date from matched job",
+      "endDate": "End date from matched job",
+      "projectCode": "Project code from matched job (if any)"
+    }
   },
-  "recommendedActions": ["Action 1", "Action 2"]
+  "matchAnalysis": {
+    "matchConfidence": "High/Medium/Low",
+    "clientNameMatch": "YES/NO/PARTIAL - explain similarity",
+    "jobNameMatch": "YES/NO/PARTIAL - explain similarity",
+    "revenueMatch": "YES/NO - amounts and variance",
+    "dateRangeMatch": "YES/NO/PARTIAL - explain date overlap or differences",
+    "projectCodeMatch": "YES/NO - are codes similar or identical",
+    "reasonForChoice": "Detailed explanation of why this is the best match",
+    "discrepancies": "Any concerns about this match",
+    "whyItDidntAutoMatch": "Why the system didn't find this automatically (if applicable)"
+  },
+  "recommendedActions": ["Action 1", "Action 2", "Action 3"]
 }]
+
+CRITICAL REQUIREMENTS:
+- Include matchingDetails with BOTH unmatchedJobSummary and matchedJobDetails for comparison
+- Include full matchAnalysis with all matching criteria
+- For CREATE NEW option, explain why no existing job matches
+- Show the specific discrepancies that would need resolving
 
 Return ONLY JSON, no other text.`;
 

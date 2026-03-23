@@ -636,6 +636,88 @@ export default function TriageSystem({ onBack }) {
                             <strong>Job:</strong> {option.jobName} (Row {option.jobRow})
                           </div>
                         )}
+                        {/* NEW FORMAT: Display allocation breakdown for expenses */}
+                        {option.allocationBreakdown && typeof option.allocationBreakdown === 'object' && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>
+                            <strong style={{ color: "#1e40af" }}>Direct Cost Allocation:</strong>
+                            {option.allocationBreakdown.jobDirectCostBudget && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#333" }}>
+                                <strong>Total Budget:</strong> {option.allocationBreakdown.jobDirectCostBudget}
+                              </div>
+                            )}
+                            {option.allocationBreakdown.allocatedExpenses && Array.isArray(option.allocationBreakdown.allocatedExpenses) && option.allocationBreakdown.allocatedExpenses.length > 0 && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#333" }}>
+                                <strong>Allocated Expenses:</strong>
+                                <ul style={{ margin: "4px 0 0 16px", paddingLeft: "0", fontSize: "12px" }}>
+                                  {option.allocationBreakdown.allocatedExpenses.map((exp, i) => (
+                                    <li key={i} style={{ color: "#444", marginBottom: "2px" }}>{exp}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {option.allocationBreakdown.totalAllocated && (
+                              <div style={{ marginTop: "4px", fontSize: "13px", color: "#555" }}>
+                                <strong>Total Allocated:</strong> {option.allocationBreakdown.totalAllocated}
+                              </div>
+                            )}
+                            {option.allocationBreakdown.placeholderExpenses && Array.isArray(option.allocationBreakdown.placeholderExpenses) && option.allocationBreakdown.placeholderExpenses.length > 0 && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#b45309" }}>
+                                <strong>Pending Placeholders:</strong>
+                                <ul style={{ margin: "4px 0 0 16px", paddingLeft: "0", fontSize: "12px" }}>
+                                  {option.allocationBreakdown.placeholderExpenses.map((exp, i) => (
+                                    <li key={i} style={{ color: "#92400e", marginBottom: "2px" }}>{exp}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {option.allocationBreakdown.remainingBudget && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#059669", fontWeight: "bold" }}>
+                                Remaining Budget: {option.allocationBreakdown.remainingBudget}
+                              </div>
+                            )}
+                            {option.allocationBreakdown.expenseCanFit && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#059669" }}>
+                                ✓ {option.allocationBreakdown.expenseCanFit}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {/* NEW FORMAT: Display match analysis */}
+                        {option.matchAnalysis && typeof option.matchAnalysis === 'object' && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#fef3c7", borderLeft: "3px solid #f59e0b" }}>
+                            <strong style={{ color: "#b45309" }}>Match Analysis:</strong>
+                            {option.matchAnalysis.matchConfidence && (
+                              <div style={{ marginTop: "6px", fontSize: "13px" }}>
+                                <strong>Confidence:</strong> {option.matchAnalysis.matchConfidence}
+                              </div>
+                            )}
+                            {option.matchAnalysis.vendorAnalysis && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#555" }}>
+                                <strong>Vendor:</strong> {option.matchAnalysis.vendorAnalysis}
+                              </div>
+                            )}
+                            {option.matchAnalysis.placeholderMatch && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#555" }}>
+                                <strong>Placeholder Match:</strong> {option.matchAnalysis.placeholderMatch}
+                              </div>
+                            )}
+                            {option.matchAnalysis.budgetFit && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#555" }}>
+                                <strong>Budget Fit:</strong> {option.matchAnalysis.budgetFit}
+                              </div>
+                            )}
+                            {option.matchAnalysis.reasonForChoice && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#555", fontStyle: "italic" }}>
+                                {option.matchAnalysis.reasonForChoice}
+                              </div>
+                            )}
+                            {option.matchAnalysis.discrepancies && (
+                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#d97706" }}>
+                                <strong>⚠️ Concerns:</strong> {option.matchAnalysis.discrepancies}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         {option.facts && typeof option.facts === 'object' && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
                             <ul style={{ margin: "4px 0 0 16px", paddingLeft: "0", fontSize: "13px", color: "#555" }}>

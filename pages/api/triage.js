@@ -1312,30 +1312,37 @@ The Confirmed tab above shows for each job:
 - Placeholders (pending): Expenses waiting to be assigned (description indicates what work they represent)
 - Remaining: How much budget is still available AFTER allocated expenses
 
-When matching this £${expenseAmount.toFixed(2)} expense:
+**RANKING PRIORITY (most important first):**
+1. **PERFECT MATCH (TOP)**: Job has a PLACEHOLDER that matches this expense
+   - Placeholder vendor name ≈ Expense vendor name? = HIGH confidence match
+   - Example: PHIZZ has placeholder "Craig Niven" £995, expense is "Craig Niven T/A FILDI" £995 = PERFECT
+2. **STRONG MATCH**: Job has sufficient REMAINING budget + matching vendor type + matching job scope
+3. **MEDIUM MATCH**: Job has remaining budget + vendor/scope is less certain
+4. **FALLBACK (LOW)**: Category match if no job matches
 
-1. Look at the account category: "${expenseAccountName}"
-   - "Subcontractor", "Contractor", "Labour" → job-specific work
-   - "Travel", "Materials", "Equipment" → likely job-specific
-2. Look at vendor name: "${expenseDescription}"
-   - Would this vendor work on project-type work?
-3. Check the Confirmed tab above for jobs with:
-   - Matching job type (development, design, ecommerce, etc.)
-   - Sufficient REMAINING budget (after allocated expenses) to accommodate this expense
-   - Reasonable match between vendor type and job scope
-   - Note any placeholder expenses - they may indicate pending work that could relate to this vendor
-4. IMPORTANT: Only subtract ALLOCATED expenses when calculating remaining budget
-   - Placeholder expenses don't count against remaining budget (they're pending assignment)
-   - But they give context about what work types the job is planning
+**When matching this £${expenseAmount.toFixed(2)} expense:**
+
+1. Expense details to match:
+   - Vendor: "${expenseDescription}"
+   - Category: "${expenseAccountName}"
+   - Amount: £${expenseAmount.toFixed(2)}
+
+2. For EACH job in Confirmed tab:
+   - Check for PLACEHOLDER matching this vendor (strongest signal)
+   - Check for REMAINING budget >= £${expenseAmount.toFixed(2)} (must fit)
+   - Check if job type matches vendor type
+   - Report: Budget → Allocated → Remaining calculation
+
+3. IMPORTANT: Only subtract ALLOCATED expenses when calculating remaining budget
+   - Placeholder expenses don't count against remaining (they're pending)
+   - But a matching placeholder = PERFECT MATCH signal
 
 **Your Task:**
 1. Determine: JOB-SPECIFIC EXPENSE (direct costs) or GENERAL OPERATIONAL expense?
-2. For job matches: identify which job has:
-   - Matching work type (if applicable)
-   - Sufficient REMAINING budget for this expense
-   - Vendor type that fits the job
-3. Consider placeholder expenses as context about pending work, but don't let them prevent a match
-4. Suggest 3 GENUINELY DIFFERENT options
+2. Find jobs that match PLACEHOLDER vendors, or have sufficient remaining budget + vendor match
+3. For EACH option you suggest: Show Budget → Allocated → Remaining in facts
+4. RANK BY: (1) Placeholder match + remaining budget, (2) Vendor match + remaining budget, (3) Category fallback
+5. Suggest 3 GENUINELY DIFFERENT options, properly ranked
 
 Format as JSON array:
 [{
@@ -1349,15 +1356,23 @@ Format as JSON array:
     "matchConfidence": "High/Medium/Low",
     "vendorAnalysis": "Why this vendor matches this work type",
     "accountCategoryAnalysis": "Why this account category indicates job-specific work",
-    "jobDirectCostBudget": "The job's total direct cost budget",
-    "jobAllocatedExpenses": "What's already finalized",
-    "jobRemainingBudget": "The job's remaining available budget after allocated expenses",
-    "placeholderContext": "Any pending placeholder expenses that relate to this match",
+    "jobDirectCostBudget": "The job's TOTAL direct cost budget (e.g., £1,995)",
+    "jobAllocatedExpenses": "What's already finalized (e.g., Onelink Media £1,000)",
+    "jobRemainingBudget": "The job's REMAINING available budget after allocated expenses (e.g., £995)",
+    "placeholderContext": "Any pending placeholder expenses that relate to this match (e.g., Craig Niven placeholder £995)",
+    "expenseCanFit": "YES or NO - can this £${expenseAmount.toFixed(2)} expense fit in the remaining budget?",
     "reasonForChoice": "Why this is the best match",
     "discrepancies": "Any concerns or issues"
   },
   "recommendedActions": ["Action 1", "Action 2"]
 }]
+
+CRITICAL REQUIREMENTS:
+- ALWAYS include jobDirectCostBudget, jobAllocatedExpenses, jobRemainingBudget, and expenseCanFit in your facts
+- These are the PRIMARY MATCHING CRITERIA - not just secondary details
+- For each job option, clearly show: Total Budget → Allocated → Remaining = (Budget - Allocated)
+- Check if this £${expenseAmount.toFixed(2)} expense FITS in the remaining budget
+- Rank options by: (1) Perfect placeholder match, (2) Sufficient remaining budget + vendor match, (3) Category fallback
 
 Return ONLY JSON, no other text.`;
 

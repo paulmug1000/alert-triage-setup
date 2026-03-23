@@ -1085,6 +1085,18 @@ export default async function handler(req, res) {
               diagnosticRowsLogged++;
             }
             
+            // SPECIAL: Log row 232 (PHIZZ LTD job) if it exists
+            if (i === 231) {  // i is 0-indexed, so row 232 = index 231
+              console.log(`\n  *** CHECKING ROW 232 (PHIZZ LTD) ***`);
+              console.log(`    Client (col A): "${client}"`);
+              console.log(`    JobName (col B): "${jobName}"`);
+              console.log(`    Revenue raw (col 32/AG): "${revenue}"`);
+              console.log(`    DirectCosts raw (col 33/AH): "${directCosts}"`);
+              const parsed = parseFloat(String(directCosts).replace(/[£$€,]/g, '')) || 0;
+              console.log(`    DirectCosts parsed: ${parsed}`);
+              console.log(`    Will be included in job list? ${parsed > 0 ? 'YES ✓' : 'NO ✗'}`);
+            }
+            
             if (client && jobName) {
               confirmedJobsAll.push({
                 row: i + 1,
@@ -1229,15 +1241,23 @@ Return ONLY JSON, no other text.`;
           console.log(`  Account Category: ${expenseAccountName}`);
           console.log(`  Confirmed jobs list has ${confirmedJobs.length} entries`);
           console.log(`  Matching strategy: vendor type + amount + account category (NOT client name)`);
-          console.log(`  First 3 jobs as reference:`);
-          confirmedJobs.slice(0, 3).forEach((job, idx) => {
+          console.log(`  ALL JOBS WITH DIRECT COSTS > £0 (complete list of ${confirmedJobs.length}):`);
+          confirmedJobs.forEach((job, idx) => {
             console.log(`    ${idx + 1}. ${job}`);
           });
           
           // Log the first part of the prompt itself
           const promptPreview = expensePrompt.substring(0, 300);
           console.log(`\n  Prompt starts with: "${promptPreview}..."`);
-
+          
+          // CRITICAL: Check if "Eleven" appears in any of the job names
+          const elevenJobs = confirmedJobs.filter(job => job.toLowerCase().includes('eleven'));
+          if (elevenJobs.length > 0) {
+            console.log(`\n  🔍 FOUND ${elevenJobs.length} JOB(S) MENTIONING 'ELEVEN':`);
+            elevenJobs.forEach(job => console.log(`     - ${job}`));
+          } else {
+            console.log(`\n  ⚠️ NO JOBS MENTIONING 'ELEVEN' IN THE CONFIRMED JOBS LIST`);
+          }
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
             max_tokens: 1500,

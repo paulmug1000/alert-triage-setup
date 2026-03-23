@@ -1063,8 +1063,8 @@ export default async function handler(req, res) {
           const activeConfirmedData = confirmedData.slice(0, lastDataRow + 1);
           console.log(`  ✓ Found ${activeConfirmedData.length} non-blank rows in Confirmed`);
           
-          // Build list of ALL jobs for matching
-          const confirmedJobs = [];
+          // Build list of ALL jobs (for reference)
+          const confirmedJobsAll = [];
           for (let i = 1; i < activeConfirmedData.length; i++) {
             const row = activeConfirmedData[i] || [];
             const client = row[0] || '';
@@ -1073,11 +1073,23 @@ export default async function handler(req, res) {
             const directCosts = row[33] !== undefined ? row[33] : '';
             
             if (client && jobName) {
-              confirmedJobs.push(`Row ${i + 1}: ${client} | ${jobName} | Revenue: ${revenue} | Direct Costs: ${directCosts}`);
+              confirmedJobsAll.push({
+                row: i + 1,
+                client,
+                jobName,
+                revenue,
+                directCosts: parseFloat(String(directCosts).replace(/,/g, '')) || 0,
+                text: `Row ${i + 1}: ${client} | ${jobName} | Revenue: ${revenue} | Direct Costs: ${directCosts}`
+              });
             }
           }
           
-          console.log(`  ✓ Built reference list of ${confirmedJobs.length} jobs`);
+          // Filter to jobs with direct costs > 0 for expense matching
+          const confirmedJobs = confirmedJobsAll
+            .filter(job => job.directCosts > 0)
+            .map(job => job.text);
+          
+          console.log(`  ✓ Built reference list of ${confirmedJobsAll.length} jobs total, ${confirmedJobs.length} with direct costs > £0`);
           
           // Read tolerance values for expenses
           const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
@@ -1183,7 +1195,7 @@ Format as JSON array:
 
 Return ONLY JSON, no other text.`;
 
-          // DEBUG: Log the prompt we're sending to Claude
+          // DEBUG: Log the FULL prompt being sent to Claude (first 500 chars)
           console.log(`\n📤 EXPENSE PROMPT TO CLAUDE:`);
           console.log(`  Vendor/Description: ${expenseDescription}`);
           console.log(`  Amount: £${expenseAmount}`);
@@ -1194,6 +1206,10 @@ Return ONLY JSON, no other text.`;
           confirmedJobs.slice(0, 3).forEach((job, idx) => {
             console.log(`    ${idx + 1}. ${job}`);
           });
+          
+          // Log the first part of the prompt itself
+          const promptPreview = expensePrompt.substring(0, 300);
+          console.log(`\n  Prompt starts with: "${promptPreview}..."`);
 
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
@@ -1205,6 +1221,12 @@ Return ONLY JSON, no other text.`;
 
           let options = [];
           const responseText = message.content[0].type === "text" ? message.content[0].text : "";
+          
+          // Log Claude's RAW response before parsing
+          console.log(`\n📥 CLAUDE'S RAW RESPONSE:`);
+          console.log(`  First 500 chars: "${responseText.substring(0, 500)}"`);
+          console.log(`  Total response length: ${responseText.length} chars`);
+          
           const cleanedText = responseText
             .replace(/```json/g, "")
             .replace(/```/g, "")
@@ -1215,18 +1237,21 @@ Return ONLY JSON, no other text.`;
             if (!Array.isArray(options)) options = [options];
             console.log(`  ✅ Parsed ${options.length} expense options from Claude`);
             
-            // DEBUG: Log Claude's top recommendation
+            // DEBUG: Log all three options Claude returned
             if (options.length > 0) {
-              console.log(`\n📥 CLAUDE'S RESPONSE:`);
-              console.log(`  Option 1 (Best): ${options[0].title}`);
-              console.log(`  Match Type: ${options[0].matchType}`);
-              if (options[0].matchType === "job") {
-                console.log(`  Job Name: ${options[0].jobName}`);
-                console.log(`  Reasoning: ${options[0].facts?.reasonForChoice || options[0].facts?.reasoning || ""}`);
-              } else if (options[0].matchType === "category") {
-                console.log(`  Category: ${options[0].category}`);
-                console.log(`  Reasoning: ${options[0].facts?.reasonForChoice || options[0].facts?.reasoning || ""}`);
-              }
+              console.log(`\n📥 ALL OPTIONS FROM CLAUDE:`);
+              options.forEach((opt, idx) => {
+                console.log(`\n  Option ${idx + 1}: ${opt.title}`);
+                console.log(`    Match Type: ${opt.matchType}`);
+                if (opt.matchType === "job") {
+                  console.log(`    Job Row: ${opt.jobRow}`);
+                  console.log(`    Job Name: ${opt.jobName}`);
+                } else {
+                  console.log(`    Category: ${opt.category}`);
+                }
+                console.log(`    Confidence: ${opt.facts?.matchConfidence || "?"}`);
+                console.log(`    Reasoning: ${opt.facts?.reasonForChoice || opt.facts?.reasoning || "?"}`);
+              });
             }
           } catch (e) {
             console.error(`  ⚠️ Could not parse Claude response as JSON`);

@@ -1065,6 +1065,7 @@ export default async function handler(req, res) {
           
           // Build list of ALL jobs (for reference)
           const confirmedJobsAll = [];
+          let diagnosticRowsLogged = 0;
           for (let i = 1; i < activeConfirmedData.length; i++) {
             const row = activeConfirmedData[i] || [];
             const client = row[0] || '';
@@ -1072,13 +1073,25 @@ export default async function handler(req, res) {
             const revenue = row[32] !== undefined ? row[32] : '';
             const directCosts = row[33] !== undefined ? row[33] : '';
             
+            // DEBUG: Log first 3 rows with client + jobName to see what's in columns 32 and 33
+            if (client && jobName && diagnosticRowsLogged < 3) {
+              console.log(`\n  DIAGNOSTIC Row ${i + 1}:`);
+              console.log(`    Client (col A): "${client}"`);
+              console.log(`    JobName (col B): "${jobName}"`);
+              console.log(`    Revenue raw (col 32/AG): "${revenue}" (type: ${typeof revenue})`);
+              console.log(`    DirectCosts raw (col 33/AH): "${directCosts}" (type: ${typeof directCosts})`);
+              const parsed = parseFloat(String(directCosts).replace(/,/g, '')) || 0;
+              console.log(`    DirectCosts parsed: ${parsed}`);
+              diagnosticRowsLogged++;
+            }
+            
             if (client && jobName) {
               confirmedJobsAll.push({
                 row: i + 1,
                 client,
                 jobName,
                 revenue,
-                directCosts: parseFloat(String(directCosts).replace(/,/g, '')) || 0,
+                directCosts: parseFloat(String(directCosts).replace(/[£$€,]/g, '')) || 0,
                 text: `Row ${i + 1}: ${client} | ${jobName} | Revenue: ${revenue} | Direct Costs: ${directCosts}`
               });
             }

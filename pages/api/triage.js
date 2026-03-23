@@ -1116,6 +1116,46 @@ export default async function handler(req, res) {
           
           console.log(`  ✓ Built reference list of ${confirmedJobsAll.length} jobs total, ${confirmedJobs.length} with direct costs > £0`);
           
+          // DIAGNOSTIC: Show expense allocation details for row 232 PHIZZ LTD
+          const phizzJob = activeConfirmedData[231];
+          if (phizzJob && phizzJob[0] === 'PHIZZ LTD') {
+            console.log(`\n  *** PHIZZ LTD ROW 232 - EXPENSE ALLOCATION DETAILS ***`);
+            console.log(`    DirectCosts Budget (col AH/33): £${phizzJob[33]}`);
+            console.log(`    Slot 1 - Descr(75): "${phizzJob[75]}" | Amt(76): "${phizzJob[76]}" | AppID(81): "${phizzJob[81]}"`);
+            console.log(`    Slot 2 - Descr(82): "${phizzJob[82]}" | Amt(83): "${phizzJob[83]}" | AppID(88): "${phizzJob[88]}"`);
+            console.log(`    Slot 3 - Descr(89): "${phizzJob[89]}" | Amt(90): "${phizzJob[90]}" | AppID(95): "${phizzJob[95]}"`);
+            
+            // Calculate allocated (only if AppID exists and is NOT blank/MANUAL-ENTRY)
+            let totalAllocated = 0;
+            if (phizzJob[75] && phizzJob[76] && phizzJob[81] && !phizzJob[81].toString().toUpperCase().includes('MANUAL-ENTRY')) {
+              const amt1 = parseFloat(String(phizzJob[76]).replace(/[£$€,]/g, '')) || 0;
+              totalAllocated += amt1;
+              console.log(`    Slot 1: ALLOCATED £${amt1} (AppID: ${phizzJob[81]})`);
+            } else if (phizzJob[75] && phizzJob[76]) {
+              console.log(`    Slot 1: PLACEHOLDER "${phizzJob[75]}" (AppID blank or MANUAL-ENTRY)`);
+            }
+            if (phizzJob[82] && phizzJob[83] && phizzJob[88] && !phizzJob[88].toString().toUpperCase().includes('MANUAL-ENTRY')) {
+              const amt2 = parseFloat(String(phizzJob[83]).replace(/[£$€,]/g, '')) || 0;
+              totalAllocated += amt2;
+              console.log(`    Slot 2: ALLOCATED £${amt2} (AppID: ${phizzJob[88]})`);
+            } else if (phizzJob[82] && phizzJob[83]) {
+              console.log(`    Slot 2: PLACEHOLDER "${phizzJob[82]}" (AppID blank or MANUAL-ENTRY)`);
+            }
+            if (phizzJob[89] && phizzJob[90] && phizzJob[95] && !phizzJob[95].toString().toUpperCase().includes('MANUAL-ENTRY')) {
+              const amt3 = parseFloat(String(phizzJob[90]).replace(/[£$€,]/g, '')) || 0;
+              totalAllocated += amt3;
+              console.log(`    Slot 3: ALLOCATED £${amt3} (AppID: ${phizzJob[95]})`);
+            } else if (phizzJob[89] && phizzJob[90]) {
+              console.log(`    Slot 3: PLACEHOLDER "${phizzJob[89]}" (AppID blank or MANUAL-ENTRY)`);
+            }
+            
+            const budgetNum = parseFloat(String(phizzJob[33]).replace(/[£$€,]/g, '')) || 0;
+            const remaining = budgetNum - totalAllocated;
+            console.log(`    Total Allocated (not counting placeholders): £${totalAllocated.toFixed(2)}`);
+            console.log(`    Remaining Budget: £${remaining.toFixed(2)}`);
+            console.log(`    Can accommodate £995 expense? ${remaining >= 995 ? 'YES ✓' : 'NO ✗'}`);
+          }
+          
           // Read tolerance values for expenses
           const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
           
@@ -1150,18 +1190,84 @@ export default async function handler(req, res) {
           console.log(`  📋 Expense details: Ref=${expenseRef}, Amount=${expenseAmount}, Description=${expenseDescription}, Account=${expenseAccountName}`);
 
           // Build detailed Confirmed tab table for expenses (matching invoice approach)
+          // CRITICAL: Calculate remaining direct cost budget for each job
           const expenseConfirmedTabTable = activeConfirmedData
             .map((row, idx) => {
               const client = row[0] || '';
               const jobName = row[1] || '';
               const projectCode = row[2] || '';
               const revenue = row[32] !== undefined ? row[32] : '';
-              const directCosts = row[33] !== undefined ? row[33] : '';
+              const directCostsBudget = row[33] !== undefined ? row[33] : '';
               const projType = row[35] || '';
               const startDate = row[37] || '';
               const endDate = row[38] || '';
               
-              return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | Revenue: ${revenue} | DirectCosts: ${directCosts} | Type: ${projType} | Start: ${startDate} | End: ${endDate}`;
+              // Read the three direct cost expense slots
+              // Slot 1: BX(75), BY(76), CA(78), CC(80), CD(81)
+              const exp1Descr = row[75] || '';
+              const exp1Amt = row[76] !== undefined ? row[76] : '';
+              const exp1RecDate = row[78] || '';
+              const exp1Status = row[80] || '';
+              const exp1AppId = row[81] || '';
+              
+              // Slot 2: CE(82), CF(83), CH(85), CJ(87), CK(88)
+              const exp2Descr = row[82] || '';
+              const exp2Amt = row[83] !== undefined ? row[83] : '';
+              const exp2RecDate = row[85] || '';
+              const exp2Status = row[87] || '';
+              const exp2AppId = row[88] || '';
+              
+              // Slot 3: CL(89), CM(90), CO(92), CQ(94), CR(95)
+              const exp3Descr = row[89] || '';
+              const exp3Amt = row[90] !== undefined ? row[90] : '';
+              const exp3RecDate = row[92] || '';
+              const exp3Status = row[94] || '';
+              const exp3AppId = row[95] || '';
+              
+              // CRITICAL: Only count as allocated if App ID exists and is NOT blank and does NOT contain "MANUAL-ENTRY"
+              // But ALWAYS show descriptions to Claude (even for placeholders)
+              let totalAllocated = 0;
+              let allocatedExpenses = [];
+              let placeholderExpenses = [];
+              
+              if (exp1Descr && exp1Amt && exp1AppId && !exp1AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
+                const amt1 = parseFloat(String(exp1Amt).replace(/[£$€,]/g, '')) || 0;
+                totalAllocated += amt1;
+                allocatedExpenses.push(`${exp1Descr} £${amt1}`);
+              } else if (exp1Descr && exp1Amt) {
+                // Placeholder: has description/amount but no valid App ID
+                placeholderExpenses.push(`${exp1Descr} (pending) £${exp1Amt}`);
+              }
+              
+              if (exp2Descr && exp2Amt && exp2AppId && !exp2AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
+                const amt2 = parseFloat(String(exp2Amt).replace(/[£$€,]/g, '')) || 0;
+                totalAllocated += amt2;
+                allocatedExpenses.push(`${exp2Descr} £${amt2}`);
+              } else if (exp2Descr && exp2Amt) {
+                placeholderExpenses.push(`${exp2Descr} (pending) £${exp2Amt}`);
+              }
+              
+              if (exp3Descr && exp3Amt && exp3AppId && !exp3AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
+                const amt3 = parseFloat(String(exp3Amt).replace(/[£$€,]/g, '')) || 0;
+                totalAllocated += amt3;
+                allocatedExpenses.push(`${exp3Descr} £${amt3}`);
+              } else if (exp3Descr && exp3Amt) {
+                placeholderExpenses.push(`${exp3Descr} (pending) £${exp3Amt}`);
+              }
+              
+              // Calculate remaining
+              const budgetNum = parseFloat(String(directCostsBudget).replace(/[£$€,]/g, '')) || 0;
+              const remaining = budgetNum - totalAllocated;
+              
+              const allocatedStr = allocatedExpenses.length > 0 
+                ? allocatedExpenses.join(' + ')
+                : '(none allocated)';
+              
+              const placeholderStr = placeholderExpenses.length > 0
+                ? ` | Placeholders (pending): ${placeholderExpenses.join(' + ')}`
+                : '';
+              
+              return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | DirectCostBudget: ${directCostsBudget} | Allocated: ${allocatedStr} | Remaining: £${remaining.toFixed(2)} | Type: ${projType} | Start: ${startDate} | End: ${endDate}${placeholderStr}`;
             })
             .join('\n');
           
@@ -1184,34 +1290,52 @@ UNMATCHED EXPENSE:
 OUTGOINGS CATEGORIES (For General/Operational Expenses):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
 
-CONFIRMED TAB DATA (All non-blank rows - shows jobs and their direct cost budgets):
+CONFIRMED TAB DATA (All non-blank rows - shows jobs, their direct cost budgets, and what's allocated):
 ${expenseConfirmedTabTable}
 
 CRITICAL INFORMATION ABOUT DIRECT COSTS:
 
 **Understanding Job Direct Costs:**
-- Each job in Confirmed tab has a "DirectCosts" amount (column AH)
-- This is the BUDGETED direct cost for the entire job
-- Expenses are matched to this budget - they reduce the remaining budget
-- Parent rows have the Revenue and DirectCosts amounts
+- Each job in Confirmed tab has a "DirectCosts" budget (column AH)
+- This is the TOTAL budgeted direct cost for the entire job
+- The Confirmed tab ALSO shows direct cost expenses in three slots per job (Slot 1, 2, 3)
+- Each slot has: Description, Amount, Rec Date, Status, App ID
+- IMPORTANT DISTINCTION:
+  * **Allocated expenses**: Have both Amount AND a valid App ID (NOT blank, NOT "MANUAL-ENTRY")
+  * **Placeholder expenses**: Have Description/Amount but App ID is blank or "MANUAL-ENTRY" - these are pending assignment
+- Remaining Budget = Total DirectCosts Budget - Sum of ALLOCATED Expenses (do NOT subtract placeholders)
 
 **How to Evaluate Job Matches for Expenses:**
+The Confirmed tab above shows for each job:
+- DirectCostBudget: The total budget allocated to this job
+- Allocated: Expenses with confirmed App IDs (already assigned and finalized)
+- Placeholders (pending): Expenses waiting to be assigned (description indicates what work they represent)
+- Remaining: How much budget is still available AFTER allocated expenses
+
+When matching this £${expenseAmount.toFixed(2)} expense:
+
 1. Look at the account category: "${expenseAccountName}"
    - "Subcontractor", "Contractor", "Labour" → job-specific work
    - "Travel", "Materials", "Equipment" → likely job-specific
 2. Look at vendor name: "${expenseDescription}"
    - Would this vendor work on project-type work?
-3. Check the Confirmed tab above for jobs with matching characteristics
-   - Is the expense amount reasonable within that job's direct cost budget?
-   - Does the job type match the expense type?
-4. IMPORTANT: Only include expenses with actual references in matching calculations
-   - Expenses with blank/missing references are PLACEHOLDERS
-   - NEVER allocate budget based on placeholder expenses
+3. Check the Confirmed tab above for jobs with:
+   - Matching job type (development, design, ecommerce, etc.)
+   - Sufficient REMAINING budget (after allocated expenses) to accommodate this expense
+   - Reasonable match between vendor type and job scope
+   - Note any placeholder expenses - they may indicate pending work that could relate to this vendor
+4. IMPORTANT: Only subtract ALLOCATED expenses when calculating remaining budget
+   - Placeholder expenses don't count against remaining budget (they're pending assignment)
+   - But they give context about what work types the job is planning
 
 **Your Task:**
 1. Determine: JOB-SPECIFIC EXPENSE (direct costs) or GENERAL OPERATIONAL expense?
-2. For job matches: identify which job's direct cost budget this should apply to, using the Confirmed tab data above
-3. Suggest 3 GENUINELY DIFFERENT options
+2. For job matches: identify which job has:
+   - Matching work type (if applicable)
+   - Sufficient REMAINING budget for this expense
+   - Vendor type that fits the job
+3. Consider placeholder expenses as context about pending work, but don't let them prevent a match
+4. Suggest 3 GENUINELY DIFFERENT options
 
 Format as JSON array:
 [{
@@ -1225,7 +1349,10 @@ Format as JSON array:
     "matchConfidence": "High/Medium/Low",
     "vendorAnalysis": "Why this vendor matches this work type",
     "accountCategoryAnalysis": "Why this account category indicates job-specific work",
-    "jobDirectCostBudget": "The job's direct cost budget from Confirmed tab (if job match)",
+    "jobDirectCostBudget": "The job's total direct cost budget",
+    "jobAllocatedExpenses": "What's already finalized",
+    "jobRemainingBudget": "The job's remaining available budget after allocated expenses",
+    "placeholderContext": "Any pending placeholder expenses that relate to this match",
     "reasonForChoice": "Why this is the best match",
     "discrepancies": "Any concerns or issues"
   },

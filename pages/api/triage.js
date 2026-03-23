@@ -1,85 +1,167 @@
-import { google } from "googleapis";
-import * as Redis from "redis";
-import Anthropic from "@anthropic-ai/sdk";
+/**
+ * PHASE 2: ALERT TRIAGE SYSTEM
+ * Backend API for analyzing financial automation alerts
+ * 
+ * Correctly implements:
+ * - Flag columns in row 2 of AutoUpdates (CW, DD, DK, etc.)
+ * - Client URLs in columns L & M (row 3 onwards)
+ * - Comparison sheet data starts at row 6
+ * - CRMComp mode toggle based on which flags are raised
+ * - Proper column ranges for each alert type
+ */
 
-const sheets = google.sheets("v4");
-const redis = Redis.createClient({
+import Anthropic from "@anthropic-ai/sdk";
+import { google } from "googleapis";
+import { createClient } from "redis";
+
+const anthropic = new Anthropic();
+
+// Create Redis client for session storage
+const redisClient = createClient({
   url: process.env.REDIS_URL,
 });
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+redisClient.connect().catch(console.error);
 
-const auth = new google.auth.GoogleAuth({
-  projectId: process.env.SERVICE_ACCOUNT_PROJECT_ID,
-  credentials: {
+// ============================================================================
+// CONSTANTS & CONFIGURATION
+// ============================================================================
+
+const FLAG_COLUMNS = {
+  invoiceDashboardDiscr: "CW",
+  invoiceAppDiscr: "DD",
+  crmPipeDashDiscr: "DK",
+  crmPipeAppDiscr: "DR",
+  crmConfDashDiscr: "DY",
+  crmConfAppDiscr: "EF",
+  crmPipeSkippedBlank: "EM",
+  crmConfSkippedBlank: "ET",
+  crmCopiedConfChecked: "FA",
+  crmCopiedConfUnchecked: "FH",
+  crmCopiedConfDelete: "FO",
+  retainerInvoicesCreated: "FV",
+  expenseDashboardDiscr: "GC",
+  expenseAppDiscr: "GJ",
+  expenseAdded: "GQ",
+  expenseUnreconGaps: "GX",
+  invoiceStaleUnsentChanges: "HE",
+};
+
+const NO_ACTION_FLAGS = [
+  "invoiceAppDiscr",
+  "crmPipeSkippedBlank",
+  "crmConfSkippedBlank",
+  "crmCopiedConfChecked",
+  "crmCopiedConfUnchecked",
+  "crmCopiedConfDelete",
+  "retainerInvoicesCreated",
+  "expenseAppDiscr",
+  "expenseAdded",
+  "expenseUnreconGaps",
+  "invoiceStaleUnsentChanges",
+];
+
+const FLAG_NAMES = {
+  invoiceDashboardDiscr: "Invoice dashboard discr",
+  invoiceAppDiscr: "Invoice app discr",
+  crmPipeDashDiscr: "CRM pipe dash discr",
+  crmPipeAppDiscr: "CRM pipe app discr",
+  crmConfDashDiscr: "CRM conf dash discr",
+  crmConfAppDiscr: "CRM conf app discr",
+  crmPipeSkippedBlank: "CRM pipe skipped with blank",
+  crmConfSkippedBlank: "CRM conf skipped with blank",
+  crmCopiedConfChecked: "CRM copied to conf box checked",
+  crmCopiedConfUnchecked: "CRM copied to conf box UNchecked",
+  crmCopiedConfDelete: "CRM copied to conf box DELETE",
+  retainerInvoicesCreated: "Retainer invoices created",
+  expenseDashboardDiscr: "Expense dashboard discr",
+  expenseAppDiscr: "Expense app discr",
+  expenseAdded: "Expense added",
+  expenseUnreconGaps: "Expense unrecon gaps",
+  invoiceStaleUnsentChanges: "Invoice stale unsent changes",
+};
+
+// ============================================================================
+// GOOGLE SHEETS INTEGRATION
+// ============================================================================
+
+function getGoogleAuth() {
+  // Fix private key encoding - handle multiple formats
+  let privateKey = process.env.SERVICE_ACCOUNT_PRIVATE_KEY || "";
+  
+  if (!privateKey) {
+    console.error("SERVICE_ACCOUNT_PRIVATE_KEY is not set");
+    throw new Error("SERVICE_ACCOUNT_PRIVATE_KEY environment variable not set");
+  }
+  
+  // Replace escaped newlines with actual newlines
+  privateKey = privateKey.replace(/\\n/g, "\n");
+  
+  const credentials = {
     type: "service_account",
     project_id: process.env.SERVICE_ACCOUNT_PROJECT_ID,
     private_key_id: process.env.SERVICE_ACCOUNT_PRIVATE_KEY_ID,
-    private_key: process.env.SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+    private_key: privateKey,
     client_email: process.env.SERVICE_ACCOUNT_EMAIL,
     client_id: process.env.SERVICE_ACCOUNT_CLIENT_ID,
     auth_uri: "https://accounts.google.com/o/oauth2/auth",
     token_uri: "https://oauth2.googleapis.com/token",
-    auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
-  },
-});
+    auth_provider_x509_cert_url:
+      "https://www.googleapis.com/oauth2/v1/certs",
+  };
 
-// ============================================================================
-// HELPER: Extract sheet ID from Google Sheets URL
-// ============================================================================
-function extractSheetId(url) {
-  if (!url) return null;
-  const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  return match ? match[1] : null;
+  return new google.auth.GoogleAuth({
+    credentials,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
 }
 
-// ============================================================================
-// HELPER: Read a sheet range
-// ============================================================================
-async function readSheetRange(spreadsheetId, range) {
+async function getSheetsClient() {
+  const auth = getGoogleAuth();
+  return google.sheets({ version: "v4", auth });
+}
+
+async function ensureFreshData(sheets, spreadsheetId, sheetName) {
+  // Wait for Google Sheets to process (reduced from 2s to 0.5s)
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  // Dummy read to trigger calculation
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${sheetName}!A1`,
+    });
+  } catch (e) {
+    // Ignore errors on dummy read
+  }
+
+  // Wait a bit more (reduced from 1s to 0.5s)
+  await new Promise((resolve) => setTimeout(resolve, 500));
+}
+
+async function readAIKnowledgeBase(sheets, automationCommanderSheetId) {
   try {
     const response = await sheets.spreadsheets.values.get({
-      auth,
-      spreadsheetId,
-      range,
+      spreadsheetId: automationCommanderSheetId,
+      range: "AIKnowledgeBase!A2:E1000",
     });
     return response.data.values || [];
   } catch (err) {
-    console.error(`❌ Error reading ${range}:`, err.message);
-    throw err;
+    console.log("⚠️ Could not read AIKnowledgeBase");
+    return [];
   }
 }
 
-// ============================================================================
-// HELPER: Write to sheet (append)
-// ============================================================================
-async function appendToSheet(spreadsheetId, range, values) {
+async function getToleranceValues(sheets, masterSheetId) {
   try {
-    await sheets.spreadsheets.values.append({
-      auth,
-      spreadsheetId,
-      range,
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [values],
-      },
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "DataChgAlert!F39,J111",
     });
-  } catch (err) {
-    console.error(`❌ Error writing to ${range}:`, err.message);
-  }
-}
-
-// ============================================================================
-// HELPER: Read tolerance values from DataChgAlert
-// ============================================================================
-async function getToleranceValues(masterSheetId) {
-  try {
-    const data = await readSheetRange(masterSheetId, "DataChgAlert!F39,J111");
+    const values = response.data.values || [];
     return {
-      invoiceMonthsTolerance: data[0]?.[0] || 2,
-      expenseMonthsTolerance: data[1]?.[0] || 1,
+      invoiceMonthsTolerance: values[0]?.[0] || 2,
+      expenseMonthsTolerance: values[1]?.[0] || 1,
     };
   } catch (err) {
     console.log("⚠️ Using default tolerance values");
@@ -90,44 +172,529 @@ async function getToleranceValues(masterSheetId) {
   }
 }
 
-// ============================================================================
-// HELPER: Get CRM matching target tab (Pipeline or Confirmed)
-// ============================================================================
-async function getCRMMatchingMode(masterSheetId) {
+async function getCRMMatchingMode(sheets, masterSheetId) {
   try {
-    // CRMComp cell B2 contains the mode switch (Confirmed or Pipeline)
-    const data = await readSheetRange(masterSheetId, "CRMComp!B2:B2");
-    const mode = data[0]?.[0];
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "CRMComp!B2:B2",
+    });
+    const mode = response.data.values?.[0]?.[0];
     return mode === "Confirmed" ? "Confirmed" : "Pipeline";
   } catch (err) {
-    return "Confirmed"; // Default to Confirmed
+    console.log("⚠️ Defaulting CRM mode to Confirmed");
+    return "Confirmed";
+  }
+}
+
+async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${sheetName}!E2`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[value]],
+    },
+  });
+
+  // Ensure data is fresh
+  await ensureFreshData(sheets, spreadsheetId, sheetName);
+}
+
+async function setCRMMode(sheets, spreadsheetId, mode) {
+  // Set B2 in CRMComp to "Pipeline" or "Confirmed"
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: "CRMComp!B2",
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[mode]],
+    },
+  });
+
+  // Ensure calculations complete
+  await ensureFreshData(sheets, spreadsheetId, "CRMComp");
+}
+
+function extractSheetIdFromUrl(url) {
+  if (!url) return null;
+  const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return match ? match[1] : null;
+}
+
+// ============================================================================
+// FLAG READING
+// ============================================================================
+
+async function getClientFlags(sheets, automationCommanderSheetId) {
+  try {
+    console.log("🔍 Reading AutoUpdates: Clients from A, URLs from L:M, flags from CW:HE...");
+    
+    // Fetch client names and sheet URLs (A:M)
+    const mainResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!A2:M1000",
+    });
+
+    const rows = mainResponse.data.values || [];
+    console.log(`📊 Total rows: ${rows.length}`);
+    
+    if (rows.length === 0) {
+      console.error("❌ No data in AutoUpdates!");
+      throw new Error("AutoUpdates sheet appears empty");
+    }
+
+    // OPTIMIZATION: Fetch ALL flag columns at once (CW2:HE1000) instead of per-row
+    // This reduces 99 API calls to just 1!
+    console.log(`⏱️ Fetching all flags at once (CW:HE)...`);
+    const flagsResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!CW2:HE1000",
+    });
+    const flagRows = flagsResponse.data.values || [];
+    console.log(`  ✓ Got ${flagRows.length} flag rows`);
+
+    const clients = [];
+
+    // rows are from A2:M, so:
+    // A (0) = Client name
+    // L (11) = Client sheet URL  
+    // M (12) = Master sheet URL
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const sheetRowNum = i + 2; // Row 2 is i=0, so sheet row = i + 2
+      
+      if (!row || row.length < 13) {
+        continue;
+      }
+
+      const clientName = String(row[0] || "").trim(); // Column A - ACTUAL CLIENT NAME
+      const clientSheetUrl = row[11]; // Column L
+      const masterSheetUrl = row[12]; // Column M
+
+      // OPTIMIZATION: Skip rows with no client name - no need to check flags
+      if (!clientName || !clientSheetUrl || !masterSheetUrl) {
+        continue;
+      }
+
+      console.log(`  Row ${sheetRowNum}: ${clientName}`);
+
+      // Extract sheet IDs
+      const clientId = extractSheetIdFromUrl(clientSheetUrl);
+      const masterId = extractSheetIdFromUrl(masterSheetUrl);
+
+      if (!clientId || !masterId) {
+        continue;
+      }
+
+      // Get flags for this row from the pre-fetched data
+      // flagRows array index = i (because we fetched starting from row 2)
+      const flagRow = flagRows[i] || [];
+      
+      const flags = {
+        invoiceDashboardDiscr: String(flagRow[0] || "").toUpperCase() === "TRUE", // CW
+        invoiceAppDiscr: String(flagRow[7] || "").toUpperCase() === "TRUE", // DD
+        crmPipeDashDiscr: String(flagRow[14] || "").toUpperCase() === "TRUE", // DK
+        crmPipeAppDiscr: String(flagRow[21] || "").toUpperCase() === "TRUE", // DR
+        crmConfDashDiscr: String(flagRow[28] || "").toUpperCase() === "TRUE", // DY
+        crmConfAppDiscr: String(flagRow[35] || "").toUpperCase() === "TRUE", // EF
+        crmPipeSkippedBlank: String(flagRow[42] || "").toUpperCase() === "TRUE", // EM
+        crmConfSkippedBlank: String(flagRow[49] || "").toUpperCase() === "TRUE", // ET
+        crmCopiedConfChecked: String(flagRow[56] || "").toUpperCase() === "TRUE", // FA
+        crmCopiedConfUnchecked: String(flagRow[63] || "").toUpperCase() === "TRUE", // FH
+        crmCopiedConfDelete: String(flagRow[70] || "").toUpperCase() === "TRUE", // FO
+        retainerInvoicesCreated: String(flagRow[77] || "").toUpperCase() === "TRUE", // FV
+        expenseDashboardDiscr: String(flagRow[84] || "").toUpperCase() === "TRUE", // GC
+        expenseAppDiscr: String(flagRow[91] || "").toUpperCase() === "TRUE", // GJ
+        expenseAdded: String(flagRow[98] || "").toUpperCase() === "TRUE", // GQ
+        expenseUnreconGaps: String(flagRow[105] || "").toUpperCase() === "TRUE", // GX
+        invoiceStaleUnsentChanges: String(flagRow[112] || "").toUpperCase() === "TRUE", // HE
+      };
+
+      const hasFlags = Object.values(flags).some(v => v);
+
+      if (hasFlags) {
+        const flagsFound = Object.entries(flags)
+          .filter(([_, value]) => value)
+          .map(([key, _]) => key);
+        
+        console.log(`    ✅ ${flagsFound.join(", ")}`);
+        clients.push({
+          clientName,
+          clientSheetId: clientId,
+          masterSheetId: masterId,
+          clientSheetUrl,
+          masterSheetUrl,
+          flags,
+        });
+      }
+    }
+
+    console.log(`✅ Found ${clients.length} clients with flags`);
+    return clients;
+  } catch (error) {
+    console.error("❌ Error getting client flags:", error);
+    throw error;
   }
 }
 
 // ============================================================================
-// HELPER: Read Confirmed/Pipeline tab for CRM matching
+// ENRICHMENT: Fetch client data for matching context
 // ============================================================================
-async function readJobsForCRMMatching(clientSheetId, tab) {
+
+async function enrichAlertWithClientData(sheets, alert, clientSheetId) {
   try {
-    // Read key columns from Confirmed or Pipeline tab
-    const data = await readSheetRange(clientSheetId, `${tab}!A2:BH1000`);
-    return data;
-  } catch (err) {
-    console.error(`Error reading ${tab}:`, err.message);
+    console.log(`  📊 Enriching alert with client data from ${clientSheetId.substring(0, 16)}...`);
+    
+    // Fetch Confirmed tab to get job list and existing invoices
+    const confirmedResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Confirmed!A2:G1000",
+    });
+    
+    const confirmedRows = confirmedResponse.data.values || [];
+    
+    // Extract job context - look for matching jobs
+    const matchingJobs = confirmedRows.filter(row => {
+      if (!row || row.length < 3) return false;
+      const jobName = row[0] || "";
+      const jobAmount = row[2] || "";
+      // Simple match: if alert mentions this job in description
+      return true; // We'll enhance this with Claude later
+    });
+    
+    alert.enrichment = {
+      clientSheetId,
+      potentialJobs: matchingJobs.slice(0, 5), // Top 5 potential matching jobs
+      timestamp: new Date().toISOString(),
+    };
+    
+    console.log(`  ✓ Enriched with ${matchingJobs.length} potential jobs`);
+    return alert;
+  } catch (error) {
+    console.error(`  ⚠️ Could not enrich alert:`, error.message);
+    // Return alert without enrichment - don't fail the whole process
+    alert.enrichment = { error: error.message };
+    return alert;
+  }
+}
+
+// ============================================================================
+// ALERT SUMMARY BUILDING
+// ============================================================================
+
+// Build alert summary from InvComp data for display to user
+function buildInvCompSummary(alert) {
+  const accounting = alert.data.accounting || [];
+  
+  // DEBUG: Log raw values to understand what we're getting
+  console.log(`DEBUG buildInvCompSummary:`, {
+    raw_accounting: accounting,
+    index_0: accounting[0],
+    index_1: accounting[1],
+    index_2: accounting[2],
+    index_3: accounting[3],
+    index_4: accounting[4],
+    index_5: accounting[5],
+  });
+  
+  // InvComp columns (A:K) - CORRECT MAPPING:
+  // A: Client, B: Job, C: Invoice amount, D: Total excl VAT, E: VAT included,
+  // F: Invoice no, G: Sent date, H: Due date, I: Fully paid on, J: Status, K: Currency
+  const client = accounting[0] || '(unknown)';
+  const job = accounting[1] || '';
+  
+  // CRITICAL FIX: Remove commas from number strings before parsing
+  // Google Sheets returns '2,700.00' but parseFloat('2,700.00') = 2 (stops at comma)
+  const invoiceAmount = parseFloat(String(accounting[2] || '0').replace(/,/g, '')) || 0; // Column C
+  const totalExclVAT = parseFloat(String(accounting[3] || '0').replace(/,/g, '')) || 0; // Column D
+  const vatIncluded = parseFloat(String(accounting[4] || '0').replace(/,/g, '')) || 0; // Column E
+  
+  const invoiceNo = accounting[5] || '(no reference)'; // Column F - Invoice no
+  const sentDate = accounting[6] || ''; // Column G - Sent date
+  const status = accounting[9] || ''; // Column J - Status
+  const currency = accounting[10] || 'GBP'; // Column K - Currency
+  
+  console.log(`DEBUG after parsing:`, {
+    client, job, invoiceAmount, totalExclVAT, vatIncluded, invoiceNo, sentDate, status, currency
+  });
+  
+  // Use Total excl VAT (Column D) as the primary amount
+  // This is what the user specified
+  const amount = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
+  console.log(`DEBUG amount decision: totalExclVAT(${totalExclVAT}) > 0 ? totalExclVAT : invoiceAmount = ${amount}`);
+  
+  // Determine VAT indicator
+  let vatSuffix = '';
+  if (vatIncluded && vatIncluded > 0) {
+    vatSuffix = ' + VAT';
+  }
+  
+  // Format the amount with currency and VAT indicator
+  const formattedAmount = amount > 0 
+    ? `${currency}${amount.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}${vatSuffix}`
+    : 'unknown amount';
+  
+  // Build the summary string
+  let summary = `Invoice ${invoiceNo} • ${formattedAmount} • ${client}`;
+  if (job) {
+    summary += ` • ${job}`;
+  }
+  if (sentDate) {
+    summary += ` • Sent ${sentDate}`;
+  }
+  if (status) {
+    summary += ` • ${status}`;
+  }
+  
+  return {
+    invoiceNo,
+    amount,
+    vatIncluded,
+    currency,
+    client,
+    job,
+    sentDate,
+    status,
+    summary
+  };
+}
+
+// ============================================================================
+// COMPARISON SHEET DATA READING
+// ============================================================================
+
+async function readInvCompAlerts(sheets, spreadsheetId) {
+  try {
+    console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
+    
+    // Activate master switch
+    console.log(`  Setting E2 = TRUE in InvComp...`);
+    await setMasterSwitch(sheets, spreadsheetId, "InvComp", true);
+    console.log(`  ✓ Master switch set, waiting for calculations...`);
+
+    // Read header row (row 5)
+    console.log(`  Reading headers (row 5)...`);
+    const headerResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "InvComp!A5:Y5",
+    });
+    const headers = (headerResponse.data.values || [[]])[0] || [];
+    console.log(`  ✓ Headers read: ${headers.length} columns`);
+
+    // Read data rows (row 6 onwards)
+    console.log(`  Reading data (rows 6-1000)...`);
+    const dataResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "InvComp!A6:Y1000",
+    });
+    const rows = dataResponse.data.values || [];
+    console.log(`  ✓ Data read: ${rows.length} rows`);
+    
+    // DEBUG: Log first few rows completely
+    if (rows.length > 0) {
+      console.log(`  DEBUG First 3 data rows (A:Y):`);
+      for (let i = 0; i < Math.min(3, rows.length); i++) {
+        console.log(`    Row ${6 + i}: [${rows[i].slice(0, 11).map((v, idx) => `[${idx}]=${v}`).join(', ')}]`);
+        console.log(`             [Cols S-Y flags]: ${rows[i].slice(18, 25).map((v, idx) => `[${18 + idx}]=${v}`).join(', ')}`);
+      }
+    }
+
+    // Columns S-Y are discrepancy flags (indices 18-24)
+    const alerts = [];
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      const row = rows[rowIdx];
+      if (!row || row.length === 0) continue;
+
+      // Check if any discrepancy flag = "1"
+      const hasDiscrepancy = [18, 19, 20, 21, 22, 23, 24].some(
+        (idx) => String(row[idx] || "").trim() === "1"
+      );
+
+      if (hasDiscrepancy) {
+        // Include columns A:K (accounting data), M:R (confirmed data), S:Y (flags)
+        const alert = {
+          type: "invoice",
+          sheetName: "InvComp",
+          rowNumber: 6 + rowIdx, // Row 6 is first data row
+          data: {
+            accounting: row.slice(0, 11), // A:K
+            confirmed: row.slice(12, 18), // M:R
+            flags: row.slice(18, 25), // S:Y
+          },
+          flagColumns: headers.slice(18, 25),
+        };
+        
+        // Add summary for display
+        alert.summary = buildInvCompSummary(alert);
+        
+        alerts.push(alert);
+      }
+    }
+
+    console.log(`  ✓ Processing complete: Found ${alerts.length} invoice alerts`);
+    return alerts;
+  } catch (error) {
+    console.error(`❌ Error reading InvComp alerts:`, error);
     return [];
   }
 }
 
-// ============================================================================
-// HELPER: Read Outgoings tab for expense matching
-// ============================================================================
-async function readOutgoingsForExpenseMatching(clientSheetId) {
+async function readDirCompAlerts(sheets, spreadsheetId) {
   try {
-    // Outgoings: Column A has categories, columns G+ have months
-    const data = await readSheetRange(clientSheetId, "Outgoings!A2:Z1000");
-    return data;
-  } catch (err) {
-    console.error(`Error reading Outgoings:`, err.message);
+    console.log(`\n📖 Reading DirComp alerts from ${spreadsheetId}...`);
+    
+    // Activate master switch
+    console.log(`  Setting E2 = TRUE in DirComp...`);
+    await setMasterSwitch(sheets, spreadsheetId, "DirComp", true);
+    console.log(`  ✓ Master switch set, waiting for calculations...`);
+
+    // Read header row (row 5)
+    console.log(`  Reading headers (row 5)...`);
+    const headerResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "DirComp!A5:AV5",
+    });
+    const headers = (headerResponse.data.values || [[]])[0] || [];
+    console.log(`  ✓ Headers read: ${headers.length} columns`);
+
+    // Read data rows (row 6 onwards)
+    console.log(`  Reading data (rows 6-1000)...`);
+    const dataResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "DirComp!A6:AV1000",
+    });
+    const rows = dataResponse.data.values || [];
+    console.log(`  ✓ Data read: ${rows.length} rows`);
+
+    // Columns AO-AV are discrepancy flags (indices 40-47)
+    const alerts = [];
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      const row = rows[rowIdx];
+      if (!row || row.length === 0) continue;
+
+      // Check if any discrepancy flag = "1"
+      const hasDiscrepancy = [40, 41, 42, 43, 44, 45, 46, 47].some(
+        (idx) => String(row[idx] || "").trim() === "1"
+      );
+
+      if (hasDiscrepancy) {
+        // Include columns A:J (accounting data), X:AH (confirmed/outgoings data), AO:AV (flags)
+        alerts.push({
+          type: "expense",
+          sheetName: "DirComp",
+          rowNumber: 7 + rowIdx,
+          data: {
+            accounting: row.slice(0, 10), // A:J
+            confirmed: row.slice(23, 34), // X:AH
+            flags: row.slice(40, 48), // AO:AV
+          },
+          flagColumns: headers.slice(40, 48),
+        });
+      }
+    }
+
+    console.log(`  ✓ Processing complete: Found ${alerts.length} expense alerts`);
+    return alerts;
+  } catch (error) {
+    console.error(`❌ Error reading DirComp alerts:`, error);
+    return [];
+  }
+}
+
+async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
+  try {
+    console.log(`\n📖 Reading CRMComp alerts (${mode} mode) for ${alertTypes.join(", ")}...`);
+    
+    // Set CRM mode
+    console.log(`  Setting B2 = "${mode}" in CRMComp...`);
+    await setCRMMode(sheets, spreadsheetId, mode);
+    console.log(`  ✓ Mode set`);
+
+    // Activate master switch
+    console.log(`  Setting E2 = TRUE in CRMComp...`);
+    await setMasterSwitch(sheets, spreadsheetId, "CRMComp", true);
+    console.log(`  ✓ Master switch set`);
+
+    const alerts = [];
+
+    for (const alertType of alertTypes) {
+      console.log(`  Processing ${alertType}...`);
+      let dataRange, crmDataCols, sheetDataCols, flagCols, flagStartIdx;
+
+      if (mode === "Pipeline") {
+        if (alertType === "crmPipeDashDiscr") {
+          // Left section: X:AJ (CRM), AO:AW (Pipeline), AY:BF (flags)
+          dataRange = "CRMComp!X6:BF1000";
+          crmDataCols = [0, 13]; // X:AJ (indices 0-12)
+          sheetDataCols = [14, 24]; // AO:AW (indices 14-23)
+          flagCols = [24, 32]; // AY:BF (indices 24-31)
+          flagStartIdx = 24;
+        } else if (alertType === "crmPipeAppDiscr") {
+          // Right section: EF:EQ (Pipeline), EU:FD (CRM), FE:FL (flags)
+          dataRange = "CRMComp!EF6:FL1000";
+          sheetDataCols = [0, 12]; // EF:EQ (indices 0-11)
+          crmDataCols = [13, 23]; // EU:FD (indices 13-23)
+          flagCols = [24, 32]; // FE:FL (indices 24-31)
+          flagStartIdx = 24;
+        }
+      } else if (mode === "Confirmed") {
+        if (alertType === "crmConfDashDiscr") {
+          // Left section: X:AJ (CRM), AO:AW (Confirmed), AY:BF (flags)
+          dataRange = "CRMComp!X6:BF1000";
+          crmDataCols = [0, 13]; // X:AJ (indices 0-12)
+          sheetDataCols = [14, 24]; // AO:AW (indices 14-23)
+          flagCols = [24, 32]; // AY:BF (indices 24-31)
+          flagStartIdx = 24;
+        } else if (alertType === "crmConfAppDiscr") {
+          // Right section: EF:EQ (Confirmed), EU:FD (CRM), FE:FL (flags)
+          dataRange = "CRMComp!EF6:FL1000";
+          sheetDataCols = [0, 12]; // EF:EQ (indices 0-11)
+          crmDataCols = [13, 23]; // EU:FD (indices 13-23)
+          flagCols = [24, 32]; // FE:FL (indices 24-31)
+          flagStartIdx = 24;
+        }
+      }
+
+      if (!dataRange) continue;
+
+      const dataResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: dataRange,
+      });
+      const rows = dataResponse.data.values || [];
+
+      for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+        const row = rows[rowIdx];
+        if (!row || row.length === 0) continue;
+
+        // Check if any flag = "1"
+        const hasDiscrepancy = [flagStartIdx, flagStartIdx + 1, flagStartIdx + 2,
+          flagStartIdx + 3, flagStartIdx + 4, flagStartIdx + 5,
+          flagStartIdx + 6, flagStartIdx + 7].some(
+          (idx) => String(row[idx] || "").trim() === "1"
+        );
+
+        if (hasDiscrepancy) {
+          alerts.push({
+            type: "crm",
+            alertType,
+            mode,
+            sheetName: "CRMComp",
+            rowNumber: 7 + rowIdx,
+            data: {
+              crmData: row.slice(crmDataCols[0], crmDataCols[1]),
+              sheetData: row.slice(sheetDataCols[0], sheetDataCols[1]),
+              flags: row.slice(flagStartIdx, flagStartIdx + 8),
+            },
+          });
+        }
+      }
+    }
+
+    console.log(`  ✓ Processing complete: Found ${alerts.length} CRM alerts in ${mode} mode`);
+    return alerts;
+  } catch (error) {
+    console.error(`❌ Error reading CRMComp alerts:`, error);
     return [];
   }
 }
@@ -135,601 +702,532 @@ async function readOutgoingsForExpenseMatching(clientSheetId) {
 // ============================================================================
 // MAIN HANDLER
 // ============================================================================
+
 export default async function handler(req, res) {
-  if (req.method !== "POST" && req.method !== "GET") {
-    return res.status(405).json({ error: "Method not allowed" });
+  // Set CORS headers
+  res.setHeader(
+    "Access-Control-Allow-Origin",
+    "https://project-shj9n.vercel.app"
+  );
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization"
+  );
+
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
   }
 
-  const action = req.body?.action || req.query?.action;
-
-  console.log(`📍 API Request: method=${req.method}, action=${action}`);
-
-  if (action === "start_triage") {
-    return await startTriage(req, res);
-  } else if (action === "get_alerts") {
-    return await getAlerts(req, res);
-  } else if (action === "analyze_alert") {
-    return await analyzeAlert(req, res);
-  } else if (action === "record_decision") {
-    return await recordDecision(req, res);
-  } else {
-    return res.status(400).json({ error: "Unknown action" });
-  }
-}
-
-// ============================================================================
-// ACTION: START TRIAGE
-// ============================================================================
-async function startTriage(req, res) {
   try {
-    const { automationCommanderSheetId } = req.body;
+    // Handle both POST (req.body) and GET (req.query) requests
+    const action = req.method === "GET" ? req.query.action : req.body.action;
+    const automationCommanderSheetId = req.body.automationCommanderSheetId;
+    const sheets = await getSheetsClient();
 
-    if (!automationCommanderSheetId) {
-      return res.status(400).json({ error: "Missing automationCommanderSheetId" });
-    }
+    console.log(`\n📍 API Request: method=${req.method}, action=${action}`);
 
-    console.log(`🔍 Reading AutoUpdates...`);
-
-    // Read AutoUpdates
-    const autoUpdates = await readSheetRange(
-      automationCommanderSheetId,
-      "AutoUpdates!A2:M1000"
-    );
-
-    // Read all flags (CW:HE)
-    console.log(`⏱️ Fetching flags...`);
-    const flagsData = await readSheetRange(
-      automationCommanderSheetId,
-      "AutoUpdates!CW2:HE1000"
-    );
-
-    // Read AIKnowledgeBase
-    console.log(`📚 Reading AIKnowledgeBase...`);
-    const knowledgeBase = await readSheetRange(
-      automationCommanderSheetId,
-      "AIKnowledgeBase!A2:E1000"
-    );
-
-    const allAlerts = [];
-
-    // Process each client
-    for (let i = 0; i < autoUpdates.length; i++) {
-      const row = autoUpdates[i];
-      const clientName = row[0];
-      const masterSheetUrl = row[12]; // M
-      const clientSheetUrl = row[11]; // L
-
-      if (!clientName || !masterSheetUrl || !clientSheetUrl) continue;
-
-      console.log(`\n🔹 Processing client: ${clientName}`);
-
-      const masterSheetId = extractSheetId(masterSheetUrl);
-      const clientSheetId = extractSheetId(clientSheetUrl);
-
-      if (!masterSheetId || !clientSheetId) continue;
-
-      const clientFlags = flagsData[i] || [];
-
-      // Check flags (relative to CW which is column 76)
-      const hasInvoiceAlerts = clientFlags[0]; // CW (76)
-      const hasExpenseAlerts = clientFlags[84 - 76]; // GC (84)
-      const hasCRMAlerts = clientFlags[14 - 0]; // DK (90)
-
-      console.log(`  Invoice: ${!!hasInvoiceAlerts}, Expense: ${!!hasExpenseAlerts}, CRM: ${!!hasCRMAlerts}`);
-
-      // Get tolerances
-      const tolerances = await getToleranceValues(masterSheetId);
-
-      // Read matching targets
-      const crmMode = await getCRMMatchingMode(masterSheetId);
-      const confirmedJobs = await readJobsForCRMMatching(clientSheetId, "Confirmed");
-      const pipelineJobs = await readJobsForCRMMatching(clientSheetId, "Pipeline");
-      const outgoings = await readOutgoingsForExpenseMatching(clientSheetId);
-
-      // Process each alert type
-      if (hasInvoiceAlerts) {
-        const invAlerts = await readInvoiceAlerts(
-          masterSheetId,
-          clientName,
-          confirmedJobs,
-          tolerances
+    if (action === "start_triage") {
+      // Get all clients with flags
+      let clientsWithFlags;
+      try {
+        clientsWithFlags = await getClientFlags(
+          sheets,
+          automationCommanderSheetId
         );
-        allAlerts.push(...invAlerts);
-      }
-
-      if (hasExpenseAlerts) {
-        const expAlerts = await readExpenseAlerts(
-          masterSheetId,
-          clientName,
-          outgoings,
-          tolerances
-        );
-        allAlerts.push(...expAlerts);
-      }
-
-      if (hasCRMAlerts) {
-        const targetJobs = crmMode === "Confirmed" ? confirmedJobs : pipelineJobs;
-        const crmAlerts = await readCRMAlerts(
-          masterSheetId,
-          clientName,
-          targetJobs,
-          crmMode
-        );
-        allAlerts.push(...crmAlerts);
-      }
-    }
-
-    console.log(`\n📊 Total alerts: ${allAlerts.length}`);
-
-    // Store in Redis
-    const sessionId = Math.random().toString(36).substr(2, 9);
-    const sessionData = {
-      alerts: allAlerts,
-      knowledgeBase,
-      automationCommanderSheetId,
-      createdAt: new Date().toISOString(),
-    };
-
-    await redis.setEx(
-      `triage_session:${sessionId}`,
-      86400,
-      JSON.stringify(sessionData)
-    );
-
-    console.log(`✅ Session: ${sessionId}`);
-
-    return res.status(200).json({
-      success: true,
-      sessionId,
-      totalAlerts: allAlerts.length,
-      alertSummary: {
-        invoices: allAlerts.filter((a) => a.type === "INVOICE").length,
-        expenses: allAlerts.filter((a) => a.type === "EXPENSE").length,
-        crm: allAlerts.filter((a) => a.type === "CRM").length,
-      },
-    });
-  } catch (err) {
-    console.error(`❌ Error:`, err);
-    return res.status(500).json({ error: err.message });
-  }
-}
-
-// ============================================================================
-// Read Invoice Alerts from InvComp
-// ============================================================================
-async function readInvoiceAlerts(masterSheetId, clientName, confirmedJobs, tolerances) {
-  try {
-    const data = await readSheetRange(masterSheetId, "InvComp!A6:Y1000");
-    const alerts = [];
-
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      // Discrepancy flags in S-Y (columns 18-24)
-      const hasDisc = [18, 19, 20, 21, 22, 23, 24].some((col) => row[col]);
-
-      if (hasDisc) {
-        alerts.push({
-          type: "INVOICE",
-          clientName,
-          sheetName: "InvComp",
-          rowIndex: i + 6,
-          data: {
-            client: row[0],
-            job: row[1],
-            invoiceAmount: parseFloat(String(row[2] || 0).replace(/,/g, "")),
-            totalExclVAT: parseFloat(String(row[3] || 0).replace(/,/g, "")),
-            vatIncluded: parseFloat(String(row[4] || 0).replace(/,/g, "")),
-            invoiceNo: row[5],
-            sentDate: row[6],
-            dueDate: row[7],
-            fullyPaidOn: row[8],
-            status: row[9],
-            currency: row[10],
-          },
-          discrepancies: getInvoiceDiscrepancies(row),
-          matchingContext: {
-            confirmedJobs,
-            monthsTolerance: tolerances.invoiceMonthsTolerance,
-          },
+      } catch (err) {
+        console.error("Fatal error reading client flags:", err);
+        return res.status(500).json({
+          success: false,
+          error: `Failed to read automation commander: ${err.message}. Check credentials and sheet access.`,
         });
       }
-    }
 
-    console.log(`  ✓ Invoice alerts: ${alerts.length}`);
-    return alerts;
-  } catch (err) {
-    console.error(`  ❌ Error reading InvComp:`, err.message);
-    return [];
-  }
-}
-
-// ============================================================================
-// Read Expense Alerts from DirComp
-// ============================================================================
-async function readExpenseAlerts(masterSheetId, clientName, outgoings, tolerances) {
-  try {
-    const data = await readSheetRange(masterSheetId, "DirComp!A6:AV1000");
-    const alerts = [];
-
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      // Discrepancy flags in AO-AV (columns 40-47)
-      const hasDisc = [40, 41, 42, 43, 44, 45, 46, 47].some((col) => row[col]);
-
-      if (hasDisc) {
-        alerts.push({
-          type: "EXPENSE",
-          clientName,
-          sheetName: "DirComp",
-          rowIndex: i + 6,
-          data: {
-            expenseRef: row[0],
-            client: row[1],
-            vendor: row[2],
-            amount: parseFloat(String(row[3] || 0).replace(/,/g, "")),
-            date: row[4],
-            category: row[5],
-            status: row[6],
-            appId: row[7],
-          },
-          discrepancies: getExpenseDiscrepancies(row),
-          matchingContext: {
-            outgoings,
-            monthsTolerance: tolerances.expenseMonthsTolerance,
-          },
+      if (clientsWithFlags.length === 0) {
+        return res.status(200).json({
+          success: true,
+          sessionId: "no-alerts",
+          totalAlerts: 0,
+          noActionAlerts: [],
+          actionableAlerts: [],
         });
       }
-    }
 
-    console.log(`  ✓ Expense alerts: ${alerts.length}`);
-    return alerts;
-  } catch (err) {
-    console.error(`  ❌ Error reading DirComp:`, err.message);
-    return [];
-  }
-}
+      const allAlerts = [];
+      const noActionAlerts = [];
 
-// ============================================================================
-// Read CRM Alerts from CRMComp
-// ============================================================================
-async function readCRMAlerts(masterSheetId, clientName, targetJobs, mode) {
-  try {
-    const data = await readSheetRange(masterSheetId, "CRMComp!A6:FL1000");
-    const alerts = [];
+      // Process each client
+      for (const client of clientsWithFlags) {
+        console.log(`\n🔹 Processing client: ${client.masterSheetId}`);
+        
+        // Check which actionable flags exist
+        const actionableFlags = Object.entries(client.flags)
+          .filter(([key, value]) => value && !NO_ACTION_FLAGS.includes(key))
+          .map(([key]) => key);
 
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      // Left section: AY-BF (50-57), Right section: FE-FL (158-165)
-      const leftDisc = [50, 51, 52, 53, 54, 55, 56, 57].some((col) => row[col]);
-      const rightDisc = [158, 159, 160, 161, 162, 163, 164, 165].some((col) => row[col]);
+        const noActionFlags = Object.entries(client.flags)
+          .filter(([key, value]) => value && NO_ACTION_FLAGS.includes(key))
+          .map(([key]) => key);
 
-      if (leftDisc || rightDisc) {
-        alerts.push({
-          type: "CRM",
-          clientName,
-          sheetName: "CRMComp",
-          rowIndex: i + 6,
-          section: leftDisc ? "dashboard_to_crm" : "crm_to_dashboard",
-          mode,
-          data: {
-            projectCode: row[0],
-            client: row[1],
-            jobName: row[2],
-            revenue: parseFloat(String(row[3] || 0).replace(/,/g, "")),
-            directCosts: parseFloat(String(row[4] || 0).replace(/,/g, "")),
-            startDate: row[5],
-            endDate: row[6],
-          },
-          discrepancies: getCRMDiscrepancies(row, leftDisc),
-          matchingContext: {
-            targetJobs,
-            mode,
-          },
-        });
+        console.log(`  Actionable flags: ${actionableFlags.join(", ") || "none"}`);
+        console.log(`  No-action flags: ${noActionFlags.join(", ") || "none"}`);
+
+        // Read actionable alerts
+        if (actionableFlags.includes("invoiceDashboardDiscr")) {
+          console.log(`  Reading InvComp...`);
+          // IMPORTANT: readInvCompAlerts uses masterSheetId (Master Sheet with InvComp tab)
+          const invoiceAlerts = await readInvCompAlerts(
+            sheets,
+            client.masterSheetId  // Master Sheet - Column M
+          );
+          console.log(`  ✓ InvComp done, found ${invoiceAlerts.length} alerts`);
+          // CRITICAL: Set clientId to client.clientSheetId for later analysis
+          // This is the Client Sheet (Confirmed tab) where we'll look for job matches
+          invoiceAlerts.forEach((alert) => {
+            alert.clientId = client.clientSheetId;  // Client Sheet - Column L
+            alert.clientName = client.clientName;   // Client name for display
+            alert.flagType = "invoiceDashboardDiscr";
+          });
+          allAlerts.push(...invoiceAlerts);
+        }
+
+        if (actionableFlags.includes("expenseDashboardDiscr")) {
+          console.log(`  Reading DirComp...`);
+          const expenseAlerts = await readDirCompAlerts(
+            sheets,
+            client.masterSheetId
+          );
+          console.log(`  ✓ DirComp done, found ${expenseAlerts.length} alerts`);
+          expenseAlerts.forEach((alert) => {
+            alert.clientId = client.clientSheetId;
+            alert.clientName = client.clientName;
+            alert.flagType = "expenseDashboardDiscr";
+          });
+          allAlerts.push(...expenseAlerts);
+        }
+
+        // Handle CRM alerts based on which modes are needed
+        const pipelineAlerts = actionableFlags.filter((f) =>
+          ["crmPipeDashDiscr", "crmPipeAppDiscr"].includes(f)
+        );
+        const confirmedAlerts = actionableFlags.filter((f) =>
+          ["crmConfDashDiscr", "crmConfAppDiscr"].includes(f)
+        );
+
+        if (pipelineAlerts.length > 0) {
+          const crmAlerts = await readCRMCompAlerts(
+            sheets,
+            client.masterSheetId,
+            "Pipeline",
+            pipelineAlerts
+          );
+          crmAlerts.forEach((alert) => {
+            alert.clientId = client.clientSheetId;
+            alert.clientName = client.clientName;
+          });
+          allAlerts.push(...crmAlerts);
+        }
+
+        if (confirmedAlerts.length > 0) {
+          const crmAlerts = await readCRMCompAlerts(
+            sheets,
+            client.masterSheetId,
+            "Confirmed",
+            confirmedAlerts
+          );
+          crmAlerts.forEach((alert) => {
+            alert.clientId = client.clientSheetId;
+            alert.clientName = client.clientName;
+          });
+          allAlerts.push(...crmAlerts);
+        }
+
+        // Collect "no action" alerts for acknowledgement
+        for (const flagKey of noActionFlags) {
+          noActionAlerts.push({
+            clientId: client.masterSheetId,
+            flagType: flagKey,
+            flagName: FLAG_NAMES[flagKey],
+            flagColumn: FLAG_COLUMNS[flagKey],
+          });
+        }
+        
+        console.log(`  ✓ Client processing complete\n`);
       }
-    }
 
-    console.log(`  ✓ CRM alerts: ${alerts.length}`);
-    return alerts;
-  } catch (err) {
-    console.error(`  ❌ Error reading CRMComp:`, err.message);
-    return [];
-  }
-}
+      console.log(`📊 All clients processed. Total alerts: ${allAlerts.length}, No-action alerts: ${noActionAlerts.length}`);
+      console.log(`💾 Storing session in Redis...`);
 
-// ============================================================================
-// Get Discrepancy Details
-// ============================================================================
-function getInvoiceDiscrepancies(row) {
-  const flags = [
-    "Missing invoice?",
-    "Client mismatch?",
-    "Invoice amount mismatch?",
-    "Sent date mismatch?",
-    "Duplicate invoice no?",
-    "Fully paid on mismatch?",
-    "Status mismatch?",
-  ];
-  return flags
-    .map((flag, idx) => (row[18 + idx] ? flag : null))
-    .filter(Boolean);
-}
+      // Store session data in Redis
+      const sessionId = Math.random().toString(36).substring(2, 15);
+      console.log(`  Storing ${allAlerts.length} alerts in Redis (session: ${sessionId})...`);
+      await redisClient.set(
+        `triage_alerts:${sessionId}`,
+        JSON.stringify({
+          alerts: allAlerts,
+          noActionAlerts,
+          clientsWithFlags,
+        }),
+        { EX: 86400 }
+      );
+      console.log(`  ✓ Redis store complete`);
 
-function getExpenseDiscrepancies(row) {
-  const flags = [
-    "Missing cost?",
-    "Duplicate app ID?",
-    "Description mismatch?",
-    "Amount mismatch?",
-    "VAT mismatch?",
-    "Reconciliation date mismatch?",
-    "Payment date mismatch?",
-    "Status mismatch?",
-  ];
-  return flags
-    .map((flag, idx) => (row[40 + idx] ? flag : null))
-    .filter(Boolean);
-}
+      console.log(`\n✅ Sending response to frontend...`);
+      res.status(200).json({
+        success: true,
+        sessionId,
+        totalAlerts: allAlerts.length,
+        noActionCount: noActionAlerts.length,
+      });
+    } else if (action === "get_alerts") {
+      // Get alerts for a session from Redis
+      const { sessionId } = req.query;
+      
+      console.log(`\n🔍 get_alerts request: sessionId=${sessionId}`);
+      
+      if (!sessionId) {
+        console.error("❌ Missing sessionId in query params");
+        res.status(400).json({ success: false, error: "Missing sessionId" });
+        return;
+      }
 
-function getCRMDiscrepancies(row, isLeftSection) {
-  const flags = [
-    "Missing job?",
-    "Client mismatch?",
-    "Job name mismatch?",
-    "Revenue mismatch?",
-    "Direct costs mismatch?",
-    "Start date mismatch?",
-    "End date mismatch?",
-    "Likelihood % mismatch?",
-  ];
-  const baseCol = isLeftSection ? 50 : 158;
-  return flags
-    .map((flag, idx) => (row[baseCol + idx] ? flag : null))
-    .filter(Boolean);
-}
+      try {
+        console.log(`  Looking up triage_alerts:${sessionId} in Redis...`);
+        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+        
+        if (!sessionData) {
+          console.error(`❌ Session not found: triage_alerts:${sessionId}`);
+          res.status(404).json({ success: false, error: "Session not found" });
+          return;
+        }
 
-// ============================================================================
-// ACTION: GET ALERTS
-// ============================================================================
-async function getAlerts(req, res) {
-  try {
-    const { sessionId } = req.query;
+        const { alerts, noActionAlerts, clientsWithFlags } = JSON.parse(sessionData);
+        console.log(`✅ Retrieved ${alerts.length} alerts from Redis for session ${sessionId}`);
+        
+        res.status(200).json({
+          success: true,
+          alerts,
+          noActionAlerts,
+          clientsWithFlags,
+        });
+      } catch (err) {
+        console.error("❌ Error retrieving alerts:", err);
+        res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "analyze_alert") {
+      // Generate matching options for an alert using Confirmed tab data
+      const { alert } = req.body;
+      
+      if (!alert) {
+        res.status(400).json({ success: false, error: "Missing alert data" });
+        return;
+      }
 
-    if (!sessionId) {
-      return res.status(400).json({ error: "Missing sessionId" });
-    }
-
-    const sessionData = await redis.get(`triage_session:${sessionId}`);
-    if (!sessionData) {
-      return res.status(404).json({ error: "Session not found" });
-    }
-
-    const parsed = JSON.parse(sessionData);
-
-    return res.status(200).json({
-      success: true,
-      alerts: parsed.alerts,
-    });
-  } catch (err) {
-    console.error(`❌ Error:`, err);
-    return res.status(500).json({ error: err.message });
-  }
-}
-
-// ============================================================================
-// ACTION: ANALYZE ALERT with Claude
-// ============================================================================
-async function analyzeAlert(req, res) {
-  try {
-    const { sessionId, alertIndex } = req.body;
-
-    const sessionData = await redis.get(`triage_session:${sessionId}`);
-    if (!sessionData) {
-      return res.status(404).json({ error: "Session not found" });
-    }
-
-    const parsed = JSON.parse(sessionData);
-    const alert = parsed.alerts[alertIndex];
-    const knowledgeBase = parsed.knowledgeBase;
-
-    if (!alert) {
-      return res.status(404).json({ error: "Alert not found" });
-    }
-
-    console.log(`🤖 Analyzing ${alert.type} alert`);
-
-    let prompt = "";
-    if (alert.type === "INVOICE") {
-      prompt = buildInvoicePrompt(alert, knowledgeBase);
-    } else if (alert.type === "EXPENSE") {
-      prompt = buildExpensePrompt(alert, knowledgeBase);
-    } else if (alert.type === "CRM") {
-      prompt = buildCRMPrompt(alert, knowledgeBase);
-    }
-
-    console.log(`📋 Prompt length: ${prompt.length} chars`);
-
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 2000,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    });
-
-    const responseText =
-      message.content[0].type === "text" ? message.content[0].text : "";
-
-    const options = JSON.parse(responseText);
-
-    console.log(`✅ Generated ${options.length} options`);
-
-    return res.status(200).json({
-      success: true,
-      alert,
-      options,
-      progress: {
-        current: alertIndex + 1,
-        total: parsed.alerts.length,
-      },
-    });
-  } catch (err) {
-    console.error(`❌ Error:`, err);
-    return res.status(500).json({ error: err.message });
-  }
-}
-
-// ============================================================================
-// PROMPT BUILDERS
-// ============================================================================
-
-function buildInvoicePrompt(alert, knowledgeBase) {
-  const kb = knowledgeBase
-    .filter((row) => row[0] === "INVOICE_MATCHING")
-    .map((row) => `- **${row[2]}**: ${row[3]}`)
-    .join("\n");
-
-  return `You are analyzing an unmatched invoice that the automation system couldn't match to a planned job.
+      try {
+        console.log(`\n🤖 Generating options for alert:`, alert.flagType);
+        
+        const sheets = await getSheetsClient();
+        
+        // CRITICAL: Fetch Confirmed tab from CLIENT SHEET, not Master Sheet
+        console.log(`  Fetching Confirmed tab from CLIENT sheet ${alert.clientId.substring(0, 16)}...`);
+        
+        // OPTIMIZATION: Only fetch up to column CR (79) instead of DC
+        // OPTIMIZATION: Estimate actual data range (usually 1-200 rows, not 5000)
+        // Fetch in chunks: first check 1-500, then expand if needed
+        const confirmedResponse = await sheets.spreadsheets.values.get({
+          spreadsheetId: alert.clientId,  // CLIENT Sheet (Column L)
+          range: "Confirmed!A1:CR500",    // Only to CR (79), only 500 rows
+        });
+        
+        let confirmedData = confirmedResponse.data.values || [];
+        
+        // If we hit the 500 row limit, fetch more (rarely needed)
+        if (confirmedData.length === 500) {
+          console.log(`  Detected 500 rows (likely more data), fetching full range...`);
+          const fullResponse = await sheets.spreadsheets.values.get({
+            spreadsheetId: alert.clientId,
+            range: "Confirmed!A1:CR5000",
+          });
+          confirmedData = fullResponse.data.values || [];
+        }
+        
+        console.log(`  📊 Loaded ${confirmedData.length} rows of job data`);
+        
+        // Find last non-blank row (checking A-E, AG-AM, AP-BH, BX-CR)
+        let lastDataRow = 1;
+        for (let row = confirmedData.length - 1; row > 0; row--) {
+          const rowData = confirmedData[row] || [];
+          
+          // Check if row has data in key columns
+          const colsToCheck = [0, 1, 2, 3, 4]; // A-E
+          colsToCheck.push(...[32, 33, 34, 35, 36, 37, 38]); // AG-AM
+          colsToCheck.push(...[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]); // AP-BH
+          colsToCheck.push(...Array.from({length: 21}, (_, i) => 75 + i)); // BX-CR
+          
+          const hasData = colsToCheck.some(col => rowData[col]);
+          
+          if (hasData) {
+            lastDataRow = row;
+            console.log(`  ✓ Last non-blank row found at index ${lastDataRow} (row ${lastDataRow + 1})`);
+            console.log(`    Data in this row: Client="${rowData[0]}", Job="${rowData[1]}", Revenue=${rowData[32]}`);
+            console.log(`  DEBUG: ALL non-empty cells in row ${lastDataRow + 1}:`);
+            for (let i = 0; i < rowData.length; i++) {
+              if (rowData[i] !== undefined && rowData[i] !== null && rowData[i] !== '') {
+                const val = String(rowData[i]).substring(0, 80);
+                console.log(`    Col ${i}: ${val}`);
+              }
+            }
+            break;
+          }
+        }
+        
+        console.log(`  Last data row: ${lastDataRow + 1}`);
+        
+        // Get the active data
+        const activeData = confirmedData.slice(0, lastDataRow + 1);
+        console.log(`  📊 Using ${activeData.length} non-blank rows for Claude analysis`);
+        
+        // Helper: Calculate remaining to invoice for a job row
+        // CRITICAL: Only count invoices with valid references (not blank, not MANUAL-INV)
+        function calculateRemainingToInvoice(jobRow, totalRevenue) {
+          if (!jobRow || !totalRevenue) return totalRevenue;
+          
+          const jobRevenue = parseFloat(totalRevenue) || 0;
+          
+          // Invoice structure in Confirmed tab:
+          // Inv 1: Amount at AP (41), Ref at AQ (42)
+          // Inv 2: Amount at AW (48), Ref at AX (49)
+          // Inv 3: Amount at BD (55), Ref at BE (56)
+          // Pattern: amounts at [41, 48, 55, 62, 69, 76, 83, ...], refs at [42, 49, 56, 63, 70, 77, 84, ...]
+          
+          const invoiceAmountIndices = [41, 48, 55, 62, 69, 76, 83];
+          const invoiceRefIndices = [42, 49, 56, 63, 70, 77, 84];
+          
+          let totalInvoiced = 0;
+          
+          // Sum amounts for invoices with VALID references (not blank, not MANUAL-INV)
+          for (let i = 0; i < invoiceAmountIndices.length; i++) {
+            const amountIdx = invoiceAmountIndices[i];
+            const refIdx = invoiceRefIndices[i];
+            
+            const ref = String(jobRow[refIdx] || '').trim();
+            const amount = parseFloat(jobRow[amountIdx]) || 0;
+            
+            // Only count invoices with valid references
+            if (ref && ref !== '' && !ref.includes('MANUAL-INV') && amount > 0) {
+              totalInvoiced += amount;
+            }
+          }
+          
+          return Math.max(0, jobRevenue - totalInvoiced);
+        }
+        
+        // Extract invoice details from alert
+        const invoiceAmount = parseFloat(alert.summary?.amount) || 0;
+        const invoiceRef = alert.summary?.invoiceNo || '(unmatched)';
+        const invoiceClient = alert.summary?.client || '';
+        const invoiceJob = alert.summary?.job || '';
+        const sentDate = alert.summary?.sentDate || '';
+        
+        // Format Confirmed tab data as a simple table for Claude to analyze
+        // Send RAW data - no pre-calculations
+        console.log(`  📊 Formatting ${activeData.length} non-blank rows as raw data table for Claude`);
+        
+        // Build CSV-style table of the Confirmed tab
+        const confirmedTabTable = activeData
+          .map((row, idx) => {
+            // Key columns: A, B, C, D, E, AG, AH, AI, AJ, AL, AM, AP, AQ, AW, AX
+            const client = row[0] || '';
+            const jobName = row[1] || '';
+            const projectCode = row[2] || '';
+            const dateConf = row[3] || '';
+            const leadSrc = row[4] || '';
+            const revenue = row[32] !== undefined ? row[32] : '';
+            const directCosts = row[33] !== undefined ? row[33] : '';
+            const vat = row[34] || '';
+            const projType = row[35] || '';
+            const startDate = row[37] || '';
+            const endDate = row[38] || '';
+            const inv1Amount = row[41] !== undefined ? row[41] : '';
+            const inv1Ref = row[42] || '';
+            const inv2Amount = row[48] !== undefined ? row[48] : '';
+            const inv2Ref = row[49] || '';
+            const inv3Amount = row[55] !== undefined ? row[55] : '';
+            const inv3Ref = row[56] || '';
+            
+            return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | Revenue: ${revenue} | VAT: ${vat} | Type: ${projType} | Start: ${startDate} | End: ${endDate} | Inv1: ${inv1Ref} £${inv1Amount} | Inv2: ${inv2Ref} £${inv2Amount} | Inv3: ${inv3Ref} £${inv3Amount}`;
+          })
+          .join('\n');
+        
+        console.log(`\n📊 Confirmed Tab Data (first 1000 chars):\n${confirmedTabTable.substring(0, 1000)}...`);
+        
+        // Read AIKnowledgeBase for context
+        console.log(`  📚 Reading AIKnowledgeBase...`);
+        const knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId || alert.automationCommanderSheetId);
+        
+        // Get tolerance values from DataChgAlert
+        const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
+        
+        // Build knowledge base context for Claude
+        const kbRules = knowledgeBase
+          .filter(row => row[0] === "INVOICE_MATCHING")
+          .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
+          .join("\n");
+        
+        // Improved Claude prompt with better context
+        const prompt = `You are a financial advisor helping to resolve an unmatched invoice. Analyze the invoice against the Confirmed tab data and suggest matching options.
 
 UNMATCHED INVOICE:
-- Reference: ${alert.data.invoiceNo}
-- Amount: £${(alert.data.totalExclVAT || alert.data.invoiceAmount).toFixed(2)}
-- Client: ${alert.data.client}
-- Description: ${alert.data.job}
-- Sent: ${alert.data.sentDate}
-- Status: ${alert.data.status}
-- Currency: ${alert.data.currency}
+• Reference: ${invoiceRef}
+• Amount: £${invoiceAmount.toFixed(2)}
+• Client: ${invoiceClient}
+• Job Description: ${invoiceJob}
+• Sent: ${sentDate}
 
-WHY AUTOMATION COULDN'T MATCH IT:
-${alert.discrepancies.map((d) => `- ${d}`).join("\n")}
+CONFIRMED TAB DATA (All non-blank rows):
+${confirmedTabTable}
 
-AVAILABLE RULES & TOLERANCES:
-${kb}
-- Date tolerance: ±${alert.matchingContext.monthsTolerance} months
+MATCHING RULES & TOLERANCES:
+${kbRules || "- Default matching rules apply"}
+- Date tolerance: ±${tolerances.invoiceMonthsTolerance} months
 
-YOUR TASK:
-1. Analyze the discrepancies and suggest 2-3 realistic resolution options
-2. For each option, provide structured facts about the match
-3. Return ONLY a JSON array with fields: optionId, title, jobName, facts (object), recommendedActions (array)
+CRITICAL INFORMATION ABOUT THE SHEET STRUCTURE:
 
-Example facts object:
-{ "totalRevenue": 15950, "startDate": "3-Mar-26", "endDate": "31-Aug-26", "existingInvoices": "0820 £7,975 + 0821 £5,725 = £13,700", "remainingToInvoice": 2250, "matchStatus": "EXACT MATCH", "discrepancies": "Invoice date within tolerance" }
+**Understanding Parent and Child Rows:**
 
-Return ONLY JSON, no other text.`;
+Each job in the Confirmed tab may have:
+- ONE PARENT ROW: Contains the job's basic information (Client, Job name, Revenue, Start date, End date)
+- ZERO OR MORE CHILD ROWS: Contain additional invoices. Child rows have the SAME Client name and Job name as their parent, but NO Revenue, Start date, or End date
+
+To identify a parent row: Has Client name, Job name, Revenue amount, Start date, and End date
+To identify a child row: Has the SAME Client name and Job name as a parent, but Revenue/Start date/End date are blank
+
+**How Invoices Are Organized (by job type):**
+
+PROJECT JOBS:
+- Parent row contains invoices 1-3 (Inv1-Inv3 columns)
+- Child row 1 (if exists) contains invoices 4-6
+- Child row 2 (if exists) contains invoices 7-9
+- Each row has 3 invoice slots (amount and reference)
+
+RETAINER JOBS:
+- Mode A (1 invoice total): Parent row has 1 invoice in slot 1, no child rows
+- Mode B (2+ invoices): Parent row has NO invoices, each child row has 1 invoice in slot 1 only
+
+**How to Calculate Remaining to Invoice:**
+1. Find the job's parent row (has Revenue)
+2. Find all child rows with same Client, same Job name, but no Revenue
+3. Sum all invoices from the parent AND all its children (ignore invoices with blank references)
+4. Calculate: Remaining = Parent's Revenue - Total Invoiced Amount
+
+**Your Task:**
+1. Identify which job (parent row) this invoice should match to, considering:
+   - Client name match (required)
+   - Job description similarity
+   - Amount matching the remaining-to-invoice gap
+   - Invoice reference pattern
+   - Date patterns
+
+2. For EACH option you suggest, provide ONLY these facts (no narrative):
+   - Parent row number
+   - Job name
+   - Job type (Project or Retainer)
+   - Total revenue
+   - Start/End dates
+   - List of existing invoices with amounts AND sent dates (e.g., "0820 £7,975 (sent 12-Mar-26) + 0821 £5,725 (sent 20-Mar-26) = £13,700")
+   - Total already invoiced
+   - Remaining to invoice
+   - Invoice match status (EXACT MATCH / PARTIAL MATCH / NEW JOB / etc.)
+   - **CRITICAL: Explain why this didn't auto-match** - What is the discrepancy or issue that caused the automation to fail? (e.g., "Invoice date is outside normal tolerance", "Amount slightly over remaining", "Invoice reference pattern different", "Project end date is before invoice sent date", etc.)
+   - Only note this if something is genuinely off - there's always SOMETHING that caused the alert
+
+3. Suggested actions should be ONLY data corrections or matching decisions:
+   - "Match invoice to row X, slot Y"
+   - "Create new job with revenue £X"
+   - "Investigate if invoices should be combined"
+   - NOT verification or client confirmation steps
+
+4. Suggest 3 GENUINELY DIFFERENT options:
+   - Option 1: BEST MATCH (highest confidence match to existing job)
+   - Option 2: ALTERNATIVE MATCH (different existing job that could work)
+   - Option 3: CREATE NEW JOB (if existing jobs don't fit)
+
+Format as JSON array with ONLY these fields:
+{
+  "optionId": 1,
+  "title": "Match to [Job Name] - [key reason]",
+  "jobRow": 52,
+  "jobName": "NARF Prize Fund Video",
+  "facts": {
+    "jobType": "Project",
+    "totalRevenue": 15950,
+    "startDate": "3-Mar-26",
+    "endDate": "31-Aug-26",
+    "existingInvoices": "0820 £7,975 (sent 12-Mar-26) + 0821 £5,725 (sent 20-Mar-26) = £13,700",
+    "remainingToInvoice": 2250,
+    "invoiceMatchStatus": "EXACT MATCH",
+    "discrepancies": "Invoice date 20-Mar-26 is within project duration (3-Mar-26 to 31-Aug-26)"
+  },
+  "recommendedActions": [
+    "Match invoice 0822 to row 52, slot 3",
+    "Note: Exact match on remaining amount"
+  ]
 }
 
-function buildExpensePrompt(alert, knowledgeBase) {
-  const kb = knowledgeBase
-    .filter((row) => row[0] === "EXPENSE_MATCHING")
-    .map((row) => `- **${row[2]}**: ${row[3]}`)
-    .join("\n");
+Return ONLY the JSON array, no other text.`;
 
-  return `You are analyzing an unmatched expense that needs reconciliation.
+        const message = await anthropic.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          messages: [
+            { role: "user", content: prompt }
+          ],
+        });
 
-UNMATCHED EXPENSE:
-- Reference: ${alert.data.expenseRef}
-- Amount: £${alert.data.amount.toFixed(2)}
-- Client: ${alert.data.client}
-- Vendor: ${alert.data.vendor}
-- Category: ${alert.data.category}
-- Date: ${alert.data.date}
-- Status: ${alert.data.status}
-
-WHY AUTOMATION COULDN'T MATCH IT:
-${alert.discrepancies.map((d) => `- ${d}`).join("\n")}
-
-AVAILABLE RULES & TOLERANCES:
-${kb}
-- Date tolerance: ±${alert.matchingContext.monthsTolerance} months
-
-YOUR TASK:
-1. Suggest which Outgoings category this should match to
-2. Provide 2-3 realistic reconciliation options
-3. Return ONLY a JSON array with fields: optionId, title, category, facts, recommendedActions
-
-Return ONLY JSON, no other text.`;
-}
-
-function buildCRMPrompt(alert, knowledgeBase) {
-  const kb = knowledgeBase
-    .filter((row) => row[0] === "CRM_MATCHING")
-    .map((row) => `- **${row[2]}**: ${row[3]}`)
-    .join("\n");
-
-  const direction =
-    alert.section === "dashboard_to_crm"
-      ? "Dashboard job not found in CRM"
-      : "CRM job not found in Dashboard";
-
-  return `You are analyzing a CRM sync discrepancy between Dashboard and CRM system.
-
-CRM MISMATCH (${direction}):
-- Project Code: ${alert.data.projectCode}
-- Client: ${alert.data.client}
-- Job Name: ${alert.data.jobName}
-- Revenue: £${alert.data.revenue.toFixed(2)}
-- Start Date: ${alert.data.startDate}
-- End Date: ${alert.data.endDate}
-- Matching to: ${alert.mode} tab
-
-DISCREPANCIES:
-${alert.discrepancies.map((d) => `- ${d}`).join("\n")}
-
-AVAILABLE RULES:
-${kb}
-
-YOUR TASK:
-1. Determine if this is a legitimate mismatch or sync issue
-2. Suggest 2-3 resolution options
-3. Return ONLY a JSON array with fields: optionId, title, jobName, facts, recommendedActions
-
-Return ONLY JSON, no other text.`;
-}
-
-// ============================================================================
-// ACTION: RECORD DECISION
-// ============================================================================
-async function recordDecision(req, res) {
-  try {
-    const { sessionId, alertIndex, decision } = req.body;
-
-    const sessionData = await redis.get(`triage_session:${sessionId}`);
-    if (!sessionData) {
-      return res.status(404).json({ error: "Session not found" });
+        const responseText = message.content[0].type === "text" ? message.content[0].text : "";
+        
+        console.log(`  ✅ Options generated`);
+        console.log(`\n📋 Claude was given this prompt:\n${prompt.substring(0, 1000)}...`);
+        console.log(`\n📝 Claude responded with (first 500 chars):\n${responseText.substring(0, 500)}`);
+        
+        // Parse JSON response - Claude might wrap in ```json ... ```
+        let options = [];
+        let cleanedText = responseText
+          .replace(/```json\n?/g, '')  // Remove ```json markers
+          .replace(/```\n?/g, '')       // Remove ``` markers
+          .trim();
+        
+        try {
+          options = JSON.parse(cleanedText);
+          if (!Array.isArray(options)) options = [options];
+          console.log(`  ✅ Parsed ${options.length} options from Claude`);
+        } catch (e) {
+          console.error(`  ⚠️ Could not parse Claude response as JSON`);
+          console.error(`  Raw text (first 200 chars): ${responseText.substring(0, 200)}`);
+          console.error(`  Cleaned text (first 200 chars): ${cleanedText.substring(0, 200)}`);
+          console.error(`  Parse error: ${e.message}`);
+          // Fallback: return raw text
+          options = [{ summary: responseText }];
+        }
+        
+        res.status(200).json({
+          success: true,
+          options,
+          alertId: alert.rowNumber,
+        });
+      } catch (err) {
+        console.error("❌ Error generating options:", err);
+        res.status(500).json({ success: false, error: err.message });
+      }
+    } else {
+      res.status(400).json({ error: "Invalid action" });
     }
-
-    const parsed = JSON.parse(sessionData);
-    const alert = parsed.alerts[alertIndex];
-    const automationCommanderSheetId = parsed.automationCommanderSheetId;
-
-    console.log(`📝 Recording decision: ${decision.action}`);
-
-    // Log to TriageLog
-    const timestamp = new Date().toISOString();
-    const logRow = [
-      timestamp,
-      alert.type,
-      `${alert.sheetName}-${alert.rowIndex}`,
-      alert.clientName,
-      alert.data.amount || alert.data.invoiceAmount || alert.data.revenue || "",
-      JSON.stringify(decision.claudeRecommendation || {}),
-      decision.action,
-      decision.notes || "",
-    ];
-
-    await appendToSheet(automationCommanderSheetId, "TriageLog!A2:H2", logRow);
-
-    console.log(`✅ Decision logged`);
-
-    return res.status(200).json({
-      success: true,
-      message: "Decision recorded",
+  } catch (error) {
+    console.error("Triage API error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
     });
-  } catch (err) {
-    console.error(`❌ Error:`, err);
-    return res.status(500).json({ error: err.message });
   }
 }

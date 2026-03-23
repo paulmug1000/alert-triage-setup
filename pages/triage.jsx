@@ -63,6 +63,7 @@ export default function TriageSystem({ onBack }) {
         body: JSON.stringify({
           action: "analyze_alert",
           alert,
+          automationCommanderSheetId,
         }),
       });
       

@@ -1115,7 +1115,7 @@ export default async function handler(req, res) {
           
           // Build expense prompt - check BOTH Outgoings categories AND Confirmed jobs
           const expensePrompt = `You are analyzing an unmatched expense that needs reconciliation. It could match either:
-1. An Outgoings budget category (for indirect costs)
+1. An Outgoings budget category (for indirect/operational costs)
 2. A Confirmed job's direct costs (for job-specific expenses)
 
 UNMATCHED EXPENSE:
@@ -1138,12 +1138,38 @@ ${kbRules || "- Default matching rules apply"}
 - Date tolerance: ±${tolerances.expenseMonthsTolerance} months
 - Amount tolerance: within 5% for same currency, 10% for foreign currency
 
-YOUR TASK:
-1. Determine if this expense is:
-   - A job-specific direct cost (match to Confirmed job)
-   - An indirect cost (match to Outgoings category)
-2. Consider: vendor name, category hints, amount, date, client
-3. Suggest 3 options: BEST MATCH (job or category), ALTERNATIVE MATCH, NEEDS REVIEW
+CRITICAL INFORMATION ABOUT CONFIRMED TAB STRUCTURE:
+
+**Understanding Job Structure:**
+The Confirmed tab contains jobs with two types of rows:
+- PARENT ROW: Has Client name, Job name, Revenue amount, Start date, End date, and Direct Costs amount
+- CHILD ROWS (optional): Have the SAME Client and Job name as their parent, but NO Revenue or dates
+
+**How Direct Costs Work:**
+- Each job has a "Direct Costs" amount (Column AH in Confirmed tab)
+- This is the total budgeted direct cost for the entire job
+- When a job-specific expense is incurred, it should be matched to the job's direct costs
+- Multiple expenses can be matched to the same job (they all count toward that job's direct costs)
+
+**Matching Logic:**
+1. Look for a job with a MATCHING CLIENT name
+2. The expense description or account name should relate to the job
+3. The expense amount should be reasonable within the job's budget
+4. The expense date should fall within (or near) the job's date range
+
+**Your Task:**
+1. Determine if this expense belongs to:
+   - A Confirmed job's direct costs (job-specific expense)
+   - An Outgoings category (general/operational expense)
+2. Priority matching factors:
+   - CLIENT NAME MATCH (highest priority)
+   - Job description/account relevance
+   - Amount fitting within job budget
+   - Date falling within job timeline
+   - Vendor type matching job needs (e.g., contractors for contractor jobs)
+3. Suggest 3 options: BEST MATCH, ALTERNATIVE MATCH, NEEDS REVIEW
+
+**Important:** Do NOT assume expenses can only match Outgoings categories. If the client name and context match a job perfectly, that is the BEST match even if the expense could theoretically fit multiple Outgoings categories.
 
 Format as JSON array:
 [{
@@ -1155,8 +1181,9 @@ Format as JSON array:
   "category": "Category Name (if category match)",
   "facts": {
     "matchConfidence": "High/Medium/Low",
-    "reasoning": "Why this matches",
-    "discrepancies": "Why it didn't auto-match (if any)"
+    "clientMatch": "How well client name matches",
+    "reasonForChoice": "Why this is the best match",
+    "discrepancies": "Any issues with this match (if any)"
   },
   "recommendedActions": ["Action 1", "Action 2"]
 }]

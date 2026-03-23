@@ -549,6 +549,16 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
     });
     const headers = (headerResponse.data.values || [[]])[0] || [];
     console.log(`  ✓ Headers read: ${headers.length} columns`);
+    
+    // DEBUG: Log header row to understand column mapping
+    console.log(`  DEBUG InvComp Headers (A:K should be Client, Job, Inv Amount, Total excl VAT, VAT, Inv No, Sent, Due, Paid, Status, Currency):`);
+    for (let i = 0; i < Math.min(11, headers.length); i++) {
+      console.log(`    [${i}] = "${headers[i]}"`);
+    }
+    console.log(`  DEBUG InvComp Flags (S:Y columns 18-24):`);
+    for (let i = 18; i < Math.min(25, headers.length); i++) {
+      console.log(`    [${i}] = "${headers[i]}"`);
+    }
 
     // Read data rows (row 6 onwards)
     console.log(`  Reading data (rows 6-1000)...`);
@@ -561,10 +571,18 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
     
     // DEBUG: Log first few rows completely
     if (rows.length > 0) {
-      console.log(`  DEBUG First 3 data rows (A:Y):`);
+      console.log(`  DEBUG First 3 data rows from InvComp (columns A:K):`);
       for (let i = 0; i < Math.min(3, rows.length); i++) {
-        console.log(`    Row ${6 + i}: [${rows[i].slice(0, 11).map((v, idx) => `[${idx}]=${v}`).join(', ')}]`);
-        console.log(`             [Cols S-Y flags]: ${rows[i].slice(18, 25).map((v, idx) => `[${18 + idx}]=${v}`).join(', ')}`);
+        const row = rows[i];
+        console.log(`    Row ${6 + i}:`);
+        for (let j = 0; j < Math.min(11, row.length); j++) {
+          console.log(`      [${j}] = "${row[j]}"`);
+        }
+        // Also show flag columns
+        console.log(`    Row ${6 + i} Flags (S:Y):`);
+        for (let j = 18; j < Math.min(25, row.length); j++) {
+          console.log(`      [${j}] = "${row[j]}"`);
+        }
       }
     }
 
@@ -596,6 +614,10 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
         
         // Add summary for display
         alert.summary = buildInvCompSummary(alert);
+        
+        console.log(`  📤 Alert prepared for frontend:`);
+        console.log(`     Type: ${alert.type}`);
+        console.log(`     Summary object: ${JSON.stringify(alert.summary)}`);
         
         alerts.push(alert);
       }
@@ -664,6 +686,10 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
         
         // Add summary for display
         alert.summary = buildDirCompSummary(alert);
+        
+        console.log(`  📤 Alert prepared for frontend:`);
+        console.log(`     Type: ${alert.type}`);
+        console.log(`     Summary object: ${JSON.stringify(alert.summary)}`);
         
         alerts.push(alert);
       }
@@ -935,6 +961,21 @@ export default async function handler(req, res) {
       console.log(`📊 All clients processed. Total alerts: ${allAlerts.length}, No-action alerts: ${noActionAlerts.length}`);
       console.log(`💾 Storing session in Redis...`);
 
+      // DEBUG: Log first few alerts before storing
+      if (allAlerts.length > 0) {
+        console.log(`\n🔍 DEBUG: First invoice alert before Redis storage:`);
+        const firstInvoice = allAlerts.find(a => a.flagType === "invoiceDashboardDiscr" || a.sheetName === "InvComp");
+        if (firstInvoice) {
+          console.log(`  Alert structure:`);
+          console.log(`    sheetName: ${firstInvoice.sheetName}`);
+          console.log(`    rowNumber: ${firstInvoice.rowNumber}`);
+          console.log(`    type: ${firstInvoice.type}`);
+          console.log(`    flagType: ${firstInvoice.flagType}`);
+          console.log(`    summary: ${JSON.stringify(firstInvoice.summary)}`);
+          console.log(`    data: ${JSON.stringify(firstInvoice.data)}`);
+        }
+      }
+
       // Store session data in Redis
       const sessionId = Math.random().toString(36).substring(2, 15);
       console.log(`  Storing ${allAlerts.length} alerts in Redis (session: ${sessionId})...`);
@@ -987,6 +1028,21 @@ export default async function handler(req, res) {
         const { alerts, noActionAlerts, clientsWithFlags } = JSON.parse(sessionData);
         console.log(`✅ Retrieved ${alerts.length} alerts from Redis for session ${sessionId}`);
         
+        // DEBUG: Log first invoice alert after retrieval
+        if (alerts.length > 0) {
+          const firstInvoice = alerts.find(a => a.flagType === "invoiceDashboardDiscr" || a.sheetName === "InvComp");
+          if (firstInvoice) {
+            console.log(`\n🔍 DEBUG: First invoice alert AFTER Redis retrieval:`);
+            console.log(`  Alert structure:`);
+            console.log(`    sheetName: ${firstInvoice.sheetName}`);
+            console.log(`    rowNumber: ${firstInvoice.rowNumber}`);
+            console.log(`    type: ${firstInvoice.type}`);
+            console.log(`    flagType: ${firstInvoice.flagType}`);
+            console.log(`    summary: ${JSON.stringify(firstInvoice.summary)}`);
+            console.log(`    data: ${JSON.stringify(firstInvoice.data)}`);
+          }
+        }
+        
         res.status(200).json({
           success: true,
           alerts,
@@ -1008,6 +1064,12 @@ export default async function handler(req, res) {
 
       try {
         console.log(`\n🤖 Generating options for ${alert.type || alert.flagType} alert`);
+        console.log(`   Alert object received from frontend:`);
+        console.log(`   - type: ${alert.type}`);
+        console.log(`   - sheetName: ${alert.sheetName}`);
+        console.log(`   - rowNumber: ${alert.rowNumber}`);
+        console.log(`   - summary: ${JSON.stringify(alert.summary)}`);
+        console.log(`   - data: ${JSON.stringify(alert.data)}`);
         
         const sheets = await getSheetsClient();
         

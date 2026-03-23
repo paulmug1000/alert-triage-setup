@@ -1487,12 +1487,15 @@ Return ONLY JSON, no other text.`;
                 } else {
                   console.log(`    Category: ${opt.category}`);
                 }
-                console.log(`    Confidence: ${opt.facts?.matchConfidence || "?"}`);
-                console.log(`    Reasoning: ${opt.facts?.reasonForChoice || opt.facts?.reasoning || "?"}`);
+                console.log(`    Confidence: ${opt.facts?.matchConfidence || opt.matchAnalysis?.matchConfidence || "?"}`);
+                console.log(`    Reasoning: ${opt.facts?.reasonForChoice || opt.matchAnalysis?.reasonForChoice || "?"}`);
               });
             }
           } catch (e) {
             console.error(`  ⚠️ Could not parse Claude response as JSON`);
+            console.error(`  Error details: ${e.message}`);
+            console.error(`  Cleaned text (first 1000 chars): ${cleanedText.substring(0, 1000)}`);
+            console.error(`  Cleaned text (last 500 chars): ${cleanedText.substring(Math.max(0, cleanedText.length - 500))}`);
             options = [{ summary: responseText }];
           }
           

@@ -672,8 +672,8 @@ export default function TriageSystem({ onBack }) {
                             )}
                           </div>
                         )}
-                        {/* CRM match analysis */}
-                        {option.matchAnalysis && typeof option.matchAnalysis === 'object' && (
+                        {/* CRM match analysis - ONLY show for CRM/invoices, not expenses */}
+                        {option.matchAnalysis && typeof option.matchAnalysis === 'object' && !option.allocationBreakdown && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#fef3c7", borderLeft: "3px solid #f59e0b" }}>
                             <strong style={{ color: "#b45309" }}>Match Analysis:</strong>
                             {option.matchAnalysis.matchConfidence && (

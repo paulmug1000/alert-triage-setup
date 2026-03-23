@@ -472,20 +472,24 @@ function buildDirCompSummary(alert) {
     index_4: accounting[4],
     index_5: accounting[5],
     index_6: accounting[6],
+    index_7: accounting[7],
+    index_8: accounting[8],
   });
   
   // DirComp columns (A:J) - CORRECTED MAPPING:
-  // A: Date, B: Description, C: Amount, D: Reference, E: Account name, F: Status, G: Transaction ID, H: ?, I: ?, J: ?
+  // A: Date, B: Description, C: Amount, D: Reference, E: Account name, F: Status, G: Transaction ID, H: Date Paid, I: VAT
   const date = accounting[0] || '';
   const description = accounting[1] || '';
   const amount = parseFloat(String(accounting[2] || '0').replace(/,/g, '')) || 0; // Column C - Amount
   const reference = accounting[3] || '';
   const accountName = accounting[4] || '';
-  const status = accounting[5] || '';
-  const transactionId = accounting[6] || '';
+  const status = accounting[5] || ''; // Column F - Status
+  const transactionId = accounting[6] || ''; // Column G - Transaction ID
+  const datePaid = accounting[7] || ''; // Column H - Date Paid
+  const vatAmount = accounting[8] || ''; // Column I - VAT
   
   console.log(`DEBUG after parsing:`, {
-    date, description, amount, reference, accountName, status, transactionId
+    date, description, amount, reference, accountName, status, transactionId, datePaid, vatAmount
   });
   
   // Format the amount
@@ -513,6 +517,8 @@ function buildDirCompSummary(alert) {
     accountName,
     status,
     transactionId,
+    datePaid,
+    vatAmount,
     summary
   };
 }
@@ -1310,6 +1316,9 @@ UNMATCHED EXPENSE:
 • Amount: £${expenseAmount.toFixed(2)}
 • Date: ${expenseDate}
 • Account Category: ${expenseAccountName}
+• VAT Amount: ${alert.summary?.vatAmount || '£0'}
+• Status: ${alert.summary?.status || '(unknown)'}
+• Transaction ID: ${alert.summary?.transactionId || '(unknown)'}
 
 OUTGOINGS CATEGORIES (For General/Operational Expenses):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
@@ -1375,32 +1384,32 @@ The Confirmed tab above shows for each job:
 - Slot 1: BX-CD (columns 75-81)
   * BX (75): Description
   * BY (76): Amount
-  * BZ (77): VAT? (Yes/No - based on whether expense includes VAT)
-  * CA (78): Date (Rec Date from DirComp)
-  * CB (79): Days to pay (calculated as: if "Date paid" exists in DirComp, use Date Paid - Rec Date; otherwise default to 30)
-  * CC (80): Status (from DirComp Status column)
-  * CD (81): Transaction ID (from DirComp Transaction ID column)
+  * BZ (77): VAT Amount (from DirComp column I - the VAT amount, or 0 if no VAT)
+  * CA (78): Date (Rec Date from DirComp column A)
+  * CB (79): Days to pay (calculated as: if "Date Paid" exists in DirComp column H, use Date Paid - Rec Date; otherwise default to 30)
+  * CC (80): Status (from DirComp column F - Status)
+  * CD (81): Transaction ID (from DirComp column G - Transaction ID)
 
 - Slot 2: CE-CK (columns 82-88)
   * CE (82): Description
   * CF (83): Amount
-  * CG (84): VAT? (Yes/No)
-  * CH (85): Date (Rec Date)
-  * CI (86): Days to pay
-  * CJ (87): Status
-  * CK (88): Transaction ID
+  * CG (84): VAT Amount (from DirComp column I)
+  * CH (85): Date (Rec Date from DirComp column A)
+  * CI (86): Days to pay (calculated from DirComp columns A and H)
+  * CJ (87): Status (from DirComp column F)
+  * CK (88): Transaction ID (from DirComp column G)
 
 - Slot 3: CL-CR (columns 89-95)
   * CL (89): Description
   * CM (90): Amount
-  * CN (91): VAT? (Yes/No)
-  * CO (92): Date (Rec Date)
-  * CP (93): Days to pay
-  * CQ (94): Status
-  * CR (95): Transaction ID
+  * CN (91): VAT Amount (from DirComp column I)
+  * CO (92): Date (Rec Date from DirComp column A)
+  * CP (93): Days to pay (calculated from DirComp columns A and H)
+  * CQ (94): Status (from DirComp column F)
+  * CR (95): Transaction ID (from DirComp column G)
 
 **Example format:**
-"Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write No to BZ232, write 10-Mar-26 to CA232, write 30 to CB232, write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
+"Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write 199 to BZ232 (VAT amount), write 10-Mar-26 to CA232, write 14 to CB232 (days between 10-Mar and 24-Mar), write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
 
 Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details:
 
@@ -1432,7 +1441,7 @@ Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details
     "discrepancies": "None"
   },
   "recommendedActions": [
-    "Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write No to BZ232, write 10-Mar-26 to CA232, write 30 to CB232, write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
+    "Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write 199 to BZ232 (VAT amount), write 10-Mar-26 to CA232, write 14 to CB232 (days between 10-Mar and 24-Mar), write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
   ]
 }]
 

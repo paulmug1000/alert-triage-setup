@@ -962,17 +962,66 @@ export default async function handler(req, res) {
             }
           }
           
-          console.log(`  ✓ Found ${categories.length} categories`);
+          console.log(`  ✓ Found ${categories.length} Outgoings categories`);
+          
+          // ALSO fetch Confirmed tab for job-based expense matching
+          console.log(`  📊 Fetching Confirmed tab for job-based expense matching...`);
+          const confirmedResponse = await sheets.spreadsheets.values.get({
+            spreadsheetId: alert.clientId,
+            range: "Confirmed!A1:CR500",
+          });
+          
+          let confirmedData = confirmedResponse.data.values || [];
+          
+          if (confirmedData.length === 500) {
+            const fullResponse = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: "Confirmed!A1:CR5000",
+            });
+            confirmedData = fullResponse.data.values || [];
+          }
+          
+          console.log(`  ✓ Loaded ${confirmedData.length} rows from Confirmed`);
+          
+          // Build list of jobs for matching
+          const confirmedJobs = [];
+          for (let i = 1; i < Math.min(confirmedData.length, 50); i++) {
+            const row = confirmedData[i] || [];
+            const client = row[0] || '';
+            const jobName = row[1] || '';
+            const revenue = row[32] !== undefined ? row[32] : '';
+            const directCosts = row[33] !== undefined ? row[33] : '';
+            
+            if (client && jobName) {
+              confirmedJobs.push(`Row ${i + 1}: ${client} | ${jobName} | Revenue: ${revenue} | Direct Costs: ${directCosts}`);
+            }
+          }
+          
+          console.log(`  ✓ Built reference list of ${confirmedJobs.length} jobs`);
           
           // Read tolerance values for expenses
           const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
           
           // Read AIKnowledgeBase for expense rules
-          const knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId || alert.automationCommanderSheetId);
-          const kbRules = knowledgeBase
-            .filter(row => row[0] === "EXPENSE_MATCHING")
-            .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
-            .join("\n");
+          console.log(`  📚 Reading AIKnowledgeBase...`);
+          let knowledgeBase = [];
+          if (req.body.automationCommanderSheetId) {
+            console.log(`  Using automationCommanderSheetId from request body`);
+            knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId);
+          } else {
+            console.log(`  ⚠️ No automationCommanderSheetId in request body, skipping AIKnowledgeBase`);
+          }
+          
+          let kbRules = "";
+          if (knowledgeBase && knowledgeBase.length > 0) {
+            kbRules = knowledgeBase
+              .filter(row => row[0] === "EXPENSE_MATCHING")
+              .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
+              .join("\n");
+            console.log(`  ✓ Found ${knowledgeBase.filter(row => row[0] === "EXPENSE_MATCHING").length} EXPENSE_MATCHING rules`);
+          } else {
+            console.log(`  ⚠️ No AIKnowledgeBase rules found`);
+          }
           
           // Extract expense details
           const expenseAmount = parseFloat(alert.summary?.amount) || parseFloat(alert.data?.amount) || 0;
@@ -981,8 +1030,10 @@ export default async function handler(req, res) {
           const expenseCategory = alert.summary?.category || alert.data?.category || "";
           const expenseDate = alert.summary?.date || alert.data?.date || "";
           
-          // Build expense prompt
-          const expensePrompt = `You are analyzing an unmatched expense that needs reconciliation to the Outgoings budget.
+          // Build expense prompt - check BOTH Outgoings categories AND Confirmed jobs
+          const expensePrompt = `You are analyzing an unmatched expense that needs reconciliation. It could match either:
+1. An Outgoings budget category (for indirect costs)
+2. A Confirmed job's direct costs (for job-specific expenses)
 
 UNMATCHED EXPENSE:
 • Reference: ${expenseRef}
@@ -992,8 +1043,12 @@ UNMATCHED EXPENSE:
 • Date: ${expenseDate}
 • Client: ${alert.clientName || ""}
 
-AVAILABLE OUTGOINGS CATEGORIES:
+AVAILABLE OUTGOINGS CATEGORIES (Budget):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
+
+AVAILABLE CONFIRMED JOBS (for direct cost matching):
+${confirmedJobs.slice(0, 20).join("\n")}
+${confirmedJobs.length > 20 ? `... and ${confirmedJobs.length - 20} more jobs` : ""}
 
 MATCHING RULES & TOLERANCES:
 ${kbRules || "- Default matching rules apply"}
@@ -1001,18 +1056,23 @@ ${kbRules || "- Default matching rules apply"}
 - Amount tolerance: within 5% for same currency, 10% for foreign currency
 
 YOUR TASK:
-1. Determine which Outgoings category this expense belongs in
-2. Consider: vendor name, category hints, amount, date
-3. Suggest 3 options: BEST MATCH, ALTERNATIVE MATCH, NEEDS REVIEW
+1. Determine if this expense is:
+   - A job-specific direct cost (match to Confirmed job)
+   - An indirect cost (match to Outgoings category)
+2. Consider: vendor name, category hints, amount, date, client
+3. Suggest 3 options: BEST MATCH (job or category), ALTERNATIVE MATCH, NEEDS REVIEW
 
 Format as JSON array:
 [{
   "optionId": 1,
-  "title": "Match to [Category] - [reason]",
-  "category": "Category Name",
+  "title": "Match to [Job Name or Category] - [reason]",
+  "matchType": "job" or "category",
+  "jobRow": 52,
+  "jobName": "Job Name (if job match)",
+  "category": "Category Name (if category match)",
   "facts": {
     "matchConfidence": "High/Medium/Low",
-    "reasoning": "Why this category matches",
+    "reasoning": "Why this matches",
     "discrepancies": "Why it didn't auto-match (if any)"
   },
   "recommendedActions": ["Action 1", "Action 2"]
@@ -1098,11 +1158,24 @@ Return ONLY JSON, no other text.`;
           console.log(`  ✓ Built reference list of ${existingJobs.length} jobs`);
           
           // Read AIKnowledgeBase for CRM rules
-          const knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId || alert.automationCommanderSheetId);
-          const kbRules = knowledgeBase
-            .filter(row => row[0] === "CRM_MATCHING")
-            .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
-            .join("\n");
+          console.log(`  📚 Reading AIKnowledgeBase...`);
+          let knowledgeBase = [];
+          if (req.body.automationCommanderSheetId) {
+            knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId);
+          } else {
+            console.log(`  ⚠️ No automationCommanderSheetId in request body, skipping AIKnowledgeBase`);
+          }
+          
+          let kbRules = "";
+          if (knowledgeBase && knowledgeBase.length > 0) {
+            kbRules = knowledgeBase
+              .filter(row => row[0] === "CRM_MATCHING")
+              .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
+              .join("\n");
+            console.log(`  ✓ Found ${knowledgeBase.filter(row => row[0] === "CRM_MATCHING").length} CRM_MATCHING rules`);
+          } else {
+            console.log(`  ⚠️ No AIKnowledgeBase rules found`);
+          }
           
           // Extract CRM details
           const crmProjectCode = alert.summary?.projectCode || alert.data?.projectCode || "(unknown)";
@@ -1250,16 +1323,27 @@ Return ONLY JSON, no other text.`;
         
         // Read AIKnowledgeBase for context
         console.log(`  📚 Reading AIKnowledgeBase...`);
-        const knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId || alert.automationCommanderSheetId);
+        let knowledgeBase = [];
+        if (req.body.automationCommanderSheetId) {
+          knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId);
+        } else {
+          console.log(`  ⚠️ No automationCommanderSheetId in request body, skipping AIKnowledgeBase`);
+        }
         
         // Get tolerance values from DataChgAlert
         const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
         
         // Build knowledge base context for Claude
-        const kbRules = knowledgeBase
-          .filter(row => row[0] === "INVOICE_MATCHING")
-          .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
-          .join("\n");
+        let kbRules = "";
+        if (knowledgeBase && knowledgeBase.length > 0) {
+          kbRules = knowledgeBase
+            .filter(row => row[0] === "INVOICE_MATCHING")
+            .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
+            .join("\n");
+          console.log(`  ✓ Found ${knowledgeBase.filter(row => row[0] === "INVOICE_MATCHING").length} INVOICE_MATCHING rules`);
+        } else {
+          console.log(`  ⚠️ No AIKnowledgeBase rules found`);
+        }
         
         // Extract invoice details
         const invoiceAmount = parseFloat(alert.summary?.amount) || 0;

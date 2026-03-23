@@ -1365,8 +1365,17 @@ The Confirmed tab above shows for each job:
 1. Determine: JOB-SPECIFIC EXPENSE (direct costs) or GENERAL OPERATIONAL expense?
 2. Find jobs that match PLACEHOLDER vendors, or have sufficient remaining budget + vendor match
 3. For EACH option you suggest: Show Budget → Allocated → Remaining in facts
-4. RANK BY: (1) Placeholder match + remaining budget, (2) Vendor match + remaining budget, (3) Category fallback
-5. Suggest 3 GENUINELY DIFFERENT options, properly ranked
+4. For recommendedActions: Generate EXACT cell update instructions for the allocation
+5. RANK BY: (1) Placeholder match + remaining budget, (2) Vendor match + remaining budget, (3) Category fallback
+6. Suggest 3 GENUINELY DIFFERENT options, properly ranked
+
+**CRITICAL: For recommendedActions, provide exact cell coordinates and values for job allocations:**
+
+Example format for job match:
+"Within the Confirmed tab, Row 232, Slot 1: Write Craig Niven T/A FILDI to cell BX232, write 995 to cell BY232, write 10-Mar-26 to cell CA232, write Received to cell CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to cell CD232"
+
+Example format for category match:
+"Within the Outgoings tab: Write 995 to the Charles Sladdin - Eleven category row in the amount column, add transaction reference INV-FILDI-ELEVEN-003"
 
 Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details:
 
@@ -1399,7 +1408,11 @@ Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details
     "reasonForChoice": "Why this is the best match",
     "discrepancies": "Any concerns or issues"
   },
-  "recommendedActions": ["Action 1", "Action 2"]
+  "recommendedActions": [
+    "Within the Confirmed tab, Row 232, Slot 1: Write Craig Niven T/A FILDI to cell BX232, write 995 to cell BY232, write 10-Mar-26 to cell CA232, write Received to cell CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to cell CD232",
+    "Verify the expense amount matches the invoice",
+    "Mark this expense as allocated in the source system"
+  ]
 }]
 
 CRITICAL REQUIREMENTS FOR EVERY OPTION:
@@ -1408,6 +1421,7 @@ CRITICAL REQUIREMENTS FOR EVERY OPTION:
 3. Include vendor name, amount, date, and slot number for EACH expense
 4. Clearly state YES/NO for "has valid App ID" for each expense
 5. Rank options by: (1) Perfect placeholder match (vendor name + remaining budget), (2) Sufficient remaining budget + vendor match, (3) Category fallback
+6. For recommendedActions, include EXACT cell coordinates (column letters + row number) and values to write
 
 Return ONLY JSON, no other text.`;
 
@@ -1600,14 +1614,23 @@ ${kbRules || "- Default matching rules apply"}
 YOUR TASK:
 1. Find the best matches in the ${tabName} tab for this CRM job
 2. For EACH option, analyze: Client name, Job name similarity, Revenue match, Date range match, Project code
-3. Suggest 3 options: BEST MATCH, ALTERNATIVE, CREATE NEW JOB
+3. For recommendedActions: Generate EXACT cell update instructions for creating/matching the job
+4. Suggest 3 options: BEST MATCH, ALTERNATIVE, CREATE NEW JOB
 
 For each option, provide detailed matching analysis showing:
 - Why this matches (or why CREATE NEW if no match)
 - Confidence level based on matching criteria
 - Specific details from the matched job
 - Any concerns or discrepancies
-- Recommended actions
+- Recommended actions with EXACT cell coordinates
+
+**CRITICAL: For recommendedActions, provide exact cell coordinates and values:**
+
+Example format for existing job match:
+"Update existing job in Row 52 - ${tabName} tab: Verify Client = ABC Ltd (Col A), Job name = New Project (Col B), Project Code = PRJ-001 (Col C), Revenue = £5,000 (Col AG), Start Date = 1-Apr-26 (Col AL), End Date = 30-Jun-26 (Col AM)"
+
+Example format for creating new job:
+"Create new job in ${tabName} tab, next available row: Write ABC Ltd to Col A, write New Project to Col B, write PRJ-001 to Col C, write 5000 to Col AG, write 1-Apr-26 to Col AL, write 30-Jun-26 to Col AM"
 
 Format as JSON array:
 [{
@@ -1646,14 +1669,19 @@ Format as JSON array:
     "discrepancies": "Any concerns about this match",
     "whyItDidntAutoMatch": "Why the system didn't find this automatically (if applicable)"
   },
-  "recommendedActions": ["Action 1", "Action 2", "Action 3"]
+  "recommendedActions": [
+    "Create new job in ${tabName} tab, next available row: Write ABC Ltd to Col A, write New Project to Col B, write PRJ-001 to Col C, write 5000 to Col AG, write 1-Apr-26 to Col AL, write 30-Jun-26 to Col AM",
+    "Verify project code PRJ-001 is unique in the system",
+    "Confirm with stakeholder that this job scope is accurate"
+  ]
 }]
 
 CRITICAL REQUIREMENTS:
 - Include matchingDetails with BOTH unmatchedJobSummary and matchedJobDetails for comparison
 - Include full matchAnalysis with all matching criteria
-- For CREATE NEW option, explain why no existing job matches
-- Show the specific discrepancies that would need resolving
+- For CREATE NEW option: Include EXACT cell coordinates (column letters + values) for all required fields
+- For existing job match: Verify key fields match
+- For recommendedActions, include EXACT cell coordinates (Col letter + row number) and values to write
 
 Return ONLY JSON, no other text.`;
 
@@ -1831,8 +1859,16 @@ RETAINER JOBS:
 **Your Task:**
 1. Identify which job (parent row) this invoice should match to, considering client name, job similarity, amount, reference pattern, and dates
 2. For EACH option, provide ONLY these facts: parent row, job name, type, revenue, dates, existing invoices with sent dates, total invoiced, remaining, match status, and WHY it didn't auto-match
-3. Suggested actions: data corrections or matching decisions only
+3. For recommendedActions: Generate EXACT cell update instructions that will write this invoice to the correct location
 4. Suggest 3 GENUINELY DIFFERENT options: BEST MATCH, ALTERNATIVE MATCH, CREATE NEW JOB
+
+**CRITICAL: For recommendedActions, provide exact cell coordinates and values:**
+
+Example format:
+"Within the Confirmed tab, Row 52, Slot 3: Write 2250 to cell BD52 (invoice amount), write 0822 to cell BE52 (invoice ref), write 20-Mar-26 to cell BF52 (sent date), write 30 to cell BG52 (days to pay), write Sent to cell BH52 (status)"
+
+Or if creating a new job:
+"Create new job row: Client=ABC Ltd, Job=New Project, Revenue=5000, Start=1-Apr-26, End=30-Jun-26. Then in Slot 1: Amount=5000, Ref=0823, SendDate=20-Mar-26, DaysToPay=30, Status=Sent"
 
 Format as JSON array:
 [{
@@ -1850,7 +1886,11 @@ Format as JSON array:
     "invoiceMatchStatus": "EXACT MATCH",
     "discrepancies": "Why it didn't auto-match"
   },
-  "recommendedActions": ["Action 1", "Action 2"]
+  "recommendedActions": [
+    "Within the Confirmed tab, Row 52, Slot 3: Write 2250 to cell BD52, write 0822 to cell BE52, write 20-Mar-26 to cell BF52, write 30 to cell BG52, write Sent to cell BH52",
+    "Verify that the invoice reference 0822 matches the source system",
+    "Mark this invoice as processed in the source system"
+  ]
 }]
 
 Return ONLY JSON, no other text.`;

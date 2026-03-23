@@ -916,7 +916,7 @@ export default async function handler(req, res) {
         res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "analyze_alert") {
-      // Generate matching options for an alert using Confirmed tab data
+      // Generate matching options for an alert
       const { alert } = req.body;
       
       if (!alert) {
@@ -925,24 +925,58 @@ export default async function handler(req, res) {
       }
 
       try {
-        console.log(`\n🤖 Generating options for alert:`, alert.flagType);
+        console.log(`\n🤖 Generating options for ${alert.type || alert.flagType} alert`);
         
         const sheets = await getSheetsClient();
         
-        // CRITICAL: Fetch Confirmed tab from CLIENT SHEET, not Master Sheet
+        // Handle expense alerts (DirComp)
+        if (alert.type === "expense" || alert.sheetName === "DirComp") {
+          console.log(`  📊 Expense alert analysis not yet implemented`);
+          return res.status(200).json({
+            success: true,
+            options: [
+              {
+                optionId: 1,
+                title: "Expense matching - feature coming soon",
+                category: alert.data?.category || "Unknown",
+                facts: { status: "Expense analysis not yet implemented in this version" },
+                recommendedActions: ["Review expense in Outgoings tab manually"]
+              }
+            ],
+            alertId: alert.rowNumber,
+          });
+        }
+        
+        // Handle CRM alerts
+        if (alert.type === "crm" || alert.sheetName === "CRMComp") {
+          console.log(`  📊 CRM alert analysis not yet implemented`);
+          return res.status(200).json({
+            success: true,
+            options: [
+              {
+                optionId: 1,
+                title: "CRM matching - feature coming soon",
+                jobName: alert.data?.jobName || "Unknown",
+                facts: { status: "CRM analysis not yet implemented in this version" },
+                recommendedActions: ["Review job in Confirmed/Pipeline tab manually"]
+              }
+            ],
+            alertId: alert.rowNumber,
+          });
+        }
+        
+        // Default: Handle invoice alerts (EXISTING WORKING LOGIC)
         console.log(`  Fetching Confirmed tab from CLIENT sheet ${alert.clientId.substring(0, 16)}...`);
         
         // OPTIMIZATION: Only fetch up to column CR (79) instead of DC
-        // OPTIMIZATION: Estimate actual data range (usually 1-200 rows, not 5000)
-        // Fetch in chunks: first check 1-500, then expand if needed
         const confirmedResponse = await sheets.spreadsheets.values.get({
-          spreadsheetId: alert.clientId,  // CLIENT Sheet (Column L)
-          range: "Confirmed!A1:CR500",    // Only to CR (79), only 500 rows
+          spreadsheetId: alert.clientId,
+          range: "Confirmed!A1:CR500",
         });
         
         let confirmedData = confirmedResponse.data.values || [];
         
-        // If we hit the 500 row limit, fetch more (rarely needed)
+        // If we hit the 500 row limit, fetch more
         if (confirmedData.length === 500) {
           console.log(`  Detected 500 rows (likely more data), fetching full range...`);
           const fullResponse = await sheets.spreadsheets.values.get({
@@ -954,97 +988,29 @@ export default async function handler(req, res) {
         
         console.log(`  📊 Loaded ${confirmedData.length} rows of job data`);
         
-        // Find last non-blank row (checking A-E, AG-AM, AP-BH, BX-CR)
+        // Find last non-blank row
         let lastDataRow = 1;
         for (let row = confirmedData.length - 1; row > 0; row--) {
           const rowData = confirmedData[row] || [];
-          
-          // Check if row has data in key columns
-          const colsToCheck = [0, 1, 2, 3, 4]; // A-E
-          colsToCheck.push(...[32, 33, 34, 35, 36, 37, 38]); // AG-AM
-          colsToCheck.push(...[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]); // AP-BH
-          colsToCheck.push(...Array.from({length: 21}, (_, i) => 75 + i)); // BX-CR
-          
+          const colsToCheck = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59];
           const hasData = colsToCheck.some(col => rowData[col]);
           
           if (hasData) {
             lastDataRow = row;
-            console.log(`  ✓ Last non-blank row found at index ${lastDataRow} (row ${lastDataRow + 1})`);
-            console.log(`    Data in this row: Client="${rowData[0]}", Job="${rowData[1]}", Revenue=${rowData[32]}`);
-            console.log(`  DEBUG: ALL non-empty cells in row ${lastDataRow + 1}:`);
-            for (let i = 0; i < rowData.length; i++) {
-              if (rowData[i] !== undefined && rowData[i] !== null && rowData[i] !== '') {
-                const val = String(rowData[i]).substring(0, 80);
-                console.log(`    Col ${i}: ${val}`);
-              }
-            }
             break;
           }
         }
         
-        console.log(`  Last data row: ${lastDataRow + 1}`);
-        
-        // Get the active data
         const activeData = confirmedData.slice(0, lastDataRow + 1);
         console.log(`  📊 Using ${activeData.length} non-blank rows for Claude analysis`);
         
-        // Helper: Calculate remaining to invoice for a job row
-        // CRITICAL: Only count invoices with valid references (not blank, not MANUAL-INV)
-        function calculateRemainingToInvoice(jobRow, totalRevenue) {
-          if (!jobRow || !totalRevenue) return totalRevenue;
-          
-          const jobRevenue = parseFloat(totalRevenue) || 0;
-          
-          // Invoice structure in Confirmed tab:
-          // Inv 1: Amount at AP (41), Ref at AQ (42)
-          // Inv 2: Amount at AW (48), Ref at AX (49)
-          // Inv 3: Amount at BD (55), Ref at BE (56)
-          // Pattern: amounts at [41, 48, 55, 62, 69, 76, 83, ...], refs at [42, 49, 56, 63, 70, 77, 84, ...]
-          
-          const invoiceAmountIndices = [41, 48, 55, 62, 69, 76, 83];
-          const invoiceRefIndices = [42, 49, 56, 63, 70, 77, 84];
-          
-          let totalInvoiced = 0;
-          
-          // Sum amounts for invoices with VALID references (not blank, not MANUAL-INV)
-          for (let i = 0; i < invoiceAmountIndices.length; i++) {
-            const amountIdx = invoiceAmountIndices[i];
-            const refIdx = invoiceRefIndices[i];
-            
-            const ref = String(jobRow[refIdx] || '').trim();
-            const amount = parseFloat(jobRow[amountIdx]) || 0;
-            
-            // Only count invoices with valid references
-            if (ref && ref !== '' && !ref.includes('MANUAL-INV') && amount > 0) {
-              totalInvoiced += amount;
-            }
-          }
-          
-          return Math.max(0, jobRevenue - totalInvoiced);
-        }
-        
-        // Extract invoice details from alert
-        const invoiceAmount = parseFloat(alert.summary?.amount) || 0;
-        const invoiceRef = alert.summary?.invoiceNo || '(unmatched)';
-        const invoiceClient = alert.summary?.client || '';
-        const invoiceJob = alert.summary?.job || '';
-        const sentDate = alert.summary?.sentDate || '';
-        
-        // Format Confirmed tab data as a simple table for Claude to analyze
-        // Send RAW data - no pre-calculations
-        console.log(`  📊 Formatting ${activeData.length} non-blank rows as raw data table for Claude`);
-        
-        // Build CSV-style table of the Confirmed tab
+        // Build table for Claude
         const confirmedTabTable = activeData
           .map((row, idx) => {
-            // Key columns: A, B, C, D, E, AG, AH, AI, AJ, AL, AM, AP, AQ, AW, AX
             const client = row[0] || '';
             const jobName = row[1] || '';
             const projectCode = row[2] || '';
-            const dateConf = row[3] || '';
-            const leadSrc = row[4] || '';
             const revenue = row[32] !== undefined ? row[32] : '';
-            const directCosts = row[33] !== undefined ? row[33] : '';
             const vat = row[34] || '';
             const projType = row[35] || '';
             const startDate = row[37] || '';
@@ -1075,7 +1041,14 @@ export default async function handler(req, res) {
           .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
           .join("\n");
         
-        // Improved Claude prompt with better context
+        // Extract invoice details
+        const invoiceAmount = parseFloat(alert.summary?.amount) || 0;
+        const invoiceRef = alert.summary?.invoiceNo || '(unmatched)';
+        const invoiceClient = alert.summary?.client || '';
+        const invoiceJob = alert.summary?.job || '';
+        const sentDate = alert.summary?.sentDate || '';
+        
+        // Build Claude prompt with knowledge base and tolerances
         const prompt = `You are a financial advisor helping to resolve an unmatched invoice. Analyze the invoice against the Confirmed tab data and suggest matching options.
 
 UNMATCHED INVOICE:
@@ -1122,43 +1095,17 @@ RETAINER JOBS:
 4. Calculate: Remaining = Parent's Revenue - Total Invoiced Amount
 
 **Your Task:**
-1. Identify which job (parent row) this invoice should match to, considering:
-   - Client name match (required)
-   - Job description similarity
-   - Amount matching the remaining-to-invoice gap
-   - Invoice reference pattern
-   - Date patterns
+1. Identify which job (parent row) this invoice should match to, considering client name, job similarity, amount, reference pattern, and dates
+2. For EACH option, provide ONLY these facts: parent row, job name, type, revenue, dates, existing invoices with sent dates, total invoiced, remaining, match status, and WHY it didn't auto-match
+3. Suggested actions: data corrections or matching decisions only
+4. Suggest 3 GENUINELY DIFFERENT options: BEST MATCH, ALTERNATIVE MATCH, CREATE NEW JOB
 
-2. For EACH option you suggest, provide ONLY these facts (no narrative):
-   - Parent row number
-   - Job name
-   - Job type (Project or Retainer)
-   - Total revenue
-   - Start/End dates
-   - List of existing invoices with amounts AND sent dates (e.g., "0820 £7,975 (sent 12-Mar-26) + 0821 £5,725 (sent 20-Mar-26) = £13,700")
-   - Total already invoiced
-   - Remaining to invoice
-   - Invoice match status (EXACT MATCH / PARTIAL MATCH / NEW JOB / etc.)
-   - **CRITICAL: Explain why this didn't auto-match** - What is the discrepancy or issue that caused the automation to fail? (e.g., "Invoice date is outside normal tolerance", "Amount slightly over remaining", "Invoice reference pattern different", "Project end date is before invoice sent date", etc.)
-   - Only note this if something is genuinely off - there's always SOMETHING that caused the alert
-
-3. Suggested actions should be ONLY data corrections or matching decisions:
-   - "Match invoice to row X, slot Y"
-   - "Create new job with revenue £X"
-   - "Investigate if invoices should be combined"
-   - NOT verification or client confirmation steps
-
-4. Suggest 3 GENUINELY DIFFERENT options:
-   - Option 1: BEST MATCH (highest confidence match to existing job)
-   - Option 2: ALTERNATIVE MATCH (different existing job that could work)
-   - Option 3: CREATE NEW JOB (if existing jobs don't fit)
-
-Format as JSON array with ONLY these fields:
-{
+Format as JSON array:
+[{
   "optionId": 1,
-  "title": "Match to [Job Name] - [key reason]",
+  "title": "Match to [Job Name] - [reason]",
   "jobRow": 52,
-  "jobName": "NARF Prize Fund Video",
+  "jobName": "Job Name",
   "facts": {
     "jobType": "Project",
     "totalRevenue": 15950,
@@ -1167,15 +1114,12 @@ Format as JSON array with ONLY these fields:
     "existingInvoices": "0820 £7,975 (sent 12-Mar-26) + 0821 £5,725 (sent 20-Mar-26) = £13,700",
     "remainingToInvoice": 2250,
     "invoiceMatchStatus": "EXACT MATCH",
-    "discrepancies": "Invoice date 20-Mar-26 is within project duration (3-Mar-26 to 31-Aug-26)"
+    "discrepancies": "Why it didn't auto-match"
   },
-  "recommendedActions": [
-    "Match invoice 0822 to row 52, slot 3",
-    "Note: Exact match on remaining amount"
-  ]
-}
+  "recommendedActions": ["Action 1", "Action 2"]
+}]
 
-Return ONLY the JSON array, no other text.`;
+Return ONLY JSON, no other text.`;
 
         const message = await anthropic.messages.create({
           model: "claude-sonnet-4-20250514",
@@ -1185,17 +1129,11 @@ Return ONLY the JSON array, no other text.`;
           ],
         });
 
-        const responseText = message.content[0].type === "text" ? message.content[0].text : "";
-        
-        console.log(`  ✅ Options generated`);
-        console.log(`\n📋 Claude was given this prompt:\n${prompt.substring(0, 1000)}...`);
-        console.log(`\n📝 Claude responded with (first 500 chars):\n${responseText.substring(0, 500)}`);
-        
-        // Parse JSON response - Claude might wrap in ```json ... ```
         let options = [];
-        let cleanedText = responseText
-          .replace(/```json\n?/g, '')  // Remove ```json markers
-          .replace(/```\n?/g, '')       // Remove ``` markers
+        const responseText = message.content[0].type === "text" ? message.content[0].text : "";
+        const cleanedText = responseText
+          .replace(/```json/g, "")
+          .replace(/```/g, "")
           .trim();
         
         try {
@@ -1204,10 +1142,6 @@ Return ONLY the JSON array, no other text.`;
           console.log(`  ✅ Parsed ${options.length} options from Claude`);
         } catch (e) {
           console.error(`  ⚠️ Could not parse Claude response as JSON`);
-          console.error(`  Raw text (first 200 chars): ${responseText.substring(0, 200)}`);
-          console.error(`  Cleaned text (first 200 chars): ${cleanedText.substring(0, 200)}`);
-          console.error(`  Parse error: ${e.message}`);
-          // Fallback: return raw text
           options = [{ summary: responseText }];
         }
         
@@ -1219,6 +1153,58 @@ Return ONLY the JSON array, no other text.`;
       } catch (err) {
         console.error("❌ Error generating options:", err);
         res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "record_decision") {
+      // Log user's decision to TriageLog
+      const { alert, decision, automationCommanderSheetId } = req.body;
+      
+      if (!alert || !decision || !automationCommanderSheetId) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "Missing alert, decision, or automationCommanderSheetId" 
+        });
+      }
+
+      try {
+        console.log(`\n📝 Recording decision for alert: ${decision.action}`);
+        
+        const sheets = await getSheetsClient();
+        
+        // Log to TriageLog sheet
+        const timestamp = new Date().toISOString();
+        const alertAmount = alert.summary?.amount || alert.data?.amount || alert.data?.revenue || "";
+        
+        const logRow = [
+          timestamp,
+          alert.type || alert.flagType,
+          `${alert.sheetName}-${alert.rowNumber}`,
+          alert.clientName || "",
+          alertAmount,
+          JSON.stringify(decision.claudeRecommendation || {}),
+          decision.action,
+          decision.notes || "",
+        ];
+        
+        console.log(`  Writing to TriageLog: ${logRow.join(" | ")}`);
+        
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: automationCommanderSheetId,
+          range: "TriageLog!A:H",
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [logRow],
+          },
+        });
+        
+        console.log(`  ✅ Decision logged to TriageLog`);
+        
+        return res.status(200).json({
+          success: true,
+          message: "Decision recorded",
+        });
+      } catch (err) {
+        console.error(`❌ Error recording decision:`, err);
+        return res.status(500).json({ success: false, error: err.message });
       }
     } else {
       res.status(400).json({ error: "Invalid action" });

@@ -18,6 +18,16 @@ export default function TriageSystem({ onBack }) {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [alertsLoaded, setAlertsLoaded] = useState(false);
   const [userDecision, setUserDecision] = useState(null);
+  
+  // NEW: Client selection states
+  const [screen, setScreen] = useState("initial"); // initial | clientSelection | alertSelection | triageAnalysis
+  const [clientsWithFlags, setClientsWithFlags] = useState([]);
+  const [selectedClient, setSelectedClient] = useState(null);
+  const [clientAlerts, setClientAlerts] = useState([]);
+  const [currentClientAlertIndex, setCurrentClientAlertIndex] = useState(0);
+  const [isAccepting, setIsAccepting] = useState(false);
+  const [acceptError, setAcceptError] = useState("");
+  const [processedAlerts, setProcessedAlerts] = useState(new Set());
 
   const fetchAndAnalyzeAlerts = async (sessionId) => {
     try {
@@ -135,26 +145,24 @@ export default function TriageSystem({ onBack }) {
         return;
       }
 
-      console.log(`Setting state: totalAlerts=${data.totalAlerts}, noActionCount=${data.noActionCount}`);
+      console.log(`Setting state: totalAlerts=${data.totalAlerts}, clientsWithFlags=${data.clientsWithFlags?.length}`);
       setSessionId(data.sessionId);
       setTotalAlerts(data.totalAlerts || 0);
       setNoActionCount(data.noActionCount || 0);
+      setClientsWithFlags(data.clientsWithFlags || []);
       setAcknowledgedNoAction(new Set());
+      setProcessedAlerts(new Set());
 
-      // Only show "complete" if truly no alerts AND we got a valid response
-      if ((data.totalAlerts || 0) === 0 && (data.noActionCount || 0) === 0) {
-        console.log("No alerts found, showing complete screen");
-        setTriageComplete(true);
-      } else if ((data.totalAlerts || 0) > 0) {
-        // Show actionable alerts first
-        console.log(`${data.totalAlerts} actionable alerts found, fetching from Redis...`);
-        setShowNoAction(false);
-        // Fetch alerts after state is set
-        setTimeout(() => fetchAndAnalyzeAlerts(data.sessionId), 100);
-      } else {
-        // Only no-action alerts
+      // Show client selection screen if there are alerts
+      if ((data.totalAlerts || 0) > 0) {
+        console.log(`${data.totalAlerts} actionable alerts found, showing client selection...`);
+        setScreen("clientSelection");
+      } else if ((data.noActionCount || 0) > 0) {
         console.log(`${data.noActionCount} no-action alerts found, showing no-action screen`);
         setShowNoAction(true);
+      } else {
+        console.log("No alerts found, showing complete screen");
+        setTriageComplete(true);
       }
     } catch (err) {
       setError(err.message);
@@ -195,6 +203,198 @@ export default function TriageSystem({ onBack }) {
     setClaudeAnalysis("");
     setAlertsLoaded(false);
     setUserDecision(null);
+  };
+
+  // NEW: Helper function to get flag name from flag key
+  const getFlagName = (flagKey) => {
+    const flagNames = {
+      "invoiceDashboardDiscr": "Invoice dashboard discr",
+      "invoiceAppDiscr": "Invoice app discr",
+      "crmPipeDashDiscr": "CRM pipe dash discr",
+      "crmPipeAppDiscr": "CRM pipe app discr",
+      "crmConfDashDiscr": "CRM conf dash discr",
+      "crmConfAppDiscr": "CRM conf app discr",
+      "crmPipeSkippedBlank": "CRM pipe skipped with blank",
+      "crmConfSkippedBlank": "CRM conf skipped with blank",
+      "crmCopiedConfChecked": "CRM copied to conf box checked",
+      "crmCopiedConfUnchecked": "CRM copied to conf box UNchecked",
+      "crmCopiedConfDelete": "CRM copied to conf box DELETE",
+      "retainerInvoicesCreated": "Retainer invoices created",
+      "expenseDashboardDiscr": "Expense dashboard discr",
+      "expenseAppDiscr": "Expense app discr",
+      "expenseAdded": "Expense added",
+      "expenseUnreconGaps": "Expense unrecon gaps",
+      "invoiceStaleUnsentChanges": "Invoice stale unsent changes",
+    };
+    return flagNames[flagKey] || flagKey;
+  };
+
+  // NEW: Select a client and fetch its alerts
+  const selectClient = async (client) => {
+    try {
+      setSelectedClient(client);
+      setCurrentClientAlertIndex(0);
+      setAcceptError("");
+      
+      console.log(`Selected client: ${client.clientName}`);
+      
+      // Fetch all alerts from Redis
+      const response = await fetch(`/api/triage?action=get_alerts&sessionId=${sessionId}`);
+      const data = await response.json();
+      
+      if (!data.success || !data.alerts) {
+        setAcceptError("Failed to load alerts");
+        return;
+      }
+      
+      // Filter alerts for this client and remove processed ones
+      const filteredAlerts = data.alerts.filter(alert => 
+        alert.clientName === client.clientName && !processedAlerts.has(`${alert.sheetName}-${alert.rowNumber}`)
+      );
+      
+      console.log(`Found ${filteredAlerts.length} unprocessed alerts for ${client.clientName}`);
+      setClientAlerts(filteredAlerts);
+      
+      if (filteredAlerts.length === 0) {
+        // All alerts processed, show clear flags option
+        setScreen("clearFlags");
+      } else {
+        setScreen("alertSelection");
+      }
+    } catch (err) {
+      setAcceptError(`Failed to select client: ${err.message}`);
+      console.error(err);
+    }
+  };
+
+  // NEW: Select an alert and analyze it
+  const selectAlert = async (alert) => {
+    try {
+      setCurrentClientAlertIndex(clientAlerts.indexOf(alert));
+      setAcceptError("");
+      
+      console.log(`Analyzing alert: ${alert.sheetName}-${alert.rowNumber}`);
+      
+      // Analyze the alert
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "analyze_alert",
+          alert,
+          automationCommanderSheetId,
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        setClaudeAnalysis("Error generating options: " + (data.error || "Unknown error"));
+        return;
+      }
+      
+      console.log(`Generated ${data.options?.length || 0} options`);
+      setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
+      setScreen("triageAnalysis");
+    } catch (err) {
+      setAcceptError(`Failed to analyze alert: ${err.message}`);
+      console.error(err);
+    }
+  };
+
+  // NEW: Accept an option and write to sheet
+  const acceptOption = async (option) => {
+    const alert = clientAlerts[currentClientAlertIndex];
+    
+    try {
+      setIsAccepting(true);
+      setAcceptError("");
+      
+      console.log(`Accepting option: ${option.title}`);
+      
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "accept_option",
+          alert,
+          option,
+          automationCommanderSheetId,
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        setAcceptError(`Failed to write to sheet: ${data.error || "Unknown error"}`);
+        return;
+      }
+      
+      console.log(`✅ Option accepted! ${data.cellsWritten} cells written`);
+      
+      // Mark alert as processed
+      const alertId = `${alert.sheetName}-${alert.rowNumber}`;
+      setProcessedAlerts(new Set([...processedAlerts, alertId]));
+      
+      // Remove from client alerts
+      const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
+      setClientAlerts(updatedAlerts);
+      
+      if (updatedAlerts.length === 0) {
+        // All alerts processed for this client
+        setScreen("clearFlags");
+      } else {
+        // Go to next alert in this client
+        setScreen("alertSelection");
+        setCurrentClientAlertIndex(0);
+      }
+    } catch (err) {
+      setAcceptError(`Error: ${err.message}`);
+      console.error(err);
+    } finally {
+      setIsAccepting(false);
+    }
+  };
+
+  // NEW: Clear all flags for a client by checking column BN
+  const clearAllFlags = async () => {
+    if (!selectedClient) return;
+    
+    try {
+      setIsLoading(true);
+      setAcceptError("");
+      
+      console.log(`Clearing all flags for ${selectedClient.clientName}`);
+      
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "clear_flags",
+          masterSheetId: selectedClient.masterSheetId,
+          automationCommanderSheetId,
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        setAcceptError(`Failed to clear flags: ${data.error || "Unknown error"}`);
+        return;
+      }
+      
+      console.log(`✅ Flags cleared for ${selectedClient.clientName}`);
+      
+      // Go back to client selection
+      setSelectedClient(null);
+      setClientAlerts([]);
+      setScreen("clientSelection");
+    } catch (err) {
+      setAcceptError(`Failed to clear flags: ${err.message}`);
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const styles = {
@@ -246,6 +446,13 @@ export default function TriageSystem({ onBack }) {
       fontSize: "14px",
       fontWeight: "500",
       cursor: "pointer",
+    },
+    optionButton: {
+      background: "transparent",
+      border: "none",
+      cursor: "pointer",
+      padding: "0",
+      textAlign: "left",
     },
     errorBanner: {
       background: "#fee",
@@ -455,6 +662,191 @@ export default function TriageSystem({ onBack }) {
     },
   };
 
+  // Screen 1b: Client Selection Screen
+  if (screen === "clientSelection" && sessionId) {
+    const flagCounts = {};
+    clientsWithFlags.forEach(client => {
+      const flagKeys = Object.keys(client.flags).filter(key => client.flags[key]);
+      flagCounts[client.clientName] = flagKeys.length;
+    });
+
+    return (
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <h1 style={styles.title}>Select Client</h1>
+          <p style={styles.subtitle}>Choose a client to review their alerts ({totalAlerts} total)</p>
+        </div>
+
+        <div style={styles.card}>
+          {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
+          
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            {clientsWithFlags.map((client, idx) => (
+              <button
+                key={idx}
+                onClick={() => selectClient(client)}
+                style={{
+                  ...styles.optionButton,
+                  textAlign: "left",
+                  padding: "16px",
+                  border: "1px solid #ddd",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  backgroundColor: "#f9f9f9",
+                  transition: "all 0.2s",
+                }}
+                onMouseEnter={(e) => {
+                  e.target.style.backgroundColor = "#f0f0f0";
+                  e.target.style.borderColor = "#2196f3";
+                }}
+                onMouseLeave={(e) => {
+                  e.target.style.backgroundColor = "#f9f9f9";
+                  e.target.style.borderColor = "#ddd";
+                }}
+              >
+                <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "4px" }}>
+                  {client.clientName}
+                </div>
+                <div style={{ fontSize: "13px", color: "#666" }}>
+                  {flagCounts[client.clientName]} flag(s)
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <button onClick={() => { setSessionId(""); setScreen("initial"); }} style={{ ...styles.buttonSecondary, marginTop: "20px" }}>
+            ← Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Screen 1c: Alert Selection Screen
+  if (screen === "alertSelection" && selectedClient) {
+    // Group alerts by type
+    const groupedAlerts = {};
+    clientAlerts.forEach(alert => {
+      const type = alert.flagType || alert.type || "unknown";
+      if (!groupedAlerts[type]) {
+        groupedAlerts[type] = [];
+      }
+      groupedAlerts[type].push(alert);
+    });
+
+    const getAlertSummary = (alert) => {
+      if (alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr") {
+        const inv = alert.summary;
+        return `Invoice #${inv?.invoiceNumber || inv?.reference || "?"} - £${inv?.amount?.toFixed(2) || "?"}`;
+      } else if (alert.type === "expense" || alert.flagType === "expenseDashboardDiscr") {
+        const exp = alert.summary;
+        return `${exp?.description || "Expense"} - £${exp?.amount?.toFixed(2) || "?"}`;
+      } else if (alert.type === "crm" || alert.flagType?.includes("crm")) {
+        const crm = alert.data;
+        return `${crm?.projectCode || "Project"} - £${crm?.revenue || "?"}`;
+      }
+      return "Alert";
+    };
+
+    return (
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <h1 style={styles.title}>Select Alert</h1>
+          <p style={styles.subtitle}>{selectedClient.clientName} - {clientAlerts.length} alert(s)</p>
+        </div>
+
+        <div style={styles.card}>
+          {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
+          
+          {Object.keys(groupedAlerts).length === 0 ? (
+            <div style={{ textAlign: "center", padding: "20px", color: "#666" }}>
+              No more alerts for this client
+            </div>
+          ) : (
+            <div>
+              {Object.keys(groupedAlerts).map((type) => (
+                <div key={type} style={{ marginBottom: "20px" }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#2196f3", marginBottom: "10px" }}>
+                    {getFlagName(type)}
+                  </h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {groupedAlerts[type].map((alert, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => selectAlert(alert)}
+                        style={{
+                          ...styles.optionButton,
+                          textAlign: "left",
+                          padding: "12px",
+                          border: "1px solid #e0e0e0",
+                          borderRadius: "4px",
+                          cursor: "pointer",
+                          backgroundColor: "#fff",
+                          fontSize: "13px",
+                          transition: "all 0.2s",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.target.style.backgroundColor = "#f5f5f5";
+                          e.target.style.borderColor = "#2196f3";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.target.style.backgroundColor = "#fff";
+                          e.target.style.borderColor = "#e0e0e0";
+                        }}
+                      >
+                        {getAlertSummary(alert)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, marginTop: "20px" }}>
+            ← Back to Clients
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Screen 1d: Clear Flags Screen
+  if (screen === "clearFlags" && selectedClient) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <h1 style={styles.title}>All Done!</h1>
+          <p style={styles.subtitle}>All alerts for {selectedClient.clientName} have been processed</p>
+        </div>
+
+        <div style={styles.card}>
+          {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
+          
+          <div style={{ ...styles.successBanner, marginBottom: "20px" }}>
+            All alerts have been reviewed and resolved. Click below to clear the flags for this client.
+          </div>
+
+          <div style={{ display: "flex", gap: "12px", flexDirection: "column" }}>
+            <button
+              onClick={clearAllFlags}
+              disabled={isLoading}
+              style={{
+                ...styles.button,
+                opacity: isLoading ? 0.5 : 1,
+              }}
+            >
+              {isLoading ? "Clearing Flags..." : "✓ Clear All Flags"}
+            </button>
+            <button onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
+              ← Back to Clients
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Screen 1: Initial state - show start button
   if (!sessionId && !triageComplete) {
     return (
@@ -558,9 +950,9 @@ export default function TriageSystem({ onBack }) {
   }
 
   // Screen 3b: Display individual alert with Claude analysis
-  if (sessionId && !showNoAction && alertsLoaded && alerts.length > 0) {
-    const alert = alerts[currentAlertIndex];
-    const progress = currentAlertIndex + 1;
+  if (screen === "triageAnalysis" && selectedClient && clientAlerts.length > 0) {
+    const alert = clientAlerts[currentClientAlertIndex];
+    const progress = currentClientAlertIndex + 1;
 
     return (
       <>
@@ -570,13 +962,13 @@ export default function TriageSystem({ onBack }) {
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
-          <p style={styles.subtitle}>Alert {progress} of {totalAlerts}</p>
+          <p style={styles.subtitle}>{selectedClient?.clientName} - Alert {progress} of {clientAlerts.length}</p>
         </div>
 
         <div style={styles.card}>
           <div style={styles.alertHeader}>
             <h2 style={styles.alertTitle}>{alert.clientName || alert.type || "Financial Alert"}</h2>
-            <span style={styles.alertCounter}>{progress}/{totalAlerts}</span>
+            <span style={styles.alertCounter}>{progress}/{clientAlerts.length}</span>
           </div>
 
           {alert.flagType && (
@@ -614,6 +1006,12 @@ export default function TriageSystem({ onBack }) {
                   </>
                 )}
               </div>
+            </div>
+          )}
+
+          {acceptError && (
+            <div style={{ ...styles.errorBanner, marginBottom: "16px" }}>
+              {acceptError}
             </div>
           )}
 
@@ -864,15 +1262,17 @@ export default function TriageSystem({ onBack }) {
                           <div style={styles.optionSummary}>{option.summary}</div>
                         )}
                         <button
-                          onClick={() => handleAlertDecision("accept_option_" + idx)}
+                          onClick={() => acceptOption(option)}
+                          disabled={isAccepting}
                           style={{
                             ...styles.decisionButton,
                             ...styles.approveButton,
                             marginTop: "12px",
                             width: "100%",
+                            opacity: isAccepting ? 0.5 : 1,
                           }}
                         >
-                          ✓ Accept Option {idx + 1}
+                          {isAccepting ? "Writing to sheet..." : `✓ Accept Option ${idx + 1}`}
                         </button>
                       </div>
                     ));
@@ -888,16 +1288,6 @@ export default function TriageSystem({ onBack }) {
                   );
                 }
               })()}
-              <button
-                onClick={() => handleAlertDecision("reject_all")}
-                style={{
-                  ...styles.decisionButton,
-                  ...styles.rejectButton,
-                  width: "100%",
-                }}
-              >
-                ✗ Reject All Options
-              </button>
             </div>
           )}
 
@@ -908,8 +1298,8 @@ export default function TriageSystem({ onBack }) {
           )}
 
           <div style={{ marginTop: "16px" }}>
-            <button onClick={resetTriage} style={styles.buttonSecondary}>
-              Start Over
+            <button onClick={() => setScreen("alertSelection")} style={styles.buttonSecondary}>
+              ← Back to Alerts
             </button>
           </div>
         </div>

@@ -948,6 +948,12 @@ export default async function handler(req, res) {
         sessionId,
         totalAlerts: allAlerts.length,
         noActionCount: noActionAlerts.length,
+        clientsWithFlags: clientsWithFlags.map(client => ({
+          clientName: client.clientName,
+          clientSheetId: client.clientSheetId,
+          masterSheetId: client.masterSheetId,
+          flags: client.flags,
+        })),
       });
     } else if (action === "get_alerts") {
       // Get alerts for a session from Redis
@@ -1384,7 +1390,7 @@ The Confirmed tab above shows for each job:
 - Slot 1: BX-CD (columns 75-81)
   * BX (75): Description
   * BY (76): Amount
-  * BZ (77): VAT Amount (from DirComp column I - the VAT amount, or 0 if no VAT)
+  * BZ (77): VAT? (Write "Yes" if VAT amount from DirComp column I > 0, write "No" if VAT amount is 0 or blank)
   * CA (78): Date (Rec Date from DirComp column A)
   * CB (79): Days to pay (calculated as: if "Date Paid" exists in DirComp column H, use Date Paid - Rec Date; otherwise default to 30)
   * CC (80): Status (from DirComp column F - Status)
@@ -1393,7 +1399,7 @@ The Confirmed tab above shows for each job:
 - Slot 2: CE-CK (columns 82-88)
   * CE (82): Description
   * CF (83): Amount
-  * CG (84): VAT Amount (from DirComp column I)
+  * CG (84): VAT? (Write "Yes" if VAT amount > 0, write "No" if VAT amount is 0 or blank)
   * CH (85): Date (Rec Date from DirComp column A)
   * CI (86): Days to pay (calculated from DirComp columns A and H)
   * CJ (87): Status (from DirComp column F)
@@ -1402,14 +1408,14 @@ The Confirmed tab above shows for each job:
 - Slot 3: CL-CR (columns 89-95)
   * CL (89): Description
   * CM (90): Amount
-  * CN (91): VAT Amount (from DirComp column I)
+  * CN (91): VAT? (Write "Yes" if VAT amount > 0, write "No" if VAT amount is 0 or blank)
   * CO (92): Date (Rec Date from DirComp column A)
   * CP (93): Days to pay (calculated from DirComp columns A and H)
   * CQ (94): Status (from DirComp column F)
   * CR (95): Transaction ID (from DirComp column G)
 
 **Example format:**
-"Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write 199 to BZ232 (VAT amount), write 10-Mar-26 to CA232, write 14 to CB232 (days between 10-Mar and 24-Mar), write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
+"Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write Yes to BZ232 (VAT amount is £199, so Yes), write 10-Mar-26 to CA232, write 14 to CB232 (days between 10-Mar and 24-Mar), write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
 
 Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details:
 
@@ -1441,7 +1447,7 @@ Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details
     "discrepancies": "None"
   },
   "recommendedActions": [
-    "Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write 199 to BZ232 (VAT amount), write 10-Mar-26 to CA232, write 14 to CB232 (days between 10-Mar and 24-Mar), write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
+    "Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write Yes to BZ232 (VAT amount is £199, so Yes), write 10-Mar-26 to CA232, write 14 to CB232 (days between 10-Mar and 24-Mar), write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
   ]
 }]
 
@@ -1451,10 +1457,10 @@ CRITICAL REQUIREMENTS FOR EVERY OPTION:
 3. For recommendedActions: 
    - First line: Brief summary of what will happen (e.g., "Insert expense into Slot X, Row Y, Job Name")
    - Second line: EXACT cell coordinates with all required values (Description, Amount, VAT?, Date, Days to pay, Status, Transaction ID)
-4. For VAT?: Use "Yes" if expense includes VAT (check DirComp), otherwise "No"
-5. For Days to pay: Calculate from DirComp columns (Rec Date col H vs Date Paid if available), default 30
-6. For Status: Use value from DirComp Status column
-7. For Transaction ID: Use DirComp Transaction ID column (NOT Reference column)
+4. For VAT?: Write "Yes" if DirComp column I (VAT amount) > 0, write "No" if DirComp column I is 0 or blank
+5. For Days to pay: Calculate from DirComp - if Date Paid (col H) exists, use Date Paid minus Rec Date (col A); otherwise default to 30
+6. For Status: Use value from DirComp column F (Status column)
+7. For Transaction ID: Use DirComp column G (Transaction ID column, NOT Reference column D)
 8. Rank options by: (1) Perfect placeholder match, (2) Sufficient budget + vendor match, (3) Category fallback
 
 Return ONLY JSON, no other text.`;
@@ -1964,6 +1970,175 @@ Return ONLY JSON, no other text.`;
       } catch (err) {
         console.error("❌ Error generating options:", err);
         res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "accept_option") {
+      // Accept an option and write changes to the client sheet
+      const { alert, option, automationCommanderSheetId } = req.body;
+      
+      if (!alert || !option || !automationCommanderSheetId) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "Missing alert, option, or automationCommanderSheetId" 
+        });
+      }
+
+      try {
+        console.log(`\n✅ ACCEPTING OPTION for alert:`, alert.clientName);
+        console.log(`   Option: ${option.title}`);
+        
+        const sheets = await getSheetsClient();
+        
+        // Parse recommendedActions to extract cell writes
+        const cellUpdates = [];
+        if (option.recommendedActions && Array.isArray(option.recommendedActions)) {
+          for (const actionString of option.recommendedActions) {
+            // Skip the summary line (first action), process only detailed cell instructions
+            if (actionString.includes("Write") || actionString.includes("write")) {
+              // Parse format like "Write Craig Niven T/A FILDI to BX232, write 995 to BY232..."
+              const cellMatches = actionString.match(/write\s+([^t]+)\s+to\s+([A-Z]+\d+)/gi) || [];
+              
+              cellMatches.forEach((match) => {
+                const regex = /write\s+(.+?)\s+to\s+([A-Z]+\d+)/i;
+                const parsed = match.match(regex);
+                if (parsed) {
+                  const value = parsed[1].trim();
+                  const cell = parsed[2];
+                  cellUpdates.push({ cell, value });
+                }
+              });
+            }
+          }
+        }
+        
+        console.log(`  Parsed ${cellUpdates.length} cell updates`);
+        
+        // Batch write all cells to the client sheet
+        if (cellUpdates.length > 0) {
+          const batchRequest = {
+            data: cellUpdates.map(({ cell, value }) => ({
+              range: cell,
+              values: [[value]],
+            })),
+            valueInputOption: "USER_ENTERED",
+          };
+          
+          console.log(`  Writing ${cellUpdates.length} cells to Client Sheet...`);
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: alert.clientId,
+            requestBody: batchRequest,
+          });
+          console.log(`  ✅ Cells written successfully`);
+        }
+        
+        // Record decision to TriageLog
+        const timestamp = new Date().toISOString();
+        const alertAmount = alert.summary?.amount || alert.data?.amount || alert.data?.revenue || "";
+        
+        const logRow = [
+          timestamp,
+          alert.type || alert.flagType,
+          `${alert.sheetName}-${alert.rowNumber}`,
+          alert.clientName || "",
+          alertAmount,
+          JSON.stringify({
+            matchAnalysis: option.matchAnalysis,
+            allocationBreakdown: option.allocationBreakdown,
+          }),
+          "ACCEPTED",
+          `Option: ${option.title}`,
+        ];
+        
+        console.log(`  Writing to TriageLog...`);
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: automationCommanderSheetId,
+          range: "TriageLog!A:H",
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [logRow],
+          },
+        });
+        console.log(`  ✅ Decision logged to TriageLog`);
+        
+        return res.status(200).json({
+          success: true,
+          message: "Option accepted and written to sheet",
+          cellsWritten: cellUpdates.length,
+        });
+      } catch (err) {
+        console.error(`❌ Error accepting option:`, err);
+        return res.status(500).json({ 
+          success: false, 
+          error: `Failed to write to sheet: ${err.message}`,
+          details: err.toString(),
+        });
+      }
+    } else if (action === "clear_flags") {
+      // Clear all flags for a client by checking column BN
+      const { masterSheetId, automationCommanderSheetId } = req.body;
+      
+      if (!masterSheetId || !automationCommanderSheetId) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "Missing masterSheetId or automationCommanderSheetId" 
+        });
+      }
+
+      try {
+        console.log(`\n🔄 Clearing flags for client: ${masterSheetId}`);
+        
+        const sheets = await getSheetsClient();
+        
+        // Find the row number for this client in AutoUpdates
+        // Master Sheet ID is in column M (index 12), so we need to match it
+        const automationResponse = await sheets.spreadsheets.values.get({
+          spreadsheetId: automationCommanderSheetId,
+          range: "AutoUpdates!A:M",
+        });
+        
+        const rows = automationResponse.data.values || [];
+        let clientRow = -1;
+        
+        for (let i = 1; i < rows.length; i++) {
+          const rowMasterSheetId = rows[i][12]; // Column M (index 12)
+          if (rowMasterSheetId === masterSheetId) {
+            clientRow = i + 1; // Google Sheets rows are 1-indexed
+            console.log(`  Found client at row ${clientRow}`);
+            break;
+          }
+        }
+        
+        if (clientRow === -1) {
+          console.error(`  ❌ Client not found in AutoUpdates`);
+          return res.status(400).json({ 
+            success: false, 
+            error: "Could not find client in AutoUpdates tab" 
+          });
+        }
+        
+        // Write TRUE to column BN (column index 65)
+        console.log(`  Writing TRUE to AutoUpdates!BN${clientRow}`);
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: automationCommanderSheetId,
+          range: `AutoUpdates!BN${clientRow}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [[true]],
+          },
+        });
+        
+        console.log(`  ✅ Flags cleared successfully`);
+        
+        return res.status(200).json({
+          success: true,
+          message: "Flags cleared",
+          row: clientRow,
+        });
+      } catch (err) {
+        console.error(`❌ Error clearing flags:`, err);
+        return res.status(500).json({ 
+          success: false, 
+          error: `Failed to clear flags: ${err.message}` 
+        });
       }
     } else if (action === "record_decision") {
       // Log user's decision to TriageLog

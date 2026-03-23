@@ -1137,8 +1137,23 @@ export default async function handler(req, res) {
           
           console.log(`  📋 Expense details: Ref=${expenseRef}, Amount=${expenseAmount}, Description=${expenseDescription}, Account=${expenseAccountName}`);
 
+          // Build detailed Confirmed tab table for expenses (matching invoice approach)
+          const expenseConfirmedTabTable = activeConfirmedData
+            .map((row, idx) => {
+              const client = row[0] || '';
+              const jobName = row[1] || '';
+              const projectCode = row[2] || '';
+              const revenue = row[32] !== undefined ? row[32] : '';
+              const directCosts = row[33] !== undefined ? row[33] : '';
+              const projType = row[35] || '';
+              const startDate = row[37] || '';
+              const endDate = row[38] || '';
+              
+              return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | Revenue: ${revenue} | DirectCosts: ${directCosts} | Type: ${projType} | Start: ${startDate} | End: ${endDate}`;
+            })
+            .join('\n');
           
-          // Build expense prompt - CORRECTED MATCHING LOGIC
+          // Build expense prompt with FULL Confirmed tab data (like invoices do)
           // DO NOT try to match by client name (client is YOUR agency, not the end-client in jobs)
           // Instead match by: vendor name, amount, and account category
           const expensePrompt = `You are analyzing an unmatched business expense. This expense could match either:
@@ -1157,51 +1172,50 @@ UNMATCHED EXPENSE:
 OUTGOINGS CATEGORIES (For General/Operational Expenses):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
 
-CONFIRMED JOBS (with end-client names and direct cost budgets):
-${confirmedJobs.join("\n")}
+CONFIRMED TAB DATA (All non-blank rows - shows jobs and their direct cost budgets):
+${expenseConfirmedTabTable}
 
-HOW TO MATCH THIS EXPENSE:
+CRITICAL INFORMATION ABOUT DIRECT COSTS:
 
-**For Job-Specific Direct Costs:**
-- Look at ACCOUNT CATEGORY first: "${expenseAccountName}"
-  - Contains "Contractor", "Subcontractor", "Freelancer", "Labour" → Almost certainly job work
-  - Contains "Travel", "Materials", "Equipment", "Software", "Services" → Likely job-specific
-  - Numbered categories (e.g., "321", "401") often represent cost types for jobs
-- Look at VENDOR NAME: "${expenseDescription}"
-  - Is this type of vendor (contractor, supplier, service provider) someone who would work on projects?
-  - Does the amount suggest it's specialist work?
-- Look at AMOUNT: £${expenseAmount.toFixed(2)}
-  - Is this a reasonable project expense amount?
-  - Check if it fits within any job's direct cost budget range
+**Understanding Job Direct Costs:**
+- Each job in Confirmed tab has a "DirectCosts" amount (column AH)
+- This is the BUDGETED direct cost for the entire job
+- Expenses are matched to this budget - they reduce the remaining budget
+- Parent rows have the Revenue and DirectCosts amounts
 
-**For Outgoings Categories:**
-- Is this a recurring/general business expense (rent, insurance, office supplies, subscriptions)?
-- Would this vendor work for ANY project or is it general operations?
+**How to Evaluate Job Matches for Expenses:**
+1. Look at the account category: "${expenseAccountName}"
+   - "Subcontractor", "Contractor", "Labour" → job-specific work
+   - "Travel", "Materials", "Equipment" → likely job-specific
+2. Look at vendor name: "${expenseDescription}"
+   - Would this vendor work on project-type work?
+3. Check the Confirmed tab above for jobs with matching characteristics
+   - Is the expense amount reasonable within that job's direct cost budget?
+   - Does the job type match the expense type?
+4. IMPORTANT: Only include expenses with actual references in matching calculations
+   - Expenses with blank/missing references are PLACEHOLDERS
+   - NEVER allocate budget based on placeholder expenses
 
-IMPORTANT MATCHING RULES:
-- If the account category strongly suggests job work (contractors, subcontractors), prioritize matching to jobs
-- Don't try to match vendor name to client names - they won't line up
-- Focus on: account category → vendor type → amount reasonableness
-
-YOUR TASK:
+**Your Task:**
 1. Determine: JOB-SPECIFIC EXPENSE (direct costs) or GENERAL OPERATIONAL expense?
-2. Suggest 3 options with clear reasoning
-3. For job matches: explain why the account/vendor type fits that type of work
+2. For job matches: identify which job's direct cost budget this should apply to, using the Confirmed tab data above
+3. Suggest 3 GENUINELY DIFFERENT options
 
 Format as JSON array:
 [{
   "optionId": 1,
-  "title": "Match to [Job Name or Category] - [brief reason]",
+  "title": "Match to [Job Name] - [reason]",
   "matchType": "job" or "category",
   "jobRow": 52,
   "jobName": "Job Name (if job match)",
   "category": "Category Name (if category match)",
   "facts": {
     "matchConfidence": "High/Medium/Low",
-    "vendorAnalysis": "What this vendor type tells us",
-    "accountCategoryAnalysis": "Why this account category matters",
+    "vendorAnalysis": "Why this vendor matches this work type",
+    "accountCategoryAnalysis": "Why this account category indicates job-specific work",
+    "jobDirectCostBudget": "The job's direct cost budget from Confirmed tab (if job match)",
     "reasonForChoice": "Why this is the best match",
-    "discrepancies": "Any concerns"
+    "discrepancies": "Any concerns or issues"
   },
   "recommendedActions": ["Action 1", "Action 2"]
 }]

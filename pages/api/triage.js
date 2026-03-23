@@ -386,16 +386,13 @@ async function enrichAlertWithClientData(sheets, alert, clientSheetId) {
 function buildInvCompSummary(alert) {
   const accounting = alert.data.accounting || [];
   
-  // DEBUG: Log raw values to understand what we're getting
-  console.log(`DEBUG buildInvCompSummary:`, {
-    raw_accounting: accounting,
-    index_0: accounting[0],
-    index_1: accounting[1],
-    index_2: accounting[2],
-    index_3: accounting[3],
-    index_4: accounting[4],
-    index_5: accounting[5],
-  });
+  // DEBUG: Log raw values with ALL indices
+  console.log(`\n🔍 buildInvCompSummary called`);
+  console.log(`  accounting array length: ${accounting.length}`);
+  console.log(`  accounting array contents:`);
+  for (let i = 0; i < accounting.length; i++) {
+    console.log(`    [${i}] = "${accounting[i]}"`);
+  }
   
   // InvComp columns (A:K) - CORRECT MAPPING:
   // A: Client, B: Job, C: Invoice amount, D: Total excl VAT, E: VAT included,
@@ -414,14 +411,20 @@ function buildInvCompSummary(alert) {
   const status = accounting[9] || ''; // Column J - Status
   const currency = accounting[10] || 'GBP'; // Column K - Currency
   
-  console.log(`DEBUG after parsing:`, {
-    client, job, invoiceAmount, totalExclVAT, vatIncluded, invoiceNo, sentDate, status, currency
-  });
+  console.log(`  Extracted values:`);
+  console.log(`    [0] client = "${client}"`);
+  console.log(`    [1] job = "${job}"`);
+  console.log(`    [2] invoiceAmount = ${invoiceAmount}`);
+  console.log(`    [3] totalExclVAT = ${totalExclVAT}`);
+  console.log(`    [4] vatIncluded = ${vatIncluded}`);
+  console.log(`    [5] invoiceNo = "${invoiceNo}"  ← THIS IS THE PROBLEM FIELD`);
+  console.log(`    [6] sentDate = "${sentDate}"`);
+  console.log(`    [9] status = "${status}"`);
+  console.log(`    [10] currency = "${currency}"`);
   
   // Use Total excl VAT (Column D) as the primary amount
   // This is what the user specified
   const amount = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
-  console.log(`DEBUG amount decision: totalExclVAT(${totalExclVAT}) > 0 ? totalExclVAT : invoiceAmount = ${amount}`);
   
   // Determine VAT indicator
   let vatSuffix = '';
@@ -445,6 +448,8 @@ function buildInvCompSummary(alert) {
   if (status) {
     summary += ` • ${status}`;
   }
+  
+  console.log(`  Final summary: "${summary}"`);
   
   return {
     invoiceNo,

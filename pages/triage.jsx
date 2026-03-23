@@ -232,36 +232,49 @@ export default function TriageSystem({ onBack }) {
   // NEW: Select a client and fetch its alerts
   const selectClient = async (client) => {
     try {
+      console.log(`\n📍 selectClient called: ${client.clientName}`);
+      
       setSelectedClient(client);
       setCurrentClientAlertIndex(0);
       setAcceptError("");
       
       console.log(`Selected client: ${client.clientName}`);
+      console.log(`  masterSheetId: ${client.masterSheetId}`);
+      console.log(`  clientSheetId: ${client.clientSheetId}`);
       
       // Fetch all alerts from Redis
+      console.log(`  Fetching alerts from Redis (sessionId: ${sessionId})`);
       const response = await fetch(`/api/triage?action=get_alerts&sessionId=${sessionId}`);
       const data = await response.json();
       
       if (!data.success || !data.alerts) {
+        console.error(`❌ Failed to load alerts from Redis`);
         setAcceptError("Failed to load alerts");
         return;
       }
+      
+      console.log(`  ✅ Loaded ${data.alerts.length} total alerts from Redis`);
       
       // Filter alerts for this client and remove processed ones
       const filteredAlerts = data.alerts.filter(alert => 
         alert.clientName === client.clientName && !processedAlerts.has(`${alert.sheetName}-${alert.rowNumber}`)
       );
       
-      console.log(`Found ${filteredAlerts.length} unprocessed alerts for ${client.clientName}`);
+      console.log(`  📊 Found ${filteredAlerts.length} unprocessed alerts for ${client.clientName}`);
+      console.log(`     (processedAlerts set: ${Array.from(processedAlerts).join(", ") || "empty"})`);
+      
       setClientAlerts(filteredAlerts);
       
       if (filteredAlerts.length === 0) {
         // All alerts processed, show clear flags option
+        console.log(`  → No unprocessed alerts, going to clearFlags screen`);
         setScreen("clearFlags");
       } else {
+        console.log(`  → ${filteredAlerts.length} alerts ready, going to alertSelection screen`);
         setScreen("alertSelection");
       }
     } catch (err) {
+      console.error(`❌ selectClient error: ${err.message}`);
       setAcceptError(`Failed to select client: ${err.message}`);
       console.error(err);
     }
@@ -270,11 +283,20 @@ export default function TriageSystem({ onBack }) {
   // NEW: Select an alert and analyze it
   const selectAlert = async (alert) => {
     try {
-      setCurrentClientAlertIndex(clientAlerts.indexOf(alert));
+      console.log(`\n📍 selectAlert called for: ${alert.sheetName}-${alert.rowNumber}`);
+      console.log(`  Current screen before change: ${screen}`);
+      console.log(`  selectedClient: ${selectedClient?.clientName}`);
+      console.log(`  clientAlerts.length: ${clientAlerts.length}`);
+      
+      const alertIndex = clientAlerts.indexOf(alert);
+      console.log(`  Alert index in clientAlerts: ${alertIndex}`);
+      
+      setCurrentClientAlertIndex(alertIndex);
       setAcceptError("");
       setIsAnalyzing(true);
       setClaudeAnalysis(""); // Clear previous analysis
       
+      console.log(`  Setting screen to "triageAnalysis"`);
       // IMPORTANT: Go to analysis screen IMMEDIATELY to show loading state
       setScreen("triageAnalysis");
       
@@ -294,15 +316,17 @@ export default function TriageSystem({ onBack }) {
       const data = await response.json();
       
       if (!data.success) {
+        console.error(`❌ Analysis failed: ${data.error}`);
         setClaudeAnalysis("Error generating options: " + (data.error || "Unknown error"));
         setIsAnalyzing(false);
         return;
       }
       
-      console.log(`Generated ${data.options?.length || 0} options`);
+      console.log(`✅ Generated ${data.options?.length || 0} options`);
       setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
       setIsAnalyzing(false);
     } catch (err) {
+      console.error(`❌ selectAlert error: ${err.message}`);
       setAcceptError(`Failed to analyze alert: ${err.message}`);
       setIsAnalyzing(false);
       console.error(err);
@@ -678,7 +702,11 @@ export default function TriageSystem({ onBack }) {
     });
 
     return (
-      <div style={styles.container}>
+      <>
+        <Head>
+          <title>Alert Triage System</title>
+        </Head>
+        <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Client</h1>
           <p style={styles.subtitle}>Choose a client to review their alerts ({totalAlerts} total)</p>
@@ -725,7 +753,7 @@ export default function TriageSystem({ onBack }) {
             ← Back
           </button>
         </div>
-      </div>
+      </>
     );
   }
 
@@ -756,7 +784,11 @@ export default function TriageSystem({ onBack }) {
     };
 
     return (
-      <div style={styles.container}>
+      <>
+        <Head>
+          <title>Alert Triage System</title>
+        </Head>
+        <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
           <p style={styles.subtitle}>{selectedClient.clientName} - {clientAlerts.length} alert(s)</p>
@@ -814,14 +846,18 @@ export default function TriageSystem({ onBack }) {
             ← Back to Clients
           </button>
         </div>
-      </div>
+      </>
     );
   }
 
   // Screen 1d: Clear Flags Screen
   if (screen === "clearFlags" && selectedClient) {
     return (
-      <div style={styles.container}>
+      <>
+        <Head>
+          <title>Alert Triage System</title>
+        </Head>
+        <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>All Done!</h1>
           <p style={styles.subtitle}>All alerts for {selectedClient.clientName} have been processed</p>
@@ -850,7 +886,7 @@ export default function TriageSystem({ onBack }) {
             </button>
           </div>
         </div>
-      </div>
+      </>
     );
   }
 
@@ -929,34 +965,7 @@ export default function TriageSystem({ onBack }) {
     );
   }
 
-  // Screen 3a: Alerts loading
-  if (sessionId && !showNoAction && totalAlerts > 0 && !alertsLoaded) {
-    return (
-      <div style={styles.container}>
-        <div style={styles.header}>
-          <h1 style={styles.title}>Actionable Alerts</h1>
-          <p style={styles.subtitle}>Alerts requiring your review and decision</p>
-        </div>
-
-        <div style={styles.card}>
-          <div style={styles.statsBox}>
-            <div style={styles.stat}>
-              <p style={styles.statNumber}>{totalAlerts}</p>
-              <p style={styles.statLabel}>Alerts to Review</p>
-            </div>
-          </div>
-
-          <p style={{ color: "#333", marginBottom: "20px" }}>
-            Claude is analyzing your {totalAlerts} actionable alert{totalAlerts !== 1 ? "s" : ""} and will provide recommendations.
-          </p>
-
-          <p style={styles.loadingText}>Loading alerts from system...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Screen 3b: Display individual alert with Claude analysis
+  // Screen 3b: Display individual alert with Claude analysis (NEW CLIENT-BASED FLOW)
   if (screen === "triageAnalysis" && selectedClient && clientAlerts.length > 0) {
     const alert = clientAlerts[currentClientAlertIndex];
     const progress = currentClientAlertIndex + 1;

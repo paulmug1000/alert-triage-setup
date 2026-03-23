@@ -1130,8 +1130,7 @@ AVAILABLE OUTGOINGS CATEGORIES (Budget):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
 
 AVAILABLE CONFIRMED JOBS (for direct cost matching):
-${confirmedJobs.slice(0, 20).join("\n")}
-${confirmedJobs.length > 20 ? `... and ${confirmedJobs.length - 20} more jobs` : ""}
+${confirmedJobs.join("\n")}
 
 MATCHING RULES & TOLERANCES:
 ${kbRules || "- Default matching rules apply"}
@@ -1324,8 +1323,7 @@ UNMATCHED CRM JOB:
 • Matching Mode: ${tabName}
 
 EXISTING JOBS IN ${tabName.toUpperCase()} TAB:
-${existingJobs.slice(0, 20).join("\n")}
-${existingJobs.length > 20 ? `... and ${existingJobs.length - 20} more jobs` : ""}
+${existingJobs.join("\n")}
 
 MATCHING RULES:
 ${kbRules || "- Default matching rules apply"}

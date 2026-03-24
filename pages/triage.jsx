@@ -56,6 +56,10 @@ export default function TriageSystem({ onBack }) {
   // Clear flags: which flag groups to clear
   const [flagsToClear, setFlagsToClear] = useState({ invoice: false, crm: false, expense: false });
 
+  // Non-actionable flags for the selected client
+  const [clientNoActionAlerts, setClientNoActionAlerts] = useState([]);
+  const [resolvedNoActionFlags, setResolvedNoActionFlags] = useState(new Set());
+
   const fetchAndAnalyzeAlerts = async (sessionId) => {
     try {
       setIsAnalyzing(true);
@@ -287,16 +291,28 @@ export default function TriageSystem({ onBack }) {
         alert.clientName === client.clientName && !processedAlerts.has(`${alert.sheetName}-${alert.rowNumber}`)
       );
       
+      // Filter non-actionable alerts for this client by masterSheetId
+      const filteredNoAction = (data.noActionAlerts || []).filter(
+        na => na.clientId === client.masterSheetId
+      );
+
       console.log(`  📊 Found ${filteredAlerts.length} unprocessed alerts for ${client.clientName}`);
-      console.log(`     (processedAlerts set: ${Array.from(processedAlerts).join(", ") || "empty"})`);
+      console.log(`  📋 Found ${filteredNoAction.length} non-actionable flags for ${client.clientName}`);
       
       setClientAlerts(filteredAlerts);
+      setClientNoActionAlerts(filteredNoAction);
+      setResolvedNoActionFlags(new Set()); // reset on each client selection
       
       if (filteredAlerts.length === 0) {
-        // All alerts processed, show clear flags option
-        console.log(`  → No unprocessed alerts, going to clearFlags screen`);
-        setFlagsToClear(computeFlagGroups(client));
-        setScreen("clearFlags");
+        // No actionable alerts — only go to clearFlags if no-action flags are all resolved too
+        if (filteredNoAction.length === 0 || filteredNoAction.every(na => resolvedNoActionFlags.has(na.flagType))) {
+          console.log(`  → No unprocessed alerts and all no-action flags resolved, going to clearFlags screen`);
+          setFlagsToClear(computeFlagGroups(client));
+          setScreen("clearFlags");
+        } else {
+          console.log(`  → No actionable alerts but ${filteredNoAction.length} non-actionable flag(s) need resolving`);
+          setScreen("alertSelection");
+        }
       } else {
         console.log(`  → ${filteredAlerts.length} alerts ready, going to alertSelection screen`);
         setScreen("alertSelection");
@@ -393,9 +409,15 @@ export default function TriageSystem({ onBack }) {
       setClientAlerts(updatedAlerts);
       
       if (updatedAlerts.length === 0) {
-        // All alerts processed for this client
-        setFlagsToClear(computeFlagGroups(selectedClient));
-        setScreen("clearFlags");
+        // All actionable alerts processed — go to clearFlags only if no-action flags are all resolved
+        if (allNoActionResolved()) {
+          setFlagsToClear(computeFlagGroups(selectedClient));
+          setScreen("clearFlags");
+        } else {
+          // Still have unresolved non-actionable flags — go back to alertSelection to show them
+          setScreen("alertSelection");
+          setCurrentClientAlertIndex(0);
+        }
       } else {
         // Go to next alert in this client
         setScreen("alertSelection");
@@ -408,6 +430,10 @@ export default function TriageSystem({ onBack }) {
       setIsAccepting(false);
     }
   };
+
+  // Returns true when all non-actionable flags for the current client are resolved
+  const allNoActionResolved = () =>
+    clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.flagType));
 
   // Compute which flag groups (invoice/crm/expense) are active for a client
   // Used to pre-check the right toggles on the Clear Flags screen
@@ -1148,15 +1174,17 @@ export default function TriageSystem({ onBack }) {
 
   // Screen 1c: Alert Selection Screen
   if (screen === "alertSelection" && selectedClient) {
-    // Group alerts by type
+    // Group actionable alerts by type
     const groupedAlerts = {};
     clientAlerts.forEach(alert => {
       const type = alert.flagType || alert.type || "unknown";
-      if (!groupedAlerts[type]) {
-        groupedAlerts[type] = [];
-      }
+      if (!groupedAlerts[type]) groupedAlerts[type] = [];
       groupedAlerts[type].push(alert);
     });
+
+    const noActionDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.flagType));
+    const allActionableDone = clientAlerts.length === 0;
+    const canProceed = allActionableDone && noActionDone;
 
     return (
       <>
@@ -1172,9 +1200,12 @@ export default function TriageSystem({ onBack }) {
         <div style={styles.card}>
           {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
           
+          {/* Actionable alerts */}
           {Object.keys(groupedAlerts).length === 0 ? (
-            <div style={{ textAlign: "center", padding: "20px", color: "#666" }}>
-              No more alerts for this client
+            <div style={{ textAlign: "center", padding: "20px", color: "#666", marginBottom: "8px" }}>
+              {clientNoActionAlerts.length > 0
+                ? "All actionable alerts resolved ✓"
+                : "No more alerts for this client"}
             </div>
           ) : (
             <div>
@@ -1217,7 +1248,80 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
-          <button onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, marginTop: "20px" }}>
+          {/* Non-actionable flags section */}
+          {clientNoActionAlerts.length > 0 && (
+            <div style={styles.noActionSection}>
+              <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#666", marginBottom: "10px" }}>
+                Informational Flags
+                <span style={{ fontWeight: "400", marginLeft: "8px", fontSize: "12px" }}>
+                  ({resolvedNoActionFlags.size}/{clientNoActionAlerts.length} resolved)
+                </span>
+              </h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {clientNoActionAlerts.map((na) => {
+                  const isResolved = resolvedNoActionFlags.has(na.flagType);
+                  return (
+                    <div
+                      key={na.flagType}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "10px 12px",
+                        borderRadius: "4px",
+                        border: `1px solid ${isResolved ? "#c8e6c9" : "#e0e0e0"}`,
+                        background: isResolved ? "#f1f8f2" : "#fff",
+                        gap: "12px",
+                      }}
+                    >
+                      <span style={{
+                        fontSize: "13px",
+                        color: isResolved ? "#2e7d32" : "#555",
+                        textDecoration: isResolved ? "line-through" : "none",
+                      }}>
+                        {na.flagName || getFlagName(na.flagType)}
+                      </span>
+                      {isResolved ? (
+                        <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>
+                          ✓ Resolved
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]))}
+                          style={{
+                            ...styles.buttonSecondary,
+                            fontSize: "12px",
+                            padding: "5px 10px",
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
+                          }}
+                        >
+                          Mark resolved
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Proceed to Clear Flags — only shown when everything is done */}
+          {canProceed && (
+            <div style={{ marginTop: "16px" }}>
+              <button
+                onClick={() => {
+                  setFlagsToClear(computeFlagGroups(selectedClient));
+                  setScreen("clearFlags");
+                }}
+                style={styles.button}
+              >
+                All Done → Clear Flags
+              </button>
+            </div>
+          )}
+
+          <button onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, marginTop: "12px" }}>
             ← Back to Clients
           </button>
         </div>

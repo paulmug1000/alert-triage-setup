@@ -2500,16 +2500,17 @@ Return ONLY JSON, no other text.`;
         if (option.recommendedActions && Array.isArray(option.recommendedActions)) {
           for (const actionString of option.recommendedActions) {
             if (actionString.includes("Write") || actionString.includes("write")) {
-              const cellMatches = actionString.match(/write\s+([^t]+)\s+to\s+([A-Z]+\d+)/gi) || [];
-              cellMatches.forEach((match) => {
-                const regex = /write\s+(.+?)\s+to\s+([A-Z]+\d+)/i;
-                const parsed = match.match(regex);
-                if (parsed) {
-                  const value = parsed[1].trim();
-                  const cell = parsed[2];
+              // Match: write <value> to <CELL> — value may contain any characters including 't'
+              // Use a global regex with a proper non-greedy lookahead stop
+              const regex = /write\s+(.+?)\s+to\s+([A-Z]{1,3}\d+)(?:\s*[,(]|$)/gi;
+              let match;
+              while ((match = regex.exec(actionString)) !== null) {
+                const value = match[1].trim();
+                const cell = match[2];
+                if (value && cell) {
                   cellUpdates.push({ cell, value });
                 }
-              });
+              }
             }
           }
         }

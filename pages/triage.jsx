@@ -35,7 +35,7 @@ export default function TriageSystem({ onBack }) {
   const [userDecision, setUserDecision] = useState(null);
   
   // NEW: Client selection states
-  const [screen, setScreen] = useState("initial"); // initial | clientSelection | alertSelection | triageAnalysis
+  const [screen, setScreen] = useState("initial"); // initial | clientSelection | alertSelection | triageAnalysis | ignoredAlerts
   const [clientsWithFlags, setClientsWithFlags] = useState([]);
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientAlerts, setClientAlerts] = useState([]);
@@ -43,6 +43,15 @@ export default function TriageSystem({ onBack }) {
   const [isAccepting, setIsAccepting] = useState(false);
   const [acceptError, setAcceptError] = useState("");
   const [processedAlerts, setProcessedAlerts] = useState(new Set());
+
+  // AlertMemory: ignore modal + ignored alerts screen
+  const [showIgnoreModal, setShowIgnoreModal] = useState(false);
+  const [ignoreReason, setIgnoreReason] = useState("");
+  const [isIgnoring, setIsIgnoring] = useState(false);
+  const [ignoredAlerts, setIgnoredAlerts] = useState([]);
+  const [isLoadingIgnored, setIsLoadingIgnored] = useState(false);
+  const [isUnignoring, setIsUnignoring] = useState(null); // holds fingerprintHash being unignored
+  const [fromCache, setFromCache] = useState(false);
 
   const fetchAndAnalyzeAlerts = async (sessionId) => {
     try {
@@ -299,25 +308,18 @@ export default function TriageSystem({ onBack }) {
   const selectAlert = async (alert) => {
     try {
       console.log(`\n📍 selectAlert called for: ${alert.sheetName}-${alert.rowNumber}`);
-      console.log(`  Current screen before change: ${screen}`);
-      console.log(`  selectedClient: ${selectedClient?.clientName}`);
-      console.log(`  clientAlerts.length: ${clientAlerts.length}`);
       
       const alertIndex = clientAlerts.indexOf(alert);
-      console.log(`  Alert index in clientAlerts: ${alertIndex}`);
-      
       setCurrentClientAlertIndex(alertIndex);
       setAcceptError("");
       setIsAnalyzing(true);
-      setClaudeAnalysis(""); // Clear previous analysis
+      setClaudeAnalysis("");
+      setFromCache(false);
+      setShowIgnoreModal(false);
+      setIgnoreReason("");
       
-      console.log(`  Setting screen to "triageAnalysis"`);
-      // IMPORTANT: Go to analysis screen IMMEDIATELY to show loading state
       setScreen("triageAnalysis");
       
-      console.log(`Analyzing alert: ${alert.sheetName}-${alert.rowNumber}`);
-      
-      // THEN analyze the alert
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -337,14 +339,14 @@ export default function TriageSystem({ onBack }) {
         return;
       }
       
-      console.log(`✅ Generated ${data.options?.length || 0} options`);
+      console.log(`✅ Generated ${data.options?.length || 0} options${data.fromCache ? " (from cache)" : ""}`);
+      setFromCache(!!data.fromCache);
       setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
       setIsAnalyzing(false);
     } catch (err) {
       console.error(`❌ selectAlert error: ${err.message}`);
       setAcceptError(`Failed to analyze alert: ${err.message}`);
       setIsAnalyzing(false);
-      console.error(err);
     }
   };
 
@@ -440,6 +442,106 @@ export default function TriageSystem({ onBack }) {
       console.error(err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // AlertMemory: ignore current alert permanently
+  const ignoreAlert = async () => {
+    const alert = clientAlerts[currentClientAlertIndex];
+    try {
+      setIsIgnoring(true);
+      setAcceptError("");
+
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "ignore_alert",
+          alert,
+          ignoreReason,
+          automationCommanderSheetId,
+        }),
+      });
+
+      const data = await response.json();
+      if (!data.success) {
+        setAcceptError(`Failed to ignore alert: ${data.error || "Unknown error"}`);
+        return;
+      }
+
+      console.log(`✅ Alert ignored`);
+      setShowIgnoreModal(false);
+      setIgnoreReason("");
+
+      // Remove from client alerts list and navigate away
+      const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
+      setClientAlerts(updatedAlerts);
+      setCurrentClientAlertIndex(0);
+      setScreen(updatedAlerts.length === 0 ? "clearFlags" : "alertSelection");
+    } catch (err) {
+      setAcceptError(`Error: ${err.message}`);
+    } finally {
+      setIsIgnoring(false);
+    }
+  };
+
+  // AlertMemory: load all ignored alerts for the ignored alerts screen
+  const loadIgnoredAlerts = async () => {
+    try {
+      setIsLoadingIgnored(true);
+      setAcceptError("");
+
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "get_ignored_alerts",
+          automationCommanderSheetId,
+        }),
+      });
+
+      const data = await response.json();
+      if (!data.success) {
+        setAcceptError(`Failed to load ignored alerts: ${data.error || "Unknown error"}`);
+        return;
+      }
+
+      setIgnoredAlerts(data.ignoredAlerts || []);
+    } catch (err) {
+      setAcceptError(`Error: ${err.message}`);
+    } finally {
+      setIsLoadingIgnored(false);
+    }
+  };
+
+  // AlertMemory: un-ignore an alert so it reappears in future triage runs
+  const unignoreAlert = async (fingerprintHash) => {
+    try {
+      setIsUnignoring(fingerprintHash);
+      setAcceptError("");
+
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "unignore_alert",
+          fingerprintHash,
+          automationCommanderSheetId,
+        }),
+      });
+
+      const data = await response.json();
+      if (!data.success) {
+        setAcceptError(`Failed to un-ignore alert: ${data.error || "Unknown error"}`);
+        return;
+      }
+
+      // Remove from local list
+      setIgnoredAlerts(prev => prev.filter(a => a.fingerprintHash !== fingerprintHash));
+    } catch (err) {
+      setAcceptError(`Error: ${err.message}`);
+    } finally {
+      setIsUnignoring(null);
     }
   };
 
@@ -706,7 +808,177 @@ export default function TriageSystem({ onBack }) {
       background: "#2196f3",
       color: "white",
     },
+    cacheBadge: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "4px",
+      background: "#e8f5e9",
+      color: "#2e7d32",
+      border: "1px solid #a5d6a7",
+      borderRadius: "4px",
+      padding: "3px 8px",
+      fontSize: "12px",
+      fontWeight: "600",
+      marginLeft: "8px",
+    },
+    modalOverlay: {
+      position: "fixed",
+      top: 0, left: 0, right: 0, bottom: 0,
+      background: "rgba(0,0,0,0.45)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 1000,
+    },
+    modalCard: {
+      background: "white",
+      borderRadius: "8px",
+      padding: "24px",
+      width: "440px",
+      maxWidth: "90vw",
+      boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+    },
+    modalTitle: {
+      fontSize: "16px",
+      fontWeight: "700",
+      color: "#1a1a1a",
+      margin: "0 0 8px 0",
+    },
+    modalSubtitle: {
+      fontSize: "13px",
+      color: "#666",
+      margin: "0 0 16px 0",
+      lineHeight: "1.5",
+    },
+    modalTextarea: {
+      width: "100%",
+      border: "1px solid #ddd",
+      borderRadius: "6px",
+      padding: "10px",
+      fontSize: "13px",
+      fontFamily: "inherit",
+      resize: "vertical",
+      minHeight: "80px",
+      boxSizing: "border-box",
+    },
+    modalButtons: {
+      display: "flex",
+      gap: "10px",
+      marginTop: "16px",
+      justifyContent: "flex-end",
+    },
+    ignoreButton: {
+      background: "#ef6c00",
+      color: "white",
+      border: "none",
+      borderRadius: "6px",
+      padding: "9px 18px",
+      fontWeight: "600",
+      fontSize: "13px",
+      cursor: "pointer",
+    },
+    ignoredAlertCard: {
+      background: "#fff8f2",
+      border: "1px solid #ffe0b2",
+      borderRadius: "6px",
+      padding: "14px 16px",
+      marginBottom: "10px",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: "12px",
+    },
+    ignoredAlertMeta: {
+      fontSize: "12px",
+      color: "#999",
+      marginTop: "4px",
+    },
+    unignoreButton: {
+      background: "#1976d2",
+      color: "white",
+      border: "none",
+      borderRadius: "6px",
+      padding: "6px 14px",
+      fontWeight: "600",
+      fontSize: "12px",
+      cursor: "pointer",
+      whiteSpace: "nowrap",
+      flexShrink: 0,
+    },
+    linkButton: {
+      background: "none",
+      border: "none",
+      color: "#0066cc",
+      fontSize: "13px",
+      cursor: "pointer",
+      padding: "0",
+      textDecoration: "underline",
+    },
   };
+
+  // Screen: Ignored Alerts
+  if (screen === "ignoredAlerts") {
+    return (
+      <>
+        <Head><title>Alert Triage System</title></Head>
+        <div style={styles.container}>
+          <div style={styles.header}>
+            <h1 style={styles.title}>Ignored Alerts</h1>
+            <p style={styles.subtitle}>Alerts permanently excluded from triage</p>
+          </div>
+
+          <div style={styles.card}>
+            {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
+
+            {isLoadingIgnored ? (
+              <p style={styles.loadingText}>Loading ignored alerts...</p>
+            ) : ignoredAlerts.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "24px", color: "#666" }}>
+                No ignored alerts yet.
+              </div>
+            ) : (
+              <div>
+                {ignoredAlerts.map((a) => (
+                  <div key={a.fingerprintHash} style={styles.ignoredAlertCard}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a" }}>
+                        {a.alertSummary || "(no summary)"}
+                      </div>
+                      <div style={styles.ignoredAlertMeta}>
+                        {a.clientName} · {a.alertType} · Ignored {a.lastSeen}
+                      </div>
+                      {a.ignoreReason && (
+                        <div style={{ fontSize: "12px", color: "#888", marginTop: "4px", fontStyle: "italic" }}>
+                          Reason: {a.ignoreReason}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => unignoreAlert(a.fingerprintHash)}
+                      disabled={isUnignoring === a.fingerprintHash}
+                      style={{
+                        ...styles.unignoreButton,
+                        opacity: isUnignoring === a.fingerprintHash ? 0.5 : 1,
+                      }}
+                    >
+                      {isUnignoring === a.fingerprintHash ? "Restoring..." : "↩ Un-ignore"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => { setAcceptError(""); setScreen("initial"); }}
+              style={{ ...styles.buttonSecondary, marginTop: "20px" }}
+            >
+              ← Back to Home
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   // Screen 1b: Client Selection Screen
   if (screen === "clientSelection" && sessionId) {
@@ -932,6 +1204,18 @@ export default function TriageSystem({ onBack }) {
           {isLoading && (
             <p style={styles.loadingText}>Scanning automation commander for alerts...</p>
           )}
+
+          <div style={{ marginTop: "16px" }}>
+            <button
+              onClick={() => {
+                setScreen("ignoredAlerts");
+                loadIgnoredAlerts();
+              }}
+              style={styles.linkButton}
+            >
+              View ignored alerts →
+            </button>
+          </div>
         </div>
 
         {onBack && (
@@ -991,7 +1275,12 @@ export default function TriageSystem({ onBack }) {
 
         <div style={styles.card}>
           <div style={styles.alertHeader}>
-            <h2 style={styles.alertTitle}>{alert.clientName || alert.type || "Financial Alert"}</h2>
+            <h2 style={styles.alertTitle}>
+              {alert.clientName || alert.type || "Financial Alert"}
+              {fromCache && (
+                <span style={styles.cacheBadge}>⚡ Cached</span>
+              )}
+            </h2>
             <span style={styles.alertCounter}>{progress}/{clientAlerts.length}</span>
           </div>
 
@@ -1327,7 +1616,6 @@ export default function TriageSystem({ onBack }) {
             </button>
             <button
               onClick={() => {
-                // Remove this alert from clientAlerts and go back to the list
                 const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
                 setClientAlerts(updatedAlerts);
                 setCurrentClientAlertIndex(0);
@@ -1337,7 +1625,48 @@ export default function TriageSystem({ onBack }) {
             >
               ⏭ Skip Alert
             </button>
+            <button
+              onClick={() => setShowIgnoreModal(true)}
+              style={{ ...styles.buttonSecondary, color: "#c62828", borderColor: "#ef9a9a" }}
+            >
+              🚫 Ignore Forever
+            </button>
           </div>
+
+          {/* Ignore reason modal */}
+          {showIgnoreModal && (
+            <div style={styles.modalOverlay} onClick={(e) => { if (e.target === e.currentTarget) setShowIgnoreModal(false); }}>
+              <div style={styles.modalCard}>
+                <h3 style={styles.modalTitle}>Permanently Ignore Alert</h3>
+                <p style={styles.modalSubtitle}>
+                  This alert will be hidden from all future triage runs unless its underlying data changes.
+                  Optionally add a reason for your records.
+                </p>
+                <textarea
+                  value={ignoreReason}
+                  onChange={(e) => setIgnoreReason(e.target.value)}
+                  placeholder="Reason for ignoring (optional)..."
+                  style={styles.modalTextarea}
+                  autoFocus
+                />
+                <div style={styles.modalButtons}>
+                  <button
+                    onClick={() => { setShowIgnoreModal(false); setIgnoreReason(""); }}
+                    style={styles.buttonSecondary}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={ignoreAlert}
+                    disabled={isIgnoring}
+                    style={{ ...styles.ignoreButton, opacity: isIgnoring ? 0.5 : 1 }}
+                  >
+                    {isIgnoring ? "Ignoring..." : "🚫 Confirm Ignore"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       </>

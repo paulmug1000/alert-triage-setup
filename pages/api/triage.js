@@ -13,6 +13,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { google } from "googleapis";
 import { createClient } from "redis";
+import { createHash } from "crypto";
 
 const anthropic = new Anthropic();
 
@@ -80,6 +81,223 @@ const FLAG_NAMES = {
   expenseUnreconGaps: "Expense unrecon gaps",
   invoiceStaleUnsentChanges: "Invoice stale unsent changes",
 };
+
+// ============================================================================
+// ALERT MEMORY — fingerprinting, caching, ignore management
+// ============================================================================
+
+const ALERT_MEMORY_TAB = "AlertMemory";
+const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:I`;
+const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
+
+/**
+ * Build a stable 16-char hex fingerprint from an alert's data fields.
+ * Includes accounting data, comparison data, flags, and alert type so that
+ * ANY change in source, comparison, or discrepancy flags produces a new hash.
+ */
+function buildAlertFingerprint(alert) {
+  const parts = [];
+
+  // Always include the alert type to namespace CRM variants
+  parts.push(alert.type || "");
+  parts.push(alert.flagType || alert.alertType || "");
+
+  if (alert.data) {
+    // Invoice: accounting (A:K) + confirmed (M:R) + flags (S:Y)
+    // Expense: accounting (A:J) + confirmed (X:AH) + flags (AO:AV)
+    // CRM: crmData + sheetData + flags
+    if (alert.data.accounting) parts.push(JSON.stringify(alert.data.accounting));
+    if (alert.data.confirmed)  parts.push(JSON.stringify(alert.data.confirmed));
+    if (alert.data.crmData)    parts.push(JSON.stringify(alert.data.crmData));
+    if (alert.data.sheetData)  parts.push(JSON.stringify(alert.data.sheetData));
+    if (alert.data.flags)      parts.push(JSON.stringify(alert.data.flags));
+  }
+
+  const raw = parts.join("|");
+  return createHash("sha256").update(raw).digest("hex").substring(0, 16);
+}
+
+/**
+ * Read all rows from AlertMemory tab.
+ * Returns array of objects with all column fields.
+ */
+async function readAlertMemory(sheets, automationCommanderSheetId) {
+  try {
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: ALERT_MEMORY_RANGE,
+    });
+    const rows = response.data.values || [];
+    if (rows.length < 2) return []; // header only or empty
+
+    return rows.slice(1).map((row, i) => ({
+      rowIndex: i + 2, // 1-indexed sheet row (row 1 = header)
+      fingerprintHash:  row[0] || "",
+      alertType:        row[1] || "",
+      clientName:       row[2] || "",
+      alertSummary:     row[3] || "",
+      cachedOptionsJSON:row[4] || "",
+      status:           row[5] || "cached",
+      ignoreReason:     row[6] || "",
+      firstSeen:        row[7] || "",
+      lastSeen:         row[8] || "",
+    }));
+  } catch (err) {
+    console.log(`⚠️ Could not read AlertMemory tab: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Ensure the AlertMemory tab exists with a header row.
+ * Safe to call on every run — does nothing if tab already exists.
+ */
+async function ensureAlertMemoryTab(sheets, automationCommanderSheetId) {
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${ALERT_MEMORY_TAB}!A1`,
+    });
+  } catch (err) {
+    // Tab doesn't exist — create it
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: {
+          requests: [{ addSheet: { properties: { title: ALERT_MEMORY_TAB } } }],
+        },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${ALERT_MEMORY_TAB}!A1:I1`,
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [[
+            "fingerprintHash", "alertType", "clientName", "alertSummary",
+            "cachedOptionsJSON", "status", "ignoreReason", "firstSeen", "lastSeen",
+          ]],
+        },
+      });
+      console.log(`✅ Created AlertMemory tab`);
+    } catch (createErr) {
+      console.log(`⚠️ Could not create AlertMemory tab: ${createErr.message}`);
+    }
+  }
+}
+
+/**
+ * Look up a single alert in the memory by fingerprint hash.
+ * Returns the memory row object or null.
+ */
+function findMemoryRow(memoryRows, fingerprintHash) {
+  return memoryRows.find(r => r.fingerprintHash === fingerprintHash) || null;
+}
+
+/**
+ * Write a new row to AlertMemory (append).
+ */
+async function appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+  fingerprintHash, alertType, clientName, alertSummary,
+  cachedOptionsJSON, status, ignoreReason,
+}) {
+  const now = new Date().toISOString().split("T")[0];
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: automationCommanderSheetId,
+    range: `${ALERT_MEMORY_TAB}!A:I`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[
+        fingerprintHash, alertType, clientName, alertSummary,
+        cachedOptionsJSON, status, ignoreReason || "", now, now,
+      ]],
+    },
+  });
+}
+
+/**
+ * Update an existing AlertMemory row by its 1-indexed sheet row number.
+ */
+async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, updates) {
+  const now = new Date().toISOString().split("T")[0];
+  // Build the full row from updates (we overwrite the entire row for simplicity)
+  const values = [
+    updates.fingerprintHash,
+    updates.alertType,
+    updates.clientName,
+    updates.alertSummary,
+    updates.cachedOptionsJSON,
+    updates.status,
+    updates.ignoreReason || "",
+    updates.firstSeen,
+    now, // lastSeen always updated
+  ];
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: automationCommanderSheetId,
+    range: `${ALERT_MEMORY_TAB}!A${rowIndex}:I${rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [values] },
+  });
+}
+
+/**
+ * Delete rows from AlertMemory by their 1-indexed sheet row numbers.
+ * Deletes in reverse order to preserve row indices during deletion.
+ */
+async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, rowIndices) {
+  if (rowIndices.length === 0) return;
+
+  // Get spreadsheet to find the AlertMemory sheet ID
+  const spreadsheet = await sheets.spreadsheets.get({
+    spreadsheetId: automationCommanderSheetId,
+  });
+  const sheet = spreadsheet.data.sheets.find(
+    s => s.properties.title === ALERT_MEMORY_TAB
+  );
+  if (!sheet) return;
+  const sheetId = sheet.properties.sheetId;
+
+  // Sort descending so deletions don't shift earlier rows
+  const sorted = [...rowIndices].sort((a, b) => b - a);
+
+  const requests = sorted.map(rowIndex => ({
+    deleteDimension: {
+      range: {
+        sheetId,
+        dimension: "ROWS",
+        startIndex: rowIndex - 1, // 0-indexed
+        endIndex: rowIndex,       // exclusive
+      },
+    },
+  }));
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: automationCommanderSheetId,
+    requestBody: { requests },
+  });
+  console.log(`  🗑️ Deleted ${rowIndices.length} stale AlertMemory row(s)`);
+}
+
+/**
+ * Purge AlertMemory rows older than ALERT_MEMORY_MAX_AGE_MONTHS.
+ * Uses the lastSeen date for the cutoff check.
+ */
+async function purgeOldAlertMemoryRows(sheets, automationCommanderSheetId, memoryRows) {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - ALERT_MEMORY_MAX_AGE_MONTHS);
+
+  const toDelete = memoryRows
+    .filter(row => {
+      if (!row.lastSeen) return false;
+      const lastSeen = new Date(row.lastSeen);
+      return lastSeen < cutoff;
+    })
+    .map(row => row.rowIndex);
+
+  if (toDelete.length > 0) {
+    console.log(`🧹 Purging ${toDelete.length} AlertMemory row(s) older than ${ALERT_MEMORY_MAX_AGE_MONTHS} months`);
+    await deleteAlertMemoryRows(sheets, automationCommanderSheetId, toDelete);
+  }
+}
 
 // ============================================================================
 // GOOGLE SHEETS INTEGRATION
@@ -922,30 +1140,44 @@ export default async function handler(req, res) {
       }
 
       console.log(`📊 All clients processed. Total alerts: ${allAlerts.length}, No-action alerts: ${noActionAlerts.length}`);
-      console.log(`💾 Storing session in Redis...`);
 
-      // DEBUG: Log first few alerts before storing
-      if (allAlerts.length > 0) {
-        console.log(`\n🔍 DEBUG: First invoice alert before Redis storage:`);
-        const firstInvoice = allAlerts.find(a => a.flagType === "invoiceDashboardDiscr" || a.sheetName === "InvComp");
-        if (firstInvoice) {
-          console.log(`  Alert structure:`);
-          console.log(`    sheetName: ${firstInvoice.sheetName}`);
-          console.log(`    rowNumber: ${firstInvoice.rowNumber}`);
-          console.log(`    type: ${firstInvoice.type}`);
-          console.log(`    flagType: ${firstInvoice.flagType}`);
-          console.log(`    summary: ${JSON.stringify(firstInvoice.summary)}`);
-          console.log(`    data: ${JSON.stringify(firstInvoice.data)}`);
+      // Read AlertMemory once — purge stale rows, then filter out ignored alerts
+      console.log(`📚 Reading AlertMemory...`);
+      await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+      const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+      console.log(`  ✓ Found ${memoryRows.length} AlertMemory records`);
+
+      // Purge rows older than 12 months
+      await purgeOldAlertMemoryRows(sheets, automationCommanderSheetId, memoryRows);
+
+      // Build set of ignored fingerprints for fast lookup
+      const ignoredHashes = new Set(
+        memoryRows.filter(r => r.status === "ignored").map(r => r.fingerprintHash)
+      );
+
+      // Attach fingerprint to every alert and filter out ignored ones
+      const filteredAlerts = [];
+      let ignoredCount = 0;
+      for (const alert of allAlerts) {
+        alert.fingerprintHash = buildAlertFingerprint(alert);
+        if (ignoredHashes.has(alert.fingerprintHash)) {
+          ignoredCount++;
+          console.log(`  ⏭ Skipping ignored alert: ${alert.fingerprintHash} (${alert.clientName})`);
+        } else {
+          filteredAlerts.push(alert);
         }
       }
+      console.log(`  ✓ ${filteredAlerts.length} active alerts, ${ignoredCount} ignored alerts filtered out`);
+
+      console.log(`💾 Storing session in Redis...`);
 
       // Store session data in Redis
       const sessionId = Math.random().toString(36).substring(2, 15);
-      console.log(`  Storing ${allAlerts.length} alerts in Redis (session: ${sessionId})...`);
+      console.log(`  Storing ${filteredAlerts.length} alerts in Redis (session: ${sessionId})...`);
       await redisClient.set(
         `triage_alerts:${sessionId}`,
         JSON.stringify({
-          alerts: allAlerts,
+          alerts: filteredAlerts,
           noActionAlerts,
           clientsWithFlags,
         }),
@@ -957,7 +1189,7 @@ export default async function handler(req, res) {
       res.status(200).json({
         success: true,
         sessionId,
-        totalAlerts: allAlerts.length,
+        totalAlerts: filteredAlerts.length,
         noActionCount: noActionAlerts.length,
         clientsWithFlags: clientsWithFlags.map(client => ({
           clientName: client.clientName,
@@ -991,21 +1223,6 @@ export default async function handler(req, res) {
         const { alerts, noActionAlerts, clientsWithFlags } = JSON.parse(sessionData);
         console.log(`✅ Retrieved ${alerts.length} alerts from Redis for session ${sessionId}`);
         
-        // DEBUG: Log first invoice alert after retrieval
-        if (alerts.length > 0) {
-          const firstInvoice = alerts.find(a => a.flagType === "invoiceDashboardDiscr" || a.sheetName === "InvComp");
-          if (firstInvoice) {
-            console.log(`\n🔍 DEBUG: First invoice alert AFTER Redis retrieval:`);
-            console.log(`  Alert structure:`);
-            console.log(`    sheetName: ${firstInvoice.sheetName}`);
-            console.log(`    rowNumber: ${firstInvoice.rowNumber}`);
-            console.log(`    type: ${firstInvoice.type}`);
-            console.log(`    flagType: ${firstInvoice.flagType}`);
-            console.log(`    summary: ${JSON.stringify(firstInvoice.summary)}`);
-            console.log(`    data: ${JSON.stringify(firstInvoice.data)}`);
-          }
-        }
-        
         res.status(200).json({
           success: true,
           alerts,
@@ -1026,15 +1243,49 @@ export default async function handler(req, res) {
       }
 
       try {
-        console.log(`\n🤖 Generating options for ${alert.type || alert.flagType} alert`);
-        console.log(`   Alert object received from frontend:`);
-        console.log(`   - type: ${alert.type}`);
-        console.log(`   - sheetName: ${alert.sheetName}`);
-        console.log(`   - rowNumber: ${alert.rowNumber}`);
-        console.log(`   - summary: ${JSON.stringify(alert.summary)}`);
-        console.log(`   - data: ${JSON.stringify(alert.data)}`);
+        console.log(`\n🤖 Generating options for ${alert.type || alert.flagType} alert (${alert.clientName})`);
         
         const sheets = await getSheetsClient();
+
+        // ── AlertMemory cache check ──────────────────────────────────────────
+        // Compute fingerprint (may already be set from start_triage, but
+        // recompute here in case alert came from a stale Redis session)
+        const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+
+        if (memoryRow) {
+          if (memoryRow.status === "ignored") {
+            // Shouldn't reach here (filtered at start_triage), but handle gracefully
+            console.log(`  ⏭ Alert is ignored — returning ignored status`);
+            return res.status(200).json({ success: true, ignored: true });
+          }
+          if (memoryRow.status === "cached" && memoryRow.cachedOptionsJSON) {
+            console.log(`  ✅ Cache HIT for ${fingerprintHash} — returning stored options`);
+            // Update lastSeen
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+              ...memoryRow,
+            });
+            let cachedOptions = [];
+            try {
+              cachedOptions = JSON.parse(memoryRow.cachedOptionsJSON);
+            } catch (e) {
+              console.log(`  ⚠️ Could not parse cached options JSON — will re-fetch from Claude`);
+            }
+            if (cachedOptions.length > 0) {
+              return res.status(200).json({
+                success: true,
+                options: cachedOptions,
+                alertId: alert.rowNumber,
+                fromCache: true,
+              });
+            }
+          }
+        }
+
+        console.log(`  Cache MISS for ${fingerprintHash} — calling Claude`);
+        // ────────────────────────────────────────────────────────────────────
         
         // Handle expense alerts (DirComp)
         if (alert.type === "expense" || alert.sheetName === "DirComp") {
@@ -1456,11 +1707,6 @@ Return ONLY JSON, no other text.`;
           let options = [];
           const responseText = message.content[0].type === "text" ? message.content[0].text : "";
           
-          // Log Claude's RAW response before parsing
-          console.log(`\n📥 CLAUDE'S RAW RESPONSE:`);
-          console.log(`  First 500 chars: "${responseText.substring(0, 500)}"`);
-          console.log(`  Total response length: ${responseText.length} chars`);
-          
           const cleanedText = responseText
             .replace(/```json/g, "")
             .replace(/```/g, "")
@@ -1470,30 +1716,29 @@ Return ONLY JSON, no other text.`;
             options = JSON.parse(cleanedText);
             if (!Array.isArray(options)) options = [options];
             console.log(`  ✅ Parsed ${options.length} expense options from Claude`);
-            
-            // DEBUG: Log all three options Claude returned
-            if (options.length > 0) {
-              console.log(`\n📥 ALL OPTIONS FROM CLAUDE:`);
-              options.forEach((opt, idx) => {
-                console.log(`\n  Option ${idx + 1}: ${opt.title}`);
-                console.log(`    Match Type: ${opt.matchType}`);
-                if (opt.matchType === "job") {
-                  console.log(`    Job Row: ${opt.jobRow}`);
-                  console.log(`    Job Name: ${opt.jobName}`);
-                } else {
-                  console.log(`    Category: ${opt.category}`);
-                }
-                console.log(`    Confidence: ${opt.facts?.matchConfidence || opt.matchAnalysis?.matchConfidence || "?"}`);
-                console.log(`    Reasoning: ${opt.facts?.reasonForChoice || opt.matchAnalysis?.reasonForChoice || "?"}`);
-              });
-            }
           } catch (e) {
-            console.error(`  ⚠️ Could not parse Claude response as JSON`);
-            console.error(`  Error details: ${e.message}`);
-            console.error(`  Cleaned text (first 1000 chars): ${cleanedText.substring(0, 1000)}`);
-            console.error(`  Cleaned text (last 500 chars): ${cleanedText.substring(Math.max(0, cleanedText.length - 500))}`);
+            console.error(`  ⚠️ Could not parse Claude response as JSON: ${e.message}`);
             options = [{ summary: responseText }];
           }
+
+          // Write to AlertMemory cache
+          const alertSummary = alert.summary?.summary || `Expense ${alert.summary?.reference || ""} £${alert.summary?.amount || ""}`;
+          if (memoryRow) {
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+              ...memoryRow,
+              cachedOptionsJSON: JSON.stringify(options),
+            });
+          } else {
+            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+              fingerprintHash,
+              alertType: "expense",
+              clientName: alert.clientName || "",
+              alertSummary,
+              cachedOptionsJSON: JSON.stringify(options),
+              status: "cached",
+            });
+          }
+          console.log(`  💾 Options cached in AlertMemory`);
           
           return res.status(200).json({
             success: true,
@@ -1707,6 +1952,25 @@ Return ONLY JSON, no other text.`;
             console.error(`  ⚠️ Could not parse Claude response as JSON`);
             options = [{ summary: responseText }];
           }
+
+          // Write to AlertMemory cache
+          const crmSummary = `CRM ${alert.alertType || ""} ${alert.data?.crmData?.[0] || ""} ${alert.data?.crmData?.[1] || ""}`.trim();
+          if (memoryRow) {
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+              ...memoryRow,
+              cachedOptionsJSON: JSON.stringify(options),
+            });
+          } else {
+            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+              fingerprintHash,
+              alertType: alert.alertType || "crm",
+              clientName: alert.clientName || "",
+              alertSummary: crmSummary,
+              cachedOptionsJSON: JSON.stringify(options),
+              status: "cached",
+            });
+          }
+          console.log(`  💾 Options cached in AlertMemory`);
           
           return res.status(200).json({
             success: true,
@@ -1926,6 +2190,25 @@ Return ONLY JSON, no other text.`;
           console.error(`  ⚠️ Could not parse Claude response as JSON`);
           options = [{ summary: responseText }];
         }
+
+        // Write to AlertMemory cache
+        const invSummary = alert.summary?.summary || `Invoice ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`;
+        if (memoryRow) {
+          await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+            ...memoryRow,
+            cachedOptionsJSON: JSON.stringify(options),
+          });
+        } else {
+          await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+            fingerprintHash,
+            alertType: "invoice",
+            clientName: alert.clientName || "",
+            alertSummary: invSummary,
+            cachedOptionsJSON: JSON.stringify(options),
+            status: "cached",
+          });
+        }
+        console.log(`  💾 Options cached in AlertMemory`);
         
         res.status(200).json({
           success: true,
@@ -2159,6 +2442,123 @@ Return ONLY JSON, no other text.`;
         console.error(`❌ Error recording decision:`, err);
         return res.status(500).json({ success: false, error: err.message });
       }
+    } else if (action === "ignore_alert") {
+      // Permanently ignore an alert by fingerprint — removes it from future triage runs
+      const { alert, ignoreReason, automationCommanderSheetId } = req.body;
+
+      if (!alert || !automationCommanderSheetId) {
+        return res.status(400).json({ success: false, error: "Missing alert or automationCommanderSheetId" });
+      }
+
+      try {
+        console.log(`\n🚫 Ignoring alert for ${alert.clientName}`);
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+
+        const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+        const alertSummary = alert.summary?.summary
+          || `${alert.type || "alert"} ${alert.summary?.invoiceNo || alert.summary?.reference || ""} £${alert.summary?.amount || ""}`.trim();
+
+        if (memoryRow) {
+          // Update existing row to ignored
+          await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+            ...memoryRow,
+            status: "ignored",
+            ignoreReason: ignoreReason || "",
+          });
+        } else {
+          // Create new row directly as ignored (no cached options needed)
+          await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+            fingerprintHash,
+            alertType: alert.type || alert.flagType || "unknown",
+            clientName: alert.clientName || "",
+            alertSummary,
+            cachedOptionsJSON: "",
+            status: "ignored",
+            ignoreReason: ignoreReason || "",
+          });
+        }
+
+        console.log(`  ✅ Alert ignored: ${fingerprintHash}`);
+        return res.status(200).json({ success: true, message: "Alert ignored" });
+      } catch (err) {
+        console.error(`❌ Error ignoring alert:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "unignore_alert") {
+      // Restore an ignored alert so it appears again in future triage runs
+      const { fingerprintHash, automationCommanderSheetId } = req.body;
+
+      if (!fingerprintHash || !automationCommanderSheetId) {
+        return res.status(400).json({ success: false, error: "Missing fingerprintHash or automationCommanderSheetId" });
+      }
+
+      try {
+        console.log(`\n♻️ Un-ignoring alert: ${fingerprintHash}`);
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+
+        if (!memoryRow) {
+          return res.status(404).json({ success: false, error: "Alert not found in memory" });
+        }
+
+        if (memoryRow.cachedOptionsJSON) {
+          // Has cached options — restore to cached status so it appears with options pre-loaded
+          await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+            ...memoryRow,
+            status: "cached",
+            ignoreReason: "",
+          });
+          console.log(`  ✅ Restored to cached status`);
+        } else {
+          // No cached options — delete the row entirely so Claude is called fresh
+          await deleteAlertMemoryRows(sheets, automationCommanderSheetId, [memoryRow.rowIndex]);
+          console.log(`  ✅ Row deleted — will get fresh Claude analysis on next triage`);
+        }
+
+        return res.status(200).json({ success: true, message: "Alert un-ignored" });
+      } catch (err) {
+        console.error(`❌ Error un-ignoring alert:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_ignored_alerts") {
+      // Return all ignored alerts for display on the Ignored Alerts screen
+      const automationCommanderSheetId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+
+      if (!automationCommanderSheetId) {
+        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      }
+
+      try {
+        console.log(`\n📋 Fetching ignored alerts`);
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+        const ignoredAlerts = memoryRows
+          .filter(r => r.status === "ignored")
+          .map(r => ({
+            fingerprintHash: r.fingerprintHash,
+            alertType:       r.alertType,
+            clientName:      r.clientName,
+            alertSummary:    r.alertSummary,
+            ignoreReason:    r.ignoreReason,
+            firstSeen:       r.firstSeen,
+            lastSeen:        r.lastSeen,
+          }));
+
+        console.log(`  ✅ Found ${ignoredAlerts.length} ignored alerts`);
+        return res.status(200).json({ success: true, ignoredAlerts });
+      } catch (err) {
+        console.error(`❌ Error fetching ignored alerts:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else {
       res.status(400).json({ error: "Invalid action" });
     }

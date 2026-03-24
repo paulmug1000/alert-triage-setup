@@ -1438,6 +1438,38 @@ export default async function handler(req, res) {
         console.error("❌ Error retrieving precomputed data:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
+    } else if (action === "store_precomputed") {
+      // Called by the GAS precompute function to store assembled triage data in Redis.
+      // Requires the cron secret to prevent unauthorised writes.
+      const { secret, alerts, noActionAlerts, clientsWithFlags,
+              totalAlerts, noActionCount, computedAt } = req.body;
+
+      if (secret !== process.env.CRON_SECRET) {
+        return res.status(401).json({ success: false, error: "Unauthorised" });
+      }
+
+      try {
+        const precomputedData = {
+          computedAt: computedAt || Date.now(),
+          totalAlerts: totalAlerts || 0,
+          noActionCount: noActionCount || 0,
+          alerts: alerts || [],
+          noActionAlerts: noActionAlerts || [],
+          clientsWithFlags: clientsWithFlags || [],
+        };
+
+        await redisClient.set(
+          PRECOMPUTED_KEY,
+          JSON.stringify(precomputedData),
+          { EX: 14400 } // 4 hour TTL
+        );
+
+        console.log(`✅ store_precomputed: ${precomputedData.totalAlerts} alerts saved to Redis`);
+        return res.status(200).json({ success: true, stored: precomputedData.totalAlerts });
+      } catch (err) {
+        console.error("❌ Error storing precomputed data:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
     } else if (action === "analyze_alert") {
       // Generate matching options for an alert
       const { alert } = req.body;

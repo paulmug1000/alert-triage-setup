@@ -1372,15 +1372,45 @@ export default async function handler(req, res) {
 
         console.log(`  ✅ Returning precomputed data (${Math.round(ageMs / 60000)} mins old, ${data.totalAlerts} alerts)`);
 
-        // Promote the precomputed data into a regular session so the existing
-        // get_alerts flow works unchanged
+        // Filter out any alerts that have been ignored since the precompute ran.
+        // AlertMemory is the source of truth — read it fresh every time.
+        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+        const ignoredHashes = new Set(
+          memoryRows.filter(r => r.status === "ignored").map(r => r.fingerprintHash)
+        );
+
+        const filteredAlerts = data.alerts.filter(alert => {
+          const hash = alert.fingerprintHash || buildAlertFingerprint(alert);
+          return !ignoredHashes.has(hash);
+        });
+
+        if (filteredAlerts.length < data.alerts.length) {
+          console.log(`  Filtered ${data.alerts.length - filteredAlerts.length} ignored alert(s) from precomputed data`);
+        }
+
+        // Rebuild alertCounts after filtering
+        const alertCountsByClientAndFlag = {};
+        for (const alert of filteredAlerts) {
+          const key = alert.clientName;
+          const flagKey = alert.flagType || alert.alertType || alert.type;
+          if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+          alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+        }
+
+        const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => ({
+          ...c,
+          alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
+        }));
+
+        // Promote into a regular session so the existing get_alerts flow works unchanged
         const sessionId = Math.random().toString(36).substring(2, 15);
         await redisClient.set(
           `triage_alerts:${sessionId}`,
           JSON.stringify({
-            alerts: data.alerts,
+            alerts: filteredAlerts,
             noActionAlerts: data.noActionAlerts,
-            clientsWithFlags: data.clientsWithFlags,
+            clientsWithFlags: clientsWithUpdatedCounts,
           }),
           { EX: 86400 }
         );
@@ -1389,9 +1419,9 @@ export default async function handler(req, res) {
           success: true,
           available: true,
           sessionId,
-          totalAlerts: data.totalAlerts,
+          totalAlerts: filteredAlerts.length,
           noActionCount: data.noActionCount,
-          clientsWithFlags: data.clientsWithFlags.map(c => ({
+          clientsWithFlags: clientsWithUpdatedCounts.map(c => ({
             clientName: c.clientName,
             clientSheetId: c.clientSheetId,
             masterSheetId: c.masterSheetId,

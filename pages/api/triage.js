@@ -1132,6 +1132,15 @@ async function getSheetId(sheets, spreadsheetId, tabName) {
   return sheet.properties.sheetId;
 }
 
+// Increase body size limit — store_precomputed sends the full alert list
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: "10mb",
+    },
+  },
+};
+
 // ============================================================================
 // MAIN HANDLER
 // ============================================================================

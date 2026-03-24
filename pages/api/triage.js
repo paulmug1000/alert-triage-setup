@@ -962,6 +962,173 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
 }
 
 // ============================================================================
+// OUTGOINGS TAB WRITE HELPER
+// Mirrors the logic of the GAS updateOutgoingsExpense_ function.
+// Finds the correct category row and month column, then:
+//   - Adds the expense amount to the existing cell value
+//   - Appends a structured {App ID:...} block to the cell note
+// ============================================================================
+
+async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
+  const { categoryName, expenseMonth, transactionId, amount, description, status, recDate, payDate } = outgoingsData;
+
+  console.log(`  📝 Writing Outgoings expense: ${categoryName} / ${expenseMonth} / £${amount}`);
+
+  // Read the full Outgoings sheet (values + notes)
+  const sheetRange = "Outgoings!A1:AX500";
+  const valuesResp = await sheets.spreadsheets.values.get({
+    spreadsheetId: clientSheetId,
+    range: sheetRange,
+  });
+  const rows = valuesResp.data.values || [];
+  if (rows.length === 0) throw new Error("Outgoings tab is empty");
+
+  // Parse the target month from "YYYY-MM"
+  const [targetYear, targetMonth] = expenseMonth.split("-").map(Number);
+
+  // Find the column index whose header date matches the target month
+  // Header row is row 0 (1-indexed row 1). Dates are stored as strings from Sheets.
+  const headerRow = rows[0];
+  let targetColIndex = -1;
+  for (let c = 0; c < headerRow.length; c++) {
+    const headerVal = headerRow[c];
+    if (!headerVal) continue;
+    // Sheets returns dates as strings like "2026-03-01T00:00:00.000Z" or "3/1/2026" etc.
+    // Try parsing as a date
+    const parsed = new Date(headerVal);
+    if (!isNaN(parsed.getTime())) {
+      if (parsed.getFullYear() === targetYear && parsed.getMonth() + 1 === targetMonth) {
+        targetColIndex = c;
+        break;
+      }
+    }
+  }
+
+  if (targetColIndex === -1) {
+    throw new Error(`Could not find column for month ${expenseMonth} in Outgoings header row`);
+  }
+
+  // Find the row whose col A matches the category name (case-insensitive trim)
+  const categoryLower = categoryName.toLowerCase().trim();
+  let targetRowIndex = -1;
+  for (let r = 1; r < rows.length; r++) {
+    const rowCategoryName = String(rows[r][0] || "").toLowerCase().trim();
+    if (rowCategoryName === categoryLower) {
+      targetRowIndex = r;
+      break;
+    }
+  }
+
+  if (targetRowIndex === -1) {
+    throw new Error(`Could not find category row "${categoryName}" in Outgoings tab`);
+  }
+
+  // Sheet row number and column letter (1-indexed)
+  const sheetRow = targetRowIndex + 1;
+  const sheetCol = targetColIndex + 1;
+
+  // Convert column index to A1 letter notation
+  const colLetter = (() => {
+    let col = sheetCol;
+    let letter = "";
+    while (col > 0) {
+      const r = (col - 1) % 26;
+      letter = String.fromCharCode(65 + r) + letter;
+      col = Math.floor((col - 1) / 26);
+    }
+    return letter;
+  })();
+
+  const cellA1 = `Outgoings!${colLetter}${sheetRow}`;
+
+  console.log(`  Found: row ${sheetRow} ("${categoryName}"), col ${colLetter} (month ${expenseMonth})`);
+
+  // Read existing cell value and note via batchGet so we get both
+  const cellResp = await sheets.spreadsheets.get({
+    spreadsheetId: clientSheetId,
+    ranges: [cellA1],
+    fields: "sheets(data(rowData(values(userEnteredValue,note))))",
+  });
+
+  const cellData = cellResp.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0];
+  const existingValueRaw = cellData?.userEnteredValue?.numberValue
+    ?? cellData?.userEnteredValue?.stringValue
+    ?? 0;
+  const existingNote = cellData?.note || "";
+  const existingValue = parseFloat(existingValueRaw) || 0;
+
+  console.log(`  Existing cell value: ${existingValue}, note length: ${existingNote.length}`);
+
+  // Calculate new total value: add expense amount to existing
+  const newValue = Math.round((existingValue + amount) * 100) / 100;
+
+  // Build the new App ID block in GAS format
+  const newBlock = `{App ID: ${transactionId}}{Amt: ${amount}}{Status: ${status || ""}}{Rec date: ${recDate || ""}}{Pay date: ${payDate || ""}}{Description: ${description || ""}}`;
+
+  // Check if this transaction ID already exists in the note (idempotency)
+  let newNote;
+  if (existingNote.includes(`{App ID: ${transactionId}}`)) {
+    // Update existing block
+    const escapedId = transactionId.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+    newNote = existingNote.replace(
+      new RegExp(`\\{App ID: ${escapedId}\\}.*?(\\n|$)`, "s"),
+      newBlock + "\n"
+    ).trim();
+    console.log(`  Updating existing App ID block for ${transactionId}`);
+  } else {
+    // Append new block
+    newNote = existingNote
+      ? `${existingNote}\n\n${newBlock}`
+      : newBlock;
+    console.log(`  Appending new App ID block for ${transactionId}`);
+  }
+
+  // Write value and note in one batchUpdate
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: clientSheetId,
+    range: cellA1,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[newValue]] },
+  });
+  console.log(`  ✅ Value written: ${existingValue} → ${newValue}`);
+
+  // Notes require the batchUpdate spreadsheets (not values) API
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: clientSheetId,
+    requestBody: {
+      requests: [{
+        updateCells: {
+          range: {
+            sheetId: await getSheetId(sheets, clientSheetId, "Outgoings"),
+            startRowIndex: sheetRow - 1,
+            endRowIndex: sheetRow,
+            startColumnIndex: sheetCol - 1,
+            endColumnIndex: sheetCol,
+          },
+          rows: [{
+            values: [{
+              note: newNote,
+            }],
+          }],
+          fields: "note",
+        },
+      }],
+    },
+  });
+  console.log(`  ✅ Note written`);
+
+  return { sheetRow, colLetter, newValue, prevValue: existingValue };
+}
+
+// Helper: get the numeric sheetId for a named tab
+async function getSheetId(sheets, spreadsheetId, tabName) {
+  const resp = await sheets.spreadsheets.get({ spreadsheetId });
+  const sheet = resp.data.sheets?.find(s => s.properties.title === tabName);
+  if (!sheet) throw new Error(`Tab "${tabName}" not found in spreadsheet`);
+  return sheet.properties.sheetId;
+}
+
+// ============================================================================
 // MAIN HANDLER
 // ============================================================================
 
@@ -1629,11 +1796,11 @@ Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details
 
 [{
   "optionId": 1,
-  "title": "Match to [Job Name] - [reason]",
+  "title": "Match to [Job Name or Category] - [reason]",
   "matchType": "job" or "category",
   "jobRow": 52,
   "jobName": "Job Name (if job match)",
-  "category": "Category Name (if category match)",
+  "category": "Category Name (if category match — must exactly match the category name in the Outgoings tab)",
   "allocationBreakdown": {
     "jobDirectCostBudget": "£1,995",
     "allocatedExpenses": [
@@ -1654,19 +1821,36 @@ Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details
     "reasonForChoice": "Exact placeholder match on vendor, amount, and remaining budget",
     "discrepancies": "None"
   },
+  "outgoingsData": {
+    "ONLY INCLUDE THIS FIELD if matchType is 'category'. Leave out entirely for job matches.",
+    "categoryName": "Exact category name from Outgoings col A (e.g. 'Accountancy fees')",
+    "expenseMonth": "YYYY-MM (e.g. '2026-03') — derived from the expense date",
+    "transactionId": "Transaction ID from DirComp column G",
+    "amount": 995,
+    "description": "Full vendor/description string",
+    "status": "Status value from DirComp column F",
+    "recDate": "dd-Mon-yy (e.g. '10-Mar-26') — Rec date from DirComp column A",
+    "payDate": "dd-Mon-yy (e.g. '24-Mar-26') — Date Paid from DirComp column H, or blank if not paid"
+  },
   "recommendedActions": [
-    "Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write Yes to BZ232 (VAT amount is £199, so Yes), write 10-Mar-26 to CA232, write 14 to CB232 (days between 10-Mar and 24-Mar), write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
+    "For job match: 'Insert expense into Slot X, Row Y, Job Name (Confirmed tab)'",
+    "For category match: 'Add expense to [Category Name] row in Outgoings tab for [Month]'",
+    "For job match only — second line with exact cell writes: 'Write Craig Niven T/A FILDI to BX232, write 995 to BY232...'"
   ]
 }]
 
 CRITICAL REQUIREMENTS FOR EVERY OPTION:
 1. ALWAYS include complete allocationBreakdown
 2. In matchAnalysis, keep descriptions SHORT and factual only
-3. For recommendedActions: 
-   - First line: Brief summary of what will happen (e.g., "Insert expense into Slot X, Row Y, Job Name")
-   - Second line: EXACT cell coordinates with all required values (Description, Amount, VAT?, Date, Days to pay, Status, Transaction ID)
-4. For VAT?: Write "Yes" if DirComp column I (VAT amount) > 0, write "No" if DirComp column I is 0 or blank
-5. For Days to pay: Calculate from DirComp - if Date Paid (col H) exists, use Date Paid minus Rec Date (col A); otherwise default to 30
+3. For job matches (matchType: "job"):
+   - recommendedActions must have EXACTLY 2 items: plain English summary, then exact cell writes
+   - Use the Confirmed tab column reference above for exact cell coordinates
+4. For category matches (matchType: "category"):
+   - MUST include the "outgoingsData" field with ALL sub-fields populated
+   - recommendedActions needs only 1 item: plain English summary (e.g. "Add £995 to Accountancy fees in Outgoings for Mar-26")
+   - The backend will handle the actual cell write using outgoingsData — do NOT provide cell coordinates
+   - "categoryName" must exactly match a category from the OUTGOINGS CATEGORIES list above
+5. For VAT?: Write "Yes" if DirComp column I (VAT amount) > 0, write "No" if DirComp column I is 0 or blank
 6. For Status: Use value from DirComp column F (Status column)
 7. For Transaction ID: Use DirComp column G (Transaction ID column, NOT Reference column D)
 8. Rank options by: (1) Perfect placeholder match, (2) Sufficient budget + vendor match, (3) Category fallback
@@ -2267,19 +2451,56 @@ Return ONLY JSON, no other text.`;
 
       try {
         console.log(`\n✅ ACCEPTING OPTION for alert:`, alert.clientName);
-        console.log(`   Option: ${option.title}`);
+        console.log(`   Option: ${option.title}, matchType: ${option.matchType}`);
         
         const sheets = await getSheetsClient();
-        
+
+        // ── OUTGOINGS WRITE (expense category match) ─────────────────────────
+        // When an expense is matched to an Outgoings category (not a Confirmed job),
+        // we use structured outgoingsData from the option rather than cell references.
+        if (
+          (alert.type === "expense" || alert.sheetName === "DirComp") &&
+          option.matchType === "category" &&
+          option.outgoingsData
+        ) {
+          console.log(`  → Outgoings category write`);
+
+          const result = await writeOutgoingsExpense(sheets, alert.clientId, option.outgoingsData);
+          console.log(`  ✅ Outgoings write complete: row ${result.sheetRow}, col ${result.colLetter}, £${result.prevValue} → £${result.newValue}`);
+
+          // Log to TriageLog
+          const timestamp = new Date().toISOString();
+          const logRow = [
+            timestamp,
+            alert.type || alert.flagType,
+            `${alert.sheetName}-${alert.rowNumber}`,
+            alert.clientName || "",
+            alert.summary?.amount || "",
+            JSON.stringify({ matchAnalysis: option.matchAnalysis, outgoingsData: option.outgoingsData }),
+            "ACCEPTED",
+            `Option: ${option.title}`,
+          ];
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId,
+            range: "TriageLog!A:H",
+            valueInputOption: "USER_ENTERED",
+            requestBody: { values: [logRow] },
+          });
+
+          return res.status(200).json({
+            success: true,
+            message: `Outgoings write complete: £${result.newValue} in ${option.outgoingsData.categoryName} for ${option.outgoingsData.expenseMonth}`,
+            cellsWritten: 1,
+          });
+        }
+
+        // ── CONFIRMED / PIPELINE / CRM WRITE (cell-reference based) ─────────
         // Parse recommendedActions to extract cell writes
         const cellUpdates = [];
         if (option.recommendedActions && Array.isArray(option.recommendedActions)) {
           for (const actionString of option.recommendedActions) {
-            // Skip the summary line (first action), process only detailed cell instructions
             if (actionString.includes("Write") || actionString.includes("write")) {
-              // Parse format like "Write Craig Niven T/A FILDI to BX232, write 995 to BY232..."
               const cellMatches = actionString.match(/write\s+([^t]+)\s+to\s+([A-Z]+\d+)/gi) || [];
-              
               cellMatches.forEach((match) => {
                 const regex = /write\s+(.+?)\s+to\s+([A-Z]+\d+)/i;
                 const parsed = match.match(regex);
@@ -2294,18 +2515,23 @@ Return ONLY JSON, no other text.`;
         }
         
         console.log(`  Parsed ${cellUpdates.length} cell updates`);
+
+        // Determine which tab to write to based on alert type
+        const writeTab = (alert.type === "crm" || alert.sheetName === "CRMComp")
+          ? (alert.mode === "Pipeline" ? "Pipeline" : "Confirmed")
+          : "Confirmed";
         
-        // Batch write all cells to the client sheet
+        // Batch write all cells, always prefixed with the tab name
         if (cellUpdates.length > 0) {
           const batchRequest = {
             data: cellUpdates.map(({ cell, value }) => ({
-              range: cell,
+              range: `${writeTab}!${cell}`,
               values: [[value]],
             })),
             valueInputOption: "USER_ENTERED",
           };
           
-          console.log(`  Writing ${cellUpdates.length} cells to Client Sheet...`);
+          console.log(`  Writing ${cellUpdates.length} cells to ${writeTab} tab of Client Sheet...`);
           await sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: alert.clientId,
             requestBody: batchRequest,

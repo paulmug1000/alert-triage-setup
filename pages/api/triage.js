@@ -1168,7 +1168,7 @@ export default async function handler(req, res) {
     const automationCommanderSheetId = req.body.automationCommanderSheetId;
     const sheets = await getSheetsClient();
 
-    console.log(`\n📍 API Request: method=${req.method}, action=${action}`);
+    console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 
     if (action === "start_triage") {
       // Get all clients with flags

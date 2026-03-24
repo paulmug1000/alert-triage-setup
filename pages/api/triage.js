@@ -700,97 +700,55 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
   try {
     console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
     
-    // Activate master switch
-    console.log(`  Setting E2 = TRUE in InvComp...`);
     await setMasterSwitch(sheets, spreadsheetId, "InvComp", true);
-    console.log(`  ✓ Master switch set, waiting for calculations...`);
 
-    // Read header row (row 5)
-    console.log(`  Reading headers (row 5)...`);
     const headerResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "InvComp!A5:Y5",
     });
     const headers = (headerResponse.data.values || [[]])[0] || [];
-    console.log(`  ✓ Headers read: ${headers.length} columns`);
-    
-    // DEBUG: Log header row to understand column mapping
-    console.log(`  DEBUG InvComp Headers (A:K should be Client, Job, Inv Amount, Total excl VAT, VAT, Inv No, Sent, Due, Paid, Status, Currency):`);
-    for (let i = 0; i < Math.min(11, headers.length); i++) {
-      console.log(`    [${i}] = "${headers[i]}"`);
-    }
-    console.log(`  DEBUG InvComp Flags (S:Y columns 18-24):`);
-    for (let i = 18; i < Math.min(25, headers.length); i++) {
-      console.log(`    [${i}] = "${headers[i]}"`);
-    }
 
-    // Read data rows (row 6 onwards)
-    console.log(`  Reading data (rows 6-1000)...`);
     const dataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "InvComp!A6:Y1000",
     });
     const rows = dataResponse.data.values || [];
-    console.log(`  ✓ Data read: ${rows.length} rows`);
-    
-    // DEBUG: Log first few rows completely
-    if (rows.length > 0) {
-      console.log(`  DEBUG First 3 data rows from InvComp (columns A:K):`);
-      for (let i = 0; i < Math.min(3, rows.length); i++) {
-        const row = rows[i];
-        console.log(`    Row ${6 + i}:`);
-        for (let j = 0; j < Math.min(11, row.length); j++) {
-          console.log(`      [${j}] = "${row[j]}"`);
-        }
-        // Also show flag columns
-        console.log(`    Row ${6 + i} Flags (S:Y):`);
-        for (let j = 18; j < Math.min(25, row.length); j++) {
-          console.log(`      [${j}] = "${row[j]}"`);
-        }
-      }
-    }
+    console.log(`  InvComp: ${rows.length} rows read`);
 
-    // Columns S-Y are discrepancy flags (indices 18-24)
-    // IGNORE column W (22) which is "Duplicate inv no ?" - only count other discrepancies
     const alerts = [];
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
       const row = rows[rowIdx];
       if (!row || row.length === 0) continue;
 
-      // Check if ANY discrepancy flag (EXCEPT W/22 which is "Duplicate inv no ?") = "1"
       const hasDiscrepancy = [18, 19, 20, 21, 23, 24].some(
         (idx) => String(row[idx] || "").trim() === "1"
       );
 
       if (hasDiscrepancy) {
-        // Include columns A:K (accounting data), M:R (confirmed data), S:Y (flags)
         const alert = {
           type: "invoice",
           sheetName: "InvComp",
-          rowNumber: 6 + rowIdx, // Row 6 is first data row
+          rowNumber: 6 + rowIdx,
           data: {
-            accounting: row.slice(0, 11), // A:K
-            confirmed: row.slice(12, 18), // M:R
-            flags: row.slice(18, 25), // S:Y
+            accounting: row.slice(0, 11),
+            confirmed: row.slice(12, 18),
+            flags: row.slice(18, 25),
           },
           flagColumns: headers.slice(18, 25),
         };
-        
-        // Add summary for display
         alert.summary = buildInvCompSummary(alert);
-        
-        console.log(`  📤 Alert prepared for frontend:`);
-        console.log(`     Type: ${alert.type}`);
-        console.log(`     Summary object: ${JSON.stringify(alert.summary)}`);
-        
         alerts.push(alert);
       }
     }
 
-    console.log(`  ✓ Processing complete: Found ${alerts.length} invoice alerts`);
+    // Uncheck master switch when done
+    await setMasterSwitch(sheets, spreadsheetId, "InvComp", false);
+    console.log(`  ✓ InvComp: ${alerts.length} alerts, master switch reset`);
     return alerts;
   } catch (error) {
     console.error(`❌ Error reading InvComp alerts:`, error);
+    // Attempt to reset master switch even on error
+    try { await setMasterSwitch(sheets, spreadsheetId, "InvComp", false); } catch (e) {}
     return [];
   }
 }
@@ -799,70 +757,54 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
   try {
     console.log(`\n📖 Reading DirComp alerts from ${spreadsheetId}...`);
     
-    // Activate master switch
-    console.log(`  Setting E2 = TRUE in DirComp...`);
     await setMasterSwitch(sheets, spreadsheetId, "DirComp", true);
-    console.log(`  ✓ Master switch set, waiting for calculations...`);
 
-    // Read header row (row 5)
-    console.log(`  Reading headers (row 5)...`);
     const headerResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "DirComp!A5:AV5",
     });
     const headers = (headerResponse.data.values || [[]])[0] || [];
-    console.log(`  ✓ Headers read: ${headers.length} columns`);
 
-    // Read data rows (row 6 onwards)
-    console.log(`  Reading data (rows 6-1000)...`);
     const dataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "DirComp!A6:AV1000",
     });
     const rows = dataResponse.data.values || [];
-    console.log(`  ✓ Data read: ${rows.length} rows`);
+    console.log(`  DirComp: ${rows.length} rows read`);
 
-    // Columns AO-AV are discrepancy flags (indices 40-47)
-    // IGNORE column AP (41) which is "Duplicate app ID ?" - only count other discrepancies
     const alerts = [];
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
       const row = rows[rowIdx];
       if (!row || row.length === 0) continue;
 
-      // Check if ANY discrepancy flag (EXCEPT AP/41 which is "Duplicate app ID ?") = "1"
       const hasDiscrepancy = [40, 42, 43, 44, 45, 46, 47].some(
         (idx) => String(row[idx] || "").trim() === "1"
       );
 
       if (hasDiscrepancy) {
-        // Include columns A:J (accounting data), X:AH (confirmed/outgoings data), AO:AV (flags)
         const alert = {
           type: "expense",
           sheetName: "DirComp",
           rowNumber: 7 + rowIdx,
           data: {
-            accounting: row.slice(0, 10), // A:J
-            confirmed: row.slice(23, 34), // X:AH
-            flags: row.slice(40, 48), // AO:AV
+            accounting: row.slice(0, 10),
+            confirmed: row.slice(23, 34),
+            flags: row.slice(40, 48),
           },
           flagColumns: headers.slice(40, 48),
         };
-        
-        // Add summary for display
         alert.summary = buildDirCompSummary(alert);
-        
-        console.log(`  📤 Alert prepared for frontend:`);
-        console.log(`     Type: ${alert.type}`);
-        console.log(`     Summary object: ${JSON.stringify(alert.summary)}`);
-        
         alerts.push(alert);
       }
     }
 
-    console.log(`  ✓ Processing complete: Found ${alerts.length} expense alerts`);
+    // Uncheck master switch when done
+    await setMasterSwitch(sheets, spreadsheetId, "DirComp", false);
+    console.log(`  ✓ DirComp: ${alerts.length} alerts, master switch reset`);
     return alerts;
   } catch (error) {
     console.error(`❌ Error reading DirComp alerts:`, error);
+    try { await setMasterSwitch(sheets, spreadsheetId, "DirComp", false); } catch (e) {}
     return [];
   }
 }
@@ -957,10 +899,14 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
       }
     }
 
-    console.log(`  ✓ Processing complete: Found ${alerts.length} CRM alerts in ${mode} mode`);
+    console.log(`  ✓ CRMComp (${mode}): ${alerts.length} alerts, master switch reset`);
+
+    // Uncheck master switch when done
+    await setMasterSwitch(sheets, spreadsheetId, "CRMComp", false);
     return alerts;
   } catch (error) {
     console.error(`❌ Error reading CRMComp alerts:`, error);
+    try { await setMasterSwitch(sheets, spreadsheetId, "CRMComp", false); } catch (e) {}
     return [];
   }
 }
@@ -1349,6 +1295,16 @@ export default async function handler(req, res) {
       console.log(`  ✓ Redis store complete`);
 
       console.log(`\n✅ Sending response to frontend...`);
+
+      // Build per-flag alert counts per client for the UI
+      const alertCountsByClientAndFlag = {};
+      for (const alert of filteredAlerts) {
+        const key = alert.clientName;
+        const flagKey = alert.flagType || alert.alertType || alert.type;
+        if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+        alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+      }
+
       res.status(200).json({
         success: true,
         sessionId,
@@ -1359,6 +1315,7 @@ export default async function handler(req, res) {
           clientSheetId: client.clientSheetId,
           masterSheetId: client.masterSheetId,
           flags: client.flags,
+          alertCounts: alertCountsByClientAndFlag[client.clientName] || {},
         })),
       });
     } else if (action === "get_alerts") {
@@ -1439,6 +1396,7 @@ export default async function handler(req, res) {
             clientSheetId: c.clientSheetId,
             masterSheetId: c.masterSheetId,
             flags: c.flags,
+            alertCounts: c.alertCounts || {},
           })),
           computedAt: data.computedAt,
           computedMinutesAgo: Math.round(ageMs / 60000),

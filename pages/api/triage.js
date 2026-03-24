@@ -2321,67 +2321,82 @@ Return ONLY JSON, no other text.`;
         });
       }
     } else if (action === "clear_flags") {
-      // Clear all flags for a client by checking column BN
-      const { masterSheetId, automationCommanderSheetId } = req.body;
+      // Clear flags by writing directly to DataChgAlert in the client's Master Sheet.
+      // flagsToClear is an array of: "invoice", "crm", "expense" (any combination).
+      // Each maps to a specific cell in DataChgAlert:
+      //   invoice → AS2
+      //   crm     → AT2 + AU2
+      //   expense → AV2
+      const { masterSheetId, automationCommanderSheetId, flagsToClear } = req.body;
       
-      if (!masterSheetId || !automationCommanderSheetId) {
+      if (!masterSheetId || !automationCommanderSheetId || !flagsToClear || flagsToClear.length === 0) {
         return res.status(400).json({ 
           success: false, 
-          error: "Missing masterSheetId or automationCommanderSheetId" 
+          error: "Missing masterSheetId, automationCommanderSheetId, or flagsToClear" 
         });
       }
 
       try {
         console.log(`\n🔄 Clearing flags for client: ${masterSheetId}`);
+        console.log(`   Flag groups to clear: ${flagsToClear.join(", ")}`);
         
         const sheets = await getSheetsClient();
-        
-        // Find the row number for this client in AutoUpdates
-        // Master Sheet ID is in column M (index 12), so we need to match it
-        const automationResponse = await sheets.spreadsheets.values.get({
-          spreadsheetId: automationCommanderSheetId,
-          range: "AutoUpdates!A:M",
+
+        // Open the Master Sheet and find the DataChgAlert tab
+        // masterSheetId may be a full URL or a bare sheet ID
+        const masterSheetIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+
+        const masterSS = await sheets.spreadsheets.get({
+          spreadsheetId: masterSheetIdClean,
         });
-        
-        const rows = automationResponse.data.values || [];
-        let clientRow = -1;
-        
-        for (let i = 1; i < rows.length; i++) {
-          const rowMasterSheetUrl = rows[i][12]; // Column M (index 12) — full URL
-          // Match by either full URL or extracted sheet ID within it
-          const rowMasterSheetId = extractSheetIdFromUrl(rowMasterSheetUrl);
-          if (rowMasterSheetUrl === masterSheetId || rowMasterSheetId === masterSheetId) {
-            clientRow = i + 1; // Google Sheets rows are 1-indexed
-            console.log(`  Found client at row ${clientRow}`);
-            break;
-          }
-        }
-        
-        if (clientRow === -1) {
-          console.error(`  ❌ Client not found in AutoUpdates`);
-          return res.status(400).json({ 
-            success: false, 
-            error: "Could not find client in AutoUpdates tab" 
+
+        // Find the DataChgAlert sheet
+        const dataChgAlertSheet = masterSS.data.sheets?.find(
+          s => s.properties.title === "DataChgAlert"
+        );
+        if (!dataChgAlertSheet) {
+          return res.status(400).json({
+            success: false,
+            error: "DataChgAlert tab not found in Master Sheet",
           });
         }
-        
-        // Write TRUE to column BN (column index 65)
-        console.log(`  Writing TRUE to AutoUpdates!BN${clientRow}`);
-        await sheets.spreadsheets.values.update({
-          spreadsheetId: automationCommanderSheetId,
-          range: `AutoUpdates!BN${clientRow}`,
-          valueInputOption: "USER_ENTERED",
+
+        // Build the list of cells to write TRUE to
+        const cellsToWrite = [];
+        if (flagsToClear.includes("invoice")) {
+          cellsToWrite.push("DataChgAlert!AS2");
+        }
+        if (flagsToClear.includes("crm")) {
+          cellsToWrite.push("DataChgAlert!AT2");
+          cellsToWrite.push("DataChgAlert!AU2");
+        }
+        if (flagsToClear.includes("expense")) {
+          cellsToWrite.push("DataChgAlert!AV2");
+        }
+
+        if (cellsToWrite.length === 0) {
+          return res.status(400).json({ success: false, error: "No valid flag groups specified" });
+        }
+
+        // Batch write TRUE to all required cells
+        console.log(`  Writing TRUE to: ${cellsToWrite.join(", ")}`);
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: masterSheetIdClean,
           requestBody: {
-            values: [[true]],
+            valueInputOption: "RAW",
+            data: cellsToWrite.map(range => ({
+              range,
+              values: [["TRUE"]],
+            })),
           },
         });
-        
+
         console.log(`  ✅ Flags cleared successfully`);
         
         return res.status(200).json({
           success: true,
-          message: "Flags cleared",
-          row: clientRow,
+          message: `Cleared: ${flagsToClear.join(", ")}`,
+          cellsWritten: cellsToWrite,
         });
       } catch (err) {
         console.error(`❌ Error clearing flags:`, err);

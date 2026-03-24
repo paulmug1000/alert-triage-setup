@@ -50,8 +50,11 @@ export default function TriageSystem({ onBack }) {
   const [isIgnoring, setIsIgnoring] = useState(false);
   const [ignoredAlerts, setIgnoredAlerts] = useState([]);
   const [isLoadingIgnored, setIsLoadingIgnored] = useState(false);
-  const [isUnignoring, setIsUnignoring] = useState(null); // holds fingerprintHash being unignored
+  const [isUnignoring, setIsUnignoring] = useState(null);
   const [fromCache, setFromCache] = useState(false);
+
+  // Clear flags: which flag groups to clear
+  const [flagsToClear, setFlagsToClear] = useState({ invoice: false, crm: false, expense: false });
 
   const fetchAndAnalyzeAlerts = async (sessionId) => {
     try {
@@ -292,6 +295,7 @@ export default function TriageSystem({ onBack }) {
       if (filteredAlerts.length === 0) {
         // All alerts processed, show clear flags option
         console.log(`  → No unprocessed alerts, going to clearFlags screen`);
+        setFlagsToClear(computeFlagGroups(client));
         setScreen("clearFlags");
       } else {
         console.log(`  → ${filteredAlerts.length} alerts ready, going to alertSelection screen`);
@@ -390,6 +394,7 @@ export default function TriageSystem({ onBack }) {
       
       if (updatedAlerts.length === 0) {
         // All alerts processed for this client
+        setFlagsToClear(computeFlagGroups(selectedClient));
         setScreen("clearFlags");
       } else {
         // Go to next alert in this client
@@ -404,16 +409,39 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
-  // NEW: Clear all flags for a client by checking column BN
-  const clearAllFlags = async () => {
+  // Compute which flag groups (invoice/crm/expense) are active for a client
+  // Used to pre-check the right toggles on the Clear Flags screen
+  const computeFlagGroups = (client) => {
+    if (!client) return { invoice: false, crm: false, expense: false };
+    const f = client.flags || {};
+    return {
+      invoice: !!(f.invoiceDashboardDiscr || f.invoiceAppDiscr || f.invoiceStaleUnsentChanges || f.retainerInvoicesCreated),
+      crm: !!(f.crmPipeDashDiscr || f.crmPipeAppDiscr || f.crmConfDashDiscr || f.crmConfAppDiscr ||
+              f.crmPipeSkippedBlank || f.crmConfSkippedBlank || f.crmCopiedConfChecked ||
+              f.crmCopiedConfUnchecked || f.crmCopiedConfDelete),
+      expense: !!(f.expenseDashboardDiscr || f.expenseAppDiscr || f.expenseAdded || f.expenseUnreconGaps),
+    };
+  };
+
+  // Clear selected flag groups by writing directly to DataChgAlert cells
+  const clearSelectedFlags = async () => {
     if (!selectedClient) return;
-    
+
+    const selected = Object.entries(flagsToClear)
+      .filter(([, checked]) => checked)
+      .map(([group]) => group);
+
+    if (selected.length === 0) {
+      setAcceptError("Please select at least one flag group to clear.");
+      return;
+    }
+
     try {
       setIsLoading(true);
       setAcceptError("");
-      
-      console.log(`Clearing all flags for ${selectedClient.clientName}`);
-      
+
+      console.log(`Clearing flags for ${selectedClient.clientName}: ${selected.join(", ")}`);
+
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -421,25 +449,26 @@ export default function TriageSystem({ onBack }) {
           action: "clear_flags",
           masterSheetId: selectedClient.masterSheetId,
           automationCommanderSheetId,
+          flagsToClear: selected,
         }),
       });
-      
+
       const data = await response.json();
-      
+
       if (!data.success) {
         setAcceptError(`Failed to clear flags: ${data.error || "Unknown error"}`);
         return;
       }
-      
-      console.log(`✅ Flags cleared for ${selectedClient.clientName}`);
-      
+
+      console.log(`✅ Flags cleared for ${selectedClient.clientName}: ${data.cellsWritten?.join(", ")}`);
+
       // Go back to client selection
       setSelectedClient(null);
       setClientAlerts([]);
+      setFlagsToClear({ invoice: false, crm: false, expense: false });
       setScreen("clientSelection");
     } catch (err) {
       setAcceptError(`Failed to clear flags: ${err.message}`);
-      console.error(err);
     } finally {
       setIsLoading(false);
     }
@@ -914,6 +943,41 @@ export default function TriageSystem({ onBack }) {
       padding: "0",
       textDecoration: "underline",
     },
+    flagToggleRow: {
+      display: "flex",
+      alignItems: "center",
+      gap: "12px",
+      padding: "12px 14px",
+      borderRadius: "6px",
+      border: "1px solid #e0e0e0",
+      marginBottom: "8px",
+      cursor: "pointer",
+      background: "#fafafa",
+      userSelect: "none",
+    },
+    flagToggleRowActive: {
+      background: "#e8f5e9",
+      borderColor: "#a5d6a7",
+    },
+    flagToggleLabel: {
+      flex: 1,
+      fontSize: "14px",
+      fontWeight: "600",
+      color: "#1a1a1a",
+    },
+    flagToggleSub: {
+      fontSize: "12px",
+      color: "#888",
+      fontWeight: "400",
+      marginTop: "2px",
+    },
+    flagCheckbox: {
+      width: "18px",
+      height: "18px",
+      accentColor: "#4caf50",
+      cursor: "pointer",
+      flexShrink: 0,
+    },
   };
 
   // Screen: Ignored Alerts
@@ -1131,40 +1195,121 @@ export default function TriageSystem({ onBack }) {
 
   // Screen 1d: Clear Flags Screen
   if (screen === "clearFlags" && selectedClient) {
+    const allChecked = flagsToClear.invoice && flagsToClear.crm && flagsToClear.expense;
+    const noneChecked = !flagsToClear.invoice && !flagsToClear.crm && !flagsToClear.expense;
+    const anyActive = flagsToClear.invoice || flagsToClear.crm || flagsToClear.expense;
+
+    const FLAG_GROUPS = [
+      {
+        key: "invoice",
+        label: "Invoice flags",
+        sub: "Clears AS2 in DataChgAlert",
+        flags: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated"],
+      },
+      {
+        key: "crm",
+        label: "CRM flags",
+        sub: "Clears AT2 and AU2 in DataChgAlert",
+        flags: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
+                "crmPipeSkippedBlank", "crmConfSkippedBlank", "crmCopiedConfChecked",
+                "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
+      },
+      {
+        key: "expense",
+        label: "Expense flags",
+        sub: "Clears AV2 in DataChgAlert",
+        flags: ["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"],
+      },
+    ];
+
     return (
       <>
-        <Head>
-          <title>Alert Triage System</title>
-        </Head>
+        <Head><title>Alert Triage System</title></Head>
         <div style={styles.container}>
-        <div style={styles.header}>
-          <h1 style={styles.title}>All Done!</h1>
-          <p style={styles.subtitle}>All alerts for {selectedClient.clientName} have been processed</p>
-        </div>
-
-        <div style={styles.card}>
-          {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
-          
-          <div style={{ ...styles.successBanner, marginBottom: "20px" }}>
-            All alerts have been reviewed and resolved. Click below to clear the flags for this client.
+          <div style={styles.header}>
+            <h1 style={styles.title}>Clear Flags</h1>
+            <p style={styles.subtitle}>{selectedClient.clientName} — select which flags to clear</p>
           </div>
 
-          <div style={{ display: "flex", gap: "12px", flexDirection: "column" }}>
-            <button
-              onClick={clearAllFlags}
-              disabled={isLoading}
-              style={{
-                ...styles.button,
-                opacity: isLoading ? 0.5 : 1,
-              }}
-            >
-              {isLoading ? "Clearing Flags..." : "✓ Clear All Flags"}
-            </button>
-            <button onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
-              ← Back to Clients
-            </button>
+          <div style={styles.card}>
+            {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
+
+            <div style={{ ...styles.successBanner, marginBottom: "20px" }}>
+              All alerts have been reviewed. Choose which flag groups to clear in the client's DataChgAlert sheet.
+            </div>
+
+            {/* Select All / None toggle */}
+            <div style={{ display: "flex", gap: "10px", marginBottom: "14px" }}>
+              <button
+                onClick={() => setFlagsToClear({ invoice: true, crm: true, expense: true })}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
+              >
+                Select All
+              </button>
+              <button
+                onClick={() => setFlagsToClear({ invoice: false, crm: false, expense: false })}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
+              >
+                Select None
+              </button>
+            </div>
+
+            {/* Per-group toggles */}
+            {FLAG_GROUPS.map(group => {
+              const isChecked = flagsToClear[group.key];
+              const hasActiveFlags = group.flags.some(f => selectedClient.flags?.[f]);
+              return (
+                <div
+                  key={group.key}
+                  style={{
+                    ...styles.flagToggleRow,
+                    ...(isChecked ? styles.flagToggleRowActive : {}),
+                  }}
+                  onClick={() => setFlagsToClear(prev => ({ ...prev, [group.key]: !prev[group.key] }))}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    onChange={() => {}}
+                    style={styles.flagCheckbox}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <div style={styles.flagToggleLabel}>
+                      {group.label}
+                      {hasActiveFlags && (
+                        <span style={{ marginLeft: "8px", fontSize: "11px", color: "#e65100", fontWeight: "700" }}>
+                          ● active
+                        </span>
+                      )}
+                    </div>
+                    <div style={styles.flagToggleSub}>{group.sub}</div>
+                  </div>
+                </div>
+              );
+            })}
+
+            <div style={{ display: "flex", gap: "12px", flexDirection: "column", marginTop: "20px" }}>
+              <button
+                onClick={clearSelectedFlags}
+                disabled={isLoading || noneChecked}
+                style={{
+                  ...styles.button,
+                  opacity: isLoading || noneChecked ? 0.5 : 1,
+                }}
+              >
+                {isLoading
+                  ? "Clearing..."
+                  : allChecked
+                  ? "✓ Clear All Flags"
+                  : anyActive
+                  ? `✓ Clear Selected Flags`
+                  : "Select flags to clear"}
+              </button>
+              <button onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
+                ← Back to Clients
+              </button>
+            </div>
           </div>
-        </div>
         </div>
       </>
     );

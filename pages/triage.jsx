@@ -710,10 +710,14 @@ export default function TriageSystem({ onBack }) {
 
   // Screen 1b: Client Selection Screen
   if (screen === "clientSelection" && sessionId) {
-    const flagCounts = {};
+    // Count actual alerts per client from the loaded alerts
+    const alertCountByClient = {};
+    // We don't have all alerts in state, but we have flag keys — count actionable flags only
     clientsWithFlags.forEach(client => {
-      const flagKeys = Object.keys(client.flags).filter(key => client.flags[key]);
-      flagCounts[client.clientName] = flagKeys.length;
+      const actionableFlagCount = Object.entries(client.flags)
+        .filter(([key, value]) => value && !["invoiceAppDiscr","crmPipeSkippedBlank","crmConfSkippedBlank","crmCopiedConfChecked","crmCopiedConfUnchecked","crmCopiedConfDelete","retainerInvoicesCreated","expenseAppDiscr","expenseAdded","expenseUnreconGaps","invoiceStaleUnsentChanges"].includes(key))
+        .length;
+      alertCountByClient[client.clientName] = actionableFlagCount;
     });
 
     return (
@@ -758,7 +762,7 @@ export default function TriageSystem({ onBack }) {
                   {client.clientName}
                 </div>
                 <div style={{ fontSize: "13px", color: "#666" }}>
-                  {flagCounts[client.clientName]} flag(s)
+                  {alertCountByClient[client.clientName] || 0} actionable alert type(s)
                 </div>
               </button>
             ))}
@@ -1317,9 +1321,21 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
-          <div style={{ marginTop: "16px" }}>
-            <button onClick={() => setScreen("alertSelection")} style={styles.buttonSecondary}>
+          <div style={{ marginTop: "16px", display: "flex", gap: "12px" }}>
+            <button onClick={() => { setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={styles.buttonSecondary}>
               ← Back to Alerts
+            </button>
+            <button
+              onClick={() => {
+                // Remove this alert from clientAlerts and go back to the list
+                const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
+                setClientAlerts(updatedAlerts);
+                setCurrentClientAlertIndex(0);
+                setScreen(updatedAlerts.length === 0 ? "clearFlags" : "alertSelection");
+              }}
+              style={{ ...styles.buttonSecondary, color: "#d97706", borderColor: "#d97706" }}
+            >
+              ⏭ Skip Alert
             </button>
           </div>
         </div>

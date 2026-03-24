@@ -338,47 +338,6 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
 }
 
 // ============================================================================
-// ENRICHMENT: Fetch client data for matching context
-// ============================================================================
-
-async function enrichAlertWithClientData(sheets, alert, clientSheetId) {
-  try {
-    console.log(`  📊 Enriching alert with client data from ${clientSheetId.substring(0, 16)}...`);
-    
-    // Fetch Confirmed tab to get job list and existing invoices
-    const confirmedResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: clientSheetId,
-      range: "Confirmed!A2:G1000",
-    });
-    
-    const confirmedRows = confirmedResponse.data.values || [];
-    
-    // Extract job context - look for matching jobs
-    const matchingJobs = confirmedRows.filter(row => {
-      if (!row || row.length < 3) return false;
-      const jobName = row[0] || "";
-      const jobAmount = row[2] || "";
-      // Simple match: if alert mentions this job in description
-      return true; // We'll enhance this with Claude later
-    });
-    
-    alert.enrichment = {
-      clientSheetId,
-      potentialJobs: matchingJobs.slice(0, 5), // Top 5 potential matching jobs
-      timestamp: new Date().toISOString(),
-    };
-    
-    console.log(`  ✓ Enriched with ${matchingJobs.length} potential jobs`);
-    return alert;
-  } catch (error) {
-    console.error(`  ⚠️ Could not enrich alert:`, error.message);
-    // Return alert without enrichment - don't fail the whole process
-    alert.enrichment = { error: error.message };
-    return alert;
-  }
-}
-
-// ============================================================================
 // ALERT SUMMARY BUILDING
 // ============================================================================
 
@@ -888,6 +847,7 @@ export default async function handler(req, res) {
           // This is the Client Sheet (Confirmed tab) where we'll look for job matches
           invoiceAlerts.forEach((alert) => {
             alert.clientId = client.clientSheetId;  // Client Sheet - Column L
+            alert.masterSheetId = client.masterSheetId; // Master Sheet - Column M
             alert.clientName = client.clientName;   // Client name for display
             alert.flagType = "invoiceDashboardDiscr";
           });
@@ -903,6 +863,7 @@ export default async function handler(req, res) {
           console.log(`  ✓ DirComp done, found ${expenseAlerts.length} alerts`);
           expenseAlerts.forEach((alert) => {
             alert.clientId = client.clientSheetId;
+            alert.masterSheetId = client.masterSheetId;
             alert.clientName = client.clientName;
             alert.flagType = "expenseDashboardDiscr";
           });
@@ -926,6 +887,7 @@ export default async function handler(req, res) {
           );
           crmAlerts.forEach((alert) => {
             alert.clientId = client.clientSheetId;
+            alert.masterSheetId = client.masterSheetId;
             alert.clientName = client.clientName;
           });
           allAlerts.push(...crmAlerts);
@@ -940,6 +902,7 @@ export default async function handler(req, res) {
           );
           crmAlerts.forEach((alert) => {
             alert.clientId = client.clientSheetId;
+            alert.masterSheetId = client.masterSheetId;
             alert.clientName = client.clientName;
           });
           allAlerts.push(...crmAlerts);
@@ -1156,26 +1119,8 @@ export default async function handler(req, res) {
             
             // DEBUG: Log first 3 rows with client + jobName to see what's in columns 32 and 33
             if (client && jobName && diagnosticRowsLogged < 3) {
-              console.log(`\n  DIAGNOSTIC Row ${i + 1}:`);
-              console.log(`    Client (col A): "${client}"`);
-              console.log(`    JobName (col B): "${jobName}"`);
-              console.log(`    Revenue raw (col 32/AG): "${revenue}" (type: ${typeof revenue})`);
-              console.log(`    DirectCosts raw (col 33/AH): "${directCosts}" (type: ${typeof directCosts})`);
-              const parsed = parseFloat(String(directCosts).replace(/,/g, '')) || 0;
-              console.log(`    DirectCosts parsed: ${parsed}`);
+              console.log(`\n  DIAGNOSTIC Row ${i + 1}: Client="${client}", JobName="${jobName}", Revenue="${revenue}", DirectCosts="${directCosts}"`);
               diagnosticRowsLogged++;
-            }
-            
-            // SPECIAL: Log row 232 (PHIZZ LTD job) if it exists
-            if (i === 231) {  // i is 0-indexed, so row 232 = index 231
-              console.log(`\n  *** CHECKING ROW 232 (PHIZZ LTD) ***`);
-              console.log(`    Client (col A): "${client}"`);
-              console.log(`    JobName (col B): "${jobName}"`);
-              console.log(`    Revenue raw (col 32/AG): "${revenue}"`);
-              console.log(`    DirectCosts raw (col 33/AH): "${directCosts}"`);
-              const parsed = parseFloat(String(directCosts).replace(/[£$€,]/g, '')) || 0;
-              console.log(`    DirectCosts parsed: ${parsed}`);
-              console.log(`    Will be included in job list? ${parsed > 0 ? 'YES ✓' : 'NO ✗'}`);
             }
             
             if (client && jobName) {
@@ -1196,46 +1141,6 @@ export default async function handler(req, res) {
             .map(job => job.text);
           
           console.log(`  ✓ Built reference list of ${confirmedJobsAll.length} jobs total, ${confirmedJobs.length} with direct costs > £0`);
-          
-          // DIAGNOSTIC: Show expense allocation details for row 232 PHIZZ LTD
-          const phizzJob = activeConfirmedData[231];
-          if (phizzJob && phizzJob[0] === 'PHIZZ LTD') {
-            console.log(`\n  *** PHIZZ LTD ROW 232 - EXPENSE ALLOCATION DETAILS ***`);
-            console.log(`    DirectCosts Budget (col AH/33): £${phizzJob[33]}`);
-            console.log(`    Slot 1 - Descr(75): "${phizzJob[75]}" | Amt(76): "${phizzJob[76]}" | AppID(81): "${phizzJob[81]}"`);
-            console.log(`    Slot 2 - Descr(82): "${phizzJob[82]}" | Amt(83): "${phizzJob[83]}" | AppID(88): "${phizzJob[88]}"`);
-            console.log(`    Slot 3 - Descr(89): "${phizzJob[89]}" | Amt(90): "${phizzJob[90]}" | AppID(95): "${phizzJob[95]}"`);
-            
-            // Calculate allocated (only if AppID exists and is NOT blank/MANUAL-ENTRY)
-            let totalAllocated = 0;
-            if (phizzJob[75] && phizzJob[76] && phizzJob[81] && !phizzJob[81].toString().toUpperCase().includes('MANUAL-ENTRY')) {
-              const amt1 = parseFloat(String(phizzJob[76]).replace(/[£$€,]/g, '')) || 0;
-              totalAllocated += amt1;
-              console.log(`    Slot 1: ALLOCATED £${amt1} (AppID: ${phizzJob[81]})`);
-            } else if (phizzJob[75] && phizzJob[76]) {
-              console.log(`    Slot 1: PLACEHOLDER "${phizzJob[75]}" (AppID blank or MANUAL-ENTRY)`);
-            }
-            if (phizzJob[82] && phizzJob[83] && phizzJob[88] && !phizzJob[88].toString().toUpperCase().includes('MANUAL-ENTRY')) {
-              const amt2 = parseFloat(String(phizzJob[83]).replace(/[£$€,]/g, '')) || 0;
-              totalAllocated += amt2;
-              console.log(`    Slot 2: ALLOCATED £${amt2} (AppID: ${phizzJob[88]})`);
-            } else if (phizzJob[82] && phizzJob[83]) {
-              console.log(`    Slot 2: PLACEHOLDER "${phizzJob[82]}" (AppID blank or MANUAL-ENTRY)`);
-            }
-            if (phizzJob[89] && phizzJob[90] && phizzJob[95] && !phizzJob[95].toString().toUpperCase().includes('MANUAL-ENTRY')) {
-              const amt3 = parseFloat(String(phizzJob[90]).replace(/[£$€,]/g, '')) || 0;
-              totalAllocated += amt3;
-              console.log(`    Slot 3: ALLOCATED £${amt3} (AppID: ${phizzJob[95]})`);
-            } else if (phizzJob[89] && phizzJob[90]) {
-              console.log(`    Slot 3: PLACEHOLDER "${phizzJob[89]}" (AppID blank or MANUAL-ENTRY)`);
-            }
-            
-            const budgetNum = parseFloat(String(phizzJob[33]).replace(/[£$€,]/g, '')) || 0;
-            const remaining = budgetNum - totalAllocated;
-            console.log(`    Total Allocated (not counting placeholders): £${totalAllocated.toFixed(2)}`);
-            console.log(`    Remaining Budget: £${remaining.toFixed(2)}`);
-            console.log(`    Can accommodate £995 expense? ${remaining >= 995 ? 'YES ✓' : 'NO ✗'}`);
-          }
           
           // Read tolerance values for expenses
           const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
@@ -1534,30 +1439,12 @@ CRITICAL REQUIREMENTS FOR EVERY OPTION:
 
 Return ONLY JSON, no other text.`;
 
-          // DEBUG: Log the FULL prompt being sent to Claude (first 500 chars)
+          // Log prompt summary before sending to Claude
           console.log(`\n📤 EXPENSE PROMPT TO CLAUDE:`);
           console.log(`  Vendor/Description: ${expenseDescription}`);
           console.log(`  Amount: £${expenseAmount}`);
           console.log(`  Account Category: ${expenseAccountName}`);
-          console.log(`  Confirmed jobs list has ${confirmedJobs.length} entries`);
-          console.log(`  Matching strategy: vendor type + amount + account category (NOT client name)`);
-          console.log(`  ALL JOBS WITH DIRECT COSTS > £0 (complete list of ${confirmedJobs.length}):`);
-          confirmedJobs.forEach((job, idx) => {
-            console.log(`    ${idx + 1}. ${job}`);
-          });
-          
-          // Log the first part of the prompt itself
-          const promptPreview = expensePrompt.substring(0, 300);
-          console.log(`\n  Prompt starts with: "${promptPreview}..."`);
-          
-          // CRITICAL: Check if "Eleven" appears in any of the job names
-          const elevenJobs = confirmedJobs.filter(job => job.toLowerCase().includes('eleven'));
-          if (elevenJobs.length > 0) {
-            console.log(`\n  🔍 FOUND ${elevenJobs.length} JOB(S) MENTIONING 'ELEVEN':`);
-            elevenJobs.forEach(job => console.log(`     - ${job}`));
-          } else {
-            console.log(`\n  ⚠️ NO JOBS MENTIONING 'ELEVEN' IN THE CONFIRMED JOBS LIST`);
-          }
+          console.log(`  Confirmed jobs with direct costs: ${confirmedJobs.length}`);
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
             max_tokens: 1500,
@@ -2177,8 +2064,10 @@ Return ONLY JSON, no other text.`;
         let clientRow = -1;
         
         for (let i = 1; i < rows.length; i++) {
-          const rowMasterSheetId = rows[i][12]; // Column M (index 12)
-          if (rowMasterSheetId === masterSheetId) {
+          const rowMasterSheetUrl = rows[i][12]; // Column M (index 12) — full URL
+          // Match by either full URL or extracted sheet ID within it
+          const rowMasterSheetId = extractSheetIdFromUrl(rowMasterSheetUrl);
+          if (rowMasterSheetUrl === masterSheetId || rowMasterSheetId === masterSheetId) {
             clientRow = i + 1; // Google Sheets rows are 1-indexed
             console.log(`  Found client at row ${clientRow}`);
             break;

@@ -462,6 +462,39 @@ export default function TriageSystem({ onBack }) {
 
       console.log(`✅ Flags cleared for ${selectedClient.clientName}: ${data.cellsWritten?.join(", ")}`);
 
+      // Map cleared groups back to individual flag keys
+      const FLAG_GROUP_KEYS = {
+        invoice: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated"],
+        crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
+              "crmPipeSkippedBlank", "crmConfSkippedBlank", "crmCopiedConfChecked",
+              "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
+        expense: ["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"],
+      };
+      const clearedKeys = new Set(selected.flatMap(group => FLAG_GROUP_KEYS[group] || []));
+
+      // Update clientsWithFlags: zero out cleared flag keys, remove client if none remain
+      const NO_ACTION_FLAG_KEYS = ["invoiceAppDiscr","crmPipeSkippedBlank","crmConfSkippedBlank",
+        "crmCopiedConfChecked","crmCopiedConfUnchecked","crmCopiedConfDelete",
+        "retainerInvoicesCreated","expenseAppDiscr","expenseAdded","expenseUnreconGaps",
+        "invoiceStaleUnsentChanges"];
+
+      setClientsWithFlags(prev => {
+        return prev
+          .map(client => {
+            if (client.clientName !== selectedClient.clientName) return client;
+            // Zero out the cleared flags
+            const updatedFlags = { ...client.flags };
+            clearedKeys.forEach(key => { updatedFlags[key] = false; });
+            return { ...client, flags: updatedFlags };
+          })
+          .filter(client => {
+            // Remove client if no actionable flags remain
+            const hasActionable = Object.entries(client.flags)
+              .some(([key, val]) => val && !NO_ACTION_FLAG_KEYS.includes(key));
+            return hasActionable;
+          });
+      });
+
       // Go back to client selection
       setSelectedClient(null);
       setClientAlerts([]);

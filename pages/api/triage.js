@@ -372,20 +372,22 @@ async function readAIKnowledgeBase(sheets, automationCommanderSheetId) {
 
 async function getToleranceValues(sheets, masterSheetId) {
   try {
-    const response = await sheets.spreadsheets.values.get({
+    const response = await sheets.spreadsheets.values.batchGet({
       spreadsheetId: masterSheetId,
-      range: "DataChgAlert!F39,J111",
+      ranges: ["DataChgAlert!F39", "DataChgAlert!J111", "DataChgAlert!B52"],
     });
-    const values = response.data.values || [];
+    const ranges = response.data.valueRanges || [];
     return {
-      invoiceMonthsTolerance: values[0]?.[0] || 2,
-      expenseMonthsTolerance: values[1]?.[0] || 1,
+      invoiceMonthsTolerance: ranges[0]?.values?.[0]?.[0] || 2,
+      expenseMonthsTolerance: ranges[1]?.values?.[0]?.[0] || 1,
+      defaultDaysToPay:       ranges[2]?.values?.[0]?.[0] || 30,
     };
   } catch (err) {
     console.log("⚠️ Using default tolerance values");
     return {
       invoiceMonthsTolerance: 2,
       expenseMonthsTolerance: 1,
+      defaultDaysToPay: 30,
     };
   }
 }
@@ -578,29 +580,19 @@ function buildInvCompSummary(alert) {
   const job = accounting[1] || '';
   
   // CRITICAL FIX: Remove commas from number strings before parsing
-  // Google Sheets returns '2,700.00' but parseFloat('2,700.00') = 2 (stops at comma)
   const invoiceAmount = parseFloat(String(accounting[2] || '0').replace(/,/g, '')) || 0; // Column C
   const totalExclVAT = parseFloat(String(accounting[3] || '0').replace(/,/g, '')) || 0; // Column D
   const vatIncluded = parseFloat(String(accounting[4] || '0').replace(/,/g, '')) || 0; // Column E
   
   const invoiceNo = accounting[5] || '(no reference)'; // Column F - Invoice no
   const sentDate = accounting[6] || ''; // Column G - Sent date
+  const datePaid = accounting[8] || ''; // Column I - Fully paid on
   const status = accounting[9] || ''; // Column J - Status
   const currency = accounting[10] || 'GBP'; // Column K - Currency
-  
-  console.log(`  Extracted values:`);
-  console.log(`    [0] client = "${client}"`);
-  console.log(`    [1] job = "${job}"`);
-  console.log(`    [2] invoiceAmount = ${invoiceAmount}`);
-  console.log(`    [3] totalExclVAT = ${totalExclVAT}`);
-  console.log(`    [4] vatIncluded = ${vatIncluded}`);
-  console.log(`    [5] invoiceNo = "${invoiceNo}"  ← THIS IS THE PROBLEM FIELD`);
-  console.log(`    [6] sentDate = "${sentDate}"`);
-  console.log(`    [9] status = "${status}"`);
-  console.log(`    [10] currency = "${currency}"`);
+
+  console.log(`  InvComp: invoiceNo="${invoiceNo}", amount=${totalExclVAT || invoiceAmount}, status="${status}", datePaid="${datePaid}"`);
   
   // Use Total excl VAT (Column D) as the primary amount
-  // This is what the user specified
   const amount = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
   
   // Determine VAT indicator
@@ -609,24 +601,14 @@ function buildInvCompSummary(alert) {
     vatSuffix = ' + VAT';
   }
   
-  // Format the amount with currency and VAT indicator
   const formattedAmount = amount > 0 
     ? `${currency}${amount.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}${vatSuffix}`
     : 'unknown amount';
   
-  // Build the summary string
   let summary = `Invoice ${invoiceNo} • ${formattedAmount} • ${client}`;
-  if (job) {
-    summary += ` • ${job}`;
-  }
-  if (sentDate) {
-    summary += ` • Sent ${sentDate}`;
-  }
-  if (status) {
-    summary += ` • ${status}`;
-  }
-  
-  console.log(`  Final summary: "${summary}"`);
+  if (job) summary += ` • ${job}`;
+  if (sentDate) summary += ` • Sent ${sentDate}`;
+  if (status) summary += ` • ${status}`;
   
   return {
     invoiceNo,
@@ -636,6 +618,7 @@ function buildInvCompSummary(alert) {
     client,
     job,
     sentDate,
+    datePaid,
     status,
     summary
   };
@@ -2030,20 +2013,28 @@ Return ONLY JSON, no other text.`;
             const startDate = row[37] || '';
             const endDate = row[38] || '';
             
-            // Include all invoices, but mark MANUAL-INV entries so Claude knows to exclude them from calculations
-            const inv1Amount = row[41] !== undefined ? row[41] : '';
-            const inv1Ref = row[42] || '';
-            const inv1Label = (inv1Ref || '').toString().toUpperCase().includes('MANUAL-INV') ? `${inv1Ref} [MANUAL ONLY]` : inv1Ref;
+            // Invoice slot column layout (0-indexed):
+            // Slot 1: Amount=AP(41), Ref=AQ(42), SentDate=AR(43), DaysToPay=AS(44), Status=AT(45)
+            // Slot 2: Amount=AW(48), Ref=AX(49), SentDate=AY(50), DaysToPay=AZ(51), Status=BA(52)
+            // Slot 3: Amount=BD(55), Ref=BE(56), SentDate=BF(57), DaysToPay=BG(58), Status=BH(59)
+
+            const formatSlot = (amtIdx, refIdx, sentIdx, daysIdx, statusIdx) => {
+              const ref = row[refIdx] || '';
+              const amt = row[amtIdx] !== undefined ? row[amtIdx] : '';
+              const sent = row[sentIdx] || '';
+              const days = row[daysIdx] !== undefined ? row[daysIdx] : '';
+              const stat = row[statusIdx] || '';
+              const label = ref.toString().toUpperCase().includes('MANUAL-INV')
+                ? `${ref} [MANUAL ONLY]` : ref;
+              if (!ref && !amt) return '(empty)';
+              return `${label} £${amt}${sent ? ' sent:' + sent : ''}${days ? ' days:' + days : ''}${stat ? ' status:' + stat : ''}`;
+            };
+
+            const inv1 = formatSlot(41, 42, 43, 44, 45);
+            const inv2 = formatSlot(48, 49, 50, 51, 52);
+            const inv3 = formatSlot(55, 56, 57, 58, 59);
             
-            const inv2Amount = row[48] !== undefined ? row[48] : '';
-            const inv2Ref = row[49] || '';
-            const inv2Label = (inv2Ref || '').toString().toUpperCase().includes('MANUAL-INV') ? `${inv2Ref} [MANUAL ONLY]` : inv2Ref;
-            
-            const inv3Amount = row[55] !== undefined ? row[55] : '';
-            const inv3Ref = row[56] || '';
-            const inv3Label = (inv3Ref || '').toString().toUpperCase().includes('MANUAL-INV') ? `${inv3Ref} [MANUAL ONLY]` : inv3Ref;
-            
-            return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | Revenue: ${revenue} | VAT: ${vat} | Type: ${projType} | Start: ${startDate} | End: ${endDate} | Inv1: ${inv1Label} £${inv1Amount} | Inv2: ${inv2Label} £${inv2Amount} | Inv3: ${inv3Label} £${inv3Amount}`;
+            return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | Revenue: ${revenue} | VAT: ${vat} | Type: ${projType} | Start: ${startDate} | End: ${endDate} | Inv1: ${inv1} | Inv2: ${inv2} | Inv3: ${inv3}`;
           })
           .join('\n');
         
@@ -2079,7 +2070,40 @@ Return ONLY JSON, no other text.`;
         const invoiceClient = alert.summary?.client || '';
         const invoiceJob = alert.summary?.job || '';
         const sentDate = alert.summary?.sentDate || '';
-        
+        const invoiceStatus = alert.summary?.status || '';
+        const datePaid = alert.summary?.datePaid || '';
+
+        // Days to pay: if Paid, calculate from sentDate → datePaid; otherwise use DataChgAlert!B52
+        let daysToPayValue = tolerances.defaultDaysToPay;
+        if (invoiceStatus.toLowerCase() === 'paid' && sentDate && datePaid) {
+          try {
+            const parseDate = (d) => {
+              // Handle formats like "20-Mar-26", "20/03/2026", "2026-03-20"
+              const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+              const parts = d.split(/[-\/]/);
+              if (parts.length === 3) {
+                // dd-Mon-yy or dd-Mon-yyyy
+                const monthNum = months[parts[1]?.toLowerCase()?.substring(0,3)];
+                if (monthNum !== undefined) {
+                  const year = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
+                  return new Date(year, monthNum, parseInt(parts[0]));
+                }
+                // yyyy-mm-dd
+                if (parts[0].length === 4) return new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
+                // dd/mm/yyyy
+                return new Date(parseInt(parts[2]), parseInt(parts[1])-1, parseInt(parts[0]));
+              }
+              return new Date(d);
+            };
+            const sent = parseDate(sentDate);
+            const paid = parseDate(datePaid);
+            const diffDays = Math.round((paid - sent) / (1000 * 60 * 60 * 24));
+            if (diffDays > 0) daysToPayValue = diffDays;
+          } catch (e) {
+            console.log(`  ⚠️ Could not calculate days to pay from dates: ${e.message}`);
+          }
+        }
+
         // Build Claude prompt with knowledge base and tolerances
         const prompt = `You are a financial advisor helping to resolve an unmatched invoice. Analyze the invoice against the Confirmed tab data and suggest matching options.
 
@@ -2089,6 +2113,7 @@ UNMATCHED INVOICE:
 • Client: ${invoiceClient}
 • Job Description: ${invoiceJob}
 • Sent: ${sentDate}
+• Status: ${invoiceStatus}${datePaid ? `\n• Date Paid: ${datePaid}` : ''}
 
 CONFIRMED TAB DATA (All non-blank rows):
 ${confirmedTabTable}
@@ -2105,42 +2130,53 @@ Each job in the Confirmed tab may have:
 - ONE PARENT ROW: Contains the job's basic information (Client, Job name, Revenue, Start date, End date)
 - ZERO OR MORE CHILD ROWS: Contain additional invoices. Child rows have the SAME Client name and Job name as their parent, but NO Revenue, Start date, or End date
 
-To identify a parent row: Has Client name, Job name, Revenue amount, Start date, and End date
-To identify a child row: Has the SAME Client name and Job name as a parent, but Revenue/Start date/End date are blank
-
 **How Invoices Are Organized (by job type):**
 
 PROJECT JOBS:
 - Parent row contains invoices 1-3 (Inv1-Inv3 columns)
 - Child row 1 (if exists) contains invoices 4-6
 - Child row 2 (if exists) contains invoices 7-9
-- Each row has 3 invoice slots (amount and reference)
+- Each row has 3 invoice slots
 
 RETAINER JOBS:
 - Mode A (1 invoice total): Parent row has 1 invoice in slot 1, no child rows
 - Mode B (2+ invoices): Parent row has NO invoices, each child row has 1 invoice in slot 1 only
 
+**Invoice Slot Column Reference (Confirmed tab):**
+Each slot has 5 fields — use THESE EXACT column letters:
+
+| Slot | Amount | Reference | Sent Date | Days to Pay | Status |
+|------|--------|-----------|-----------|-------------|--------|
+|  1   |   AP   |    AQ     |    AR     |     AS      |   AT   |
+|  2   |   AW   |    AX     |    AY     |     AZ      |   BA   |
+|  3   |   BD   |    BE     |    BF     |     BG      |   BH   |
+
 **How to Calculate Remaining to Invoice:**
 1. Find the job's parent row (has Revenue)
 2. Find all child rows with same Client, same Job name, but no Revenue
 3. Sum all invoices from the parent AND all its children
-4. **CRITICAL**: When summing, ONLY include invoices with real references (NOT marked [MANUAL ONLY])
-5. **IMPORTANT**: Invoices marked [MANUAL ONLY] are planned/scheduled invoices that haven't been issued yet - they show the invoicing plan but should NOT be included in "total already invoiced" calculations
-6. Calculate: Remaining = Parent's Revenue - Total Invoiced Amount (excluding [MANUAL ONLY] invoices)
+4. ONLY include invoices with real references (NOT marked [MANUAL ONLY])
+5. Invoices marked [MANUAL ONLY] are planned but not yet issued — exclude from totals
+6. Calculate: Remaining = Parent's Revenue - Total Invoiced Amount (excluding [MANUAL ONLY])
+
+**Days to Pay value to use:** ${daysToPayValue}
+(${invoiceStatus.toLowerCase() === 'paid' && datePaid ? `Calculated from sent date ${sentDate} to paid date ${datePaid}` : `Default from DataChgAlert!B52`})
 
 **Your Task:**
-1. Identify which job (parent row) this invoice should match to, considering client name, job similarity, amount, reference pattern, and dates
-2. For EACH option, provide ONLY these facts: parent row, job name, type, revenue, dates, existing invoices with sent dates, total invoiced, remaining, match status, and WHY it didn't auto-match
-3. For recommendedActions: Generate EXACT cell update instructions that will write this invoice to the correct location
-4. Suggest 3 GENUINELY DIFFERENT options: BEST MATCH, ALTERNATIVE MATCH, CREATE NEW JOB
+1. Identify which job (parent row) this invoice should match to
+2. For EACH option, provide facts: parent row, job name, type, revenue, dates, existing invoices, total invoiced, remaining, match status
+3. Suggest 3 GENUINELY DIFFERENT options: BEST MATCH, ALTERNATIVE MATCH, CREATE NEW JOB
 
-**CRITICAL: For recommendedActions, provide exact cell coordinates and values:**
+**CRITICAL: recommendedActions must contain EXACTLY 2 items:**
 
-Example format:
-"Within the Confirmed tab, Row 52, Slot 3: Write 2250 to cell BD52 (invoice amount), write 0822 to cell BE52 (invoice ref), write 20-Mar-26 to cell BF52 (sent date), write 30 to cell BG52 (days to pay), write Sent to cell BH52 (status)"
+Item 1 — Plain English summary (one sentence):
+"Insert invoice [ref] to slot [N] of the [Job Name] job (row [R])"
 
-Or if creating a new job:
-"Create new job row: Client=ABC Ltd, Job=New Project, Revenue=5000, Start=1-Apr-26, End=30-Jun-26. Then in Slot 1: Amount=5000, Ref=0823, SendDate=20-Mar-26, DaysToPay=30, Status=Sent"
+Item 2 — Exact cell writes only, nothing else:
+"Write [amount] to [col][R] (amount), write [ref] to [col][R] (ref), write [sentDate] to [col][R] (sent date), write ${daysToPayValue} to [col][R] (days to pay), write [status] to [col][R] (status)"
+
+Replace [col] with the correct column letter from the table above for the chosen slot.
+Do NOT include any other bullet points such as "Update project status" or "Mark as processed".
 
 Format as JSON array:
 [{
@@ -2159,9 +2195,8 @@ Format as JSON array:
     "discrepancies": "Why it didn't auto-match"
   },
   "recommendedActions": [
-    "Within the Confirmed tab, Row 52, Slot 3: Write 2250 to cell BD52, write 0822 to cell BE52, write 20-Mar-26 to cell BF52, write 30 to cell BG52, write Sent to cell BH52",
-    "Verify that the invoice reference 0822 matches the source system",
-    "Mark this invoice as processed in the source system"
+    "Insert invoice 0822 to slot 3 of the Natasha Allergy Research Foundation video job (row 52)",
+    "Write 2250 to BD52 (amount), write 0822 to BE52 (ref), write 20-Mar-26 to BF52 (sent date), write ${daysToPayValue} to BG52 (days to pay), write Sent to BH52 (status)"
   ]
 }]
 

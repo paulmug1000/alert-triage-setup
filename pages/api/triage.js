@@ -48,6 +48,10 @@ const FLAG_COLUMNS = {
   invoiceStaleUnsentChanges: "HE",
 };
 
+// Precomputed triage data — stored by cron job, consumed by frontend on Start
+const PRECOMPUTED_KEY = "triage_precomputed";
+const PRECOMPUTED_MAX_AGE_MS = 3 * 60 * 60 * 1000; // 3 hours
+
 const NO_ACTION_FLAGS = [
   "invoiceAppDiscr",
   "crmPipeSkippedBlank",
@@ -1382,6 +1386,57 @@ export default async function handler(req, res) {
       } catch (err) {
         console.error("❌ Error retrieving alerts:", err);
         res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "get_precomputed") {
+      // Return the latest precomputed triage data if it exists and is fresh enough
+      try {
+        const raw = await redisClient.get(PRECOMPUTED_KEY);
+        if (!raw) {
+          console.log(`  No precomputed data found`);
+          return res.status(200).json({ success: true, available: false });
+        }
+
+        const data = JSON.parse(raw);
+        const ageMs = Date.now() - (data.computedAt || 0);
+
+        if (ageMs > PRECOMPUTED_MAX_AGE_MS) {
+          console.log(`  Precomputed data is stale (${Math.round(ageMs / 60000)} mins old)`);
+          return res.status(200).json({ success: true, available: false, staleMinutes: Math.round(ageMs / 60000) });
+        }
+
+        console.log(`  ✅ Returning precomputed data (${Math.round(ageMs / 60000)} mins old, ${data.totalAlerts} alerts)`);
+
+        // Promote the precomputed data into a regular session so the existing
+        // get_alerts flow works unchanged
+        const sessionId = Math.random().toString(36).substring(2, 15);
+        await redisClient.set(
+          `triage_alerts:${sessionId}`,
+          JSON.stringify({
+            alerts: data.alerts,
+            noActionAlerts: data.noActionAlerts,
+            clientsWithFlags: data.clientsWithFlags,
+          }),
+          { EX: 86400 }
+        );
+
+        return res.status(200).json({
+          success: true,
+          available: true,
+          sessionId,
+          totalAlerts: data.totalAlerts,
+          noActionCount: data.noActionCount,
+          clientsWithFlags: data.clientsWithFlags.map(c => ({
+            clientName: c.clientName,
+            clientSheetId: c.clientSheetId,
+            masterSheetId: c.masterSheetId,
+            flags: c.flags,
+          })),
+          computedAt: data.computedAt,
+          computedMinutesAgo: Math.round(ageMs / 60000),
+        });
+      } catch (err) {
+        console.error("❌ Error retrieving precomputed data:", err);
+        return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "analyze_alert") {
       // Generate matching options for an alert

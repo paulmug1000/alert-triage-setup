@@ -154,6 +154,44 @@ export default function TriageSystem({ onBack }) {
       setIsLoading(true);
       setError("");
 
+      // ── Step 1: Check for fresh precomputed data from cron job ──────────
+      console.log("Checking for precomputed triage data...");
+      let precomputedUsed = false;
+      try {
+        const preResponse = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId }),
+        });
+        const preData = await preResponse.json();
+
+        if (preData.success && preData.available) {
+          console.log(`✅ Using precomputed data (${preData.computedMinutesAgo} min old, ${preData.totalAlerts} alerts)`);
+          setSessionId(preData.sessionId);
+          setTotalAlerts(preData.totalAlerts || 0);
+          setNoActionCount(preData.noActionCount || 0);
+          setClientsWithFlags(preData.clientsWithFlags || []);
+          setAcknowledgedNoAction(new Set());
+          setProcessedAlerts(new Set());
+
+          if ((preData.totalAlerts || 0) > 0) {
+            setScreen("clientSelection");
+          } else if ((preData.noActionCount || 0) > 0) {
+            setShowNoAction(true);
+          } else {
+            setTriageComplete(true);
+          }
+          precomputedUsed = true;
+        } else {
+          console.log(`No fresh precomputed data available — running live triage`);
+        }
+      } catch (preErr) {
+        console.log(`Precomputed check failed, falling back to live run: ${preErr.message}`);
+      }
+
+      if (precomputedUsed) return;
+
+      // ── Step 2: Fall back to live start_triage ───────────────────────────
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -167,7 +205,6 @@ export default function TriageSystem({ onBack }) {
 
       console.log("📥 Response from /api/triage:", JSON.stringify(data, null, 2));
 
-      // Check both HTTP status and API success flag
       if (!response.ok || !data.success) {
         const errorMsg = data.error || "Failed to start triage";
         console.error("Triage API error:", errorMsg);
@@ -184,7 +221,6 @@ export default function TriageSystem({ onBack }) {
       setAcknowledgedNoAction(new Set());
       setProcessedAlerts(new Set());
 
-      // Show client selection screen if there are alerts
       if ((data.totalAlerts || 0) > 0) {
         console.log(`${data.totalAlerts} actionable alerts found, showing client selection...`);
         setScreen("clientSelection");
@@ -1484,7 +1520,7 @@ export default function TriageSystem({ onBack }) {
           </button>
 
           {isLoading && (
-            <p style={styles.loadingText}>Scanning automation commander for alerts...</p>
+            <p style={styles.loadingText}>Checking for pre-computed data, then scanning for alerts...</p>
           )}
 
           <div style={{ marginTop: "16px" }}>

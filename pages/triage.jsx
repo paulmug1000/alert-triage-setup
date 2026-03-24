@@ -539,28 +539,17 @@ export default function TriageSystem({ onBack }) {
       };
       const clearedKeys = new Set(selected.flatMap(group => FLAG_GROUP_KEYS[group] || []));
 
-      // Update clientsWithFlags: zero out cleared flag keys, remove client if none remain
-      const NO_ACTION_FLAG_KEYS = ["invoiceAppDiscr","crmPipeSkippedBlank","crmConfSkippedBlank",
-        "crmCopiedConfChecked","crmCopiedConfUnchecked","crmCopiedConfDelete",
-        "retainerInvoicesCreated","expenseAppDiscr","expenseAdded","expenseUnreconGaps",
-        "invoiceStaleUnsentChanges"];
-
-      setClientsWithFlags(prev => {
-        return prev
-          .map(client => {
-            if (client.clientName !== selectedClient.clientName) return client;
-            // Zero out the cleared flags
-            const updatedFlags = { ...client.flags };
-            clearedKeys.forEach(key => { updatedFlags[key] = false; });
-            return { ...client, flags: updatedFlags };
-          })
-          .filter(client => {
-            // Remove client if no actionable flags remain
-            const hasActionable = Object.entries(client.flags)
-              .some(([key, val]) => val && !NO_ACTION_FLAG_KEYS.includes(key));
-            return hasActionable;
-          });
-      });
+      // Zero out the cleared flag keys on the selected client only.
+      // Do NOT remove any clients from the list — the list only refreshes from the
+      // server on reload. Removing clients here causes other clients to vanish too.
+      setClientsWithFlags(prev =>
+        prev.map(client => {
+          if (client.clientName !== selectedClient.clientName) return client;
+          const updatedFlags = { ...client.flags };
+          clearedKeys.forEach(key => { updatedFlags[key] = false; });
+          return { ...client, flags: updatedFlags };
+        })
+      );
 
       // Go back to client selection
       setSelectedClient(null);
@@ -602,11 +591,26 @@ export default function TriageSystem({ onBack }) {
       setShowIgnoreModal(false);
       setIgnoreReason("");
 
-      // Remove from client alerts list and navigate away
+      // Mark as processed so it won't reappear if selectClient reloads from Redis
+      const alertId = `${alert.sheetName}-${alert.rowNumber}`;
+      setProcessedAlerts(prev => new Set([...prev, alertId]));
+
+      // Remove from client alerts list
       const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
       setClientAlerts(updatedAlerts);
       setCurrentClientAlertIndex(0);
-      setScreen(updatedAlerts.length === 0 ? "clearFlags" : "alertSelection");
+
+      if (updatedAlerts.length === 0) {
+        // Same gate as acceptOption — only go to clearFlags if no-action flags resolved too
+        if (allNoActionResolved()) {
+          setFlagsToClear(computeFlagGroups(selectedClient));
+          setScreen("clearFlags");
+        } else {
+          setScreen("alertSelection");
+        }
+      } else {
+        setScreen("alertSelection");
+      }
     } catch (err) {
       setAcceptError(`Error: ${err.message}`);
     } finally {

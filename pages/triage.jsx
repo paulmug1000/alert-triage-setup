@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Head from "next/head";
 
 // Helper function defined OUTSIDE component to prevent re-creation on each render
@@ -470,6 +470,11 @@ export default function TriageSystem({ onBack }) {
   // Returns true when all non-actionable flags for the current client are resolved
   const allNoActionResolved = () =>
     clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.flagType));
+
+  // Auto-trigger triage on mount — skips the home screen entirely
+  useEffect(() => {
+    startTriage();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Compute which flag groups (invoice/crm/expense) are active for a client
   // Used to pre-check the right toggles on the Clear Flags screen
@@ -1128,10 +1133,10 @@ export default function TriageSystem({ onBack }) {
             )}
 
             <button
-              onClick={() => { setAcceptError(""); setScreen("initial"); }}
+              onClick={() => { setAcceptError(""); setScreen("clientSelection"); }}
               style={{ ...styles.buttonSecondary, marginTop: "20px" }}
             >
-              ← Back to Home
+              ← Back to Clients
             </button>
           </div>
         </div>
@@ -1199,9 +1204,21 @@ export default function TriageSystem({ onBack }) {
             ))}
           </div>
 
-          <button onClick={() => { setSessionId(""); setScreen("initial"); }} style={{ ...styles.buttonSecondary, marginTop: "20px" }}>
+          <button onClick={() => { setSessionId(""); setScreen("initial"); }} style={{ ...styles.buttonSecondary, marginTop: "20px", display: "none" }}>
             ← Back
           </button>
+
+          <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #eee" }}>
+            <button
+              onClick={() => {
+                setScreen("ignoredAlerts");
+                loadIgnoredAlerts();
+              }}
+              style={styles.linkButton}
+            >
+              View ignored alerts →
+            </button>
+          </div>
         </div>
         </div>
       </>
@@ -1488,60 +1505,35 @@ export default function TriageSystem({ onBack }) {
     );
   }
 
-  // Screen 1: Initial state - show start button
+  // Screen 1: Loading state (shown while startTriage runs on mount)
   if (!sessionId && !triageComplete) {
     return (
       <>
-        <Head>
-          <title>Alert Triage System</title>
-        </Head>
+        <Head><title>Alert Triage System</title></Head>
         <div style={styles.container}>
-        <div style={styles.header}>
-          <h1 style={styles.title}>Alert Triage System</h1>
-          <p style={styles.subtitle}>Review and resolve financial automation alerts</p>
-        </div>
-
-        <div style={styles.card}>
-          {error && <div style={styles.errorBanner}>{error}</div>}
-
-          <p style={{ color: "#333", marginBottom: "20px" }}>
-            This system will review all flagged alerts from your automation commander and help you resolve them with AI assistance.
-          </p>
-
-          <button
-            onClick={startTriage}
-            disabled={isLoading}
-            style={{
-              ...styles.button,
-              opacity: isLoading ? 0.5 : 1,
-            }}
-          >
-            {isLoading ? "Loading Alerts..." : "Start Triage →"}
-          </button>
-
-          {isLoading && (
-            <p style={styles.loadingText}>Checking for pre-computed data, then scanning for alerts...</p>
-          )}
-
-          <div style={{ marginTop: "16px" }}>
-            <button
-              onClick={() => {
-                setScreen("ignoredAlerts");
-                loadIgnoredAlerts();
-              }}
-              style={styles.linkButton}
-            >
-              View ignored alerts →
-            </button>
+          <div style={styles.header}>
+            <h1 style={styles.title}>Alert Triage System</h1>
+            <p style={styles.subtitle}>Review and resolve financial automation alerts</p>
+          </div>
+          <div style={styles.card}>
+            {error ? (
+              <>
+                <div style={styles.errorBanner}>{error}</div>
+                <button
+                  onClick={startTriage}
+                  disabled={isLoading}
+                  style={{ ...styles.button, marginTop: "12px", opacity: isLoading ? 0.5 : 1 }}
+                >
+                  {isLoading ? "Loading..." : "Retry →"}
+                </button>
+              </>
+            ) : (
+              <p style={styles.loadingText}>
+                {isLoading ? "Loading alerts..." : "Initialising..."}
+              </p>
+            )}
           </div>
         </div>
-
-        {onBack && (
-          <button onClick={onBack} style={styles.buttonSecondary}>
-            ← Back to Menu
-          </button>
-        )}
-      </div>
       </>
     );
   }
@@ -1561,8 +1553,8 @@ export default function TriageSystem({ onBack }) {
           </div>
 
           <div style={styles.buttonGroup}>
-            <button onClick={resetTriage} style={styles.button}>
-              Run Triage Again
+            <button onClick={startTriage} style={styles.button}>
+              Refresh →
             </button>
             {onBack && (
               <button onClick={onBack} style={styles.buttonSecondary}>

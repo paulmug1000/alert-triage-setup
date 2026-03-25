@@ -2690,17 +2690,87 @@ Return ONLY JSON, no other text.`;
         const sheets = await getSheetsClient();
         const masterSheetIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
         const clientSheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+        const acIdClean = extractSheetIdFromUrl(acId) || acId;
 
-        // ── Step 1: Read AutoLog from master sheet (Timestamp, Category, Summary, Details) ──
-        // AutoLog contains all automation activity for this client going back 90 days.
-        // Col A=Timestamp, B=Category, C=Summary, D=Details
+        // ── Step 1: Find when the flag was last cleared ──────────────────────────
+        // Search the monthly Log tabs in the Automation Commander sheet (back 90 days max).
+        // Each row: col A=timestamp, col B=client name, clear columns:
+        //   BJ(61) = clear invoice flags (also clears retainerInvoicesCreated)
+        //   BL(63) = clear copied-to-confirmed flags
+        //   BO(66) = clear ALL flags
+        // Find the most recent row for this client where the relevant clear column = TRUE.
+
+        const clearColForFlag = {
+          crmCopiedConfChecked:   [63, 66], // BL or BO
+          crmCopiedConfUnchecked: [63, 66], // BL or BO
+          retainerInvoicesCreated: [61, 66], // BJ or BO
+        };
+        const clearCols = clearColForFlag[flagType] || [66];
+
+        // Generate monthly tab names for the last 90 days
+        const monthTabNames = [];
+        const now = new Date();
+        for (let m = 0; m < 4; m++) { // up to 4 months covers 90 days
+          const d = new Date(now.getFullYear(), now.getMonth() - m, 1);
+          const mon = d.toLocaleString("en-GB", { month: "short" }); // "Mar", "Feb" etc.
+          const yr = String(d.getFullYear()).slice(2); // "26"
+          monthTabNames.push(`Log-${mon}${yr}`);
+        }
+        console.log(`  📅 Checking log tabs: ${monthTabNames.join(", ")}`);
+
+        let windowStart = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000); // default: 90 days ago
+        let foundClear = false;
+
+        for (const tabName of monthTabNames) {
+          if (foundClear) break;
+          try {
+            const logResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: acIdClean,
+              range: `${tabName}!A3:BP5000`,
+            });
+            const logRows = logResp.data.values || [];
+            // Search newest-first: rows in the tab are chronological, so iterate in reverse
+            for (let i = logRows.length - 1; i >= 0; i--) {
+              const row = logRows[i];
+              const rowClient = String(row[1] || "").trim(); // col B = client name
+              if (rowClient !== clientName.trim()) continue;
+              // Check if any clear column = TRUE
+              const wasCleared = clearCols.some(colIdx => {
+                const val = row[colIdx];
+                return val && String(val).toUpperCase() === "TRUE";
+              });
+              if (wasCleared) {
+                const ts = row[0] ? new Date(row[0]) : null;
+                if (ts && !isNaN(ts.getTime())) {
+                  windowStart = ts;
+                  foundClear = true;
+                  console.log(`  ✓ Flag last cleared at ${ts.toISOString()} (${tabName})`);
+                  break;
+                }
+              }
+            }
+          } catch (e) {
+            console.log(`  ⚠ Could not read tab ${tabName}: ${e.message}`);
+          }
+        }
+        if (!foundClear) {
+          console.log(`  ℹ No clear event found — using 90-day window from ${windowStart.toISOString()}`);
+        }
+
+        // ── Step 2: Read AutoLog and filter to entries after windowStart ──────────
+        // AutoLog col A=Timestamp, B=Category, C=Summary, D=Details
         console.log(`  📖 Reading AutoLog from master sheet...`);
         const autoLogResp = await sheets.spreadsheets.values.get({
           spreadsheetId: masterSheetIdClean,
           range: "AutoLog!A2:D2000",
         });
-        const autoLogRows = autoLogResp.data.values || [];
-        console.log(`  ✓ Loaded ${autoLogRows.length} AutoLog entries`);
+        const allAutoLogRows = autoLogResp.data.values || [];
+        // Filter to entries after windowStart
+        const autoLogRows = allAutoLogRows.filter(row => {
+          const ts = row[0] ? new Date(row[0]) : null;
+          return ts && !isNaN(ts.getTime()) && ts > windowStart;
+        });
+        console.log(`  ✓ ${autoLogRows.length} AutoLog entries after window start (${allAutoLogRows.length} total)`);
 
         const results = [];
 
@@ -2732,31 +2802,27 @@ Return ONLY JSON, no other text.`;
           // (Use only the most recent — older ones may be historical and not related to this flag raise)
           // Format: "Created New Confirmed Job: Row N, ClientName | JobName"
           // or multiple on separate lines
-          const affectedJobs = []; // { confirmedRow, jobName }
+          const affectedJobs = [];
 
           if (expectCopied) {
-            // Parse ALL relevant entries (not just the most recent) —
-            // multiple jobs may have been copied across different automation runs
-            for (const entry of relevantEntries) {
+            // All entries in the window containing "Created New Confirmed Job:" are relevant
+            const candidateEntries = relevantEntries.filter(row => String(row[3] || "").includes("Created New Confirmed Job:"));
+            console.log(`  ✓ ${candidateEntries.length} entries with "Created New Confirmed Job:" in window`);
+            for (const entry of candidateEntries) {
               const details = String(entry[3] || "");
               const createdPattern = /Created New Confirmed Job:\s*Row\s*(\d+),\s*([^\n\[]*)/gi;
               let m;
               while ((m = createdPattern.exec(details)) !== null) {
-                // The text after "Row N," is "ClientName | JobName" in the log
                 const fullName = m[2].trim();
                 const jobName = fullName.includes("|") ? fullName.split("|").pop().trim() : fullName;
                 if (jobName) affectedJobs.push({ confirmedRow: parseInt(m[1], 10), jobName, logTimestamp: String(entry[0] || "") });
               }
             }
-            // Deduplicate by confirmedRow (same job may appear in multiple log entries)
+            // Deduplicate by confirmedRow
             const seen = new Set();
-            const dedupedJobs = affectedJobs.filter(j => {
-              if (seen.has(j.confirmedRow)) return false;
-              seen.add(j.confirmedRow);
-              return true;
-            });
+            const deduped = affectedJobs.filter(j => { if (seen.has(j.confirmedRow)) return false; seen.add(j.confirmedRow); return true; });
             affectedJobs.length = 0;
-            affectedJobs.push(...dedupedJobs);
+            affectedJobs.push(...deduped);
           } else {
             // UNchecked: look at most recent entry only (same logic as before)
             if (relevantEntries.length > 0) {
@@ -2884,36 +2950,40 @@ Return ONLY JSON, no other text.`;
             }
           }
 
-
         } else if (flagType === "retainerInvoicesCreated") {
           // AutoLog Details format for retainer creation:
           // "[Retainers] Created sets for N jobs:\nRow N, ClientName, JobName: Added X invoice rows"
           // or: "Created N Retainer Sets for new jobs:\nRow N, ClientName, JobName: Added X invoice rows"
+          // All retainer creation entries in the window since the flag was last cleared
           const retainerLogEntries = autoLogRows.filter(row => {
             const details = String(row[3] || "");
             return details.includes("Retainer") && details.includes("Added") && details.includes("invoice rows");
           });
-          console.log(`  ✓ Found ${retainerLogEntries.length} retainer creation AutoLog entries`);
+          console.log(`  ✓ Found ${retainerLogEntries.length} retainer creation entries in window`);
 
-          // Parse affected jobs from the most recent retainer creation entry
-          // Format: "Row N, ClientName, JobName: Added X invoice rows"
-          const affectedRetainerJobs = []; // { sheetRow, jobName }
+          const affectedRetainerJobs = [];
 
-          if (retainerLogEntries.length > 0) {
-            const mostRecent = retainerLogEntries[0];
-            const details = String(mostRecent[3] || "");
-            console.log(`  Most recent retainer entry: [${mostRecent[0]}] Details="${details.slice(0, 400)}"`);
-
-            // Match lines like "Row 155, Cedar Recruitment Ltd, Social Media Support: Added 1 invoice rows"
-            const retainerJobPattern = /Row\s+(\d+),\s+[^,]+,\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
-            let m;
-            while ((m = retainerJobPattern.exec(details)) !== null) {
-              affectedRetainerJobs.push({
-                sheetRow: parseInt(m[1], 10),
-                jobName: m[2].trim(),
-              });
+          if (retainerLogEntries.length === 0) {
+            results.push({
+              status: "info",
+              message: `No retainer invoice creation entries found in AutoLog since flag was last cleared.`,
+            });
+          } else {
+            // Parse all entries in the window
+            for (const entry of retainerLogEntries) {
+              const details = String(entry[3] || "");
+              const retainerJobPattern = /Row\s+(\d+),\s+[^,]+,\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
+              let m;
+              while ((m = retainerJobPattern.exec(details)) !== null) {
+                affectedRetainerJobs.push({ sheetRow: parseInt(m[1], 10), jobName: m[2].trim(), logTimestamp: String(entry[0] || "") });
+              }
             }
-          }
+            // Deduplicate by sheetRow
+            const seen = new Set();
+            const deduped = affectedRetainerJobs.filter(j => { if (seen.has(j.sheetRow)) return false; seen.add(j.sheetRow); return true; });
+            affectedRetainerJobs.length = 0;
+            affectedRetainerJobs.push(...deduped);
+            console.log(`  ✓ Parsed ${affectedRetainerJobs.length} affected retainer jobs`);
 
           console.log(`  ✓ Parsed ${affectedRetainerJobs.length} affected retainer jobs: ${JSON.stringify(affectedRetainerJobs)}`);
 
@@ -2925,14 +2995,7 @@ Return ONLY JSON, no other text.`;
           const confirmedRows = confirmedResp.data.values || [];
           const retainerChecks = [];
 
-          if (affectedRetainerJobs.length === 0) {
-            results.push({
-              status: "info",
-              message: `No specific retainer jobs identified in AutoLog. ${retainerLogEntries.length} retainer log entries found but could not be parsed.`,
-              detail: retainerLogEntries.slice(0, 3).map(r => `[${r[0]}] ${String(r[3]||"").slice(0,200)}`).join("\n") || "No retainer entries found.",
-            });
-          } else {
-            for (const job of affectedRetainerJobs) {
+          for (const job of affectedRetainerJobs) {
               // Find this job in the Confirmed tab by sheet row number
               const parentRow = confirmedRows[job.sheetRow - 1] || [];
               const clientN = String(parentRow[0] || "").trim();
@@ -3032,12 +3095,10 @@ Return ONLY JSON, no other text.`;
                 status: durationOk && allHaveInvoice ? "ok" : "issue",
                 periodLabel, checks,
               });
-            }
+            } // end for each affectedRetainerJob
 
             results.push(...retainerChecks);
-          }
-
-        }
+        } // end retainerInvoicesCreated
 
         const overallOk = results.every(r => r.status === "ok" || r.status === "info");
         console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);

@@ -2828,7 +2828,7 @@ Return ONLY JSON, no other text.`;
             if (relevantEntries.length > 0) {
               const mostRecent = relevantEntries[0];
               const details = String(mostRecent[3] || "");
-              const uncheckedPattern = /Row\s*(\d+),\s*[^|]*\|\s*([^-\n]+).*?Copied Status:.*?->\s*['"]?No['"]?/gi;
+              const uncheckedPattern = new RegExp("Row\\s*(\\d+),\\s*[^|]*\\|\\s*([^-\\n]+).*?Copied Status:.*?->\\s*['\"]?No['\"]?", "gi");
               let m;
               while ((m = uncheckedPattern.exec(details)) !== null) {
                 affectedJobs.push({ pipelineRow: parseInt(m[1], 10), jobName: m[2].trim(), logTimestamp: String(mostRecent[0] || "") });
@@ -3065,7 +3065,7 @@ Return ONLY JSON, no other text.`;
               checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months, ${periodLabel})` });
               checks.push({
                 ok: durationOk,
-                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected — ${durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`}`,
+                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected — ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),
               });
 
               let allHaveInvoice = true;
@@ -3089,7 +3089,9 @@ Return ONLY JSON, no other text.`;
             results.push(...retainerChecks);
           }
 
-                const overallOk = results.every(r => r.status === "ok" || r.status === "info");
+        } // end retainerInvoicesCreated
+
+        const overallOk = results.every(r => r.status === "ok" || r.status === "info");
         console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);
         return res.status(200).json({ success: true, flagType, results, overallOk });
 

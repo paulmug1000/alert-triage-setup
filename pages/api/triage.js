@@ -1691,7 +1691,10 @@ The expense could be either:
 1. A DIRECT COST for a specific client job — written into an expense slot on the Confirmed tab
 2. A CONTRACTOR EXPENSE recorded in the Outgoings tab — added to the vendor's row for the correct month
 
-⚠️ CRITICAL: The "Client" field in job data refers to END-CLIENTS (e.g. "Marmoris Srl"), NOT the agency. Do NOT match expense vendor against client names.
+⚠️ CRITICAL — READ BEFORE ANALYSING:
+1. The expense description may contain a CLIENT name in brackets (e.g. "Design FC Ltd (Marmoris designs)"). The part in brackets is the CLIENT this work was done FOR — it is NOT a match signal. Match only on the VENDOR name (the part before the brackets).
+2. NEVER suggest a job with DirectCostBudget = £0 or blank. Only jobs with DirectCostBudget > £0 are candidates for direct cost allocation.
+3. A job with DirectCostBudget > £0 is a candidate even if no placeholder matches the vendor — remaining budget and job scope are sufficient for a STRONG MATCH.
 
 UNMATCHED EXPENSE:
 • Reference: ${expenseRef}
@@ -1738,21 +1741,29 @@ MATCHING RULES:
 ${kbRules || "- Default matching rules apply"}
 
 YOUR ANALYSIS TASK:
-Step 1 — Scan ALL jobs in the Confirmed tab with DirectCostBudget > £0:
-  - For each: check all expense slots (across parent AND child rows) for placeholders matching "${expenseDescription}"
-  - A matching placeholder = PERFECT MATCH (highest priority), even if remaining budget is £0
-  - Also check: does remaining budget >= £${expenseAmount.toFixed(2)}? If yes = STRONG MATCH
-  - NEVER suggest a job with DirectCostBudget = £0 or blank as a primary recommendation
+Step 1 — Find ALL jobs in the Confirmed tab with DirectCostBudget > £0:
+  List every such job. For each calculate:
+  - Total allocated = sum of all ExpSlot amounts with a valid App ID across parent AND child rows
+  - Remaining = DirectCostBudget − total allocated
+  - Check all ExpSlots for placeholders: does any placeholder description ≈ the VENDOR name "${expenseDescription.split('(')[0].trim()}"?
 
-Step 2 — Check Outgoings tab:
-  - Does "${expenseDescription}" already exist in the vendor list above? If yes → write to that row
-  - If not → write to Row ${firstBlankOutgoingsRow || "next available blank"} as a new vendor entry
-  - The account category "${expenseAccountName}" is a strong signal this belongs in Outgoings
+  Ranking within job matches:
+  1. PERFECT MATCH: placeholder description ≈ vendor name (regardless of budget)
+  2. STRONG MATCH: remaining budget >= £${expenseAmount.toFixed(2)} AND job scope suggests this vendor type
+  3. POSSIBLE MATCH: remaining budget >= £${expenseAmount.toFixed(2)}, less certain scope match
+
+  ALWAYS include at least one job match if ANY job has DirectCostBudget > £0, even if no placeholder matches.
+  The vendor name to match is: "${expenseDescription.split('(')[0].trim()}" — ignore anything in brackets.
+
+Step 2 — Outgoings tab entry:
+  - Does "${expenseDescription.split('(')[0].trim()}" already exist in the vendor list above? Use that row.
+  - If not → use Row ${firstBlankOutgoingsRow || "next available blank"} as a new vendor entry
+  - Account category "${expenseAccountName}" confirms this is a subcontractor expense
 
 Step 3 — Suggest 3 GENUINELY DIFFERENT options:
-  1. Best Confirmed tab job match (if any job has DirectCostBudget > £0 with placeholder or remaining budget)
-  2. Outgoings tab entry (existing vendor row or new vendor row)
-  3. Alternative job match OR alternative Outgoings category
+  1. Best job match from Step 1 (must have DirectCostBudget > £0)
+  2. Outgoings tab entry for this vendor
+  3. Second-best job match OR alternative if only one job qualifies
 
 CRITICAL — recommendedActions MUST be specific and actionable:
 For Confirmed tab job matches, provide EXACTLY 2 items:

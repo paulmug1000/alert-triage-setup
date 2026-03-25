@@ -2787,18 +2787,20 @@ Return ONLY JSON, no other text.`;
           const expectCopied = flagType === "crmCopiedConfChecked";
 
           // Read all CRM AutoLog entries — the Details field contains the full structured log
-          // Format for "copied to confirmed": "Created New Confirmed Job: Row N, ClientName | JobName"
-          // Format for "copied status unchecked": "Copied Status: 'Yes' -> 'No'" or similar
+          // "Copied Pipeline Project to Confirmed: ClientName | JobName"
+          // "Copied Pipeline Project (with N child rows) to Confirmed: ClientName"
+          // These are the log strings written when Pipeline DD is set to "Yes" (the copy event)
+          // "Created New Confirmed Job:" is a DIFFERENT event — direct CRM→Confirmed sync, not a Pipeline copy
           const allCRMEntries = autoLogRows.filter(row => String(row[1] || "").toLowerCase().includes("crm"));
           console.log(`  ✓ ${allCRMEntries.length} CRM AutoLog entries total`);
 
-          // Find entries that contain the specific copy event we care about
+          // Find entries containing the relevant copy event
           const relevantEntries = allCRMEntries.filter(row => {
             const details = String(row[3] || "");
             if (expectCopied) {
-              return details.includes("Created New Confirmed Job:");
+              return details.includes("Copied Pipeline Project to Confirmed:") ||
+                     details.includes("Copied Pipeline Project (with");
             } else {
-              // UNchecked: copied status changed to No, or a confirmed job was removed
               return details.includes("Copied Status:") && (
                 details.includes("-> 'No'") || details.includes("-> \"No\"") ||
                 details.includes("Removed Confirmed Job:") || details.includes("Deleted Confirmed Job:")
@@ -2807,31 +2809,44 @@ Return ONLY JSON, no other text.`;
           });
           console.log(`  ✓ Found ${relevantEntries.length} relevant entries for ${flagType}`);
 
-          // Parse job identifiers from the most recent relevant entry
-          // (Use only the most recent — older ones may be historical and not related to this flag raise)
-          // Format: "Created New Confirmed Job: Row N, ClientName | JobName"
-          // or multiple on separate lines
           const affectedJobs = [];
 
           if (expectCopied) {
-            // All entries in the window containing "Created New Confirmed Job:" are relevant
-            const candidateEntries = relevantEntries.filter(row => String(row[3] || "").includes("Created New Confirmed Job:"));
-            console.log(`  ✓ ${candidateEntries.length} entries with "Created New Confirmed Job:" in window`);
-            for (const entry of candidateEntries) {
+            // Parse all copy events in the window
+            // Format 1: "Copied Pipeline Project to Confirmed: ClientName | JobName"
+            // Format 2: "Copied Pipeline Project (with N child rows) to Confirmed: ClientName"
+            //           (no job name in format 2 — client only)
+            for (const entry of relevantEntries) {
               const details = String(entry[3] || "");
-              const createdPattern = /Created New Confirmed Job:\s*Row\s*(\d+),\s*([^\n\[]*)/gi;
+              // Format 1: has client | jobName after "to Confirmed:"
+              const fmt1 = /Copied Pipeline Project(?:\s+\([^)]+\))?\s+to Confirmed:\s*([^|\n]+)\s*\|\s*([^\n]+)/gi;
               let m;
-              while ((m = createdPattern.exec(details)) !== null) {
-                const fullName = m[2].trim();
-                const jobName = fullName.includes("|") ? fullName.split("|").pop().trim() : fullName;
-                if (jobName) affectedJobs.push({ confirmedRow: parseInt(m[1], 10), jobName, logTimestamp: String(entry[0] || "") });
+              while ((m = fmt1.exec(details)) !== null) {
+                const jobName = m[2].trim();
+                const clientParsed = m[1].trim();
+                if (jobName) affectedJobs.push({ jobName, clientParsed, logTimestamp: String(entry[0] || "") });
+              }
+              // Format 2: client only (no pipe separator)
+              const fmt2 = /Copied Pipeline Project \(with \d+ child rows\) to Confirmed:\s*([^\n|]+)$/gim;
+              while ((m = fmt2.exec(details)) !== null) {
+                // Only add if not already captured by fmt1 (fmt1 would have matched the | variant)
+                const clientParsed = m[1].trim();
+                if (clientParsed && !affectedJobs.some(j => j.clientParsed === clientParsed && !j.jobName)) {
+                  affectedJobs.push({ jobName: "", clientParsed, logTimestamp: String(entry[0] || "") });
+                }
               }
             }
-            // Deduplicate by confirmedRow
+            // Deduplicate by jobName (or clientParsed if no jobName)
             const seen = new Set();
-            const deduped = affectedJobs.filter(j => { if (seen.has(j.confirmedRow)) return false; seen.add(j.confirmedRow); return true; });
+            const deduped = affectedJobs.filter(j => {
+              const key = j.jobName || j.clientParsed;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
             affectedJobs.length = 0;
             affectedJobs.push(...deduped);
+            console.log(`  ✓ Parsed ${affectedJobs.length} affected jobs: ${JSON.stringify(affectedJobs)}`);
           } else {
             // UNchecked: look at most recent entry only (same logic as before)
             if (relevantEntries.length > 0) {
@@ -2961,8 +2976,8 @@ Return ONLY JSON, no other text.`;
               }
 
               results.push({
-                jobName: job.jobName,
-                confirmedRow: job.confirmedRow,
+                jobName: job.jobName || `(${job.clientParsed} — job name not in log)`,
+                clientParsed: job.clientParsed,
                 logTimestamp: job.logTimestamp,
                 status: allOk ? "ok" : "issue",
                 checks,

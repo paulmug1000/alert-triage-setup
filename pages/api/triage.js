@@ -2707,25 +2707,25 @@ Return ONLY JSON, no other text.`;
         if (flagType === "crmCopiedConfChecked" || flagType === "crmCopiedConfUnchecked") {
           const expectCopied = flagType === "crmCopiedConfChecked";
 
-          // Find relevant AutoLog entries: Category contains "CRM" and Summary/Details
-          // mention "copied to confirmed" or "copied to conf"
-          // Find relevant AutoLog entries: Category contains "CRM" and Summary/Details mention copying
-          const relevantEntries = autoLogResp.data.values
-            ? autoLogRows.filter(row => {
-                const cat = String(row[1] || "").toLowerCase();
-                const summary = String(row[2] || "").toLowerCase();
-                const details = String(row[3] || "").toLowerCase();
-                return cat.includes("crm") && (
-                  summary.includes("copied") || details.includes("copied") ||
-                  summary.includes("confirmed") || details.includes("confirmed")
-                );
-              })
-            : [];
-          console.log(`  ✓ Found ${relevantEntries.length} relevant CRM AutoLog entries`);
+          // DIAGNOSTIC: show all CRM AutoLog entries so we can see the real format
+          const allCRMEntries = autoLogRows.filter(row => String(row[1] || "").toLowerCase().includes("crm"));
+          console.log(`  📋 ALL CRM AutoLog entries (${allCRMEntries.length} total, showing up to 10 most recent):`);
+          for (const r of allCRMEntries.slice(0, 10)) {
+            console.log(`    [${r[0]}] Cat="${r[1]}"`);
+            console.log(`      Summary="${String(r[2]||"").slice(0,200)}"`);
+            console.log(`      Details="${String(r[3]||"").slice(0,400)}"`);
+          }
+          // Also show any entries mentioning "copied" or "confirmed" regardless of category
+          const copiedEntries = autoLogRows.filter(row => {
+            const all = `${row[1]||""} ${row[2]||""} ${row[3]||""}`.toLowerCase();
+            return all.includes("copied") || all.includes("created new confirmed");
+          });
+          console.log(`  📋 AutoLog entries mentioning "copied" or "created new confirmed" (${copiedEntries.length}):`);
+          for (const r of copiedEntries.slice(0, 5)) {
+            console.log(`    [${r[0]}] Cat="${r[1]}" Summary="${String(r[2]||"").slice(0,200)}" Details="${String(r[3]||"").slice(0,400)}"`);
+          }
 
-          // Primary source for project codes: AutoUpdates detail column (EW for checked, FD for unchecked)
-          // The automation writes structured text here like "Check job CODE copied to confirmed tab"
-          // AutoLog is used only to confirm the event happened — not for code extraction
+          // DIAGNOSTIC: show AutoUpdates detail columns for this client
           const detailOffset = expectCopied ? 52 : 59; // EW or FD from CW
           const flagDetailResp = await sheets.spreadsheets.values.get({
             spreadsheetId: acId,
@@ -2742,10 +2742,12 @@ Return ONLY JSON, no other text.`;
           for (let i = 0; i < nameRows.length; i++) {
             if (String(nameRows[i]?.[0] || "").trim() === clientName.trim()) {
               detailValue = String(flagDetailRows[i]?.[detailOffset] || "").trim();
+              console.log(`  Found client "${clientName}" at AutoUpdates row ${i+2}`);
+              console.log(`  AutoUpdates offsets 50-65 (EW/FD area): ${JSON.stringify((flagDetailRows[i]||[]).slice(50,66))}`);
               break;
             }
           }
-          console.log(`  Detail from AutoUpdates: "${detailValue}"`);
+          console.log(`  Detail from AutoUpdates (offset ${detailOffset}): "${detailValue}"`);
 
           // Parse project codes from structured automation text
           // The automation writes: "Check job {CODE} copied to confirmed tab" (possibly multiple, comma/newline separated)
@@ -2882,10 +2884,30 @@ Return ONLY JSON, no other text.`;
           for (let i = 0; i < retNameRows.length; i++) {
             if (String(retNameRows[i]?.[0] || "").trim() === clientName.trim()) {
               retDetailValue = String(retDetailRows[i]?.[73] || "").trim(); // FR = offset 73
+              console.log(`  Found client "${clientName}" at AutoUpdates row ${i+2}`);
+              // Log the surrounding detail columns to see what's actually stored
+              const surrounding = retDetailRows[i] || [];
+              console.log(`  AutoUpdates offsets 70-80 (FR area): ${JSON.stringify(surrounding.slice(70,81))}`);
               break;
             }
           }
           console.log(`  Retainer detail from AutoUpdates: "${retDetailValue}"`);
+
+          // DIAGNOSTIC: log recent AutoLog entries to understand what the automation writes
+          const recentInvLog = autoLogRows
+            .filter(r => String(r[1] || "").toLowerCase().includes("inv"))
+            .slice(0, 10);
+          console.log(`  📋 Recent INVOICES AutoLog entries (up to 10):`);
+          for (const r of recentInvLog) {
+            console.log(`    [${r[0]}] Cat="${r[1]}" Summary="${String(r[2]||"").slice(0,120)}" Details="${String(r[3]||"").slice(0,200)}"`);
+          }
+          const retainerLogDiag = autoLogRows
+            .filter(r => String(r[2]||"").toLowerCase().includes("retainer") || String(r[3]||"").toLowerCase().includes("retainer"))
+            .slice(0, 10);
+          console.log(`  📋 AutoLog entries mentioning 'retainer' (up to 10):`);
+          for (const r of retainerLogDiag) {
+            console.log(`    [${r[0]}] Cat="${r[1]}" Summary="${String(r[2]||"").slice(0,120)}" Details="${String(r[3]||"").slice(0,200)}"`);
+          }
 
           // Also use AutoLog entries to extract job names mentioned alongside "retainer" and "created"
           // We match only structured "job CODE" or "job NAME" prefixes — no client-specific patterns

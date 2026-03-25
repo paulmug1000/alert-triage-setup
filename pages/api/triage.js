@@ -2676,7 +2676,8 @@ Return ONLY JSON, no other text.`;
         });
       }
     } else if (action === "analyze_noaction_flag") {
-      // Analyze a non-actionable flag and verify whether the automation ran correctly.
+      // Analyze a non-actionable flag by reading the client's AutoLog tab (master sheet)
+      // to identify exactly which jobs were affected, then verify them.
       // Supported flagTypes: crmCopiedConfChecked, crmCopiedConfUnchecked, retainerInvoicesCreated
       const { clientSheetId, masterSheetId, automationCommanderSheetId: acId, flagType, clientName } = req.body;
 
@@ -2687,124 +2688,132 @@ Return ONLY JSON, no other text.`;
       try {
         console.log(`\n🔍 Analyzing non-actionable flag: ${flagType} for ${clientName}`);
         const sheets = await getSheetsClient();
+        const masterSheetIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+        const clientSheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
-        // ── Step 1: Read the detail column from AutoUpdates to get context ─────
-        // Find the client's row in AutoUpdates by client name, then read the
-        // "sheet" detail column for the relevant flag (EW=offset 52, FD=offset 59, FR=offset 73)
-        const detailOffsets = {
-          crmCopiedConfChecked:   52, // EW = "Check job {projectCode} copied to confirmed tab" or "Yes"/"No"
-          crmCopiedConfUnchecked: 59, // FD
-          retainerInvoicesCreated: 73, // FR = "Yes"/"No"
-        };
-
-        const detailOffset = detailOffsets[flagType];
-        if (detailOffset === undefined) {
-          return res.status(400).json({ success: false, error: `Unknown flagType: ${flagType}` });
-        }
-
-        // Fetch the detail value from AutoUpdates (CW2:HE1000, offset from CW)
-        const flagDetailResp = await sheets.spreadsheets.values.get({
-          spreadsheetId: acId,
-          range: "AutoUpdates!CW2:HE1000",
+        // ── Step 1: Read AutoLog from master sheet (Timestamp, Category, Summary, Details) ──
+        // AutoLog contains all automation activity for this client going back 90 days.
+        // Col A=Timestamp, B=Category, C=Summary, D=Details
+        console.log(`  📖 Reading AutoLog from master sheet...`);
+        const autoLogResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: masterSheetIdClean,
+          range: "AutoLog!A2:D2000",
         });
-        const flagDetailRows = flagDetailResp.data.values || [];
+        const autoLogRows = autoLogResp.data.values || [];
+        console.log(`  ✓ Loaded ${autoLogRows.length} AutoLog entries`);
 
-        // Also fetch client names from AutoUpdates A2:A1000 to find this client's row
-        const namesResp = await sheets.spreadsheets.values.get({
-          spreadsheetId: acId,
-          range: "AutoUpdates!A2:A1000",
-        });
-        const nameRows = namesResp.data.values || [];
-
-        let detailValue = null;
-        for (let i = 0; i < nameRows.length; i++) {
-          if (String(nameRows[i]?.[0] || "").trim() === clientName.trim()) {
-            detailValue = String(flagDetailRows[i]?.[detailOffset] || "").trim();
-            break;
-          }
-        }
-        console.log(`  Detail value from AutoUpdates: "${detailValue}"`);
-
-        // ── Step 2: Parse project codes (CRM flags) or proceed to Confirmed scan ─
         const results = [];
 
         if (flagType === "crmCopiedConfChecked" || flagType === "crmCopiedConfUnchecked") {
           const expectCopied = flagType === "crmCopiedConfChecked";
 
-          // Extract project codes from detail strings like "Check job CODE copied to confirmed tab"
-          // Multiple jobs may appear separated by commas or newlines
-          const projectCodes = [];
-          if (detailValue && detailValue !== "No" && detailValue !== "Yes") {
-            const matches = detailValue.match(/Check job (\S+) copied to confirmed tab/gi) || [];
-            for (const m of matches) {
-              const code = m.replace(/check job /i, "").replace(/ copied to confirmed tab/i, "").trim();
-              if (code) projectCodes.push(code);
+          // Find relevant AutoLog entries: Category contains "CRM" and Summary/Details
+          // mention "copied to confirmed" or "copied to conf"
+          // Find relevant AutoLog entries: Category contains "CRM" and Summary/Details mention copying
+          const relevantEntries = autoLogResp.data.values
+            ? autoLogRows.filter(row => {
+                const cat = String(row[1] || "").toLowerCase();
+                const summary = String(row[2] || "").toLowerCase();
+                const details = String(row[3] || "").toLowerCase();
+                return cat.includes("crm") && (
+                  summary.includes("copied") || details.includes("copied") ||
+                  summary.includes("confirmed") || details.includes("confirmed")
+                );
+              })
+            : [];
+          console.log(`  ✓ Found ${relevantEntries.length} relevant CRM AutoLog entries`);
+
+          // Primary source for project codes: AutoUpdates detail column (EW for checked, FD for unchecked)
+          // The automation writes structured text here like "Check job CODE copied to confirmed tab"
+          // AutoLog is used only to confirm the event happened — not for code extraction
+          const detailOffset = expectCopied ? 52 : 59; // EW or FD from CW
+          const flagDetailResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: acId,
+            range: "AutoUpdates!CW2:HE1000",
+          });
+          const namesResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: acId,
+            range: "AutoUpdates!A2:A1000",
+          });
+          const nameRows = namesResp.data.values || [];
+          const flagDetailRows = flagDetailResp.data.values || [];
+
+          let detailValue = "";
+          for (let i = 0; i < nameRows.length; i++) {
+            if (String(nameRows[i]?.[0] || "").trim() === clientName.trim()) {
+              detailValue = String(flagDetailRows[i]?.[detailOffset] || "").trim();
+              break;
             }
           }
-          // If detail just says "Yes", we can't identify specific jobs — report generically
-          if (projectCodes.length === 0 && detailValue === "Yes") {
-            projectCodes.push("(unknown — no project code in log)");
+          console.log(`  Detail from AutoUpdates: "${detailValue}"`);
+
+          // Parse project codes from structured automation text
+          // The automation writes: "Check job {CODE} copied to confirmed tab" (possibly multiple, comma/newline separated)
+          // We only match codes that follow the known "job " prefix — no client-specific patterns
+          const projectCodeSet = new Set();
+          const jobPrefixPattern = /check job\s+(\S+)\s+copied to confirmed tab/gi;
+          let m;
+          while ((m = jobPrefixPattern.exec(detailValue)) !== null) {
+            projectCodeSet.add(m[1]);
+          }
+          // Also try a broader "job CODE" pattern in case the format varies slightly
+          if (projectCodeSet.size === 0) {
+            const broadPattern = /job\s+([^\s,;]+)/gi;
+            while ((m = broadPattern.exec(detailValue)) !== null) {
+              const candidate = m[1].trim().replace(/[.,:;]$/, "");
+              if (candidate.length >= 4) projectCodeSet.add(candidate);
+            }
           }
 
-          console.log(`  Project codes to verify: ${projectCodes.join(", ") || "(none found)"}`);
+          const projectCodes = [...projectCodeSet];
+          console.log(`  ✓ Project codes to verify: ${projectCodes.join(", ") || "(none found)"}`);
 
           if (projectCodes.length === 0) {
+            // No codes found — report recent CRM log entries for context
+            const recentCRM = autoLogRows
+              .filter(r => String(r[1] || "").toLowerCase().includes("crm"))
+              .slice(0, 5);
             results.push({
               status: "info",
-              message: "No specific jobs identified in the log for this flag.",
-              detail: `Log detail: "${detailValue || "(empty)"}"`,
+              message: "No specific project codes identified in AutoLog for this flag.",
+              detail: recentCRM.length > 0
+                ? `Most recent CRM log entries:\n${recentCRM.map(r => `• ${r[0]} — ${r[2]}`).join("\n")}`
+                : "No CRM entries found in AutoLog.",
             });
           } else {
-            // Read Pipeline tab (A:DE = enough to include DD at col 107)
+            // Read Pipeline and Confirmed tabs
             const pipelineResp = await sheets.spreadsheets.values.get({
-              spreadsheetId: clientSheetId,
+              spreadsheetId: clientSheetIdClean,
               range: "Pipeline!A6:DE500",
             });
             const pipelineRows = pipelineResp.data.values || [];
-            // Pipeline header at row 6 (0-indexed row 0 in our slice), data from row 7+
-            // Pipeline cols (0-indexed from A): B=1 client, C=2 job name, D=3 project code, DD=107 copied?
-            // Wait — Pipeline starts at row 6, so col A=row label. Let's look for project code col C (index 2)
-            // and DD = index 107. But "D" in pipeline = project code based on session knowledge.
 
-            // Read Confirmed tab
             const confirmedResp = await sheets.spreadsheets.values.get({
-              spreadsheetId: clientSheetId,
+              spreadsheetId: clientSheetIdClean,
               range: "Confirmed!A1:E500",
             });
             const confirmedRows = confirmedResp.data.values || [];
 
             for (const code of projectCodes) {
-              if (code === "(unknown — no project code in log)") {
-                results.push({ status: "info", projectCode: code, message: "Cannot verify — project code not recorded in log." });
-                continue;
-              }
-
-              // Find job in Pipeline by project code (col C = index 2, 0-indexed from A)
-              // Pipeline rows start at row 6, slice starts at A6 so index 0 = row 6
+              // Find in Pipeline: col B(1)=client, C(2)=job, D(3)=projectCode, DD(107)=copied?
               let pipelineJob = null;
               for (const pr of pipelineRows) {
-                const pCode = String(pr[3] || "").trim(); // col D = index 3 = project code
-                if (pCode === code) {
+                if (String(pr[3] || "").trim() === code) {
                   pipelineJob = {
-                    clientName: String(pr[1] || "").trim(),   // col B = index 1
-                    jobName: String(pr[2] || "").trim(),      // col C = index 2
-                    projectCode: pCode,
-                    copiedToConf: String(pr[107] || "").trim(), // col DD = index 107
+                    clientName: String(pr[1] || "").trim(),
+                    jobName: String(pr[2] || "").trim(),
+                    projectCode: code,
+                    copiedToConf: String(pr[107] || "").trim(),
                   };
                   break;
                 }
               }
 
-              // Find job in Confirmed by project code (col C = index 2)
+              // Find in Confirmed: col A(0)=client, B(1)=job, C(2)=projectCode
               let confirmedJob = null;
               for (const cr of confirmedRows) {
-                const cCode = String(cr[2] || "").trim(); // col C = index 2
-                if (cCode === code) {
-                  confirmedJob = {
-                    clientName: String(cr[0] || "").trim(),
-                    jobName: String(cr[1] || "").trim(),
-                    projectCode: cCode,
-                  };
+                if (String(cr[2] || "").trim() === code) {
+                  confirmedJob = { clientName: String(cr[0]||"").trim(), jobName: String(cr[1]||"").trim() };
                   break;
                 }
               }
@@ -2819,27 +2828,24 @@ Return ONLY JSON, no other text.`;
                 const ddVal = pipelineJob.copiedToConf.toLowerCase();
                 if (expectCopied) {
                   const ddOk = ddVal === "yes" || ddVal === "true";
-                  checks.push({ ok: ddOk, message: `Pipeline DD ("Copied to confirmed tab?"): "${pipelineJob.copiedToConf}" — ${ddOk ? "✓ shows Yes" : "✗ expected Yes"}` });
+                  checks.push({ ok: ddOk, message: `Pipeline col DD ("Copied to confirmed?"): "${pipelineJob.copiedToConf}" — ${ddOk ? "✓ Yes" : "✗ expected Yes"}` });
                   if (!ddOk) allOk = false;
-
                   const confOk = confirmedJob !== null;
-                  checks.push({ ok: confOk, message: `Confirmed tab: ${confOk ? `✓ job "${confirmedJob.jobName}" exists` : `✗ job not found`}` });
+                  checks.push({ ok: confOk, message: `Confirmed tab: ${confOk ? `✓ "${confirmedJob.jobName}" found` : "✗ job not found — copy may have failed"}` });
                   if (!confOk) allOk = false;
                 } else {
-                  // UNchecked: DD should be No/blank, job should NOT be in Confirmed
                   const ddOk = ddVal === "no" || ddVal === "" || ddVal === "false";
-                  checks.push({ ok: ddOk, message: `Pipeline DD ("Copied to confirmed tab?"): "${pipelineJob.copiedToConf}" — ${ddOk ? "✓ shows No/blank" : "✗ expected No or blank"}` });
+                  checks.push({ ok: ddOk, message: `Pipeline col DD ("Copied to confirmed?"): "${pipelineJob.copiedToConf}" — ${ddOk ? "✓ No/blank" : "✗ expected No or blank"}` });
                   if (!ddOk) allOk = false;
-
                   const confOk = confirmedJob === null;
-                  checks.push({ ok: confOk, message: `Confirmed tab: ${confOk ? "✓ job not present (correct)" : `✗ job "${confirmedJob?.jobName}" still exists — should have been removed`}` });
+                  checks.push({ ok: confOk, message: `Confirmed tab: ${confOk ? "✓ job not present (correct)" : `✗ "${confirmedJob?.jobName}" still exists — should have been removed`}` });
                   if (!confOk) allOk = false;
                 }
               }
 
               results.push({
                 projectCode: code,
-                jobName: pipelineJob?.jobName || "(not found)",
+                jobName: pipelineJob?.jobName || "(not found in Pipeline)",
                 clientName: pipelineJob?.clientName || "",
                 status: allOk ? "ok" : "issue",
                 checks,
@@ -2848,17 +2854,74 @@ Return ONLY JSON, no other text.`;
           }
 
         } else if (flagType === "retainerInvoicesCreated") {
-          // Read full Confirmed tab to find retainer jobs
+          // Find AutoLog entries for retainer invoice creation
+          // Category = "INVOICES" or similar, Summary/Details mention "retainer" + job name/code
+          const retainerLogEntries = autoLogRows.filter(row => {
+            const summary = String(row[2] || "").toLowerCase();
+            const details = String(row[3] || "").toLowerCase();
+            return (summary.includes("retainer") || details.includes("retainer")) &&
+                   (summary.includes("invoice") || details.includes("invoice") ||
+                    summary.includes("created") || details.includes("created"));
+          });
+          console.log(`  ✓ Found ${retainerLogEntries.length} retainer invoice AutoLog entries`);
+
+          // Primary source for project codes: AutoUpdates detail column (FR = offset 73 from CW)
+          // The automation records what it processed in structured form there
+          const retDetailResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: acId,
+            range: "AutoUpdates!CW2:HE1000",
+          });
+          const retNamesResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: acId,
+            range: "AutoUpdates!A2:A1000",
+          });
+          const retNameRows = retNamesResp.data.values || [];
+          const retDetailRows = retDetailResp.data.values || [];
+
+          let retDetailValue = "";
+          for (let i = 0; i < retNameRows.length; i++) {
+            if (String(retNameRows[i]?.[0] || "").trim() === clientName.trim()) {
+              retDetailValue = String(retDetailRows[i]?.[73] || "").trim(); // FR = offset 73
+              break;
+            }
+          }
+          console.log(`  Retainer detail from AutoUpdates: "${retDetailValue}"`);
+
+          // Also use AutoLog entries to extract job names mentioned alongside "retainer" and "created"
+          // We match only structured "job CODE" or "job NAME" prefixes — no client-specific patterns
+          const jobIdsFromLog = new Set();
+          const retJobPattern = /job\s+([^\s,;(]+)/gi;
+          for (const row of retainerLogEntries) {
+            const text = `${row[2] || ""} ${row[3] || ""}`;
+            let m;
+            while ((m = retJobPattern.exec(text)) !== null) {
+              const candidate = m[1].trim().replace(/[.,:;)']$/, "");
+              if (candidate.length >= 3) jobIdsFromLog.add(candidate);
+            }
+          }
+          // Also extract from AutoUpdates detail if it contains job references
+          if (retDetailValue && retDetailValue !== "Yes" && retDetailValue !== "No") {
+            const retDetailPattern = /job\s+([^\s,;(]+)/gi;
+            let m;
+            while ((m = retDetailPattern.exec(retDetailValue)) !== null) {
+              const candidate = m[1].trim().replace(/[.,:;)']$/, "");
+              if (candidate.length >= 3) jobIdsFromLog.add(candidate);
+            }
+          }
+          console.log(`  ✓ Job identifiers from log: ${[...jobIdsFromLog].join(", ") || "(none — will check recent retainers)"}`);
+
+          // Read Confirmed tab (full width for invoice slots)
           const confirmedResp = await sheets.spreadsheets.values.get({
-            spreadsheetId: clientSheetId,
-            range: "Confirmed!A1:BH500",
+            spreadsheetId: clientSheetIdClean,
+            range: "Confirmed!A1:BH1000",
           });
           const confirmedRows = confirmedResp.data.values || [];
 
-          // Find all retainer parent rows (Type = Retainer, has Revenue + Start + End)
-          // Then verify child rows cover the full duration
-          let i = 1; // skip header
+          // If we found specific job identifiers from the log, only check those.
+          // Otherwise fall back to all retainer jobs (the flag was raised so something was created).
+          const checkByCode = jobIdsFromLog.size > 0;
           const retainerChecks = [];
+          let i = 1;
 
           while (i < confirmedRows.length) {
             const row = confirmedRows[i] || [];
@@ -2871,7 +2934,6 @@ Return ONLY JSON, no other text.`;
               const clientN = String(row[0] || "").trim();
               const jobName = String(row[1] || "").trim();
               const projectCode = String(row[2] || "").trim();
-              const monthlyRevenue = parseFloat(String(revenue).replace(/[£$€,\s]/g, "")) || 0;
 
               // Collect child rows
               const childRows = [];
@@ -2883,32 +2945,28 @@ Return ONLY JSON, no other text.`;
                 if (nc === clientN && nj === jobName && !next[32] && !next[37]) {
                   childRows.push({ row: next, sheetRow: j + 1 });
                   j++;
-                } else if (nc || nj) {
-                  break;
-                } else {
-                  j++;
-                }
+                } else if (nc || nj) { break; } else { j++; }
               }
               i = j;
 
-              // Parse start and end dates
+              // Only check this job if it matches log codes, OR if no codes found (check all)
+              const matchesLog = !checkByCode || (projectCode && jobIdsFromLog.has(projectCode));
+              if (!matchesLog) continue;
+
+              const monthlyRevenue = parseFloat(String(revenue).replace(/[£$€,\s]/g, "")) || 0;
+
               const parseDate = (v) => {
                 if (!v) return null;
                 if (v instanceof Date) return v;
-                // Try parsing strings like "1-Feb-26" or "28-Feb-26"
                 const d = new Date(v);
                 if (!isNaN(d.getTime())) return d;
-                // Handle Excel serial numbers
                 const serial = parseFloat(v);
-                if (!isNaN(serial)) {
-                  return new Date((serial - 25569) * 86400 * 1000);
-                }
+                if (!isNaN(serial)) return new Date((serial - 25569) * 86400 * 1000);
                 return null;
               };
 
               const startDate = parseDate(startRaw);
               const endDate = parseDate(endRaw);
-
               if (!startDate || !endDate) {
                 retainerChecks.push({
                   jobName, clientName: clientN, projectCode,
@@ -2919,12 +2977,11 @@ Return ONLY JSON, no other text.`;
                 continue;
               }
 
-              // Calculate expected number of periods from child row invoice amounts
-              // Infer frequency from first child row's invoice amount vs monthly revenue
-              let periodMonths = 1; // default monthly
+              // Infer billing frequency from first child row invoice amount vs monthly revenue
+              let periodMonths = 1;
               let periodLabel = "monthly";
               if (childRows.length > 0 && monthlyRevenue > 0) {
-                const firstChildInv = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0; // AP = inv1 amount
+                const firstChildInv = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
                 if (firstChildInv > 0) {
                   const ratio = Math.round(firstChildInv / monthlyRevenue);
                   if (ratio >= 2) {
@@ -2937,51 +2994,48 @@ Return ONLY JSON, no other text.`;
                 }
               }
 
-              // Calculate expected number of child rows to cover start→end
               const monthsDiff = (endDate.getFullYear() - startDate.getFullYear()) * 12
                 + (endDate.getMonth() - startDate.getMonth()) + 1;
-              const expectedChildRows = Math.ceil(monthsDiff / periodMonths);
-              const cappedExpected = Math.min(expectedChildRows, 18);
+              const expectedChildRows = Math.min(Math.ceil(monthsDiff / periodMonths), 18);
               const actualChildRows = childRows.length;
 
               const checks = [];
-              const durationOk = actualChildRows >= cappedExpected;
+              const durationOk = actualChildRows >= expectedChildRows;
+              const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
               checks.push({
-                ok: durationOk,
-                message: `Duration: ${startDate.toLocaleDateString("en-GB", { month: "short", year: "2-digit" })} → ${endDate.toLocaleDateString("en-GB", { month: "short", year: "2-digit" })} (${monthsDiff} months, ${periodLabel})`,
+                ok: true,
+                message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months, ${periodLabel})`,
               });
               checks.push({
                 ok: durationOk,
-                message: `Child rows: ${actualChildRows} found, ${cappedExpected} expected${expectedChildRows > 18 ? " (capped at 18)" : ""} — ${durationOk ? "✓ full coverage" : `✗ ${cappedExpected - actualChildRows} row(s) missing`}`,
+                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected — ${durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`}`,
               });
 
-              // Check each child row has an invoice in slot 1 (AP = col 41)
               let allHaveInvoice = true;
               for (const { row: cr, sheetRow } of childRows) {
-                const inv1Amt = cr[41]; // AP
-                if (!inv1Amt) {
-                  checks.push({ ok: false, message: `✗ Row ${sheetRow}: Inv slot 1 is empty — no invoice amount` });
+                if (!cr[41]) {
+                  checks.push({ ok: false, message: `✗ Row ${sheetRow}: invoice slot 1 is empty` });
                   allHaveInvoice = false;
                 }
               }
               if (allHaveInvoice && childRows.length > 0) {
-                checks.push({ ok: true, message: `✓ All ${childRows.length} child rows have invoice amounts in slot 1` });
+                checks.push({ ok: true, message: `✓ All ${childRows.length} child rows have invoice amounts` });
               }
 
               retainerChecks.push({
                 jobName, clientName: clientN, projectCode,
                 status: durationOk && allHaveInvoice ? "ok" : "issue",
-                periodLabel, periodMonths, monthsDiff, expectedChildRows: cappedExpected, actualChildRows,
-                checks,
+                periodLabel, checks,
               });
 
-            } else {
-              i++;
-            }
+            } else { i++; }
           }
 
           if (retainerChecks.length === 0) {
-            results.push({ status: "info", message: "No retainer jobs found in Confirmed tab." });
+            const msg = checkByCode
+              ? `No retainer jobs found matching project codes: ${[...jobIdsFromLog].join(", ")}`
+              : "No retainer jobs with start/end dates found in Confirmed tab.";
+            results.push({ status: "info", message: msg });
           } else {
             results.push(...retainerChecks);
           }
@@ -2989,7 +3043,6 @@ Return ONLY JSON, no other text.`;
 
         const overallOk = results.every(r => r.status === "ok" || r.status === "info");
         console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);
-
         return res.status(200).json({ success: true, flagType, results, overallOk });
 
       } catch (err) {
@@ -2998,6 +3051,7 @@ Return ONLY JSON, no other text.`;
       }
 
     } else if (action === "clear_flags") {
+
       // Clear flags by writing directly to DataChgAlert in the client's Master Sheet.
       // flagsToClear is an array of: "invoice", "crm", "expense" (any combination).
       // Each maps to a specific cell in DataChgAlert:

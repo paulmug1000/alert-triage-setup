@@ -1509,12 +1509,18 @@ export default function TriageSystem({ onBack }) {
                                 {/* Job header */}
                                 {(r.jobName || r.projectCode) && (
                                   <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                                    {r.clientName && (
+                                      <span style={{ fontWeight: "400", color: "#666" }}>{r.clientName} — </span>
+                                    )}
                                     {r.jobName || r.projectCode}
                                     {r.projectCode && r.jobName && (
                                       <span style={{ fontWeight: "400", color: "#888", marginLeft: "6px" }}>({r.projectCode})</span>
                                     )}
                                     {r.periodLabel && (
                                       <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> — {r.periodLabel}</span>
+                                    )}
+                                    {r.parentSheetRow && (
+                                      <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>Confirmed row {r.parentSheetRow}</span>
                                     )}
                                   </div>
                                 )}

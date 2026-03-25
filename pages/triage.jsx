@@ -60,6 +60,10 @@ export default function TriageSystem({ onBack }) {
   const [clientNoActionAlerts, setClientNoActionAlerts] = useState([]);
   const [resolvedNoActionFlags, setResolvedNoActionFlags] = useState(new Set());
 
+  // Rich analysis for noaction flags (crmCopiedConfChecked, crmCopiedConfUnchecked, retainerInvoicesCreated)
+  const [noActionAnalysis, setNoActionAnalysis] = useState({}); // keyed by flagType
+  const [noActionAnalysisLoading, setNoActionAnalysisLoading] = useState({}); // keyed by flagType
+
   const fetchAndAnalyzeAlerts = async (sessionId) => {
     try {
       setIsAnalyzing(true);
@@ -384,6 +388,8 @@ export default function TriageSystem({ onBack }) {
       setClientAlerts(filteredAlerts);
       setClientNoActionAlerts(filteredNoAction);
       setResolvedNoActionFlags(new Set()); // reset on each client selection
+      setNoActionAnalysis({});             // reset analysis results
+      setNoActionAnalysisLoading({});      // reset loading state
       
       if (filteredAlerts.length === 0) {
         // No actionable alerts — only go to clearFlags if no-action flags are all resolved too
@@ -606,6 +612,32 @@ export default function TriageSystem({ onBack }) {
       setAcceptError(`Failed to clear flags: ${err.message}`);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Analyze a rich non-actionable flag (CRM copied / retainer invoices)
+  const analyzeNoActionFlag = async (flagType) => {
+    if (!selectedClient || noActionAnalysisLoading[flagType]) return;
+    setNoActionAnalysisLoading(prev => ({ ...prev, [flagType]: true }));
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "analyze_noaction_flag",
+          flagType,
+          clientSheetId: selectedClient.clientSheetId,
+          masterSheetId: selectedClient.masterSheetId,
+          automationCommanderSheetId,
+          clientName: selectedClient.clientName,
+        }),
+      });
+      const data = await resp.json();
+      setNoActionAnalysis(prev => ({ ...prev, [flagType]: data }));
+    } catch (e) {
+      setNoActionAnalysis(prev => ({ ...prev, [flagType]: { success: false, error: e.message } }));
+    } finally {
+      setNoActionAnalysisLoading(prev => ({ ...prev, [flagType]: false }));
     }
   };
 
@@ -1399,9 +1431,119 @@ export default function TriageSystem({ onBack }) {
                   ({resolvedNoActionFlags.size}/{clientNoActionAlerts.length} resolved)
                 </span>
               </h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 {clientNoActionAlerts.map((na) => {
                   const isResolved = resolvedNoActionFlags.has(na.flagType);
+                  const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated"].includes(na.flagType);
+                  const analysis = noActionAnalysis[na.flagType];
+                  const isLoading = noActionAnalysisLoading[na.flagType];
+
+                  if (isRichFlag && !isResolved) {
+                    // Rich analysis card
+                    const overallOk = analysis?.overallOk;
+                    const hasIssues = analysis && !analysis.overallOk;
+                    const borderColor = !analysis ? "#e0e0e0" : overallOk ? "#c8e6c9" : "#ffccbc";
+                    const bgColor = !analysis ? "#fff" : overallOk ? "#f1f8f2" : "#fff8f6";
+
+                    return (
+                      <div key={na.flagType} style={{ border: `1px solid ${borderColor}`, borderRadius: "6px", background: bgColor, padding: "12px" }}>
+                        {/* Header row */}
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0" }}>
+                          <span style={{ fontSize: "13px", fontWeight: "600", color: "#444" }}>
+                            {na.flagName || getFlagName(na.flagType)}
+                          </span>
+                          <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                            {!analysis && !isLoading && (
+                              <button
+                                onClick={() => analyzeNoActionFlag(na.flagType)}
+                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
+                              >
+                                🔍 Analyse
+                              </button>
+                            )}
+                            {isLoading && (
+                              <span style={{ fontSize: "12px", color: "#888", padding: "5px 10px" }}>Analysing…</span>
+                            )}
+                            {analysis && !isLoading && (
+                              <button
+                                onClick={() => analyzeNoActionFlag(na.flagType)}
+                                style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
+                              >
+                                ↻ Re-run
+                              </button>
+                            )}
+                            <button
+                              onClick={() => setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]))}
+                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
+                            >
+                              ✓ Mark resolved
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Analysis results */}
+                        {analysis && !isLoading && (
+                          <div>
+                            {/* Overall status banner */}
+                            <div style={{
+                              padding: "6px 10px",
+                              borderRadius: "4px",
+                              marginBottom: "8px",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              background: overallOk ? "#e8f5e9" : "#fbe9e7",
+                              color: overallOk ? "#2e7d32" : "#bf360c",
+                            }}>
+                              {overallOk ? "✓ Everything looks correct" : "⚠ Issues found — review below"}
+                            </div>
+
+                            {/* Per-job results */}
+                            {(analysis.results || []).map((r, ri) => (
+                              <div key={ri} style={{
+                                marginBottom: "8px",
+                                padding: "8px 10px",
+                                borderRadius: "4px",
+                                border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
+                                background: r.status === "ok" ? "#f9fef9" : r.status === "issue" ? "#fff8f6" : "#fafafa",
+                              }}>
+                                {/* Job header */}
+                                {(r.jobName || r.projectCode) && (
+                                  <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                                    {r.jobName || r.projectCode}
+                                    {r.projectCode && r.jobName && (
+                                      <span style={{ fontWeight: "400", color: "#888", marginLeft: "6px" }}>({r.projectCode})</span>
+                                    )}
+                                    {r.periodLabel && (
+                                      <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> — {r.periodLabel}</span>
+                                    )}
+                                  </div>
+                                )}
+                                {/* Info message (no job breakdown) */}
+                                {r.message && !r.checks && (
+                                  <div style={{ fontSize: "12px", color: "#666" }}>{r.message}</div>
+                                )}
+                                {/* Check lines */}
+                                {(r.checks || []).map((chk, ci) => (
+                                  <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
+                                    {chk.message}
+                                  </div>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* API error */}
+                        {analysis && !analysis.success && (
+                          <div style={{ fontSize: "12px", color: "#c62828", marginTop: "6px" }}>
+                            Error: {analysis.error}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  // Simple flag (no rich analysis) or resolved
                   return (
                     <div
                       key={na.flagType}

@@ -2734,32 +2734,38 @@ Return ONLY JSON, no other text.`;
           // or multiple on separate lines
           const affectedJobs = []; // { confirmedRow, jobName }
 
-          if (relevantEntries.length > 0) {
-            // Take the most recent entry (AutoLog is newest-first)
-            const mostRecent = relevantEntries[0];
-            const details = String(mostRecent[3] || "");
-            console.log(`  Most recent relevant entry: [${mostRecent[0]}] Details="${details.slice(0, 400)}"`);
-
-            if (expectCopied) {
-              // Parse all "Created New Confirmed Job: Row N, ClientName | JobName" occurrences
-              const createdPattern = /Created New Confirmed Job:\s*Row\s*(\d+),\s*[^|]*\|\s*([^\n\[]+)/gi;
+          if (expectCopied) {
+            // Parse ALL relevant entries (not just the most recent) —
+            // multiple jobs may have been copied across different automation runs
+            for (const entry of relevantEntries) {
+              const details = String(entry[3] || "");
+              const createdPattern = /Created New Confirmed Job:\s*Row\s*(\d+),\s*([^\n\[]*)/gi;
               let m;
               while ((m = createdPattern.exec(details)) !== null) {
-                affectedJobs.push({
-                  confirmedRow: parseInt(m[1], 10),
-                  jobName: m[2].trim().replace(/\s+$/, ""),
-                });
+                // The text after "Row N," is "ClientName | JobName" in the log
+                const fullName = m[2].trim();
+                const jobName = fullName.includes("|") ? fullName.split("|").pop().trim() : fullName;
+                if (jobName) affectedJobs.push({ confirmedRow: parseInt(m[1], 10), jobName, logTimestamp: String(entry[0] || "") });
               }
-            } else {
-              // Parse jobs whose Copied Status was changed to No
-              // Format: "Row N, ClientName | JobName - ... Copied Status: 'Yes' -> 'No'"
+            }
+            // Deduplicate by confirmedRow (same job may appear in multiple log entries)
+            const seen = new Set();
+            const dedupedJobs = affectedJobs.filter(j => {
+              if (seen.has(j.confirmedRow)) return false;
+              seen.add(j.confirmedRow);
+              return true;
+            });
+            affectedJobs.length = 0;
+            affectedJobs.push(...dedupedJobs);
+          } else {
+            // UNchecked: look at most recent entry only (same logic as before)
+            if (relevantEntries.length > 0) {
+              const mostRecent = relevantEntries[0];
+              const details = String(mostRecent[3] || "");
               const uncheckedPattern = /Row\s*(\d+),\s*[^|]*\|\s*([^-\n]+).*?Copied Status:.*?->\s*['"]?No['"]?/gi;
               let m;
               while ((m = uncheckedPattern.exec(details)) !== null) {
-                affectedJobs.push({
-                  pipelineRow: parseInt(m[1], 10),
-                  jobName: m[2].trim(),
-                });
+                affectedJobs.push({ pipelineRow: parseInt(m[1], 10), jobName: m[2].trim(), logTimestamp: String(mostRecent[0] || "") });
               }
             }
           }
@@ -2792,52 +2798,56 @@ Return ONLY JSON, no other text.`;
               let allOk = true;
 
               if (expectCopied) {
-                // Verify the job exists in Confirmed at the expected row
-                const confRow = confirmedRows[job.confirmedRow - 1] || []; // 1-indexed → 0-indexed
-                const confJobName = String(confRow[1] || "").trim();
-                const confExists = !!confRow[0] || !!confRow[1];
-
-                checks.push({
-                  ok: confExists,
-                  message: `Confirmed tab Row ${job.confirmedRow}: ${confExists ? `✓ exists ("${confJobName}")` : "✗ row is empty — job may not have been created"}`,
-                });
-                if (!confExists) allOk = false;
-
-                // Also check Pipeline col DD for the job — find by job name match
+                // CRITICAL CHECK: Pipeline col DD must be "Yes"
+                // Pipeline data: col A(0)=Client, B(1)=JobName, C(2)=ProjectCode, DD(107)=CopiedToConf?
+                // Pipeline rows start at row 6 in the sheet; our slice starts at A6 so index 0 = row 6
                 let pipelineJob = null;
                 for (const pr of pipelineRows) {
-                  const pJobName = String(pr[2] || "").trim();
+                  const pJobName = String(pr[1] || "").trim(); // col B = job name
                   if (pJobName && pJobName === job.jobName) {
-                    pipelineJob = { jobName: pJobName, copiedToConf: String(pr[107] || "").trim() };
+                    pipelineJob = {
+                      clientName: String(pr[0] || "").trim(),
+                      jobName: pJobName,
+                      projectCode: String(pr[2] || "").trim(),
+                      copiedToConf: String(pr[107] || "").trim(),
+                    };
                     break;
                   }
                 }
-                if (pipelineJob) {
+
+                if (!pipelineJob) {
+                  // Job may have been created directly in Confirmed (not via Pipeline copy)
+                  checks.push({ ok: true, message: `Pipeline: job "${job.jobName}" not found — may have been created directly in Confirmed (not a copy from Pipeline)` });
+                } else {
                   const ddVal = pipelineJob.copiedToConf.toLowerCase();
                   const ddOk = ddVal === "yes" || ddVal === "true";
                   checks.push({
                     ok: ddOk,
-                    message: `Pipeline col DD ("Copied to confirmed?"): "${pipelineJob.copiedToConf}" — ${ddOk ? "✓ Yes" : "✗ expected Yes"}`,
+                    message: ddOk
+                      ? `✓ Pipeline col DD ("Copied to confirmed?"): Yes`
+                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" — expected Yes. The copy may not have registered correctly.`,
                   });
                   if (!ddOk) allOk = false;
-                } else {
-                  checks.push({ ok: true, message: `Pipeline: job name "${job.jobName}" not matched by name (may have been renamed)` });
                 }
 
-              } else {
-                // UNchecked: job should NOT be in Confirmed, Pipeline DD should be No/blank
-                // Check Confirmed for this job name
-                const inConfirmed = confirmedRows.some(cr => String(cr[1] || "").trim() === job.jobName);
+                // Secondary check: job exists in Confirmed at expected row
+                const confRow = confirmedRows[job.confirmedRow - 1] || [];
+                const confJobName = String(confRow[1] || "").trim();
+                const confExists = !!confRow[0] || !!confRow[1];
                 checks.push({
-                  ok: !inConfirmed,
-                  message: `Confirmed tab: ${!inConfirmed ? "✓ job not present (correct)" : `✗ "${job.jobName}" still exists in Confirmed`}`,
+                  ok: confExists,
+                  message: confExists
+                    ? `✓ Confirmed tab Row ${job.confirmedRow}: exists ("${confJobName}")`
+                    : `✗ Confirmed tab Row ${job.confirmedRow}: row is empty — job may not have been created`,
                 });
-                if (inConfirmed) allOk = false;
+                if (!confExists) allOk = false;
 
-                // Check Pipeline DD
+              } else {
+                // UNchecked: Pipeline DD should be No/blank, job should NOT be in Confirmed
                 let pipelineJob = null;
                 for (const pr of pipelineRows) {
-                  if (String(pr[2] || "").trim() === job.jobName) {
+                  const pJobName = String(pr[1] || "").trim(); // col B
+                  if (pJobName && pJobName === job.jobName) {
                     pipelineJob = { copiedToConf: String(pr[107] || "").trim() };
                     break;
                   }
@@ -2847,15 +2857,27 @@ Return ONLY JSON, no other text.`;
                   const ddOk = ddVal === "no" || ddVal === "" || ddVal === "false";
                   checks.push({
                     ok: ddOk,
-                    message: `Pipeline col DD: "${pipelineJob.copiedToConf}" — ${ddOk ? "✓ No/blank" : "✗ expected No or blank"}`,
+                    message: ddOk
+                      ? `✓ Pipeline col DD: "${pipelineJob.copiedToConf}" — No/blank (correct)`
+                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" — expected No or blank`,
                   });
                   if (!ddOk) allOk = false;
                 }
+
+                const inConfirmed = confirmedRows.some(cr => String(cr[1] || "").trim() === job.jobName);
+                checks.push({
+                  ok: !inConfirmed,
+                  message: !inConfirmed
+                    ? `✓ Confirmed tab: job not present (correct)`
+                    : `✗ "${job.jobName}" still exists in Confirmed — should have been removed`,
+                });
+                if (inConfirmed) allOk = false;
               }
 
               results.push({
                 jobName: job.jobName,
                 confirmedRow: job.confirmedRow,
+                logTimestamp: job.logTimestamp,
                 status: allOk ? "ok" : "issue",
                 checks,
               });

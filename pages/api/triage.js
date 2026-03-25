@@ -950,32 +950,30 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
     throw new Error(`Could not find column for month ${expenseMonth} in Outgoings header row`);
   }
 
-  // Find the vendor row in the contractor section (rows 12-112, 0-indexed 11-111)
+  // Find the vendor row in the contractor section (rows 13-110, 0-indexed 12-109)
   const categoryLower = categoryName.toLowerCase().trim();
   let targetRowIndex = -1;
-  let firstBlankRowIndex = -1;
+  let lastFilledRowIndex = -1; // track last row with a vendor name
 
-  for (let r = 11; r <= Math.min(111, rows.length - 1); r++) {
+  for (let r = 12; r <= Math.min(109, rows.length - 1); r++) {
     const rowVendorName = String(rows[r][0] || "").toLowerCase().trim();
     if (rowVendorName === categoryLower) {
       targetRowIndex = r;
       break;
     }
-    // Track first blank row (col A empty) as fallback for new vendors
-    if (!rowVendorName && firstBlankRowIndex === -1) {
-      firstBlankRowIndex = r;
-    }
+    if (rowVendorName) lastFilledRowIndex = r;
   }
 
   let isNewVendor = false;
   if (targetRowIndex === -1) {
-    // Vendor not found — use first blank row
-    if (firstBlankRowIndex === -1) {
-      throw new Error(`No existing row for "${categoryName}" and no blank rows available in contractor section (rows 12-112)`);
+    // Vendor not found — use the first blank row AFTER the last existing vendor
+    const nextBlankIndex = lastFilledRowIndex + 1;
+    if (lastFilledRowIndex === -1 || nextBlankIndex > 109) {
+      throw new Error(`No existing row for "${categoryName}" and no blank rows available in contractor section (rows 13-110)`);
     }
-    targetRowIndex = firstBlankRowIndex;
+    targetRowIndex = nextBlankIndex;
     isNewVendor = true;
-    console.log(`  New vendor — using blank row ${targetRowIndex + 1}`);
+    console.log(`  New vendor — using blank row ${targetRowIndex + 1} (after last vendor at row ${lastFilledRowIndex + 1})`);
   }
 
   const sheetRow = targetRowIndex + 1; // 1-indexed
@@ -1567,21 +1565,22 @@ BUDGET AND REVENUE:
           const outgoingsRows = outgoingsResponse.data.values || [];
           console.log(`  ✓ Loaded ${outgoingsRows.length} rows from Outgoings (rows 1-112)`);
 
-          // Build vendor list for Claude — rows 12-112 are the contractor section
+          // Build vendor list for Claude — rows 13-110 are the contractor section
           // Each row: A=vendorName, B=chargesVAT, C-F=defaults
-          // Blank rows (col A empty) = available slots for new vendors
+          // Find the LAST blank row after all existing vendors (i.e. next available slot at the bottom)
           const outgoingsVendorList = [];
-          let firstBlankOutgoingsRow = null;
-          for (let i = 11; i < Math.min(outgoingsRows.length, 112); i++) { // 0-indexed rows 11-111 = sheet rows 12-112
+          let lastVendorRowIndex = -1; // 0-indexed
+          for (let i = 12; i <= Math.min(outgoingsRows.length - 1, 109); i++) { // 0-indexed rows 12-109 = sheet rows 13-110
             const vendorName = String(outgoingsRows[i]?.[0] || '').trim();
             const chargesVAT = String(outgoingsRows[i]?.[1] || '').trim();
             if (vendorName) {
               outgoingsVendorList.push(`Row ${i + 1}: ${vendorName} (VAT: ${chargesVAT || 'unknown'})`);
-            } else if (firstBlankOutgoingsRow === null) {
-              firstBlankOutgoingsRow = i + 1; // 1-indexed sheet row
+              lastVendorRowIndex = i;
             }
           }
-          console.log(`  ✓ Found ${outgoingsVendorList.length} existing vendors, first blank row: ${firstBlankOutgoingsRow}`);
+          // First blank row after all existing vendors
+          const firstBlankOutgoingsRow = lastVendorRowIndex < 109 ? lastVendorRowIndex + 2 : null; // +2: +1 for 0→1 index, +1 for next row
+          console.log(`  ✓ Found ${outgoingsVendorList.length} existing vendors, next blank row: ${firstBlankOutgoingsRow}`);
           
           // ALSO fetch Confirmed tab for job-based expense matching
           console.log(`  📊 Fetching Confirmed tab for job-based expense matching...`);
@@ -1674,9 +1673,11 @@ BUDGET AND REVENUE:
               const parentIdx = ci;
               const parentClient = String(row[0] || '').trim();
               const parentJob = String(row[1] || '').trim();
+              const projType = String(row[35] || '').trim();
+              const isRetainer = projType.toLowerCase().includes('retainer');
 
               // Collect parent + child rows for this job
-              const jobRows = [{ row, sheetRow: ci + 1 }];
+              const jobRows = [{ row, sheetRow: ci + 1, isParent: true }];
               let cj = ci + 1;
               while (cj < activeConfirmedData.length) {
                 const next = activeConfirmedData[cj] || [];
@@ -1684,26 +1685,36 @@ BUDGET AND REVENUE:
                 const nj = String(next[1] || '').trim();
                 const nb = String(next[33] || '').replace(/[£$€,\s]/g, '');
                 if (nc === parentClient && nj === parentJob && !next[32] && !parseFloat(nb) && !next[37]) {
-                  jobRows.push({ row: next, sheetRow: cj + 1 });
+                  jobRows.push({ row: next, sheetRow: cj + 1, isParent: false });
                   cj++;
                 } else { break; }
               }
               ci = cj;
 
+              const numMonths = isRetainer ? jobRows.length : 1;
+              const totalBudget = budget * numMonths;
+
               let totalAllocated = 0;
               const slots = [];
-              for (const { row: r, sheetRow } of jobRows) {
+              for (const { row: r, sheetRow, isParent: isParentRow } of jobRows) {
                 for (let s = 0; s < slotColDefs.length; s++) {
                   const { d, a, dt, id } = slotColDefs[s];
                   const descr = String(r[d] || '').trim();
                   const amt = r[a] !== undefined ? r[a] : '';
                   const date = r[dt] || '';
                   const appId = String(r[id] || '').trim();
-                  if (!descr && !amt) { slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, empty: true, sheetRow, slotNum: s+1 }); continue; }
+
+                  // For retainer jobs, parent row slots are NEVER write targets
+                  const isWritable = !(isRetainer && isParentRow);
+
+                  if (!descr && !amt) {
+                    if (isWritable) slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, empty: true, sheetRow, slotNum: s+1, isParentRow });
+                    continue;
+                  }
                   const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
                   const isAllocated = !!(appId && !appId.toUpperCase().includes('MANUAL-ENTRY'));
                   if (isAllocated) totalAllocated += amtNum;
-                  slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, descr, amt, date, appId, isAllocated, empty: false, sheetRow, slotNum: s+1 });
+                  slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, descr, amt, date, appId, isAllocated, empty: false, sheetRow, slotNum: s+1, isParentRow });
                 }
               }
 
@@ -1712,11 +1723,12 @@ BUDGET AND REVENUE:
                 parentClient, parentJob,
                 projectCode: row[2] || '',
                 revenue: row[32] !== undefined ? row[32] : '',
-                projType: row[35] || '',
+                projType, isRetainer,
                 startDate: row[37] || '',
                 endDate: row[38] || '',
-                budget, totalAllocated,
-                remaining: budget - totalAllocated,
+                budget, numMonths, totalBudget,
+                totalAllocated,
+                remaining: totalBudget - totalAllocated,
                 slots,
               });
             } else { ci++; }
@@ -1726,11 +1738,15 @@ BUDGET AND REVENUE:
 
           const expenseConfirmedTabTable = candidateJobs.length > 0
             ? candidateJobs.map(job => {
+                const budgetStr = job.isRetainer
+                  ? `£${job.budget}/month × ${job.numMonths} months = £${job.totalBudget} total`
+                  : `£${job.budget}`;
                 const filled = job.slots.filter(s => !s.empty)
                   .map(s => `${s.label}: ${s.descr} £${s.amt} ${s.date} (${s.isAllocated ? 'allocated' : 'NO App ID - placeholder'})`)
                   .join(' | ') || 'none';
                 const empty = job.slots.filter(s => s.empty).map(s => s.label).join(', ') || 'none';
-                return `ParentRow ${job.parentRow} | ${job.parentClient} | ${job.parentJob} | Code: ${job.projectCode} | Budget: £${job.budget} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | Type: ${job.projType} | ${job.startDate}→${job.endDate}\n  Filled: ${filled}\n  Empty slots: ${empty}`;
+                const retainerNote = job.isRetainer ? ` [RETAINER — parent row (${job.parentRow}) is NOT a write target; write only to child rows]` : '';
+                return `ParentRow ${job.parentRow} | ${job.parentClient} | ${job.parentJob} | Code: ${job.projectCode} | Budget: ${budgetStr} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | Type: ${job.projType}${retainerNote} | ${job.startDate}→${job.endDate}\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
               }).join('\n\n')
             : '(no jobs with DirectCostBudget > £0)'
           

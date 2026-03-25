@@ -1806,6 +1806,7 @@ Format as JSON array:
 Return ONLY JSON, no other text.`;
 
           console.log(`\n📤 EXPENSE PROMPT TO CLAUDE: ${expenseDescription} £${expenseAmount}`);
+          console.log(`\n📊 CONFIRMED TAB DATA SENT TO CLAUDE (full):\n${expenseConfirmedTabTable}`);
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
             max_tokens: 1500,

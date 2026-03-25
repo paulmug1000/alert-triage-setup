@@ -1214,64 +1214,76 @@ export default function TriageSystem({ onBack }) {
 
         <div style={styles.card}>
           {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
-          
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {clientsWithFlags.map((client, idx) => {
-              const actionableLines = ACTIONABLE_FLAG_KEYS
-                .filter(key => client.flags?.[key])
-                .map(key => {
-                  const count = client.alertCounts?.[key];
-                  const label = getFlagName(key);
-                  return count
-                    ? `${label} (${count} alert${count !== 1 ? "s" : ""})`
-                    : label;
-                });
 
-              const infoLines = Object.entries(client.flags || {})
-                .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key))
-                .map(([key]) => getFlagName(key));
+          {isLoading ? (
+            <div style={{ textAlign: "center", padding: "32px 16px", color: "#666" }}>
+              <div style={{ fontSize: "28px", marginBottom: "12px" }}>↻</div>
+              <div style={{ fontSize: "15px", fontWeight: "600", color: "#333", marginBottom: "6px" }}>
+                Refreshing data...
+              </div>
+              <div style={{ fontSize: "13px", color: "#888" }}>
+                Reading latest flags and alerts from your sheets
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {clientsWithFlags.map((client, idx) => {
+                const actionableLines = ACTIONABLE_FLAG_KEYS
+                  .filter(key => client.flags?.[key])
+                  .map(key => {
+                    const count = client.alertCounts?.[key];
+                    const label = getFlagName(key);
+                    return count
+                      ? `${label} (${count} alert${count !== 1 ? "s" : ""})`
+                      : label;
+                  });
 
-              return (
-                <button
-                  key={idx}
-                  onClick={() => selectClient(client)}
-                  style={{
-                    ...styles.optionButton,
-                    textAlign: "left",
-                    padding: "16px",
-                    border: "1px solid #ddd",
-                    borderRadius: "6px",
-                    cursor: "pointer",
-                    backgroundColor: "#f9f9f9",
-                    transition: "all 0.2s",
-                    width: "100%",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = "#f0f0f0";
-                    e.currentTarget.style.borderColor = "#2196f3";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = "#f9f9f9";
-                    e.currentTarget.style.borderColor = "#ddd";
-                  }}
-                >
-                  <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px" }}>
-                    {client.clientName}
-                  </div>
-                  {actionableLines.map((line, i) => (
-                    <div key={i} style={{ fontSize: "13px", color: "#1976d2", marginBottom: "2px" }}>
-                      • {line}
+                const infoLines = Object.entries(client.flags || {})
+                  .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key))
+                  .map(([key]) => getFlagName(key));
+
+                return (
+                  <button
+                    key={idx}
+                    onClick={() => selectClient(client)}
+                    style={{
+                      ...styles.optionButton,
+                      textAlign: "left",
+                      padding: "16px",
+                      border: "1px solid #ddd",
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      backgroundColor: "#f9f9f9",
+                      transition: "all 0.2s",
+                      width: "100%",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = "#f0f0f0";
+                      e.currentTarget.style.borderColor = "#2196f3";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = "#f9f9f9";
+                      e.currentTarget.style.borderColor = "#ddd";
+                    }}
+                  >
+                    <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px" }}>
+                      {client.clientName}
                     </div>
-                  ))}
-                  {infoLines.map((line, i) => (
-                    <div key={i} style={{ fontSize: "13px", color: "#888", marginBottom: "2px" }}>
-                      • {line}
-                    </div>
-                  ))}
-                </button>
-              );
-            })}
-          </div>
+                    {actionableLines.map((line, i) => (
+                      <div key={i} style={{ fontSize: "13px", color: "#1976d2", marginBottom: "2px" }}>
+                        • {line}
+                      </div>
+                    ))}
+                    {infoLines.map((line, i) => (
+                      <div key={i} style={{ fontSize: "13px", color: "#888", marginBottom: "2px" }}>
+                        • {line}
+                      </div>
+                    ))}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <button

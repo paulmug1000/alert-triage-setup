@@ -1587,15 +1587,16 @@ BUDGET AND REVENUE:
           console.log(`  📊 Fetching Confirmed tab for job-based expense matching...`);
           const confirmedResponse = await sheets.spreadsheets.values.get({
             spreadsheetId: alert.clientId,
-            range: "Confirmed!A1:CR500",
+            range: "Confirmed!A1:CR300",
           });
           
           let confirmedData = confirmedResponse.data.values || [];
           
-          if (confirmedData.length === 500) {
+          if (confirmedData.length === 300) {
+            console.log(`  Hit 300-row limit, fetching full range...`);
             const fullResponse = await sheets.spreadsheets.values.get({
               spreadsheetId: alert.clientId,
-              range: "Confirmed!A1:CR5000",
+              range: "Confirmed!A1:CR1000",
             });
             confirmedData = fullResponse.data.values || [];
           }
@@ -1820,7 +1821,7 @@ Return ONLY JSON, no other text.`;
           console.log(`\n📊 CONFIRMED TAB DATA SENT TO CLAUDE (full):\n${expenseConfirmedTabTable}`);
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
-            max_tokens: 1500,
+            max_tokens: 3000,
             messages: [{ role: "user", content: expensePrompt }],
           });
 

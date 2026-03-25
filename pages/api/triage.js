@@ -1515,7 +1515,40 @@ export default async function handler(req, res) {
 
         console.log(`  Cache MISS for ${fingerprintHash} — calling Claude`);
         // ────────────────────────────────────────────────────────────────────
-        
+
+        // Shared structure explanation used across all three prompt types
+        const SHEET_STRUCTURE_BLOCK = `
+CRITICAL: CONFIRMED TAB STRUCTURE — READ THIS CAREFULLY BEFORE ANALYSING
+
+Each job consists of ONE PARENT ROW plus ZERO OR MORE CHILD ROWS:
+
+PARENT ROW — identified by having Revenue, DirectCostBudget, Start date, End date values.
+CHILD ROW — has the same Client name and Job name as its parent, but Revenue/Start date/End date are BLANK.
+Child rows inherit Client name and Job name from their parent (this is how you identify them).
+The DirectCostBudget and Revenue for a job ALWAYS come from the parent row — child rows never have their own budget.
+
+Each row (parent or child) has 3 invoice slots (Inv1-3) and 3 direct cost expense slots (ExpSlot1-3).
+
+PROJECT JOBS:
+  Parent row:  Inv1, Inv2, Inv3  /  ExpSlot1, ExpSlot2, ExpSlot3  (invoices/expenses 1-3)
+  Child row 1: Inv1, Inv2, Inv3  /  ExpSlot1, ExpSlot2, ExpSlot3  (invoices/expenses 4-6)
+  Child row 2: Inv1, Inv2, Inv3  /  ExpSlot1, ExpSlot2, ExpSlot3  (invoices/expenses 7-9)
+
+RETAINER JOBS — TWO MODES:
+  Mode A (1 invoice total): Parent row has Inv1 only. No child rows needed.
+  Mode B (2+ invoices):     Parent row has NO invoices (all invoice slots empty).
+                             Each child row has exactly 1 invoice in Inv1 slot only.
+
+IDENTIFYING PARENT vs CHILD:
+  Parent: has Revenue value AND/OR Start date AND/OR End date
+  Child:  same Client + same Job name as the parent row directly above it, but Revenue/Start/End are ALL blank
+
+BUDGET AND REVENUE:
+  Revenue and DirectCostBudget live on the parent row only.
+  To calculate total invoiced or total expenses: sum ALL relevant slot amounts across the parent AND all its child rows.
+  Allocated expenses = has a valid App ID (not blank, not MANUAL-ENTRY).
+  Placeholder expenses = blank App ID or MANUAL-ENTRY — do NOT subtract these from remaining budget.`;
+
         // Handle expense alerts (DirComp)
         if (alert.type === "expense" || alert.sheetName === "DirComp") {
           console.log(`  📊 Fetching Outgoings tab for expense matching...`);
@@ -1586,42 +1619,7 @@ export default async function handler(req, res) {
           
           const activeConfirmedData = confirmedData.slice(0, lastDataRow + 1);
           console.log(`  ✓ Found ${activeConfirmedData.length} non-blank rows in Confirmed`);
-          
-          // Build list of ALL jobs (for reference)
-          const confirmedJobsAll = [];
-          let diagnosticRowsLogged = 0;
-          for (let i = 1; i < activeConfirmedData.length; i++) {
-            const row = activeConfirmedData[i] || [];
-            const client = row[0] || '';
-            const jobName = row[1] || '';
-            const revenue = row[32] !== undefined ? row[32] : '';
-            const directCosts = row[33] !== undefined ? row[33] : '';
-            
-            // DEBUG: Log first 3 rows with client + jobName to see what's in columns 32 and 33
-            if (client && jobName && diagnosticRowsLogged < 3) {
-              console.log(`\n  DIAGNOSTIC Row ${i + 1}: Client="${client}", JobName="${jobName}", Revenue="${revenue}", DirectCosts="${directCosts}"`);
-              diagnosticRowsLogged++;
-            }
-            
-            if (client && jobName) {
-              confirmedJobsAll.push({
-                row: i + 1,
-                client,
-                jobName,
-                revenue,
-                directCosts: parseFloat(String(directCosts).replace(/[£$€,]/g, '')) || 0,
-                text: `Row ${i + 1}: ${client} | ${jobName} | Revenue: ${revenue} | Direct Costs: ${directCosts}`
-              });
-            }
-          }
-          
-          // Filter to jobs with direct costs > 0 for expense matching
-          const confirmedJobs = confirmedJobsAll
-            .filter(job => job.directCosts > 0)
-            .map(job => job.text);
-          
-          console.log(`  ✓ Built reference list of ${confirmedJobsAll.length} jobs total, ${confirmedJobs.length} with direct costs > £0`);
-          
+
           // Read tolerance values for expenses
           const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
           
@@ -1655,8 +1653,8 @@ export default async function handler(req, res) {
           
           console.log(`  📋 Expense details: Ref=${expenseRef}, Amount=${expenseAmount}, Description=${expenseDescription}, Account=${expenseAccountName}`);
 
-          // Build detailed Confirmed tab table for expenses (matching invoice approach)
-          // CRITICAL: Calculate remaining direct cost budget for each job
+          // Build flat row-by-row Confirmed tab table (same approach as invoices).
+          // Claude uses the structure rules in the prompt to reason about parent/child rows.
           const expenseConfirmedTabTable = activeConfirmedData
             .map((row, idx) => {
               const client = row[0] || '';
@@ -1667,103 +1665,27 @@ export default async function handler(req, res) {
               const projType = row[35] || '';
               const startDate = row[37] || '';
               const endDate = row[38] || '';
-              
-              // Read the three direct cost expense slots
-              // Slot 1: BX(75), BY(76), CA(78), CC(80), CD(81)
-              const exp1Descr = row[75] || '';
-              const exp1Amt = row[76] !== undefined ? row[76] : '';
-              const exp1RecDate = row[78] || '';
-              const exp1Status = row[80] || '';
-              const exp1AppId = row[81] || '';
-              
-              // Slot 2: CE(82), CF(83), CH(85), CJ(87), CK(88)
-              const exp2Descr = row[82] || '';
-              const exp2Amt = row[83] !== undefined ? row[83] : '';
-              const exp2RecDate = row[85] || '';
-              const exp2Status = row[87] || '';
-              const exp2AppId = row[88] || '';
-              
-              // Slot 3: CL(89), CM(90), CO(92), CQ(94), CR(95)
-              const exp3Descr = row[89] || '';
-              const exp3Amt = row[90] !== undefined ? row[90] : '';
-              const exp3RecDate = row[92] || '';
-              const exp3Status = row[94] || '';
-              const exp3AppId = row[95] || '';
-              
-              // CRITICAL: Only count as allocated if App ID exists and is NOT blank and does NOT contain "MANUAL-ENTRY"
-              // But ALWAYS show descriptions to Claude (even for placeholders)
-              let totalAllocated = 0;
-              let allocatedExpenses = [];
-              let placeholderExpenses = [];
-              let allThreeSlots = [];  // For detailed Claude output
-              
-              // Slot 1
-              if (exp1Descr && exp1Amt) {
-                if (exp1AppId && !exp1AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
-                  const amt1 = parseFloat(String(exp1Amt).replace(/[£$€,]/g, '')) || 0;
-                  totalAllocated += amt1;
-                  allocatedExpenses.push(`${exp1Descr} £${amt1}`);
-                  allThreeSlots.push(`Slot 1: ${exp1Descr} - ${String(exp1Amt)} - ${exp1RecDate} - (has valid App ID: yes)`);
-                } else {
-                  placeholderExpenses.push(`${exp1Descr} (pending) £${exp1Amt}`);
-                  allThreeSlots.push(`Slot 1: ${exp1Descr} - ${String(exp1Amt)} - ${exp1RecDate} - (NO App ID - placeholder)`);
-                }
-              } else {
-                allThreeSlots.push(`Slot 1: (empty)`);
-              }
-              
-              // Slot 2
-              if (exp2Descr && exp2Amt) {
-                if (exp2AppId && !exp2AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
-                  const amt2 = parseFloat(String(exp2Amt).replace(/[£$€,]/g, '')) || 0;
-                  totalAllocated += amt2;
-                  allocatedExpenses.push(`${exp2Descr} £${amt2}`);
-                  allThreeSlots.push(`Slot 2: ${exp2Descr} - ${String(exp2Amt)} - ${exp2RecDate} - (has valid App ID: yes)`);
-                } else {
-                  placeholderExpenses.push(`${exp2Descr} (pending) £${exp2Amt}`);
-                  allThreeSlots.push(`Slot 2: ${exp2Descr} - ${String(exp2Amt)} - ${exp2RecDate} - (NO App ID - placeholder)`);
-                }
-              } else {
-                allThreeSlots.push(`Slot 2: (empty)`);
-              }
-              
-              // Slot 3
-              if (exp3Descr && exp3Amt) {
-                if (exp3AppId && !exp3AppId.toString().toUpperCase().includes('MANUAL-ENTRY')) {
-                  const amt3 = parseFloat(String(exp3Amt).replace(/[£$€,]/g, '')) || 0;
-                  totalAllocated += amt3;
-                  allocatedExpenses.push(`${exp3Descr} £${amt3}`);
-                  allThreeSlots.push(`Slot 3: ${exp3Descr} - ${String(exp3Amt)} - ${exp3RecDate} - (has valid App ID: yes)`);
-                } else {
-                  placeholderExpenses.push(`${exp3Descr} (pending) £${exp3Amt}`);
-                  allThreeSlots.push(`Slot 3: ${exp3Descr} - ${String(exp3Amt)} - ${exp3RecDate} - (NO App ID - placeholder)`);
-                }
-              } else {
-                allThreeSlots.push(`Slot 3: (empty)`);
-              }
-              
-              // Calculate remaining
-              const budgetNum = parseFloat(String(directCostsBudget).replace(/[£$€,]/g, '')) || 0;
-              const remaining = budgetNum - totalAllocated;
-              
-              const allocatedStr = allocatedExpenses.length > 0 
-                ? allocatedExpenses.join(' + ')
-                : '(none allocated)';
-              
-              const placeholderStr = placeholderExpenses.length > 0
-                ? ` | Placeholders (pending): ${placeholderExpenses.join(' + ')}`
-                : '';
-              
-              // Store all three slots for detailed Claude analysis
-              const detailedBreakdown = allThreeSlots.join('\n  ');
-              
-              return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | DirectCostBudget: ${directCostsBudget} | Allocated: ${allocatedStr} | Remaining: £${remaining.toFixed(2)} | Type: ${projType} | Start: ${startDate} | End: ${endDate}${placeholderStr}\n  Expense Slots:\n  ${detailedBreakdown}`;
+
+              const formatExpSlot = (descCol, amtCol, dateCol, statusCol, idCol) => {
+                const descr = row[descCol] || '';
+                const amt = row[amtCol] !== undefined ? row[amtCol] : '';
+                const recDate = row[dateCol] || '';
+                const appId = row[idCol] || '';
+                if (!descr && !amt) return '(empty)';
+                const isAllocated = appId && !appId.toString().toUpperCase().includes('MANUAL-ENTRY');
+                const tag = isAllocated ? '(has valid App ID: yes)' : '(NO App ID - placeholder)';
+                return `${descr} - £${amt} - ${recDate} - ${tag}`;
+              };
+
+              const slot1 = formatExpSlot(75, 76, 78, 80, 81);
+              const slot2 = formatExpSlot(82, 83, 85, 87, 88);
+              const slot3 = formatExpSlot(89, 90, 92, 94, 95);
+
+              return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | DirectCostBudget: ${directCostsBudget} | Revenue: ${revenue} | Type: ${projType} | Start: ${startDate} | End: ${endDate} | ExpSlot1: ${slot1} | ExpSlot2: ${slot2} | ExpSlot3: ${slot3}`;
             })
             .join('\n');
           
-          // Build expense prompt with FULL Confirmed tab data (like invoices do)
-          // DO NOT try to match by client name (client is YOUR agency, not the end-client in jobs)
-          // Instead match by: vendor name, amount, and account category
+          // Build expense prompt with flat Confirmed tab data (same approach as invoices)
           const expensePrompt = `You are analyzing an unmatched business expense. This expense could match either:
 1. An Outgoings budget category (for indirect/operational costs like office supplies, software, insurance)
 2. A Confirmed job's direct costs (for job-specific vendor expenses like contractors, subcontractors, freelancers, materials)
@@ -1783,181 +1705,113 @@ UNMATCHED EXPENSE:
 OUTGOINGS CATEGORIES (For General/Operational Expenses):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
 
-CONFIRMED TAB DATA (All non-blank rows - shows jobs, their direct cost budgets, and what's allocated):
+CONFIRMED TAB DATA (All non-blank rows):
 ${expenseConfirmedTabTable}
+${SHEET_STRUCTURE_BLOCK}
 
-CRITICAL INFORMATION ABOUT DIRECT COSTS:
+DIRECT COST EXPENSE SLOT DETAILS:
+Each row has 3 expense slots. Slot columns:
+- ExpSlot1: BX(desc) BY(amount) CA(date) CC(status) CD(appId)
+- ExpSlot2: CE(desc) CF(amount) CH(date) CJ(status) CK(appId)
+- ExpSlot3: CL(desc) CM(amount) CO(date) CQ(status) CR(appId)
+(has valid App ID: yes) = allocated and finalised
+(NO App ID - placeholder) = pending assignment — these are a strong match signal
 
-**Understanding Job Direct Costs:**
-- Each job in Confirmed tab has a "DirectCosts" budget (column AH)
-- This is the TOTAL budgeted direct cost for the entire job
-- The Confirmed tab ALSO shows direct cost expenses in three slots per job (Slot 1, 2, 3)
-- Each slot has: Description, Amount, Rec Date, Status, App ID
-- IMPORTANT DISTINCTION:
-  * **Allocated expenses**: Have both Amount AND a valid App ID (NOT blank, NOT "MANUAL-ENTRY")
-  * **Placeholder expenses**: Have Description/Amount but App ID is blank or "MANUAL-ENTRY" - these are pending assignment
-- Remaining Budget = Total DirectCosts Budget - Sum of ALLOCATED Expenses (do NOT subtract placeholders)
+REMAINING BUDGET CALCULATION:
+  Sum ALL allocated expense amounts across parent row AND all its child rows.
+  Remaining = parent's DirectCostBudget − total allocated (placeholders excluded).
+
+RANKING PRIORITY:
+1. PERFECT MATCH: Row has a placeholder whose vendor ≈ this expense's vendor
+2. STRONG MATCH: Sufficient remaining budget + matching vendor/scope
+3. MEDIUM MATCH: Remaining budget, less certain vendor match
+4. FALLBACK: Outgoings category match
+
+YOUR TASK:
+1. Determine: job-specific direct cost, or general operational expense?
+2. For job matches: identify the correct parent job (using budget/revenue from parent row), find the first empty ExpSlot across parent and child rows
+3. For each option: show Budget → Allocated → Remaining arithmetic
+4. Suggest 3 GENUINELY DIFFERENT options, ranked by priority above
+
+MATCHING RULES:
+${kbRules || "- Default matching rules apply"}
+
+**CRITICAL: For recommendedActions, provide exact cell coordinates:**
+
+Cell Column Reference for Direct Cost Expense Slots:
+- ExpSlot1: BX(75)Description, BY(76)Amount, BZ(77)VAT?, CA(78)Date, CB(79)DaysToPay, CC(80)Status, CD(81)TransactionID
+- ExpSlot2: CE(82)Description, CF(83)Amount, CG(84)VAT?, CH(85)Date, CI(86)DaysToPay, CJ(87)Status, CK(88)TransactionID
+- ExpSlot3: CL(89)Description, CM(90)Amount, CN(91)VAT?, CO(92)Date, CP(93)DaysToPay, CQ(94)Status, CR(95)TransactionID
+
+Example: "Write Sonar Systems to BX87, write 12862.50 to BY87, write No to BZ87, write 4-Feb-26 to CA87, write 30 to CB87, write Paid to CC87, write 22c5892e-uuid to CD87"
 
 **How to Evaluate Job Matches for Expenses:**
 The Confirmed tab above shows for each job:
 - DirectCostBudget: The total budget allocated to this job
 - Allocated: Expenses with confirmed App IDs (already assigned and finalized)
 - Placeholders (pending): Expenses waiting to be assigned (description indicates what work they represent)
-- Remaining: How much budget is still available AFTER allocated expenses
-
-**RANKING PRIORITY (most important first):**
-1. **PERFECT MATCH (TOP)**: Job has a PLACEHOLDER that matches this expense
-   - Placeholder vendor name ≈ Expense vendor name? = HIGH confidence match
-   - Example: PHIZZ has placeholder "Craig Niven" £995, expense is "Craig Niven T/A FILDI" £995 = PERFECT
-2. **STRONG MATCH**: Job has sufficient REMAINING budget + matching vendor type + matching job scope
-3. **MEDIUM MATCH**: Job has remaining budget + vendor/scope is less certain
-4. **FALLBACK (LOW)**: Category match if no job matches
-
-**When matching this £${expenseAmount.toFixed(2)} expense:**
-
-1. Expense details to match:
-   - Vendor: "${expenseDescription}"
-   - Category: "${expenseAccountName}"
-   - Amount: £${expenseAmount.toFixed(2)}
-
-2. For EACH job in Confirmed tab:
-   - Check for PLACEHOLDER matching this vendor (strongest signal)
-   - Check for REMAINING budget >= £${expenseAmount.toFixed(2)} (must fit)
-   - Check if job type matches vendor type
-   - Report: Budget → Allocated → Remaining calculation
-
-3. IMPORTANT: Only subtract ALLOCATED expenses when calculating remaining budget
-   - Placeholder expenses don't count against remaining (they're pending)
-   - But a matching placeholder = PERFECT MATCH signal
-
-**Your Task:**
-1. Determine: JOB-SPECIFIC EXPENSE (direct costs) or GENERAL OPERATIONAL expense?
-2. Find jobs that match PLACEHOLDER vendors, or have sufficient remaining budget + vendor match
-3. For EACH option you suggest: Show Budget → Allocated → Remaining in facts
-4. For recommendedActions: Generate EXACT cell update instructions for the allocation
-5. RANK BY: (1) Placeholder match + remaining budget, (2) Vendor match + remaining budget, (3) Category fallback
-6. Suggest 3 GENUINELY DIFFERENT options, properly ranked
-
-**CRITICAL: For recommendedActions, provide exact cell coordinates and values for job allocations:**
-
-**Cell Column Reference for Direct Cost Expense Slots:**
-- Slot 1: BX-CD (columns 75-81)
-  * BX (75): Description
-  * BY (76): Amount
-  * BZ (77): VAT? (Write "Yes" if VAT amount from DirComp column I > 0, write "No" if VAT amount is 0 or blank)
-  * CA (78): Date (Rec Date from DirComp column A)
-  * CB (79): Days to pay (calculated as: if "Date Paid" exists in DirComp column H, use Date Paid - Rec Date; otherwise default to 30)
-  * CC (80): Status (from DirComp column F - Status)
-  * CD (81): Transaction ID (from DirComp column G - Transaction ID)
-
-- Slot 2: CE-CK (columns 82-88)
-  * CE (82): Description
-  * CF (83): Amount
-  * CG (84): VAT? (Write "Yes" if VAT amount > 0, write "No" if VAT amount is 0 or blank)
-  * CH (85): Date (Rec Date from DirComp column A)
-  * CI (86): Days to pay (calculated from DirComp columns A and H)
-  * CJ (87): Status (from DirComp column F)
-  * CK (88): Transaction ID (from DirComp column G)
-
-- Slot 3: CL-CR (columns 89-95)
-  * CL (89): Description
-  * CM (90): Amount
-  * CN (91): VAT? (Write "Yes" if VAT amount > 0, write "No" if VAT amount is 0 or blank)
-  * CO (92): Date (Rec Date from DirComp column A)
-  * CP (93): Days to pay (calculated from DirComp columns A and H)
-  * CQ (94): Status (from DirComp column F)
-  * CR (95): Transaction ID (from DirComp column G)
-
-**Example format:**
-"Insert expense into Slot 1, Row 232, PHIZZ LTD Development Project (Confirmed tab): Write Craig Niven T/A FILDI to BX232, write 995 to BY232, write Yes to BZ232 (VAT amount is £199, so Yes), write 10-Mar-26 to CA232, write 14 to CB232 (days between 10-Mar and 24-Mar), write Paid to CC232, write 415e873d-23fd-48f5-8a80-d671d6315eae to CD232"
-
-Format as JSON array. FOR EACH OPTION, you MUST show complete allocation details:
-
+Format as JSON array:
 [{
   "optionId": 1,
   "title": "Match to [Job Name or Category] - [reason]",
   "matchType": "job" or "category",
   "jobRow": 52,
-  "jobName": "Job Name (if job match)",
-  "category": "Category Name (if category match — must exactly match the category name in the Outgoings tab)",
+  "jobName": "Job Name (if job match — use the PARENT row number)",
+  "category": "Category Name (if category match — must exactly match Outgoings tab col A)",
   "allocationBreakdown": {
-    "jobDirectCostBudget": "£1,995",
-    "allocatedExpenses": [
-      "Slot 2: Onelink Media Ltd - £1,000.00 - 23-Jan-26 - (has valid App ID: yes)"
-    ],
-    "totalAllocated": "£1,000.00",
-    "placeholderExpenses": [
-      "Slot 1: Craig Niven - £995.00 - 10-Mar-26 - (NO App ID - placeholder)"
-    ],
-    "remainingBudget": "£995.00",
-    "expenseCanFit": "YES - £995.00 matches remaining budget"
+    "parentRow": 85,
+    "jobDirectCostBudget": "£20,607",
+    "allocatedExpenses": ["Sonar Systems Nov £1,050 (Row 86 ExpSlot1)", "Sonar Systems Dec £6,737.50 (Row 86 ExpSlot2)"],
+    "totalAllocated": "£7,787.50",
+    "remainingBudget": "£12,819.50",
+    "expenseCanFit": "YES"
   },
   "matchAnalysis": {
     "matchConfidence": "High/Medium/Low",
-    "vendorAnalysis": "Craig Niven T/A FILDI matches placeholder 'Craig Niven'",
-    "placeholderMatch": "YES - Row 232 has placeholder 'Craig Niven - £995.00'",
-    "budgetFit": "YES - £995.00 fits in remaining £995.00",
-    "reasonForChoice": "Exact placeholder match on vendor, amount, and remaining budget",
-    "discrepancies": "None"
+    "vendorAnalysis": "brief factual note",
+    "placeholderMatch": "YES/NO",
+    "budgetFit": "YES/NO",
+    "reasonForChoice": "brief factual reason",
+    "discrepancies": "any concerns"
   },
   "outgoingsData": {
-    "ONLY INCLUDE THIS FIELD if matchType is 'category'. Leave out entirely for job matches.",
-    "categoryName": "Exact category name from Outgoings col A (e.g. 'Accountancy fees')",
-    "expenseMonth": "YYYY-MM (e.g. '2026-03') — derived from the expense date",
-    "transactionId": "Transaction ID from DirComp column G",
+    "NOTE": "ONLY INCLUDE if matchType is category. Omit entirely for job matches.",
+    "categoryName": "exact category name from Outgoings col A",
+    "expenseMonth": "YYYY-MM",
+    "transactionId": "from DirComp col G",
     "amount": 995,
-    "description": "Full vendor/description string",
-    "status": "Status value from DirComp column F",
-    "recDate": "dd-Mon-yy (e.g. '10-Mar-26') — Rec date from DirComp column A",
-    "payDate": "dd-Mon-yy (e.g. '24-Mar-26') — Date Paid from DirComp column H, or blank if not paid"
+    "description": "vendor/description string",
+    "status": "from DirComp col F",
+    "recDate": "dd-Mon-yy from DirComp col A",
+    "payDate": "dd-Mon-yy from DirComp col H, or blank"
   },
   "recommendedActions": [
-    "For job match: 'Insert expense into Slot X, Row Y, Job Name (Confirmed tab)'",
-    "For category match: 'Add expense to [Category Name] row in Outgoings tab for [Month]'",
-    "For job match only — second line with exact cell writes: 'Write Craig Niven T/A FILDI to BX232, write 995 to BY232...'"
+    "For job match: plain English summary e.g. 'Allocate expense to Row 87 ExpSlot1 of GC: CMS RePlatform job'",
+    "For job match: exact cell writes e.g. 'Write Sonar Systems to BX87, write 12862.50 to BY87, write No to BZ87, write 4-Feb-26 to CA87, write 30 to CB87, write Paid to CC87, write 22c5892e-uuid to CD87'",
+    "For category match: 1 item only — plain English summary. Backend handles the write."
   ]
 }]
 
-CRITICAL REQUIREMENTS FOR EVERY OPTION:
-1. ALWAYS include complete allocationBreakdown
-2. In matchAnalysis, keep descriptions SHORT and factual only
-3. For job matches (matchType: "job"):
-   - recommendedActions must have EXACTLY 2 items: plain English summary, then exact cell writes
-   - Use the Confirmed tab column reference above for exact cell coordinates
-4. For category matches (matchType: "category"):
-   - MUST include the "outgoingsData" field with ALL sub-fields populated
-   - recommendedActions needs only 1 item: plain English summary (e.g. "Add £995 to Accountancy fees in Outgoings for Mar-26")
-   - The backend will handle the actual cell write using outgoingsData — do NOT provide cell coordinates
-   - "categoryName" must exactly match a category from the OUTGOINGS CATEGORIES list above
-5. For VAT?: Write "Yes" if DirComp column I (VAT amount) > 0, write "No" if DirComp column I is 0 or blank
-6. For Status: Use value from DirComp column F (Status column)
-7. For Transaction ID: Use DirComp column G (Transaction ID column, NOT Reference column D)
-8. Rank options by: (1) Perfect placeholder match, (2) Sufficient budget + vendor match, (3) Category fallback
+REQUIREMENTS:
+1. For job matches: recommendedActions has exactly 2 items (summary + cell writes). Use the actual row number from the data (could be a child row).
+2. For category matches: include outgoingsData field; recommendedActions has 1 item only.
+3. VAT?: "Yes" if DirComp col I (VAT amount) > 0, else "No"
+4. Status: from DirComp col F. Transaction ID: from DirComp col G (NOT col D).
+5. jobRow in the JSON = the PARENT row number (for display). Cell writes use the actual slot row.
 
 Return ONLY JSON, no other text.`;
 
-          // Log prompt summary before sending to Claude
-          console.log(`\n📤 EXPENSE PROMPT TO CLAUDE:`);
-          console.log(`  Vendor/Description: ${expenseDescription}`);
-          console.log(`  Amount: £${expenseAmount}`);
-          console.log(`  Account Category: ${expenseAccountName}`);
-          console.log(`  Confirmed jobs with direct costs: ${confirmedJobs.length}`);
+          console.log(`\n📤 EXPENSE PROMPT TO CLAUDE: ${expenseDescription} £${expenseAmount}`);
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
             max_tokens: 1500,
-            messages: [
-              { role: "user", content: expensePrompt }
-            ],
+            messages: [{ role: "user", content: expensePrompt }],
           });
 
           let options = [];
           const responseText = message.content[0].type === "text" ? message.content[0].text : "";
-          
-          const cleanedText = responseText
-            .replace(/```json/g, "")
-            .replace(/```/g, "")
-            .trim();
-          
+          const cleanedText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
+
           try {
             options = JSON.parse(cleanedText);
             if (!Array.isArray(options)) options = [options];
@@ -2097,6 +1951,7 @@ UNMATCHED CRM JOB:
 
 EXISTING JOBS IN ${tabName.toUpperCase()} TAB:
 ${existingJobs.join("\n")}
+${SHEET_STRUCTURE_BLOCK}
 
 MATCHING RULES & KNOWLEDGE BASE:
 ${kbRules || "- Default matching rules apply"}
@@ -2408,18 +2263,7 @@ ${confirmedTabTable}
 MATCHING RULES & TOLERANCES:
 ${kbRules || "- Default matching rules apply"}
 - Date tolerance: ±${tolerances.invoiceMonthsTolerance} months
-
-CRITICAL INFORMATION ABOUT THE SHEET STRUCTURE:
-
-**Understanding Parent and Child Rows:**
-Each job in the Confirmed tab may have:
-- ONE PARENT ROW: Contains the job's basic information (Client, Job name, Revenue, Start date, End date)
-- ZERO OR MORE CHILD ROWS: Same Client and Job name as parent, but NO Revenue/Start/End date
-
-**How Invoices Are Organised:**
-PROJECT JOBS: Parent row has invoices 1-3. Child row 1 (if exists) has invoices 4-6, etc.
-RETAINER JOBS (Mode A): Parent row has 1 invoice in slot 1 only.
-RETAINER JOBS (Mode B): Parent row has NO invoices; each child row has 1 invoice in slot 1.
+${SHEET_STRUCTURE_BLOCK}
 
 **Invoice Slot Column Reference (Confirmed tab):**
 | Slot | Amount | Reference | Sent Date | Days to Pay | Status |

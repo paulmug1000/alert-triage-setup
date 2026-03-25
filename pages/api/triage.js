@@ -2724,23 +2724,32 @@ Return ONLY JSON, no other text.`;
         for (const tabName of monthTabNames) {
           if (foundClear) break;
           try {
+            // Use UNFORMATTED_VALUE to get raw serial numbers for dates (col A)
+            // This avoids locale-dependent date string parsing (e.g. "8/1/2026" being
+            // ambiguous between Jan 8 and Aug 1 depending on locale)
             const logResp = await sheets.spreadsheets.values.get({
               spreadsheetId: acIdClean,
               range: `${tabName}!A3:BP5000`,
+              valueRenderOption: "UNFORMATTED_VALUE",
             });
             const logRows = logResp.data.values || [];
-            // Search newest-first: rows in the tab are chronological, so iterate in reverse
+            // Helper: convert Sheets serial number to JS Date
+            // Sheets epoch: Dec 30 1899. Serial 1 = Jan 1 1900.
+            const serialToDate = (serial) => {
+              if (!serial || typeof serial !== 'number') return null;
+              return new Date((serial - 25569) * 86400 * 1000);
+            };
+            // Search newest-first
             for (let i = logRows.length - 1; i >= 0; i--) {
               const row = logRows[i];
               const rowClient = String(row[1] || "").trim(); // col B = client name
               if (rowClient !== clientName.trim()) continue;
-              // Check if any clear column = TRUE
               const wasCleared = clearCols.some(colIdx => {
                 const val = row[colIdx];
                 return val && String(val).toUpperCase() === "TRUE";
               });
               if (wasCleared) {
-                const ts = row[0] ? new Date(row[0]) : null;
+                const ts = serialToDate(row[0]);
                 if (ts && !isNaN(ts.getTime())) {
                   windowStart = ts;
                   foundClear = true;

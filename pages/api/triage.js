@@ -2951,17 +2951,12 @@ Return ONLY JSON, no other text.`;
           }
 
         } else if (flagType === "retainerInvoicesCreated") {
-          // AutoLog Details format for retainer creation:
-          // "[Retainers] Created sets for N jobs:\nRow N, ClientName, JobName: Added X invoice rows"
-          // or: "Created N Retainer Sets for new jobs:\nRow N, ClientName, JobName: Added X invoice rows"
           // All retainer creation entries in the window since the flag was last cleared
           const retainerLogEntries = autoLogRows.filter(row => {
             const details = String(row[3] || "");
             return details.includes("Retainer") && details.includes("Added") && details.includes("invoice rows");
           });
           console.log(`  ✓ Found ${retainerLogEntries.length} retainer creation entries in window`);
-
-          const affectedRetainerJobs = [];
 
           if (retainerLogEntries.length === 0) {
             results.push({
@@ -2970,6 +2965,7 @@ Return ONLY JSON, no other text.`;
             });
           } else {
             // Parse all entries in the window
+            const affectedRetainerJobs = [];
             for (const entry of retainerLogEntries) {
               const details = String(entry[3] || "");
               const retainerJobPattern = /Row\s+(\d+),\s+[^,]+,\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
@@ -2979,25 +2975,20 @@ Return ONLY JSON, no other text.`;
               }
             }
             // Deduplicate by sheetRow
-            const seen = new Set();
-            const deduped = affectedRetainerJobs.filter(j => { if (seen.has(j.sheetRow)) return false; seen.add(j.sheetRow); return true; });
-            affectedRetainerJobs.length = 0;
-            affectedRetainerJobs.push(...deduped);
-            console.log(`  ✓ Parsed ${affectedRetainerJobs.length} affected retainer jobs`);
+            const seenRows = new Set();
+            const dedupedJobs = affectedRetainerJobs.filter(j => { if (seenRows.has(j.sheetRow)) return false; seenRows.add(j.sheetRow); return true; });
+            console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs`);
 
-          console.log(`  ✓ Parsed ${affectedRetainerJobs.length} affected retainer jobs: ${JSON.stringify(affectedRetainerJobs)}`);
+            // Read Confirmed tab
+            const retConfirmedResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetIdClean,
+              range: "Confirmed!A1:BH1000",
+            });
+            const retConfirmedRows = retConfirmedResp.data.values || [];
+            const retainerChecks = [];
 
-          // Read Confirmed tab
-          const confirmedResp = await sheets.spreadsheets.values.get({
-            spreadsheetId: clientSheetIdClean,
-            range: "Confirmed!A1:BH1000",
-          });
-          const confirmedRows = confirmedResp.data.values || [];
-          const retainerChecks = [];
-
-          for (const job of affectedRetainerJobs) {
-              // Find this job in the Confirmed tab by sheet row number
-              const parentRow = confirmedRows[job.sheetRow - 1] || [];
+            for (const job of dedupedJobs) {
+              const parentRow = retConfirmedRows[job.sheetRow - 1] || [];
               const clientN = String(parentRow[0] || "").trim();
               const jobName = String(parentRow[1] || "").trim();
               const projectCode = String(parentRow[2] || "").trim();
@@ -3015,15 +3006,15 @@ Return ONLY JSON, no other text.`;
 
               // Collect child rows
               const childRows = [];
-              let j = job.sheetRow; // next row after parent (0-indexed = sheetRow)
-              while (j < confirmedRows.length) {
-                const next = confirmedRows[j] || [];
+              let ci = job.sheetRow;
+              while (ci < retConfirmedRows.length) {
+                const next = retConfirmedRows[ci] || [];
                 const nc = String(next[0] || "").trim();
                 const nj = String(next[1] || "").trim();
                 if (nc === clientN && nj === jobName && !next[32] && !next[37]) {
-                  childRows.push({ row: next, sheetRow: j + 1 });
-                  j++;
-                } else if (nc || nj) { break; } else { j++; }
+                  childRows.push({ row: next, sheetRow: ci + 1 });
+                  ci++;
+                } else if (nc || nj) { break; } else { ci++; }
               }
 
               const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
@@ -3038,7 +3029,6 @@ Return ONLY JSON, no other text.`;
               };
               const startDate = parseDate(startRaw);
               const endDate = parseDate(endRaw);
-
               const checks = [];
 
               if (!startDate || !endDate) {
@@ -3049,7 +3039,6 @@ Return ONLY JSON, no other text.`;
                 continue;
               }
 
-              // Infer billing frequency from first child row invoice amount vs monthly revenue
               let periodMonths = 1;
               let periodLabel = "monthly";
               if (childRows.length > 0 && monthlyRevenue > 0) {
@@ -3095,12 +3084,12 @@ Return ONLY JSON, no other text.`;
                 status: durationOk && allHaveInvoice ? "ok" : "issue",
                 periodLabel, checks,
               });
-            } // end for each affectedRetainerJob
+            }
 
             results.push(...retainerChecks);
-        } // end retainerInvoicesCreated
+          }
 
-        const overallOk = results.every(r => r.status === "ok" || r.status === "info");
+                const overallOk = results.every(r => r.status === "ok" || r.status === "info");
         console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);
         return res.status(200).json({ success: true, flagType, results, overallOk });
 

@@ -2905,15 +2905,26 @@ Return ONLY JSON, no other text.`;
                   if (!ddOk) allOk = false;
                 }
 
-                // Secondary check: job exists in Confirmed at expected row
-                const confRow = confirmedRows[job.confirmedRow - 1] || [];
-                const confJobName = String(confRow[1] || "").trim();
-                const confExists = !!confRow[0] || !!confRow[1];
+                // Secondary check: job exists in Confirmed — search by job name (and project code if available)
+                // Row numbers are unreliable (rows can shift), so we match on col B (job name) and optionally col C (project code)
+                const pipelineProjectCode = pipelineJob?.projectCode || "";
+                let confirmedMatch = null;
+                for (const cr of confirmedRows) {
+                  const crJobName = String(cr[1] || "").trim();
+                  const crProjectCode = String(cr[2] || "").trim();
+                  if (crJobName === job.jobName) {
+                    // If we have a project code from Pipeline, also verify it matches
+                    if (pipelineProjectCode && crProjectCode && crProjectCode !== pipelineProjectCode) continue;
+                    confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: String(cr[0] || "").trim() };
+                    break;
+                  }
+                }
+                const confExists = confirmedMatch !== null;
                 checks.push({
                   ok: confExists,
                   message: confExists
-                    ? `✓ Confirmed tab Row ${job.confirmedRow}: exists ("${confJobName}")`
-                    : `✗ Confirmed tab Row ${job.confirmedRow}: row is empty — job may not have been created`,
+                    ? `✓ Confirmed tab: "${confirmedMatch.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""} found`
+                    : `✗ Confirmed tab: job "${job.jobName}" not found — copy may have failed`,
                 });
                 if (!confExists) allOk = false;
 

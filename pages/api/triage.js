@@ -2432,9 +2432,9 @@ RETAINER JOBS (Mode B): Parent row has NO invoices; each child row has 1 invoice
 A placeholder slot has an AMOUNT set but a BLANK reference (or a reference beginning with MANUAL-INV).
 - Blank-reference placeholders: Claude CAN adjust or clear these as part of recommendations
 - MANUAL-INV references (shown as [MANUAL ONLY]): These are managed by automation elsewhere — do NOT modify them
-- When proposing to place a new invoice in a slot that replaces one or more placeholders, you MUST account for the effect on total invoiced amount:
-  * If the new invoice covers the same value as multiple placeholders combined, clear the superseded placeholder slots
-  * "Clear a slot" means writing "" to all 5 fields of that slot (Amount, Reference, Sent Date, Days to Pay, Status)
+- CRITICAL RULE: After all recommended writes are applied, the total invoiced (sum of all non-MANUAL-ONLY slot amounts) must equal the job revenue, OR a documented gap must remain for automation to fill. It must NEVER exceed revenue.
+- "Clear a slot" means writing "" to all 5 fields of that slot (Amount, Reference, Sent Date, Days to Pay, Status)
+- When placing a new invoice causes the total to exceed revenue, clear blank-reference placeholder slots (starting from the last slot and working backwards) until the total balances
 
 **How to Calculate Total Invoiced and Remaining:**
 1. Find the job's parent row (has Revenue value)
@@ -2453,10 +2453,14 @@ A placeholder slot has an AMOUNT set but a BLANK reference (or a reference begin
 
 **IF MISSING INVOICE:**
 1. Find the job this invoice belongs to
-2. Identify the correct empty slot to place it in
-3. Check if any blank-reference placeholder slots exist for the same amount — if so, this invoice replaces them; clear the placeholder and fill the slot
-4. If a single invoice covers multiple placeholder amounts combined, fill one slot with the new invoice and clear the now-superseded placeholder slot(s)
-5. Write the invoice into the correct slot; include clears for any superseded placeholder slots
+2. Identify the correct empty or placeholder slot to place it in
+3. After placing the invoice, calculate the new total invoiced across ALL slots (excluding [MANUAL ONLY])
+4. Compare the new total to the job revenue:
+   - If new total > revenue: you MUST clear blank-reference placeholder slots until the total equals revenue. Work through the slots systematically — clear the lowest-priority placeholders first (later slots first). Include the clear writes in recommendedActions.
+   - If new total = revenue: clean — no further action needed
+   - If new total < revenue: a gap remains — note it but do NOT create new placeholders (automation handles this)
+5. ALWAYS show the full arithmetic in facts: slot-by-slot breakdown → current total → new total after placing invoice → new total after any clears → vs revenue
+6. The goal is: after all writes are applied, total invoiced = revenue (or a documented gap remains for automation to fill)
 
 **IF AMOUNT MISMATCH:**
 1. Find the existing slot containing this invoice reference (${invoiceRef}) in the Confirmed tab

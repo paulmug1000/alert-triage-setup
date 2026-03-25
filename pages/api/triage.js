@@ -1691,46 +1691,71 @@ BUDGET AND REVENUE:
               }
               ci = cj;
 
-              const numMonths = isRetainer ? jobRows.length : 1;
-              const totalBudget = budget * numMonths;
-
-              let totalAllocated = 0;
-              const slots = [];
-              for (const { row: r, sheetRow, isParent: isParentRow } of jobRows) {
-                for (let s = 0; s < slotColDefs.length; s++) {
-                  const { d, a, dt, id } = slotColDefs[s];
-                  const descr = String(r[d] || '').trim();
-                  const amt = r[a] !== undefined ? r[a] : '';
-                  const date = r[dt] || '';
-                  const appId = String(r[id] || '').trim();
-
-                  // For retainer jobs, parent row slots are NEVER write targets
-                  const isWritable = !(isRetainer && isParentRow);
-
-                  if (!descr && !amt) {
-                    if (isWritable) slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, empty: true, sheetRow, slotNum: s+1, isParentRow });
-                    continue;
+              if (isRetainer) {
+                // For retainers: each child row is an independent monthly budget unit.
+                // Parent row is never a write target. Show each child row separately.
+                for (const { row: cr, sheetRow: childSheetRow } of jobRows.filter(r => !r.isParent)) {
+                  let childAllocated = 0;
+                  const childSlots = [];
+                  for (let s = 0; s < slotColDefs.length; s++) {
+                    const { d, a, dt, id } = slotColDefs[s];
+                    const descr = String(cr[d] || '').trim();
+                    const amt = cr[a] !== undefined ? cr[a] : '';
+                    const date = cr[dt] || '';
+                    const appId = String(cr[id] || '').trim();
+                    if (!descr && !amt) {
+                      childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s+1}`, empty: true, sheetRow: childSheetRow, slotNum: s+1 });
+                      continue;
+                    }
+                    const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
+                    const isAllocated = !!(appId && !appId.toUpperCase().includes('MANUAL-ENTRY'));
+                    if (isAllocated) childAllocated += amtNum;
+                    childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s+1}`, descr, amt, date, appId, isAllocated, empty: false, sheetRow: childSheetRow, slotNum: s+1 });
                   }
-                  const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
-                  const isAllocated = !!(appId && !appId.toUpperCase().includes('MANUAL-ENTRY'));
-                  if (isAllocated) totalAllocated += amtNum;
-                  slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, descr, amt, date, appId, isAllocated, empty: false, sheetRow, slotNum: s+1, isParentRow });
+                  candidateJobs.push({
+                    parentRow: parentIdx + 1, parentClient, parentJob,
+                    projectCode: row[2] || '',
+                    revenue: cr[32] !== undefined ? cr[32] : '',
+                    projType, isRetainer: true,
+                    startDate: row[37] || '', endDate: row[38] || '',
+                    budget, totalBudget: budget,
+                    totalAllocated: childAllocated,
+                    remaining: budget - childAllocated,
+                    childSheetRow, slots: childSlots,
+                  });
                 }
+              } else {
+                // Project jobs: pool all slots across parent + child rows
+                let totalAllocated = 0;
+                const slots = [];
+                for (const { row: r, sheetRow } of jobRows) {
+                  for (let s = 0; s < slotColDefs.length; s++) {
+                    const { d, a, dt, id } = slotColDefs[s];
+                    const descr = String(r[d] || '').trim();
+                    const amt = r[a] !== undefined ? r[a] : '';
+                    const date = r[dt] || '';
+                    const appId = String(r[id] || '').trim();
+                    if (!descr && !amt) {
+                      slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, empty: true, sheetRow, slotNum: s+1 });
+                      continue;
+                    }
+                    const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
+                    const isAllocated = !!(appId && !appId.toUpperCase().includes('MANUAL-ENTRY'));
+                    if (isAllocated) totalAllocated += amtNum;
+                    slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, descr, amt, date, appId, isAllocated, empty: false, sheetRow, slotNum: s+1 });
+                  }
+                }
+                candidateJobs.push({
+                  parentRow: parentIdx + 1, parentClient, parentJob,
+                  projectCode: row[2] || '',
+                  revenue: row[32] !== undefined ? row[32] : '',
+                  projType, isRetainer: false,
+                  startDate: row[37] || '', endDate: row[38] || '',
+                  budget, totalBudget: budget,
+                  totalAllocated, remaining: budget - totalAllocated,
+                  slots,
+                });
               }
-
-              candidateJobs.push({
-                parentRow: parentIdx + 1,
-                parentClient, parentJob,
-                projectCode: row[2] || '',
-                revenue: row[32] !== undefined ? row[32] : '',
-                projType, isRetainer,
-                startDate: row[37] || '',
-                endDate: row[38] || '',
-                budget, numMonths, totalBudget,
-                totalAllocated,
-                remaining: totalBudget - totalAllocated,
-                slots,
-              });
             } else { ci++; }
           }
 
@@ -1738,14 +1763,14 @@ BUDGET AND REVENUE:
 
           const expenseConfirmedTabTable = candidateJobs.length > 0
             ? candidateJobs.map(job => {
-                const budgetStr = job.isRetainer
-                  ? `£${job.budget}/month × ${job.numMonths} months = £${job.totalBudget} total`
-                  : `£${job.budget}`;
+                const budgetStr = `£${job.budget}`;
                 const filled = job.slots.filter(s => !s.empty)
                   .map(s => `${s.label}: ${s.descr} £${s.amt} ${s.date} (${s.isAllocated ? 'allocated' : 'NO App ID - placeholder'})`)
                   .join(' | ') || 'none';
                 const empty = job.slots.filter(s => s.empty).map(s => s.label).join(', ') || 'none';
-                const retainerNote = job.isRetainer ? ` [RETAINER — parent row (${job.parentRow}) is NOT a write target; write only to child rows]` : '';
+                const retainerNote = job.isRetainer
+                  ? ` [RETAINER MONTH — child row ${job.childSheetRow}, budget is £${job.budget} for THIS month only, write to this row's slots]`
+                  : '';
                 return `ParentRow ${job.parentRow} | ${job.parentClient} | ${job.parentJob} | Code: ${job.projectCode} | Budget: ${budgetStr} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | Type: ${job.projType}${retainerNote} | ${job.startDate}→${job.endDate}\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
               }).join('\n\n')
             : '(no jobs with DirectCostBudget > £0)'

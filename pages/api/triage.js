@@ -1650,7 +1650,10 @@ BUDGET AND REVENUE:
           const expenseDate = alert.summary?.date || "";
           const expenseAccountName = alert.summary?.accountName || "";
           
-          console.log(`  📋 Expense details: Ref=${expenseRef}, Amount=${expenseAmount}, Description=${expenseDescription}, Account=${expenseAccountName}`);
+          // Compute VAT flag from actual data — don't let Claude guess
+          const vatAmountRaw = parseFloat(String(alert.summary?.vatAmount || '0').replace(/[£$€,]/g, '')) || 0;
+          const vatYesNo = vatAmountRaw > 0 ? 'Yes' : 'No';
+          console.log(`  VAT amount: ${vatAmountRaw}, vatYesNo: ${vatYesNo}`);
 
           // Backend pre-analysis: identify candidate jobs with DirectCostBudget > £0.
           // Claude cannot reliably scan 250 rows — we compute candidates in code
@@ -1692,9 +1695,30 @@ BUDGET AND REVENUE:
               ci = cj;
 
               if (isRetainer) {
-                // For retainers: each child row is an independent monthly budget unit.
-                // Parent row is never a write target. Show each child row separately.
+                // For retainers: each child row is an independent budget unit.
+                // The period covered by each child row is determined by comparing
+                // the child row's invoice amount to the parent's monthly revenue.
+                // e.g. if monthly revenue = £3,456 and child invoice = £10,368 → quarterly (×3)
+                const parentMonthlyRevenue = parseFloat(String(row[32] || '0').replace(/[£$€,\s]/g, '')) || 0;
+                const parentMonthlyBudget = budget; // budget on parent row = per-month direct cost
+
                 for (const { row: cr, sheetRow: childSheetRow } of jobRows.filter(r => !r.isParent)) {
+                  // Child invoice amount is in slot 1 amount column (index 41 = AP)
+                  const childInvoiceAmt = parseFloat(String(cr[41] || '0').replace(/[£$€,\s]/g, '')) || 0;
+                  // Determine period multiplier: how many months does this child row cover?
+                  let periodMultiplier = 1;
+                  if (parentMonthlyRevenue > 0 && childInvoiceAmt > 0) {
+                    const ratio = childInvoiceAmt / parentMonthlyRevenue;
+                    // Round to nearest integer — handles minor rounding differences
+                    periodMultiplier = Math.max(1, Math.round(ratio));
+                  }
+                  const childBudget = parentMonthlyBudget * periodMultiplier;
+                  const periodLabel = periodMultiplier === 1 ? 'monthly' :
+                    periodMultiplier === 3 ? 'quarterly' :
+                    periodMultiplier === 6 ? 'bi-annual' :
+                    periodMultiplier === 12 ? 'annual' :
+                    `${periodMultiplier}-month`;
+
                   let childAllocated = 0;
                   const childSlots = [];
                   for (let s = 0; s < slotColDefs.length; s++) {
@@ -1718,9 +1742,10 @@ BUDGET AND REVENUE:
                     revenue: cr[32] !== undefined ? cr[32] : '',
                     projType, isRetainer: true,
                     startDate: row[37] || '', endDate: row[38] || '',
-                    budget, totalBudget: budget,
+                    budget: childBudget, totalBudget: childBudget,
+                    periodMultiplier, periodLabel,
                     totalAllocated: childAllocated,
-                    remaining: budget - childAllocated,
+                    remaining: childBudget - childAllocated,
                     childSheetRow, slots: childSlots,
                   });
                 }
@@ -1768,7 +1793,10 @@ BUDGET AND REVENUE:
                   .join(' | ') || 'none';
                 const empty = job.slots.filter(s => s.empty).map(s => s.label).join(', ') || 'none';
                 if (job.isRetainer) {
-                  return `ChildRow ${job.childSheetRow} | ${job.parentClient} | ${job.parentJob} (retainer month) | Code: ${job.projectCode} | MonthlyBudget: £${job.budget} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | WRITE TARGET: Row ${job.childSheetRow} slots only\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
+                  const budgetLabel = job.periodMultiplier > 1
+                    ? `£${job.budget} (${job.periodLabel}: £${job.budget / job.periodMultiplier}/month × ${job.periodMultiplier} months)`
+                    : `£${job.budget} (monthly)`;
+                  return `ChildRow ${job.childSheetRow} | ${job.parentClient} | ${job.parentJob} (retainer ${job.periodLabel}) | Code: ${job.projectCode} | PeriodBudget: ${budgetLabel} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | WRITE TARGET: Row ${job.childSheetRow} slots only\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
                 }
                 return `ParentRow ${job.parentRow} | ${job.parentClient} | ${job.parentJob} | Code: ${job.projectCode} | Budget: £${job.budget} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | Type: ${job.projType} | ${job.startDate}→${job.endDate}\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
               }).join('\n\n')
@@ -1793,6 +1821,7 @@ UNMATCHED EXPENSE:
 • Date: ${expenseDate}
 • Account Category: ${expenseAccountName}
 • VAT Amount: ${alert.summary?.vatAmount || '£0'}
+• VAT field to write (BZ/CG/CN): ${vatYesNo} ← use this exact value, do not recalculate
 • Status: ${alert.summary?.status || '(unknown)'}
 • Transaction ID: ${alert.summary?.transactionId || '(unknown)'}
 
@@ -1840,7 +1869,8 @@ Option 3 (second-best job OR alternative): Next best job match, or if only one q
 CRITICAL — recommendedActions MUST be specific and actionable:
 For Confirmed tab job matches, provide EXACTLY 2 items:
   Item 1: Plain English — "Allocate expense to [Job Name] (Row [N]), [ExpSlotX]"
-  Item 2: Exact cell writes — "Write [Desc] to [COL][ROW], write [Amt] to [COL][ROW], write [VAT] to [COL][ROW], write [Date] to [COL][ROW], write [DaysToPay] to [COL][ROW], write [Status] to [COL][ROW], write [TransactionID] to [COL][ROW]"
+  Item 2: Exact cell writes — "Write [Desc] to [COL][ROW], write [Amt] to [COL][ROW], write ${vatYesNo} to [COL][ROW], write [Date] to [COL][ROW], write [DaysToPay] to [COL][ROW], write [Status] to [COL][ROW], write [TransactionID] to [COL][ROW]"
+  Note: The VAT field (BZ/CG/CN) must always be "${vatYesNo}" — this is pre-computed from the actual VAT amount.
 
 For Outgoings tab entries, provide EXACTLY 1 item:
   "Add £[amount] to [VendorName] row (Row [N]) in Outgoings tab for [Mon-YY]"
@@ -1881,7 +1911,7 @@ Format as JSON array:
     "status": "${alert.summary?.status || ''}",
     "recDate": "${expenseDate}",
     "payDate": "",
-    "vatCharged": "Yes or No based on VAT amount"
+    "vatCharged": "${vatYesNo}"
   },
   "recommendedActions": ["..."]
 }]

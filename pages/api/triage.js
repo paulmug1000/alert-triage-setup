@@ -2793,6 +2793,15 @@ Return ONLY JSON, no other text.`;
           // "Created New Confirmed Job:" is a DIFFERENT event — direct CRM→Confirmed sync, not a Pipeline copy
           const allCRMEntries = autoLogRows.filter(row => String(row[1] || "").toLowerCase().includes("crm"));
           console.log(`  ✓ ${allCRMEntries.length} CRM AutoLog entries total`);
+          // DIAGNOSTIC: show a sample of CRM Details strings to verify expected log format
+          const sampleWithCopy = allCRMEntries.filter(r => {
+            const d = String(r[3] || "");
+            return d.includes("Copied") || d.includes("Confirmed");
+          }).slice(0, 5);
+          console.log(`  📋 CRM entries mentioning "Copied" or "Confirmed" (${sampleWithCopy.length}):`);
+          for (const r of sampleWithCopy) {
+            console.log(`    [${r[0]}] Details="${String(r[3]||"").slice(0,300)}"`);
+          }
 
           // Find entries containing the relevant copy event
           const relevantEntries = allCRMEntries.filter(row => {

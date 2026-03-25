@@ -1873,8 +1873,11 @@ export default function TriageSystem({ onBack }) {
                               </div>
                             )}
                             {option.allocationBreakdown.expenseCanFit && (
-                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#059669" }}>
-                                ✓ {option.allocationBreakdown.expenseCanFit}
+                              <div style={{
+                                marginTop: "6px", fontSize: "13px",
+                                color: String(option.allocationBreakdown.expenseCanFit).toUpperCase().startsWith("YES") ? "#059669" : "#dc2626"
+                              }}>
+                                {String(option.allocationBreakdown.expenseCanFit).toUpperCase().startsWith("YES") ? "✓" : "✗"} {option.allocationBreakdown.expenseCanFit}
                               </div>
                             )}
                           </div>

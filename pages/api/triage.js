@@ -1686,11 +1686,13 @@ BUDGET AND REVENUE:
             .join('\n');
           
           // Build expense prompt with flat Confirmed tab data (same approach as invoices)
-          const expensePrompt = `You are analyzing an unmatched business expense. This expense could match either:
-1. An Outgoings budget category (for indirect/operational costs like office supplies, software, insurance)
-2. A Confirmed job's direct costs (for job-specific vendor expenses like contractors, subcontractors, freelancers, materials)
+          const expensePrompt = `You are analyzing an unmatched business expense and must suggest the best ways to record it.
 
-⚠️ CRITICAL: The "Client" field in the job list refers to END-CLIENTS (like "AH Technology", "National Renal Complement"), NOT the agency. The expense vendor/description will NOT match a client name.
+The expense could be either:
+1. A DIRECT COST for a specific client job — recorded in the Confirmed tab's expense slots
+2. A GENERAL OPERATIONAL expense — recorded as a new entry in the Outgoings tab under the appropriate category
+
+⚠️ CRITICAL: The "Client" field in job data refers to END-CLIENTS (e.g. "Marmoris Srl", "AH Technology"), NOT the agency itself. Do NOT try to match the expense vendor name against client names.
 
 UNMATCHED EXPENSE:
 • Reference: ${expenseRef}
@@ -1702,102 +1704,97 @@ UNMATCHED EXPENSE:
 • Status: ${alert.summary?.status || '(unknown)'}
 • Transaction ID: ${alert.summary?.transactionId || '(unknown)'}
 
-OUTGOINGS CATEGORIES (For General/Operational Expenses):
+OUTGOINGS CATEGORIES (each represents a running total row in the Outgoings tab):
 ${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
 
-CONFIRMED TAB DATA (All non-blank rows):
+CONFIRMED TAB DATA (All non-blank rows — shows all jobs and their expense slots):
 ${expenseConfirmedTabTable}
 ${SHEET_STRUCTURE_BLOCK}
 
-DIRECT COST EXPENSE SLOT DETAILS:
-Each row has 3 expense slots. Slot columns:
-- ExpSlot1: BX(desc) BY(amount) CA(date) CC(status) CD(appId)
-- ExpSlot2: CE(desc) CF(amount) CH(date) CJ(status) CK(appId)
-- ExpSlot3: CL(desc) CM(amount) CO(date) CQ(status) CR(appId)
+EXPENSE SLOT COLUMNS (same columns regardless of which row):
+- ExpSlot1: BX(Description) BY(Amount) BZ(VAT?) CA(Date) CB(DaysToPay) CC(Status) CD(TransactionID)
+- ExpSlot2: CE(Description) CF(Amount) CG(VAT?) CH(Date) CI(DaysToPay) CJ(Status) CK(TransactionID)
+- ExpSlot3: CL(Description) CM(Amount) CN(VAT?) CO(Date) CP(DaysToPay) CQ(Status) CR(TransactionID)
 (has valid App ID: yes) = allocated and finalised
-(NO App ID - placeholder) = pending assignment — these are a strong match signal
+(NO App ID - placeholder) = pending assignment — a placeholder whose vendor ≈ this expense = PERFECT MATCH
 
-REMAINING BUDGET CALCULATION:
-  Sum ALL allocated expense amounts across parent row AND all its child rows.
-  Remaining = parent's DirectCostBudget − total allocated (placeholders excluded).
-
-RANKING PRIORITY:
-1. PERFECT MATCH: Row has a placeholder whose vendor ≈ this expense's vendor
-2. STRONG MATCH: Sufficient remaining budget + matching vendor/scope
-3. MEDIUM MATCH: Remaining budget, less certain vendor match
-4. FALLBACK: Outgoings category match
-
-YOUR TASK:
-1. Determine: job-specific direct cost, or general operational expense?
-2. For job matches: identify the correct parent job (using budget/revenue from parent row), find the first empty ExpSlot across parent and child rows
-3. For each option: show Budget → Allocated → Remaining arithmetic
-4. Suggest 3 GENUINELY DIFFERENT options, ranked by priority above
+REMAINING BUDGET = parent's DirectCostBudget − sum of ALL allocated expenses (valid App ID) across parent AND child rows.
+Placeholder amounts do NOT reduce remaining budget — they represent planned but unconfirmed spend.
 
 MATCHING RULES:
 ${kbRules || "- Default matching rules apply"}
 
-**CRITICAL: For recommendedActions, provide exact cell coordinates:**
+YOUR ANALYSIS TASK:
+Step 1 — Check for job matches in the Confirmed tab:
+  - Look at EVERY job that has a DirectCostBudget > 0
+  - For each, check: (a) does any expense slot have a placeholder whose vendor ≈ "${expenseDescription}"? (b) is remaining budget >= £${expenseAmount.toFixed(2)}?
+  - A job with a matching placeholder is a PERFECT MATCH regardless of remaining budget
+  - A job with remaining budget and matching scope is a STRONG MATCH
+  - For job matches: find the first empty ExpSlot across parent and child rows for the write target
 
-Cell Column Reference for Direct Cost Expense Slots:
-- ExpSlot1: BX(75)Description, BY(76)Amount, BZ(77)VAT?, CA(78)Date, CB(79)DaysToPay, CC(80)Status, CD(81)TransactionID
-- ExpSlot2: CE(82)Description, CF(83)Amount, CG(84)VAT?, CH(85)Date, CI(86)DaysToPay, CJ(87)Status, CK(88)TransactionID
-- ExpSlot3: CL(89)Description, CM(90)Amount, CN(91)VAT?, CO(92)Date, CP(93)DaysToPay, CQ(94)Status, CR(95)TransactionID
+Step 2 — Check for Outgoings category matches:
+  - The Outgoings tab tracks running totals by category — adding this expense creates a new entry under that category
+  - This is appropriate for general operational expenses (contractors, software, office costs, etc.)
+  - The account category "${expenseAccountName}" is a strong signal — find the best matching Outgoings category
+  - Writing to Outgoings adds the amount to that category's running total and appends a note block
 
-Example: "Write Sonar Systems to BX87, write 12862.50 to BY87, write No to BZ87, write 4-Feb-26 to CA87, write 30 to CB87, write Paid to CC87, write 22c5892e-uuid to CD87"
+Step 3 — Suggest 3 GENUINELY DIFFERENT options, ranked:
+  1. Best job match (if any job has DirectCostBudget > 0 with placeholder match or sufficient remaining budget)
+  2. Next best job match OR best Outgoings category match
+  3. Alternative Outgoings category OR least likely job match
 
-**How to Evaluate Job Matches for Expenses:**
-The Confirmed tab above shows for each job:
-- DirectCostBudget: The total budget allocated to this job
-- Allocated: Expenses with confirmed App IDs (already assigned and finalized)
-- Placeholders (pending): Expenses waiting to be assigned (description indicates what work they represent)
+CRITICAL: Do NOT suggest allocating to a job that has DirectCostBudget = £0 or blank as a top option.
+CRITICAL: Always calculate and show the full arithmetic: Budget → Allocated → Remaining → Can this expense fit?
+
 Format as JSON array:
 [{
   "optionId": 1,
-  "title": "Match to [Job Name or Category] - [reason]",
+  "title": "Concise descriptive title",
   "matchType": "job" or "category",
   "jobRow": 52,
-  "jobName": "Job Name (if job match — use the PARENT row number)",
-  "category": "Category Name (if category match — must exactly match Outgoings tab col A)",
+  "jobName": "Job name (parent row number for display — only for job matches)",
+  "category": "Exact category name from Outgoings col A (only for category matches)",
   "allocationBreakdown": {
     "parentRow": 85,
     "jobDirectCostBudget": "£20,607",
-    "allocatedExpenses": ["Sonar Systems Nov £1,050 (Row 86 ExpSlot1)", "Sonar Systems Dec £6,737.50 (Row 86 ExpSlot2)"],
-    "totalAllocated": "£7,787.50",
-    "remainingBudget": "£12,819.50",
-    "expenseCanFit": "YES"
+    "allocatedExpenses": ["Vendor A £1,000 (Row 86 ExpSlot1 — valid App ID)", "Vendor B £500 (Row 86 ExpSlot2 — placeholder)"],
+    "totalAllocated": "£1,000",
+    "remainingBudget": "£19,607",
+    "expenseCanFit": "YES — £${expenseAmount.toFixed(2)} fits within remaining £19,607"
   },
   "matchAnalysis": {
     "matchConfidence": "High/Medium/Low",
-    "vendorAnalysis": "brief factual note",
-    "placeholderMatch": "YES/NO",
-    "budgetFit": "YES/NO",
-    "reasonForChoice": "brief factual reason",
-    "discrepancies": "any concerns"
+    "vendorAnalysis": "brief factual note on vendor match",
+    "placeholderMatch": "YES — Row 86 ExpSlot2 has placeholder matching vendor / NO",
+    "budgetFit": "YES / NO — explain",
+    "reasonForChoice": "one sentence factual reason",
+    "discrepancies": "any concerns, or None"
   },
   "outgoingsData": {
-    "NOTE": "ONLY INCLUDE if matchType is category. Omit entirely for job matches.",
+    "NOTE": "ONLY include this field for category matches. Omit entirely for job matches.",
     "categoryName": "exact category name from Outgoings col A",
-    "expenseMonth": "YYYY-MM",
+    "expenseMonth": "YYYY-MM derived from expense date",
     "transactionId": "from DirComp col G",
-    "amount": 995,
-    "description": "vendor/description string",
+    "amount": ${expenseAmount},
+    "description": "${expenseDescription}",
     "status": "from DirComp col F",
     "recDate": "dd-Mon-yy from DirComp col A",
-    "payDate": "dd-Mon-yy from DirComp col H, or blank"
+    "payDate": "dd-Mon-yy from DirComp col H, or blank if not paid"
   },
   "recommendedActions": [
-    "For job match: plain English summary e.g. 'Allocate expense to Row 87 ExpSlot1 of GC: CMS RePlatform job'",
-    "For job match: exact cell writes e.g. 'Write Sonar Systems to BX87, write 12862.50 to BY87, write No to BZ87, write 4-Feb-26 to CA87, write 30 to CB87, write Paid to CC87, write 22c5892e-uuid to CD87'",
-    "For category match: 1 item only — plain English summary. Backend handles the write."
+    "Job match item 1: plain English — e.g. 'Allocate expense to ExpSlot1 on Row 87 of GC: CMS RePlatform job'",
+    "Job match item 2: exact cell writes — e.g. 'Write Design FC Ltd to BX87, write 700.00 to BY87, write No to BZ87, write 19-Mar-26 to CA87, write 30 to CB87, write Paid to CC87, write f94efce7-uuid to CD87'",
+    "Category match: 1 item only — plain English summary e.g. 'Add £700 to Contractors category in Outgoings tab for Mar-26'"
   ]
 }]
 
 REQUIREMENTS:
-1. For job matches: recommendedActions has exactly 2 items (summary + cell writes). Use the actual row number from the data (could be a child row).
-2. For category matches: include outgoingsData field; recommendedActions has 1 item only.
-3. VAT?: "Yes" if DirComp col I (VAT amount) > 0, else "No"
-4. Status: from DirComp col F. Transaction ID: from DirComp col G (NOT col D).
-5. jobRow in the JSON = the PARENT row number (for display). Cell writes use the actual slot row.
+1. Job matches: recommendedActions has exactly 2 items (plain English summary + exact cell writes)
+2. Category matches: outgoingsData field required; recommendedActions has 1 item only
+3. VAT?: "Yes" if VAT amount > 0, else "No"
+4. Status: from DirComp col F. Transaction ID: from DirComp col G (NOT col D Reference)
+5. jobRow = PARENT row number for display. Cell write row = actual slot row (may be a child row)
+6. Never suggest a job with £0 or blank DirectCostBudget as the primary recommendation
 
 Return ONLY JSON, no other text.`;
 

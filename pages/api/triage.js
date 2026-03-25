@@ -1653,37 +1653,86 @@ BUDGET AND REVENUE:
           
           console.log(`  📋 Expense details: Ref=${expenseRef}, Amount=${expenseAmount}, Description=${expenseDescription}, Account=${expenseAccountName}`);
 
-          // Build flat row-by-row Confirmed tab table (same approach as invoices).
-          // Claude uses the structure rules in the prompt to reason about parent/child rows.
-          const expenseConfirmedTabTable = activeConfirmedData
-            .map((row, idx) => {
-              const client = row[0] || '';
-              const jobName = row[1] || '';
-              const projectCode = row[2] || '';
-              const revenue = row[32] !== undefined ? row[32] : '';
-              const directCostsBudget = row[33] !== undefined ? row[33] : '';
-              const projType = row[35] || '';
-              const startDate = row[37] || '';
-              const endDate = row[38] || '';
+          // Backend pre-analysis: identify candidate jobs with DirectCostBudget > £0.
+          // Claude cannot reliably scan 250 rows — we compute candidates in code
+          // and pass only those to Claude for qualitative ranking.
 
-              const formatExpSlot = (descCol, amtCol, dateCol, statusCol, idCol) => {
-                const descr = row[descCol] || '';
-                const amt = row[amtCol] !== undefined ? row[amtCol] : '';
-                const recDate = row[dateCol] || '';
-                const appId = row[idCol] || '';
-                if (!descr && !amt) return '(empty)';
-                const isAllocated = appId && !appId.toString().toUpperCase().includes('MANUAL-ENTRY');
-                const tag = isAllocated ? '(has valid App ID: yes)' : '(NO App ID - placeholder)';
-                return `${descr} - £${amt} - ${recDate} - ${tag}`;
-              };
+          const slotColDefs = [
+            { d: 75, a: 76, dt: 78, s: 80, id: 81 },
+            { d: 82, a: 83, dt: 85, s: 87, id: 88 },
+            { d: 89, a: 90, dt: 92, s: 94, id: 95 },
+          ];
 
-              const slot1 = formatExpSlot(75, 76, 78, 80, 81);
-              const slot2 = formatExpSlot(82, 83, 85, 87, 88);
-              const slot3 = formatExpSlot(89, 90, 92, 94, 95);
+          const candidateJobs = [];
+          let ci = 1;
+          while (ci < activeConfirmedData.length) {
+            const row = activeConfirmedData[ci] || [];
+            const budgetRaw = String(row[33] || '').replace(/[£$€,\s]/g, '');
+            const budget = parseFloat(budgetRaw) || 0;
 
-              return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | DirectCostBudget: ${directCostsBudget} | Revenue: ${revenue} | Type: ${projType} | Start: ${startDate} | End: ${endDate} | ExpSlot1: ${slot1} | ExpSlot2: ${slot2} | ExpSlot3: ${slot3}`;
-            })
-            .join('\n');
+            if (budget > 0) {
+              const parentIdx = ci;
+              const parentClient = String(row[0] || '').trim();
+              const parentJob = String(row[1] || '').trim();
+
+              // Collect parent + child rows for this job
+              const jobRows = [{ row, sheetRow: ci + 1 }];
+              let cj = ci + 1;
+              while (cj < activeConfirmedData.length) {
+                const next = activeConfirmedData[cj] || [];
+                const nc = String(next[0] || '').trim();
+                const nj = String(next[1] || '').trim();
+                const nb = String(next[33] || '').replace(/[£$€,\s]/g, '');
+                if (nc === parentClient && nj === parentJob && !next[32] && !parseFloat(nb) && !next[37]) {
+                  jobRows.push({ row: next, sheetRow: cj + 1 });
+                  cj++;
+                } else { break; }
+              }
+              ci = cj;
+
+              let totalAllocated = 0;
+              const slots = [];
+              for (const { row: r, sheetRow } of jobRows) {
+                for (let s = 0; s < slotColDefs.length; s++) {
+                  const { d, a, dt, id } = slotColDefs[s];
+                  const descr = String(r[d] || '').trim();
+                  const amt = r[a] !== undefined ? r[a] : '';
+                  const date = r[dt] || '';
+                  const appId = String(r[id] || '').trim();
+                  if (!descr && !amt) { slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, empty: true, sheetRow, slotNum: s+1 }); continue; }
+                  const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
+                  const isAllocated = !!(appId && !appId.toUpperCase().includes('MANUAL-ENTRY'));
+                  if (isAllocated) totalAllocated += amtNum;
+                  slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, descr, amt, date, appId, isAllocated, empty: false, sheetRow, slotNum: s+1 });
+                }
+              }
+
+              candidateJobs.push({
+                parentRow: parentIdx + 1,
+                parentClient, parentJob,
+                projectCode: row[2] || '',
+                revenue: row[32] !== undefined ? row[32] : '',
+                projType: row[35] || '',
+                startDate: row[37] || '',
+                endDate: row[38] || '',
+                budget, totalAllocated,
+                remaining: budget - totalAllocated,
+                slots,
+              });
+            } else { ci++; }
+          }
+
+          console.log(`  ✓ Found ${candidateJobs.length} jobs with DirectCostBudget > £0`);
+
+          const expenseConfirmedTabTable = candidateJobs.length > 0
+            ? candidateJobs.map(job => {
+                const filled = job.slots.filter(s => !s.empty)
+                  .map(s => `${s.label}: ${s.descr} £${s.amt} ${s.date} (${s.isAllocated ? 'allocated' : 'NO App ID - placeholder'})`)
+                  .join(' | ') || 'none';
+                const empty = job.slots.filter(s => s.empty).map(s => s.label).join(', ') || 'none';
+                return `ParentRow ${job.parentRow} | ${job.parentClient} | ${job.parentJob} | Code: ${job.projectCode} | Budget: £${job.budget} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | Type: ${job.projType} | ${job.startDate}→${job.endDate}\n  Filled: ${filled}\n  Empty slots: ${empty}`;
+              }).join('\n\n')
+            : '(no jobs with DirectCostBudget > £0)'
           
           // Build expense prompt with flat Confirmed tab data (same approach as invoices)
           const expensePrompt = `You are analyzing an unmatched business expense and must suggest the best ways to record it.
@@ -1716,24 +1765,14 @@ EXISTING VENDORS IN OUTGOINGS (rows 12-112, col A):
 ${outgoingsVendorList.length > 0 ? outgoingsVendorList.join('\n') : '(none found)'}
 ${firstBlankOutgoingsRow ? `First available blank row for new vendor: Row ${firstBlankOutgoingsRow}` : '(no blank rows available)'}
 
-CONFIRMED TAB DATA (All non-blank rows — shows all jobs and their expense slots):
+JOBS WITH DIRECT COST BUDGET (pre-analysed — only jobs with DirectCostBudget > £0):
 ${expenseConfirmedTabTable}
-${SHEET_STRUCTURE_BLOCK}
 
-UNDERSTANDING EXPENSE SLOTS IN THE CONFIRMED TAB:
-Each row has 3 expense slots (ExpSlot1, ExpSlot2, ExpSlot3). Each slot has:
-- Description, Amount, Date, Status, App ID (Transaction ID)
+Budget, Allocated, and Remaining are already calculated for you.
+Empty slots show the exact row and slot number to write to (use those exact row numbers in cell writes).
+Placeholders (NO App ID) = unconfirmed planned allocations. A placeholder whose description ≈ this vendor = PERFECT MATCH.
 
-PLACEHOLDER = a slot that has a Description and/or Amount BUT the App ID field is BLANK or contains "MANUAL-ENTRY".
-  → A placeholder whose Description ≈ the expense vendor is a PERFECT MATCH signal.
-  → Placeholders do NOT count as allocated — they represent planned but unconfirmed spend.
-
-ALLOCATED = a slot with a valid App ID (not blank, not MANUAL-ENTRY).
-  → These ARE counted against the budget.
-
-REMAINING BUDGET = parent's DirectCostBudget − sum of ALLOCATED slot amounts across parent AND all child rows.
-
-EXPENSE SLOT COLUMNS (same column letters for all rows):
+EXPENSE SLOT COLUMNS (same letters for all rows):
 - ExpSlot1: BX(Desc) BY(Amt) BZ(VAT?) CA(Date) CB(DaysToPay) CC(Status) CD(TransactionID)
 - ExpSlot2: CE(Desc) CF(Amt) CG(VAT?) CH(Date) CI(DaysToPay) CJ(Status) CK(TransactionID)
 - ExpSlot3: CL(Desc) CM(Amt) CN(VAT?) CO(Date) CP(DaysToPay) CQ(Status) CR(TransactionID)
@@ -1741,30 +1780,18 @@ EXPENSE SLOT COLUMNS (same column letters for all rows):
 MATCHING RULES:
 ${kbRules || "- Default matching rules apply"}
 
-YOUR ANALYSIS TASK:
-Step 1 — Find ALL jobs in the Confirmed tab with DirectCostBudget > £0:
-  List every such job. For each calculate:
-  - Total allocated = sum of all ExpSlot amounts with a valid App ID across parent AND child rows
-  - Remaining = DirectCostBudget − total allocated
-  - Check all ExpSlots for placeholders: does any placeholder description ≈ the VENDOR name "${expenseDescription.split('(')[0].trim()}"?
+YOUR TASK — suggest 3 GENUINELY DIFFERENT options:
 
-  Ranking within job matches:
-  1. PERFECT MATCH: placeholder description ≈ vendor name (regardless of budget)
-  2. STRONG MATCH: remaining budget >= £${expenseAmount.toFixed(2)} AND job scope suggests this vendor type
-  3. POSSIBLE MATCH: remaining budget >= £${expenseAmount.toFixed(2)}, less certain scope match
+Option 1 (best job match): Pick the job from the list above where:
+  - Remaining >= £${expenseAmount.toFixed(2)} OR a placeholder matches the vendor
+  - Prefer: exact placeholder match > largest remaining budget > most relevant job scope
+  - Write to the first empty slot for that job (use the exact row number shown)
 
-  ALWAYS include at least one job match if ANY job has DirectCostBudget > £0, even if no placeholder matches.
-  The vendor name to match is: "${expenseDescription.split('(')[0].trim()}" — ignore anything in brackets.
-
-Step 2 — Outgoings tab entry:
-  - Does "${expenseDescription.split('(')[0].trim()}" already exist in the vendor list above? Use that row.
-  - If not → use Row ${firstBlankOutgoingsRow || "next available blank"} as a new vendor entry
+Option 2 (Outgoings entry): Record in the Outgoings tab.
+  - Vendor "${expenseDescription.split('(')[0].trim()}" — use existing row if listed above, else Row ${firstBlankOutgoingsRow || "next blank"}
   - Account category "${expenseAccountName}" confirms this is a subcontractor expense
 
-Step 3 — Suggest 3 GENUINELY DIFFERENT options:
-  1. Best job match from Step 1 (must have DirectCostBudget > £0)
-  2. Outgoings tab entry for this vendor
-  3. Second-best job match OR alternative if only one job qualifies
+Option 3 (second-best job OR alternative): Next best job match, or if only one qualifies, explain why Outgoings is better
 
 CRITICAL — recommendedActions MUST be specific and actionable:
 For Confirmed tab job matches, provide EXACTLY 2 items:

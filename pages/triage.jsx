@@ -149,6 +149,52 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
+  // Manual refresh — skips precomputed cache and runs a live start_triage
+  const refreshTriage = async () => {
+    try {
+      setIsLoading(true);
+      setError("");
+      setAcceptError("");
+
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "start_triage",
+          automationCommanderSheetId,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setError(data.error || "Failed to refresh triage data");
+        return;
+      }
+
+      setSessionId(data.sessionId);
+      setTotalAlerts(data.totalAlerts || 0);
+      setNoActionCount(data.noActionCount || 0);
+      setClientsWithFlags(data.clientsWithFlags || []);
+      setProcessedAlerts(new Set());
+      setAcknowledgedNoAction(new Set());
+      setSelectedClient(null);
+      setClientAlerts([]);
+
+      if ((data.totalAlerts || 0) > 0) {
+        setScreen("clientSelection");
+      } else if ((data.noActionCount || 0) > 0) {
+        setShowNoAction(true);
+      } else {
+        setTriageComplete(true);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const startTriage = async () => {
     try {
       setIsLoading(true);
@@ -1227,7 +1273,7 @@ export default function TriageSystem({ onBack }) {
             })}
           </div>
 
-          <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #eee" }}>
+          <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <button
               onClick={() => {
                 setScreen("ignoredAlerts");
@@ -1236,6 +1282,18 @@ export default function TriageSystem({ onBack }) {
               style={styles.linkButton}
             >
               View ignored alerts →
+            </button>
+            <button
+              onClick={refreshTriage}
+              disabled={isLoading}
+              style={{
+                ...styles.buttonSecondary,
+                fontSize: "13px",
+                padding: "6px 14px",
+                opacity: isLoading ? 0.5 : 1,
+              }}
+            >
+              {isLoading ? "Refreshing..." : "↻ Refresh"}
             </button>
           </div>
         </div>

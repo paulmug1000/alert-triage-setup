@@ -1763,15 +1763,14 @@ BUDGET AND REVENUE:
 
           const expenseConfirmedTabTable = candidateJobs.length > 0
             ? candidateJobs.map(job => {
-                const budgetStr = `£${job.budget}`;
                 const filled = job.slots.filter(s => !s.empty)
                   .map(s => `${s.label}: ${s.descr} £${s.amt} ${s.date} (${s.isAllocated ? 'allocated' : 'NO App ID - placeholder'})`)
                   .join(' | ') || 'none';
                 const empty = job.slots.filter(s => s.empty).map(s => s.label).join(', ') || 'none';
-                const retainerNote = job.isRetainer
-                  ? ` [RETAINER MONTH — child row ${job.childSheetRow}, budget is £${job.budget} for THIS month only, write to this row's slots]`
-                  : '';
-                return `ParentRow ${job.parentRow} | ${job.parentClient} | ${job.parentJob} | Code: ${job.projectCode} | Budget: ${budgetStr} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | Type: ${job.projType}${retainerNote} | ${job.startDate}→${job.endDate}\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
+                if (job.isRetainer) {
+                  return `ChildRow ${job.childSheetRow} | ${job.parentClient} | ${job.parentJob} (retainer month) | Code: ${job.projectCode} | MonthlyBudget: £${job.budget} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | WRITE TARGET: Row ${job.childSheetRow} slots only\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
+                }
+                return `ParentRow ${job.parentRow} | ${job.parentClient} | ${job.parentJob} | Code: ${job.projectCode} | Budget: £${job.budget} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | Type: ${job.projType} | ${job.startDate}→${job.endDate}\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
               }).join('\n\n')
             : '(no jobs with DirectCostBudget > £0)'
           
@@ -1809,9 +1808,13 @@ ${firstBlankOutgoingsRow ? `First available blank row for new vendor: Row ${firs
 JOBS WITH DIRECT COST BUDGET (pre-analysed — only jobs with DirectCostBudget > £0):
 ${expenseConfirmedTabTable}
 
-Budget, Allocated, and Remaining are already calculated for you.
-Empty slots show the exact row and slot number to write to (use those exact row numbers in cell writes).
-Placeholders (NO App ID) = unconfirmed planned allocations. A placeholder whose description ≈ this vendor = PERFECT MATCH.
+Budget, Allocated, and Remaining are already calculated.
+Empty slots show the exact row and slot number to write to — use those exact row numbers in cell writes.
+Placeholders (NO App ID) = unconfirmed planned spend — a placeholder whose description ≈ this vendor = PERFECT MATCH.
+
+IMPORTANT — RETAINER ENTRIES: Lines starting with "ChildRow" are individual monthly retainer entries.
+Each is independent — its budget applies only to that specific row. Treat each ChildRow as a completely separate job.
+The jobRow in your JSON response for a ChildRow entry must be the ChildRow number, NOT the parent row number.
 
 EXPENSE SLOT COLUMNS (same letters for all rows):
 - ExpSlot1: BX(Desc) BY(Amt) BZ(VAT?) CA(Date) CB(DaysToPay) CC(Status) CD(TransactionID)

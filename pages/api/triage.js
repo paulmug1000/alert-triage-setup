@@ -741,13 +741,11 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
       }
     }
 
-    // Uncheck master switch when done
+    console.log(`  ✓ InvComp: ${alerts.length} alerts`);
     await setMasterSwitch(sheets, spreadsheetId, "InvComp", false);
-    console.log(`  ✓ InvComp: ${alerts.length} alerts, master switch reset`);
     return alerts;
   } catch (error) {
     console.error(`❌ Error reading InvComp alerts:`, error);
-    // Attempt to reset master switch even on error
     try { await setMasterSwitch(sheets, spreadsheetId, "InvComp", false); } catch (e) {}
     return [];
   }
@@ -798,9 +796,8 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
       }
     }
 
-    // Uncheck master switch when done
+    console.log(`  ✓ DirComp: ${alerts.length} alerts`);
     await setMasterSwitch(sheets, spreadsheetId, "DirComp", false);
-    console.log(`  ✓ DirComp: ${alerts.length} alerts, master switch reset`);
     return alerts;
   } catch (error) {
     console.error(`❌ Error reading DirComp alerts:`, error);
@@ -899,9 +896,7 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
       }
     }
 
-    console.log(`  ✓ CRMComp (${mode}): ${alerts.length} alerts, master switch reset`);
-
-    // Uncheck master switch when done
+    console.log(`  ✓ CRMComp (${mode}): ${alerts.length} alerts`);
     await setMasterSwitch(sheets, spreadsheetId, "CRMComp", false);
     return alerts;
   } catch (error) {
@@ -2292,9 +2287,15 @@ Return ONLY JSON, no other text.`;
               const sent = row[sentIdx] || '';
               const days = row[daysIdx] !== undefined ? row[daysIdx] : '';
               const stat = row[statusIdx] || '';
-              const label = ref.toString().toUpperCase().includes('MANUAL-INV')
-                ? `${ref} [MANUAL ONLY]` : ref;
               if (!ref && !amt) return '(empty)';
+              let label;
+              if (ref.toString().toUpperCase().includes('MANUAL-INV')) {
+                label = `${ref} [MANUAL ONLY]`;
+              } else if (!ref && amt) {
+                label = `[PLACEHOLDER — blank ref]`;
+              } else {
+                label = ref;
+              }
               return `${label} £${amt}${sent ? ' sent:' + sent : ''}${days ? ' days:' + days : ''}${stat ? ' status:' + stat : ''}`;
             };
 
@@ -2372,16 +2373,34 @@ Return ONLY JSON, no other text.`;
           }
         }
 
-        // Build Claude prompt with knowledge base and tolerances
-        const prompt = `You are a financial advisor helping to resolve an unmatched invoice. Analyze the invoice against the Confirmed tab data and suggest matching options.
+        // Determine which discrepancy types are present from InvComp flags (S:Y, indices 0-6)
+        // S(0)=missing invoice, T(1)=client mismatch, U(2)=amount mismatch,
+        // V(3)=sent date mismatch, X(5)=date paid mismatch, Y(6)=status mismatch
+        const invFlags = alert.data.flags || [];
+        const discrepancyTypes = [];
+        if (String(invFlags[0] || "").trim() === "1") discrepancyTypes.push("MISSING INVOICE — invoice exists in accounting but has no match in the Confirmed tab");
+        if (String(invFlags[1] || "").trim() === "1") discrepancyTypes.push("CLIENT MISMATCH — the client name on the invoice differs from the job");
+        if (String(invFlags[2] || "").trim() === "1") discrepancyTypes.push("AMOUNT MISMATCH — the invoice amount differs from what is recorded in the Confirmed tab");
+        if (String(invFlags[3] || "").trim() === "1") discrepancyTypes.push("SENT DATE MISMATCH — the sent date differs from what is recorded in the Confirmed tab");
+        if (String(invFlags[5] || "").trim() === "1") discrepancyTypes.push("DATE PAID MISMATCH — the date paid differs from what is recorded in the Confirmed tab");
+        if (String(invFlags[6] || "").trim() === "1") discrepancyTypes.push("STATUS MISMATCH — the status differs from what is recorded in the Confirmed tab");
+        const discrepancySummary = discrepancyTypes.length > 0
+          ? discrepancyTypes.join("\n• ")
+          : "UNSPECIFIED DISCREPANCY";
 
-UNMATCHED INVOICE:
+        // Build Claude prompt with knowledge base and tolerances
+        const prompt = `You are a financial advisor helping to resolve an invoice discrepancy. Analyze the invoice against the Confirmed tab data and suggest the best course of action.
+
+INVOICE DETAILS (from accounting system):
 • Reference: ${invoiceRef}
 • Amount: £${invoiceAmount.toFixed(2)}
 • Client: ${invoiceClient}
 • Job Description: ${invoiceJob}
 • Sent: ${sentDate}
 • Status: ${invoiceStatus}${datePaid ? `\n• Date Paid: ${datePaid}` : ''}
+
+DISCREPANCY TYPE(S) FLAGGED:
+• ${discrepancySummary}
 
 CONFIRMED TAB DATA (All non-blank rows):
 ${confirmedTabTable}
@@ -2393,78 +2412,102 @@ ${kbRules || "- Default matching rules apply"}
 CRITICAL INFORMATION ABOUT THE SHEET STRUCTURE:
 
 **Understanding Parent and Child Rows:**
-
 Each job in the Confirmed tab may have:
 - ONE PARENT ROW: Contains the job's basic information (Client, Job name, Revenue, Start date, End date)
-- ZERO OR MORE CHILD ROWS: Contain additional invoices. Child rows have the SAME Client name and Job name as their parent, but NO Revenue, Start date, or End date
+- ZERO OR MORE CHILD ROWS: Same Client and Job name as parent, but NO Revenue/Start/End date
 
-**How Invoices Are Organized (by job type):**
-
-PROJECT JOBS:
-- Parent row contains invoices 1-3 (Inv1-Inv3 columns)
-- Child row 1 (if exists) contains invoices 4-6
-- Child row 2 (if exists) contains invoices 7-9
-- Each row has 3 invoice slots
-
-RETAINER JOBS:
-- Mode A (1 invoice total): Parent row has 1 invoice in slot 1, no child rows
-- Mode B (2+ invoices): Parent row has NO invoices, each child row has 1 invoice in slot 1 only
+**How Invoices Are Organised:**
+PROJECT JOBS: Parent row has invoices 1-3. Child row 1 (if exists) has invoices 4-6, etc.
+RETAINER JOBS (Mode A): Parent row has 1 invoice in slot 1 only.
+RETAINER JOBS (Mode B): Parent row has NO invoices; each child row has 1 invoice in slot 1.
 
 **Invoice Slot Column Reference (Confirmed tab):**
-Each slot has 5 fields — use THESE EXACT column letters:
-
 | Slot | Amount | Reference | Sent Date | Days to Pay | Status |
 |------|--------|-----------|-----------|-------------|--------|
 |  1   |   AP   |    AQ     |    AR     |     AS      |   AT   |
 |  2   |   AW   |    AX     |    AY     |     AZ      |   BA   |
 |  3   |   BD   |    BE     |    BF     |     BG      |   BH   |
 
-**How to Calculate Remaining to Invoice:**
-1. Find the job's parent row (has Revenue)
-2. Find all child rows with same Client, same Job name, but no Revenue
-3. Sum all invoices from the parent AND all its children
-4. ONLY include invoices with real references (NOT marked [MANUAL ONLY])
-5. Invoices marked [MANUAL ONLY] are planned but not yet issued — exclude from totals
-6. Calculate: Remaining = Parent's Revenue - Total Invoiced Amount (excluding [MANUAL ONLY])
+**Placeholder invoices:**
+A placeholder slot has an AMOUNT set but a BLANK reference (or a reference beginning with MANUAL-INV).
+- Blank-reference placeholders: Claude CAN adjust or clear these as part of recommendations
+- MANUAL-INV references (shown as [MANUAL ONLY]): These are managed by automation elsewhere — do NOT modify them
+- When proposing to place a new invoice in a slot that replaces one or more placeholders, you MUST account for the effect on total invoiced amount:
+  * If the new invoice covers the same value as multiple placeholders combined, clear the superseded placeholder slots
+  * "Clear a slot" means writing "" to all 5 fields of that slot (Amount, Reference, Sent Date, Days to Pay, Status)
+
+**How to Calculate Total Invoiced and Remaining:**
+1. Find the job's parent row (has Revenue value)
+2. Find all child rows (same Client + Job name, no Revenue)
+3. Sum amounts across ALL slots on parent AND child rows
+4. EXCLUDE [MANUAL ONLY] slots from the total (they're planned but automation-managed)
+5. INCLUDE blank-reference placeholder amounts in the total (they represent planned invoices)
+6. Remaining to Invoice = Revenue − (sum of all non-MANUAL-ONLY invoice amounts)
 
 **Days to Pay value to use:** ${daysToPayValue}
 (${invoiceStatus.toLowerCase() === 'paid' && datePaid ? `Calculated from sent date ${sentDate} to paid date ${datePaid}` : `Default from DataChgAlert!B52`})
 
-**Your Task:**
-1. Identify which job (parent row) this invoice should match to
-2. For EACH option, provide facts: parent row, job name, type, revenue, dates, existing invoices, total invoiced, remaining, match status
-3. Suggest 3 GENUINELY DIFFERENT options: BEST MATCH, ALTERNATIVE MATCH, CREATE NEW JOB
+---
 
-**CRITICAL: recommendedActions must contain EXACTLY 2 items:**
+**YOUR TASK — depends on the discrepancy type(s) flagged above:**
 
-Item 1 — Plain English summary (one sentence):
-"Insert invoice [ref] to slot [N] of the [Job Name] job (row [R])"
+**IF MISSING INVOICE:**
+1. Find the job this invoice belongs to
+2. Identify the correct empty slot to place it in
+3. Check if any blank-reference placeholder slots exist for the same amount — if so, this invoice replaces them; clear the placeholder and fill the slot
+4. If a single invoice covers multiple placeholder amounts combined, fill one slot with the new invoice and clear the now-superseded placeholder slot(s)
+5. Write the invoice into the correct slot; include clears for any superseded placeholder slots
 
-Item 2 — Exact cell writes only, nothing else:
-"Write [amount] to [col][R] (amount), write [ref] to [col][R] (ref), write [sentDate] to [col][R] (sent date), write ${daysToPayValue} to [col][R] (days to pay), write [status] to [col][R] (status)"
+**IF AMOUNT MISMATCH:**
+1. Find the existing slot containing this invoice reference (${invoiceRef}) in the Confirmed tab
+2. Calculate what the NEW amount (£${invoiceAmount.toFixed(2)}) does to the total invoiced vs revenue:
+   - New total invoiced = (sum of all other slots) + £${invoiceAmount.toFixed(2)}
+   - Compare to job revenue
+3. If new total > revenue: This is the final invoice and the revenue needs updating. Suggest updating the amount AND flag a revenue increase. If another option exists, also suggest it.
+4. If new total < revenue: A gap is created. If blank-reference placeholders exist, suggest adjusting one to cover the gap. If no placeholders exist, note that the automation will handle creating a new placeholder — do NOT propose any placeholder creation yourself.
+5. If new total = revenue: Clean solution — just update the amount.
+6. Simply updating the amount: write the new amount to the correct cell (same slot, same row, just update the amount column)
+7. For the revenue increase option: also write the new revenue to column AG of the parent row
 
-Replace [col] with the correct column letter from the table above for the chosen slot.
-Do NOT include any other bullet points such as "Update project status" or "Mark as processed".
+**FOR ALL DISCREPANCY TYPES:**
+- Suggest 3 GENUINELY DIFFERENT options where possible
+- If only 1-2 meaningful options exist, don't invent extras
+- Always show the full arithmetic: current total invoiced → new total → vs revenue
+
+**CRITICAL: recommendedActions format:**
+
+Item 1 — Plain English summary (one sentence describing what will happen)
+
+Item 2 — Exact cell writes only:
+"Write [value] to [COL][ROW] ([field name]), write [value] to [COL][ROW] ([field name]), ..."
+- To CLEAR a slot field: write "" to [COL][ROW]
+- Include ALL writes including clears for superseded placeholders
+- For revenue updates: write [amount] to AG[parentRow] (revenue)
+
+Use EXACT column letters from the slot reference table above.
 
 Format as JSON array:
 [{
   "optionId": 1,
-  "title": "Match to [Job Name] - [reason]",
+  "title": "Brief descriptive title",
   "jobRow": 52,
   "jobName": "Job Name",
   "facts": {
-    "jobType": "Project",
+    "jobType": "Project or Retainer",
     "totalRevenue": 15950,
     "startDate": "3-Mar-26",
     "endDate": "31-Aug-26",
-    "existingInvoices": "0820 £7,975 (sent 12-Mar-26) + 0821 £5,725 (sent 20-Mar-26) = £13,700 (excludes any [MANUAL ONLY] invoices)",
-    "remainingToInvoice": 2250,
-    "invoiceMatchStatus": "EXACT MATCH",
-    "discrepancies": "Why it didn't auto-match"
+    "existingInvoices": "Description of all existing invoice slots including placeholders",
+    "currentTotalInvoiced": 13700,
+    "newTotalIfAccepted": 15950,
+    "remainingAfterAccepting": 0,
+    "invoiceMatchStatus": "EXACT MATCH / AMOUNT MISMATCH / etc",
+    "placeholderImpact": "Description of any placeholder slots being cleared or adjusted",
+    "revenueImpact": "No change / Suggest increasing revenue to X / Gap created — automation will handle"
   },
   "recommendedActions": [
-    "Insert invoice 0822 to slot 3 of the Natasha Allergy Research Foundation video job (row 52)",
-    "Write 2250 to BD52 (amount), write 0822 to BE52 (ref), write 20-Mar-26 to BF52 (sent date), write ${daysToPayValue} to BG52 (days to pay), write Sent to BH52 (status)"
+    "Plain English summary",
+    "Write [value] to [CELL] ([field]), write [value] to [CELL] ([field]), ..."
   ]
 }]
 
@@ -2591,7 +2634,7 @@ Return ONLY JSON, no other text.`;
               while ((match = regex.exec(actionString)) !== null) {
                 const value = match[1].trim();
                 const cell = match[2];
-                if (value && cell) {
+                if (cell) {  // allow empty string values — needed to clear placeholder slots
                   cellUpdates.push({ cell, value });
                 }
               }

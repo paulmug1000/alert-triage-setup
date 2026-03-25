@@ -2787,20 +2787,23 @@ Return ONLY JSON, no other text.`;
           const expectCopied = flagType === "crmCopiedConfChecked";
 
           // Read all CRM AutoLog entries — the Details field contains the full structured log
-          // "Copied Pipeline Project to Confirmed: ClientName | JobName"  ← standard copy
-          // "Copied Pipeline Project (with N child rows) to Confirmed: ClientName" ← copy with child rows
-          // These are the ONLY strings written when a Pipeline job is copied to Confirmed (line 387 of GAS).
-          // "Created New Confirmed Job:" is written for direct CRM→Confirmed sync (sourceSheetName='Confirmed')
-          // and should NOT be included here.
+          // The flag is raised when Pipeline col DD changes to 'Yes'.
+          // The GAS code writes this at line 293: "Copied Status: 'X' -> 'Yes'"
+          // as part of an "Updated Pipeline: Row N, Client | Job - ... Copied Status: ..." entry.
+          // "Copied Pipeline Project to Confirmed:" is only written if B82="yes" (auto-copy enabled).
+          // "Created New Confirmed Job:" is a direct Confirmed creation, unrelated to this flag.
           const allCRMEntries = autoLogRows.filter(row => String(row[1] || "").toLowerCase().includes("crm"));
           console.log(`  ✓ ${allCRMEntries.length} CRM AutoLog entries total`);
 
           const relevantEntries = allCRMEntries.filter(row => {
             const details = String(row[3] || "");
             if (expectCopied) {
-              return details.includes("Copied Pipeline Project to Confirmed:") ||
-                     details.includes("Copied Pipeline Project (with");
+              // Pipeline DD changed to Yes — the direct trigger for this flag
+              return details.includes("Copied Status:") && (
+                details.includes("-> 'Yes'") || details.includes("-> \"Yes\"")
+              );
             } else {
+              // Pipeline DD changed away from Yes
               return details.includes("Copied Status:") && (
                 details.includes("-> 'No'") || details.includes("-> \"No\"") ||
                 details.includes("Removed Confirmed Job:") || details.includes("Deleted Confirmed Job:")
@@ -2814,31 +2817,26 @@ Return ONLY JSON, no other text.`;
           if (expectCopied) {
             for (const entry of relevantEntries) {
               const details = String(entry[3] || "");
-              // "Copied Pipeline Project to Confirmed: ClientName | JobName"
-              const fmt1 = /Copied Pipeline Project to Confirmed:\s*([^|\n]+)\s*\|\s*([^\n]+)/gi;
-              let m;
-              while ((m = fmt1.exec(details)) !== null) {
-                const clientParsed = m[1].trim();
-                const jobName = m[2].trim();
-                if (jobName) affectedJobs.push({ jobName, clientParsed, logTimestamp: String(entry[0] || "") });
-              }
-              // "Copied Pipeline Project (with N child rows) to Confirmed: ClientName"
-              // No job name in this variant — client only
-              const fmt2 = /Copied Pipeline Project \(with \d+ child rows\) to Confirmed:\s*([^\n|]+)/gi;
-              while ((m = fmt2.exec(details)) !== null) {
-                const clientParsed = m[1].trim();
-                // Only add if fmt1 didn't already capture a job for this client
-                if (clientParsed && !affectedJobs.some(j => j.clientParsed === clientParsed)) {
-                  affectedJobs.push({ jobName: "", clientParsed, logTimestamp: String(entry[0] || "") });
+              // Format: "Updated Pipeline: Row N, ClientName | JobName - ... Copied Status: 'X' -> 'Yes'"
+              // We need to match the line that contains BOTH the job info AND the Copied Status change
+              const lines = details.split('\n');
+              for (const line of lines) {
+                if (!line.includes("Copied Status:")) continue;
+                if (!line.includes("-> 'Yes'") && !line.includes("-> \"Yes\"")) continue;
+                // Extract client | job from: "Updated Pipeline: Row N, ClientName | JobName - ..."
+                const jobMatch = line.match(/Row\s*\d+,\s*([^|]*)\|\s*([^-\n]+)/);
+                if (jobMatch) {
+                  const clientParsed = jobMatch[1].trim();
+                  const jobName = jobMatch[2].trim();
+                  if (jobName) affectedJobs.push({ jobName, clientParsed, logTimestamp: String(entry[0] || "") });
                 }
               }
             }
-            // Deduplicate by jobName (or clientParsed if no jobName)
+            // Deduplicate by jobName
             const seen = new Set();
             const deduped = affectedJobs.filter(j => {
-              const key = j.jobName || j.clientParsed;
-              if (seen.has(key)) return false;
-              seen.add(key);
+              if (seen.has(j.jobName)) return false;
+              seen.add(j.jobName);
               return true;
             });
             affectedJobs.length = 0;
@@ -3113,6 +3111,7 @@ Return ONLY JSON, no other text.`;
 
               retainerChecks.push({
                 jobName, clientName: clientN, projectCode,
+                parentSheetRow: job.sheetRow,
                 status: durationOk && allHaveInvoice ? "ok" : "issue",
                 periodLabel, checks,
               });

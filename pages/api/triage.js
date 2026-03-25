@@ -915,11 +915,11 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
 // ============================================================================
 
 async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
-  const { categoryName, expenseMonth, transactionId, amount, description, status, recDate, payDate } = outgoingsData;
+  const { categoryName, expenseMonth, transactionId, amount, description, status, recDate, payDate, vatCharged } = outgoingsData;
 
   console.log(`  📝 Writing Outgoings expense: ${categoryName} / ${expenseMonth} / £${amount}`);
 
-  // Read the full Outgoings sheet (values + notes)
+  // Read the full Outgoings sheet (values + notes) — wide enough to cover all monthly columns
   const sheetRange = "Outgoings!A1:AX500";
   const valuesResp = await sheets.spreadsheets.values.get({
     spreadsheetId: clientSheetId,
@@ -932,14 +932,11 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   const [targetYear, targetMonth] = expenseMonth.split("-").map(Number);
 
   // Find the column index whose header date matches the target month
-  // Header row is row 0 (1-indexed row 1). Dates are stored as strings from Sheets.
   const headerRow = rows[0];
   let targetColIndex = -1;
   for (let c = 0; c < headerRow.length; c++) {
     const headerVal = headerRow[c];
     if (!headerVal) continue;
-    // Sheets returns dates as strings like "2026-03-01T00:00:00.000Z" or "3/1/2026" etc.
-    // Try parsing as a date
     const parsed = new Date(headerVal);
     if (!isNaN(parsed.getTime())) {
       if (parsed.getFullYear() === targetYear && parsed.getMonth() + 1 === targetMonth) {
@@ -953,23 +950,35 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
     throw new Error(`Could not find column for month ${expenseMonth} in Outgoings header row`);
   }
 
-  // Find the row whose col A matches the category name (case-insensitive trim)
+  // Find the vendor row in the contractor section (rows 12-112, 0-indexed 11-111)
   const categoryLower = categoryName.toLowerCase().trim();
   let targetRowIndex = -1;
-  for (let r = 1; r < rows.length; r++) {
-    const rowCategoryName = String(rows[r][0] || "").toLowerCase().trim();
-    if (rowCategoryName === categoryLower) {
+  let firstBlankRowIndex = -1;
+
+  for (let r = 11; r <= Math.min(111, rows.length - 1); r++) {
+    const rowVendorName = String(rows[r][0] || "").toLowerCase().trim();
+    if (rowVendorName === categoryLower) {
       targetRowIndex = r;
       break;
     }
+    // Track first blank row (col A empty) as fallback for new vendors
+    if (!rowVendorName && firstBlankRowIndex === -1) {
+      firstBlankRowIndex = r;
+    }
   }
 
+  let isNewVendor = false;
   if (targetRowIndex === -1) {
-    throw new Error(`Could not find category row "${categoryName}" in Outgoings tab`);
+    // Vendor not found — use first blank row
+    if (firstBlankRowIndex === -1) {
+      throw new Error(`No existing row for "${categoryName}" and no blank rows available in contractor section (rows 12-112)`);
+    }
+    targetRowIndex = firstBlankRowIndex;
+    isNewVendor = true;
+    console.log(`  New vendor — using blank row ${targetRowIndex + 1}`);
   }
 
-  // Sheet row number and column letter (1-indexed)
-  const sheetRow = targetRowIndex + 1;
+  const sheetRow = targetRowIndex + 1; // 1-indexed
   const sheetCol = targetColIndex + 1;
 
   // Convert column index to A1 letter notation
@@ -985,10 +994,20 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   })();
 
   const cellA1 = `Outgoings!${colLetter}${sheetRow}`;
+  console.log(`  Target: row ${sheetRow} ("${categoryName}"), col ${colLetter} (month ${expenseMonth}), newVendor=${isNewVendor}`);
 
-  console.log(`  Found: row ${sheetRow} ("${categoryName}"), col ${colLetter} (month ${expenseMonth})`);
+  // If new vendor, write the fixed fields first (A=name, B=VAT, C=Next, D=Next, E=100%, F=100%)
+  if (isNewVendor) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: clientSheetId,
+      range: `Outgoings!A${sheetRow}:F${sheetRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [[categoryName, vatCharged || "No", "Next", "Next", "100%", "100%"]] },
+    });
+    console.log(`  ✅ New vendor row written: ${categoryName}`);
+  }
 
-  // Read existing cell value and note via batchGet so we get both
+  // Read existing cell value and note
   const cellResp = await sheets.spreadsheets.get({
     spreadsheetId: clientSheetId,
     ranges: [cellA1],
@@ -1004,16 +1023,11 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
 
   console.log(`  Existing cell value: ${existingValue}, note length: ${existingNote.length}`);
 
-  // Calculate new total value: add expense amount to existing
   const newValue = Math.round((existingValue + amount) * 100) / 100;
-
-  // Build the new App ID block in GAS format
   const newBlock = `{App ID: ${transactionId}}{Amt: ${amount}}{Status: ${status || ""}}{Rec date: ${recDate || ""}}{Pay date: ${payDate || ""}}{Description: ${description || ""}}`;
 
-  // Check if this transaction ID already exists in the note (idempotency)
   let newNote;
   if (existingNote.includes(`{App ID: ${transactionId}}`)) {
-    // Update existing block
     const escapedId = transactionId.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
     newNote = existingNote.replace(
       new RegExp(`\\{App ID: ${escapedId}\\}.*?(\\n|$)`, "s"),
@@ -1021,14 +1035,11 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
     ).trim();
     console.log(`  Updating existing App ID block for ${transactionId}`);
   } else {
-    // Append new block
-    newNote = existingNote
-      ? `${existingNote}\n\n${newBlock}`
-      : newBlock;
+    newNote = existingNote ? `${existingNote}\n\n${newBlock}` : newBlock;
     console.log(`  Appending new App ID block for ${transactionId}`);
   }
 
-  // Write value and note in one batchUpdate
+  // Write value
   await sheets.spreadsheets.values.update({
     spreadsheetId: clientSheetId,
     range: cellA1,
@@ -1037,7 +1048,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   });
   console.log(`  ✅ Value written: ${existingValue} → ${newValue}`);
 
-  // Notes require the batchUpdate spreadsheets (not values) API
+  // Write note
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: clientSheetId,
     requestBody: {
@@ -1050,11 +1061,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
             startColumnIndex: sheetCol - 1,
             endColumnIndex: sheetCol,
           },
-          rows: [{
-            values: [{
-              note: newNote,
-            }],
-          }],
+          rows: [{ values: [{ note: newNote }] }],
           fields: "note",
         },
       }],
@@ -1062,7 +1069,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   });
   console.log(`  ✅ Note written`);
 
-  return { sheetRow, colLetter, newValue, prevValue: existingValue };
+  return { sheetRow, colLetter, newValue, prevValue: existingValue, isNewVendor };
 }
 
 // Helper: get the numeric sheetId for a named tab
@@ -1555,34 +1562,26 @@ BUDGET AND REVENUE:
           
           const outgoingsResponse = await sheets.spreadsheets.values.get({
             spreadsheetId: alert.clientId,
-            range: "Outgoings!A1:Z500",
+            range: "Outgoings!A1:F112",
           });
-          
-          let outgoingsData = outgoingsResponse.data.values || [];
-          
-          // If we hit the 500 row limit, fetch more
-          if (outgoingsData.length === 500) {
-            console.log(`  Detected 500 rows, fetching full range...`);
-            const fullResponse = await sheets.spreadsheets.values.get({
-              spreadsheetId: alert.clientId,
-              range: "Outgoings!A1:Z5000",
-            });
-            outgoingsData = fullResponse.data.values || [];
-          }
-          
-          console.log(`  ✓ Loaded ${outgoingsData.length} rows from Outgoings`);
-          
-          // Find non-blank categories (skip header and empty rows)
-          const categories = [];
-          for (let i = 1; i < Math.min(outgoingsData.length, 100); i++) {
-            const row = outgoingsData[i] || [];
-            const category = String(row[0] || '').trim();
-            if (category && !category.includes('=') && category.length > 0) {
-              categories.push(category);
+          const outgoingsRows = outgoingsResponse.data.values || [];
+          console.log(`  ✓ Loaded ${outgoingsRows.length} rows from Outgoings (rows 1-112)`);
+
+          // Build vendor list for Claude — rows 12-112 are the contractor section
+          // Each row: A=vendorName, B=chargesVAT, C-F=defaults
+          // Blank rows (col A empty) = available slots for new vendors
+          const outgoingsVendorList = [];
+          let firstBlankOutgoingsRow = null;
+          for (let i = 11; i < Math.min(outgoingsRows.length, 112); i++) { // 0-indexed rows 11-111 = sheet rows 12-112
+            const vendorName = String(outgoingsRows[i]?.[0] || '').trim();
+            const chargesVAT = String(outgoingsRows[i]?.[1] || '').trim();
+            if (vendorName) {
+              outgoingsVendorList.push(`Row ${i + 1}: ${vendorName} (VAT: ${chargesVAT || 'unknown'})`);
+            } else if (firstBlankOutgoingsRow === null) {
+              firstBlankOutgoingsRow = i + 1; // 1-indexed sheet row
             }
           }
-          
-          console.log(`  ✓ Found ${categories.length} Outgoings categories`);
+          console.log(`  ✓ Found ${outgoingsVendorList.length} existing vendors, first blank row: ${firstBlankOutgoingsRow}`);
           
           // ALSO fetch Confirmed tab for job-based expense matching
           console.log(`  📊 Fetching Confirmed tab for job-based expense matching...`);
@@ -1689,10 +1688,10 @@ BUDGET AND REVENUE:
           const expensePrompt = `You are analyzing an unmatched business expense and must suggest the best ways to record it.
 
 The expense could be either:
-1. A DIRECT COST for a specific client job — recorded in the Confirmed tab's expense slots
-2. A GENERAL OPERATIONAL expense — recorded as a new entry in the Outgoings tab under the appropriate category
+1. A DIRECT COST for a specific client job — written into an expense slot on the Confirmed tab
+2. A CONTRACTOR EXPENSE recorded in the Outgoings tab — added to the vendor's row for the correct month
 
-⚠️ CRITICAL: The "Client" field in job data refers to END-CLIENTS (e.g. "Marmoris Srl", "AH Technology"), NOT the agency itself. Do NOT try to match the expense vendor name against client names.
+⚠️ CRITICAL: The "Client" field in job data refers to END-CLIENTS (e.g. "Marmoris Srl"), NOT the agency. Do NOT match expense vendor against client names.
 
 UNMATCHED EXPENSE:
 • Reference: ${expenseRef}
@@ -1704,97 +1703,105 @@ UNMATCHED EXPENSE:
 • Status: ${alert.summary?.status || '(unknown)'}
 • Transaction ID: ${alert.summary?.transactionId || '(unknown)'}
 
-OUTGOINGS CATEGORIES (each represents a running total row in the Outgoings tab):
-${categories.slice(0, 30).map((cat, idx) => `${idx + 1}. ${cat}`).join("\n")}
+OUTGOINGS TAB — CONTRACTOR SECTION (rows 12-112):
+The Outgoings tab tracks contractor expenses by vendor. Each row is one vendor.
+Column A = vendor name. The monthly columns accumulate the running total for that vendor.
+Writing to Outgoings means: find the vendor's row (or use first blank row for new vendors), add the amount to the correct month column, and append a note block.
+
+EXISTING VENDORS IN OUTGOINGS (rows 12-112, col A):
+${outgoingsVendorList.length > 0 ? outgoingsVendorList.join('\n') : '(none found)'}
+${firstBlankOutgoingsRow ? `First available blank row for new vendor: Row ${firstBlankOutgoingsRow}` : '(no blank rows available)'}
 
 CONFIRMED TAB DATA (All non-blank rows — shows all jobs and their expense slots):
 ${expenseConfirmedTabTable}
 ${SHEET_STRUCTURE_BLOCK}
 
-EXPENSE SLOT COLUMNS (same columns regardless of which row):
-- ExpSlot1: BX(Description) BY(Amount) BZ(VAT?) CA(Date) CB(DaysToPay) CC(Status) CD(TransactionID)
-- ExpSlot2: CE(Description) CF(Amount) CG(VAT?) CH(Date) CI(DaysToPay) CJ(Status) CK(TransactionID)
-- ExpSlot3: CL(Description) CM(Amount) CN(VAT?) CO(Date) CP(DaysToPay) CQ(Status) CR(TransactionID)
-(has valid App ID: yes) = allocated and finalised
-(NO App ID - placeholder) = pending assignment — a placeholder whose vendor ≈ this expense = PERFECT MATCH
+UNDERSTANDING EXPENSE SLOTS IN THE CONFIRMED TAB:
+Each row has 3 expense slots (ExpSlot1, ExpSlot2, ExpSlot3). Each slot has:
+- Description, Amount, Date, Status, App ID (Transaction ID)
 
-REMAINING BUDGET = parent's DirectCostBudget − sum of ALL allocated expenses (valid App ID) across parent AND child rows.
-Placeholder amounts do NOT reduce remaining budget — they represent planned but unconfirmed spend.
+PLACEHOLDER = a slot that has a Description and/or Amount BUT the App ID field is BLANK or contains "MANUAL-ENTRY".
+  → A placeholder whose Description ≈ the expense vendor is a PERFECT MATCH signal.
+  → Placeholders do NOT count as allocated — they represent planned but unconfirmed spend.
+
+ALLOCATED = a slot with a valid App ID (not blank, not MANUAL-ENTRY).
+  → These ARE counted against the budget.
+
+REMAINING BUDGET = parent's DirectCostBudget − sum of ALLOCATED slot amounts across parent AND all child rows.
+
+EXPENSE SLOT COLUMNS (same column letters for all rows):
+- ExpSlot1: BX(Desc) BY(Amt) BZ(VAT?) CA(Date) CB(DaysToPay) CC(Status) CD(TransactionID)
+- ExpSlot2: CE(Desc) CF(Amt) CG(VAT?) CH(Date) CI(DaysToPay) CJ(Status) CK(TransactionID)
+- ExpSlot3: CL(Desc) CM(Amt) CN(VAT?) CO(Date) CP(DaysToPay) CQ(Status) CR(TransactionID)
 
 MATCHING RULES:
 ${kbRules || "- Default matching rules apply"}
 
 YOUR ANALYSIS TASK:
-Step 1 — Check for job matches in the Confirmed tab:
-  - Look at EVERY job that has a DirectCostBudget > 0
-  - For each, check: (a) does any expense slot have a placeholder whose vendor ≈ "${expenseDescription}"? (b) is remaining budget >= £${expenseAmount.toFixed(2)}?
-  - A job with a matching placeholder is a PERFECT MATCH regardless of remaining budget
-  - A job with remaining budget and matching scope is a STRONG MATCH
-  - For job matches: find the first empty ExpSlot across parent and child rows for the write target
+Step 1 — Scan ALL jobs in the Confirmed tab with DirectCostBudget > £0:
+  - For each: check all expense slots (across parent AND child rows) for placeholders matching "${expenseDescription}"
+  - A matching placeholder = PERFECT MATCH (highest priority), even if remaining budget is £0
+  - Also check: does remaining budget >= £${expenseAmount.toFixed(2)}? If yes = STRONG MATCH
+  - NEVER suggest a job with DirectCostBudget = £0 or blank as a primary recommendation
 
-Step 2 — Check for Outgoings category matches:
-  - The Outgoings tab tracks running totals by category — adding this expense creates a new entry under that category
-  - This is appropriate for general operational expenses (contractors, software, office costs, etc.)
-  - The account category "${expenseAccountName}" is a strong signal — find the best matching Outgoings category
-  - Writing to Outgoings adds the amount to that category's running total and appends a note block
+Step 2 — Check Outgoings tab:
+  - Does "${expenseDescription}" already exist in the vendor list above? If yes → write to that row
+  - If not → write to Row ${firstBlankOutgoingsRow || "next available blank"} as a new vendor entry
+  - The account category "${expenseAccountName}" is a strong signal this belongs in Outgoings
 
-Step 3 — Suggest 3 GENUINELY DIFFERENT options, ranked:
-  1. Best job match (if any job has DirectCostBudget > 0 with placeholder match or sufficient remaining budget)
-  2. Next best job match OR best Outgoings category match
-  3. Alternative Outgoings category OR least likely job match
+Step 3 — Suggest 3 GENUINELY DIFFERENT options:
+  1. Best Confirmed tab job match (if any job has DirectCostBudget > £0 with placeholder or remaining budget)
+  2. Outgoings tab entry (existing vendor row or new vendor row)
+  3. Alternative job match OR alternative Outgoings category
 
-CRITICAL: Do NOT suggest allocating to a job that has DirectCostBudget = £0 or blank as a top option.
-CRITICAL: Always calculate and show the full arithmetic: Budget → Allocated → Remaining → Can this expense fit?
+CRITICAL — recommendedActions MUST be specific and actionable:
+For Confirmed tab job matches, provide EXACTLY 2 items:
+  Item 1: Plain English — "Allocate expense to [Job Name] (Row [N]), [ExpSlotX]"
+  Item 2: Exact cell writes — "Write [Desc] to [COL][ROW], write [Amt] to [COL][ROW], write [VAT] to [COL][ROW], write [Date] to [COL][ROW], write [DaysToPay] to [COL][ROW], write [Status] to [COL][ROW], write [TransactionID] to [COL][ROW]"
+
+For Outgoings tab entries, provide EXACTLY 1 item:
+  "Add £[amount] to [VendorName] row (Row [N]) in Outgoings tab for [Mon-YY]"
+  (The backend handles the actual cell write using outgoingsData)
 
 Format as JSON array:
 [{
   "optionId": 1,
-  "title": "Concise descriptive title",
+  "title": "Concise title",
   "matchType": "job" or "category",
-  "jobRow": 52,
-  "jobName": "Job name (parent row number for display — only for job matches)",
-  "category": "Exact category name from Outgoings col A (only for category matches)",
+  "jobRow": 85,
+  "jobName": "Job name (parent row — job matches only)",
+  "category": "Exact vendor name for Outgoings (category matches only)",
   "allocationBreakdown": {
     "parentRow": 85,
     "jobDirectCostBudget": "£20,607",
-    "allocatedExpenses": ["Vendor A £1,000 (Row 86 ExpSlot1 — valid App ID)", "Vendor B £500 (Row 86 ExpSlot2 — placeholder)"],
-    "totalAllocated": "£1,000",
-    "remainingBudget": "£19,607",
-    "expenseCanFit": "YES — £${expenseAmount.toFixed(2)} fits within remaining £19,607"
+    "allocatedExpenses": ["Vendor A £1,050 (Row 86 ExpSlot1 — valid App ID)", "Vendor B £6,737.50 (Row 86 ExpSlot2 — valid App ID)"],
+    "placeholderExpenses": ["Design FC Ltd £700 (Row 86 ExpSlot3 — NO App ID, placeholder)"],
+    "totalAllocated": "£7,787.50",
+    "remainingBudget": "£12,819.50",
+    "expenseCanFit": "YES — £${expenseAmount.toFixed(2)} fits within remaining £12,819.50"
   },
   "matchAnalysis": {
     "matchConfidence": "High/Medium/Low",
-    "vendorAnalysis": "brief factual note on vendor match",
-    "placeholderMatch": "YES — Row 86 ExpSlot2 has placeholder matching vendor / NO",
-    "budgetFit": "YES / NO — explain",
-    "reasonForChoice": "one sentence factual reason",
+    "vendorAnalysis": "brief factual note",
+    "placeholderMatch": "YES — Row 86 ExpSlot3 has placeholder matching vendor / NO",
+    "budgetFit": "YES / NO",
+    "reasonForChoice": "one sentence",
     "discrepancies": "any concerns, or None"
   },
   "outgoingsData": {
-    "NOTE": "ONLY include this field for category matches. Omit entirely for job matches.",
-    "categoryName": "exact category name from Outgoings col A",
-    "expenseMonth": "YYYY-MM derived from expense date",
-    "transactionId": "from DirComp col G",
+    "NOTE": "ONLY include for category matches. Omit entirely for job matches.",
+    "categoryName": "exact vendor name — must match Outgoings col A or be a new vendor name",
+    "expenseMonth": "YYYY-MM",
+    "transactionId": "${alert.summary?.transactionId || ''}",
     "amount": ${expenseAmount},
     "description": "${expenseDescription}",
-    "status": "from DirComp col F",
-    "recDate": "dd-Mon-yy from DirComp col A",
-    "payDate": "dd-Mon-yy from DirComp col H, or blank if not paid"
+    "status": "${alert.summary?.status || ''}",
+    "recDate": "${expenseDate}",
+    "payDate": "",
+    "vatCharged": "Yes or No based on VAT amount"
   },
-  "recommendedActions": [
-    "Job match item 1: plain English — e.g. 'Allocate expense to ExpSlot1 on Row 87 of GC: CMS RePlatform job'",
-    "Job match item 2: exact cell writes — e.g. 'Write Design FC Ltd to BX87, write 700.00 to BY87, write No to BZ87, write 19-Mar-26 to CA87, write 30 to CB87, write Paid to CC87, write f94efce7-uuid to CD87'",
-    "Category match: 1 item only — plain English summary e.g. 'Add £700 to Contractors category in Outgoings tab for Mar-26'"
-  ]
+  "recommendedActions": ["..."]
 }]
-
-REQUIREMENTS:
-1. Job matches: recommendedActions has exactly 2 items (plain English summary + exact cell writes)
-2. Category matches: outgoingsData field required; recommendedActions has 1 item only
-3. VAT?: "Yes" if VAT amount > 0, else "No"
-4. Status: from DirComp col F. Transaction ID: from DirComp col G (NOT col D Reference)
-5. jobRow = PARENT row number for display. Cell write row = actual slot row (may be a child row)
-6. Never suggest a job with £0 or blank DirectCostBudget as the primary recommendation
 
 Return ONLY JSON, no other text.`;
 

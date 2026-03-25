@@ -2729,7 +2729,7 @@ Return ONLY JSON, no other text.`;
             // ambiguous between Jan 8 and Aug 1 depending on locale)
             const logResp = await sheets.spreadsheets.values.get({
               spreadsheetId: acIdClean,
-              range: `${tabName}!A3:BP5000`,
+              range: `${tabName}!A3:BP30000`,
               valueRenderOption: "UNFORMATTED_VALUE",
             });
             const logRows = logResp.data.values || [];

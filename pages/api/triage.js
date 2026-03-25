@@ -2787,27 +2787,19 @@ Return ONLY JSON, no other text.`;
           const expectCopied = flagType === "crmCopiedConfChecked";
 
           // Read all CRM AutoLog entries — the Details field contains the full structured log
-          // "Copied Pipeline Project to Confirmed: ClientName | JobName"
-          // "Copied Pipeline Project (with N child rows) to Confirmed: ClientName"
-          // These are the log strings written when Pipeline DD is set to "Yes" (the copy event)
-          // "Created New Confirmed Job:" is a DIFFERENT event — direct CRM→Confirmed sync, not a Pipeline copy
+          // The actual log string written when a job is copied to Confirmed is:
+          // "Created New Confirmed Job: Row N, ClientName | JobName"
+          // (Note: the GAS script may use "Copied Pipeline Project to Confirmed:" in newer versions
+          //  but the deployed version uses "Created New Confirmed Job:")
           const allCRMEntries = autoLogRows.filter(row => String(row[1] || "").toLowerCase().includes("crm"));
           console.log(`  ✓ ${allCRMEntries.length} CRM AutoLog entries total`);
-          // DIAGNOSTIC: show a sample of CRM Details strings to verify expected log format
-          const sampleWithCopy = allCRMEntries.filter(r => {
-            const d = String(r[3] || "");
-            return d.includes("Copied") || d.includes("Confirmed");
-          }).slice(0, 5);
-          console.log(`  📋 CRM entries mentioning "Copied" or "Confirmed" (${sampleWithCopy.length}):`);
-          for (const r of sampleWithCopy) {
-            console.log(`    [${r[0]}] Details="${String(r[3]||"").slice(0,300)}"`);
-          }
 
           // Find entries containing the relevant copy event
           const relevantEntries = allCRMEntries.filter(row => {
             const details = String(row[3] || "");
             if (expectCopied) {
-              return details.includes("Copied Pipeline Project to Confirmed:") ||
+              return details.includes("Created New Confirmed Job:") ||
+                     details.includes("Copied Pipeline Project to Confirmed:") ||
                      details.includes("Copied Pipeline Project (with");
             } else {
               return details.includes("Copied Status:") && (
@@ -2821,36 +2813,29 @@ Return ONLY JSON, no other text.`;
           const affectedJobs = [];
 
           if (expectCopied) {
-            // Parse all copy events in the window
-            // Format 1: "Copied Pipeline Project to Confirmed: ClientName | JobName"
-            // Format 2: "Copied Pipeline Project (with N child rows) to Confirmed: ClientName"
-            //           (no job name in format 2 — client only)
             for (const entry of relevantEntries) {
               const details = String(entry[3] || "");
-              // Format 1: has client | jobName after "to Confirmed:"
-              const fmt1 = /Copied Pipeline Project(?:\s+\([^)]+\))?\s+to Confirmed:\s*([^|\n]+)\s*\|\s*([^\n]+)/gi;
+              // Format A (deployed): "Created New Confirmed Job: Row N, ClientName | JobName"
+              const fmtA = /Created New Confirmed Job:\s*Row\s*\d+,\s*([^|\n]*)\|\s*([^\n\[]+)/gi;
               let m;
-              while ((m = fmt1.exec(details)) !== null) {
+              while ((m = fmtA.exec(details)) !== null) {
                 const jobName = m[2].trim();
                 const clientParsed = m[1].trim();
                 if (jobName) affectedJobs.push({ jobName, clientParsed, logTimestamp: String(entry[0] || "") });
               }
-              // Format 2: client only (no pipe separator)
-              const fmt2 = /Copied Pipeline Project \(with \d+ child rows\) to Confirmed:\s*([^\n|]+)$/gim;
-              while ((m = fmt2.exec(details)) !== null) {
-                // Only add if not already captured by fmt1 (fmt1 would have matched the | variant)
+              // Format B (newer GAS): "Copied Pipeline Project to Confirmed: ClientName | JobName"
+              const fmtB = /Copied Pipeline Project(?:\s+\([^)]+\))?\s+to Confirmed:\s*([^|\n]+)\s*\|\s*([^\n]+)/gi;
+              while ((m = fmtB.exec(details)) !== null) {
+                const jobName = m[2].trim();
                 const clientParsed = m[1].trim();
-                if (clientParsed && !affectedJobs.some(j => j.clientParsed === clientParsed && !j.jobName)) {
-                  affectedJobs.push({ jobName: "", clientParsed, logTimestamp: String(entry[0] || "") });
-                }
+                if (jobName) affectedJobs.push({ jobName, clientParsed, logTimestamp: String(entry[0] || "") });
               }
             }
-            // Deduplicate by jobName (or clientParsed if no jobName)
+            // Deduplicate by jobName
             const seen = new Set();
             const deduped = affectedJobs.filter(j => {
-              const key = j.jobName || j.clientParsed;
-              if (seen.has(key)) return false;
-              seen.add(key);
+              if (seen.has(j.jobName)) return false;
+              seen.add(j.jobName);
               return true;
             });
             affectedJobs.length = 0;
@@ -2915,8 +2900,10 @@ Return ONLY JSON, no other text.`;
                 }
 
                 if (!pipelineJob) {
-                  // Job may have been created directly in Confirmed (not via Pipeline copy)
-                  checks.push({ ok: true, message: `Pipeline: job "${job.jobName}" not found — may have been created directly in Confirmed (not a copy from Pipeline)` });
+                  // Not found in Pipeline — could be a direct Confirmed creation (not a Pipeline copy)
+                  // Flag for manual review rather than silently passing
+                  checks.push({ ok: false, message: `⚠ Job not found in Pipeline — if this was a Pipeline copy, DD may not have been set. If created directly in Confirmed, this is expected.` });
+                  allOk = false;
                 } else {
                   const ddVal = pipelineJob.copiedToConf.toLowerCase();
                   const ddOk = ddVal === "yes" || ddVal === "true";

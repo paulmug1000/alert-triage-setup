@@ -1395,8 +1395,8 @@ export default function TriageSystem({ onBack }) {
 
           {isLoading ? (
             <div style={{ textAlign: "center", padding: "32px 16px", color: "#666" }}>
-              <div style={{ fontSize: "28px", marginBottom: "12px" }}>↻</div>
-              <div style={{ fontSize: "15px", fontWeight: "600", color: "#333", marginBottom: "6px" }}>
+              <Spinner size={32} color="#0066cc" />
+              <div style={{ fontSize: "15px", fontWeight: "600", color: "#333", marginTop: "12px", marginBottom: "6px" }}>
                 Refreshing data...
               </div>
               <div style={{ fontSize: "13px", color: "#888" }}>
@@ -1965,20 +1965,28 @@ export default function TriageSystem({ onBack }) {
         </div>
 
         <div style={styles.card}>
-          <div style={styles.successBanner}>
-            No discrepancies detected. Your financial automation system is running smoothly!
-          </div>
-
-          <div style={styles.buttonGroup}>
-            <button className="triage-btn triage-btn-primary" onClick={startTriage} style={styles.button}>
-              Refresh →
-            </button>
-            {onBack && (
-              <button className="triage-btn" onClick={onBack} style={styles.buttonSecondary}>
-                ← Back to Menu
-              </button>
-            )}
-          </div>
+          {isLoading ? (
+            <div style={{ textAlign: "center", padding: "32px 16px" }}>
+              <Spinner size={32} color="#0066cc" />
+              <div style={{ fontSize: "15px", fontWeight: "600", color: "#333", marginTop: "12px", marginBottom: "6px" }}>
+                Checking for new alerts...
+              </div>
+              <div style={{ fontSize: "13px", color: "#888" }}>
+                Reading latest flags from your sheets
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={styles.successBanner}>
+                No discrepancies detected. Your financial automation system is running smoothly!
+              </div>
+              <div style={styles.buttonGroup}>
+                <button className="triage-btn triage-btn-primary" onClick={startTriage} style={styles.button}>
+                  ↻ Refresh
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     );

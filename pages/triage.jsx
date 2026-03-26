@@ -654,6 +654,20 @@ export default function TriageSystem({ onBack }) {
       };
       const clearedKeys = new Set(selected.flatMap(group => FLAG_GROUP_KEYS[group] || []));
 
+      // Update Redis session and precomputed cache so reloads reflect the cleared state
+      if (sessionId) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_session_flags",
+            sessionId,
+            clientName: selectedClient.clientName,
+            clearedFlagKeys: [...clearedKeys],
+          }),
+        }).catch(() => {});
+      }
+
       // Zero out the cleared flag keys on the selected client only.
       // Do NOT remove any clients from the list — the list only refreshes from the
       // server on reload. Removing clients here causes other clients to vanish too.

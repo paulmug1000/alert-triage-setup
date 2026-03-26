@@ -3348,6 +3348,88 @@ Return ONLY JSON, no other text.`;
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "update_session_flags") {
+      // After clearing flags for a client, update both the session and precomputed cache
+      // so that reloads reflect the cleared state without needing a full re-triage.
+      const { sessionId, clientName, clearedFlagKeys } = req.body;
+      if (!sessionId || !clientName || !clearedFlagKeys) {
+        return res.status(400).json({ success: false, error: "Missing sessionId, clientName, or clearedFlagKeys" });
+      }
+      try {
+        const keysToZero = new Set(clearedFlagKeys);
+
+        // Update session
+        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+        if (sessionData) {
+          const parsed = JSON.parse(sessionData);
+          // Remove alerts for this client that belong to cleared flag groups
+          parsed.alerts = parsed.alerts.filter(a => {
+            if (a.clientName !== clientName) return true;
+            return !keysToZero.has(a.flagType || a.type);
+          });
+          // Remove noAction alerts for this client that belong to cleared flag groups
+          if (parsed.noActionAlerts) {
+            parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
+              if (na.clientId !== clientName && !na.flagType) return true; // keep if can't determine
+              return !keysToZero.has(na.flagType);
+            });
+          }
+          // Zero out the client's cleared flags in clientsWithFlags
+          if (parsed.clientsWithFlags) {
+            parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
+              if (c.clientName !== clientName) return c;
+              const updatedFlags = { ...c.flags };
+              keysToZero.forEach(k => { updatedFlags[k] = false; });
+              return { ...c, flags: updatedFlags };
+            });
+          }
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 });
+          console.log(`  update_session_flags: session updated for ${clientName}`);
+        }
+
+        // Update precomputed cache
+        const precomputed = await redisClient.get(PRECOMPUTED_KEY);
+        if (precomputed) {
+          const parsed = JSON.parse(precomputed);
+          parsed.alerts = (parsed.alerts || []).filter(a => {
+            if (a.clientName !== clientName) return true;
+            return !keysToZero.has(a.flagType || a.type);
+          });
+          if (parsed.noActionAlerts) {
+            parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
+              return !keysToZero.has(na.flagType) || na.clientId !== clientName;
+            });
+          }
+          if (parsed.clientsWithFlags) {
+            parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
+              if (c.clientName !== clientName) return c;
+              const updatedFlags = { ...c.flags };
+              keysToZero.forEach(k => { updatedFlags[k] = false; });
+              return { ...c, flags: updatedFlags };
+            });
+          }
+          parsed.totalAlerts = (parsed.alerts || []).length;
+          parsed.noActionCount = (parsed.noActionAlerts || []).length;
+          // Remove stale noAction analysis results for this client's cleared flags
+          // so the next load forces a fresh Analyse rather than showing outdated results
+          if (parsed.noActionAnalysisResults) {
+            const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated"];
+            richFlags.forEach(flagType => {
+              if (keysToZero.has(flagType)) {
+                delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`];
+              }
+            });
+          }
+          await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 14400 });
+          console.log(`  update_session_flags: precomputed cache updated for ${clientName}`);
+        }
+
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ Error updating session flags:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "resolve_noaction_flag") {
       // Mark a noAction flag as resolved in the Redis session so it persists across reloads.
       // resolvedNoActionFlags is stored as a set of "clientName___flagType" strings.

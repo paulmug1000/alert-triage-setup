@@ -3175,15 +3175,27 @@ Return ONLY JSON, no other text.`;
             const affectedRetainerJobs = [];
             for (const entry of retainerLogEntries) {
               const details = String(entry[3] || "");
-              const retainerJobPattern = /Row\s+(\d+),\s+[^,]+,\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
+              // Capture client name from the log as well as job name — sheetRow is NOT used for lookup
+              // since rows in Confirmed can shift after the log was written
+              const retainerJobPattern = /Row\s+(\d+),\s+([^,]+),\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
               let m;
               while ((m = retainerJobPattern.exec(details)) !== null) {
-                affectedRetainerJobs.push({ sheetRow: parseInt(m[1], 10), jobName: m[2].trim(), logTimestamp: String(entry[0] || "") });
+                affectedRetainerJobs.push({
+                  logSheetRow: parseInt(m[1], 10), // kept for display only, not for lookup
+                  clientNameFromLog: m[2].trim(),
+                  jobName: m[3].trim(),
+                  logTimestamp: String(entry[0] || "")
+                });
               }
             }
-            // Deduplicate by sheetRow
-            const seenRows = new Set();
-            const dedupedJobs = affectedRetainerJobs.filter(j => { if (seenRows.has(j.sheetRow)) return false; seenRows.add(j.sheetRow); return true; });
+            // Deduplicate by jobName (row numbers are unreliable after row shifts)
+            const seenJobs = new Set();
+            const dedupedJobs = affectedRetainerJobs.filter(j => {
+              const key = `${j.clientNameFromLog}___${j.jobName}`;
+              if (seenJobs.has(key)) return false;
+              seenJobs.add(key);
+              return true;
+            });
             console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
 
             // Read Confirmed tab
@@ -3195,26 +3207,44 @@ Return ONLY JSON, no other text.`;
             const retainerChecks = [];
 
             for (const job of dedupedJobs) {
-              const parentRow = retConfirmedRows[job.sheetRow - 1] || [];
+              // Find the parent row by matching client name AND job name — never by row number
+              const jobNameLower = job.jobName.toLowerCase();
+              const clientLower = job.clientNameFromLog.toLowerCase();
+              let parentRowIdx = -1;
+              for (let ri = 0; ri < retConfirmedRows.length; ri++) {
+                const r = retConfirmedRows[ri];
+                const rClient = String(r[0] || "").trim().toLowerCase();
+                const rJob = String(r[1] || "").trim().toLowerCase();
+                if (rClient === clientLower && rJob === jobNameLower) {
+                  parentRowIdx = ri;
+                  break;
+                }
+              }
+
+              if (parentRowIdx === -1) {
+                // Not found by name — report clearly
+                retainerChecks.push({
+                  jobName: job.jobName,
+                  clientName: job.clientNameFromLog,
+                  status: "issue",
+                  checks: [{ ok: false, message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in Confirmed tab` }],
+                });
+                continue;
+              }
+
+              const parentRow = retConfirmedRows[parentRowIdx];
               const clientN = String(parentRow[0] || "").trim();
               const jobName = String(parentRow[1] || "").trim();
               const projectCode = String(parentRow[2] || "").trim();
               const revenue = parentRow[32];
               const startRaw = parentRow[37];
               const endRaw = parentRow[38];
-              console.log(`  Row ${job.sheetRow} in Confirmed: client="${clientN}", job="${jobName}", code="${projectCode}", revenue="${revenue}", start="${startRaw}", end="${endRaw}"`);
+              const confirmedSheetRow = parentRowIdx + 1; // 1-indexed for display
+              console.log(`  Found "${jobName}" (${clientN}) at Confirmed row ${confirmedSheetRow}: start="${startRaw}", end="${endRaw}"`);
 
-              if (!jobName) {
-                retainerChecks.push({
-                  jobName: job.jobName, status: "issue",
-                  checks: [{ ok: false, message: `✗ Row ${job.sheetRow} in Confirmed tab appears empty` }],
-                });
-                continue;
-              }
-
-              // Collect child rows
+              // Collect child rows — start immediately after the parent row we found by name
               const childRows = [];
-              let ci = job.sheetRow;
+              let ci = parentRowIdx + 1;
               while (ci < retConfirmedRows.length) {
                 const next = retConfirmedRows[ci] || [];
                 const nc = String(next[0] || "").trim();
@@ -3290,7 +3320,7 @@ Return ONLY JSON, no other text.`;
 
               retainerChecks.push({
                 jobName, clientName: clientN, projectCode,
-                parentSheetRow: job.sheetRow,
+                parentSheetRow: confirmedSheetRow,
                 status: durationOk && allHaveInvoice ? "ok" : "issue",
                 periodLabel, checks,
               });

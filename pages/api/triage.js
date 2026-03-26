@@ -919,11 +919,13 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
 
   console.log(`  📝 Writing Outgoings expense: ${categoryName} / ${expenseMonth} / £${amount}`);
 
-  // Read the full Outgoings sheet (values + notes) — wide enough to cover all monthly columns
+  // Read the full Outgoings sheet — use UNFORMATTED_VALUE so header dates come back
+  // as serial numbers (e.g. 46083.0) rather than locale-dependent strings like "1/3/2026"
   const sheetRange = "Outgoings!A1:AX500";
   const valuesResp = await sheets.spreadsheets.values.get({
     spreadsheetId: clientSheetId,
     range: sheetRange,
+    valueRenderOption: "UNFORMATTED_VALUE",
   });
   const rows = valuesResp.data.values || [];
   if (rows.length === 0) throw new Error("Outgoings tab is empty");
@@ -931,18 +933,25 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   // Parse the target month from "YYYY-MM"
   const [targetYear, targetMonth] = expenseMonth.split("-").map(Number);
 
-  // Find the column index whose header date matches the target month
+  // Find the column index whose header date matches the target month.
+  // Header cells are date serials (days since 30-Dec-1899). Convert to JS Date and compare.
   const headerRow = rows[0];
   let targetColIndex = -1;
   for (let c = 0; c < headerRow.length; c++) {
     const headerVal = headerRow[c];
     if (!headerVal) continue;
-    const parsed = new Date(headerVal);
-    if (!isNaN(parsed.getTime())) {
-      if (parsed.getFullYear() === targetYear && parsed.getMonth() + 1 === targetMonth) {
-        targetColIndex = c;
-        break;
-      }
+    let parsed = null;
+    if (typeof headerVal === "number") {
+      // Sheets serial → JS Date (UTC)
+      parsed = new Date((headerVal - 25569) * 86400 * 1000);
+    } else {
+      // Fallback: try direct parse for ISO-format strings
+      const d = new Date(headerVal);
+      if (!isNaN(d.getTime())) parsed = d;
+    }
+    if (parsed && parsed.getUTCFullYear() === targetYear && parsed.getUTCMonth() + 1 === targetMonth) {
+      targetColIndex = c;
+      break;
     }
   }
 

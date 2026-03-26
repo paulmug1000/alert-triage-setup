@@ -424,7 +424,7 @@ export default function TriageSystem({ onBack }) {
         // No actionable alerts — only go to clearFlags if no-action flags are all resolved too
         if (filteredNoAction.length === 0 || filteredNoAction.every(na => resolvedNoActionFlags.has(na.flagType))) {
           console.log(`  → No unprocessed alerts and all no-action flags resolved, going to clearFlags screen`);
-          setFlagsToClear(computeFlagGroups(client));
+          setFlagsToClear(computeFlagGroups(client, []));
           setScreen("clearFlags");
         } else {
           console.log(`  → No actionable alerts but ${filteredNoAction.length} non-actionable flag(s) need resolving`);
@@ -520,6 +520,15 @@ export default function TriageSystem({ onBack }) {
       // Mark alert as processed
       const alertId = `${alert.sheetName}-${alert.rowNumber}`;
       setProcessedAlerts(new Set([...processedAlerts, alertId]));
+
+      // Update Redis session so reloads reflect resolved state (fire-and-forget)
+      if (sessionId) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
+        }).catch(() => {});
+      }
       
       // Remove from client alerts
       const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
@@ -528,7 +537,7 @@ export default function TriageSystem({ onBack }) {
       if (updatedAlerts.length === 0) {
         // All actionable alerts processed — go to clearFlags only if no-action flags are all resolved
         if (allNoActionResolved()) {
-          setFlagsToClear(computeFlagGroups(selectedClient));
+          setFlagsToClear(computeFlagGroups(selectedClient, []));
           setScreen("clearFlags");
         } else {
           // Still have unresolved non-actionable flags — go back to alertSelection to show them
@@ -559,15 +568,32 @@ export default function TriageSystem({ onBack }) {
 
   // Compute which flag groups (invoice/crm/expense) are active for a client
   // Used to pre-check the right toggles on the Clear Flags screen
-  const computeFlagGroups = (client) => {
+  const computeFlagGroups = (client, remainingAlerts) => {
     if (!client) return { invoice: false, crm: false, expense: false };
     const f = client.flags || {};
+
+    // A group is pre-checked only if:
+    // (a) the client has flags in that group, AND
+    // (b) there are no remaining unprocessed alerts for that group
+    const invoiceAlertTypes = new Set(["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated"]);
+    const crmAlertTypes = new Set(["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
+      "crmPipeSkippedBlank", "crmConfSkippedBlank", "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"]);
+    const expenseAlertTypes = new Set(["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"]);
+
+    const remaining = remainingAlerts || [];
+    const hasInvoiceFlag = !!(f.invoiceDashboardDiscr || f.invoiceAppDiscr || f.invoiceStaleUnsentChanges || f.retainerInvoicesCreated);
+    const hasCRMFlag = !!(f.crmPipeDashDiscr || f.crmPipeAppDiscr || f.crmConfDashDiscr || f.crmConfAppDiscr ||
+      f.crmPipeSkippedBlank || f.crmConfSkippedBlank || f.crmCopiedConfChecked || f.crmCopiedConfUnchecked || f.crmCopiedConfDelete);
+    const hasExpenseFlag = !!(f.expenseDashboardDiscr || f.expenseAppDiscr || f.expenseAdded || f.expenseUnreconGaps);
+
+    const remainingInvoice = remaining.some(a => invoiceAlertTypes.has(a.flagType || a.type));
+    const remainingCRM = remaining.some(a => crmAlertTypes.has(a.flagType || a.type));
+    const remainingExpense = remaining.some(a => expenseAlertTypes.has(a.flagType || a.type));
+
     return {
-      invoice: !!(f.invoiceDashboardDiscr || f.invoiceAppDiscr || f.invoiceStaleUnsentChanges || f.retainerInvoicesCreated),
-      crm: !!(f.crmPipeDashDiscr || f.crmPipeAppDiscr || f.crmConfDashDiscr || f.crmConfAppDiscr ||
-              f.crmPipeSkippedBlank || f.crmConfSkippedBlank || f.crmCopiedConfChecked ||
-              f.crmCopiedConfUnchecked || f.crmCopiedConfDelete),
-      expense: !!(f.expenseDashboardDiscr || f.expenseAppDiscr || f.expenseAdded || f.expenseUnreconGaps),
+      invoice: hasInvoiceFlag && !remainingInvoice,
+      crm: hasCRMFlag && !remainingCRM,
+      expense: hasExpenseFlag && !remainingExpense,
     };
   };
 
@@ -702,6 +728,15 @@ export default function TriageSystem({ onBack }) {
       const alertId = `${alert.sheetName}-${alert.rowNumber}`;
       setProcessedAlerts(prev => new Set([...prev, alertId]));
 
+      // Update Redis session so reloads reflect resolved state (fire-and-forget)
+      if (sessionId) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
+        }).catch(() => {});
+      }
+
       // Remove from client alerts list
       const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
       setClientAlerts(updatedAlerts);
@@ -710,7 +745,7 @@ export default function TriageSystem({ onBack }) {
       if (updatedAlerts.length === 0) {
         // Same gate as acceptOption — only go to clearFlags if no-action flags resolved too
         if (allNoActionResolved()) {
-          setFlagsToClear(computeFlagGroups(selectedClient));
+          setFlagsToClear(computeFlagGroups(selectedClient, []));
           setScreen("clearFlags");
         } else {
           setScreen("alertSelection");
@@ -1632,7 +1667,7 @@ export default function TriageSystem({ onBack }) {
             </button>
             <button
               onClick={() => {
-                setFlagsToClear(computeFlagGroups(selectedClient));
+                setFlagsToClear(computeFlagGroups(selectedClient, clientAlerts));
                 setScreen("clearFlags");
               }}
               style={styles.buttonSecondary}
@@ -1688,7 +1723,7 @@ export default function TriageSystem({ onBack }) {
             {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
 
             <div style={{ ...styles.successBanner, marginBottom: "20px" }}>
-              All alerts have been reviewed. Choose which flag groups to clear in the client's DataChgAlert sheet.
+              Select which flag groups to clear in the client's DataChgAlert sheet. Groups with unresolved alerts are unchecked by default.
             </div>
 
             {/* Select All / None toggle */}

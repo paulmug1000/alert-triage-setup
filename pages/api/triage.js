@@ -914,6 +914,22 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
 //   - Appends a structured {App ID:...} block to the cell note
 // ============================================================================
 
+// Apply bold + italic formatting to a range of cells via batchUpdate
+async function applyBoldItalic(sheets, spreadsheetId, sheetId, startRowIndex, endRowIndex, startColIndex, endColIndex) {
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [{
+        repeatCell: {
+          range: { sheetId, startRowIndex, endRowIndex, startColumnIndex: startColIndex, endColumnIndex: endColIndex },
+          cell: { userEnteredFormat: { textFormat: { bold: true, italic: true } } },
+          fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.italic",
+        },
+      }],
+    },
+  });
+}
+
 async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   const { categoryName, expenseMonth, transactionId, amount, description, status, recDate, payDate, vatCharged } = outgoingsData;
 
@@ -1055,26 +1071,55 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   });
   console.log(`  ✅ Value written: ${existingValue} → ${newValue}`);
 
-  // Write note
+  // Write note + apply bold/italic formatting in one batchUpdate
+  const outgoingsSheetId = await getSheetId(sheets, clientSheetId, "Outgoings");
+  const formatRequests = [
+    // Format the value cell (bold + italic)
+    {
+      repeatCell: {
+        range: {
+          sheetId: outgoingsSheetId,
+          startRowIndex: sheetRow - 1, endRowIndex: sheetRow,
+          startColumnIndex: sheetCol - 1, endColumnIndex: sheetCol,
+        },
+        cell: { userEnteredFormat: { textFormat: { bold: true, italic: true } } },
+        fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.italic",
+      },
+    },
+    // Write the note
+    {
+      updateCells: {
+        range: {
+          sheetId: outgoingsSheetId,
+          startRowIndex: sheetRow - 1, endRowIndex: sheetRow,
+          startColumnIndex: sheetCol - 1, endColumnIndex: sheetCol,
+        },
+        rows: [{ values: [{ note: newNote }] }],
+        fields: "note",
+      },
+    },
+  ];
+
+  // If new vendor row, also format cols A:F bold+italic
+  if (isNewVendor) {
+    formatRequests.push({
+      repeatCell: {
+        range: {
+          sheetId: outgoingsSheetId,
+          startRowIndex: sheetRow - 1, endRowIndex: sheetRow,
+          startColumnIndex: 0, endColumnIndex: 6,
+        },
+        cell: { userEnteredFormat: { textFormat: { bold: true, italic: true } } },
+        fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.italic",
+      },
+    });
+  }
+
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: clientSheetId,
-    requestBody: {
-      requests: [{
-        updateCells: {
-          range: {
-            sheetId: await getSheetId(sheets, clientSheetId, "Outgoings"),
-            startRowIndex: sheetRow - 1,
-            endRowIndex: sheetRow,
-            startColumnIndex: sheetCol - 1,
-            endColumnIndex: sheetCol,
-          },
-          rows: [{ values: [{ note: newNote }] }],
-          fields: "note",
-        },
-      }],
-    },
+    requestBody: { requests: formatRequests },
   });
-  console.log(`  ✅ Note written`);
+  console.log(`  ✅ Note written and formatting applied`);
 
   return { sheetRow, colLetter, newValue, prevValue: existingValue, isNewVendor };
 }
@@ -2642,6 +2687,31 @@ Return ONLY JSON, no other text.`;
             requestBody: batchRequest,
           });
           console.log(`  ✅ Cells written successfully`);
+
+          // Apply bold + italic formatting to all written cells
+          const writeTabSheetId = await getSheetId(sheets, alert.clientId, writeTab);
+          const formatReqs = cellUpdates.map(({ cell }) => {
+            // Parse cell reference e.g. "B23" → row 22, col 1 (0-indexed)
+            const colMatch = cell.match(/^([A-Z]+)(\d+)$/);
+            if (!colMatch) return null;
+            const colNum = colMatch[1].split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+            const rowNum = parseInt(colMatch[2], 10) - 1;
+            return {
+              repeatCell: {
+                range: { sheetId: writeTabSheetId, startRowIndex: rowNum, endRowIndex: rowNum + 1, startColumnIndex: colNum, endColumnIndex: colNum + 1 },
+                cell: { userEnteredFormat: { textFormat: { bold: true, italic: true } } },
+                fields: "userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.italic",
+              },
+            };
+          }).filter(Boolean);
+
+          if (formatReqs.length > 0) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: alert.clientId,
+              requestBody: { requests: formatReqs },
+            });
+            console.log(`  ✅ Formatting applied (bold+italic) to ${formatReqs.length} cells`);
+          }
         }
         
         // Record decision to TriageLog
@@ -3228,6 +3298,28 @@ Return ONLY JSON, no other text.`;
           error: `Failed to clear flags: ${err.message}` 
         });
       }
+    } else if (action === "remove_alert") {
+      // Remove a specific alert from the Redis session after it's been accepted/ignored.
+      // This ensures the session stays current so reloads show resolved state.
+      const { sessionId, alertId } = req.body; // alertId = "SheetName-rowNumber"
+      if (!sessionId || !alertId) {
+        return res.status(400).json({ success: false, error: "Missing sessionId or alertId" });
+      }
+      try {
+        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+        if (!sessionData) return res.status(200).json({ success: true, notFound: true });
+        const parsed = JSON.parse(sessionData);
+        const before = parsed.alerts.length;
+        parsed.alerts = parsed.alerts.filter(a => `${a.sheetName}-${a.rowNumber}` !== alertId);
+        const removed = before - parsed.alerts.length;
+        await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 });
+        console.log(`  remove_alert: removed ${removed} alert(s) matching "${alertId}" from session`);
+        return res.status(200).json({ success: true, removed });
+      } catch (err) {
+        console.error("❌ Error removing alert from session:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "record_decision") {
       // Log user's decision to TriageLog
       const { alert, decision, automationCommanderSheetId } = req.body;

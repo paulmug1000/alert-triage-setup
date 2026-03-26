@@ -61,8 +61,9 @@ export default function TriageSystem({ onBack }) {
   const [resolvedNoActionFlags, setResolvedNoActionFlags] = useState(new Set());
 
   // Rich analysis for noaction flags (crmCopiedConfChecked, crmCopiedConfUnchecked, retainerInvoicesCreated)
-  const [noActionAnalysis, setNoActionAnalysis] = useState({}); // keyed by flagType
+  const [noActionAnalysis, setNoActionAnalysis] = useState({}); // keyed by flagType, for current client only
   const [noActionAnalysisLoading, setNoActionAnalysisLoading] = useState({}); // keyed by flagType
+  const [precomputedNoActionResults, setPrecomputedNoActionResults] = useState({}); // keyed by "clientName___flagType", never wiped
 
   const fetchAndAnalyzeAlerts = async (sessionId) => {
     try {
@@ -224,10 +225,10 @@ export default function TriageSystem({ onBack }) {
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());
 
-          // Pre-populate noAction analysis results so they show immediately
-          // Results are keyed as "clientName___flagType" in the precomputed payload
+          // Store precomputed noAction analysis results in persistent state (keyed by "clientName___flagType")
+          // This survives client switches — unpacked per-client on selection
           if (preData.noActionAnalysisResults && Object.keys(preData.noActionAnalysisResults).length > 0) {
-            setNoActionAnalysis(preData.noActionAnalysisResults);
+            setPrecomputedNoActionResults(preData.noActionAnalysisResults);
             console.log(`  ✅ Pre-populated ${Object.keys(preData.noActionAnalysisResults).length} noAction analysis results`);
           }
 
@@ -397,11 +398,11 @@ export default function TriageSystem({ onBack }) {
       setResolvedNoActionFlags(new Set()); // reset on each client selection
       setNoActionAnalysisLoading({});      // reset loading state
 
-      // Seed analysis results from precomputed data if available for this client
+      // Seed analysis results from precomputed data for this client only
+      // precomputedNoActionResults is keyed as "clientName___flagType" and never wiped
       const precomputedForClient = {};
-      console.log(`  Unpacking noActionAnalysis keys for ${client.clientName}:`, Object.keys(noActionAnalysis));
-      Object.entries(noActionAnalysis).forEach(([key, result]) => {
-        // Keys are stored as "clientName___flagType" by the GAS precompute
+      console.log(`  Unpacking noActionAnalysis keys for ${client.clientName}:`, Object.keys(precomputedNoActionResults));
+      Object.entries(precomputedNoActionResults).forEach(([key, result]) => {
         const sep = "___";
         const sepIdx = key.indexOf(sep);
         if (sepIdx !== -1) {
@@ -411,9 +412,6 @@ export default function TriageSystem({ onBack }) {
             precomputedForClient[keyFlag] = result;
             console.log(`    ✓ Matched precomputed result: ${keyFlag}`);
           }
-        } else {
-          // Plain flagType key (set by on-demand analysis in current session)
-          precomputedForClient[key] = result;
         }
       });
       console.log(`  precomputedForClient keys:`, Object.keys(precomputedForClient));

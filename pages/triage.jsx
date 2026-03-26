@@ -1314,6 +1314,28 @@ export default function TriageSystem({ onBack }) {
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
     ];
 
+    // If all clients have had their flags zeroed out, show complete screen
+    const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
+    if (activeClients.length === 0) {
+      return (
+        <>
+          <Head><title>Alert Triage System</title></Head>
+          <div style={styles.container}>
+            <div style={styles.header}>
+              <h1 style={styles.title}>All Done</h1>
+              <p style={styles.subtitle}>All alerts and flags have been resolved</p>
+            </div>
+            <div style={styles.card}>
+              <div style={styles.successBanner}>✓ No outstanding alerts or flags</div>
+              <button onClick={refreshTriage} style={{ ...styles.buttonSecondary, marginTop: "16px" }}>
+                ↻ Refresh
+              </button>
+            </div>
+          </div>
+        </>
+      );
+    }
+
     return (
       <>
         <Head>
@@ -1340,7 +1362,9 @@ export default function TriageSystem({ onBack }) {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {clientsWithFlags.map((client, idx) => {
+              {clientsWithFlags.filter(client =>
+                Object.values(client.flags || {}).some(v => v)
+              ).map((client, idx) => {
                 const actionableLines = ACTIONABLE_FLAG_KEYS
                   .filter(key => client.flags?.[key])
                   .map(key => {
@@ -2405,4 +2429,3 @@ export default function TriageSystem({ onBack }) {
 
   return null;
 }
-

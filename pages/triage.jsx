@@ -79,6 +79,18 @@ export default function TriageSystem({ onBack }) {
   const [ignoreReason, setIgnoreReason] = useState("");
   const [isIgnoring, setIsIgnoring] = useState(false);
   const [selectingClient, setSelectingClient] = useState(null); // clientName being loaded
+
+  // Inject global button/interaction styles once on mount
+  useEffect(() => {
+    const id = "triage-global-styles";
+    if (!document.getElementById(id)) {
+      const el = document.createElement("style");
+      el.id = id;
+      el.textContent = GLOBAL_STYLES;
+      document.head.appendChild(el);
+    }
+    return () => { /* leave styles in place for performance */ };
+  }, []);
   const [ignoredAlerts, setIgnoredAlerts] = useState([]);
   const [isLoadingIgnored, setIsLoadingIgnored] = useState(false);
   const [isUnignoring, setIsUnignoring] = useState(null);
@@ -1278,7 +1290,6 @@ export default function TriageSystem({ onBack }) {
   if (screen === "ignoredAlerts") {
     return (
       <>
-        <style>{GLOBAL_STYLES}</style>
         <Head><title>Alert Triage System</title></Head>
         <div style={styles.container}>
           <div style={styles.header}>
@@ -1351,8 +1362,7 @@ export default function TriageSystem({ onBack }) {
     if (activeClients.length === 0) {
       return (
         <>
-          <style>{GLOBAL_STYLES}</style>
-          <Head><title>Alert Triage System</title></Head>
+            <Head><title>Alert Triage System</title></Head>
           <div style={styles.container}>
             <div style={styles.header}>
               <h1 style={styles.title}>All Done</h1>
@@ -1360,8 +1370,8 @@ export default function TriageSystem({ onBack }) {
             </div>
             <div style={styles.card}>
               <div style={styles.successBanner}>✓ No outstanding alerts or flags</div>
-              <button className="triage-btn" onClick={refreshTriage} style={{ ...styles.buttonSecondary, marginTop: "16px" }}>
-                ↻ Refresh
+              <button className="triage-btn" onClick={refreshTriage} disabled={isLoading} style={{ ...styles.buttonSecondary, marginTop: "16px", opacity: isLoading ? 0.5 : 1 }}>
+                {isLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
               </button>
             </div>
           </div>
@@ -1371,7 +1381,6 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
-        <style>{GLOBAL_STYLES}</style>
         <Head>
           <title>Alert Triage System</title>
         </Head>
@@ -1496,7 +1505,6 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
-        <style>{GLOBAL_STYLES}</style>
         <Head>
           <title>Alert Triage System</title>
         </Head>
@@ -1823,7 +1831,6 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
-        <style>{GLOBAL_STYLES}</style>
         <Head><title>Alert Triage System</title></Head>
         <div style={styles.container}>
           <div style={styles.header}>
@@ -1919,7 +1926,6 @@ export default function TriageSystem({ onBack }) {
   if (!sessionId && !triageComplete) {
     return (
       <>
-        <style>{GLOBAL_STYLES}</style>
         <Head><title>Alert Triage System</title></Head>
         <div style={styles.container}>
           <div style={styles.header}>
@@ -1985,7 +1991,6 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
-        <style>{GLOBAL_STYLES}</style>
         <Head>
           <title>Alert Triage System</title>
         </Head>

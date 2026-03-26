@@ -2934,7 +2934,9 @@ Return ONLY JSON, no other text.`;
                 if (!line.includes("Copied Status:")) continue;
                 if (!line.includes("-> 'Yes'") && !line.includes("-> \"Yes\"")) continue;
                 // Extract client | job from: "Updated Pipeline: Row N, ClientName | JobName - ..."
-                const jobMatch = line.match(/Row\s*\d+,\s*([^|]*)\|\s*([^-\n]+)/);
+                // Job name ends at " - " (space-hyphen-space) which separates it from the change details.
+                // We must NOT stop at bare hyphens since job names can contain them (e.g. "Gong-cha digital framework")
+                const jobMatch = line.match(/Row\s*\d+,\s*([^|]*)\|\s*(.+?)\s+-\s+/);
                 if (jobMatch) {
                   const clientParsed = jobMatch[1].trim();
                   const jobName = jobMatch[2].trim();
@@ -2997,9 +2999,10 @@ Return ONLY JSON, no other text.`;
                 // Pipeline data: col A(0)=Client, B(1)=JobName, C(2)=ProjectCode, DD(107)=CopiedToConf?
                 // Pipeline rows start at row 6 in the sheet; our slice starts at A6 so index 0 = row 6
                 let pipelineJob = null;
+                const jobNameLower = job.jobName.toLowerCase();
                 for (const pr of pipelineRows) {
                   const pJobName = String(pr[1] || "").trim(); // col B = job name
-                  if (pJobName && pJobName === job.jobName) {
+                  if (pJobName && pJobName.toLowerCase() === jobNameLower) {
                     pipelineJob = {
                       clientName: String(pr[0] || "").trim(),
                       jobName: pJobName,
@@ -3032,8 +3035,7 @@ Return ONLY JSON, no other text.`;
                 for (const cr of confirmedRows) {
                   const crJobName = String(cr[1] || "").trim();
                   const crProjectCode = String(cr[2] || "").trim();
-                  if (crJobName === job.jobName) {
-                    // If we have a project code from Pipeline, also verify it matches
+                  if (crJobName.toLowerCase() === jobNameLower) {
                     if (pipelineProjectCode && crProjectCode && crProjectCode !== pipelineProjectCode) continue;
                     confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: String(cr[0] || "").trim() };
                     break;
@@ -3053,7 +3055,7 @@ Return ONLY JSON, no other text.`;
                 let pipelineJob = null;
                 for (const pr of pipelineRows) {
                   const pJobName = String(pr[1] || "").trim(); // col B
-                  if (pJobName && pJobName === job.jobName) {
+                  if (pJobName && pJobName.toLowerCase() === job.jobName.toLowerCase()) {
                     pipelineJob = { copiedToConf: String(pr[107] || "").trim() };
                     break;
                   }
@@ -3634,3 +3636,4 @@ Return ONLY JSON, no other text.`;
     });
   }
 }
+

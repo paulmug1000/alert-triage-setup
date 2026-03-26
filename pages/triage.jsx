@@ -189,10 +189,8 @@ export default function TriageSystem({ onBack }) {
       setSelectedClient(null);
       setClientAlerts([]);
 
-      if ((data.totalAlerts || 0) > 0) {
+      if ((data.clientsWithFlags || []).length > 0) {
         setScreen("clientSelection");
-      } else if ((data.noActionCount || 0) > 0) {
-        setShowNoAction(true);
       } else {
         setTriageComplete(true);
       }
@@ -235,10 +233,10 @@ export default function TriageSystem({ onBack }) {
             console.log(`  ✅ Pre-populated ${Object.keys(preData.noActionAnalysisResults).length} noAction analysis results`);
           }
 
-          if ((preData.totalAlerts || 0) > 0) {
+          // Go to clientSelection if any clients have flags (actionable or noAction-only).
+          // The old showNoAction path is bypassed — noAction flags are handled within clientSelection.
+          if ((preData.clientsWithFlags || []).length > 0) {
             setScreen("clientSelection");
-          } else if ((preData.noActionCount || 0) > 0) {
-            setShowNoAction(true);
           } else {
             setTriageComplete(true);
           }
@@ -282,14 +280,11 @@ export default function TriageSystem({ onBack }) {
       setAcknowledgedNoAction(new Set());
       setProcessedAlerts(new Set());
 
-      if ((data.totalAlerts || 0) > 0) {
-        console.log(`${data.totalAlerts} actionable alerts found, showing client selection...`);
+      if ((data.clientsWithFlags || []).length > 0) {
+        console.log(`${(data.clientsWithFlags || []).length} client(s) with flags, showing client selection...`);
         setScreen("clientSelection");
-      } else if ((data.noActionCount || 0) > 0) {
-        console.log(`${data.noActionCount} no-action alerts found, showing no-action screen`);
-        setShowNoAction(true);
       } else {
-        console.log("No alerts found, showing complete screen");
+        console.log("No clients with flags, showing complete screen");
         setTriageComplete(true);
       }
     } catch (err) {
@@ -1319,6 +1314,28 @@ export default function TriageSystem({ onBack }) {
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
     ];
 
+    // If all clients have had their flags zeroed out, show complete screen
+    const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
+    if (activeClients.length === 0) {
+      return (
+        <>
+          <Head><title>Alert Triage System</title></Head>
+          <div style={styles.container}>
+            <div style={styles.header}>
+              <h1 style={styles.title}>All Done</h1>
+              <p style={styles.subtitle}>All alerts and flags have been resolved</p>
+            </div>
+            <div style={styles.card}>
+              <div style={styles.successBanner}>✓ No outstanding alerts or flags</div>
+              <button onClick={refreshTriage} style={{ ...styles.buttonSecondary, marginTop: "16px" }}>
+                ↻ Refresh
+              </button>
+            </div>
+          </div>
+        </>
+      );
+    }
+
     return (
       <>
         <Head>
@@ -1345,7 +1362,9 @@ export default function TriageSystem({ onBack }) {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {clientsWithFlags.map((client, idx) => {
+              {clientsWithFlags.filter(client =>
+                Object.values(client.flags || {}).some(v => v)
+              ).map((client, idx) => {
                 const actionableLines = ACTIONABLE_FLAG_KEYS
                   .filter(key => client.flags?.[key])
                   .map(key => {

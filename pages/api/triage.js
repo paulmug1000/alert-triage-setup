@@ -1430,16 +1430,16 @@ export default async function handler(req, res) {
           })),
           computedAt: data.computedAt,
           computedMinutesAgo: Math.round(ageMs / 60000),
+          noActionAnalysisResults: data.noActionAnalysisResults || {},
         });
       } catch (err) {
         console.error("❌ Error retrieving precomputed data:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "store_precomputed") {
-      // Called by the GAS precompute function to store assembled triage data in Redis.
-      // Requires the cron secret to prevent unauthorised writes.
       const { secret, alerts, noActionAlerts, clientsWithFlags,
-              totalAlerts, noActionCount, computedAt } = req.body;
+              totalAlerts, noActionCount, computedAt,
+              noActionAnalysisResults } = req.body;
 
       if (secret !== process.env.CRON_SECRET) {
         return res.status(401).json({ success: false, error: "Unauthorised" });
@@ -1453,6 +1453,7 @@ export default async function handler(req, res) {
           alerts: alerts || [],
           noActionAlerts: noActionAlerts || [],
           clientsWithFlags: clientsWithFlags || [],
+          noActionAnalysisResults: noActionAnalysisResults || {},
         };
 
         await redisClient.set(
@@ -1461,7 +1462,8 @@ export default async function handler(req, res) {
           { EX: 14400 } // 4 hour TTL
         );
 
-        console.log(`✅ store_precomputed: ${precomputedData.totalAlerts} alerts saved to Redis`);
+        const analysisCount = Object.keys(precomputedData.noActionAnalysisResults).length;
+        console.log(`✅ store_precomputed: ${precomputedData.totalAlerts} alerts, ${analysisCount} pre-analysed flags saved to Redis`);
         return res.status(200).json({ success: true, stored: precomputedData.totalAlerts });
       } catch (err) {
         console.error("❌ Error storing precomputed data:", err);

@@ -224,6 +224,13 @@ export default function TriageSystem({ onBack }) {
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());
 
+          // Pre-populate noAction analysis results so they show immediately
+          // Results are keyed as "clientName___flagType" in the precomputed payload
+          if (preData.noActionAnalysisResults && Object.keys(preData.noActionAnalysisResults).length > 0) {
+            setNoActionAnalysis(preData.noActionAnalysisResults);
+            console.log(`  ✅ Pre-populated ${Object.keys(preData.noActionAnalysisResults).length} noAction analysis results`);
+          }
+
           if ((preData.totalAlerts || 0) > 0) {
             setScreen("clientSelection");
           } else if ((preData.noActionCount || 0) > 0) {
@@ -388,8 +395,26 @@ export default function TriageSystem({ onBack }) {
       setClientAlerts(filteredAlerts);
       setClientNoActionAlerts(filteredNoAction);
       setResolvedNoActionFlags(new Set()); // reset on each client selection
-      setNoActionAnalysis({});             // reset analysis results
       setNoActionAnalysisLoading({});      // reset loading state
+
+      // Seed analysis results from precomputed data if available for this client
+      const precomputedForClient = {};
+      Object.entries(noActionAnalysis).forEach(([key, result]) => {
+        // Keys are stored as "clientName___flagType" by the GAS precompute
+        const sep = "___";
+        const sepIdx = key.indexOf(sep);
+        if (sepIdx !== -1) {
+          const keyClient = key.slice(0, sepIdx);
+          const keyFlag = key.slice(sepIdx + sep.length);
+          if (keyClient === client.clientName) {
+            precomputedForClient[keyFlag] = result;
+          }
+        } else {
+          // Plain flagType key (set by on-demand analysis in current session)
+          precomputedForClient[key] = result;
+        }
+      });
+      setNoActionAnalysis(precomputedForClient);
       
       if (filteredAlerts.length === 0) {
         // No actionable alerts — only go to clearFlags if no-action flags are all resolved too

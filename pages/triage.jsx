@@ -1688,7 +1688,7 @@ export default function TriageSystem({ onBack }) {
                                   </div>
                                 )}
                                 {/* Info message (no job breakdown) */}
-                                {r.message && !r.checks && (
+                                {r.message && (!r.checks || r.checks.length === 0) && (
                                   <div style={{ fontSize: "12px", color: "#666" }}>{r.message}</div>
                                 )}
                                 {/* Check lines */}

@@ -3161,6 +3161,9 @@ Return ONLY JSON, no other text.`;
             return details.includes("Retainer") && details.includes("Added") && details.includes("invoice rows");
           });
           console.log(`  ✓ Found ${retainerLogEntries.length} retainer creation entries in window`);
+          for (const entry of retainerLogEntries) {
+            console.log(`    [${entry[0]}] Details="${String(entry[3]||"").slice(0, 400)}"`);
+          }
 
           if (retainerLogEntries.length === 0) {
             results.push({
@@ -3181,7 +3184,7 @@ Return ONLY JSON, no other text.`;
             // Deduplicate by sheetRow
             const seenRows = new Set();
             const dedupedJobs = affectedRetainerJobs.filter(j => { if (seenRows.has(j.sheetRow)) return false; seenRows.add(j.sheetRow); return true; });
-            console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs`);
+            console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
 
             // Read Confirmed tab
             const retConfirmedResp = await sheets.spreadsheets.values.get({
@@ -3199,6 +3202,7 @@ Return ONLY JSON, no other text.`;
               const revenue = parentRow[32];
               const startRaw = parentRow[37];
               const endRaw = parentRow[38];
+              console.log(`  Row ${job.sheetRow} in Confirmed: client="${clientN}", job="${jobName}", code="${projectCode}", revenue="${revenue}", start="${startRaw}", end="${endRaw}"`);
 
               if (!jobName) {
                 retainerChecks.push({
@@ -3238,7 +3242,8 @@ Return ONLY JSON, no other text.`;
               if (!startDate || !endDate) {
                 retainerChecks.push({
                   jobName, clientName: clientN, projectCode, status: "info",
-                  checks: [{ ok: false, message: `Cannot parse start/end dates: "${startRaw}" → "${endRaw}"` }],
+                  message: `No start/end dates set on this retainer — cannot verify invoice coverage`,
+                  checks: [],
                 });
                 continue;
               }

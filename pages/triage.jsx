@@ -399,6 +399,7 @@ export default function TriageSystem({ onBack }) {
 
       // Seed analysis results from precomputed data if available for this client
       const precomputedForClient = {};
+      console.log(`  Unpacking noActionAnalysis keys for ${client.clientName}:`, Object.keys(noActionAnalysis));
       Object.entries(noActionAnalysis).forEach(([key, result]) => {
         // Keys are stored as "clientName___flagType" by the GAS precompute
         const sep = "___";
@@ -408,12 +409,14 @@ export default function TriageSystem({ onBack }) {
           const keyFlag = key.slice(sepIdx + sep.length);
           if (keyClient === client.clientName) {
             precomputedForClient[keyFlag] = result;
+            console.log(`    ✓ Matched precomputed result: ${keyFlag}`);
           }
         } else {
           // Plain flagType key (set by on-demand analysis in current session)
           precomputedForClient[key] = result;
         }
       });
+      console.log(`  precomputedForClient keys:`, Object.keys(precomputedForClient));
       setNoActionAnalysis(precomputedForClient);
       
       if (filteredAlerts.length === 0) {

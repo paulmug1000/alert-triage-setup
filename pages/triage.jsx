@@ -19,6 +19,33 @@ function getAlertSummary(alert) {
   return "Alert";
 }
 
+// Inline spinner SVG — shown inside buttons during async operations
+function Spinner({ size = 14, color = "currentColor" }) {
+  return (
+    <svg
+      width={size} height={size}
+      viewBox="0 0 24 24" fill="none"
+      style={{ display: "inline-block", verticalAlign: "middle", marginRight: "6px", animation: "triage-spin 0.7s linear infinite" }}
+    >
+      <circle cx="12" cy="12" r="10" stroke={color} strokeWidth="3" strokeOpacity="0.25" />
+      <path d="M12 2a10 10 0 0 1 10 10" stroke={color} strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// Global styles injected once — handles :hover/:active which React inline styles can't do
+const GLOBAL_STYLES = `
+  @keyframes triage-spin { to { transform: rotate(360deg); } }
+  .triage-btn { transition: filter 0.15s, transform 0.1s, background 0.15s, box-shadow 0.15s !important; }
+  .triage-btn:hover:not(:disabled) { filter: brightness(0.92); box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+  .triage-btn:active:not(:disabled) { transform: scale(0.97); filter: brightness(0.85); }
+  .triage-btn:disabled { cursor: not-allowed !important; opacity: 0.55 !important; }
+  .triage-btn-primary:hover:not(:disabled) { background: #0055aa !important; }
+  .triage-client-card { transition: background 0.12s, border-color 0.12s, box-shadow 0.12s !important; }
+  .triage-client-card:hover { background: #f0f4ff !important; border-color: #2196f3 !important; box-shadow: 0 2px 8px rgba(33,150,243,0.15) !important; }
+  .triage-client-card:active { background: #e3ecff !important; transform: scale(0.995); }
+`;
+
 export default function TriageSystem({ onBack }) {
   const AUTOMATION_COMMANDER_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
   const [automationCommanderSheetId] = useState(AUTOMATION_COMMANDER_SHEET_ID);
@@ -51,6 +78,7 @@ export default function TriageSystem({ onBack }) {
   const [showIgnoreModal, setShowIgnoreModal] = useState(false);
   const [ignoreReason, setIgnoreReason] = useState("");
   const [isIgnoring, setIsIgnoring] = useState(false);
+  const [selectingClient, setSelectingClient] = useState(null); // clientName being loaded
   const [ignoredAlerts, setIgnoredAlerts] = useState([]);
   const [isLoadingIgnored, setIsLoadingIgnored] = useState(false);
   const [isUnignoring, setIsUnignoring] = useState(null);
@@ -356,7 +384,7 @@ export default function TriageSystem({ onBack }) {
   const selectClient = async (client) => {
     try {
       console.log(`\n📍 selectClient called: ${client.clientName}`);
-      
+      setSelectingClient(client.clientName);
       setSelectedClient(client);
       setCurrentClientAlertIndex(0);
       setAcceptError("");
@@ -441,6 +469,8 @@ export default function TriageSystem({ onBack }) {
       console.error(`❌ selectClient error: ${err.message}`);
       setAcceptError(`Failed to select client: ${err.message}`);
       console.error(err);
+    } finally {
+      setSelectingClient(null);
     }
   };
 
@@ -627,6 +657,7 @@ export default function TriageSystem({ onBack }) {
           masterSheetId: selectedClient.masterSheetId,
           automationCommanderSheetId,
           flagsToClear: selected,
+          clientName: selectedClient.clientName,
         }),
       });
 
@@ -1247,6 +1278,7 @@ export default function TriageSystem({ onBack }) {
   if (screen === "ignoredAlerts") {
     return (
       <>
+        <style>{GLOBAL_STYLES}</style>
         <Head><title>Alert Triage System</title></Head>
         <div style={styles.container}>
           <div style={styles.header}>
@@ -1280,7 +1312,7 @@ export default function TriageSystem({ onBack }) {
                         </div>
                       )}
                     </div>
-                    <button
+                    <button className="triage-btn"
                       onClick={() => unignoreAlert(a.fingerprintHash)}
                       disabled={isUnignoring === a.fingerprintHash}
                       style={{
@@ -1295,7 +1327,7 @@ export default function TriageSystem({ onBack }) {
               </div>
             )}
 
-            <button
+            <button className="triage-btn"
               onClick={() => { setAcceptError(""); setScreen("clientSelection"); }}
               style={{ ...styles.buttonSecondary, marginTop: "20px" }}
             >
@@ -1319,6 +1351,7 @@ export default function TriageSystem({ onBack }) {
     if (activeClients.length === 0) {
       return (
         <>
+          <style>{GLOBAL_STYLES}</style>
           <Head><title>Alert Triage System</title></Head>
           <div style={styles.container}>
             <div style={styles.header}>
@@ -1327,7 +1360,7 @@ export default function TriageSystem({ onBack }) {
             </div>
             <div style={styles.card}>
               <div style={styles.successBanner}>✓ No outstanding alerts or flags</div>
-              <button onClick={refreshTriage} style={{ ...styles.buttonSecondary, marginTop: "16px" }}>
+              <button className="triage-btn" onClick={refreshTriage} style={{ ...styles.buttonSecondary, marginTop: "16px" }}>
                 ↻ Refresh
               </button>
             </div>
@@ -1338,6 +1371,7 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
+        <style>{GLOBAL_STYLES}</style>
         <Head>
           <title>Alert Triage System</title>
         </Head>
@@ -1383,27 +1417,22 @@ export default function TriageSystem({ onBack }) {
                   <button
                     key={idx}
                     onClick={() => selectClient(client)}
+                    className="triage-client-card"
+                    disabled={selectingClient !== null}
                     style={{
                       ...styles.optionButton,
                       textAlign: "left",
                       padding: "16px",
-                      border: "1px solid #ddd",
+                      border: `1px solid ${selectingClient === client.clientName ? "#2196f3" : "#ddd"}`,
                       borderRadius: "6px",
-                      cursor: "pointer",
-                      backgroundColor: "#f9f9f9",
-                      transition: "all 0.2s",
+                      cursor: selectingClient !== null ? "wait" : "pointer",
+                      backgroundColor: selectingClient === client.clientName ? "#e8f0fe" : "#f9f9f9",
                       width: "100%",
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = "#f0f0f0";
-                      e.currentTarget.style.borderColor = "#2196f3";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = "#f9f9f9";
-                      e.currentTarget.style.borderColor = "#ddd";
+                      opacity: selectingClient !== null && selectingClient !== client.clientName ? 0.5 : 1,
                     }}
                   >
-                    <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px" }}>
+                    <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px", display: "flex", alignItems: "center", gap: "8px" }}>
+                      {selectingClient === client.clientName && <Spinner size={13} />}
                       {client.clientName}
                     </div>
                     {actionableLines.map((line, i) => (
@@ -1423,7 +1452,7 @@ export default function TriageSystem({ onBack }) {
           )}
 
           <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <button
+            <button className="triage-btn"
               onClick={() => {
                 setScreen("ignoredAlerts");
                 loadIgnoredAlerts();
@@ -1432,7 +1461,7 @@ export default function TriageSystem({ onBack }) {
             >
               View ignored alerts →
             </button>
-            <button
+            <button className="triage-btn"
               onClick={refreshTriage}
               disabled={isLoading}
               style={{
@@ -1442,7 +1471,7 @@ export default function TriageSystem({ onBack }) {
                 opacity: isLoading ? 0.5 : 1,
               }}
             >
-              {isLoading ? "Refreshing..." : "↻ Refresh"}
+              {isLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
             </button>
           </div>
         </div>
@@ -1467,6 +1496,7 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
+        <style>{GLOBAL_STYLES}</style>
         <Head>
           <title>Alert Triage System</title>
         </Head>
@@ -1495,7 +1525,7 @@ export default function TriageSystem({ onBack }) {
                   </h3>
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                     {groupedAlerts[type].map((alert, idx) => (
-                      <button
+                      <button className="triage-btn"
                         key={idx}
                         onClick={() => selectAlert(alert)}
                         style={{
@@ -1559,7 +1589,7 @@ export default function TriageSystem({ onBack }) {
                           </span>
                           <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
                             {!analysis && !isLoading && (
-                              <button
+                              <button className="triage-btn"
                                 onClick={() => analyzeNoActionFlag(na.flagType)}
                                 style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
                               >
@@ -1567,17 +1597,17 @@ export default function TriageSystem({ onBack }) {
                               </button>
                             )}
                             {isLoading && (
-                              <span style={{ fontSize: "12px", color: "#888", padding: "5px 10px" }}>Analysing…</span>
+                              <span style={{ fontSize: "12px", color: "#888", padding: "5px 10px", display: "inline-flex", alignItems: "center" }}><Spinner size={12} />Analysing…</span>
                             )}
                             {analysis && !isLoading && (
-                              <button
+                              <button className="triage-btn"
                                 onClick={() => analyzeNoActionFlag(na.flagType)}
                                 style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
                               >
                                 ↻ Re-run
                               </button>
                             )}
-                            <button
+                            <button className="triage-btn"
                               onClick={() => {
                                 setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
                                 // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
@@ -1701,7 +1731,7 @@ export default function TriageSystem({ onBack }) {
                           ✓ Resolved
                         </span>
                       ) : (
-                        <button
+                        <button className="triage-btn"
                           onClick={() => {
                                 setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
                                 // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
@@ -1743,10 +1773,10 @@ export default function TriageSystem({ onBack }) {
 
           {/* Bottom button row — always visible */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "20px" }}>
-            <button onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
+            <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
               ← Back to Clients
             </button>
-            <button
+            <button className="triage-btn"
               onClick={() => {
                 setFlagsToClear(computeFlagGroups(selectedClient, clientAlerts));
                 setScreen("clearFlags");
@@ -1793,6 +1823,7 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
+        <style>{GLOBAL_STYLES}</style>
         <Head><title>Alert Triage System</title></Head>
         <div style={styles.container}>
           <div style={styles.header}>
@@ -1809,13 +1840,13 @@ export default function TriageSystem({ onBack }) {
 
             {/* Select All / None toggle */}
             <div style={{ display: "flex", gap: "10px", marginBottom: "14px" }}>
-              <button
+              <button className="triage-btn"
                 onClick={() => setFlagsToClear({ invoice: true, crm: true, expense: true })}
                 style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
               >
                 Select All
               </button>
-              <button
+              <button className="triage-btn"
                 onClick={() => setFlagsToClear({ invoice: false, crm: false, expense: false })}
                 style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
               >
@@ -1858,7 +1889,7 @@ export default function TriageSystem({ onBack }) {
             })}
 
             <div style={{ display: "flex", gap: "12px", flexDirection: "column", marginTop: "20px" }}>
-              <button
+              <button className="triage-btn triage-btn-primary"
                 onClick={clearSelectedFlags}
                 disabled={isLoading || noneChecked}
                 style={{
@@ -1867,14 +1898,14 @@ export default function TriageSystem({ onBack }) {
                 }}
               >
                 {isLoading
-                  ? "Clearing..."
+                  ? <><Spinner color="white" />Clearing...</>
                   : allChecked
                   ? "✓ Clear All Flags"
                   : anyActive
-                  ? `✓ Clear Selected Flags`
+                  ? "✓ Clear Selected Flags"
                   : "Select flags to clear"}
               </button>
-              <button onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
+              <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
                 ← Back to Clients
               </button>
             </div>
@@ -1888,6 +1919,7 @@ export default function TriageSystem({ onBack }) {
   if (!sessionId && !triageComplete) {
     return (
       <>
+        <style>{GLOBAL_STYLES}</style>
         <Head><title>Alert Triage System</title></Head>
         <div style={styles.container}>
           <div style={styles.header}>
@@ -1898,17 +1930,17 @@ export default function TriageSystem({ onBack }) {
             {error ? (
               <>
                 <div style={styles.errorBanner}>{error}</div>
-                <button
+                <button className="triage-btn"
                   onClick={startTriage}
                   disabled={isLoading}
                   style={{ ...styles.button, marginTop: "12px", opacity: isLoading ? 0.5 : 1 }}
                 >
-                  {isLoading ? "Loading..." : "Retry →"}
+                  {isLoading ? <><Spinner color="white" />Loading...</> : "Retry →"}
                 </button>
               </>
             ) : (
               <p style={styles.loadingText}>
-                {isLoading ? "Loading alerts..." : "Initialising..."}
+                {isLoading ? <><Spinner color="white" />Loading alerts...</> : "Initialising..."}
               </p>
             )}
           </div>
@@ -1932,11 +1964,11 @@ export default function TriageSystem({ onBack }) {
           </div>
 
           <div style={styles.buttonGroup}>
-            <button onClick={startTriage} style={styles.button}>
+            <button className="triage-btn triage-btn-primary" onClick={startTriage} style={styles.button}>
               Refresh →
             </button>
             {onBack && (
-              <button onClick={onBack} style={styles.buttonSecondary}>
+              <button className="triage-btn" onClick={onBack} style={styles.buttonSecondary}>
                 ← Back to Menu
               </button>
             )}
@@ -1953,6 +1985,7 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
+        <style>{GLOBAL_STYLES}</style>
         <Head>
           <title>Alert Triage System</title>
         </Head>
@@ -2269,7 +2302,7 @@ export default function TriageSystem({ onBack }) {
                         {option.summary && !option.businessLogic && (
                           <div style={styles.optionSummary}>{option.summary}</div>
                         )}
-                        <button
+                        <button className="triage-btn triage-btn-primary"
                           onClick={() => acceptOption(option)}
                           disabled={isAccepting}
                           style={{
@@ -2280,7 +2313,7 @@ export default function TriageSystem({ onBack }) {
                             opacity: isAccepting ? 0.5 : 1,
                           }}
                         >
-                          {isAccepting ? "Writing to sheet..." : `✓ Accept Option ${idx + 1}`}
+                          {isAccepting ? <><Spinner color="white" />Writing to sheet...</> : `✓ Accept Option ${idx + 1}`}
                         </button>
                       </div>
                     ));
@@ -2306,10 +2339,10 @@ export default function TriageSystem({ onBack }) {
           )}
 
           <div style={{ marginTop: "16px", display: "flex", gap: "12px" }}>
-            <button onClick={() => { setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={styles.buttonSecondary}>
+            <button className="triage-btn" onClick={() => { setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={styles.buttonSecondary}>
               ← Back to Alerts
             </button>
-            <button
+            <button className="triage-btn"
               onClick={() => {
                 const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
                 setClientAlerts(updatedAlerts);
@@ -2320,7 +2353,7 @@ export default function TriageSystem({ onBack }) {
             >
               ⏭ Skip Alert
             </button>
-            <button
+            <button className="triage-btn"
               onClick={() => setShowIgnoreModal(true)}
               style={{ ...styles.buttonSecondary, color: "#c62828", borderColor: "#ef9a9a" }}
             >
@@ -2345,18 +2378,18 @@ export default function TriageSystem({ onBack }) {
                   autoFocus
                 />
                 <div style={styles.modalButtons}>
-                  <button
+                  <button className="triage-btn"
                     onClick={() => { setShowIgnoreModal(false); setIgnoreReason(""); }}
                     style={styles.buttonSecondary}
                   >
                     Cancel
                   </button>
-                  <button
+                  <button className="triage-btn"
                     onClick={ignoreAlert}
                     disabled={isIgnoring}
                     style={{ ...styles.ignoreButton, opacity: isIgnoring ? 0.5 : 1 }}
                   >
-                    {isIgnoring ? "Ignoring..." : "🚫 Confirm Ignore"}
+                    {isIgnoring ? <><Spinner />Ignoring...</> : "🚫 Confirm Ignore"}
                   </button>
                 </div>
               </div>
@@ -2409,12 +2442,12 @@ export default function TriageSystem({ onBack }) {
 
           <div style={styles.buttonGroup}>
             {totalAlerts > 0 && (
-              <button onClick={() => setShowNoAction(false)} style={styles.buttonSecondary}>
+              <button className="triage-btn" onClick={() => setShowNoAction(false)} style={styles.buttonSecondary}>
                 ← Back to Actionable Alerts
               </button>
             )}
             {allAcknowledged && (
-              <button
+              <button className="triage-btn"
                 onClick={() => setTriageComplete(true)}
                 style={styles.button}
               >

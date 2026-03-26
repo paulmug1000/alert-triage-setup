@@ -477,6 +477,16 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
     const flagRows = flagsResponse.data.values || [];
     console.log(`  ✓ Got ${flagRows.length} flag rows`);
 
+    // Also fetch clear-command columns (BI:BN) to suppress flags that are pending clearance.
+    // If a clear command has been sent, the flag is in-progress of being cleared — don't show it.
+    // BI(0)=Clear invoice, BJ(1)=Clear CRM, BK(2)=Clear copied-to-conf, BL(3)=Clear expense, BN(5)=Clear all
+    const clearResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!BI2:BN1000",
+    });
+    const clearRows = clearResponse.data.values || [];
+    console.log(`  ✓ Got ${clearRows.length} clear-command rows`);
+
     const clients = [];
 
     // rows are from A2:M, so:
@@ -533,6 +543,46 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         expenseUnreconGaps: String(flagRow[105] || "").toUpperCase() === "TRUE", // GX
         invoiceStaleUnsentChanges: String(flagRow[112] || "").toUpperCase() === "TRUE", // HE
       };
+
+      // Suppress flags that have a pending clear command (BI:BN)
+      // Clear command = TRUE means the user already sent a clear — flag is being processed
+      const clearRow = clearRows[i] || [];
+      const isTrue = (v) => String(v || "").toUpperCase() === "TRUE";
+      const clearInvoice  = isTrue(clearRow[0]); // BI
+      const clearCRM      = isTrue(clearRow[1]); // BJ
+      const clearCopied   = isTrue(clearRow[2]); // BK
+      const clearExpense  = isTrue(clearRow[3]); // BL
+      const clearAll      = isTrue(clearRow[5]); // BN
+
+      if (clearAll || clearInvoice) {
+        flags.invoiceDashboardDiscr = false;
+        flags.invoiceAppDiscr = false;
+        flags.invoiceStaleUnsentChanges = false;
+        flags.retainerInvoicesCreated = false;
+      }
+      if (clearAll || clearCRM) {
+        flags.crmPipeDashDiscr = false;
+        flags.crmPipeAppDiscr = false;
+        flags.crmConfDashDiscr = false;
+        flags.crmConfAppDiscr = false;
+        flags.crmPipeSkippedBlank = false;
+        flags.crmConfSkippedBlank = false;
+      }
+      if (clearAll || clearCopied) {
+        flags.crmCopiedConfChecked = false;
+        flags.crmCopiedConfUnchecked = false;
+        flags.crmCopiedConfDelete = false;
+      }
+      if (clearAll || clearExpense) {
+        flags.expenseDashboardDiscr = false;
+        flags.expenseAppDiscr = false;
+        flags.expenseAdded = false;
+        flags.expenseUnreconGaps = false;
+      }
+
+      if (clearInvoice || clearCRM || clearCopied || clearExpense || clearAll) {
+        console.log(`    ⏭ Clear pending for ${clientName}: inv=${clearInvoice} crm=${clearCRM} copied=${clearCopied} exp=${clearExpense} all=${clearAll} — suppressing affected flags`);
+      }
 
       const hasFlags = Object.values(flags).some(v => v);
 
@@ -3263,7 +3313,7 @@ Return ONLY JSON, no other text.`;
       //   invoice → AS2
       //   crm     → AT2 + AU2
       //   expense → AV2
-      const { masterSheetId, automationCommanderSheetId, flagsToClear } = req.body;
+      const { masterSheetId, automationCommanderSheetId, flagsToClear, clientName } = req.body;
       
       if (!masterSheetId || !automationCommanderSheetId || !flagsToClear || flagsToClear.length === 0) {
         return res.status(400).json({ 
@@ -3297,7 +3347,7 @@ Return ONLY JSON, no other text.`;
           });
         }
 
-        // Build the list of cells to write TRUE to
+        // Build the list of cells to write TRUE to in DataChgAlert
         const cellsToWrite = [];
         if (flagsToClear.includes("invoice")) {
           cellsToWrite.push("DataChgAlert!AS2");
@@ -3328,6 +3378,57 @@ Return ONLY JSON, no other text.`;
         });
 
         console.log(`  ✅ Flags cleared successfully`);
+
+        // Also zero out the flag columns in AutoUpdates (Automation Commander) immediately.
+        // clear_flags writes to DataChgAlert which signals the GAS to clear AutoUpdates,
+        // but GAS only runs every 30 mins. If the user clicks Refresh before then,
+        // start_triage re-reads AutoUpdates and sees the flags as still active.
+        // Writing FALSE directly here ensures Refresh sees the correct state immediately.
+        if (clientName && automationCommanderSheetId) {
+          try {
+            const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
+            // Map flag groups to their AutoUpdates columns (A=1, CW=101, FA=157, etc.)
+            const FLAG_GROUP_COLUMNS = {
+              invoice: ["CW", "DD", "HE"],   // invoiceDashboardDiscr, invoiceAppDiscr, invoiceStaleUnsentChanges
+              crm:     ["DK", "DR", "DY", "EF", "EM", "ET", "FA", "FH", "FO"], // all CRM flags
+              expense: ["GC", "GJ", "GQ", "GX"], // all expense flags
+            };
+            // Find the client row in AutoUpdates (col A = client name, starting row 2)
+            const namesResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: acIdClean,
+              range: "AutoUpdates!A2:A1000",
+            });
+            const nameRows = namesResp.data.values || [];
+            let clientRowNum = -1;
+            for (let i = 0; i < nameRows.length; i++) {
+              if (String(nameRows[i]?.[0] || "").trim() === clientName.trim()) {
+                clientRowNum = i + 2; // 1-indexed, starts at row 2
+                break;
+              }
+            }
+            if (clientRowNum !== -1) {
+              const colsToZero = flagsToClear.flatMap(group => FLAG_GROUP_COLUMNS[group] || []);
+              if (colsToZero.length > 0) {
+                await sheets.spreadsheets.values.batchUpdate({
+                  spreadsheetId: acIdClean,
+                  requestBody: {
+                    valueInputOption: "RAW",
+                    data: colsToZero.map(col => ({
+                      range: `AutoUpdates!${col}${clientRowNum}`,
+                      values: [["FALSE"]],
+                    })),
+                  },
+                });
+                console.log(`  ✅ AutoUpdates zeroed for ${clientName} row ${clientRowNum}: ${colsToZero.join(", ")}`);
+              }
+            } else {
+              console.log(`  ⚠ Client "${clientName}" not found in AutoUpdates — skipping AutoUpdates zero`);
+            }
+          } catch (auErr) {
+            console.error(`  ⚠ Failed to zero AutoUpdates: ${auErr.message}`);
+            // Non-fatal — DataChgAlert write was the important part
+          }
+        }
         
         return res.status(200).json({
           success: true,

@@ -1561,11 +1561,22 @@ export default function TriageSystem({ onBack }) {
                             <button
                               onClick={() => {
                                 setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
+                                // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
+                                setClientsWithFlags(prev => prev.map(c => {
+                                  if (c.clientName !== selectedClient?.clientName) return c;
+                                  return { ...c, flags: { ...c.flags, [na.flagType]: false } };
+                                }));
                                 if (sessionId && selectedClient) {
+                                  // Persist to Redis session and clear from precomputed cache
                                   fetch("/api/triage", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType }),
+                                  }).catch(() => {});
+                                  fetch("/api/triage", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
                                   }).catch(() => {});
                                 }
                               }}
@@ -1674,11 +1685,22 @@ export default function TriageSystem({ onBack }) {
                         <button
                           onClick={() => {
                                 setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
+                                // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
+                                setClientsWithFlags(prev => prev.map(c => {
+                                  if (c.clientName !== selectedClient?.clientName) return c;
+                                  return { ...c, flags: { ...c.flags, [na.flagType]: false } };
+                                }));
                                 if (sessionId && selectedClient) {
+                                  // Persist to Redis session and clear from precomputed cache
                                   fetch("/api/triage", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType }),
+                                  }).catch(() => {});
+                                  fetch("/api/triage", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
                                   }).catch(() => {});
                                 }
                               }}

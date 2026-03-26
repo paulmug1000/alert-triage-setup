@@ -5,10 +5,13 @@ import Head from "next/head";
 function getAlertSummary(alert) {
   if (alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr") {
     const inv = alert.summary;
-    return `Invoice #${inv?.invoiceNo || inv?.reference || "?"} - £${inv?.amount?.toFixed(2) || "?"}`;
+    const vatLabel = inv?.vatIncluded && inv.vatIncluded > 0 ? " +VAT" : " (no VAT)";
+    return `Invoice #${inv?.invoiceNo || inv?.reference || "?"} - £${inv?.amount?.toFixed(2) || "?"}${vatLabel}`;
   } else if (alert.type === "expense" || alert.flagType === "expenseDashboardDiscr") {
     const exp = alert.summary;
-    return `${exp?.description || "Expense"} - £${exp?.amount?.toFixed(2) || "?"}`;
+    const vat = parseFloat(String(exp?.vatAmount || "0").replace(/[£$€,\s]/g, "")) || 0;
+    const vatLabel = vat > 0 ? " +VAT" : " (no VAT)";
+    return `${exp?.description || "Expense"} - £${exp?.amount?.toFixed(2) || "?"}${vatLabel}`;
   } else if (alert.type === "crm" || alert.flagType?.includes("crm")) {
     const crm = alert.data;
     return `${crm?.projectCode || "Project"} - £${crm?.revenue || "?"}`;
@@ -1622,24 +1625,21 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
-          {/* Proceed to Clear Flags — only shown when everything is done */}
-          {canProceed && (
-            <div style={{ marginTop: "16px" }}>
-              <button
-                onClick={() => {
-                  setFlagsToClear(computeFlagGroups(selectedClient));
-                  setScreen("clearFlags");
-                }}
-                style={styles.button}
-              >
-                All Done → Clear Flags
-              </button>
-            </div>
-          )}
-
-          <button onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, marginTop: "12px" }}>
-            ← Back to Clients
-          </button>
+          {/* Bottom button row — always visible */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "20px" }}>
+            <button onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
+              ← Back to Clients
+            </button>
+            <button
+              onClick={() => {
+                setFlagsToClear(computeFlagGroups(selectedClient));
+                setScreen("clearFlags");
+              }}
+              style={styles.buttonSecondary}
+            >
+              Clear Flags →
+            </button>
+          </div>
         </div>
         </div>
       </>
@@ -1874,7 +1874,10 @@ export default function TriageSystem({ onBack }) {
                   <>
                     {alert.summary.reference && <div><strong>Reference:</strong> {alert.summary.reference}</div>}
                     {alert.summary.description && <div><strong>Description:</strong> {alert.summary.description}</div>}
-                    <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}</div>
+                    <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{(() => {
+                      const vat = parseFloat(String(alert.summary.vatAmount || "0").replace(/[£$€,\s]/g, "")) || 0;
+                      return vat > 0 ? " +VAT" : " (no VAT)";
+                    })()}</div>
                     {alert.summary.date && <div><strong>Date:</strong> {alert.summary.date}</div>}
                     {alert.summary.accountName && <div><strong>Account Name:</strong> {alert.summary.accountName}</div>}
                     {alert.summary.status && <div><strong>Status:</strong> {alert.summary.status}</div>}
@@ -1884,7 +1887,7 @@ export default function TriageSystem({ onBack }) {
                   // Invoice display
                   <>
                     <div><strong>Invoice:</strong> {alert.summary.invoiceNo}</div>
-                    <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{alert.summary.vatIncluded && alert.summary.vatIncluded > 0 ? ' + VAT' : ''}</div>
+                    <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{alert.summary.vatIncluded && alert.summary.vatIncluded > 0 ? " +VAT" : " (no VAT)"}</div>
                     <div><strong>Client:</strong> {alert.summary.client}</div>
                     {alert.summary.job && <div><strong>Description:</strong> {alert.summary.job}</div>}
                     {alert.summary.sentDate && <div><strong>Sent:</strong> {alert.summary.sentDate}</div>}

@@ -398,8 +398,16 @@ export default function TriageSystem({ onBack }) {
       
       setClientAlerts(filteredAlerts);
       setClientNoActionAlerts(filteredNoAction);
-      setResolvedNoActionFlags(new Set()); // reset on each client selection
       setNoActionAnalysisLoading({});      // reset loading state
+
+      // Restore resolved noAction flags from Redis session for this client
+      const sessionResolved = (data.resolvedNoActionFlags || []);
+      const restoredResolved = new Set(
+        sessionResolved
+          .filter(key => key.startsWith(client.clientName + "___"))
+          .map(key => key.slice(client.clientName.length + 3))
+      );
+      setResolvedNoActionFlags(restoredResolved);
 
       // Seed analysis results from precomputed data for this client only
       // precomputedNoActionResults is keyed as "clientName___flagType" and never wiped
@@ -1537,7 +1545,16 @@ export default function TriageSystem({ onBack }) {
                               </button>
                             )}
                             <button
-                              onClick={() => setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]))}
+                              onClick={() => {
+                                setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
+                                if (sessionId && selectedClient) {
+                                  fetch("/api/triage", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType }),
+                                  }).catch(() => {});
+                                }
+                              }}
                               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
                             >
                               ✓ Mark resolved
@@ -1641,7 +1658,16 @@ export default function TriageSystem({ onBack }) {
                         </span>
                       ) : (
                         <button
-                          onClick={() => setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]))}
+                          onClick={() => {
+                                setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
+                                if (sessionId && selectedClient) {
+                                  fetch("/api/triage", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType }),
+                                  }).catch(() => {});
+                                }
+                              }}
                           style={{
                             ...styles.buttonSecondary,
                             fontSize: "12px",

@@ -1359,18 +1359,46 @@ export default async function handler(req, res) {
         alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
       }
 
+      const clientsWithFlagsSlim = clientsWithFlags.map(client => ({
+        clientName: client.clientName,
+        clientSheetId: client.clientSheetId,
+        masterSheetId: client.masterSheetId,
+        flags: client.flags,
+        alertCounts: alertCountsByClientAndFlag[client.clientName] || {},
+      }));
+
+      // Also update the precomputed cache so a full page reload shows fresh data.
+      // Preserve any existing noActionAnalysisResults from the previous precompute run.
+      try {
+        const existingRaw = await redisClient.get(PRECOMPUTED_KEY);
+        const existingNoActionAnalysis = existingRaw
+          ? (JSON.parse(existingRaw).noActionAnalysisResults || {})
+          : {};
+        await redisClient.set(
+          PRECOMPUTED_KEY,
+          JSON.stringify({
+            computedAt: Date.now(),
+            totalAlerts: filteredAlerts.length,
+            noActionCount: noActionAlerts.length,
+            alerts: filteredAlerts,
+            noActionAlerts,
+            clientsWithFlags: clientsWithFlagsSlim,
+            noActionAnalysisResults: existingNoActionAnalysis,
+          }),
+          { EX: 14400 }
+        );
+        console.log(`  ✓ Precomputed cache updated (${filteredAlerts.length} alerts)`);
+      } catch (cacheErr) {
+        console.error(`  ⚠ Failed to update precomputed cache: ${cacheErr.message}`);
+        // Non-fatal — session still works
+      }
+
       res.status(200).json({
         success: true,
         sessionId,
         totalAlerts: filteredAlerts.length,
         noActionCount: noActionAlerts.length,
-        clientsWithFlags: clientsWithFlags.map(client => ({
-          clientName: client.clientName,
-          clientSheetId: client.clientSheetId,
-          masterSheetId: client.masterSheetId,
-          flags: client.flags,
-          alertCounts: alertCountsByClientAndFlag[client.clientName] || {},
-        })),
+        clientsWithFlags: clientsWithFlagsSlim,
       });
     } else if (action === "get_alerts") {
       // Get alerts for a session from Redis
@@ -1394,7 +1422,7 @@ export default async function handler(req, res) {
           return;
         }
 
-        const { alerts, noActionAlerts, clientsWithFlags } = JSON.parse(sessionData);
+        const { alerts, noActionAlerts, clientsWithFlags, resolvedNoActionFlags } = JSON.parse(sessionData);
         console.log(`✅ Retrieved ${alerts.length} alerts from Redis for session ${sessionId}`);
         
         res.status(200).json({
@@ -1402,6 +1430,7 @@ export default async function handler(req, res) {
           alerts,
           noActionAlerts,
           clientsWithFlags,
+          resolvedNoActionFlags: resolvedNoActionFlags || [],
         });
       } catch (err) {
         console.error("❌ Error retrieving alerts:", err);
@@ -3300,8 +3329,7 @@ Return ONLY JSON, no other text.`;
       }
     } else if (action === "remove_alert") {
       // Remove a specific alert from the Redis session after it's been accepted/ignored.
-      // This ensures the session stays current so reloads show resolved state.
-      const { sessionId, alertId } = req.body; // alertId = "SheetName-rowNumber"
+      const { sessionId, alertId } = req.body;
       if (!sessionId || !alertId) {
         return res.status(400).json({ success: false, error: "Missing sessionId or alertId" });
       }
@@ -3317,6 +3345,30 @@ Return ONLY JSON, no other text.`;
         return res.status(200).json({ success: true, removed });
       } catch (err) {
         console.error("❌ Error removing alert from session:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "resolve_noaction_flag") {
+      // Mark a noAction flag as resolved in the Redis session so it persists across reloads.
+      // resolvedNoActionFlags is stored as a set of "clientName___flagType" strings.
+      const { sessionId, clientName, flagType } = req.body;
+      if (!sessionId || !clientName || !flagType) {
+        return res.status(400).json({ success: false, error: "Missing sessionId, clientName, or flagType" });
+      }
+      try {
+        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+        if (!sessionData) return res.status(200).json({ success: true, notFound: true });
+        const parsed = JSON.parse(sessionData);
+        if (!parsed.resolvedNoActionFlags) parsed.resolvedNoActionFlags = [];
+        const key = `${clientName}___${flagType}`;
+        if (!parsed.resolvedNoActionFlags.includes(key)) {
+          parsed.resolvedNoActionFlags.push(key);
+        }
+        await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 });
+        console.log(`  resolve_noaction_flag: marked "${key}" as resolved`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ Error resolving noAction flag:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

@@ -2933,13 +2933,25 @@ Return ONLY JSON, no other text.`;
               for (const line of lines) {
                 if (!line.includes("Copied Status:")) continue;
                 if (!line.includes("-> 'Yes'") && !line.includes("-> \"Yes\"")) continue;
-                // Extract client | job from: "Updated Pipeline: Row N, ClientName | JobName - ..."
-                // Job name ends at " - " (space-hyphen-space) which separates it from the change details.
-                // We must NOT stop at bare hyphens since job names can contain them (e.g. "Gong-cha digital framework")
-                const jobMatch = line.match(/Row\s*\d+,\s*([^|]*)\|\s*(.+?)\s+-\s+/);
-                if (jobMatch) {
-                  const clientParsed = jobMatch[1].trim();
-                  const jobName = jobMatch[2].trim();
+                // Extract client | job from: "Updated Pipeline: Row N, ClientName | JobName - FieldName: ..."
+                // Job names can contain " - " (e.g. "Grace & Co (Delta) - Prototype"), so we can't
+                // simply stop at the first " - ". Instead, find the first known change-field keyword
+                // (Start date:, End date:, Copied Status:, etc.) then take the last " - " before it.
+                const pipeIdx = line.indexOf("|");
+                if (pipeIdx !== -1) {
+                  const rowMatch = line.match(/Row\s*\d+,\s*([^|]*)/);
+                  const clientParsed = rowMatch ? rowMatch[1].trim() : "";
+                  const afterPipe = line.slice(pipeIdx + 1).trim();
+                  const knownFields = ["Start date:", "End date:", "Job name:", "Date originally",
+                    "Direct costs:", "Prod. line:", "% likel.", "Copied Status:", "Revenue:", "Type:", "VAT"];
+                  let firstFieldPos = afterPipe.length;
+                  for (const field of knownFields) {
+                    const idx = afterPipe.indexOf(field);
+                    if (idx !== -1 && idx < firstFieldPos) firstFieldPos = idx;
+                  }
+                  const chunk = afterPipe.slice(0, firstFieldPos);
+                  const lastSep = chunk.lastIndexOf(" - ");
+                  const jobName = (lastSep !== -1 ? chunk.slice(0, lastSep) : chunk).trim();
                   if (jobName) affectedJobs.push({ jobName, clientParsed, logTimestamp: String(entry[0] || "") });
                 }
               }
@@ -3636,4 +3648,3 @@ Return ONLY JSON, no other text.`;
     });
   }
 }
-

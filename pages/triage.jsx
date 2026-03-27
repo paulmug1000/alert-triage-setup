@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from "react";
-import Head from "next/head";
 
 // Helper function defined OUTSIDE component to prevent re-creation on each render
 function getAlertSummary(alert) {
@@ -80,8 +79,18 @@ export default function TriageSystem({ onBack }) {
   const [isIgnoring, setIsIgnoring] = useState(false);
   const [selectingClient, setSelectingClient] = useState(null); // clientName being loaded
 
-  // Inject global button/interaction styles once on mount
+  // Inject global button/interaction styles once on mount, and set page title/favicon
   useEffect(() => {
+    // Set title and favicon directly — reliable across all screen transitions
+    document.title = "Triage System";
+    let favicon = document.querySelector("link[rel~='icon']");
+    if (!favicon) {
+      favicon = document.createElement("link");
+      favicon.rel = "icon";
+      document.head.appendChild(favicon);
+    }
+    favicon.href = "https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png";
+
     const id = "triage-global-styles";
     if (!document.getElementById(id)) {
       const el = document.createElement("style");
@@ -89,7 +98,6 @@ export default function TriageSystem({ onBack }) {
       el.textContent = GLOBAL_STYLES;
       document.head.appendChild(el);
     }
-    return () => { /* leave styles in place for performance */ };
   }, []);
   const [ignoredAlerts, setIgnoredAlerts] = useState([]);
   const [isLoadingIgnored, setIsLoadingIgnored] = useState(false);
@@ -1290,7 +1298,6 @@ export default function TriageSystem({ onBack }) {
   if (screen === "ignoredAlerts") {
     return (
       <>
-        <Head><title>Triage System</title><link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" /></Head>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Ignored Alerts</h1>
@@ -1362,7 +1369,6 @@ export default function TriageSystem({ onBack }) {
     if (activeClients.length === 0) {
       return (
         <>
-            <Head><title>Triage System</title><link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" /></Head>
           <div style={styles.container}>
             <div style={styles.header}>
               <h1 style={styles.title}>All Done</h1>
@@ -1381,10 +1387,6 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
-        <Head>
-          <title>Triage System</title>
-          <link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" />
-        </Head>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Client</h1>
@@ -1506,10 +1508,6 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
-        <Head>
-          <title>Triage System</title>
-          <link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" />
-        </Head>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
@@ -1833,7 +1831,6 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
-        <Head><title>Triage System</title><link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" /></Head>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Clear Flags</h1>
@@ -1928,7 +1925,6 @@ export default function TriageSystem({ onBack }) {
   if (!sessionId && !triageComplete) {
     return (
       <>
-        <Head><title>Triage System</title><link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" /></Head>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Alert Triage System</h1>
@@ -2001,10 +1997,6 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
-        <Head>
-          <title>Triage System</title>
-          <link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" />
-        </Head>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>

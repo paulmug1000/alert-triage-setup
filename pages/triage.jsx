@@ -1290,7 +1290,7 @@ export default function TriageSystem({ onBack }) {
   if (screen === "ignoredAlerts") {
     return (
       <>
-        <Head><title>Alert Triage System</title></Head>
+        <Head><title>Triage System</title><link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" /></Head>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Ignored Alerts</h1>
@@ -1362,7 +1362,7 @@ export default function TriageSystem({ onBack }) {
     if (activeClients.length === 0) {
       return (
         <>
-            <Head><title>Alert Triage System</title></Head>
+            <Head><title>Triage System</title><link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" /></Head>
           <div style={styles.container}>
             <div style={styles.header}>
               <h1 style={styles.title}>All Done</h1>
@@ -1382,7 +1382,8 @@ export default function TriageSystem({ onBack }) {
     return (
       <>
         <Head>
-          <title>Alert Triage System</title>
+          <title>Triage System</title>
+          <link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" />
         </Head>
         <div style={styles.container}>
         <div style={styles.header}>
@@ -1506,7 +1507,8 @@ export default function TriageSystem({ onBack }) {
     return (
       <>
         <Head>
-          <title>Alert Triage System</title>
+          <title>Triage System</title>
+          <link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" />
         </Head>
         <div style={styles.container}>
         <div style={styles.header}>
@@ -1831,7 +1833,7 @@ export default function TriageSystem({ onBack }) {
 
     return (
       <>
-        <Head><title>Alert Triage System</title></Head>
+        <Head><title>Triage System</title><link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" /></Head>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Clear Flags</h1>
@@ -1926,7 +1928,7 @@ export default function TriageSystem({ onBack }) {
   if (!sessionId && !triageComplete) {
     return (
       <>
-        <Head><title>Alert Triage System</title></Head>
+        <Head><title>Triage System</title><link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" /></Head>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Alert Triage System</h1>
@@ -2000,7 +2002,8 @@ export default function TriageSystem({ onBack }) {
     return (
       <>
         <Head>
-          <title>Alert Triage System</title>
+          <title>Triage System</title>
+          <link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" />
         </Head>
         <div style={styles.container}>
         <div style={styles.header}>

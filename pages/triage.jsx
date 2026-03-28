@@ -13,7 +13,21 @@ function getAlertSummary(alert) {
     return `${exp?.description || "Expense"} - £${exp?.amount?.toFixed(2) || "?"}${vatLabel}`;
   } else if (alert.type === "crm" || alert.flagType?.includes("crm")) {
     const crm = alert.data;
-    return `${crm?.projectCode || "Project"} - £${crm?.revenue || "?"}`;
+    const flagType = alert.alertType || alert.flagType || "";
+
+    // crmConfAppDiscr / crmPipeAppDiscr: crmData = EU:FD (0=ProjectCode, 1=Client, 2=Job, 3=Revenue)
+    // crmConfDashDiscr / crmPipeDashDiscr: crmData = X:AJ (0=Client, 1=Job, 2=ProjectCode, 3=Revenue)
+    if (flagType === "crmConfAppDiscr" || flagType === "crmPipeAppDiscr") {
+      const client = crm?.crmData?.[1] || "";
+      const job    = crm?.crmData?.[2] || "";
+      const code   = crm?.crmData?.[0] || "";
+      return `${client}${job ? " — " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
+    } else {
+      const client = crm?.crmData?.[0] || "";
+      const job    = crm?.crmData?.[1] || "";
+      const code   = crm?.crmData?.[2] || "";
+      return `${client}${job ? " — " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
+    }
   }
   return "Alert";
 }
@@ -425,7 +439,6 @@ export default function TriageSystem({ onBack }) {
       }
       
       console.log(`  ✅ Loaded ${data.alerts.length} total alerts from Redis`);
-      console.log(`  noActionAlerts raw:`, JSON.stringify(data.noActionAlerts));
       
       // Filter alerts for this client and remove processed ones
       const filteredAlerts = data.alerts.filter(alert => 

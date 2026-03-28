@@ -50,7 +50,7 @@ const FLAG_COLUMNS = {
 
 // Precomputed triage data — stored by cron job, consumed by frontend on Start
 const PRECOMPUTED_KEY = "triage_precomputed";
-const PRECOMPUTED_MAX_AGE_MS = 3 * 60 * 60 * 1000; // 3 hours
+const PRECOMPUTED_MAX_AGE_MS = 45 * 60 * 1000; // 45 minutes (GAS precompute runs every 30 min)
 
 const NO_ACTION_FLAGS = [
   "invoiceAppDiscr",
@@ -1435,10 +1435,9 @@ export default async function handler(req, res) {
             clientsWithFlags: clientsWithFlagsSlim,
             noActionAnalysisResults: existingNoActionAnalysis,
           }),
-          { EX: 14400 }
+          { EX: 3600 }
         );
         console.log(`  ✓ Precomputed cache updated (${filteredAlerts.length} alerts)`);
-      } catch (cacheErr) {
         console.error(`  ⚠ Failed to update precomputed cache: ${cacheErr.message}`);
         // Non-fatal — session still works
       }
@@ -1592,7 +1591,7 @@ export default async function handler(req, res) {
         await redisClient.set(
           PRECOMPUTED_KEY,
           JSON.stringify(precomputedData),
-          { EX: 14400 } // 4 hour TTL
+          { EX: 3600 } // 1 hour TTL
         );
 
         const analysisCount = Object.keys(precomputedData.noActionAnalysisResults).length;
@@ -1642,14 +1641,19 @@ export default async function handler(req, res) {
             } catch (e) {
               console.log(`  ⚠️ Could not parse cached options JSON — will re-fetch from Claude`);
             }
-            if (cachedOptions.length > 0) {
+            // Only use cache if options have valid structure (title field present)
+            // If cached options are the fallback { summary: ... } format from a failed
+            // Claude parse, discard them and re-call Claude for a fresh result
+            const validCachedOptions = cachedOptions.filter(o => o.title);
+            if (validCachedOptions.length > 0) {
               return res.status(200).json({
                 success: true,
-                options: cachedOptions,
+                options: validCachedOptions,
                 alertId: alert.rowNumber,
                 fromCache: true,
               });
             }
+            console.log(`  ⚠️ Cached options have no valid title — treating as cache miss`);
           }
         }
 
@@ -3581,7 +3585,7 @@ Return ONLY JSON, no other text.`;
               }
             });
           }
-          await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 14400 });
+          await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 3600 });
           console.log(`  update_session_flags: precomputed cache updated for ${clientName}`);
         }
 

@@ -1741,8 +1741,13 @@ BUDGET AND REVENUE:
           let lastDataRow = 1;
           for (let row = confirmedData.length - 1; row > 0; row--) {
             const rowData = confirmedData[row] || [];
-            // Check columns that indicate a job exists: A-E (client/job), AG-AM (revenue/dates), AP-BH (invoices), BX-CR (more invoices)
-            const colsToCheck = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59];
+            // A:G (0-6), AG:AM (32-38), AP:BH (41-59), BX:CR (75-94)
+            const colsToCheck = [
+              0,1,2,3,4,5,6,
+              32,33,34,35,36,37,38,
+              41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,
+              75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94
+            ];
             const hasData = colsToCheck.some(col => rowData[col]);
             
             if (hasData) {
@@ -2360,7 +2365,13 @@ Return ONLY JSON, no other text.`;
         let lastDataRow = 1;
         for (let row = confirmedData.length - 1; row > 0; row--) {
           const rowData = confirmedData[row] || [];
-          const colsToCheck = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59];
+          // A:G (0-6), AG:AM (32-38), AP:BH (41-59), BX:CR (75-94)
+          const colsToCheck = [
+            0,1,2,3,4,5,6,
+            32,33,34,35,36,37,38,
+            41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,
+            75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94
+          ];
           const hasData = colsToCheck.some(col => rowData[col]);
           
           if (hasData) {

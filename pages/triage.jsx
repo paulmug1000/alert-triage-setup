@@ -14,22 +14,17 @@ function getAlertSummary(alert) {
   } else if (alert.type === "crm" || alert.flagType?.includes("crm")) {
     const crm = alert.data;
     const flagType = alert.alertType || alert.flagType || "";
-    console.log(`getAlertSummary CRM: flagType=${flagType} alertType=${alert.alertType} type=${alert.type} crmData=`, JSON.stringify(crm?.crmData?.slice(0,4)));
 
-    // crmConfAppDiscr / crmPipeAppDiscr: crmData = EU:FD (0=ProjectCode, 1=Client, 2=Job, 3=Revenue)
-    // crmConfDashDiscr / crmPipeDashDiscr: crmData = X:AJ (0=Client, 1=Job, 2=ProjectCode, 3=Revenue)
-    if (flagType === "crmConfAppDiscr" || flagType === "crmPipeAppDiscr") {
-      const client = crm?.crmData?.[1] || "";
-      const job    = crm?.crmData?.[2] || "";
-      const code   = crm?.crmData?.[0] || "";
-      return `${client}${job ? " — " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
-    } else {
-      const client = crm?.crmData?.[0] || "";
-      const job    = crm?.crmData?.[1] || "";
-      const code   = crm?.crmData?.[2] || "";
-      return `${client}${job ? " — " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
-    }
-  }
+    // App discr (crmConfAppDiscr / crmPipeAppDiscr): job exists in sheet but not CRM
+    //   → read from sheetData (EF:EQ): 0=Client, 1=Job, 2=ProjectCode, 3=Revenue
+    // Dash discr (crmConfDashDiscr / crmPipeDashDiscr): job exists in CRM but not sheet
+    //   → read from crmData (X:AJ): 0=Client, 1=Job, 2=ProjectCode, 3=Revenue
+    const isAppDiscr = flagType === "crmConfAppDiscr" || flagType === "crmPipeAppDiscr";
+    const src = isAppDiscr ? crm?.sheetData : crm?.crmData;
+    const client = src?.[0] || "";
+    const job    = src?.[1] || "";
+    const code   = src?.[2] || "";
+    return `${client}${job ? " — " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
   return "Alert";
 }
 
@@ -1512,7 +1507,7 @@ export default function TriageSystem({ onBack }) {
     // Group actionable alerts by type
     const groupedAlerts = {};
     clientAlerts.forEach(alert => {
-      const type = alert.flagType || alert.type || "unknown";
+      const type = alert.flagType || alert.alertType || alert.type || "unknown";
       if (!groupedAlerts[type]) groupedAlerts[type] = [];
       groupedAlerts[type].push(alert);
     });

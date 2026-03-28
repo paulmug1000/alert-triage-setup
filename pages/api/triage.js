@@ -2314,6 +2314,7 @@ Return ONLY JSON, no other text.`;
             console.log(`  ✅ Parsed ${options.length} CRM options from Claude`);
           } catch (e) {
             console.error(`  ⚠️ Could not parse Claude response as JSON`);
+            console.error(`  Raw Claude response (first 500 chars): ${responseText.slice(0, 500)}`);
             options = [{ summary: responseText }];
           }
 

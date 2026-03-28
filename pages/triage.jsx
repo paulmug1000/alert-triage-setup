@@ -425,6 +425,7 @@ export default function TriageSystem({ onBack }) {
       }
       
       console.log(`  ✅ Loaded ${data.alerts.length} total alerts from Redis`);
+      console.log(`  noActionAlerts raw:`, JSON.stringify(data.noActionAlerts));
       
       // Filter alerts for this client and remove processed ones
       const filteredAlerts = data.alerts.filter(alert => 

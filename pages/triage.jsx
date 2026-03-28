@@ -25,6 +25,7 @@ function getAlertSummary(alert) {
     const job    = src?.[1] || "";
     const code   = src?.[2] || "";
     return `${client}${job ? " — " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
+  }
   return "Alert";
 }
 

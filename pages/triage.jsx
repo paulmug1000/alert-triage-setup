@@ -560,12 +560,15 @@ export default function TriageSystem({ onBack }) {
       setAcceptError("");
       
       console.log(`Accepting option: ${option.title}`);
+
+      // delete matchType uses a dedicated action that does a fresh sheet read
+      const action = option.matchType === "delete" ? "delete_job" : "accept_option";
       
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "accept_option",
+          action,
           alert,
           option,
           automationCommanderSheetId,
@@ -575,7 +578,8 @@ export default function TriageSystem({ onBack }) {
       const data = await response.json();
       
       if (!data.success) {
-        setAcceptError(`Failed to write to sheet: ${data.error || "Unknown error"}`);
+        const isStale = response.status === 409;
+        setAcceptError(`${isStale ? "⚠ Sheet has changed since analysis — please go back and re-analyse this alert. " : ""}${data.error || "Unknown error"}`);
         return;
       }
       
@@ -2097,13 +2101,17 @@ export default function TriageSystem({ onBack }) {
                             <strong style={{ color: "#5b21b6" }}>CRM Job Matching Details:</strong>
                             {option.matchingDetails.unmatchedJobSummary && (
                               <div style={{ marginTop: "6px", fontSize: "13px", color: "#333" }}>
-                                <strong>Unmatched Job (CRM):</strong>
+                                <strong>
+                                  {option.matchType === "ignore" || option.matchType === "delete"
+                                    ? "Unmatched job — in dashboard but not in CRM:"
+                                    : "Unmatched Job (CRM):"}
+                                </strong>
                                 <div style={{ marginLeft: "12px", fontSize: "12px", marginTop: "4px" }}>
-                                  {option.matchingDetails.unmatchedJobSummary.projectCode && <div>Code: {option.matchingDetails.unmatchedJobSummary.projectCode}</div>}
                                   {option.matchingDetails.unmatchedJobSummary.clientName && <div>Client: {option.matchingDetails.unmatchedJobSummary.clientName}</div>}
                                   {option.matchingDetails.unmatchedJobSummary.jobName && <div>Job: {option.matchingDetails.unmatchedJobSummary.jobName}</div>}
+                                  {option.matchingDetails.unmatchedJobSummary.projectCode && <div>Code: {option.matchingDetails.unmatchedJobSummary.projectCode}</div>}
                                   {option.matchingDetails.unmatchedJobSummary.revenue && <div>Revenue: {option.matchingDetails.unmatchedJobSummary.revenue}</div>}
-                                  {option.matchingDetails.unmatchedJobSummary.startDate && <div>Dates: {option.matchingDetails.unmatchedJobSummary.startDate} → {option.matchingDetails.unmatchedJobSummary.endDate}</div>}
+                                  {option.matchingDetails.unmatchedJobSummary.startDate && <div>Dates: {option.matchingDetails.unmatchedJobSummary.startDate} → {option.matchingDetails.unmatchedJobSummary.endDate || "?"}</div>}
                                 </div>
                               </div>
                             )}

@@ -445,6 +445,18 @@ function extractSheetIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
+// Convert 1-indexed column number to A1 letter notation (e.g. 1→A, 27→AA)
+function colIndexToLetter(colNum) {
+  let letter = "";
+  let n = colNum;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    n = Math.floor((n - 1) / 26);
+  }
+  return letter;
+}
+
 // ============================================================================
 // FLAG READING
 // ============================================================================
@@ -2122,9 +2134,12 @@ Return ONLY JSON, no other text.`;
           if (alertType === "crmConfAppDiscr" || alertType === "crmPipeAppDiscr") {
             const tabName = alertType === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
             const src = alert.data?.sheetData || [];
-            const client = src[0] || alert.clientName || "";
-            const jobName = src[1] || "";
+            const client     = src[0] || alert.clientName || "";
+            const jobName    = src[1] || "";
             const projectCode = src[2] || "";
+            const revenue    = src[3] || "";
+            const startDate  = src[5] || "";
+            const endDate    = src[6] || "";
             const jobDesc = [client, jobName, projectCode].filter(Boolean).join(" — ");
 
             const options = [
@@ -2135,12 +2150,14 @@ Return ONLY JSON, no other text.`;
                 jobRow: alert.rowNumber,
                 jobName,
                 matchingDetails: {
-                  unmatchedJobSummary: { clientName: client, jobName, projectCode },
-                },
-                matchAnalysis: {
-                  matchConfidence: "N/A",
-                  reasonForChoice: `The job "${jobDesc}" exists in the ${tabName} tab but has no equivalent entry in the CRM. If this job is intentionally not tracked in the CRM, select this option to ignore the discrepancy.`,
-                  discrepancies: `Job found in ${tabName} tab (${jobDesc}) but not in CRM.`,
+                  unmatchedJobSummary: {
+                    clientName: client,
+                    jobName,
+                    projectCode,
+                    revenue,
+                    startDate,
+                    endDate,
+                  },
                 },
                 recommendedActions: [
                   `Verify that "${jobDesc}" is intentionally absent from the CRM`,
@@ -2154,16 +2171,19 @@ Return ONLY JSON, no other text.`;
                 jobRow: alert.rowNumber,
                 jobName,
                 matchingDetails: {
-                  unmatchedJobSummary: { clientName: client, jobName, projectCode },
-                },
-                matchAnalysis: {
-                  matchConfidence: "N/A",
-                  reasonForChoice: `The job "${jobDesc}" exists in the ${tabName} tab but has no equivalent entry in the CRM. If this job was created in error or is no longer valid, it should be removed from the ${tabName} tab.`,
-                  discrepancies: `Job found in ${tabName} tab (${jobDesc}) but not in CRM.`,
+                  unmatchedJobSummary: {
+                    clientName: client,
+                    jobName,
+                    projectCode,
+                    revenue,
+                    startDate,
+                    endDate,
+                  },
                 },
                 recommendedActions: [
-                  `Delete or clear the row for "${jobDesc}" from the ${tabName} tab`,
-                  `Verify no invoices or expenses are linked to this job before deleting`,
+                  `Blank all cells for "${jobDesc}" and its child rows in the ${tabName} tab`,
+                  `All columns A:G, AG:AM, AP:BH, BX:CR will be cleared across the parent row and all child rows`,
+                  `Verify no invoices or expenses are linked to this job before accepting`,
                 ],
               },
             ];
@@ -2822,22 +2842,106 @@ Return ONLY JSON, no other text.`;
         if (option.recommendedActions && Array.isArray(option.recommendedActions)) {
           for (const actionString of option.recommendedActions) {
             if (actionString.includes("Write") || actionString.includes("write")) {
-              // Match: write <value> to <CELL> — value may contain any characters including 't'
-              // Use a global regex with a proper non-greedy lookahead stop
               const regex = /write\s+(.+?)\s+to\s+([A-Z]{1,3}\d+)(?:\s*[,(]|$)/gi;
               let match;
               while ((match = regex.exec(actionString)) !== null) {
                 const value = match[1].trim();
                 const cell = match[2];
-                if (cell) {  // allow empty string values — needed to clear placeholder slots
-                  cellUpdates.push({ cell, value });
+                if (cell) cellUpdates.push({ cell, value });
+              }
+            }
+          }
+        }
+
+        console.log(`  Parsed ${cellUpdates.length} cell updates`);
+
+        // ── ROW RE-VERIFICATION ──────────────────────────────────────────────
+        // Cell references were generated at analysis time pointing to Confirmed tab rows.
+        // Before writing, verify the job is still at the expected row by matching
+        // client + job name. If rows have shifted, remap all cell references.
+        if (cellUpdates.length > 0) {
+          const alertType = alert.type || alert.sheetName;
+
+          if (alertType === "invoice" || alert.sheetName === "InvComp" ||
+              alertType === "expense" || alert.sheetName === "DirComp" ||
+              alertType === "crm"    || alert.sheetName === "CRMComp") {
+
+            // Determine which tab the cell references point to
+            const verifyTab = (alertType === "crm" || alert.sheetName === "CRMComp")
+              ? (alert.mode === "Pipeline" ? "Pipeline" : "Confirmed")
+              : "Confirmed";
+
+            // Extract the expected row number from the first cell reference
+            // e.g. "AP52" → row 52
+            const firstCell = cellUpdates[0]?.cell || "";
+            const firstRowMatch = firstCell.match(/^[A-Z]+(\d+)$/);
+            if (firstRowMatch) {
+              const expectedRow = parseInt(firstRowMatch[1], 10);
+
+              // Determine the expected job name from the option
+              const expectedJobName = (option.jobName || option.matchingDetails?.unmatchedJobSummary?.jobName || "").trim().toLowerCase();
+              const expectedClient  = (option.matchingDetails?.unmatchedJobSummary?.clientName || alert.clientName || "").trim().toLowerCase();
+
+              if (expectedJobName) {
+                // Re-read the Confirmed/Pipeline tab fresh — cols A:AM covers client, job, revenue (AG), start date (AL)
+                const verifyResp = await sheets.spreadsheets.values.get({
+                  spreadsheetId: alert.clientId,
+                  range: `${verifyTab}!A1:AM5000`,
+                });
+                const verifyRows = verifyResp.data.values || [];
+
+                // Check if the expected row still has the right job
+                const currentRow = verifyRows[expectedRow - 1] || [];
+                const currentClient  = String(currentRow[0] || "").trim().toLowerCase();
+                const currentJob     = String(currentRow[1] || "").trim().toLowerCase();
+                const currentRevenue = String(currentRow[32] || "").trim(); // AG = index 32
+                const currentStart   = String(currentRow[37] || "").trim(); // AL = index 37
+
+                // Expected revenue and start date from the option
+                const expectedRevenue = String(option.matchingDetails?.unmatchedJobSummary?.revenue || "").trim();
+                const expectedStart   = String(option.matchingDetails?.unmatchedJobSummary?.startDate || "").trim();
+
+                const jobMatches = (r) => {
+                  const rClient  = String(r[0] || "").trim().toLowerCase();
+                  const rJob     = String(r[1] || "").trim().toLowerCase();
+                  const rRevenue = String(r[32] || "").trim();
+                  const rStart   = String(r[37] || "").trim();
+                  if (rJob !== expectedJobName) return false;
+                  if (expectedClient && rClient !== expectedClient) return false;
+                  if (expectedRevenue && rRevenue && rRevenue !== expectedRevenue) return false;
+                  if (expectedStart   && rStart   && rStart   !== expectedStart)   return false;
+                  return true;
+                };
+
+                if (!jobMatches(currentRow)) {
+                  // Row has shifted — find the job by name + revenue + start date
+                  let foundRow = -1;
+                  for (let i = 0; i < verifyRows.length; i++) {
+                    if (jobMatches(verifyRows[i])) {
+                      foundRow = i + 1; // 1-indexed
+                      break;
+                    }
+                  }
+                  if (foundRow === -1) {
+                    return res.status(409).json({
+                      success: false,
+                      error: `Job "${option.jobName || expectedJobName}" could not be found in the ${verifyTab} tab. The sheet may have changed — please go back and re-analyse this alert.`,
+                    });
+                  }
+                  const rowShift = foundRow - expectedRow;
+                  console.log(`  ⚠️ Row shift detected for "${expectedJobName}": was row ${expectedRow}, now row ${foundRow} (shift: ${rowShift > 0 ? "+" : ""}${rowShift})`);
+                  for (const update of cellUpdates) {
+                    update.cell = update.cell.replace(/^([A-Z]+)(\d+)$/, (_, col, row) =>
+                      `${col}${parseInt(row, 10) + rowShift}`
+                    );
+                  }
+                } else {
+                  console.log(`  ✓ Job "${expectedJobName}" confirmed at row ${expectedRow} in ${verifyTab}`);
                 }
               }
             }
           }
         }
-        
-        console.log(`  Parsed ${cellUpdates.length} cell updates`);
 
         // Determine which tab to write to based on alert type
         const writeTab = (alert.type === "crm" || alert.sheetName === "CRMComp")
@@ -2929,6 +3033,128 @@ Return ONLY JSON, no other text.`;
           details: err.toString(),
         });
       }
+    } else if (action === "delete_job") {
+      // Blank out all cells for a job (parent + child rows) in the Confirmed or Pipeline tab.
+      // NEVER deletes rows — only clears cell content.
+      // Child rows: same client (col A) + same job name (col B) + no revenue (AG=32) + no direct costs (AH=33) + no start date (AL=37)
+      // Blanked columns: A:G (0-6), AG:AM (32-38), AP:BH (41-59), BX:CR (75-94)
+      const { alert, option, automationCommanderSheetId } = req.body;
+      if (!alert || !option || !automationCommanderSheetId) {
+        return res.status(400).json({ success: false, error: "Missing alert, option, or automationCommanderSheetId" });
+      }
+
+      try {
+        console.log(`\n🗑️ DELETE_JOB for ${alert.clientName}: ${option.jobName}`);
+        const sheets = await getSheetsClient();
+
+        const tabName = (alert.alertType || alert.flagType || "") === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
+        const clientSheetId = alert.clientId;
+
+        // Fresh read of the tab
+        const tabResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${tabName}!A1:CR2000`,
+          valueRenderOption: "UNFORMATTED_VALUE",
+        });
+        const tabRows = tabResp.data.values || [];
+
+        // Find parent row by client + job name match (never by cached row number)
+        const targetClient = (option.matchingDetails?.unmatchedJobSummary?.clientName || "").trim().toLowerCase();
+        const targetJob = (option.jobName || "").trim().toLowerCase();
+
+        let parentRowIdx = -1;
+        for (let i = 1; i < tabRows.length; i++) {
+          const r = tabRows[i] || [];
+          const rClient = String(r[0] || "").trim().toLowerCase();
+          const rJob = String(r[1] || "").trim().toLowerCase();
+          if (rClient === targetClient && rJob === targetJob) {
+            parentRowIdx = i;
+            break;
+          }
+        }
+
+        if (parentRowIdx === -1) {
+          return res.status(404).json({
+            success: false,
+            error: `Job "${option.jobName}" not found in ${tabName} tab — it may have already been deleted or the sheet has changed.`,
+          });
+        }
+
+        const parentSheetRow = parentRowIdx + 1; // 1-indexed
+        console.log(`  Found parent at row ${parentSheetRow}`);
+
+        // Collect child rows: same client + job, no revenue (32) + no direct costs (33) + no start date (37)
+        const rowsToBlank = [parentRowIdx];
+        let ci = parentRowIdx + 1;
+        while (ci < tabRows.length) {
+          const next = tabRows[ci] || [];
+          const nc = String(next[0] || "").trim().toLowerCase();
+          const nj = String(next[1] || "").trim().toLowerCase();
+          if (nc === targetClient && nj === targetJob && !next[32] && !next[33] && !next[37]) {
+            rowsToBlank.push(ci);
+            ci++;
+          } else { break; }
+        }
+        console.log(`  Rows to blank: ${rowsToBlank.map(r => r + 1).join(", ")} (${rowsToBlank.length} rows)`);
+
+        // Build column ranges to blank: A:G (1-7), AG:AM (33-39), AP:BH (42-60), BX:CR (76-96)
+        // In A1 notation: colNum is 1-indexed
+        const colRanges = [
+          [1, 7],    // A:G
+          [33, 39],  // AG:AM
+          [42, 60],  // AP:BH
+          [76, 96],  // BX:CR
+        ];
+
+        const blankData = [];
+        for (const rowIdx of rowsToBlank) {
+          const sheetRow = rowIdx + 1;
+          for (const [startCol, endCol] of colRanges) {
+            const startColLetter = colIndexToLetter(startCol);
+            const endColLetter = colIndexToLetter(endCol);
+            const numCols = endCol - startCol + 1;
+            blankData.push({
+              range: `${tabName}!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`,
+              values: [Array(numCols).fill("")],
+            });
+          }
+        }
+
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: clientSheetId,
+          requestBody: { valueInputOption: "RAW", data: blankData },
+        });
+        console.log(`  ✅ Blanked ${rowsToBlank.length} rows (${blankData.length} ranges)`);
+
+        // Log to TriageLog
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: automationCommanderSheetId,
+          range: "TriageLog!A:H",
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [[
+              new Date().toISOString(),
+              alert.alertType || alert.type || "crm",
+              `${alert.sheetName}-${alert.rowNumber}`,
+              alert.clientName || "",
+              "",
+              JSON.stringify({ deletedJob: option.jobName, tabName, rowsBlank: rowsToBlank.map(r => r + 1) }),
+              "ACCEPTED",
+              `Deleted job: ${option.jobName} from ${tabName} tab`,
+            ]],
+          },
+        });
+
+        return res.status(200).json({
+          success: true,
+          message: `Job "${option.jobName}" blanked across ${rowsToBlank.length} row(s) in ${tabName} tab`,
+          rowsBlank: rowsToBlank.map(r => r + 1),
+        });
+      } catch (err) {
+        console.error(`❌ Error in delete_job:`, err);
+        return res.status(500).json({ success: false, error: `Failed to delete job: ${err.message}` });
+      }
+
     } else if (action === "analyze_noaction_flag") {
       // Analyze a non-actionable flag by reading the client's AutoLog tab (master sheet)
       // to identify exactly which jobs were affected, then verify them.
@@ -3337,16 +3563,18 @@ Return ONLY JSON, no other text.`;
               console.log(`  Found "${jobName}" (${clientN}) at Confirmed row ${confirmedSheetRow}: start="${startRaw}", end="${endRaw}"`);
 
               // Collect child rows — start immediately after the parent row we found by name
+              // Child row: same client (col A), same job name (col B), no revenue (col AG=32),
+              // no direct costs (col AH=33), no start date (col AL=37)
               const childRows = [];
               let ci = parentRowIdx + 1;
               while (ci < retConfirmedRows.length) {
                 const next = retConfirmedRows[ci] || [];
                 const nc = String(next[0] || "").trim();
                 const nj = String(next[1] || "").trim();
-                if (nc === clientN && nj === jobName && !next[32] && !next[37]) {
+                if (nc === clientN && nj === jobName && !next[32] && !next[33] && !next[37]) {
                   childRows.push({ row: next, sheetRow: ci + 1 });
                   ci++;
-                } else if (nc || nj) { break; } else { ci++; }
+                } else { break; }
               }
 
               const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;

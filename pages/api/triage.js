@@ -1438,6 +1438,7 @@ export default async function handler(req, res) {
           { EX: 3600 }
         );
         console.log(`  ✓ Precomputed cache updated (${filteredAlerts.length} alerts)`);
+      } catch (cacheErr) {
         console.error(`  ⚠ Failed to update precomputed cache: ${cacheErr.message}`);
         // Non-fatal — session still works
       }

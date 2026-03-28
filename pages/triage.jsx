@@ -14,6 +14,7 @@ function getAlertSummary(alert) {
   } else if (alert.type === "crm" || alert.flagType?.includes("crm")) {
     const crm = alert.data;
     const flagType = alert.alertType || alert.flagType || "";
+    console.log(`getAlertSummary CRM: flagType=${flagType} alertType=${alert.alertType} type=${alert.type} crmData=`, JSON.stringify(crm?.crmData?.slice(0,4)));
 
     // crmConfAppDiscr / crmPipeAppDiscr: crmData = EU:FD (0=ProjectCode, 1=Client, 2=Job, 3=Revenue)
     // crmConfDashDiscr / crmPipeDashDiscr: crmData = X:AJ (0=Client, 1=Job, 2=ProjectCode, 3=Revenue)

@@ -2113,6 +2113,83 @@ Return ONLY JSON, no other text.`;
         // Handle CRM alerts
         if (alert.type === "crm" || alert.sheetName === "CRMComp") {
           console.log(`  📊 Analyzing CRM alert...`);
+
+          const alertType = alert.alertType || alert.flagType || "";
+
+          // App discrepancy: job exists in sheet (Confirmed/Pipeline) but not in CRM.
+          // The only valid actions are: ignore the discrepancy, or delete the job from the sheet.
+          // We never suggest creating a job — Claude is not needed here.
+          if (alertType === "crmConfAppDiscr" || alertType === "crmPipeAppDiscr") {
+            const tabName = alertType === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
+            const src = alert.data?.sheetData || [];
+            const client = src[0] || alert.clientName || "";
+            const jobName = src[1] || "";
+            const projectCode = src[2] || "";
+            const jobDesc = [client, jobName, projectCode].filter(Boolean).join(" — ");
+
+            const options = [
+              {
+                optionId: 1,
+                title: `IGNORE — Job "${jobName || projectCode || "unknown"}" is legitimate and CRM discrepancy can be disregarded`,
+                matchType: "ignore",
+                jobRow: alert.rowNumber,
+                jobName,
+                matchingDetails: {
+                  unmatchedJobSummary: { clientName: client, jobName, projectCode },
+                },
+                matchAnalysis: {
+                  matchConfidence: "N/A",
+                  reasonForChoice: `The job "${jobDesc}" exists in the ${tabName} tab but has no equivalent entry in the CRM. If this job is intentionally not tracked in the CRM, select this option to ignore the discrepancy.`,
+                  discrepancies: `Job found in ${tabName} tab (${jobDesc}) but not in CRM.`,
+                },
+                recommendedActions: [
+                  `Verify that "${jobDesc}" is intentionally absent from the CRM`,
+                  `If confirmed, mark this alert as ignored to prevent it recurring`,
+                ],
+              },
+              {
+                optionId: 2,
+                title: `DELETE — Remove job "${jobName || projectCode || "unknown"}" from ${tabName} tab as it should not exist`,
+                matchType: "delete",
+                jobRow: alert.rowNumber,
+                jobName,
+                matchingDetails: {
+                  unmatchedJobSummary: { clientName: client, jobName, projectCode },
+                },
+                matchAnalysis: {
+                  matchConfidence: "N/A",
+                  reasonForChoice: `The job "${jobDesc}" exists in the ${tabName} tab but has no equivalent entry in the CRM. If this job was created in error or is no longer valid, it should be removed from the ${tabName} tab.`,
+                  discrepancies: `Job found in ${tabName} tab (${jobDesc}) but not in CRM.`,
+                },
+                recommendedActions: [
+                  `Delete or clear the row for "${jobDesc}" from the ${tabName} tab`,
+                  `Verify no invoices or expenses are linked to this job before deleting`,
+                ],
+              },
+            ];
+
+            console.log(`  ✅ App discr — returning 2 hardcoded options (ignore/delete) for ${jobDesc}`);
+
+            // Cache these options
+            const crmSummary = `CRM ${alertType} ${jobDesc}`.trim();
+            if (memoryRow) {
+              await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+                ...memoryRow,
+                cachedOptionsJSON: JSON.stringify(options),
+              });
+            } else {
+              await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+                fingerprintHash,
+                alertType: "crm",
+                clientName: alert.clientName || "",
+                alertSummary: crmSummary,
+                cachedOptionsJSON: JSON.stringify(options),
+                status: "cached",
+              });
+            }
+
+            return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+          }
           
           // Determine which tab to match against (Pipeline or Confirmed)
           const crmMode = await getCRMMatchingMode(sheets, alert.masterSheetId || alert.clientId);

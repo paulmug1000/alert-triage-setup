@@ -2902,12 +2902,10 @@ Return ONLY JSON, no other text.`;
                 const expectedStart   = String(option.matchingDetails?.unmatchedJobSummary?.startDate || "").trim();
 
                 const jobMatches = (r) => {
-                  const rClient  = String(r[0] || "").trim().toLowerCase();
                   const rJob     = String(r[1] || "").trim().toLowerCase();
                   const rRevenue = String(r[32] || "").trim();
                   const rStart   = String(r[37] || "").trim();
                   if (rJob !== expectedJobName) return false;
-                  if (expectedClient && rClient !== expectedClient) return false;
                   if (expectedRevenue && rRevenue && rRevenue !== expectedRevenue) return false;
                   if (expectedStart   && rStart   && rStart   !== expectedStart)   return false;
                   return true;
@@ -2916,8 +2914,8 @@ Return ONLY JSON, no other text.`;
                 if (!jobMatches(currentRow)) {
                   // Row has shifted — find the job by name + revenue + start date
                   console.log(`  ⚠️ Job not at expected row ${expectedRow}.`);
-                  console.log(`  Expected: client="${expectedClient}" job="${expectedJobName}" revenue="${expectedRevenue}" start="${expectedStart}"`);
-                  console.log(`  Found at row ${expectedRow}: client="${String(currentRow[0]||"").trim()}" job="${String(currentRow[1]||"").trim()}" revenue="${String(currentRow[32]||"").trim()}" start="${String(currentRow[37]||"").trim()}"`);
+                  console.log(`  Expected: job="${expectedJobName}" revenue="${expectedRevenue}" start="${expectedStart}"`);
+                  console.log(`  Found at row ${expectedRow}: job="${String(currentRow[1]||"").trim()}" revenue="${String(currentRow[32]||"").trim()}" start="${String(currentRow[37]||"").trim()}"`);
                   let foundRow = -1;
                   for (let i = 0; i < verifyRows.length; i++) {
                     if (jobMatches(verifyRows[i])) {

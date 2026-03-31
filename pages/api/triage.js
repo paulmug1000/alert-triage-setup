@@ -2915,6 +2915,9 @@ Return ONLY JSON, no other text.`;
 
                 if (!jobMatches(currentRow)) {
                   // Row has shifted — find the job by name + revenue + start date
+                  console.log(`  ⚠️ Job not at expected row ${expectedRow}.`);
+                  console.log(`  Expected: client="${expectedClient}" job="${expectedJobName}" revenue="${expectedRevenue}" start="${expectedStart}"`);
+                  console.log(`  Found at row ${expectedRow}: client="${String(currentRow[0]||"").trim()}" job="${String(currentRow[1]||"").trim()}" revenue="${String(currentRow[32]||"").trim()}" start="${String(currentRow[37]||"").trim()}"`);
                   let foundRow = -1;
                   for (let i = 0; i < verifyRows.length; i++) {
                     if (jobMatches(verifyRows[i])) {
@@ -2923,9 +2926,14 @@ Return ONLY JSON, no other text.`;
                     }
                   }
                   if (foundRow === -1) {
+                    // Log nearby rows to help diagnose format mismatches
+                    for (let i = Math.max(0, expectedRow - 3); i < Math.min(verifyRows.length, expectedRow + 3); i++) {
+                      const r = verifyRows[i] || [];
+                      console.log(`  Nearby row ${i+1}: client="${String(r[0]||"").trim()}" job="${String(r[1]||"").trim()}" revenue="${String(r[32]||"").trim()}" start="${String(r[37]||"").trim()}"`);
+                    }
                     return res.status(409).json({
                       success: false,
-                      error: `Job "${option.jobName || expectedJobName}" could not be found in the ${verifyTab} tab. The sheet may have changed — please go back and re-analyse this alert.`,
+                      error: `Job "${option.jobName || expectedJobName}" could not be found in the ${verifyTab} tab. Please go back to the alert list and click this alert again to refresh the analysis before accepting.`,
                     });
                   }
                   const rowShift = foundRow - expectedRow;

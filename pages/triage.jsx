@@ -579,7 +579,9 @@ export default function TriageSystem({ onBack }) {
       
       if (!data.success) {
         const isStale = response.status === 409;
-        setAcceptError(`${isStale ? "⚠ Sheet has changed since analysis — please go back and re-analyse this alert. " : ""}${data.error || "Unknown error"}`);
+        setAcceptError(isStale
+          ? `⚠ ${data.error}`
+          : `Failed to write to sheet: ${data.error || "Unknown error"}`);
         return;
       }
       
@@ -2073,6 +2075,17 @@ export default function TriageSystem({ onBack }) {
           {acceptError && (
             <div style={{ ...styles.errorBanner, marginBottom: "16px" }}>
               {acceptError}
+              {acceptError.includes("go back to the alert list") && (
+                <div style={{ marginTop: "10px" }}>
+                  <button
+                    className="triage-btn"
+                    onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }}
+                    style={{ ...styles.buttonSecondary, fontSize: "13px" }}
+                  >
+                    ← Back to Alert List
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

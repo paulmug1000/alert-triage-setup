@@ -2950,10 +2950,39 @@ Return ONLY JSON, no other text.`;
         
         // Batch write all cells, always prefixed with the tab name
         if (cellUpdates.length > 0) {
+
+          // Sanitise values before writing:
+          // 1. Strip surrounding quotes — Claude sometimes writes "" for empty, which would
+          //    appear as literal quote characters in the sheet rather than a blank cell.
+          // 2. Reformat JS date strings (e.g. "Mon Mar 23 2026 00:00:00 GMT+0000") to "23-Mar-26"
+          const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          const sanitiseValue = (val) => {
+            let v = String(val ?? "");
+            // Strip surrounding double quotes (e.g. "" → empty, "foo" → foo)
+            if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
+            // Detect JS Date toString format: "Mon Mar 23 2026 00:00:00 GMT..."
+            const jsDateMatch = v.match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\w{3})\s+(\d{1,2})\s+(\d{4})/);
+            if (jsDateMatch) {
+              const month = jsDateMatch[1];
+              const day   = jsDateMatch[2].padStart(2, "0");
+              const year  = jsDateMatch[3].slice(-2);
+              return `${day}-${month}-${year}`;
+            }
+            // Also handle ISO date strings (e.g. "2026-03-23T00:00:00.000Z")
+            const isoDateMatch = v.match(/^(\d{4})-(\d{2})-(\d{2})(?:T|$)/);
+            if (isoDateMatch) {
+              const year  = isoDateMatch[1].slice(-2);
+              const month = MONTHS[parseInt(isoDateMatch[2], 10) - 1] || isoDateMatch[2];
+              const day   = isoDateMatch[3];
+              return `${day}-${month}-${year}`;
+            }
+            return v;
+          };
+
           const batchRequest = {
             data: cellUpdates.map(({ cell, value }) => ({
               range: `${writeTab}!${cell}`,
-              values: [[value]],
+              values: [[sanitiseValue(value)]],
             })),
             valueInputOption: "USER_ENTERED",
           };

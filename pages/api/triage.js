@@ -2794,6 +2794,7 @@ Return ONLY JSON, no other text.`;
       try {
         console.log(`\n✅ ACCEPTING OPTION for alert:`, alert.clientName);
         console.log(`   Option: ${option.title}, matchType: ${option.matchType}`);
+        console.log(`   recommendedActions:`, JSON.stringify(option.recommendedActions));
         
         const sheets = await getSheetsClient();
 
@@ -2994,6 +2995,7 @@ Return ONLY JSON, no other text.`;
           };
           
           console.log(`  Writing ${cellUpdates.length} cells to ${writeTab} tab of Client Sheet...`);
+          console.log(`  Cell updates: ${cellUpdates.map(u => `${u.cell}=${JSON.stringify(u.value)}`).join(", ")}`);
           await sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: alert.clientId,
             requestBody: batchRequest,

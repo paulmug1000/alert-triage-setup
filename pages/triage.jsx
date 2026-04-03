@@ -2481,7 +2481,7 @@ export default function TriageSystem({ onBack }) {
                     ? `https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`
                     : null;
                   if (clientUrl) window.open(clientUrl, "_blank");
-                  if (masterUrl) setTimeout(() => window.open(masterUrl, "_blank"), 300);
+                  if (masterUrl) window.open(masterUrl, "_blank");
                 }}
                 style={{ ...styles.buttonSecondary, color: "#1d4ed8", borderColor: "#93c5fd" }}
               >

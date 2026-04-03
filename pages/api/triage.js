@@ -3049,14 +3049,14 @@ Return ONLY JSON, no other text.`;
         // Determine which discrepancy types are present from InvComp flags (S:Y, indices 0-6)
         // S(0)=missing invoice, T(1)=client mismatch, U(2)=amount mismatch,
         // V(3)=sent date mismatch, X(5)=date paid mismatch, Y(6)=status mismatch
-        const invFlags = alert.data.flags || [];
+        const invFlagsForPrompt = alert.data.flags || [];
         const discrepancyTypes = [];
-        if (String(invFlags[0] || "").trim() === "1") discrepancyTypes.push("MISSING INVOICE — invoice exists in accounting but has no match in the Confirmed tab");
-        if (String(invFlags[1] || "").trim() === "1") discrepancyTypes.push("CLIENT MISMATCH — the client name on the invoice differs from the job");
-        if (String(invFlags[2] || "").trim() === "1") discrepancyTypes.push("AMOUNT MISMATCH — the invoice amount differs from what is recorded in the Confirmed tab");
-        if (String(invFlags[3] || "").trim() === "1") discrepancyTypes.push("SENT DATE MISMATCH — the sent date differs from what is recorded in the Confirmed tab");
-        if (String(invFlags[5] || "").trim() === "1") discrepancyTypes.push("DATE PAID MISMATCH — the date paid differs from what is recorded in the Confirmed tab");
-        if (String(invFlags[6] || "").trim() === "1") discrepancyTypes.push("STATUS MISMATCH — the status differs from what is recorded in the Confirmed tab");
+        if (String(invFlagsForPrompt[0] || "").trim() === "1") discrepancyTypes.push("MISSING INVOICE — invoice exists in accounting but has no match in the Confirmed tab");
+        if (String(invFlagsForPrompt[1] || "").trim() === "1") discrepancyTypes.push("CLIENT MISMATCH — the client name on the invoice differs from the job");
+        if (String(invFlagsForPrompt[2] || "").trim() === "1") discrepancyTypes.push("AMOUNT MISMATCH — the invoice amount differs from what is recorded in the Confirmed tab");
+        if (String(invFlagsForPrompt[3] || "").trim() === "1") discrepancyTypes.push("SENT DATE MISMATCH — the sent date differs from what is recorded in the Confirmed tab");
+        if (String(invFlagsForPrompt[5] || "").trim() === "1") discrepancyTypes.push("DATE PAID MISMATCH — the date paid differs from what is recorded in the Confirmed tab");
+        if (String(invFlagsForPrompt[6] || "").trim() === "1") discrepancyTypes.push("STATUS MISMATCH — the status differs from what is recorded in the Confirmed tab");
         const discrepancySummary = discrepancyTypes.length > 0
           ? discrepancyTypes.join("\n• ")
           : "UNSPECIFIED DISCREPANCY";

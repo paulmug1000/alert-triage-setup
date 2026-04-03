@@ -2817,9 +2817,10 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
               // Slot amount column: Slot 1 = AP, Slot 2 = AW, Slot 3 = BD
               const slotAmtCol = matchedSlot === 1 ? "AP" : matchedSlot === 2 ? "AW" : "BD";
               const cellRef = `${slotAmtCol}${matchedRowNum}`;
+              const currentSlotAmt = matchedSlot === 1 ? slot1.amt : matchedSlot === 2 ? slot2.amt : slot3.amt;
               const options = [{
                 optionId: 1,
-                title: `ROUNDING DIFFERENCE — Correct invoice #${invoiceNo} amount from £${dashboardTotal.toFixed(2)}${vatIncluded > 0 ? " +VAT" : ""} to £${correctAmount.toFixed(2)}${vatIncluded > 0 ? " +VAT" : ""}`,
+                title: `ROUNDING DIFFERENCE — Correct invoice #${invoiceNo} amount from £${currentSlotAmt}${vatIncluded > 0 ? " +VAT" : ""} to £${correctAmount.toFixed(2)}${vatIncluded > 0 ? " +VAT" : ""}`,
                 matchType: "existing_job",
                 jobRow: matchedRowNum,
                 jobName,

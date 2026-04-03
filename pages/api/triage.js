@@ -2678,7 +2678,221 @@ Return ONLY JSON, no other text.`;
           });
         }
         
-        // Default: Handle invoice alerts (EXISTING WORKING LOGIC)
+        // Default: Handle invoice alerts with flag-based branching
+        // flags slice = row.slice(18, 25) = cols S:Y (indices 0-6 within slice)
+        // S(0)=Missing invoice, T(1)=Client mismatch, U(2)=Inv amt mismatch,
+        // V(3)=Sent date mismatch, W(4)=Duplicate inv no (skip), X(5)=Fully paid on mismatch,
+        // Y(6)=Status mismatch
+        const invFlags = alert.data?.flags || [];
+        const isMissingInvoice  = String(invFlags[0] || "").trim() === "1";
+        const isInvAmtMismatch  = String(invFlags[2] || "").trim() === "1";
+        const invFlagNames = ["Missing invoice","Client mismatch","Inv amt mismatch",
+          "Sent date mismatch",null,"Fully paid on mismatch","Status mismatch"];
+        const activeInvFlags = invFlags.map((v,i) => String(v||"").trim()==="1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
+
+        // accounting slice = cols A:K (indices 0-10)
+        const invAccounting = alert.data?.accounting || [];
+        const invConfirmed  = alert.data?.confirmed  || [];
+        const invoiceNo      = String(invAccounting[5] || "").trim();   // F
+        const grossAmount    = parseFloat(String(invAccounting[2] || "0").replace(/[£$€,]/g, "")) || 0; // C
+        const totalExclVAT   = parseFloat(String(invAccounting[3] || "0").replace(/[£$€,]/g, "")) || 0; // D
+        const vatIncluded    = parseFloat(String(invAccounting[4] || "0").replace(/[£$€,]/g, "")) || 0; // E
+        const invClient      = String(invAccounting[0] || "").trim();   // A
+        const invJob         = String(invAccounting[1] || "").trim();   // B
+        const invSentDate    = String(invAccounting[6] || "").trim();   // G
+        const invStatus      = String(invAccounting[9] || "").trim();   // J
+        const dashboardTotal = parseFloat(String(invConfirmed[2] || "0").replace(/[£$€,]/g, "")) || 0; // O
+
+        console.log(`  Invoice flags: ${activeInvFlags.join(", ") || "unknown"}`);
+        console.log(`  Invoice #${invoiceNo}, gross=£${grossAmount}, exclVAT=£${totalExclVAT}, VAT=£${vatIncluded}, dashboardTotal=£${dashboardTotal}`);
+
+        // ── "Inv amt mismatch" handling ────────────────────────────────────
+        if (isInvAmtMismatch && !isMissingInvoice) {
+          console.log(`  📊 Invoice amount mismatch — analysing...`);
+
+          // Step 1: Find the job in Confirmed tab by invoice number
+          // Search AQ(42), AX(49), BE(56) for the invoice number
+          console.log(`  Fetching Confirmed tab to find invoice #${invoiceNo}...`);
+          const invConfirmedResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: alert.clientId,
+            range: "Confirmed!A1:BH5000",
+          });
+          const invConfirmedRows = invConfirmedResp.data.values || [];
+
+          let matchedJob = null;
+          let matchedSlot = null;
+          for (let ri = 1; ri < invConfirmedRows.length; ri++) {
+            const r = invConfirmedRows[ri] || [];
+            const ref1 = String(r[42] || "").trim(); // AQ = Inv1 ref
+            const ref2 = String(r[49] || "").trim(); // AX = Inv2 ref
+            const ref3 = String(r[56] || "").trim(); // BE = Inv3 ref
+            if (ref1 === invoiceNo) { matchedJob = r; matchedSlot = 1; break; }
+            if (ref2 === invoiceNo) { matchedJob = r; matchedSlot = 2; break; }
+            if (ref3 === invoiceNo) { matchedJob = r; matchedSlot = 3; break; }
+          }
+
+          if (!matchedJob) {
+            // Invoice not found in Confirmed — pass to Claude with just what we know
+            console.log(`  Invoice #${invoiceNo} not found in Confirmed tab — falling through to Claude`);
+          } else {
+            const jobClient     = String(matchedJob[0]  || "").trim();  // A
+            const jobName       = String(matchedJob[1]  || "").trim();  // B
+            const jobCode       = String(matchedJob[2]  || "").trim();  // C
+            const jobRevenue    = String(matchedJob[32] || "").trim();  // AG
+            const jobVAT        = String(matchedJob[34] || "").trim();  // AI — "Yes" or "No"
+            const jobStart      = String(matchedJob[37] || "").trim();  // AL
+            const jobEnd        = String(matchedJob[38] || "").trim();  // AM
+            const jobVATYes     = jobVAT.toLowerCase() === "yes";
+
+            // Existing invoice slots
+            const slot1 = { ref: String(matchedJob[42]||""), amt: String(matchedJob[41]||""), sent: String(matchedJob[43]||""), status: String(matchedJob[45]||"") };
+            const slot2 = { ref: String(matchedJob[49]||""), amt: String(matchedJob[48]||""), sent: String(matchedJob[50]||""), status: String(matchedJob[52]||"") };
+            const slot3 = { ref: String(matchedJob[56]||""), amt: String(matchedJob[55]||""), sent: String(matchedJob[57]||""), status: String(matchedJob[59]||"") };
+
+            const jobSummary = `Client: ${jobClient} | Job: ${jobName}${jobCode ? ` (${jobCode})` : ""} | Revenue: ${jobRevenue} | VAT: ${jobVAT} | Start: ${jobStart} | End: ${jobEnd}
+Inv1: ${slot1.ref || "(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}
+Inv2: ${slot2.ref || "(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}
+Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
+
+            console.log(`  Found invoice in Confirmed at slot ${matchedSlot}: ${jobClient} — ${jobName}, VAT=${jobVAT}`);
+
+            // Step 2: VAT scenario detection
+            const epsilon = 0.01;
+
+            // Scenario A: Invoice sent WITH VAT, job marked as NO VAT
+            // Evidence: VAT > 0 AND total excl VAT ≈ dashboard total
+            if (vatIncluded > 0 && !jobVATYes && Math.abs(totalExclVAT - dashboardTotal) < epsilon) {
+              console.log(`  VAT scenario A: invoice sent WITH VAT (£${vatIncluded}) but job marked NO VAT`);
+              const options = [{
+                optionId: 1,
+                title: `MANUAL INVESTIGATION — Invoice sent WITH VAT but job "${jobName}" is marked NO VAT`,
+                matchType: "info",
+                matchAnalysis: {
+                  matchConfidence: "N/A",
+                  reasonForChoice: `The invoice was sent including VAT (£${vatIncluded.toFixed(2)}), but the job in the Confirmed tab is marked as "No VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the invoice amount excluding VAT (£${totalExclVAT.toFixed(2)}), which confirms the mismatch. Either the job's VAT setting needs updating to "Yes", or the invoice needs to be re-issued excluding VAT.`,
+                  discrepancies: `Invoice #${invoiceNo} includes VAT (£${vatIncluded.toFixed(2)}) but job is marked NO VAT. Dashboard total £${dashboardTotal.toFixed(2)} vs gross invoice £${grossAmount.toFixed(2)}.`,
+                },
+                recommendedActions: [
+                  `Invoice #${invoiceNo}: gross £${grossAmount.toFixed(2)}, excl VAT £${totalExclVAT.toFixed(2)}, VAT £${vatIncluded.toFixed(2)}`,
+                  `Job "${jobName}" (${jobClient}) is marked "No VAT" in Confirmed tab`,
+                  `Option 1: Update job VAT setting to "Yes" if the invoice is correct`,
+                  `Option 2: Re-issue the invoice excluding VAT if the job setting is correct`,
+                ],
+              }];
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            }
+
+            // Scenario B: Invoice sent WITHOUT VAT, job marked to INCLUDE VAT
+            // Evidence: VAT = 0 AND gross amount ≈ dashboard total (excl VAT portion)
+            if (vatIncluded === 0 && jobVATYes && Math.abs(grossAmount - dashboardTotal) < epsilon) {
+              console.log(`  VAT scenario B: invoice sent WITHOUT VAT but job marked YES VAT`);
+              const options = [{
+                optionId: 1,
+                title: `MANUAL INVESTIGATION — Invoice sent WITHOUT VAT but job "${jobName}" is marked YES VAT`,
+                matchType: "info",
+                matchAnalysis: {
+                  matchConfidence: "N/A",
+                  reasonForChoice: `The invoice was sent without VAT (VAT = £0.00), but the job in the Confirmed tab is marked as "Yes VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the gross invoice amount (£${grossAmount.toFixed(2)}), but the expected total including VAT would be higher. Either the job's VAT setting needs updating to "No", or the invoice needs to be re-issued including VAT.`,
+                  discrepancies: `Invoice #${invoiceNo} has no VAT but job is marked YES VAT. Dashboard total £${dashboardTotal.toFixed(2)} vs gross invoice £${grossAmount.toFixed(2)}.`,
+                },
+                recommendedActions: [
+                  `Invoice #${invoiceNo}: gross £${grossAmount.toFixed(2)}, no VAT applied`,
+                  `Job "${jobName}" (${jobClient}) is marked "Yes VAT" in Confirmed tab`,
+                  `Option 1: Update job VAT setting to "No" if the invoice is correct`,
+                  `Option 2: Re-issue the invoice including VAT if the job setting is correct`,
+                ],
+              }];
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            }
+
+            // Step 3: Not a VAT scenario — send to Claude with specific job + invoice details
+            console.log(`  No VAT scenario detected — sending to Claude with job details`);
+            const invAmtPrompt = `You are analysing an invoice amount mismatch between the accounting system and the dashboard.
+
+INVOICE FROM ACCOUNTING SYSTEM:
+• Invoice #: ${invoiceNo}
+• Client: ${invClient}
+• Job: ${invJob}
+• Gross amount (incl VAT): £${grossAmount.toFixed(2)}
+• Total excl VAT: £${totalExclVAT.toFixed(2)}
+• VAT included: £${vatIncluded.toFixed(2)}
+• Sent date: ${invSentDate}
+• Status: ${invStatus}
+• Dashboard shows total: £${dashboardTotal.toFixed(2)}
+
+MATCHED JOB IN CONFIRMED TAB (Slot ${matchedSlot}):
+${jobSummary}
+
+The VAT scenarios (invoice with VAT/job no VAT, and invoice without VAT/job with VAT) have already been checked and ruled out.
+
+YOUR TASK:
+Identify the most likely cause of the amount mismatch and suggest what action to take. Consider:
+- Rounding differences
+- Partial payments
+- Currency issues
+- Incorrect invoice amount entered in dashboard
+- Revenue amount needs updating
+
+Format as JSON array:
+[{
+  "optionId": 1,
+  "title": "Brief description of the issue and recommended action",
+  "matchType": "info",
+  "matchAnalysis": {
+    "matchConfidence": "High/Medium/Low",
+    "reasonForChoice": "Detailed explanation",
+    "discrepancies": "Specific numbers and what they mean"
+  },
+  "recommendedActions": ["Action 1", "Action 2"]
+}]
+
+Return ONLY JSON, no other text.`;
+
+            const invAmtMessage = await anthropic.messages.create({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 1000,
+              messages: [{ role: "user", content: invAmtPrompt }],
+            });
+
+            let invAmtOptions = [];
+            const invAmtText = invAmtMessage.content[0]?.type === "text" ? invAmtMessage.content[0].text : "";
+            const invAmtCleaned = invAmtText.replace(/```json/g, "").replace(/```/g, "").trim();
+            try {
+              invAmtOptions = JSON.parse(invAmtCleaned);
+              if (!Array.isArray(invAmtOptions)) invAmtOptions = [invAmtOptions];
+            } catch (e) {
+              console.error(`  ⚠️ Could not parse Claude response for inv amt mismatch`);
+              invAmtOptions = [{ optionId: 1, title: "MANUAL INVESTIGATION REQUIRED", matchType: "info",
+                matchAnalysis: { matchConfidence: "N/A", reasonForChoice: invAmtText, discrepancies: `Invoice #${invoiceNo} amount mismatch` },
+                recommendedActions: [`Review invoice #${invoiceNo} manually`] }];
+            }
+            return res.status(200).json({ success: true, options: invAmtOptions, alertId: alert.rowNumber });
+          }
+        }
+
+        // ── Non-standard invoice discrepancy types ─────────────────────────
+        if (!isMissingInvoice && activeInvFlags.length > 0) {
+          console.log(`  📊 Non-standard invoice discrepancy: ${activeInvFlags.join(", ")} — returning info message`);
+          const options = [{
+            optionId: 1,
+            title: `MANUAL INVESTIGATION REQUIRED — ${activeInvFlags.join(", ")}`,
+            matchType: "info",
+            matchAnalysis: {
+              matchConfidence: "N/A",
+              reasonForChoice: `This type of invoice discrepancy (${activeInvFlags.join(", ")}) requires manual investigation.`,
+              discrepancies: activeInvFlags.join(", "),
+            },
+            recommendedActions: [
+              `Invoice #${invoiceNo} — ${invClient}${invJob ? " | " + invJob : ""}`,
+              `Amount: £${grossAmount.toFixed(2)}${vatIncluded > 0 ? ` (incl. £${vatIncluded.toFixed(2)} VAT)` : ""}, Sent: ${invSentDate}, Status: ${invStatus}`,
+              `Discrepancy type(s): ${activeInvFlags.join(", ")}`,
+              `Please review this invoice directly in InvComp`,
+            ],
+          }];
+          return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+        }
+
+        // ── Missing invoice — existing Claude path ─────────────────────────
         console.log(`  Fetching Confirmed tab from CLIENT sheet ${alert.clientId.substring(0, 16)}...`);
         
         // OPTIMIZATION: Only fetch up to column CR (79) instead of DC

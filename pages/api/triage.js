@@ -2721,14 +2721,15 @@ Return ONLY JSON, no other text.`;
 
           let matchedJob = null;
           let matchedSlot = null;
+          let matchedRowNum = null; // 1-indexed sheet row
           for (let ri = 1; ri < invConfirmedRows.length; ri++) {
             const r = invConfirmedRows[ri] || [];
             const ref1 = String(r[42] || "").trim(); // AQ = Inv1 ref
             const ref2 = String(r[49] || "").trim(); // AX = Inv2 ref
             const ref3 = String(r[56] || "").trim(); // BE = Inv3 ref
-            if (ref1 === invoiceNo) { matchedJob = r; matchedSlot = 1; break; }
-            if (ref2 === invoiceNo) { matchedJob = r; matchedSlot = 2; break; }
-            if (ref3 === invoiceNo) { matchedJob = r; matchedSlot = 3; break; }
+            if (ref1 === invoiceNo) { matchedJob = r; matchedSlot = 1; matchedRowNum = ri + 1; break; }
+            if (ref2 === invoiceNo) { matchedJob = r; matchedSlot = 2; matchedRowNum = ri + 1; break; }
+            if (ref3 === invoiceNo) { matchedJob = r; matchedSlot = 3; matchedRowNum = ri + 1; break; }
           }
 
           if (!matchedJob) {
@@ -2811,25 +2812,30 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
 
             // If difference < £1.00, it's almost certainly a rounding issue — no need for Claude
             if (amtDiff < 1.00 && amtDiff > 0) {
+              // Amount to write = total excl VAT (Confirmed tab always stores excl-VAT amounts)
+              const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
+              // Slot amount column: Slot 1 = AP, Slot 2 = AW, Slot 3 = BD
+              const slotAmtCol = matchedSlot === 1 ? "AP" : matchedSlot === 2 ? "AW" : "BD";
+              const cellRef = `${slotAmtCol}${matchedRowNum}`;
               const options = [{
                 optionId: 1,
-                title: `LIKELY ROUNDING DIFFERENCE — Invoice #${invoiceNo} differs from dashboard by ${amtDiff.toFixed(2)}p`,
-                matchType: "info",
-                discrepancyType: "inv_amt_mismatch",
-                explanation: `The difference between the invoice amount (£${grossAmount.toFixed(2)}) and the dashboard total (£${dashboardTotal.toFixed(2)}) is just £${amtDiff.toFixed(2)} — almost certainly a rounding difference. This can usually be safely ignored, or the dashboard amount corrected to match the invoice.`,
-                jobDetails: {
-                  clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
-                  vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
-                  slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
-                  slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
-                  slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
+                title: `ROUNDING DIFFERENCE — Correct invoice #${invoiceNo} amount from £${dashboardTotal.toFixed(2)} to £${correctAmount.toFixed(2)}`,
+                matchType: "existing_job",
+                jobRow: matchedRowNum,
+                jobName,
+                matchingDetails: {
+                  unmatchedJobSummary: { clientName: jobClient, jobName, revenue: jobRevenue, startDate: jobStart, endDate: jobEnd },
+                },
+                matchAnalysis: {
+                  matchConfidence: "High",
+                  reasonForChoice: `The difference between the invoice amount (£${grossAmount.toFixed(2)} incl. VAT, £${correctAmount.toFixed(2)} excl. VAT) and the dashboard total (£${dashboardTotal.toFixed(2)}) is just £${amtDiff.toFixed(2)} — almost certainly a rounding difference. The Confirmed tab will be updated to the correct excl-VAT amount.`,
+                  discrepancies: `Invoice #${invoiceNo}: £${grossAmount.toFixed(2)} gross (£${correctAmount.toFixed(2)} excl VAT) vs dashboard £${dashboardTotal.toFixed(2)}`,
                 },
                 recommendedActions: [
-                  `Difference of £${amtDiff.toFixed(2)} is within rounding tolerance`,
-                  `If correction needed: update the slot amount in the Confirmed tab to £${grossAmount.toFixed(2)} to match the invoice`,
+                  `write ${correctAmount.toFixed(2)} to ${cellRef}`,
                 ],
               }];
-              console.log(`  ✅ Rounding difference (£${amtDiff.toFixed(2)}) — returning hardcoded option`);
+              console.log(`  ✅ Rounding difference (£${amtDiff.toFixed(2)}) — writing ${correctAmount.toFixed(2)} to ${cellRef}`);
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
             }
 

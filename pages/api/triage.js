@@ -758,6 +758,55 @@ function buildDirCompSummary(alert) {
 // COMPARISON SHEET DATA READING
 // ============================================================================
 
+// Check if GAS automation is currently running for a given sequence type.
+// Reads DataChgAlert tab of the master sheet:
+//   Invoices: B4 (flag), C4 (timestamp)
+//   Expenses: F4 (flag), G4 (timestamp)
+//   CRM:      H4 (flag), I4 (timestamp)
+// Returns { locked: false } if safe to proceed, or { locked: true, message: "..." } if GAS is running.
+// Flags older than 30 minutes are treated as stale and ignored.
+const GAS_LOCK_STALE_MS = 30 * 60 * 1000; // 30 minutes
+
+async function checkGASLock(sheets, masterSheetId, sequenceType) {
+  const cellMap = {
+    invoice: { flag: "B4", timestamp: "C4" },
+    expense: { flag: "F4", timestamp: "G4" },
+    crm:     { flag: "H4", timestamp: "I4" },
+  };
+  const cells = cellMap[sequenceType];
+  if (!cells || !masterSheetId) return { locked: false };
+
+  try {
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: `DataChgAlert!${cells.flag}:${cells.timestamp}`,
+    });
+    const row = (resp.data.values || [[]])[0] || [];
+    const flagValue = String(row[0] || "").trim().toUpperCase();
+    const tsRaw = row[1];
+
+    if (flagValue !== "YES") return { locked: false };
+
+    // Check for stale flag
+    if (tsRaw) {
+      const tsDate = new Date(tsRaw);
+      if (!isNaN(tsDate) && (Date.now() - tsDate.getTime()) > GAS_LOCK_STALE_MS) {
+        console.log(`  ⚠️ GAS lock for ${sequenceType} is stale (set at ${tsDate.toISOString()}) — ignoring`);
+        return { locked: false };
+      }
+    }
+
+    const since = tsRaw ? ` (started ${new Date(tsRaw).toLocaleTimeString("en-GB")})` : "";
+    return {
+      locked: true,
+      message: `The ${sequenceType} automation sequence is currently running for this client${since}. Please try again in a few minutes.`,
+    };
+  } catch (e) {
+    console.log(`  ⚠️ Could not read GAS lock for ${sequenceType}: ${e.message} — proceeding anyway`);
+    return { locked: false };
+  }
+}
+
 async function readInvCompAlerts(sheets, spreadsheetId) {
   try {
     console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
@@ -1279,38 +1328,61 @@ export default async function handler(req, res) {
 
         // Read actionable alerts
         if (actionableFlags.includes("invoiceDashboardDiscr")) {
-          console.log(`  Reading InvComp...`);
-          // IMPORTANT: readInvCompAlerts uses masterSheetId (Master Sheet with InvComp tab)
-          const invoiceAlerts = await readInvCompAlerts(
-            sheets,
-            client.masterSheetId  // Master Sheet - Column M
-          );
-          console.log(`  ✓ InvComp done, found ${invoiceAlerts.length} alerts`);
-          // CRITICAL: Set clientId to client.clientSheetId for later analysis
-          // This is the Client Sheet (Confirmed tab) where we'll look for job matches
-          invoiceAlerts.forEach((alert) => {
-            alert.clientId = client.clientSheetId;  // Client Sheet - Column L
-            alert.masterSheetId = client.masterSheetId; // Master Sheet - Column M
-            alert.clientName = client.clientName;   // Client name for display
-            alert.flagType = "invoiceDashboardDiscr";
-          });
-          allAlerts.push(...invoiceAlerts);
+          const invLock = await checkGASLock(sheets, client.masterSheetId, "invoice");
+          if (invLock.locked) {
+            console.log(`  🔒 Invoice GAS lock active for ${client.clientName} — skipping InvComp`);
+            // Add a synthetic locked alert so the user is informed
+            allAlerts.push({
+              type: "locked", sheetName: "InvComp", clientName: client.clientName,
+              clientId: client.clientSheetId, masterSheetId: client.masterSheetId,
+              flagType: "invoiceDashboardDiscr",
+              summary: { lockedMessage: invLock.message },
+            });
+          } else {
+            console.log(`  Reading InvComp...`);
+            // IMPORTANT: readInvCompAlerts uses masterSheetId (Master Sheet with InvComp tab)
+            const invoiceAlerts = await readInvCompAlerts(
+              sheets,
+              client.masterSheetId  // Master Sheet - Column M
+            );
+            console.log(`  ✓ InvComp done, found ${invoiceAlerts.length} alerts`);
+            // CRITICAL: Set clientId to client.clientSheetId for later analysis
+            // This is the Client Sheet (Confirmed tab) where we'll look for job matches
+            invoiceAlerts.forEach((alert) => {
+              alert.clientId = client.clientSheetId;  // Client Sheet - Column L
+              alert.masterSheetId = client.masterSheetId; // Master Sheet - Column M
+              alert.clientName = client.clientName;   // Client name for display
+              alert.flagType = "invoiceDashboardDiscr";
+            });
+            allAlerts.push(...invoiceAlerts);
+          }
         }
 
         if (actionableFlags.includes("expenseDashboardDiscr")) {
-          console.log(`  Reading DirComp...`);
-          const expenseAlerts = await readDirCompAlerts(
-            sheets,
-            client.masterSheetId
-          );
-          console.log(`  ✓ DirComp done, found ${expenseAlerts.length} alerts`);
-          expenseAlerts.forEach((alert) => {
-            alert.clientId = client.clientSheetId;
-            alert.masterSheetId = client.masterSheetId;
-            alert.clientName = client.clientName;
-            alert.flagType = "expenseDashboardDiscr";
-          });
-          allAlerts.push(...expenseAlerts);
+          const expLock = await checkGASLock(sheets, client.masterSheetId, "expense");
+          if (expLock.locked) {
+            console.log(`  🔒 Expense GAS lock active for ${client.clientName} — skipping DirComp`);
+            allAlerts.push({
+              type: "locked", sheetName: "DirComp", clientName: client.clientName,
+              clientId: client.clientSheetId, masterSheetId: client.masterSheetId,
+              flagType: "expenseDashboardDiscr",
+              summary: { lockedMessage: expLock.message },
+            });
+          } else {
+            console.log(`  Reading DirComp...`);
+            const expenseAlerts = await readDirCompAlerts(
+              sheets,
+              client.masterSheetId
+            );
+            console.log(`  ✓ DirComp done, found ${expenseAlerts.length} alerts`);
+            expenseAlerts.forEach((alert) => {
+              alert.clientId = client.clientSheetId;
+              alert.masterSheetId = client.masterSheetId;
+              alert.clientName = client.clientName;
+              alert.flagType = "expenseDashboardDiscr";
+            });
+            allAlerts.push(...expenseAlerts);
+          }
         }
 
         // Handle CRM alerts based on which modes are needed
@@ -1321,34 +1393,49 @@ export default async function handler(req, res) {
           ["crmConfDashDiscr", "crmConfAppDiscr"].includes(f)
         );
 
-        if (pipelineAlerts.length > 0) {
-          const crmAlerts = await readCRMCompAlerts(
-            sheets,
-            client.masterSheetId,
-            "Pipeline",
-            pipelineAlerts
-          );
-          crmAlerts.forEach((alert) => {
-            alert.clientId = client.clientSheetId;
-            alert.masterSheetId = client.masterSheetId;
-            alert.clientName = client.clientName;
-          });
-          allAlerts.push(...crmAlerts);
-        }
+        // Single CRM lock check covers both Pipeline and Confirmed reads
+        const crmLock = (pipelineAlerts.length > 0 || confirmedAlerts.length > 0)
+          ? await checkGASLock(sheets, client.masterSheetId, "crm")
+          : { locked: false };
 
-        if (confirmedAlerts.length > 0) {
-          const crmAlerts = await readCRMCompAlerts(
-            sheets,
-            client.masterSheetId,
-            "Confirmed",
-            confirmedAlerts
-          );
-          crmAlerts.forEach((alert) => {
-            alert.clientId = client.clientSheetId;
-            alert.masterSheetId = client.masterSheetId;
-            alert.clientName = client.clientName;
+        if (crmLock.locked) {
+          console.log(`  🔒 CRM GAS lock active for ${client.clientName} — skipping CRMComp`);
+          allAlerts.push({
+            type: "locked", sheetName: "CRMComp", clientName: client.clientName,
+            clientId: client.clientSheetId, masterSheetId: client.masterSheetId,
+            flagType: "crmPipeDashDiscr",
+            summary: { lockedMessage: crmLock.message },
           });
-          allAlerts.push(...crmAlerts);
+        } else {
+          if (pipelineAlerts.length > 0) {
+            const crmAlerts = await readCRMCompAlerts(
+              sheets,
+              client.masterSheetId,
+              "Pipeline",
+              pipelineAlerts
+            );
+            crmAlerts.forEach((alert) => {
+              alert.clientId = client.clientSheetId;
+              alert.masterSheetId = client.masterSheetId;
+              alert.clientName = client.clientName;
+            });
+            allAlerts.push(...crmAlerts);
+          }
+
+          if (confirmedAlerts.length > 0) {
+            const crmAlerts = await readCRMCompAlerts(
+              sheets,
+              client.masterSheetId,
+              "Confirmed",
+              confirmedAlerts
+            );
+            crmAlerts.forEach((alert) => {
+              alert.clientId = client.clientSheetId;
+              alert.masterSheetId = client.masterSheetId;
+              alert.clientName = client.clientName;
+            });
+            allAlerts.push(...crmAlerts);
+          }
         }
 
         // Collect "no action" alerts for acknowledgement

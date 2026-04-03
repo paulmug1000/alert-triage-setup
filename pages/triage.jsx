@@ -2037,7 +2037,18 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
-          {alert.summary && (
+          {alert.type === "locked" && alert.summary?.lockedMessage && (
+            <div style={{ ...styles.alertSummary, marginBottom: "20px", backgroundColor: "#fff3e0", borderLeft: "4px solid #f59e0b" }}>
+              <h3 style={{ fontSize: "13px", fontWeight: "700", marginBottom: "8px", color: "#92400e", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                🔒 Automation In Progress
+              </h3>
+              <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#78350f" }}>
+                {alert.summary.lockedMessage}
+              </div>
+            </div>
+          )}
+
+          {alert.summary && alert.type !== "locked" && (
             <div style={{ ...styles.alertSummary, marginBottom: "20px" }}>
               <h3 style={{ fontSize: "13px", fontWeight: "700", marginBottom: "8px", color: "#1a1a1a", textTransform: "uppercase", letterSpacing: "0.5px" }}>
                 {alert.type === "expense" ? "Unmatched Expense"

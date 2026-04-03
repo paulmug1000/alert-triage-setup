@@ -1708,6 +1708,243 @@ BUDGET AND REVENUE:
 
         // Handle expense alerts (DirComp)
         if (alert.type === "expense" || alert.sheetName === "DirComp") {
+
+          // ── Determine discrepancy type from flags ──────────────────────────
+          // flags = alert.data.flags (AO:AV, indices 0-7)
+          // 0=AO Missing cost, 1=AP Duplicate app ID, 2=AQ Descr mismatch,
+          // 3=AR Amount mismatch, 4=AS VAT mismatch, 5=AT Rec date mismatch,
+          // 6=AU Pay date mismatch, 7=AV Status mismatch
+          const flags = alert.data?.flags || [];
+          const isMissingCost = String(flags[0] || "").trim() === "1";
+          const isVATMismatch = String(flags[4] || "").trim() === "1";
+          const flagNames = ["Missing cost","Duplicate app ID","Description mismatch",
+            "Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
+          const activeFlags = flags.map((v, i) => String(v||"").trim()==="1" ? flagNames[i] : null).filter(Boolean);
+
+          // Extract key fields from alert data
+          // confirmed slice = cols X:AH (indices 23-33 of raw row), so:
+          //   index 3 within confirmed = AA (vendor description)
+          //   index 10 within confirmed = AH (source)
+          // accounting slice = cols A:J (indices 0-9), index 8 = col I (VAT amount)
+          const confirmed  = alert.data?.confirmed  || [];
+          const accounting = alert.data?.accounting || [];
+          const vendorDesc = String(confirmed[3] || "").trim();   // AA
+          const source     = String(confirmed[10] || "").trim();  // AH
+          const vatAmount  = parseFloat(String(accounting[8] || "0").replace(/[£$€,]/g, "")) || 0;
+          const expDescription = String(accounting[1] || "").trim();
+          const expAmount      = parseFloat(String(accounting[2] || "0").replace(/[£$€,]/g, "")) || 0;
+          const expDate        = String(accounting[0] || "").trim();
+
+          // Extract vendor name = part before first "(" in vendorDesc, trimmed
+          const vendorName = (vendorDesc.includes("(")
+            ? vendorDesc.slice(0, vendorDesc.indexOf("("))
+            : vendorDesc).trim();
+
+          console.log(`  Discrepancy type(s): ${activeFlags.join(", ") || "unknown"}`);
+          console.log(`  Source: ${source}, Vendor: "${vendorName}", VAT amount: ${vatAmount}`);
+
+          // ── VAT mismatch handling ──────────────────────────────────────────
+          if (isVATMismatch && !isMissingCost) {
+            console.log(`  📊 VAT mismatch — analysing...`);
+
+            // Step 1: Is this a Confirmed tab or Outgoings tab expense?
+            if (source.startsWith("Slot")) {
+              // Confirmed tab expense — manual investigation required
+              const options = [{
+                optionId: 1,
+                title: `MANUAL INVESTIGATION REQUIRED — VAT mismatch on Confirmed tab expense`,
+                matchType: "info",
+                matchAnalysis: {
+                  matchConfidence: "N/A",
+                  reasonForChoice: `This VAT mismatch is on a Confirmed tab expense (source: ${source}). The VAT setting is stored per expense slot and cannot be changed automatically. Please investigate manually.`,
+                  discrepancies: `VAT mismatch on ${source} for "${vendorDesc}"`,
+                },
+                recommendedActions: [
+                  `Check the VAT field for "${vendorDesc}" in ${source} of the Confirmed tab`,
+                  `Correct the VAT value manually in the appropriate slot`,
+                ],
+              }];
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            }
+
+            if (!source.startsWith("OG-")) {
+              // Unknown source — manual investigation
+              const options = [{
+                optionId: 1,
+                title: `MANUAL INVESTIGATION REQUIRED — Cannot determine expense location`,
+                matchType: "info",
+                matchAnalysis: {
+                  matchConfidence: "N/A",
+                  reasonForChoice: `The source field "${source}" is not recognised. Manual investigation required.`,
+                  discrepancies: `VAT mismatch, unrecognised source: "${source}"`,
+                },
+                recommendedActions: [`Investigate the expense "${vendorDesc}" manually`],
+              }];
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            }
+
+            // Step 2: Outgoings tab expense — re-read full DirComp to find all items for this vendor
+            console.log(`  Re-reading DirComp to find all Outgoings items for vendor "${vendorName}"...`);
+            const dirCompResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.masterSheetId || alert.clientId,
+              range: "DirComp!A6:AV2000",
+            });
+            const dirCompRows = dirCompResp.data.values || [];
+
+            // Filter to rows with data in A:J (indices 0-9)
+            const populatedRows = dirCompRows.filter(r =>
+              r && r.slice(0, 10).some(v => String(v || "").trim() !== "")
+            );
+
+            // Find all rows for the same vendor that are Outgoings tab expenses
+            const normalise = s => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+            const vendorNorm = normalise(vendorName);
+
+            const vendorOGRows = populatedRows.filter(r => {
+              const rowVendorDesc = String(r[26] || "").trim(); // AA = index 26
+              const rowVendor = normalise(rowVendorDesc.includes("(")
+                ? rowVendorDesc.slice(0, rowVendorDesc.indexOf("("))
+                : rowVendorDesc);
+              const rowSource = String(r[33] || "").trim(); // AH = index 33
+              return rowVendor === vendorNorm && rowSource.startsWith("OG-");
+            });
+
+            console.log(`  Found ${vendorOGRows.length} Outgoings items for vendor "${vendorName}"`);
+
+            if (vendorOGRows.length === 0) {
+              // Shouldn't happen since the triggering row should be in there, but handle gracefully
+              const options = [{
+                optionId: 1,
+                title: `MANUAL INVESTIGATION REQUIRED — Could not find vendor items in DirComp`,
+                matchType: "info",
+                matchAnalysis: {
+                  matchConfidence: "N/A",
+                  reasonForChoice: `No Outgoings tab items found for vendor "${vendorName}" in DirComp. Manual investigation required.`,
+                  discrepancies: `VAT mismatch for "${vendorDesc}" (source: ${source})`,
+                },
+                recommendedActions: [`Investigate the VAT setting for "${vendorName}" in the Outgoings tab manually`],
+              }];
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            }
+
+            // Step 3: Check VAT treatment across all vendor OG items
+            // col I = index 8 in raw DirComp row (accounting section A:J)
+            const vatTreatments = vendorOGRows.map(r => {
+              const vat = parseFloat(String(r[8] || "0").replace(/[£$€,]/g, "")) || 0;
+              return vat > 0 ? "yes" : "no";
+            });
+            const allSameVAT = vatTreatments.every(v => v === vatTreatments[0]);
+            const unanimousVAT = allSameVAT ? vatTreatments[0] : null; // "yes" or "no"
+
+            console.log(`  VAT treatments across ${vendorOGRows.length} items: ${vatTreatments.join(", ")} — unanimous: ${unanimousVAT || "NO"}`);
+
+            if (!allSameVAT) {
+              // Mixed VAT treatment — manual investigation
+              const options = [{
+                optionId: 1,
+                title: `MANUAL INVESTIGATION REQUIRED — Mixed VAT treatment across items for "${vendorName}"`,
+                matchType: "info",
+                matchAnalysis: {
+                  matchConfidence: "N/A",
+                  reasonForChoice: `${vendorOGRows.length} Outgoings items found for "${vendorName}", but they have mixed VAT treatments (some with VAT, some without). Changing the row-level VAT setting would not resolve all discrepancies. Manual investigation required.`,
+                  discrepancies: `VAT mismatch — ${vatTreatments.filter(v=>v==="yes").length} items with VAT, ${vatTreatments.filter(v=>v==="no").length} items without VAT`,
+                },
+                recommendedActions: [
+                  `Review all expense items for "${vendorName}" in the Outgoings tab`,
+                  `Determine the correct VAT treatment for each item individually`,
+                ],
+              }];
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            }
+
+            // Step 4: All items agree — find vendor row in Outgoings and recommend VAT change
+            const newVATValue = unanimousVAT === "yes" ? "Yes" : "No";
+            const isSingleItem = vendorOGRows.length === 1;
+
+            // Find vendor row in Outgoings (rows 13-110 = 0-indexed 12-109, col A)
+            const outgoingsResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: "Outgoings!A13:B110",
+            });
+            const outgoingsRows2 = outgoingsResp.data.values || [];
+            let outgoingsVendorRow = -1;
+            for (let i = 0; i < outgoingsRows2.length; i++) {
+              const rowVendor = normalise(String(outgoingsRows2[i]?.[0] || ""));
+              if (rowVendor === vendorNorm) {
+                outgoingsVendorRow = i + 13; // 1-indexed sheet row
+                break;
+              }
+            }
+
+            if (outgoingsVendorRow === -1) {
+              const options = [{
+                optionId: 1,
+                title: `MANUAL INVESTIGATION REQUIRED — Vendor "${vendorName}" not found in Outgoings tab`,
+                matchType: "info",
+                matchAnalysis: {
+                  matchConfidence: "N/A",
+                  reasonForChoice: `All ${vendorOGRows.length} items for "${vendorName}" agree on VAT treatment (${newVATValue}), but the vendor could not be found in the Outgoings tab rows 13-110. Manual investigation required.`,
+                  discrepancies: `VAT mismatch for "${vendorName}"`,
+                },
+                recommendedActions: [`Find "${vendorName}" in the Outgoings tab and set column B to "${newVATValue}"`],
+              }];
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            }
+
+            const rationale = isSingleItem
+              ? `This is the only Outgoings tab expense for "${vendorName}". Changing the VAT setting to "${newVATValue}" will resolve the discrepancy.`
+              : `All ${vendorOGRows.length} Outgoings tab expenses for "${vendorName}" have the same VAT treatment (${newVATValue}). Changing the row-level VAT setting will resolve all discrepancies at once.`;
+
+            const options = [{
+              optionId: 1,
+              title: `CHANGE VAT SETTING to "${newVATValue}" for "${vendorName}" in Outgoings tab (Row ${outgoingsVendorRow})`,
+              matchType: "existing_job",
+              jobRow: outgoingsVendorRow,
+              jobName: vendorName,
+              matchingDetails: {
+                unmatchedJobSummary: {
+                  clientName: alert.clientName,
+                  jobName: vendorDesc,
+                  revenue: String(expAmount),
+                  startDate: expDate,
+                },
+              },
+              matchAnalysis: {
+                matchConfidence: "High",
+                reasonForChoice: rationale,
+                discrepancies: `Current VAT setting does not match expense items (all ${vatTreatments.length} items have VAT ${unanimousVAT === "yes" ? "applied" : "not applied"})`,
+              },
+              recommendedActions: [
+                `write ${newVATValue} to B${outgoingsVendorRow}`,
+              ],
+            }];
+
+            console.log(`  ✅ VAT mismatch resolved: recommend writing "${newVATValue}" to B${outgoingsVendorRow} for "${vendorName}"`);
+            return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+          }
+
+          // ── Other discrepancy types (not Missing cost, not VAT mismatch) ──
+          if (!isMissingCost) {
+            console.log(`  📊 Non-standard discrepancy type: ${activeFlags.join(", ")} — returning info message`);
+            const options = [{
+              optionId: 1,
+              title: `MANUAL INVESTIGATION REQUIRED — ${activeFlags.join(", ")}`,
+              matchType: "info",
+              matchAnalysis: {
+                matchConfidence: "N/A",
+                reasonForChoice: `This type of discrepancy (${activeFlags.join(", ")}) requires manual investigation. The triage system handles "Missing cost" and "VAT mismatch" automatically — other discrepancy types should be reviewed directly in the sheet.`,
+                discrepancies: activeFlags.join(", "),
+              },
+              recommendedActions: [
+                `Review the expense directly in DirComp: ${expDescription || vendorDesc}`,
+                `Amount: £${expAmount.toFixed(2)}, Date: ${expDate}, Source: ${source}`,
+                `Discrepancy type(s): ${activeFlags.join(", ")}`,
+              ],
+            }];
+            return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+          }
+
+          // ── Missing cost — existing Claude path follows ────────────────────
           console.log(`  📊 Fetching Outgoings tab for expense matching...`);
           
           const outgoingsResponse = await sheets.spreadsheets.values.get({

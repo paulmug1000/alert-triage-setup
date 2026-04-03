@@ -2765,19 +2765,18 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
               console.log(`  VAT scenario A: invoice sent WITH VAT (£${vatIncluded}) but job marked NO VAT`);
               const options = [{
                 optionId: 1,
-                title: `MANUAL INVESTIGATION — Invoice sent WITH VAT but job "${jobName}" is marked NO VAT`,
+                title: `MANUAL INVESTIGATION — Invoice sent WITH VAT but job is marked NO VAT`,
                 matchType: "info",
-                matchAnalysis: {
-                  matchConfidence: "N/A",
-                  reasonForChoice: `The invoice was sent including VAT (£${vatIncluded.toFixed(2)}), but the job in the Confirmed tab is marked as "No VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the invoice amount excluding VAT (£${totalExclVAT.toFixed(2)}), which confirms the mismatch. Either the job's VAT setting needs updating to "Yes", or the invoice needs to be re-issued excluding VAT.`,
-                  discrepancies: `Invoice #${invoiceNo} includes VAT (£${vatIncluded.toFixed(2)}) but job is marked NO VAT. Dashboard total £${dashboardTotal.toFixed(2)} vs gross invoice £${grossAmount.toFixed(2)}.`,
+                discrepancyType: "inv_amt_mismatch",
+                explanation: `Invoice #${invoiceNo} was sent including VAT (£${vatIncluded.toFixed(2)}), but the job in the Confirmed tab is marked as "No VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the invoice amount excluding VAT (£${totalExclVAT.toFixed(2)}), confirming the mismatch. Either the job's VAT setting needs updating to "Yes", or the invoice needs to be re-issued excluding VAT.`,
+                jobDetails: {
+                  clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
+                  vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
+                  slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
+                  slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
+                  slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
                 },
-                recommendedActions: [
-                  `Invoice #${invoiceNo}: gross £${grossAmount.toFixed(2)}, excl VAT £${totalExclVAT.toFixed(2)}, VAT £${vatIncluded.toFixed(2)}`,
-                  `Job "${jobName}" (${jobClient}) is marked "No VAT" in Confirmed tab`,
-                  `Option 1: Update job VAT setting to "Yes" if the invoice is correct`,
-                  `Option 2: Re-issue the invoice excluding VAT if the job setting is correct`,
-                ],
+                recommendedActions: [],
               }];
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
             }
@@ -2788,19 +2787,18 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
               console.log(`  VAT scenario B: invoice sent WITHOUT VAT but job marked YES VAT`);
               const options = [{
                 optionId: 1,
-                title: `MANUAL INVESTIGATION — Invoice sent WITHOUT VAT but job "${jobName}" is marked YES VAT`,
+                title: `MANUAL INVESTIGATION — Invoice sent WITHOUT VAT but job is marked YES VAT`,
                 matchType: "info",
-                matchAnalysis: {
-                  matchConfidence: "N/A",
-                  reasonForChoice: `The invoice was sent without VAT (VAT = £0.00), but the job in the Confirmed tab is marked as "Yes VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the gross invoice amount (£${grossAmount.toFixed(2)}), but the expected total including VAT would be higher. Either the job's VAT setting needs updating to "No", or the invoice needs to be re-issued including VAT.`,
-                  discrepancies: `Invoice #${invoiceNo} has no VAT but job is marked YES VAT. Dashboard total £${dashboardTotal.toFixed(2)} vs gross invoice £${grossAmount.toFixed(2)}.`,
+                discrepancyType: "inv_amt_mismatch",
+                explanation: `Invoice #${invoiceNo} was sent without VAT (VAT = £0.00), but the job in the Confirmed tab is marked as "Yes VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the gross invoice amount (£${grossAmount.toFixed(2)}), but the expected total including VAT would be higher. Either the job's VAT setting needs updating to "No", or the invoice needs to be re-issued including VAT.`,
+                jobDetails: {
+                  clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
+                  vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
+                  slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
+                  slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
+                  slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
                 },
-                recommendedActions: [
-                  `Invoice #${invoiceNo}: gross £${grossAmount.toFixed(2)}, no VAT applied`,
-                  `Job "${jobName}" (${jobClient}) is marked "Yes VAT" in Confirmed tab`,
-                  `Option 1: Update job VAT setting to "No" if the invoice is correct`,
-                  `Option 2: Re-issue the invoice including VAT if the job setting is correct`,
-                ],
+                recommendedActions: [],
               }];
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
             }

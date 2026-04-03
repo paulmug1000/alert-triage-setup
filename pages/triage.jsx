@@ -2040,7 +2040,16 @@ export default function TriageSystem({ onBack }) {
           {alert.summary && (
             <div style={{ ...styles.alertSummary, marginBottom: "20px" }}>
               <h3 style={{ fontSize: "13px", fontWeight: "700", marginBottom: "8px", color: "#1a1a1a", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                {alert.type === "expense" ? "Unmatched Expense" : "Unmatched Invoice"}
+                {alert.type === "expense" ? "Unmatched Expense"
+                  : (() => {
+                      const flags = alert.data?.flags || [];
+                      if (String(flags[2]||"").trim() === "1" && String(flags[0]||"").trim() !== "1") return "Invoice Amount Mismatch";
+                      if (String(flags[0]||"").trim() === "1") return "Unmatched Invoice";
+                      const invFlagNames2 = [null,"Client mismatch",null,"Sent date mismatch",null,"Fully paid on mismatch","Status mismatch"];
+                      const active = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames2[i] ? invFlagNames2[i] : null).filter(Boolean);
+                      return active.length > 0 ? active.join(", ") : "Invoice Discrepancy";
+                    })()
+                }
               </h3>
               <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#333" }}>
                 {alert.type === "expense" ? (
@@ -2103,11 +2112,73 @@ export default function TriageSystem({ onBack }) {
                         <div style={styles.optionTitle}>
                           Option {idx + 1}: {option.title}
                         </div>
-                        {option.jobName && (
+                        {option.jobName && option.matchType !== "info" && (
                           <div style={styles.optionDetail}>
                             <strong>Job:</strong> {option.jobName} (Row {option.jobRow})
                           </div>
                         )}
+
+                        {/* Info matchType: explanation + job details, Mark as resolved button */}
+                        {option.matchType === "info" && (
+                          <>
+                            {option.explanation && (
+                              <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#fff8e1", borderLeft: "3px solid #f59e0b", fontSize: "13px", lineHeight: "1.5" }}>
+                                {option.explanation}
+                              </div>
+                            )}
+                            {option.jobDetails && (
+                              <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>
+                                <strong style={{ color: "#1d4ed8", fontSize: "12px" }}>Job Details:</strong>
+                                <div style={{ marginTop: "6px", fontSize: "12px", color: "#333" }}>
+                                  {option.jobDetails.clientName && <div><strong>Client:</strong> {option.jobDetails.clientName}</div>}
+                                  {option.jobDetails.jobName && <div><strong>Job:</strong> {option.jobDetails.jobName}</div>}
+                                  {option.jobDetails.projectCode && <div><strong>Code:</strong> {option.jobDetails.projectCode}</div>}
+                                  {option.jobDetails.revenue && <div><strong>Revenue:</strong> {option.jobDetails.revenue}</div>}
+                                  {option.jobDetails.vatSetting && <div><strong>VAT:</strong> {option.jobDetails.vatSetting}</div>}
+                                  {option.jobDetails.startDate && <div><strong>Dates:</strong> {option.jobDetails.startDate} → {option.jobDetails.endDate || "?"}</div>}
+                                  {option.jobDetails.slot1 && !option.jobDetails.slot1.startsWith("(empty)") && <div><strong>Inv 1:</strong> {option.jobDetails.slot1}</div>}
+                                  {option.jobDetails.slot2 && !option.jobDetails.slot2.startsWith("(empty)") && <div><strong>Inv 2:</strong> {option.jobDetails.slot2}</div>}
+                                  {option.jobDetails.slot3 && !option.jobDetails.slot3.startsWith("(empty)") && <div><strong>Inv 3:</strong> {option.jobDetails.slot3}</div>}
+                                </div>
+                              </div>
+                            )}
+                            {option.recommendedActions && option.recommendedActions.length > 0 && (
+                              <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
+                                <strong>Actions:</strong>
+                                {option.recommendedActions.map((action, i) => (
+                                  <div key={i} style={{ marginTop: "4px", fontSize: "13px" }}>
+                                    {i === 0 ? <strong style={{ color: "#059669" }}>✓ {action}</strong> : `• ${action}`}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <button className="triage-btn triage-btn-primary"
+                              onClick={() => {
+                                const alert2 = clientAlerts[currentClientAlertIndex];
+                                const alertId = `${alert2.sheetName}-${alert2.rowNumber}`;
+                                setProcessedAlerts(new Set([...processedAlerts, alertId]));
+                                if (sessionId) {
+                                  fetch("/api/triage", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
+                                  }).catch(() => {});
+                                }
+                                const updatedAlerts = clientAlerts.filter((_, i) => i !== currentClientAlertIndex);
+                                setClientAlerts(updatedAlerts);
+                                if (updatedAlerts.length === 0) {
+                                  if (allNoActionResolved()) { setFlagsToClear(computeFlagGroups(selectedClient, [])); setScreen("clearFlags"); }
+                                  else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
+                                } else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
+                              }}
+                              style={{ ...styles.decisionButton, ...styles.approveButton, marginTop: "12px", width: "100%" }}
+                            >
+                              ✓ Mark as Resolved
+                            </button>
+                          </>
+                        )}
+                        {/* Standard (non-info) rendering: CRM details, match analysis, accept button */}
+                        {option.matchType !== "info" && (<>
                         {/* CRM matching details */}
                         {option.matchingDetails && typeof option.matchingDetails === 'object' && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#f5f3ff", borderLeft: "3px solid #7c3aed" }}>
@@ -2355,6 +2426,7 @@ export default function TriageSystem({ onBack }) {
                         >
                           {isAccepting ? <><Spinner color="white" />Writing to sheet...</> : `✓ Accept Option ${idx + 1}`}
                         </button>
+                        </>)}
                       </div>
                     ));
                   }

@@ -2819,18 +2819,10 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
               const cellRef = `${slotAmtCol}${matchedRowNum}`;
               const options = [{
                 optionId: 1,
-                title: `ROUNDING DIFFERENCE — Correct invoice #${invoiceNo} amount from £${dashboardTotal.toFixed(2)} to £${correctAmount.toFixed(2)}`,
+                title: `ROUNDING DIFFERENCE — Correct invoice #${invoiceNo} amount from £${dashboardTotal.toFixed(2)}${vatIncluded > 0 ? " +VAT" : ""} to £${correctAmount.toFixed(2)}${vatIncluded > 0 ? " +VAT" : ""}`,
                 matchType: "existing_job",
                 jobRow: matchedRowNum,
                 jobName,
-                matchingDetails: {
-                  unmatchedJobSummary: { clientName: jobClient, jobName, revenue: jobRevenue, startDate: jobStart, endDate: jobEnd },
-                },
-                matchAnalysis: {
-                  matchConfidence: "High",
-                  reasonForChoice: `The difference between the invoice amount (£${grossAmount.toFixed(2)} incl. VAT, £${correctAmount.toFixed(2)} excl. VAT) and the dashboard total (£${dashboardTotal.toFixed(2)}) is just £${amtDiff.toFixed(2)} — almost certainly a rounding difference. The Confirmed tab will be updated to the correct excl-VAT amount.`,
-                  discrepancies: `Invoice #${invoiceNo}: £${grossAmount.toFixed(2)} gross (£${correctAmount.toFixed(2)} excl VAT) vs dashboard £${dashboardTotal.toFixed(2)}`,
-                },
                 recommendedActions: [
                   `write ${correctAmount.toFixed(2)} to ${cellRef}`,
                 ],

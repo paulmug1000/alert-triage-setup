@@ -791,7 +791,21 @@ async function checkGASLock(sheets, masterSheetId, sequenceType) {
     if (tsRaw) {
       const tsDate = new Date(tsRaw);
       if (!isNaN(tsDate) && (Date.now() - tsDate.getTime()) > GAS_LOCK_STALE_MS) {
-        console.log(`  ⚠️ GAS lock for ${sequenceType} is stale (set at ${tsDate.toISOString()}) — ignoring`);
+        console.log(`  ⚠️ GAS lock for ${sequenceType} is stale (set at ${tsDate.toISOString()}) — clearing and proceeding`);
+        try {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: masterSheetId,
+            requestBody: {
+              data: [
+                { range: `DataChgAlert!${cells.flag}`, values: [["NO"]] },
+                { range: `DataChgAlert!${cells.timestamp}`, values: [[""]] },
+              ],
+              valueInputOption: "RAW",
+            },
+          });
+        } catch (clearErr) {
+          console.log(`  ⚠️ Could not clear stale GAS lock: ${clearErr.message}`);
+        }
         return { locked: false };
       }
     }

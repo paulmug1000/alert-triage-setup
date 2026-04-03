@@ -145,6 +145,8 @@ async function readAlertMemory(sheets, automationCommanderSheetId) {
       ignoreReason:     row[6] || "",
       firstSeen:        row[7] || "",
       lastSeen:         row[8] || "",
+      lastRechecked:    row[9] || "",
+      dataSnapshot:     row[10] || "",
     }));
   } catch (err) {
     console.log(`⚠️ Could not read AlertMemory tab: ${err.message}`);
@@ -173,12 +175,13 @@ async function ensureAlertMemoryTab(sheets, automationCommanderSheetId) {
       });
       await sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId,
-        range: `${ALERT_MEMORY_TAB}!A1:I1`,
+        range: `${ALERT_MEMORY_TAB}!A1:K1`,
         valueInputOption: "RAW",
         requestBody: {
           values: [[
             "fingerprintHash", "alertType", "clientName", "alertSummary",
             "cachedOptionsJSON", "status", "ignoreReason", "firstSeen", "lastSeen",
+            "lastRechecked", "dataSnapshot",
           ]],
         },
       });
@@ -202,17 +205,19 @@ function findMemoryRow(memoryRows, fingerprintHash) {
  */
 async function appendAlertMemoryRow(sheets, automationCommanderSheetId, {
   fingerprintHash, alertType, clientName, alertSummary,
-  cachedOptionsJSON, status, ignoreReason,
+  cachedOptionsJSON, status, ignoreReason, dataSnapshot,
 }) {
   const now = new Date().toISOString().split("T")[0];
   await sheets.spreadsheets.values.append({
     spreadsheetId: automationCommanderSheetId,
-    range: `${ALERT_MEMORY_TAB}!A:I`,
+    range: `${ALERT_MEMORY_TAB}!A:K`,
     valueInputOption: "RAW",
     requestBody: {
       values: [[
         fingerprintHash, alertType, clientName, alertSummary,
         cachedOptionsJSON, status, ignoreReason || "", now, now,
+        now, // lastRechecked = now on creation
+        dataSnapshot || "",
       ]],
     },
   });
@@ -223,7 +228,6 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, {
  */
 async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, updates) {
   const now = new Date().toISOString().split("T")[0];
-  // Build the full row from updates (we overwrite the entire row for simplicity)
   const values = [
     updates.fingerprintHash,
     updates.alertType,
@@ -234,10 +238,12 @@ async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex
     updates.ignoreReason || "",
     updates.firstSeen,
     now, // lastSeen always updated
+    updates.lastRechecked || now,
+    updates.dataSnapshot || "",
   ];
   await sheets.spreadsheets.values.update({
     spreadsheetId: automationCommanderSheetId,
-    range: `${ALERT_MEMORY_TAB}!A${rowIndex}:I${rowIndex}`,
+    range: `${ALERT_MEMORY_TAB}!A${rowIndex}:K${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: { values: [values] },
   });
@@ -4648,12 +4654,24 @@ Return ONLY JSON, no other text.`;
         const alertSummary = alert.summary?.summary
           || `${alert.type || "alert"} ${alert.summary?.invoiceNo || alert.summary?.reference || ""} £${alert.summary?.amount || ""}`.trim();
 
+        // Build data snapshot for re-check comparison
+        const dataSnapshot = JSON.stringify({
+          alertType: alert.type || alert.flagType || "",
+          invoiceNo:     alert.summary?.invoiceNo     || "",
+          reference:     alert.summary?.reference     || "",
+          amount:        String(alert.summary?.amount || ""),
+          status:        alert.summary?.status        || "",
+          flagType:      alert.flagType               || "",
+          masterSheetId: alert.masterSheetId          || "",
+        });
+
         if (memoryRow) {
           // Update existing row to ignored
           await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
             ...memoryRow,
             status: "ignored",
             ignoreReason: ignoreReason || "",
+            dataSnapshot,
           });
         } else {
           // Create new row directly as ignored (no cached options needed)
@@ -4665,6 +4683,7 @@ Return ONLY JSON, no other text.`;
             cachedOptionsJSON: "",
             status: "ignored",
             ignoreReason: ignoreReason || "",
+            dataSnapshot,
           });
         }
 
@@ -4711,6 +4730,97 @@ Return ONLY JSON, no other text.`;
         return res.status(200).json({ success: true, message: "Alert un-ignored" });
       } catch (err) {
         console.error(`❌ Error un-ignoring alert:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_ignored_for_recheck") {
+      // Returns all "ignored" AlertMemory rows whose lastRechecked is older than 4 hours.
+      // Called by GAS precompute to determine which alerts need re-checking.
+      const automationCommanderSheetId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+      if (!automationCommanderSheetId) {
+        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+        const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
+        const cutoff = Date.now() - FOUR_HOURS_MS;
+
+        const toRecheck = memoryRows
+          .filter(r => {
+            if (r.status !== "ignored") return false;
+            // Parse lastRechecked — if missing/invalid treat as epoch (always recheck)
+            const ts = r.lastRechecked ? new Date(r.lastRechecked).getTime() : 0;
+            return isNaN(ts) || ts < cutoff;
+          })
+          .map(r => ({
+            rowIndex:        r.rowIndex,
+            fingerprintHash: r.fingerprintHash,
+            alertType:       r.alertType,
+            clientName:      r.clientName,
+            alertSummary:    r.alertSummary,
+            dataSnapshot:    r.dataSnapshot,
+            lastRechecked:   r.lastRechecked,
+          }));
+
+        console.log(`  ✅ ${toRecheck.length} ignored alerts due for recheck`);
+        return res.status(200).json({ success: true, alerts: toRecheck });
+      } catch (err) {
+        console.error(`❌ Error in get_ignored_for_recheck:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "mark_superseded") {
+      // Marks an AlertMemory row as "superseded" (data has changed since it was ignored).
+      // Also updates lastRechecked. Called by GAS precompute when a re-check detects changed data.
+      const { rowIndex, automationCommanderSheetId } = req.body;
+      if (!rowIndex || !automationCommanderSheetId) {
+        return res.status(400).json({ success: false, error: "Missing rowIndex or automationCommanderSheetId" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+        const memoryRow = memoryRows.find(r => r.rowIndex === rowIndex);
+        if (!memoryRow) {
+          return res.status(404).json({ success: false, error: `No AlertMemory row at index ${rowIndex}` });
+        }
+        const nowISO = new Date().toISOString();
+        await updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, {
+          ...memoryRow,
+          status: "superseded",
+          lastRechecked: nowISO,
+        });
+        console.log(`  ✅ Marked row ${rowIndex} as superseded (${memoryRow.fingerprintHash})`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error(`❌ Error in mark_superseded:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "update_recheck_timestamp") {
+      // Updates lastRechecked on a batch of AlertMemory rows without changing their status.
+      // Called by GAS precompute after re-checking alerts that have NOT changed.
+      const { rowIndexes, automationCommanderSheetId } = req.body;
+      if (!rowIndexes?.length || !automationCommanderSheetId) {
+        return res.status(400).json({ success: false, error: "Missing rowIndexes or automationCommanderSheetId" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const nowISO = new Date().toISOString();
+        // Batch update just col J (lastRechecked = col 10, index 9) for each row
+        const data = rowIndexes.map(ri => ({
+          range: `${ALERT_MEMORY_TAB}!J${ri}`,
+          values: [[nowISO]],
+        }));
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: automationCommanderSheetId,
+          requestBody: { data, valueInputOption: "RAW" },
+        });
+        console.log(`  ✅ Updated lastRechecked for ${rowIndexes.length} rows`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error(`❌ Error in update_recheck_timestamp:`, err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

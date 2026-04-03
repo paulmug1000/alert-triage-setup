@@ -1215,7 +1215,7 @@ export default function TriageSystem({ onBack }) {
       border: "1px solid #ddd",
       borderRadius: "6px",
       padding: "10px",
-      fontSize: "13px",
+      fontSize: "16px",
       fontFamily: "inherit",
       resize: "vertical",
       minHeight: "80px",
@@ -2450,7 +2450,7 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
-          <div style={{ marginTop: "16px", display: "flex", gap: "12px" }}>
+          <div style={{ marginTop: "16px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
             <button className="triage-btn" onClick={() => { setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={styles.buttonSecondary}>
               ← Back to Alerts
             </button>
@@ -2471,6 +2471,23 @@ export default function TriageSystem({ onBack }) {
             >
               🚫 Ignore Forever
             </button>
+            {(selectedClient?.clientSheetId || selectedClient?.masterSheetId) && (
+              <button className="triage-btn"
+                onClick={() => {
+                  const clientUrl = selectedClient.clientSheetId
+                    ? `https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`
+                    : null;
+                  const masterUrl = selectedClient.masterSheetId
+                    ? `https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`
+                    : null;
+                  if (clientUrl) window.open(clientUrl, "_blank");
+                  if (masterUrl) setTimeout(() => window.open(masterUrl, "_blank"), 300);
+                }}
+                style={{ ...styles.buttonSecondary, color: "#1d4ed8", borderColor: "#93c5fd" }}
+              >
+                📊 Open Sheets
+              </button>
+            )}
           </div>
 
           {/* Ignore reason modal */}

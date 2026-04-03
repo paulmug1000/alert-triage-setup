@@ -2740,21 +2740,23 @@ Return ONLY JSON, no other text.`;
             const jobCode       = String(matchedJob[2]  || "").trim();  // C
             const jobRevenue    = String(matchedJob[32] || "").trim();  // AG
             const jobVAT        = String(matchedJob[34] || "").trim();  // AI — "Yes" or "No"
+            const jobType       = String(matchedJob[35] || "").trim();  // AJ — Project / Retainer
             const jobStart      = String(matchedJob[37] || "").trim();  // AL
             const jobEnd        = String(matchedJob[38] || "").trim();  // AM
             const jobVATYes     = jobVAT.toLowerCase() === "yes";
+            const isRetainer    = jobType.toLowerCase().includes("retainer");
 
             // Existing invoice slots
             const slot1 = { ref: String(matchedJob[42]||""), amt: String(matchedJob[41]||""), sent: String(matchedJob[43]||""), status: String(matchedJob[45]||"") };
             const slot2 = { ref: String(matchedJob[49]||""), amt: String(matchedJob[48]||""), sent: String(matchedJob[50]||""), status: String(matchedJob[52]||"") };
             const slot3 = { ref: String(matchedJob[56]||""), amt: String(matchedJob[55]||""), sent: String(matchedJob[57]||""), status: String(matchedJob[59]||"") };
 
-            const jobSummary = `Client: ${jobClient} | Job: ${jobName}${jobCode ? ` (${jobCode})` : ""} | Revenue: ${jobRevenue} | VAT: ${jobVAT} | Start: ${jobStart} | End: ${jobEnd}
+            const jobSummary = `Client: ${jobClient} | Job: ${jobName}${jobCode ? ` (${jobCode})` : ""} | Revenue: ${jobRevenue} | VAT: ${jobVAT} | Type: ${jobType} | Start: ${jobStart} | End: ${jobEnd}
 Inv1: ${slot1.ref || "(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}
 Inv2: ${slot2.ref || "(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}
 Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
 
-            console.log(`  Found invoice in Confirmed at slot ${matchedSlot}: ${jobClient} — ${jobName}, VAT=${jobVAT}`);
+            console.log(`  Found invoice in Confirmed at slot ${matchedSlot}: ${jobClient} — ${jobName}, VAT=${jobVAT}, type=${jobType}`);
 
             // Step 2: VAT scenario detection
             const epsilon = 0.01;
@@ -2803,8 +2805,74 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
             }
 
-            // Step 3: Not a VAT scenario — send to Claude with specific job + invoice details
-            console.log(`  No VAT scenario detected — sending to Claude with job details`);
+            // Step 3: Not a VAT scenario — check for rounding difference first
+            const amtDiff = Math.abs(grossAmount - dashboardTotal);
+            console.log(`  Amount diff: £${amtDiff.toFixed(2)}, isRetainer: ${isRetainer}`);
+
+            // If difference < £1.00, it's almost certainly a rounding issue — no need for Claude
+            if (amtDiff < 1.00 && amtDiff > 0) {
+              const options = [{
+                optionId: 1,
+                title: `LIKELY ROUNDING DIFFERENCE — Invoice #${invoiceNo} differs from dashboard by ${amtDiff.toFixed(2)}p`,
+                matchType: "info",
+                discrepancyType: "inv_amt_mismatch",
+                explanation: `The difference between the invoice amount (£${grossAmount.toFixed(2)}) and the dashboard total (£${dashboardTotal.toFixed(2)}) is just £${amtDiff.toFixed(2)} — almost certainly a rounding difference. This can usually be safely ignored, or the dashboard amount corrected to match the invoice.`,
+                jobDetails: {
+                  clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
+                  vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
+                  slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
+                  slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
+                  slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
+                },
+                recommendedActions: [
+                  `Difference of £${amtDiff.toFixed(2)} is within rounding tolerance`,
+                  `If correction needed: update the slot amount in the Confirmed tab to £${grossAmount.toFixed(2)} to match the invoice`,
+                ],
+              }];
+              console.log(`  ✅ Rounding difference (£${amtDiff.toFixed(2)}) — returning hardcoded option`);
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            }
+
+            // Build retainer revenue context for Claude if applicable
+            let retainerContext = "";
+            if (isRetainer) {
+              const monthlyRevNum = parseFloat(String(jobRevenue || "0").replace(/[£$€,]/g, "")) || 0;
+              // Calculate total months from start to end date
+              const parseJobDate = (d) => {
+                if (!d) return null;
+                const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+                const parts = d.split(/[-\/]/);
+                if (parts.length === 3) {
+                  const mNum = months[parts[1]?.toLowerCase()?.substring(0,3)];
+                  if (mNum !== undefined) {
+                    const yr = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
+                    return new Date(yr, mNum, parseInt(parts[0]));
+                  }
+                }
+                return null;
+              };
+              const startD = parseJobDate(jobStart);
+              const endD   = parseJobDate(jobEnd);
+              let totalMonths = null;
+              let totalRevenue = null;
+              let cappedMonths = null;
+              if (startD && endD) {
+                totalMonths = (endD.getFullYear() - startD.getFullYear()) * 12 + (endD.getMonth() - startD.getMonth()) + 1;
+                cappedMonths = Math.min(totalMonths, 18);
+                totalRevenue = monthlyRevNum * cappedMonths;
+              }
+              retainerContext = `
+RETAINER JOB CONTEXT (IMPORTANT):
+- The revenue figure (${jobRevenue}) is the MONTHLY amount, NOT the total contract value
+- Start: ${jobStart}, End: ${jobEnd}${totalMonths ? `, Duration: ${totalMonths} months` : ""}
+- Maximum 18 invoice slots per job (system limit)${cappedMonths ? `, so effective period = ${cappedMonths} months` : ""}
+${totalRevenue ? `- TOTAL CONTRACT REVENUE = £${monthlyRevNum.toFixed(2)} × ${cappedMonths} months = £${totalRevenue.toFixed(2)}` : ""}
+- When comparing "total invoiced" to revenue, use the TOTAL CONTRACT REVENUE above, not the monthly figure
+- Do NOT include placeholder slots (blank reference or MANUAL-INV) in the "total invoiced" calculation`;
+            }
+
+            // Send to Claude with job details and retainer context
+            console.log(`  No VAT scenario, diff £${amtDiff.toFixed(2)} — sending to Claude with job details`);
             const invAmtPrompt = `You are analysing an invoice amount mismatch between the accounting system and the dashboard.
 
 INVOICE FROM ACCOUNTING SYSTEM:
@@ -2820,27 +2888,24 @@ INVOICE FROM ACCOUNTING SYSTEM:
 
 MATCHED JOB IN CONFIRMED TAB (Slot ${matchedSlot}):
 ${jobSummary}
-
+${retainerContext}
 The VAT scenarios (invoice with VAT/job no VAT, and invoice without VAT/job with VAT) have already been checked and ruled out.
+Rounding differences (< £1.00) have also been ruled out — this is a genuine amount discrepancy of £${amtDiff.toFixed(2)}.
 
 YOUR TASK:
 Identify the most likely cause of the amount mismatch and suggest what action to take. Consider:
-- Rounding differences
 - Partial payments
 - Currency issues
 - Incorrect invoice amount entered in dashboard
 - Revenue amount needs updating
+${isRetainer ? "- For retainers: use the TOTAL CONTRACT REVENUE (monthly × capped months) when assessing over/under-invoicing. Do NOT include placeholder slots in the total invoiced figure." : ""}
 
 Format as JSON array:
 [{
   "optionId": 1,
   "title": "Brief description of the issue and recommended action",
   "matchType": "info",
-  "matchAnalysis": {
-    "matchConfidence": "High/Medium/Low",
-    "reasonForChoice": "Detailed explanation",
-    "discrepancies": "Specific numbers and what they mean"
-  },
+  "explanation": "Detailed explanation for the user",
   "recommendedActions": ["Action 1", "Action 2"]
 }]
 

@@ -2746,7 +2746,7 @@ Example format for existing job match:
 "Update existing job in Row 52 - ${tabName} tab: Verify Client = ABC Ltd (Col A), Job name = New Project (Col B), Project Code = PRJ-001 (Col C), Revenue = £5,000 (Col AG), Start Date = 1-Apr-26 (Col AL), End Date = 30-Jun-26 (Col AM)"
 
 Example format for creating new job:
-"Create new job in ${tabName} tab, next available row: Write ABC Ltd to Col A, write New Project to Col B, write PRJ-001 to Col C, write 5000 to Col AG, write 1-Apr-26 to Col AL, write 30-Jun-26 to Col AM"
+"Create new job in ${tabName} tab, next available row: write ABC Ltd to Col A, write New Project to Col B, write PRJ-001 to Col C, write 5000 to Col AG, write 1-Apr-26 to Col AL, write 30-Jun-26 to Col AM, write 265.67 to Col AP, write 2111-1 to Col AQ, write 28-Mar-26 to Col AR, write 30 to Col AS, write Sent to Col AT"
 
 Format as JSON array:
 [{
@@ -2786,16 +2786,15 @@ Format as JSON array:
     "whyItDidntAutoMatch": "Why the system didn't find this automatically (if applicable)"
   },
   "recommendedActions": [
-    "Create new job in ${tabName} tab, next available row: Write ABC Ltd to Col A, write New Project to Col B, write PRJ-001 to Col C, write 5000 to Col AG, write 1-Apr-26 to Col AL, write 30-Jun-26 to Col AM",
-    "Verify project code PRJ-001 is unique in the system",
-    "Confirm with stakeholder that this job scope is accurate"
+    "Create new job in ${tabName} tab: [one sentence plain English summary of what will be created]",
+    "write ABC Ltd to Col A, write New Project to Col B, write PRJ-001 to Col C, write 5000 to Col AG, write No to Col AI, write Project to Col AJ, write 1-Apr-26 to Col AL, write 30-Jun-26 to Col AM, write 265.67 to Col AP, write 2111-1 to Col AQ, write 28-Mar-26 to Col AR, write 30 to Col AS, write Sent to Col AT"
   ]
 }]
 
 CRITICAL REQUIREMENTS:
 - Include matchingDetails with BOTH unmatchedJobSummary and matchedJobDetails for comparison
 - Include full matchAnalysis with all matching criteria
-- For CREATE NEW option: Include EXACT cell coordinates (column letters + values) for all required fields
+- For CREATE NEW option: matchType MUST be "create_new". recommendedActions item 2 MUST contain ALL cell writes in exact format "write VALUE to Col X" for every field — client (Col A), job name (Col B), project code (Col C), revenue (Col AG), VAT (Col AI), type (Col AJ), start date (Col AL), end date (Col AM), and ALL invoice slot fields (amount, reference, sent date, days to pay, status). Never say a new row is "beyond scope" — always provide the full write instructions.
 - For existing job match: Verify key fields match
 - For recommendedActions, include EXACT cell coordinates (Col letter + row number) and values to write
 

@@ -3536,8 +3536,125 @@ Return ONLY JSON, no other text.`;
           });
         }
 
-        // ── CONFIRMED / PIPELINE / CRM WRITE (cell-reference based) ─────────
-        // Parse recommendedActions to extract cell writes
+        // ── CREATE NEW JOB ────────────────────────────────────────────────────
+        // For create_new, Claude specifies column letters but no row number (since
+        // the next available row is unknown at analysis time). Find the next blank
+        // row in the Confirmed tab and write to it.
+        if (option.matchType === "create_new") {
+          console.log(`  → Create new job in Confirmed tab`);
+
+          // Read Confirmed tab to find next available row
+          const confirmedResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: alert.clientId,
+            range: "Confirmed!A1:AM5000",
+          });
+          const confirmedRows = confirmedResp.data.values || [];
+
+          // Find the last row with any data in key columns (A, B, AG, AL)
+          let lastDataRow = 1;
+          for (let i = confirmedRows.length - 1; i >= 1; i--) {
+            const r = confirmedRows[i] || [];
+            if (r[0] || r[1] || r[32] || r[37]) {
+              lastDataRow = i + 1; // 1-indexed
+              break;
+            }
+          }
+          const newRow = lastDataRow + 1;
+          console.log(`  Next available row: ${newRow}`);
+
+          // Parse "write VALUE to Col X" from recommendedActions
+          const createCellUpdates = [];
+          for (const actionString of (option.recommendedActions || [])) {
+            const regex = /write\s+(.+?)\s+to\s+Col\s+([A-Z]{1,3})(?:\s*[,(]|$)/gi;
+            let match;
+            while ((match = regex.exec(actionString)) !== null) {
+              const value = match[1].trim();
+              const col   = match[2].trim();
+              createCellUpdates.push({ cell: `${col}${newRow}`, value });
+            }
+          }
+
+          console.log(`  Create new job cell updates: ${JSON.stringify(createCellUpdates)}`);
+
+          if (createCellUpdates.length === 0) {
+            return res.status(400).json({ success: false, error: "Could not parse any cell writes from create_new recommendedActions. Check the Claude output format." });
+          }
+
+          // Sanitise and write
+          const MONTHS_NEW = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          const sanitiseNew = (val) => {
+            let v = String(val ?? "");
+            if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
+            const jsDateMatch = v.match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\w{3})\s+(\d{1,2})\s+(\d{4})/);
+            if (jsDateMatch) {
+              const day = jsDateMatch[2].padStart(2, "0");
+              const yr  = jsDateMatch[3].slice(-2);
+              return `${day}-${jsDateMatch[1]}-${yr}`;
+            }
+            const isoMatch = v.match(/^(\d{4})-(\d{2})-(\d{2})(?:T|$)/);
+            if (isoMatch) {
+              const month = MONTHS_NEW[parseInt(isoMatch[2], 10) - 1] || isoMatch[2];
+              return `${isoMatch[3]}-${month}-${isoMatch[1].slice(-2)}`;
+            }
+            return v;
+          };
+
+          const writeTab = (alert.type === "crm" || alert.sheetName === "CRMComp")
+            ? (alert.mode === "Pipeline" ? "Pipeline" : "Confirmed")
+            : "Confirmed";
+
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: alert.clientId,
+            requestBody: {
+              data: createCellUpdates.map(({ cell, value }) => ({
+                range: `${writeTab}!${cell}`,
+                values: [[sanitiseNew(value)]],
+              })),
+              valueInputOption: "USER_ENTERED",
+            },
+          });
+
+          console.log(`  ✅ Created new job at row ${newRow} with ${createCellUpdates.length} fields`);
+
+          // Log to TriageLog
+          const timestamp = new Date().toISOString();
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId,
+            range: "TriageLog!A:H",
+            valueInputOption: "USER_ENTERED",
+            requestBody: { values: [[
+              timestamp, alert.type || alert.flagType,
+              `${alert.sheetName}-${alert.rowNumber}`,
+              alert.clientName || "",
+              alert.summary?.amount || "",
+              JSON.stringify({ matchAnalysis: option.matchAnalysis }),
+              "ACCEPTED", `Created new job at row ${newRow}: ${option.title}`,
+            ]] },
+          });
+
+          // Update AlertMemory
+          await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+          const memoryRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
+          const fingerprintHash2 = alert.fingerprintHash || buildAlertFingerprint(alert);
+          const memoryRow2 = findMemoryRow(memoryRows2, fingerprintHash2);
+          const alertSummary2 = alert.summary?.summary || `${alert.type} ${fingerprintHash2}`;
+          if (memoryRow2) {
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow2.rowIndex, { ...memoryRow2, status: "accepted" });
+          } else {
+            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+              fingerprintHash: fingerprintHash2, alertType: alert.type || alert.flagType || "unknown",
+              clientName: alert.clientName || "", alertSummary: alertSummary2,
+              cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
+            });
+          }
+
+          return res.status(200).json({
+            success: true,
+            message: `Created new job at row ${newRow} in ${writeTab} tab`,
+            cellsWritten: createCellUpdates.length,
+            newRow,
+          });
+        }
         const cellUpdates = [];
         if (option.recommendedActions && Array.isArray(option.recommendedActions)) {
           for (const actionString of option.recommendedActions) {

@@ -1529,12 +1529,14 @@ export default async function handler(req, res) {
       const ignoredHashes = new Set(
         memoryRows.filter(r => r.status === "ignored").map(r => r.fingerprintHash)
       );
+      console.log(`  Ignored hashes in AlertMemory: ${[...ignoredHashes].join(", ") || "none"}`);
 
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
       let ignoredCount = 0;
       for (const alert of allAlerts) {
         alert.fingerprintHash = buildAlertFingerprint(alert);
+        console.log(`  Alert: ${alert.clientName} / ${alert.type} / hash=${alert.fingerprintHash} / inIgnoredSet=${ignoredHashes.has(alert.fingerprintHash)}`);
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
           console.log(`  ⏭ Skipping ignored alert: ${alert.fingerprintHash} (${alert.clientName})`);

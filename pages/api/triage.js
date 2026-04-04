@@ -3349,8 +3349,11 @@ A placeholder slot has an AMOUNT set but a BLANK reference (or a reference begin
 **YOUR TASK — depends on the discrepancy type(s) flagged above:**
 
 **IF MISSING INVOICE:**
-1. Find the job this invoice belongs to
-2. Identify the correct slot to place it in using this priority order:
+1. Search the Confirmed tab for a job matching this invoice by client name and/or job description
+2. TWO OUTCOMES — one of these MUST always be suggested:
+   a) **Job found**: Place the invoice in the correct slot (see slot rules below)
+   b) **No job found**: Suggest creating a new job row (matchType: "create_new") — this is ALWAYS a valid option when no match exists. Never say "no action possible" — creating a new job IS the action.
+3. For slot placement (when job found):
    - A "real" invoice slot = has a reference that does NOT start with MANUAL-INV and is not blank
    - A "non-real" slot = empty OR has a MANUAL-INV reference (automation-managed placeholder)
    - ALWAYS place the new invoice in the FIRST non-real slot (slot 1 > slot 2 > slot 3)
@@ -3358,16 +3361,16 @@ A placeholder slot has an AMOUNT set but a BLANK reference (or a reference begin
    - Example: if slot 1 = real invoice, slot 2 = MANUAL-INV, slot 3 = empty → place in slot 2
    - Example: if slot 1 = MANUAL-INV, slot 2 = MANUAL-INV, slot 3 = empty → place in slot 1
    - Only write to the target slot — leave other MANUAL-INV slots for automation to adjust
-3. After placing the invoice, calculate the new total invoiced:
+4. After placing the invoice, calculate the new total invoiced:
    - Count all REAL invoice slots (non-MANUAL-INV, non-blank) including the new one
    - EXCLUDE all [MANUAL ONLY] slots — automation will adjust these to cover any remaining gap
    - EXCLUDE blank slots
    - A remaining gap covered by MANUAL-INV slots is NOT a problem — do NOT suggest a revenue change for this reason
    - Only suggest a revenue change if the real invoices ALONE exceed the current job revenue
-4. Compare the new total (real invoices only) to the job revenue:
+5. Compare the new total (real invoices only) to the job revenue:
    - If new total > revenue: revenue needs updating — suggest updating revenue to match
    - If new total ≤ revenue: clean — automation will handle remaining MANUAL-INV slots, no revenue change needed
-5. ALWAYS show the full arithmetic in facts: real invoice slot breakdown → new real total → vs revenue
+6. ALWAYS show the full arithmetic in facts: real invoice slot breakdown → new real total → vs revenue
 
 **IF AMOUNT MISMATCH:**
 1. Find the existing slot containing this invoice reference (${invoiceRef}) in the Confirmed tab

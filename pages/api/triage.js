@@ -3284,7 +3284,14 @@ A placeholder slot has an AMOUNT set but a BLANK reference (or a reference begin
 
 **IF MISSING INVOICE:**
 1. Find the job this invoice belongs to
-2. Identify the correct empty or placeholder slot to place it in
+2. Identify the correct slot to place it in using this priority order:
+   - A "real" invoice slot = has a reference that does NOT start with MANUAL-INV and is not blank
+   - A "non-real" slot = empty OR has a MANUAL-INV reference (automation-managed placeholder)
+   - ALWAYS place the new invoice in the FIRST non-real slot (slot 1 > slot 2 > slot 3)
+   - Do NOT skip a MANUAL-INV slot in favour of an empty slot — MANUAL-INV slots are available for real invoices
+   - Example: if slot 1 = real invoice, slot 2 = MANUAL-INV, slot 3 = empty → place in slot 2
+   - Example: if slot 1 = MANUAL-INV, slot 2 = MANUAL-INV, slot 3 = empty → place in slot 1
+   - Only write to the target slot — leave other MANUAL-INV slots for automation to adjust
 3. After placing the invoice, calculate the new total invoiced across ALL slots (excluding [MANUAL ONLY])
 4. Compare the new total to the job revenue:
    - If new total > revenue: you MUST clear blank-reference placeholder slots until the total equals revenue. Work through the slots systematically — clear the lowest-priority placeholders first (later slots first). Include the clear writes in recommendedActions.

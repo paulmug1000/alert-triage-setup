@@ -3539,10 +3539,14 @@ Return ONLY JSON, no other text.`;
         }
 
         // ── CREATE NEW JOB ────────────────────────────────────────────────────
-        // For create_new, Claude specifies column letters but no row number (since
-        // the next available row is unknown at analysis time). Find the next blank
-        // row in the Confirmed tab and write to it.
-        if (option.matchType === "create_new") {
+        // Detect create_new either from matchType field OR from recommendedActions content
+        // (Claude sometimes puts matchType inside the action string rather than as a JSON field)
+        const isCreateNew = option.matchType === "create_new" ||
+          (option.recommendedActions || []).some(a =>
+            /create.new|new.row|new.job|add.new.row/i.test(a) || /matchType:\s*create_new/i.test(a)
+          );
+
+        if (isCreateNew) {
           console.log(`  → Create new job in Confirmed tab`);
 
           // Read Confirmed tab to find next available row
@@ -3588,6 +3592,74 @@ Return ONLY JSON, no other text.`;
               }
             }
             console.log(`  Fallback row-number parse: ${JSON.stringify(createCellUpdates)}`);
+          }
+
+          // Third fallback: parse "Client: X, Job: Y, Revenue: Z" structured format
+          // Maps known field names to Confirmed tab column letters
+          if (createCellUpdates.length === 0) {
+            const FIELD_TO_COL = {
+              client: "A", job: "B", "job name": "B", code: "C", "project code": "C",
+              revenue: "AG", vat: "AI", type: "AJ",
+              start: "AL", "start date": "AL", end: "AM", "end date": "AM",
+            };
+            // Invoice slot fields — detect from context
+            const INV_SLOT = {
+              "invoice 1": { amt: "AP", ref: "AQ", sent: "AR", days: "AS", status: "AT" },
+              "inv1": { amt: "AP", ref: "AQ", sent: "AR", days: "AS", status: "AT" },
+              "invoice 2": { amt: "AW", ref: "AX", sent: "AY", days: "AZ", status: "BA" },
+              "inv2": { amt: "AW", ref: "AX", sent: "AY", days: "AZ", status: "BA" },
+              "invoice 3": { amt: "BD", ref: "BE", sent: "BF", days: "BG", status: "BH" },
+              "inv3": { amt: "BD", ref: "BE", sent: "BF", days: "BG", status: "BH" },
+            };
+
+            // Combine all action strings and split on commas
+            const allText = (option.recommendedActions || []).join(" ");
+            // Parse "Key: Value" pairs
+            const kvRegex = /([A-Za-z][A-Za-z0-9 ]*?):\s*([^,\n]+?)(?=\s*[,\n]|$)/g;
+            let kv;
+            while ((kv = kvRegex.exec(allText)) !== null) {
+              const key = kv[1].trim().toLowerCase();
+              const val = kv[2].trim().replace(/^£/, "");
+              const col = FIELD_TO_COL[key];
+              if (col) {
+                createCellUpdates.push({ cell: `${col}${newRow}`, value: val });
+                continue;
+              }
+              // Check invoice slot fields
+              for (const [slotKey, slotCols] of Object.entries(INV_SLOT)) {
+                if (key.startsWith(slotKey)) {
+                  const subKey = key.slice(slotKey.length).trim();
+                  if (subKey === "ref" || subKey === "reference" || subKey === "") {
+                    createCellUpdates.push({ cell: `${slotCols.ref}${newRow}`, value: val });
+                  } else if (subKey === "amount" || subKey === "amt") {
+                    createCellUpdates.push({ cell: `${slotCols.amt}${newRow}`, value: val });
+                  } else if (subKey === "sent" || subKey === "sent date") {
+                    createCellUpdates.push({ cell: `${slotCols.sent}${newRow}`, value: val });
+                  } else if (subKey === "days") {
+                    createCellUpdates.push({ cell: `${slotCols.days}${newRow}`, value: val });
+                  } else if (subKey === "status") {
+                    createCellUpdates.push({ cell: `${slotCols.status}${newRow}`, value: val });
+                  }
+                }
+              }
+            }
+
+            // If we found some fields, also try to extract the invoice number/amount from invoice description
+            // e.g. "Invoice 1: 2111-1 £265.67 sent 17-Mar-26 days 13 status Paid"
+            if (createCellUpdates.length > 0) {
+              const invDescRegex = /invoice\s*1\s*:\s*(\S+)\s+£?([\d,.]+)\s+sent\s+(\S+)\s+days\s+(\d+)\s+status\s+(\S+)/i;
+              const invMatch = allText.match(invDescRegex);
+              if (invMatch && !createCellUpdates.find(u => u.cell === `AQ${newRow}`)) {
+                createCellUpdates.push(
+                  { cell: `AQ${newRow}`, value: invMatch[1] }, // ref
+                  { cell: `AP${newRow}`, value: invMatch[2].replace(/,/g, "") }, // amount
+                  { cell: `AR${newRow}`, value: invMatch[3] }, // sent date
+                  { cell: `AS${newRow}`, value: invMatch[4] }, // days
+                  { cell: `AT${newRow}`, value: invMatch[5] }, // status
+                );
+              }
+            }
+            console.log(`  Structured KV parse: ${JSON.stringify(createCellUpdates)}`);
           }
 
           if (createCellUpdates.length === 0) {

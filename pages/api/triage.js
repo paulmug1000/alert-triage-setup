@@ -95,6 +95,21 @@ const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:I`;
 const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
 
 /**
+/**
+ * Normalise a value for fingerprinting — ensures dates are always in DD-Mon-YY format
+ * regardless of whether they came from the Sheets API (4-digit year) or GAS (2-digit year).
+ */
+function normaliseForFingerprint(val) {
+  if (typeof val !== "string") return String(val ?? "");
+  // Match DD-Mon-YYYY (4-digit year) → convert to DD-Mon-YY
+  return val.replace(/^(\d{1,2}-[A-Za-z]{3}-)(\d{4})$/, (_, prefix, year) => prefix + year.slice(-2));
+}
+
+function normaliseArrayForFingerprint(arr) {
+  return (arr || []).map(normaliseForFingerprint);
+}
+
+/**
  * Build a stable 16-char hex fingerprint from an alert's data fields.
  * Includes accounting data, comparison data, flags, and alert type so that
  * ANY change in source, comparison, or discrepancy flags produces a new hash.
@@ -107,14 +122,16 @@ function buildAlertFingerprint(alert) {
   parts.push(alert.flagType || alert.alertType || "");
 
   if (alert.data) {
-    // Invoice: accounting (A:K) + confirmed (M:R) + flags (S:Y)
-    // Expense: accounting (A:J) + confirmed (X:AH) + flags (AO:AV)
-    // CRM: crmData + sheetData + flags
-    if (alert.data.accounting) parts.push(JSON.stringify(alert.data.accounting));
-    if (alert.data.confirmed)  parts.push(JSON.stringify(alert.data.confirmed));
-    if (alert.data.crmData)    parts.push(JSON.stringify(alert.data.crmData));
-    if (alert.data.sheetData)  parts.push(JSON.stringify(alert.data.sheetData));
-    if (alert.data.flags)      parts.push(JSON.stringify(alert.data.flags));
+    // Normalise all arrays before hashing to ensure date format consistency.
+    // The Sheets API returns dates as DD-Mon-YYYY (4-digit year) but GAS
+    // valuesToStrings_ returns DD-Mon-YY (2-digit year). Without normalisation,
+    // the same alert produces different fingerprints depending on which path
+    // built it, breaking the ignore/supersede logic.
+    if (alert.data.accounting) parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.accounting)));
+    if (alert.data.confirmed)  parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.confirmed)));
+    if (alert.data.crmData)    parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
+    if (alert.data.sheetData)  parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
+    if (alert.data.flags)      parts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
   }
 
   const raw = parts.join("|");

@@ -3319,6 +3319,8 @@ A placeholder slot has an AMOUNT set but a BLANK reference (or a reference begin
 **CRITICAL: recommendedActions format:**
 
 Item 1 — Plain English summary (one sentence describing what will happen)
+   - For missing invoice placements: MUST state the slot number explicitly, e.g. "Place invoice 1162 (£3,078.70) in invoice slot 1 of the Peoples Health Trust project, replacing the MANUAL-INV placeholder"
+   - For amount updates: state the slot number and old/new amounts
 
 Item 2 — Exact cell writes only:
 "Write [value] to [COL][ROW] ([field name]), write [value] to [COL][ROW] ([field name]), ..."

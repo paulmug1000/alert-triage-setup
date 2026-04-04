@@ -3562,6 +3562,9 @@ Return ONLY JSON, no other text.`;
 
         if (isCreateNew) {
           console.log(`  → Create new job in Confirmed tab`);
+          console.log(`  newJobData present: ${!!option.newJobData}`);
+          console.log(`  option keys: ${Object.keys(option).join(", ")}`);
+          if (option.newJobData) console.log(`  newJobData: ${JSON.stringify(option.newJobData)}`);
 
           // Read Confirmed tab to find next available row
           const confirmedResp = await sheets.spreadsheets.values.get({

@@ -106,7 +106,7 @@ function normaliseForFingerprint(val) {
 }
 
 function normaliseArrayForFingerprint(arr) {
-  return (arr || []).map(normaliseForFingerprint);
+  return (arr || []).map(v => normaliseForFingerprint(String(v ?? "")));
 }
 
 /**
@@ -211,10 +211,14 @@ async function ensureAlertMemoryTab(sheets, automationCommanderSheetId) {
 
 /**
  * Look up a single alert in the memory by fingerprint hash.
- * Returns the memory row object or null.
+ * Returns the MOST RECENTLY SEEN row if multiple rows share the same hash.
  */
 function findMemoryRow(memoryRows, fingerprintHash) {
-  return memoryRows.find(r => r.fingerprintHash === fingerprintHash) || null;
+  const matches = memoryRows.filter(r => r.fingerprintHash === fingerprintHash);
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0];
+  // Multiple rows — return the one with the most recent lastSeen date
+  return matches.sort((a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0))[0];
 }
 
 /**
@@ -1542,10 +1546,22 @@ export default async function handler(req, res) {
       // Purge rows older than 12 months
       await purgeOldAlertMemoryRows(sheets, automationCommanderSheetId, memoryRows);
 
-      // Build set of ignored fingerprints for fast lookup
-      const ignoredHashes = new Set(
+      // Build set of ignored fingerprints for fast lookup.
+      // Include both "ignored" rows AND "superseded" rows that have an ignoreReason
+      // (superseded = was ignored, data appeared to change, but if the new cached entry
+      // has the same hash it means the change was spurious — keep treating as ignored).
+      const ignoredStatuses = new Set(
         memoryRows.filter(r => r.status === "ignored").map(r => r.fingerprintHash)
       );
+      // Also include superseded+ignored hashes where no newer "ignored" row exists
+      // (prevents spuriously superseded alerts from reappearing)
+      const supersededIgnoredHashes = new Set(
+        memoryRows
+          .filter(r => r.status === "superseded" && r.ignoreReason)
+          .map(r => r.fingerprintHash)
+          .filter(hash => !ignoredStatuses.has(hash)) // not already covered by an active ignore
+      );
+      const ignoredHashes = new Set([...ignoredStatuses, ...supersededIgnoredHashes]);
 
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
@@ -1688,9 +1704,16 @@ export default async function handler(req, res) {
         // AlertMemory is the source of truth — read it fresh every time.
         await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
         const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-        const ignoredHashes = new Set(
+        const ignoredStatusesPC = new Set(
           memoryRows.filter(r => r.status === "ignored").map(r => r.fingerprintHash)
         );
+        const supersededIgnoredHashesPC = new Set(
+          memoryRows
+            .filter(r => r.status === "superseded" && r.ignoreReason)
+            .map(r => r.fingerprintHash)
+            .filter(hash => !ignoredStatusesPC.has(hash))
+        );
+        const ignoredHashes = new Set([...ignoredStatusesPC, ...supersededIgnoredHashesPC]);
 
         const filteredAlerts = data.alerts.filter(alert => {
           const hash = alert.fingerprintHash || buildAlertFingerprint(alert);

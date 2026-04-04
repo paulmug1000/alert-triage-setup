@@ -3185,6 +3185,76 @@ Return ONLY JSON, no other text.`;
         
         const activeData = confirmedData.slice(0, lastDataRow + 1);
         console.log(`  📊 Using ${activeData.length} non-blank rows for Claude analysis`);
+
+        // ── Pre-check: if missing invoice and no matching client found, skip Claude ──
+        // Build newJobData directly from the alert — we already have all the fields we need.
+        if (isMissingInvoice) {
+          const normClient = (s) => String(s || "").toLowerCase().trim();
+          const alertClientNorm = normClient(alert.summary?.client || invoiceClient);
+          const clientFound = alertClientNorm && activeData.some(row =>
+            normClient(row[0]).includes(alertClientNorm) || alertClientNorm.includes(normClient(row[0]))
+          );
+
+          if (!clientFound) {
+            console.log(`  No matching client "${invoiceClient}" found in Confirmed tab — returning hardcoded create_new option`);
+            const vatYesNo = vatIncluded > 0 ? "Yes" : "No";
+            const hardcodedOption = {
+              optionId: 1,
+              title: `Create new job for ${invoiceClient}${invoiceJob ? " — " + invoiceJob : ""}`,
+              matchType: "create_new",
+              jobName: invoiceJob || invoiceClient,
+              newJobData: {
+                clientName:    invoiceClient,
+                jobName:       invoiceJob || "",
+                projectCode:   "",
+                revenue:       String(totalExclVAT > 0 ? totalExclVAT : invoiceAmount),
+                directCosts:   "0",
+                vatYesNo,
+                projectType:   "Project",
+                startDate:     sentDate || "",
+                endDate:       sentDate || "",
+                inv1Ref:       invoiceRef,
+                inv1Amount:    String(totalExclVAT > 0 ? totalExclVAT : invoiceAmount),
+                inv1SentDate:  sentDate || "",
+                inv1DaysToPay: String(daysToPayValue || "30"),
+                inv1Status:    invoiceStatus || "",
+              },
+              facts: {
+                jobType: "Project",
+                totalRevenue: totalExclVAT > 0 ? totalExclVAT : invoiceAmount,
+                startDate: sentDate,
+                endDate: sentDate,
+                existingInvoices: "None — new job",
+                invoiceMatchStatus: "NO MATCHING CLIENT FOUND",
+              },
+              matchAnalysis: {
+                matchConfidence: "N/A",
+                reasonForChoice: `No existing job found for client "${invoiceClient}" in the Confirmed tab. A new job row will be created with the invoice details.`,
+                discrepancies: "New client/job — no existing data to compare",
+              },
+              recommendedActions: [
+                `Create new job for ${invoiceClient}${invoiceJob ? " — " + invoiceJob : ""}, revenue £${(totalExclVAT > 0 ? totalExclVAT : invoiceAmount).toFixed(2)} ${vatYesNo === "Yes" ? "+VAT" : "(no VAT)"}, and place invoice ${invoiceRef} in slot 1`,
+              ],
+            };
+
+            // Cache and return
+            const invSummary = alert.summary?.summary || `Invoice ${invoiceRef} ${invoiceClient}`;
+            await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+            const memRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
+            const memRow2 = findMemoryRow(memRows2, fingerprintHash);
+            if (memRow2) {
+              await updateAlertMemoryRow(sheets, automationCommanderSheetId, memRow2.rowIndex, {
+                ...memRow2, cachedOptionsJSON: JSON.stringify([hardcodedOption]),
+              });
+            } else {
+              await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+                fingerprintHash, alertType: "invoice", clientName: alert.clientName || "",
+                alertSummary: invSummary, cachedOptionsJSON: JSON.stringify([hardcodedOption]), status: "cached",
+              });
+            }
+            return res.status(200).json({ success: true, options: [hardcodedOption], alertId: alert.rowNumber, previousIgnoreReason });
+          }
+        }
         
         // Build table for Claude
         const confirmedTabTable = activeData
@@ -3565,6 +3635,29 @@ Return ONLY JSON, no other text.`;
           console.log(`  newJobData present: ${!!option.newJobData}`);
           console.log(`  option keys: ${Object.keys(option).join(", ")}`);
           if (option.newJobData) console.log(`  newJobData: ${JSON.stringify(option.newJobData)}`);
+
+          // If Claude didn't return newJobData, reconstruct it from facts + alert summary
+          if (!option.newJobData && option.facts) {
+            const f = option.facts;
+            const parseAmt = (v) => String(v ?? "").replace(/[£,]/g, "").trim();
+            option.newJobData = {
+              clientName:    String(f.clientName || alert.summary?.client || "").trim(),
+              jobName:       String(f.jobName || f.jobDescription || option.jobName || "").trim(),
+              projectCode:   String(f.projectCode || "").trim(),
+              revenue:       parseAmt(f.totalRevenue || f.revenue || alert.summary?.amount || ""),
+              directCosts:   "0",
+              vatYesNo:      String(f.vatYesNo || f.vat || f.vatStatus || "No").trim(),
+              projectType:   String(f.jobType || f.projectType || "Project").trim(),
+              startDate:     String(f.startDate || alert.summary?.sentDate || "").trim(),
+              endDate:       String(f.endDate || "").trim(),
+              inv1Ref:       String(alert.summary?.invoiceNo || "").trim(),
+              inv1Amount:    parseAmt(alert.summary?.amount || ""),
+              inv1SentDate:  String(alert.summary?.sentDate || "").trim(),
+              inv1DaysToPay: String(f.daysToPayValue || "30").trim(),
+              inv1Status:    String(alert.summary?.status || "").trim(),
+            };
+            console.log(`  Reconstructed newJobData from facts: ${JSON.stringify(option.newJobData)}`);
+          }
 
           // Read Confirmed tab to find next available row
           const confirmedResp = await sheets.spreadsheets.values.get({

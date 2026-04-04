@@ -4796,9 +4796,14 @@ Return ONLY JSON, no other text.`;
       }
 
     } else if (action === "get_ignored_for_recheck") {
-      // Returns all "ignored" AlertMemory rows whose lastRechecked is older than 4 hours.
-      // Called by GAS precompute to determine which alerts need re-checking.
+      // Reads all "ignored" AlertMemory rows older than 4 hours, re-reads the live comparison
+      // tabs for each client, builds fresh fingerprints using the same Node.js logic that
+      // created the original fingerprints, and returns which rows have changed vs unchanged.
+      // GAS uses this to mark superseded rows and raise flags — no fingerprint logic in GAS.
       const automationCommanderSheetId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+      // masterSheetIds map: clientName → masterSheetId, passed by GAS from AutoUpdates
+      const clientMasterSheetIds = req.body.clientMasterSheetIds || {};
+
       if (!automationCommanderSheetId) {
         return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
       }
@@ -4809,25 +4814,71 @@ Return ONLY JSON, no other text.`;
         const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
         const cutoff = Date.now() - FOUR_HOURS_MS;
 
-        const toRecheck = memoryRows
-          .filter(r => {
-            if (r.status !== "ignored") return false;
-            // Parse lastRechecked — if missing/invalid treat as epoch (always recheck)
-            const ts = r.lastRechecked ? new Date(r.lastRechecked).getTime() : 0;
-            return isNaN(ts) || ts < cutoff;
-          })
-          .map(r => ({
-            rowIndex:        r.rowIndex,
-            fingerprintHash: r.fingerprintHash,
-            alertType:       r.alertType,
-            clientName:      r.clientName,
-            alertSummary:    r.alertSummary,
-            dataSnapshot:    r.dataSnapshot,
-            lastRechecked:   r.lastRechecked,
-          }));
+        const dueRows = memoryRows.filter(r => {
+          if (r.status !== "ignored") return false;
+          const ts = r.lastRechecked ? new Date(r.lastRechecked).getTime() : 0;
+          return isNaN(ts) || ts < cutoff;
+        });
 
-        console.log(`  ✅ ${toRecheck.length} ignored alerts due for recheck`);
-        return res.status(200).json({ success: true, alerts: toRecheck });
+        console.log(`  ${dueRows.length} ignored alerts due for recheck`);
+        if (dueRows.length === 0) {
+          return res.status(200).json({ success: true, changed: [], unchanged: [] });
+        }
+
+        // Group by clientName + alertType to minimise tab reads
+        const groups = {};
+        for (const row of dueRows) {
+          const snap = row.dataSnapshot ? (() => { try { return JSON.parse(row.dataSnapshot); } catch(e) { return {}; } })() : {};
+          const masterSheetId = snap.masterSheetId || clientMasterSheetIds[row.clientName] || null;
+          const key = `${row.clientName}|||${row.alertType}|||${masterSheetId || ""}`;
+          if (!groups[key]) groups[key] = { masterSheetId, alertType: row.alertType, rows: [] };
+          groups[key].rows.push(row);
+        }
+
+        const changed = [];
+        const unchanged = [];
+
+        for (const [key, group] of Object.entries(groups)) {
+          const { masterSheetId, alertType, rows } = group;
+          if (!masterSheetId) {
+            console.log(`  No masterSheetId for group ${key} — treating as unchanged`);
+            unchanged.push(...rows.map(r => r.rowIndex));
+            continue;
+          }
+
+          // Read fresh alerts from the comparison tab
+          let freshAlerts = [];
+          try {
+            if (alertType === "invoice") {
+              freshAlerts = await readInvCompAlerts(sheets, masterSheetId);
+            } else if (alertType === "expense") {
+              freshAlerts = await readDirCompAlerts(sheets, masterSheetId);
+            } else if (alertType === "crm") {
+              const pipe = await readCRMCompAlerts(sheets, masterSheetId, "Pipeline", ["crmPipeDashDiscr"]);
+              const conf = await readCRMCompAlerts(sheets, masterSheetId, "Confirmed", ["crmConfDashDiscr"]);
+              freshAlerts = [...pipe, ...conf];
+            }
+          } catch (e) {
+            console.log(`  Error reading fresh data for ${key}: ${e.message} — treating as unchanged`);
+            unchanged.push(...rows.map(r => r.rowIndex));
+            continue;
+          }
+
+          // Build set of current fingerprints from fresh data
+          const freshHashes = new Set(freshAlerts.map(a => buildAlertFingerprint(a)));
+
+          for (const row of rows) {
+            if (freshHashes.has(row.fingerprintHash)) {
+              unchanged.push(row.rowIndex);
+            } else {
+              console.log(`  CHANGED: ${row.fingerprintHash} (${row.clientName} / ${alertType})`);
+              changed.push({ rowIndex: row.rowIndex, clientName: row.clientName, alertType });
+            }
+          }
+        }
+
+        console.log(`  ✅ Recheck complete: ${changed.length} changed, ${unchanged.length} unchanged`);
+        return res.status(200).json({ success: true, changed, unchanged });
       } catch (err) {
         console.error(`❌ Error in get_ignored_for_recheck:`, err);
         return res.status(500).json({ success: false, error: err.message });

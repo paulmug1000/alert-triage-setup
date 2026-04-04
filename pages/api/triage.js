@@ -201,6 +201,49 @@ function findMemoryRow(memoryRows, fingerprintHash) {
 }
 
 /**
+ * Find any previous ignore reason for an alert that has since been superseded.
+ * Matches superseded rows by client name + alert type + key identifier
+ * (invoice number, reference, or job name from the dataSnapshot).
+ * Returns the ignore reason string, or null if not found.
+ */
+async function findPreviousIgnoreReason(memoryRows, alert) {
+  try {
+    const supersededRows = memoryRows
+      .filter(r => r.status === "superseded" && r.ignoreReason)
+      .sort((a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0));
+    if (supersededRows.length === 0) return null;
+
+    const alertClient = (alert.clientName || "").toLowerCase().trim();
+    const alertType   = (alert.type || alert.flagType || "").toLowerCase();
+    const alertInvNo  = (alert.summary?.invoiceNo || "").trim();
+    const alertRef    = (alert.summary?.reference || "").trim();
+
+    for (const row of supersededRows) {
+      if ((row.clientName || "").toLowerCase().trim() !== alertClient) continue;
+      if ((row.alertType || "").toLowerCase() !== alertType) continue;
+
+      // Try to match by invoice number or reference from dataSnapshot
+      if (row.dataSnapshot) {
+        try {
+          const snap = JSON.parse(row.dataSnapshot);
+          const snapInvNo = (snap.invoiceNo || "").trim();
+          const snapRef   = (snap.reference || "").trim();
+          if (alertInvNo && snapInvNo && snapInvNo === alertInvNo) return row.ignoreReason;
+          if (alertRef   && snapRef   && snapRef   === alertRef)   return row.ignoreReason;
+        } catch (e) { /* ignore parse errors */ }
+      }
+
+      // Fallback: match by alert summary substring
+      if (alertInvNo && (row.alertSummary || "").includes(alertInvNo)) return row.ignoreReason;
+      if (alertRef   && (row.alertSummary || "").includes(alertRef))   return row.ignoreReason;
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
  * Write a new row to AlertMemory (append).
  */
 async function appendAlertMemoryRow(sheets, automationCommanderSheetId, {
@@ -1771,6 +1814,7 @@ export default async function handler(req, res) {
                 options: validCachedOptions,
                 alertId: alert.rowNumber,
                 fromCache: true,
+                previousIgnoreReason: await findPreviousIgnoreReason(memoryRows, alert),
               });
             }
             console.log(`  ⚠️ Cached options have no valid title — treating as cache miss`);
@@ -1778,6 +1822,12 @@ export default async function handler(req, res) {
         }
 
         console.log(`  Cache MISS for ${fingerprintHash} — calling Claude`);
+
+        // Check if this alert was previously ignored (superseded) — surface the old reason
+        const previousIgnoreReason = await findPreviousIgnoreReason(memoryRows, alert);
+        if (previousIgnoreReason) {
+          console.log(`  ℹ️ Found previous ignore reason for this alert`);
+        }
         // ────────────────────────────────────────────────────────────────────
 
         // Shared structure explanation used across all three prompt types
@@ -1871,7 +1921,7 @@ BUDGET AND REVENUE:
                   `Correct the VAT value manually in the appropriate slot`,
                 ],
               }];
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             if (!source.startsWith("OG-")) {
@@ -1887,7 +1937,7 @@ BUDGET AND REVENUE:
                 },
                 recommendedActions: [`Investigate the expense "${vendorDesc}" manually`],
               }];
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             // Step 2: Outgoings tab expense — re-read full DirComp to find all items for this vendor
@@ -1931,7 +1981,7 @@ BUDGET AND REVENUE:
                 },
                 recommendedActions: [`Investigate the VAT setting for "${vendorName}" in the Outgoings tab manually`],
               }];
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             // Step 3: Check VAT treatment across all vendor OG items
@@ -1961,7 +2011,7 @@ BUDGET AND REVENUE:
                   `Determine the correct VAT treatment for each item individually`,
                 ],
               }];
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             // Step 4: All items agree — find vendor row in Outgoings and recommend VAT change
@@ -1995,7 +2045,7 @@ BUDGET AND REVENUE:
                 },
                 recommendedActions: [`Find "${vendorName}" in the Outgoings tab and set column B to "${newVATValue}"`],
               }];
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             const rationale = isSingleItem
@@ -2027,7 +2077,7 @@ BUDGET AND REVENUE:
             }];
 
             console.log(`  ✅ VAT mismatch resolved: recommend writing "${newVATValue}" to B${outgoingsVendorRow} for "${vendorName}"`);
-            return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
           }
 
           // ── Other discrepancy types (not Missing cost, not VAT mismatch) ──
@@ -2048,7 +2098,7 @@ BUDGET AND REVENUE:
                 `Discrepancy type(s): ${activeFlags.join(", ")}`,
               ],
             }];
-            return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
           }
 
           // ── Missing cost — existing Claude path follows ────────────────────
@@ -2552,7 +2602,7 @@ Return ONLY JSON, no other text.`;
               });
             }
 
-            return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+            return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
           }
           
           // Determine which tab to match against (Pipeline or Confirmed)
@@ -2888,7 +2938,7 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
                 },
                 recommendedActions: [],
               }];
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             // Scenario B: Invoice sent WITHOUT VAT, job marked to INCLUDE VAT
@@ -2910,7 +2960,7 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
                 },
                 recommendedActions: [],
               }];
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             // Step 3: Not a VAT scenario — check for rounding difference first
@@ -2936,7 +2986,7 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
                 ],
               }];
               console.log(`  ✅ Rounding difference (£${amtDiff.toFixed(2)}) — writing ${correctAmount.toFixed(2)} to ${cellRef}`);
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             // Build retainer revenue context for Claude if applicable
@@ -3058,7 +3108,7 @@ Return ONLY JSON, no other text.`;
               `Please review this invoice directly in InvComp`,
             ],
           }];
-          return res.status(200).json({ success: true, options, alertId: alert.rowNumber });
+          return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
         }
 
         // ── Missing invoice — existing Claude path ─────────────────────────

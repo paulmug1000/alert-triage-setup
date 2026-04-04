@@ -89,6 +89,7 @@ export default function TriageSystem({ onBack }) {
   const [ignoreReason, setIgnoreReason] = useState("");
   const [isIgnoring, setIsIgnoring] = useState(false);
   const [selectingClient, setSelectingClient] = useState(null); // clientName being loaded
+  const [previousIgnoreReason, setPreviousIgnoreReason] = useState("");
 
   // Inject global button/interaction styles once on mount, and set page title/favicon
   useEffect(() => {
@@ -160,7 +161,7 @@ export default function TriageSystem({ onBack }) {
   const analyzeAlert = async (alert) => {
     try {
       setIsAnalyzing(true);
-      setClaudeAnalysis("");
+      setClaudeAnalysis(""); setPreviousIgnoreReason("");
       
       console.log(`🔍 Generating options for alert:`, alert.flagType);
       
@@ -183,6 +184,7 @@ export default function TriageSystem({ onBack }) {
       }
       
       console.log(`✅ Options generated:`, data.options?.length || 0);
+      setPreviousIgnoreReason(data.previousIgnoreReason || "");
       setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
     } catch (err) {
       setClaudeAnalysis(`Error generating options: ${err.message}`);
@@ -382,7 +384,7 @@ export default function TriageSystem({ onBack }) {
     setError("");
     setAlerts([]);
     setCurrentAlertIndex(0);
-    setClaudeAnalysis("");
+    setClaudeAnalysis(""); setPreviousIgnoreReason("");
     setAlertsLoaded(false);
     setUserDecision(null);
   };
@@ -514,7 +516,7 @@ export default function TriageSystem({ onBack }) {
       setCurrentClientAlertIndex(alertIndex);
       setAcceptError("");
       setIsAnalyzing(true);
-      setClaudeAnalysis("");
+      setClaudeAnalysis(""); setPreviousIgnoreReason("");
       setFromCache(false);
       setShowIgnoreModal(false);
       setIgnoreReason("");
@@ -542,6 +544,7 @@ export default function TriageSystem({ onBack }) {
       
       console.log(`✅ Generated ${data.options?.length || 0} options${data.fromCache ? " (from cache)" : ""}`);
       setFromCache(!!data.fromCache);
+      setPreviousIgnoreReason(data.previousIgnoreReason || "");
       setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
       setIsAnalyzing(false);
     } catch (err) {
@@ -2111,6 +2114,11 @@ export default function TriageSystem({ onBack }) {
 
           {claudeAnalysis && (
             <div>
+              {previousIgnoreReason && (
+                <div style={{ marginBottom: "12px", padding: "10px 14px", backgroundColor: "#fff8e1", borderLeft: "4px solid #f59e0b", borderRadius: "4px", fontSize: "13px", color: "#78350f" }}>
+                  <strong>⚠ Previously ignored:</strong> {previousIgnoreReason}
+                </div>
+              )}
               <h3 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
                 Potential Actions
               </h3>

@@ -3567,7 +3567,7 @@ Return ONLY JSON, no other text.`;
           // Parse "write VALUE to Col X" from recommendedActions
           const createCellUpdates = [];
           for (const actionString of (option.recommendedActions || [])) {
-            const regex = /write\s+(.+?)\s+to\s+Col\s+([A-Z]{1,3})(?:\s*[,(]|$)/gi;
+            const regex = /write\s+(.+?)\s+to\s+Col(?:umn)?\s+([A-Z]{1,3})(?:\s*[,.()\n]|$)/gi;
             let match;
             while ((match = regex.exec(actionString)) !== null) {
               const value = match[1].trim();
@@ -3577,6 +3577,18 @@ Return ONLY JSON, no other text.`;
           }
 
           console.log(`  Create new job cell updates: ${JSON.stringify(createCellUpdates)}`);
+
+          if (createCellUpdates.length === 0) {
+            // Fallback: try the regular "write X to A251" format in case Claude included row numbers
+            for (const actionString of (option.recommendedActions || [])) {
+              const regex2 = /write\s+(.+?)\s+to\s+([A-Z]{1,3}\d+)(?:\s*[,(]|$)/gi;
+              let match2;
+              while ((match2 = regex2.exec(actionString)) !== null) {
+                createCellUpdates.push({ cell: match2[2], value: match2[1].trim() });
+              }
+            }
+            console.log(`  Fallback row-number parse: ${JSON.stringify(createCellUpdates)}`);
+          }
 
           if (createCellUpdates.length === 0) {
             return res.status(400).json({ success: false, error: "Could not parse any cell writes from create_new recommendedActions. Check the Claude output format." });

@@ -3292,13 +3292,16 @@ A placeholder slot has an AMOUNT set but a BLANK reference (or a reference begin
    - Example: if slot 1 = real invoice, slot 2 = MANUAL-INV, slot 3 = empty → place in slot 2
    - Example: if slot 1 = MANUAL-INV, slot 2 = MANUAL-INV, slot 3 = empty → place in slot 1
    - Only write to the target slot — leave other MANUAL-INV slots for automation to adjust
-3. After placing the invoice, calculate the new total invoiced across ALL slots (excluding [MANUAL ONLY])
-4. Compare the new total to the job revenue:
-   - If new total > revenue: you MUST clear blank-reference placeholder slots until the total equals revenue. Work through the slots systematically — clear the lowest-priority placeholders first (later slots first). Include the clear writes in recommendedActions.
-   - If new total = revenue: clean — no further action needed
-   - If new total < revenue: a gap remains — note it but do NOT create new placeholders (automation handles this)
-5. ALWAYS show the full arithmetic in facts: slot-by-slot breakdown → current total → new total after placing invoice → new total after any clears → vs revenue
-6. The goal is: after all writes are applied, total invoiced = revenue (or a documented gap remains for automation to fill)
+3. After placing the invoice, calculate the new total invoiced:
+   - Count all REAL invoice slots (non-MANUAL-INV, non-blank) including the new one
+   - EXCLUDE all [MANUAL ONLY] slots — automation will adjust these to cover any remaining gap
+   - EXCLUDE blank slots
+   - A remaining gap covered by MANUAL-INV slots is NOT a problem — do NOT suggest a revenue change for this reason
+   - Only suggest a revenue change if the real invoices ALONE exceed the current job revenue
+4. Compare the new total (real invoices only) to the job revenue:
+   - If new total > revenue: revenue needs updating — suggest updating revenue to match
+   - If new total ≤ revenue: clean — automation will handle remaining MANUAL-INV slots, no revenue change needed
+5. ALWAYS show the full arithmetic in facts: real invoice slot breakdown → new real total → vs revenue
 
 **IF AMOUNT MISMATCH:**
 1. Find the existing slot containing this invoice reference (${invoiceRef}) in the Confirmed tab

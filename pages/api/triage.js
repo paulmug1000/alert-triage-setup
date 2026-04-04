@@ -2746,15 +2746,30 @@ Example format for existing job match:
 "Update existing job in Row 52 - ${tabName} tab: Verify Client = ABC Ltd (Col A), Job name = New Project (Col B), Project Code = PRJ-001 (Col C), Revenue = £5,000 (Col AG), Start Date = 1-Apr-26 (Col AL), End Date = 30-Jun-26 (Col AM)"
 
 Example format for creating new job:
-"Create new job in ${tabName} tab, next available row: write ABC Ltd to Col A, write New Project to Col B, write PRJ-001 to Col C, write 5000 to Col AG, write 1-Apr-26 to Col AL, write 30-Jun-26 to Col AM, write 265.67 to Col AP, write 2111-1 to Col AQ, write 28-Mar-26 to Col AR, write 30 to Col AS, write Sent to Col AT"
+(use matchType "create_new" and populate newJobData with ALL known fields)
 
 Format as JSON array:
 [{
   "optionId": 1,
-  "title": "Match to [Job Name] in ${tabName} - [reason]",
+  "title": "Create new job for [Client] - [Job Name]",
   "matchType": "existing_job" or "create_new",
   "jobRow": 52,
   "jobName": "Job Name (if matching existing)",
+  "newJobData": {
+    "clientName": "Cybot A/S",
+    "jobName": "Reverse Charge",
+    "projectCode": "",
+    "revenue": "265.67",
+    "vatYesNo": "No",
+    "projectType": "Project",
+    "startDate": "17-Mar-26",
+    "endDate": "30-Mar-26",
+    "inv1Ref": "2111-1",
+    "inv1Amount": "265.67",
+    "inv1SentDate": "17-Mar-26",
+    "inv1DaysToPay": "30",
+    "inv1Status": "Paid"
+  },
   "matchingDetails": {
     "unmatchedJobSummary": {
       "projectCode": "${crmProjectCode}",
@@ -2786,15 +2801,14 @@ Format as JSON array:
     "whyItDidntAutoMatch": "Why the system didn't find this automatically (if applicable)"
   },
   "recommendedActions": [
-    "Create new job in ${tabName} tab: [one sentence plain English summary of what will be created]",
-    "write ABC Ltd to Col A, write New Project to Col B, write PRJ-001 to Col C, write 5000 to Col AG, write No to Col AI, write Project to Col AJ, write 1-Apr-26 to Col AL, write 30-Jun-26 to Col AM, write 265.67 to Col AP, write 2111-1 to Col AQ, write 28-Mar-26 to Col AR, write 30 to Col AS, write Sent to Col AT"
+    "Create new job in ${tabName} tab: [one sentence plain English summary of what will be created]"
   ]
 }]
 
 CRITICAL REQUIREMENTS:
 - Include matchingDetails with BOTH unmatchedJobSummary and matchedJobDetails for comparison
 - Include full matchAnalysis with all matching criteria
-- For CREATE NEW option: matchType MUST be "create_new". recommendedActions item 2 MUST contain ALL cell writes in exact format "write VALUE to Col X" for every field — client (Col A), job name (Col B), project code (Col C), revenue (Col AG), VAT (Col AI), type (Col AJ), start date (Col AL), end date (Col AM), and ALL invoice slot fields (amount, reference, sent date, days to pay, status). Never say a new row is "beyond scope" — always provide the full write instructions.
+- For CREATE NEW option: matchType MUST be "create_new". Populate newJobData with ALL known fields. Leave unknown fields as empty string "". For invoice slots: only populate inv1 fields if there is a real invoice to place — leave inv2/inv3 empty unless needed.
 - For existing job match: Verify key fields match
 - For recommendedActions, include EXACT cell coordinates (Col letter + row number) and values to write
 
@@ -3568,98 +3582,65 @@ Return ONLY JSON, no other text.`;
           const newRow = lastDataRow + 1;
           console.log(`  Next available row: ${newRow}`);
 
-          // Parse "write VALUE to Col X" from recommendedActions
+          // Parse cell updates from newJobData (structured) or fall back to text parsing
           const createCellUpdates = [];
-          for (const actionString of (option.recommendedActions || [])) {
-            const regex = /write\s+(.+?)\s+to\s+Col(?:umn)?\s+([A-Z]{1,3})(?:\s*[,.()\n]|$)/gi;
-            let match;
-            while ((match = regex.exec(actionString)) !== null) {
-              const value = match[1].trim();
-              const col   = match[2].trim();
-              createCellUpdates.push({ cell: `${col}${newRow}`, value });
+
+          if (option.newJobData && typeof option.newJobData === "object") {
+            // Primary path: Claude returned structured newJobData — map fields to columns
+            const d = option.newJobData;
+            const strVal = (v) => String(v ?? "").trim();
+            const numVal = (v) => String(v ?? "").replace(/[£,]/g, "").trim();
+
+            const fieldMap = [
+              ["A",  strVal(d.clientName)],
+              ["B",  strVal(d.jobName)],
+              ["C",  strVal(d.projectCode)],
+              ["AG", numVal(d.revenue)],
+              ["AH", numVal(d.directCosts || "0")],
+              ["AI", strVal(d.vatYesNo)],
+              ["AJ", strVal(d.projectType)],
+              ["AL", strVal(d.startDate)],
+              ["AM", strVal(d.endDate)],
+              // Inv1
+              ["AP", numVal(d.inv1Amount)],
+              ["AQ", strVal(d.inv1Ref)],
+              ["AR", strVal(d.inv1SentDate)],
+              ["AS", strVal(d.inv1DaysToPay)],
+              ["AT", strVal(d.inv1Status)],
+              // Inv2 (if present)
+              ["AW", numVal(d.inv2Amount || "")],
+              ["AX", strVal(d.inv2Ref || "")],
+              ["AY", strVal(d.inv2SentDate || "")],
+              ["AZ", strVal(d.inv2DaysToPay || "")],
+              ["BA", strVal(d.inv2Status || "")],
+            ];
+
+            for (const [col, val] of fieldMap) {
+              if (val !== "") createCellUpdates.push({ cell: `${col}${newRow}`, value: val });
             }
-          }
+            console.log(`  newJobData parsed: ${createCellUpdates.length} fields`);
 
-          console.log(`  Create new job cell updates: ${JSON.stringify(createCellUpdates)}`);
-
-          if (createCellUpdates.length === 0) {
-            // Fallback: try the regular "write X to A251" format in case Claude included row numbers
+          } else {
+            // Fallback: try to parse from recommendedActions text
             for (const actionString of (option.recommendedActions || [])) {
-              const regex2 = /write\s+(.+?)\s+to\s+([A-Z]{1,3}\d+)(?:\s*[,(]|$)/gi;
-              let match2;
-              while ((match2 = regex2.exec(actionString)) !== null) {
-                createCellUpdates.push({ cell: match2[2], value: match2[1].trim() });
+              // Format 1: "write VALUE to Col X"
+              const regex1 = /write\s+(.+?)\s+to\s+Col(?:umn)?\s+([A-Z]{1,3})(?:\s*[,.()\n]|$)/gi;
+              let match1;
+              while ((match1 = regex1.exec(actionString)) !== null) {
+                createCellUpdates.push({ cell: `${match1[2]}${newRow}`, value: match1[1].trim() });
               }
             }
-            console.log(`  Fallback row-number parse: ${JSON.stringify(createCellUpdates)}`);
-          }
-
-          // Third fallback: parse "Client: X, Job: Y, Revenue: Z" structured format
-          // Maps known field names to Confirmed tab column letters
-          if (createCellUpdates.length === 0) {
-            const FIELD_TO_COL = {
-              client: "A", job: "B", "job name": "B", code: "C", "project code": "C",
-              revenue: "AG", vat: "AI", type: "AJ",
-              start: "AL", "start date": "AL", end: "AM", "end date": "AM",
-            };
-            // Invoice slot fields — detect from context
-            const INV_SLOT = {
-              "invoice 1": { amt: "AP", ref: "AQ", sent: "AR", days: "AS", status: "AT" },
-              "inv1": { amt: "AP", ref: "AQ", sent: "AR", days: "AS", status: "AT" },
-              "invoice 2": { amt: "AW", ref: "AX", sent: "AY", days: "AZ", status: "BA" },
-              "inv2": { amt: "AW", ref: "AX", sent: "AY", days: "AZ", status: "BA" },
-              "invoice 3": { amt: "BD", ref: "BE", sent: "BF", days: "BG", status: "BH" },
-              "inv3": { amt: "BD", ref: "BE", sent: "BF", days: "BG", status: "BH" },
-            };
-
-            // Combine all action strings and split on commas
-            const allText = (option.recommendedActions || []).join(" ");
-            // Parse "Key: Value" pairs
-            const kvRegex = /([A-Za-z][A-Za-z0-9 ]*?):\s*([^,\n]+?)(?=\s*[,\n]|$)/g;
-            let kv;
-            while ((kv = kvRegex.exec(allText)) !== null) {
-              const key = kv[1].trim().toLowerCase();
-              const val = kv[2].trim().replace(/^£/, "");
-              const col = FIELD_TO_COL[key];
-              if (col) {
-                createCellUpdates.push({ cell: `${col}${newRow}`, value: val });
-                continue;
-              }
-              // Check invoice slot fields
-              for (const [slotKey, slotCols] of Object.entries(INV_SLOT)) {
-                if (key.startsWith(slotKey)) {
-                  const subKey = key.slice(slotKey.length).trim();
-                  if (subKey === "ref" || subKey === "reference" || subKey === "") {
-                    createCellUpdates.push({ cell: `${slotCols.ref}${newRow}`, value: val });
-                  } else if (subKey === "amount" || subKey === "amt") {
-                    createCellUpdates.push({ cell: `${slotCols.amt}${newRow}`, value: val });
-                  } else if (subKey === "sent" || subKey === "sent date") {
-                    createCellUpdates.push({ cell: `${slotCols.sent}${newRow}`, value: val });
-                  } else if (subKey === "days") {
-                    createCellUpdates.push({ cell: `${slotCols.days}${newRow}`, value: val });
-                  } else if (subKey === "status") {
-                    createCellUpdates.push({ cell: `${slotCols.status}${newRow}`, value: val });
-                  }
+            if (createCellUpdates.length === 0) {
+              // Format 2: "write VALUE to A251"
+              for (const actionString of (option.recommendedActions || [])) {
+                const regex2 = /write\s+(.+?)\s+to\s+([A-Z]{1,3}\d+)(?:\s*[,(]|$)/gi;
+                let match2;
+                while ((match2 = regex2.exec(actionString)) !== null) {
+                  createCellUpdates.push({ cell: match2[2], value: match2[1].trim() });
                 }
               }
             }
-
-            // If we found some fields, also try to extract the invoice number/amount from invoice description
-            // e.g. "Invoice 1: 2111-1 £265.67 sent 17-Mar-26 days 13 status Paid"
-            if (createCellUpdates.length > 0) {
-              const invDescRegex = /invoice\s*1\s*:\s*(\S+)\s+£?([\d,.]+)\s+sent\s+(\S+)\s+days\s+(\d+)\s+status\s+(\S+)/i;
-              const invMatch = allText.match(invDescRegex);
-              if (invMatch && !createCellUpdates.find(u => u.cell === `AQ${newRow}`)) {
-                createCellUpdates.push(
-                  { cell: `AQ${newRow}`, value: invMatch[1] }, // ref
-                  { cell: `AP${newRow}`, value: invMatch[2].replace(/,/g, "") }, // amount
-                  { cell: `AR${newRow}`, value: invMatch[3] }, // sent date
-                  { cell: `AS${newRow}`, value: invMatch[4] }, // days
-                  { cell: `AT${newRow}`, value: invMatch[5] }, // status
-                );
-              }
-            }
-            console.log(`  Structured KV parse: ${JSON.stringify(createCellUpdates)}`);
+            console.log(`  Text fallback parsed: ${createCellUpdates.length} fields`);
           }
 
           if (createCellUpdates.length === 0) {

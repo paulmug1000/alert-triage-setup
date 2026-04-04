@@ -3803,35 +3803,39 @@ Return ONLY JSON, no other text.`;
           console.log(`  ✅ Created new job at row ${newRow} with ${createCellUpdates.length} fields`);
 
           // Log to TriageLog
-          const timestamp = new Date().toISOString();
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: automationCommanderSheetId,
-            range: "TriageLog!A:H",
-            valueInputOption: "USER_ENTERED",
-            requestBody: { values: [[
-              timestamp, alert.type || alert.flagType,
-              `${alert.sheetName}-${alert.rowNumber}`,
-              alert.clientName || "",
-              alert.summary?.amount || "",
-              JSON.stringify({ matchAnalysis: option.matchAnalysis }),
-              "ACCEPTED", `Created new job at row ${newRow}: ${option.title}`,
-            ]] },
-          });
-
-          // Update AlertMemory
-          await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-          const memoryRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
-          const fingerprintHash2 = alert.fingerprintHash || buildAlertFingerprint(alert);
-          const memoryRow2 = findMemoryRow(memoryRows2, fingerprintHash2);
-          const alertSummary2 = alert.summary?.summary || `${alert.type} ${fingerprintHash2}`;
-          if (memoryRow2) {
-            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow2.rowIndex, { ...memoryRow2, status: "accepted" });
-          } else {
-            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-              fingerprintHash: fingerprintHash2, alertType: alert.type || alert.flagType || "unknown",
-              clientName: alert.clientName || "", alertSummary: alertSummary2,
-              cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
+          // Log to TriageLog and update AlertMemory — failures here don't affect the user
+          try {
+            const timestamp = new Date().toISOString();
+            await sheets.spreadsheets.values.append({
+              spreadsheetId: automationCommanderSheetId,
+              range: "TriageLog!A:H",
+              valueInputOption: "USER_ENTERED",
+              requestBody: { values: [[
+                timestamp, alert.type || alert.flagType,
+                `${alert.sheetName}-${alert.rowNumber}`,
+                alert.clientName || "",
+                alert.summary?.amount || "",
+                JSON.stringify({ matchAnalysis: option.matchAnalysis }),
+                "ACCEPTED", `Created new job at row ${newRow}: ${option.title}`,
+              ]] },
             });
+
+            await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+            const memoryRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
+            const fingerprintHash2 = alert.fingerprintHash || buildAlertFingerprint(alert);
+            const memoryRow2 = findMemoryRow(memoryRows2, fingerprintHash2);
+            const alertSummary2 = alert.summary?.summary || `${alert.type} ${fingerprintHash2}`;
+            if (memoryRow2) {
+              await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow2.rowIndex, { ...memoryRow2, status: "accepted" });
+            } else {
+              await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+                fingerprintHash: fingerprintHash2, alertType: alert.type || alert.flagType || "unknown",
+                clientName: alert.clientName || "", alertSummary: alertSummary2,
+                cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
+              });
+            }
+          } catch (postWriteErr) {
+            console.log(`  ⚠️ Post-write logging failed (job was still created): ${postWriteErr.message}`);
           }
 
           return res.status(200).json({

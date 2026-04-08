@@ -4435,13 +4435,24 @@ Return ONLY JSON, no other text.`;
                   const prIdx = job.pipelineRowFromLog - 6; // Pipeline data starts at row 6, index 0 = row 6
                   const pr = prIdx >= 0 ? pipelineRows[prIdx] : null;
                   if (pr) {
-                    pipelineJob = {
-                      clientName: String(pr[0] || "").trim(),
-                      jobName: String(pr[1] || "").trim(),
-                      projectCode: String(pr[2] || "").trim(),
-                      copiedToConf: String(pr[107] || "").trim(),
-                      rowNumber: job.pipelineRowFromLog,
-                    };
+                    const prJobName    = String(pr[1] || "").trim();
+                    const prClientName = String(pr[0] || "").trim();
+                    // Validate the row still contains the expected job
+                    const jobNameMatches   = prJobName.toLowerCase() === jobNameLower;
+                    const clientNameMatches = !clientParsedLower || !prClientName ||
+                      prClientName.toLowerCase().includes(clientParsedLower) ||
+                      clientParsedLower.includes(prClientName.toLowerCase());
+                    if (jobNameMatches && clientNameMatches) {
+                      pipelineJob = {
+                        clientName: prClientName,
+                        jobName: prJobName,
+                        projectCode: String(pr[2] || "").trim(),
+                        copiedToConf: String(pr[107] || "").trim(),
+                        rowNumber: job.pipelineRowFromLog,
+                      };
+                    } else {
+                      console.log(`  ⚠️ Pipeline row ${job.pipelineRowFromLog} has "${prJobName}" / "${prClientName}" — expected "${job.jobName}" / "${job.clientParsed}". Row may have shifted — falling back to name search.`);
+                    }
                   }
                 }
 

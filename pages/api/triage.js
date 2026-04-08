@@ -4352,8 +4352,9 @@ Return ONLY JSON, no other text.`;
                 // (Start date:, End date:, Copied Status:, etc.) then take the last " - " before it.
                 const pipeIdx = line.indexOf("|");
                 if (pipeIdx !== -1) {
-                  const rowMatch = line.match(/Row\s*\d+,\s*([^|]*)/);
-                  const clientParsed = rowMatch ? rowMatch[1].trim() : "";
+                  const rowMatch = line.match(/Row\s*(\d+),\s*([^|]*)/);
+                  const pipelineRowFromLog = rowMatch ? parseInt(rowMatch[1], 10) : null;
+                  const clientParsed = rowMatch ? rowMatch[2].trim() : "";
                   const afterPipe = line.slice(pipeIdx + 1).trim();
                   const knownFields = ["Start date:", "End date:", "Job name:", "Date originally",
                     "Direct costs:", "Prod. line:", "% likel.", "Copied Status:", "Revenue:", "Type:", "VAT"];
@@ -4365,7 +4366,7 @@ Return ONLY JSON, no other text.`;
                   const chunk = afterPipe.slice(0, firstFieldPos);
                   const lastSep = chunk.lastIndexOf(" - ");
                   const jobName = (lastSep !== -1 ? chunk.slice(0, lastSep) : chunk).trim();
-                  if (jobName) affectedJobs.push({ jobName, clientParsed, logTimestamp: String(entry[0] || "") });
+                  if (jobName) affectedJobs.push({ jobName, clientParsed, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
                 }
               }
             }
@@ -4406,13 +4407,13 @@ Return ONLY JSON, no other text.`;
             // Read Pipeline and Confirmed tabs to verify
             const pipelineResp = await sheets.spreadsheets.values.get({
               spreadsheetId: clientSheetIdClean,
-              range: "Pipeline!A6:DE500",
+              range: "Pipeline!A6:DE5000",
             });
             const pipelineRows = pipelineResp.data.values || [];
 
             const confirmedResp = await sheets.spreadsheets.values.get({
               spreadsheetId: clientSheetIdClean,
-              range: "Confirmed!A1:E500",
+              range: "Confirmed!A1:C5000",
             });
             const confirmedRows = confirmedResp.data.values || [];
 
@@ -4428,21 +4429,39 @@ Return ONLY JSON, no other text.`;
                 // Pipeline rows start at row 6 in the sheet; our slice starts at A6 so index 0 = row 6
                 const jobNameLower   = job.jobName.toLowerCase();
                 const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
-                for (let pri = 0; pri < pipelineRows.length; pri++) {
-                  const pr = pipelineRows[pri];
-                  const pJobName    = String(pr[1] || "").trim(); // col B = job name
-                  const pClientName = String(pr[0] || "").trim(); // col A = client name
-                  if (!pJobName || pJobName.toLowerCase() !== jobNameLower) continue;
-                  // If we have a client name from the log, require it to match too
-                  if (clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
-                  pipelineJob = {
-                    clientName: pClientName,
-                    jobName: pJobName,
-                    projectCode: String(pr[2] || "").trim(),
-                    copiedToConf: String(pr[107] || "").trim(),
-                    rowNumber: pri + 6, // Pipeline data starts at row 6
-                  };
-                  break;
+
+                // Primary: use the row number from the AutoLog (most reliable)
+                if (job.pipelineRowFromLog) {
+                  const prIdx = job.pipelineRowFromLog - 6; // Pipeline data starts at row 6, index 0 = row 6
+                  const pr = prIdx >= 0 ? pipelineRows[prIdx] : null;
+                  if (pr) {
+                    pipelineJob = {
+                      clientName: String(pr[0] || "").trim(),
+                      jobName: String(pr[1] || "").trim(),
+                      projectCode: String(pr[2] || "").trim(),
+                      copiedToConf: String(pr[107] || "").trim(),
+                      rowNumber: job.pipelineRowFromLog,
+                    };
+                  }
+                }
+
+                // Fallback: search by job name + client name
+                if (!pipelineJob) {
+                  for (let pri = 0; pri < pipelineRows.length; pri++) {
+                    const pr = pipelineRows[pri];
+                    const pJobName    = String(pr[1] || "").trim();
+                    const pClientName = String(pr[0] || "").trim();
+                    if (!pJobName || pJobName.toLowerCase() !== jobNameLower) continue;
+                    if (clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+                    pipelineJob = {
+                      clientName: pClientName,
+                      jobName: pJobName,
+                      projectCode: String(pr[2] || "").trim(),
+                      copiedToConf: String(pr[107] || "").trim(),
+                      rowNumber: pri + 6,
+                    };
+                    break;
+                  }
                 }
 
                 if (!pipelineJob) {
@@ -4467,19 +4486,18 @@ Return ONLY JSON, no other text.`;
                 const pipelineProjectCode = pipelineJob?.projectCode || "";
                 for (let cri = 0; cri < confirmedRows.length; cri++) {
                   const cr = confirmedRows[cri];
-                  const crJobName    = String(cr[1] || "").trim();
-                  const crClientName = String(cr[0] || "").trim();
+                  const crJobName     = String(cr[1] || "").trim();
+                  const crClientName  = String(cr[0] || "").trim();
                   const crProjectCode = String(cr[2] || "").trim();
+                  // Primary match: project code (most reliable, unique per job)
+                  if (pipelineProjectCode && crProjectCode && crProjectCode === pipelineProjectCode) {
+                    confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
+                    break;
+                  }
+                  // Fallback: job name + client name
                   if (crJobName.toLowerCase() !== jobNameLower) continue;
-                  if (pipelineProjectCode && crProjectCode && crProjectCode !== pipelineProjectCode) continue;
-                  // If we have a client name, require it to match
                   if (clientParsedLower && crClientName && !crClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(crClientName.toLowerCase())) continue;
-                  confirmedMatch = {
-                    jobName: crJobName,
-                    projectCode: crProjectCode,
-                    clientName: crClientName,
-                    rowNumber: cri + 1, // Confirmed data starts at row 1
-                  };
+                  confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
                   break;
                 }
                 const confExists = confirmedMatch !== null;

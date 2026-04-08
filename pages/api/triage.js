@@ -4559,6 +4559,7 @@ Return ONLY JSON, no other text.`;
 
               results.push({
                 jobName: job.jobName || `(${job.clientParsed} — job name not in log)`,
+                projectCode: pipelineJob?.projectCode || confirmedMatch?.projectCode || "",
                 clientName: job.clientParsed || pipelineJob?.clientName || confirmedMatch?.clientName || "",
                 pipelineRow: pipelineJob?.rowNumber || null,
                 confirmedRow: confirmedMatch?.rowNumber || null,

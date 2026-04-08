@@ -4418,14 +4418,16 @@ Return ONLY JSON, no other text.`;
             for (const job of affectedJobs) {
               const checks = [];
               let allOk = true;
+              let pipelineJob = null;    // hoisted so accessible at results.push
+              let confirmedMatch = null; // hoisted so accessible at results.push
 
               if (expectCopied) {
                 // CRITICAL CHECK: Pipeline col DD must be "Yes"
                 // Pipeline data: col A(0)=Client, B(1)=JobName, C(2)=ProjectCode, DD(107)=CopiedToConf?
                 // Pipeline rows start at row 6 in the sheet; our slice starts at A6 so index 0 = row 6
-                let pipelineJob = null;
                 const jobNameLower = job.jobName.toLowerCase();
-                for (const pr of pipelineRows) {
+                for (let pri = 0; pri < pipelineRows.length; pri++) {
+                  const pr = pipelineRows[pri];
                   const pJobName = String(pr[1] || "").trim(); // col B = job name
                   if (pJobName && pJobName.toLowerCase() === jobNameLower) {
                     pipelineJob = {
@@ -4433,6 +4435,7 @@ Return ONLY JSON, no other text.`;
                       jobName: pJobName,
                       projectCode: String(pr[2] || "").trim(),
                       copiedToConf: String(pr[107] || "").trim(),
+                      rowNumber: pri + 6, // Pipeline data starts at row 6
                     };
                     break;
                   }
@@ -4444,11 +4447,13 @@ Return ONLY JSON, no other text.`;
                 } else {
                   const ddVal = pipelineJob.copiedToConf.toLowerCase();
                   const ddOk = ddVal === "yes" || ddVal === "true";
+                  const pRowStr = pipelineJob.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
+                  const cliStr = pipelineJob.clientName ? ` — ${pipelineJob.clientName}` : "";
                   checks.push({
                     ok: ddOk,
                     message: ddOk
-                      ? `✓ Pipeline col DD ("Copied to confirmed?"): Yes`
-                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" — expected Yes. The copy may not have registered correctly.`,
+                      ? `✓ Pipeline col DD ("Copied to confirmed?"): Yes${pRowStr}${cliStr}`
+                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" — expected Yes${pRowStr}${cliStr}. The copy may not have registered correctly.`,
                   });
                   if (!ddOk) allOk = false;
                 }
@@ -4456,28 +4461,38 @@ Return ONLY JSON, no other text.`;
                 // Secondary check: job exists in Confirmed — search by job name (and project code if available)
                 // Row numbers are unreliable (rows can shift), so we match on col B (job name) and optionally col C (project code)
                 const pipelineProjectCode = pipelineJob?.projectCode || "";
-                let confirmedMatch = null;
-                for (const cr of confirmedRows) {
+                for (let cri = 0; cri < confirmedRows.length; cri++) {
+                  const cr = confirmedRows[cri];
                   const crJobName = String(cr[1] || "").trim();
                   const crProjectCode = String(cr[2] || "").trim();
                   if (crJobName.toLowerCase() === jobNameLower) {
                     if (pipelineProjectCode && crProjectCode && crProjectCode !== pipelineProjectCode) continue;
-                    confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: String(cr[0] || "").trim() };
+                    confirmedMatch = {
+                      jobName: crJobName,
+                      projectCode: crProjectCode,
+                      clientName: String(cr[0] || "").trim(),
+                      rowNumber: cri + 1, // Confirmed data starts at row 1
+                    };
                     break;
                   }
                 }
                 const confExists = confirmedMatch !== null;
+
+                // Include client name and row numbers in check messages
+                const pipelineRowStr = pipelineJob?.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
+                const confirmedRowStr = confirmedMatch?.rowNumber ? ` (Confirmed row ${confirmedMatch.rowNumber})` : "";
+                const clientStr = pipelineJob?.clientName ? ` — ${pipelineJob.clientName}` : "";
+
                 checks.push({
                   ok: confExists,
                   message: confExists
-                    ? `✓ Confirmed tab: "${confirmedMatch.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""} found`
+                    ? `✓ Confirmed tab: "${confirmedMatch.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confirmedRowStr}${clientStr} found`
                     : `✗ Confirmed tab: job "${job.jobName}" not found — copy may have failed`,
                 });
                 if (!confExists) allOk = false;
 
               } else {
                 // UNchecked: Pipeline DD should be No/blank, job should NOT be in Confirmed
-                let pipelineJob = null;
                 for (const pr of pipelineRows) {
                   const pJobName = String(pr[1] || "").trim(); // col B
                   if (pJobName && pJobName.toLowerCase() === job.jobName.toLowerCase()) {
@@ -4509,6 +4524,9 @@ Return ONLY JSON, no other text.`;
 
               results.push({
                 jobName: job.jobName || `(${job.clientParsed} — job name not in log)`,
+                clientName: job.clientParsed || pipelineJob?.clientName || confirmedMatch?.clientName || "",
+                pipelineRow: pipelineJob?.rowNumber || null,
+                confirmedRow: confirmedMatch?.rowNumber || null,
                 clientParsed: job.clientParsed,
                 logTimestamp: job.logTimestamp,
                 status: allOk ? "ok" : "issue",

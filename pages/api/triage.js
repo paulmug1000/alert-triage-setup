@@ -4813,7 +4813,6 @@ Return ONLY JSON, no other text.`;
               );
               const futureRows = Math.min(18 / periodMonths, monthsRemainingInContract / periodMonths);
               const expectedChildRows = realInvoiceRows + Math.ceil(futureRows);
-              const expectedChildRows = realInvoiceRows + (18 / periodMonths);
               const actualChildRows = childRows.length;
               const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 

@@ -910,11 +910,11 @@ async function ensureProactiveAlertsTab(sheets, automationCommanderSheetId) {
       });
       await sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId,
-        range: `${PROACTIVE_ALERTS_TAB}!A1:I1`,
+        range: `${PROACTIVE_ALERTS_TAB}!A1:J1`,
         valueInputOption: "RAW",
         requestBody: { values: [[
           "alertKey", "alertType", "clientName", "heading", "detail",
-          "status", "firstSeen", "lastSeen", "acknowledgedAt",
+          "status", "firstSeen", "lastSeen", "acknowledgedAt", "metadata",
         ]] },
       });
       console.log(`✅ Created ${PROACTIVE_ALERTS_TAB} tab`);
@@ -928,7 +928,7 @@ async function readProactiveAlerts(sheets, automationCommanderSheetId) {
   try {
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
-      range: `${PROACTIVE_ALERTS_TAB}!A:I`,
+      range: `${PROACTIVE_ALERTS_TAB}!A:J`,
     });
     const rows = resp.data.values || [];
     if (rows.length < 2) return [];
@@ -943,6 +943,7 @@ async function readProactiveAlerts(sheets, automationCommanderSheetId) {
       firstSeen:      row[6] || "",
       lastSeen:       row[7] || "",
       acknowledgedAt: row[8] || "",
+      metadata:       row[9] ? (() => { try { return JSON.parse(row[9]); } catch(e) { return {}; } })() : {},
     }));
   } catch (err) {
     console.log(`⚠️ Could not read ${PROACTIVE_ALERTS_TAB}: ${err.message}`);
@@ -5430,13 +5431,20 @@ Return ONLY JSON, no other text.`;
             updated++;
           } else {
             // Append new row
+            // Build metadata object from extra fields
+            const metadata = {};
+            const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
+              "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet"];
+            for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
+
             await sheets.spreadsheets.values.append({
               spreadsheetId: acId,
-              range: `${PROACTIVE_ALERTS_TAB}!A:I`,
+              range: `${PROACTIVE_ALERTS_TAB}!A:J`,
               valueInputOption: "RAW",
               requestBody: { values: [[
                 alert.alertKey, alert.alertType, alert.clientName,
                 alert.heading, alert.detail, "active", nowISO, nowISO, "",
+                JSON.stringify(metadata),
               ]] },
             });
             stored++;

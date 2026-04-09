@@ -93,6 +93,7 @@ export default function TriageSystem({ onBack }) {
   const [proactiveAlerts, setProactiveAlerts] = useState([]);
   const [proactiveCountsByClient, setProactiveCountsByClient] = useState({});
   const [proactiveLoading, setProactiveLoading] = useState(false);
+  const [proactiveSelectedClient, setProactiveSelectedClient] = useState(null);
 
   // Inject global button/interaction styles once on mount, and set page title/favicon
   useEffect(() => {
@@ -907,14 +908,12 @@ export default function TriageSystem({ onBack }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "acknowledge_proactive_alert", alertKey, automationCommanderSheetId }),
       });
-      setProactiveAlerts(prev => prev.filter(a => a.alertKey !== alertKey));
-      setProactiveCountsByClient(prev => {
-        const updated = { ...prev };
-        // Recount from remaining alerts
-        const remaining = proactiveAlerts.filter(a => a.alertKey !== alertKey);
+      setProactiveAlerts(prev => {
+        const remaining = prev.filter(a => a.alertKey !== alertKey);
         const counts = {};
         remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
-        return counts;
+        setProactiveCountsByClient(counts);
+        return remaining;
       });
     } catch (err) {
       console.error("Failed to acknowledge proactive alert:", err);
@@ -1537,50 +1536,6 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
-          {/* Proactive Alerts section */}
-          {(proactiveAlerts.length > 0 || proactiveLoading) && (
-            <div style={{ marginTop: "24px", border: "1px solid #f59e0b", borderRadius: "8px", overflow: "hidden" }}>
-              <div style={{ backgroundColor: "#fffbeb", padding: "12px 16px", borderBottom: "1px solid #f59e0b", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <strong style={{ fontSize: "14px", color: "#92400e" }}>
-                  ⚡ Proactive Alerts {proactiveLoading ? "" : `(${proactiveAlerts.length})`}
-                </strong>
-                <button className="triage-btn" onClick={loadProactiveAlerts} disabled={proactiveLoading} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 10px" }}>
-                  {proactiveLoading ? <><Spinner size={11} />Loading...</> : "↻ Refresh"}
-                </button>
-              </div>
-              {proactiveLoading ? (
-                <div style={{ padding: "16px", textAlign: "center", color: "#666", fontSize: "13px" }}>Loading proactive alerts...</div>
-              ) : (
-                <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>
-                  {proactiveAlerts.map((alert, idx) => (
-                    <div key={idx} style={{ backgroundColor: "#fff", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 14px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: "13px", fontWeight: "600", color: "#92400e", marginBottom: "4px" }}>
-                            {alert.heading}
-                          </div>
-                          <div style={{ fontSize: "12px", color: "#555", lineHeight: "1.5" }}>
-                            {alert.detail}
-                          </div>
-                          <div style={{ fontSize: "11px", color: "#aaa", marginTop: "4px" }}>
-                            First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}
-                          </div>
-                        </div>
-                        <button
-                          className="triage-btn"
-                          onClick={() => acknowledgeProactiveAlert(alert.alertKey)}
-                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 10px", whiteSpace: "nowrap", flexShrink: 0 }}
-                        >
-                          ✓ Acknowledge
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
           <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <button className="triage-btn"
               onClick={() => {
@@ -1605,6 +1560,168 @@ export default function TriageSystem({ onBack }) {
             </button>
           </div>
         </div>
+
+        {/* Proactive Alerts — separate card below */}
+        <div style={{ ...styles.card, marginTop: "16px" }}>
+          <h2 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
+            Proactive Alerts {!proactiveLoading && proactiveAlerts.length > 0 && `(${proactiveAlerts.length})`}
+          </h2>
+          {proactiveLoading ? (
+            <div style={{ textAlign: "center", padding: "20px", color: "#666", fontSize: "13px" }}>
+              <Spinner size={20} color="#0066cc" />
+              <div style={{ marginTop: "8px" }}>Loading proactive alerts...</div>
+            </div>
+          ) : proactiveAlerts.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
+              ✓ No proactive alerts
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {(() => {
+                // Group by clientName
+                const grouped = {};
+                proactiveAlerts.forEach(a => {
+                  if (!grouped[a.clientName]) grouped[a.clientName] = [];
+                  grouped[a.clientName].push(a);
+                });
+                return Object.entries(grouped).map(([clientName, alerts], idx) => {
+                  const typeCounts = {};
+                  alerts.forEach(a => {
+                    const label = a.alertType === "retainer_invoice" ? "Retainer invoice" : "CRM data wipe";
+                    typeCounts[label] = (typeCounts[label] || 0) + 1;
+                  });
+                  return (
+                    <button
+                      key={idx}
+                      className="triage-client-card"
+                      onClick={() => { setProactiveSelectedClient(clientName); setScreen("proactiveReview"); }}
+                      style={{
+                        ...styles.optionButton,
+                        textAlign: "left",
+                        padding: "16px",
+                        border: "1px solid #ddd",
+                        borderRadius: "6px",
+                        backgroundColor: "#f9f9f9",
+                        width: "100%",
+                      }}
+                    >
+                      <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px" }}>
+                        {clientName}
+                      </div>
+                      {Object.entries(typeCounts).map(([type, count], i) => (
+                        <div key={i} style={{ fontSize: "13px", color: "#d97706", marginBottom: "2px" }}>
+                          • {type} ({count} alert{count !== 1 ? "s" : ""})
+                        </div>
+                      ))}
+                    </button>
+                  );
+                });
+              })()}
+            </div>
+          )}
+          <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid #eee", display: "flex", justifyContent: "flex-end" }}>
+            <button className="triage-btn" onClick={loadProactiveAlerts} disabled={proactiveLoading}
+              style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: proactiveLoading ? 0.5 : 1 }}>
+              {proactiveLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
+            </button>
+          </div>
+        </div>
+
+        </div>
+      </>
+    );
+  }
+
+  // Screen 1b: Proactive Alert Review Screen
+  if (screen === "proactiveReview" && proactiveSelectedClient) {
+    const clientAlertsList = proactiveAlerts.filter(a => a.clientName === proactiveSelectedClient);
+    const freqLabel = (days) => {
+      if (days <= 31) return "monthly";
+      if (days <= 65) return "bi-monthly";
+      if (days <= 95) return "quarterly";
+      if (days <= 190) return "semi-annual";
+      return "annual";
+    };
+
+    return (
+      <>
+        <div style={styles.container}>
+          <div style={styles.header}>
+            <h1 style={styles.title}>Proactive Alerts</h1>
+            <p style={styles.subtitle}>{proactiveSelectedClient} — {clientAlertsList.length} alert{clientAlertsList.length !== 1 ? "s" : ""}</p>
+          </div>
+          <div style={styles.card}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {clientAlertsList.map((alert, idx) => {
+                const m = alert.metadata || {};
+                return (
+                  <div key={idx} style={{ border: "1px solid #ddd", borderRadius: "6px", padding: "14px", backgroundColor: "#fafafa" }}>
+                    <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px" }}>
+                      {alert.heading}
+                    </div>
+                    <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
+                      {alert.detail}
+                    </div>
+
+                    {/* Retainer invoice detail */}
+                    {alert.alertType === "retainer_invoice" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
+                        {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
+                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                        {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
+                        {m.startDate && <div><strong>Contract period:</strong> {m.startDate} → {m.endDate}</div>}
+                        {m.frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(m.frequencyDays)} (every ~{m.frequencyDays} days)</div>}
+                        {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
+                        {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
+                      </div>
+                    )}
+
+                    {/* CRM wipe detail */}
+                    {alert.alertType === "crm_wipe" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.timestamp && <div><strong>Log timestamp:</strong> {m.timestamp}</div>}
+                        {m.sequenceType && <div><strong>Sequence:</strong> {m.sequenceType}</div>}
+                        {m.summary && <div><strong>Summary:</strong> {m.summary}</div>}
+                        {m.jobInfo && <div><strong>Job:</strong> {m.jobInfo}</div>}
+                        {m.detailsSnippet && (
+                          <div style={{ marginTop: "4px" }}>
+                            <strong>AutoLog details:</strong>
+                            <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                              {m.detailsSnippet}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ fontSize: "11px", color: "#aaa" }}>
+                        First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}
+                      </div>
+                      <button
+                        className="triage-btn"
+                        onClick={() => acknowledgeProactiveAlert(alert.alertKey)}
+                        style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                      >
+                        ✓ Acknowledge
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {clientAlertsList.length === 0 && (
+                <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
+                  All alerts acknowledged
+                </div>
+              )}
+            </div>
+            <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid #eee" }}>
+              <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
+                ← Back to Client List
+              </button>
+            </div>
+          </div>
         </div>
       </>
     );

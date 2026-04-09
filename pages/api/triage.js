@@ -3124,19 +3124,22 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
               const endD   = parseJobDate(jobEnd);
               let totalMonths = null;
               let totalRevenue = null;
-              let cappedMonths = null;
               if (startD && endD) {
                 totalMonths = (endD.getFullYear() - startD.getFullYear()) * 12 + (endD.getMonth() - startD.getMonth()) + 1;
-                cappedMonths = Math.min(totalMonths, 18);
-                totalRevenue = monthlyRevNum * cappedMonths;
+                // Child rows cover past periods + up to 18 months into the future from today
+                const today = new Date();
+                const futureEndD = new Date(today.getFullYear(), today.getMonth() + 18, 1);
+                const effectiveEnd = endD < futureEndD ? endD : futureEndD;
+                const effectiveMonths = (effectiveEnd.getFullYear() - startD.getFullYear()) * 12 + (effectiveEnd.getMonth() - startD.getMonth()) + 1;
+                totalRevenue = monthlyRevNum * Math.max(effectiveMonths, 1);
               }
               retainerContext = `
 RETAINER JOB CONTEXT (IMPORTANT):
 - The revenue figure (${jobRevenue}) is the MONTHLY amount, NOT the total contract value
 - Start: ${jobStart}, End: ${jobEnd}${totalMonths ? `, Duration: ${totalMonths} months` : ""}
-- Maximum 18 invoice slots per job (system limit)${cappedMonths ? `, so effective period = ${cappedMonths} months` : ""}
-${totalRevenue ? `- TOTAL CONTRACT REVENUE = £${monthlyRevNum.toFixed(2)} × ${cappedMonths} months = £${totalRevenue.toFixed(2)}` : ""}
-- When comparing "total invoiced" to revenue, use the TOTAL CONTRACT REVENUE above, not the monthly figure
+- Child rows cover past periods + up to 18 months into the future from today (no fixed maximum)
+${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = £${monthlyRevNum.toFixed(2)} × months = £${totalRevenue.toFixed(2)}` : ""}
+- When comparing "total invoiced" to revenue, use the EFFECTIVE CONTRACT REVENUE above, not the monthly figure
 - Do NOT include placeholder slots (blank reference or MANUAL-INV) in the "total invoiced" calculation`;
             }
 
@@ -4635,7 +4638,8 @@ Return ONLY JSON, no other text.`;
           // All retainer creation entries in the window since the flag was last cleared
           const retainerLogEntries = autoLogRows.filter(row => {
             const details = String(row[3] || "");
-            return details.includes("Retainer") && details.includes("Added") && details.includes("invoice rows");
+            return details.includes("Retainer") && details.includes("Added") &&
+              (details.includes("child row") || details.includes("invoice rows"));
           });
           console.log(`  ✓ Found ${retainerLogEntries.length} retainer creation entries in window`);
           for (const entry of retainerLogEntries) {
@@ -4652,17 +4656,30 @@ Return ONLY JSON, no other text.`;
             const affectedRetainerJobs = [];
             for (const entry of retainerLogEntries) {
               const details = String(entry[3] || "");
-              // Capture client name from the log as well as job name — sheetRow is NOT used for lookup
-              // since rows in Confirmed can shift after the log was written
-              const retainerJobPattern = /Row\s+(\d+),\s+([^,]+),\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
+
+              // Format A (new): "[Retainers - Confirmed] Added N child row(s) (Parent Row: N) for CLIENT | JOB"
+              const newPattern = /Added\s+\d+\s+child\s+row[^(]*\(Parent\s+Row:\s*(\d+)\)\s+for\s+([^|]+)\s*\|\s*([^\[]+)/gi;
               let m;
-              while ((m = retainerJobPattern.exec(details)) !== null) {
+              while ((m = newPattern.exec(details)) !== null) {
                 affectedRetainerJobs.push({
-                  logSheetRow: parseInt(m[1], 10), // kept for display only, not for lookup
+                  logSheetRow: parseInt(m[1], 10),
                   clientNameFromLog: m[2].trim(),
                   jobName: m[3].trim(),
                   logTimestamp: String(entry[0] || "")
                 });
+              }
+
+              // Format B (old): "Row N, ClientName, JobName: Added N invoice rows"
+              if (affectedRetainerJobs.length === 0) {
+                const oldPattern = /Row\s+(\d+),\s+([^,]+),\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
+                while ((m = oldPattern.exec(details)) !== null) {
+                  affectedRetainerJobs.push({
+                    logSheetRow: parseInt(m[1], 10),
+                    clientNameFromLog: m[2].trim(),
+                    jobName: m[3].trim(),
+                    logTimestamp: String(entry[0] || "")
+                  });
+                }
               }
             }
             // Deduplicate by jobName (row numbers are unreliable after row shifts)
@@ -4773,17 +4790,25 @@ Return ONLY JSON, no other text.`;
                 }
               }
 
-              const monthsDiff = (endDate.getFullYear() - startDate.getFullYear()) * 12
-                + (endDate.getMonth() - startDate.getMonth()) + 1;
-              const expectedChildRows = Math.min(Math.ceil(monthsDiff / periodMonths), 18);
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              // Expected child rows = months from start to MIN(end, today + 18 months)
+              // i.e. all past periods covered + up to 18 months into the future
+              const futureLimit = new Date(today.getFullYear(), today.getMonth() + 18, 1);
+              const effectiveEnd = endDate < futureLimit ? endDate : futureLimit;
+              const effectiveMonths = (effectiveEnd.getFullYear() - startDate.getFullYear()) * 12
+                + (effectiveEnd.getMonth() - startDate.getMonth()) + 1;
+              const expectedChildRows = Math.max(Math.ceil(effectiveMonths / periodMonths), 1);
               const actualChildRows = childRows.length;
               const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 
+              const monthsDiff = (endDate.getFullYear() - startDate.getFullYear()) * 12
+                + (endDate.getMonth() - startDate.getMonth()) + 1;
               const durationOk = actualChildRows >= expectedChildRows;
-              checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months, ${periodLabel})` });
+              checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel}), rows expected to ${fmt(effectiveEnd)}` });
               checks.push({
                 ok: durationOk,
-                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected — ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),
+                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (past + up to 18 months forward) — ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),
               });
 
               let allHaveInvoice = true;

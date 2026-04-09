@@ -90,6 +90,9 @@ export default function TriageSystem({ onBack }) {
   const [isIgnoring, setIsIgnoring] = useState(false);
   const [selectingClient, setSelectingClient] = useState(null); // clientName being loaded
   const [previousIgnoreReason, setPreviousIgnoreReason] = useState("");
+  const [proactiveAlerts, setProactiveAlerts] = useState([]);
+  const [proactiveCountsByClient, setProactiveCountsByClient] = useState({});
+  const [proactiveLoading, setProactiveLoading] = useState(false);
 
   // Inject global button/interaction styles once on mount, and set page title/favicon
   useEffect(() => {
@@ -877,6 +880,47 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
+  const loadProactiveAlerts = async () => {
+    try {
+      setProactiveLoading(true);
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_proactive_alerts", automationCommanderSheetId }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        setProactiveAlerts(data.alerts || []);
+        setProactiveCountsByClient(data.countsByClient || {});
+      }
+    } catch (err) {
+      console.error("Failed to load proactive alerts:", err);
+    } finally {
+      setProactiveLoading(false);
+    }
+  };
+
+  const acknowledgeProactiveAlert = async (alertKey) => {
+    try {
+      await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "acknowledge_proactive_alert", alertKey, automationCommanderSheetId }),
+      });
+      setProactiveAlerts(prev => prev.filter(a => a.alertKey !== alertKey));
+      setProactiveCountsByClient(prev => {
+        const updated = { ...prev };
+        // Recount from remaining alerts
+        const remaining = proactiveAlerts.filter(a => a.alertKey !== alertKey);
+        const counts = {};
+        remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+        return counts;
+      });
+    } catch (err) {
+      console.error("Failed to acknowledge proactive alert:", err);
+    }
+  };
+
   // AlertMemory: un-ignore an alert so it reappears in future triage runs
   const unignoreAlert = async (fingerprintHash) => {
     try {
@@ -1384,6 +1428,11 @@ export default function TriageSystem({ onBack }) {
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
     ];
 
+    // Load proactive alerts once when this screen first renders
+    if (proactiveAlerts.length === 0 && !proactiveLoading) {
+      loadProactiveAlerts();
+    }
+
     // If all clients have had their flags zeroed out, show complete screen
     const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
     if (activeClients.length === 0) {
@@ -1466,6 +1515,11 @@ export default function TriageSystem({ onBack }) {
                     <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px", display: "flex", alignItems: "center", gap: "8px" }}>
                       {selectingClient === client.clientName && <Spinner size={13} />}
                       {client.clientName}
+                      {proactiveCountsByClient[client.clientName] > 0 && (
+                        <span style={{ fontSize: "11px", background: "#f59e0b", color: "#fff", borderRadius: "10px", padding: "1px 7px", fontWeight: "600" }}>
+                          {proactiveCountsByClient[client.clientName]} proactive
+                        </span>
+                      )}
                     </div>
                     {actionableLines.map((line, i) => (
                       <div key={i} style={{ fontSize: "13px", color: "#1976d2", marginBottom: "2px" }}>
@@ -1480,6 +1534,50 @@ export default function TriageSystem({ onBack }) {
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {/* Proactive Alerts section */}
+          {(proactiveAlerts.length > 0 || proactiveLoading) && (
+            <div style={{ marginTop: "24px", border: "1px solid #f59e0b", borderRadius: "8px", overflow: "hidden" }}>
+              <div style={{ backgroundColor: "#fffbeb", padding: "12px 16px", borderBottom: "1px solid #f59e0b", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <strong style={{ fontSize: "14px", color: "#92400e" }}>
+                  ⚡ Proactive Alerts {proactiveLoading ? "" : `(${proactiveAlerts.length})`}
+                </strong>
+                <button className="triage-btn" onClick={loadProactiveAlerts} disabled={proactiveLoading} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 10px" }}>
+                  {proactiveLoading ? <><Spinner size={11} />Loading...</> : "↻ Refresh"}
+                </button>
+              </div>
+              {proactiveLoading ? (
+                <div style={{ padding: "16px", textAlign: "center", color: "#666", fontSize: "13px" }}>Loading proactive alerts...</div>
+              ) : (
+                <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {proactiveAlerts.map((alert, idx) => (
+                    <div key={idx} style={{ backgroundColor: "#fff", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 14px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: "13px", fontWeight: "600", color: "#92400e", marginBottom: "4px" }}>
+                            {alert.heading}
+                          </div>
+                          <div style={{ fontSize: "12px", color: "#555", lineHeight: "1.5" }}>
+                            {alert.detail}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#aaa", marginTop: "4px" }}>
+                            First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}
+                          </div>
+                        </div>
+                        <button
+                          className="triage-btn"
+                          onClick={() => acknowledgeProactiveAlert(alert.alertKey)}
+                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 10px", whiteSpace: "nowrap", flexShrink: 0 }}
+                        >
+                          ✓ Acknowledge
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -1704,6 +1802,13 @@ export default function TriageSystem({ onBack }) {
                                     )}
                                     {r.parentSheetRow && (
                                       <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>Confirmed row {r.parentSheetRow}</span>
+                                    )}
+                                    {(r.pipelineRow || r.confirmedRow) && (
+                                      <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>
+                                        {r.pipelineRow ? `Pipeline row ${r.pipelineRow}` : ""}
+                                        {r.pipelineRow && r.confirmedRow ? " · " : ""}
+                                        {r.confirmedRow ? `Confirmed row ${r.confirmedRow}` : ""}
+                                      </span>
                                     )}
                                   </div>
                                 )}

@@ -93,6 +93,7 @@ const FLAG_NAMES = {
 const ALERT_MEMORY_TAB = "AlertMemory";
 const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:I`;
 const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
+const PROACTIVE_ALERTS_TAB = "ProactiveAlerts";
 
 /**
 /**
@@ -888,6 +889,64 @@ async function checkGASLock(sheets, masterSheetId, sequenceType) {
   } catch (e) {
     console.log(`  ⚠️ Could not read GAS lock for ${sequenceType}: ${e.message} — proceeding anyway`);
     return { locked: false };
+  }
+}
+
+// ============================================================================
+// PROACTIVE ALERTS — storage helpers
+// ============================================================================
+
+async function ensureProactiveAlertsTab(sheets, automationCommanderSheetId) {
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PROACTIVE_ALERTS_TAB}!A1`,
+    });
+  } catch (err) {
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: { requests: [{ addSheet: { properties: { title: PROACTIVE_ALERTS_TAB } } }] },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${PROACTIVE_ALERTS_TAB}!A1:I1`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[
+          "alertKey", "alertType", "clientName", "heading", "detail",
+          "status", "firstSeen", "lastSeen", "acknowledgedAt",
+        ]] },
+      });
+      console.log(`✅ Created ${PROACTIVE_ALERTS_TAB} tab`);
+    } catch (createErr) {
+      console.log(`⚠️ Could not create ${PROACTIVE_ALERTS_TAB} tab: ${createErr.message}`);
+    }
+  }
+}
+
+async function readProactiveAlerts(sheets, automationCommanderSheetId) {
+  try {
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PROACTIVE_ALERTS_TAB}!A:I`,
+    });
+    const rows = resp.data.values || [];
+    if (rows.length < 2) return [];
+    return rows.slice(1).map((row, i) => ({
+      rowIndex:       i + 2,
+      alertKey:       row[0] || "",
+      alertType:      row[1] || "",
+      clientName:     row[2] || "",
+      heading:        row[3] || "",
+      detail:         row[4] || "",
+      status:         row[5] || "active",
+      firstSeen:      row[6] || "",
+      lastSeen:       row[7] || "",
+      acknowledgedAt: row[8] || "",
+    }));
+  } catch (err) {
+    console.log(`⚠️ Could not read ${PROACTIVE_ALERTS_TAB}: ${err.message}`);
+    return [];
   }
 }
 
@@ -5344,6 +5403,104 @@ Return ONLY JSON, no other text.`;
         return res.status(200).json({ success: true, ignoredAlerts });
       } catch (err) {
         console.error(`❌ Error fetching ignored alerts:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "store_proactive_alerts") {
+      // Called by GAS overnight checks to store/update alerts in ProactiveAlerts tab.
+      const { alerts: incomingAlerts, automationCommanderSheetId: acId } = req.body;
+      if (!incomingAlerts || !acId) {
+        return res.status(400).json({ success: false, error: "Missing alerts or automationCommanderSheetId" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureProactiveAlertsTab(sheets, acId);
+        const existing = await readProactiveAlerts(sheets, acId);
+        const existingByKey = {};
+        for (const row of existing) existingByKey[row.alertKey] = row;
+        const nowISO = new Date().toISOString().split("T")[0];
+        let stored = 0, updated = 0, dismissed = 0;
+        const writes = [];
+        for (const alert of incomingAlerts) {
+          const ex = existingByKey[alert.alertKey];
+          if (ex) {
+            if (ex.status === "acknowledged") { dismissed++; continue; }
+            // Update lastSeen
+            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!H${ex.rowIndex}`, values: [[nowISO]] });
+            updated++;
+          } else {
+            // Append new row
+            await sheets.spreadsheets.values.append({
+              spreadsheetId: acId,
+              range: `${PROACTIVE_ALERTS_TAB}!A:I`,
+              valueInputOption: "RAW",
+              requestBody: { values: [[
+                alert.alertKey, alert.alertType, alert.clientName,
+                alert.heading, alert.detail, "active", nowISO, nowISO, "",
+              ]] },
+            });
+            stored++;
+          }
+        }
+        if (writes.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: acId,
+            requestBody: { data: writes, valueInputOption: "RAW" },
+          });
+        }
+        console.log(`  ✅ Proactive alerts: ${stored} stored, ${updated} updated, ${dismissed} dismissed`);
+        return res.status(200).json({ success: true, stored, updated, dismissed });
+      } catch (err) {
+        console.error(`❌ Error in store_proactive_alerts:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_proactive_alerts") {
+      // Returns all active proactive alerts, optionally filtered by clientName.
+      const acId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureProactiveAlertsTab(sheets, acId);
+        const all = await readProactiveAlerts(sheets, acId);
+        const active = all.filter(r => r.status === "active");
+        // Group by clientName for count display
+        const countsByClient = {};
+        for (const a of active) {
+          countsByClient[a.clientName] = (countsByClient[a.clientName] || 0) + 1;
+        }
+        const clientFilter = req.body.clientName;
+        const alerts = clientFilter ? active.filter(a => a.clientName === clientFilter) : active;
+        return res.status(200).json({ success: true, alerts, countsByClient });
+      } catch (err) {
+        console.error(`❌ Error in get_proactive_alerts:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "acknowledge_proactive_alert") {
+      // Marks a proactive alert as acknowledged so it won't reappear.
+      const { alertKey, automationCommanderSheetId: acId } = req.body;
+      if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const all = await readProactiveAlerts(sheets, acId);
+        const row = all.find(r => r.alertKey === alertKey);
+        if (!row) return res.status(404).json({ success: false, error: "Alert not found" });
+        const nowISO = new Date().toISOString();
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: acId,
+          requestBody: {
+            data: [
+              { range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["acknowledged"]] },
+              { range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] },
+            ],
+            valueInputOption: "RAW",
+          },
+        });
+        console.log(`  ✅ Acknowledged proactive alert: ${alertKey}`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error(`❌ Error in acknowledge_proactive_alert:`, err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

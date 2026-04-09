@@ -4704,7 +4704,7 @@ Return ONLY JSON, no other text.`;
             // Read Confirmed tab
             const retConfirmedResp = await sheets.spreadsheets.values.get({
               spreadsheetId: clientSheetIdClean,
-              range: "Confirmed!A1:BH1000",
+              range: "Confirmed!A1:BH5000",
             });
             const retConfirmedRows = retConfirmedResp.data.values || [];
             const retainerChecks = [];
@@ -4799,25 +4799,31 @@ Return ONLY JSON, no other text.`;
                 }
               }
 
+              // Count child rows that already have a real invoice (non-blank, non-MANUAL-INV ref in Inv1 slot)
+              // Expected = real invoice rows + 18 future placeholder rows, capped by contract end date
+              const realInvoiceRows = childRows.filter(({ row: cr }) => {
+                const ref = String(cr[42] || "").trim(); // AQ = Inv1 ref, 0-indexed 42
+                return ref && !ref.toUpperCase().startsWith("MANUAL-INV");
+              }).length;
               const today = new Date();
               today.setHours(0, 0, 0, 0);
-              // Expected child rows = months from start to MIN(end, today + 18 months)
-              // i.e. all past periods covered + up to 18 months into the future
-              const futureLimit = new Date(today.getFullYear(), today.getMonth() + 18, 1);
-              const effectiveEnd = endDate < futureLimit ? endDate : futureLimit;
-              const effectiveMonths = (effectiveEnd.getFullYear() - startDate.getFullYear()) * 12
-                + (effectiveEnd.getMonth() - startDate.getMonth()) + 1;
-              const expectedChildRows = Math.max(Math.ceil(effectiveMonths / periodMonths), 1);
+              const monthsRemainingInContract = Math.max(0,
+                (endDate.getFullYear() - today.getFullYear()) * 12 +
+                (endDate.getMonth() - today.getMonth())
+              );
+              const futureRows = Math.min(18 / periodMonths, monthsRemainingInContract / periodMonths);
+              const expectedChildRows = realInvoiceRows + Math.ceil(futureRows);
+              const expectedChildRows = realInvoiceRows + (18 / periodMonths);
               const actualChildRows = childRows.length;
               const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 
               const monthsDiff = (endDate.getFullYear() - startDate.getFullYear()) * 12
                 + (endDate.getMonth() - startDate.getMonth()) + 1;
               const durationOk = actualChildRows >= expectedChildRows;
-              checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel}), rows expected to ${fmt(effectiveEnd)}` });
+              checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
               checks.push({
                 ok: durationOk,
-                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (past + up to 18 months forward) — ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),
+                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${realInvoiceRows} with real invoices + 18 forward) — ` + (durationOk ? "✓ full coverage" : `✗ ${Math.ceil(expectedChildRows - actualChildRows)} row(s) missing`),
               });
 
               let allHaveInvoice = true;

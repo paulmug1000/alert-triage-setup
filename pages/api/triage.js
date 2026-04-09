@@ -4799,20 +4799,39 @@ Return ONLY JSON, no other text.`;
                 }
               }
 
-              // Count child rows that already have a real invoice (non-blank, non-MANUAL-INV ref in Inv1 slot)
-              // Expected = real invoice rows + 18 future placeholder rows, capped by contract end date
-              const realInvoiceRows = childRows.filter(({ row: cr }) => {
-                const ref = String(cr[42] || "").trim(); // AQ = Inv1 ref, 0-indexed 42
-                return ref && !ref.toUpperCase().startsWith("MANUAL-INV");
-              }).length;
+              // Count child rows whose scheduled invoice date (Inv1 sent-date slot) falls
+              // in or before the current calendar month — these are "past + current" rows.
+              // Expected = that count + 18 future rows (adjusted for period frequency).
+              const parseConfirmedDate = (val) => {
+                if (!val) return null;
+                if (val instanceof Date) return val;
+                const s = String(val).trim();
+                // Handle DD-Mon-YY format e.g. "1-Apr-26"
+                const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+                if (m) {
+                  const months = { Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11 };
+                  const yr = 2000 + parseInt(m[3], 10);
+                  return new Date(yr, months[m[2]], parseInt(m[1], 10));
+                }
+                const d = new Date(val);
+                return isNaN(d.getTime()) ? null : d;
+              };
+
               const today = new Date();
-              today.setHours(0, 0, 0, 0);
+              const endOfCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+              endOfCurrentMonth.setHours(23, 59, 59, 999);
+
+              const pastAndCurrentRows = childRows.filter(({ row: cr }) => {
+                const sentDate = parseConfirmedDate(cr[43]); // AR = Inv1 sent date
+                return sentDate && sentDate <= endOfCurrentMonth;
+              }).length;
+
               const monthsRemainingInContract = Math.max(0,
                 (endDate.getFullYear() - today.getFullYear()) * 12 +
                 (endDate.getMonth() - today.getMonth())
               );
-              const futureRows = Math.min(18 / periodMonths, monthsRemainingInContract / periodMonths);
-              const expectedChildRows = realInvoiceRows + Math.ceil(futureRows);
+              const futureRows = Math.min(18 / periodMonths, Math.ceil(monthsRemainingInContract / periodMonths));
+              const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
               const actualChildRows = childRows.length;
               const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 
@@ -4822,7 +4841,7 @@ Return ONLY JSON, no other text.`;
               checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
               checks.push({
                 ok: durationOk,
-                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${realInvoiceRows} with real invoices + 18 forward) — ` + (durationOk ? "✓ full coverage" : `✗ ${Math.ceil(expectedChildRows - actualChildRows)} row(s) missing`),
+                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${Math.ceil(futureRows)} forward) — ` + (durationOk ? "✓ full coverage" : `✗ ${Math.ceil(expectedChildRows - actualChildRows)} row(s) missing`),
               });
 
               let allHaveInvoice = true;

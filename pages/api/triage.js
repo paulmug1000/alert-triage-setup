@@ -4357,13 +4357,22 @@ Return ONLY JSON, no other text.`;
         console.log(`  📖 Reading AutoLog from master sheet...`);
         const autoLogResp = await sheets.spreadsheets.values.get({
           spreadsheetId: masterSheetIdClean,
-          range: "AutoLog!A2:D2000",
+          range: "AutoLog!A2:D5000",
+          valueRenderOption: "UNFORMATTED_VALUE",
         });
         const allAutoLogRows = autoLogResp.data.values || [];
+        // Convert serial numbers to JS Dates (same approach as log tab reading)
+        const autoLogSerialToDate = (val) => {
+          if (!val) return null;
+          if (typeof val === "number") return new Date((val - 25569) * 86400 * 1000);
+          // Fallback: try direct parse for string timestamps
+          const d = new Date(val);
+          return isNaN(d.getTime()) ? null : d;
+        };
         // Filter to entries after windowStart
         const autoLogRows = allAutoLogRows.filter(row => {
-          const ts = row[0] ? new Date(row[0]) : null;
-          return ts && !isNaN(ts.getTime()) && ts > windowStart;
+          const ts = autoLogSerialToDate(row[0]);
+          return ts && ts > windowStart;
         });
         console.log(`  ✓ ${autoLogRows.length} AutoLog entries after window start (${allAutoLogRows.length} total)`);
 

@@ -4667,7 +4667,7 @@ Return ONLY JSON, no other text.`;
               const details = String(entry[3] || "");
 
               // Format A (new): "[Retainers - Confirmed] Added N child row(s) (Parent Row: N) for CLIENT | JOB"
-              const newPattern = /Added\s+\d+\s+child\s+row[^(]*\(Parent\s+Row:\s*(\d+)\)\s+for\s+([^|]+)\s*\|\s*([^\[]+)/gi;
+              const newPattern = /Added\s+\d+\s+child\s+rows?\([^)]*\)\s*\(Parent\s+Row:\s*(\d+)\)\s+for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
               let m;
               while ((m = newPattern.exec(details)) !== null) {
                 affectedRetainerJobs.push({

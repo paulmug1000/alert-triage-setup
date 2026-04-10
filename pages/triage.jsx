@@ -93,6 +93,7 @@ export default function TriageSystem({ onBack }) {
   const [proactiveAlerts, setProactiveAlerts] = useState([]);
   const [proactiveCountsByClient, setProactiveCountsByClient] = useState({});
   const [proactiveLoading, setProactiveLoading] = useState(false);
+  const [proactiveLoaded, setProactiveLoaded] = useState(false);
   const [proactiveSelectedClient, setProactiveSelectedClient] = useState(null);
 
   // Inject global button/interaction styles once on mount, and set page title/favicon
@@ -884,6 +885,7 @@ export default function TriageSystem({ onBack }) {
   const loadProactiveAlerts = async () => {
     try {
       setProactiveLoading(true);
+      setProactiveLoaded(false);
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -894,6 +896,7 @@ export default function TriageSystem({ onBack }) {
         setProactiveAlerts(data.alerts || []);
         setProactiveCountsByClient(data.countsByClient || {});
       }
+      setProactiveLoaded(true);
     } catch (err) {
       console.error("Failed to load proactive alerts:", err);
     } finally {
@@ -1428,7 +1431,7 @@ export default function TriageSystem({ onBack }) {
     ];
 
     // Load proactive alerts once when this screen first renders
-    if (proactiveAlerts.length === 0 && !proactiveLoading) {
+    if (!proactiveLoaded && !proactiveLoading) {
       loadProactiveAlerts();
     }
 
@@ -1462,6 +1465,7 @@ export default function TriageSystem({ onBack }) {
         </div>
 
         <div style={styles.card}>
+          <h2 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>Automation Alerts</h2>
           {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
 
           {isLoading ? (

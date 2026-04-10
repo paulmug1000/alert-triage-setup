@@ -2746,6 +2746,17 @@ export default function TriageSystem({ onBack }) {
                         )}
                         {/* Standard (non-info) rendering: CRM details, match analysis, accept button */}
                         {option.matchType !== "info" && (<>
+                        {/* Explanation and revenue impact for invoice amount mismatch options */}
+                        {option.explanation && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#fff8e1", borderLeft: "3px solid #f59e0b", fontSize: "13px", lineHeight: "1.5" }}>
+                            {option.explanation}
+                          </div>
+                        )}
+                        {option.revenueImpact && (
+                          <div style={{ ...styles.optionDetail, marginTop: "6px", padding: "10px", backgroundColor: "#fef2f2", borderLeft: "3px solid #ef4444", fontSize: "13px", fontWeight: "500" }}>
+                            ⚠ Revenue impact: {option.revenueImpact}
+                          </div>
+                        )}
                         {/* CRM matching details */}
                         {option.matchingDetails && typeof option.matchingDetails === 'object' && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#f5f3ff", borderLeft: "3px solid #7c3aed" }}>

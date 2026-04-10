@@ -3267,11 +3267,15 @@ The dashboard slot amount column is ${slotAmtCol}, currently showing £${current
 The accounting system excl-VAT amount is £${correctAmount.toFixed(2)}.
 
 YOUR TASK:
-Identify the most likely cause of the amount mismatch and suggest what action to take.
-- If the accounting system amount should be treated as authoritative (e.g. correct invoice was sent), use matchType "existing_job" and include a write action to update the slot.
-- If manual investigation is needed (e.g. partial payment, unclear which is correct), use matchType "info".
-Consider: partial payments, currency issues, incorrect dashboard entry, revenue needing update.
-${isRetainer ? "- For retainers: use the TOTAL CONTRACT REVENUE (monthly × capped months) when assessing over/under-invoicing. Do NOT include placeholder slots in the total invoiced figure." : ""}
+1. Identify the most likely cause of the amount mismatch.
+2. Calculate the revenue impact of updating the slot to £${correctAmount.toFixed(2)}:
+   - Sum all REAL invoice slots (non-blank, non-MANUAL-INV refs) AFTER the update
+   - Compare to the job revenue (${jobRevenue})
+   - State clearly: "New total invoiced = £X. Job revenue = £Y. [Over/Under/Exactly matches]."
+3. Decide matchType:
+   - Use "existing_job" if the accounting system amount should be treated as authoritative (most cases where an invoice has been sent)
+   - Use "info" only if genuinely unclear which amount is correct (e.g. partial payment scenario)
+${isRetainer ? "4. For retainers: use the EFFECTIVE CONTRACT REVENUE (monthly × effective months) when assessing over/under-invoicing. Do NOT include placeholder (MANUAL-INV) slots in the total invoiced figure." : ""}
 
 Format as JSON array:
 [{
@@ -3279,10 +3283,11 @@ Format as JSON array:
   "title": "Brief description of the issue and recommended action",
   "matchType": "existing_job" or "info",
   "jobRow": ${matchedRowNum},
-  "explanation": "Detailed explanation for the user",
+  "explanation": "Detailed explanation including the revenue impact analysis",
+  "revenueImpact": "New total invoiced = £X. Job revenue = £Y. [Over by £Z — consider updating revenue / Under by £Z — gap remains / Exactly matches].",
   "recommendedActions": [
-    "Plain English summary",
-    "write £${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount)"
+    "Plain English summary of what will be done",
+    "write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount)"
   ]
 }]
 

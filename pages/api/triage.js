@@ -4872,8 +4872,6 @@ Return ONLY JSON, no other text.`;
             results.push(...retainerChecks);
           }
 
-        } // end retainerInvoicesCreated
-
         } else if (flagType === "retainerInvoicesDeleted") {
 
           // Find AutoLog entries where retainer child rows were trimmed

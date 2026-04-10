@@ -3240,6 +3240,10 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
 
             // Send to Claude with job details and retainer context
             console.log(`  No VAT scenario, diff £${amtDiff.toFixed(2)} — sending to Claude with job details`);
+            const slotAmtCol = matchedSlot === 1 ? "AP" : matchedSlot === 2 ? "AW" : "BD";
+            const currentSlotAmt = matchedSlot === 1 ? slot1.amt : matchedSlot === 2 ? slot2.amt : slot3.amt;
+            const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
+
             const invAmtPrompt = `You are analysing an invoice amount mismatch between the accounting system and the dashboard.
 
 INVOICE FROM ACCOUNTING SYSTEM:
@@ -3253,28 +3257,36 @@ INVOICE FROM ACCOUNTING SYSTEM:
 • Status: ${invStatus}
 • Dashboard shows total: £${dashboardTotal.toFixed(2)}
 
-MATCHED JOB IN CONFIRMED TAB (Slot ${matchedSlot}):
+MATCHED JOB IN CONFIRMED TAB (Slot ${matchedSlot}, row ${matchedRowNum}):
 ${jobSummary}
 ${retainerContext}
 The VAT scenarios (invoice with VAT/job no VAT, and invoice without VAT/job with VAT) have already been checked and ruled out.
 Rounding differences (< £1.00) have also been ruled out — this is a genuine amount discrepancy of £${amtDiff.toFixed(2)}.
 
+The dashboard slot amount column is ${slotAmtCol}, currently showing £${currentSlotAmt}.
+The accounting system excl-VAT amount is £${correctAmount.toFixed(2)}.
+
 YOUR TASK:
-Identify the most likely cause of the amount mismatch and suggest what action to take. Consider:
-- Partial payments
-- Currency issues
-- Incorrect invoice amount entered in dashboard
-- Revenue amount needs updating
+Identify the most likely cause of the amount mismatch and suggest what action to take.
+- If the accounting system amount should be treated as authoritative (e.g. correct invoice was sent), use matchType "existing_job" and include a write action to update the slot.
+- If manual investigation is needed (e.g. partial payment, unclear which is correct), use matchType "info".
+Consider: partial payments, currency issues, incorrect dashboard entry, revenue needing update.
 ${isRetainer ? "- For retainers: use the TOTAL CONTRACT REVENUE (monthly × capped months) when assessing over/under-invoicing. Do NOT include placeholder slots in the total invoiced figure." : ""}
 
 Format as JSON array:
 [{
   "optionId": 1,
   "title": "Brief description of the issue and recommended action",
-  "matchType": "info",
+  "matchType": "existing_job" or "info",
+  "jobRow": ${matchedRowNum},
   "explanation": "Detailed explanation for the user",
-  "recommendedActions": ["Action 1", "Action 2"]
+  "recommendedActions": [
+    "Plain English summary",
+    "write £${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount)"
+  ]
 }]
+
+IMPORTANT: If matchType is "existing_job", recommendedActions item 2 MUST be in the exact format "write VALUE to CELLREF (description)" so the system can execute the write automatically.
 
 Return ONLY JSON, no other text.`;
 
@@ -4131,6 +4143,8 @@ Return ONLY JSON, no other text.`;
             let v = String(val ?? "");
             // Strip surrounding double quotes (e.g. "" → empty, "foo" → foo)
             if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
+            // Strip leading currency symbols so numbers are stored as numeric values
+            v = v.replace(/^[£$€]/, "");
             // Detect JS Date toString format: "Mon Mar 23 2026 00:00:00 GMT..."
             const jsDateMatch = v.match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\w{3})\s+(\d{1,2})\s+(\d{4})/);
             if (jsDateMatch) {
@@ -5740,6 +5754,70 @@ Return ONLY JSON, no other text.`;
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error(`❌ Error in update_recheck_timestamp:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "rehash_ignored_alerts") {
+      // Rebuilds fingerprint hashes for all "ignored" AlertMemory rows by reading
+      // fresh alerts from the comparison tabs and matching by alert summary.
+      // Use after fingerprint algorithm changes invalidate stored hashes.
+      const { automationCommanderSheetId: acId } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const ignoredRows = memoryRows.filter(r => r.status === "ignored");
+        if (ignoredRows.length === 0) return res.status(200).json({ success: true, updated: 0, message: "No ignored rows to update" });
+
+        // Get all clients so we can read their comparison tabs
+        const flagResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: acId,
+          range: "AutoUpdates!A2:M100",
+          valueRenderOption: "UNFORMATTED_VALUE",
+        });
+        const clientRows = (flagResp.data.values || []).slice(1).filter(r => r[0] && r[11] && r[12]);
+
+        // Build map of alertSummary → fresh fingerprint by reading each client's InvComp
+        const freshHashByInvNo = {}; // invoiceNo → { hash, clientName }
+        for (const cr of clientRows) {
+          const clientName = String(cr[0] || "").trim();
+          const clientSheetId = extractSheetIdFromUrl(String(cr[11] || "")) || String(cr[11] || "");
+          if (!clientSheetId) continue;
+          try {
+            const alerts = await readInvCompAlerts(sheets, clientSheetId);
+            for (const alert of alerts) {
+              alert.fingerprintHash = buildAlertFingerprint(alert);
+              const invNo = alert.summary?.invoiceNo || "";
+              if (invNo) freshHashByInvNo[`${clientName}|${invNo}`] = alert.fingerprintHash;
+            }
+          } catch (e) { /* skip client on error */ }
+        }
+
+        // Match ignored rows to fresh hashes and update
+        const writes = [];
+        let updated = 0;
+        for (const row of ignoredRows) {
+          const invMatch = (row.alertSummary || "").match(/Invoice\s+#?(\S+)/i);
+          if (!invMatch) continue;
+          const key = `${row.clientName}|${invMatch[1]}`;
+          const freshHash = freshHashByInvNo[key];
+          if (freshHash && freshHash !== row.fingerprintHash) {
+            console.log(`  Rehashing "${row.clientName}" inv ${invMatch[1]}: ${row.fingerprintHash} → ${freshHash}`);
+            writes.push({ range: `AlertMemory!A${row.rowIndex}`, values: [[freshHash]] });
+            updated++;
+          }
+        }
+
+        if (writes.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: acId,
+            requestBody: { data: writes, valueInputOption: "RAW" },
+          });
+        }
+        console.log(`  ✅ rehash_ignored_alerts: ${updated} updated of ${ignoredRows.length} ignored rows`);
+        return res.status(200).json({ success: true, updated, total: ignoredRows.length });
+      } catch (err) {
+        console.error("❌ rehash_ignored_alerts:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

@@ -3055,15 +3055,16 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
             }
 
             // Scenario B: Invoice sent WITHOUT VAT, job marked to INCLUDE VAT
-            // Evidence: VAT = 0 AND gross amount ≈ dashboard total (excl VAT portion)
-            if (vatIncluded === 0 && jobVATYes && Math.abs(grossAmount - dashboardTotal) < epsilon) {
-              console.log(`  VAT scenario B: invoice sent WITHOUT VAT but job marked YES VAT`);
+            // Evidence: VAT = 0 AND gross amount × 1.2 ≈ dashboard total
+            // (InvComp calculates dashboard total as slot amount × 1.2 when job VAT = Yes)
+            if (vatIncluded === 0 && jobVATYes && Math.abs(grossAmount * 1.2 - dashboardTotal) < epsilon) {
+              console.log(`  VAT scenario B: invoice sent WITHOUT VAT (£${grossAmount}) but job marked YES VAT — dashboard shows £${dashboardTotal} (= £${grossAmount} × 1.2)`);
               const options = [{
                 optionId: 1,
                 title: `MANUAL INVESTIGATION — Invoice sent WITHOUT VAT but job is marked YES VAT`,
                 matchType: "info",
                 discrepancyType: "inv_amt_mismatch",
-                explanation: `Invoice #${invoiceNo} was sent without VAT (VAT = £0.00), but the job in the Confirmed tab is marked as "Yes VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the gross invoice amount (£${grossAmount.toFixed(2)}), but the expected total including VAT would be higher. Either the job's VAT setting needs updating to "No", or the invoice needs to be re-issued including VAT.`,
+                explanation: `Invoice #${invoiceNo} was sent without VAT (VAT = £0.00), but the job in the Confirmed tab is marked as "Yes VAT". The dashboard is showing £${dashboardTotal.toFixed(2)} (£${grossAmount.toFixed(2)} + 20% VAT), but the invoice was sent for £${grossAmount.toFixed(2)} with no VAT. Either the job's VAT setting needs updating to "No", or the invoice needs to be re-issued including VAT.`,
                 jobDetails: {
                   clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
                   vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,

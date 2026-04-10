@@ -169,6 +169,10 @@ export default function TriageSystem({ onBack }) {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [activeNav, setActiveNav] = useState("home"); // "home" | "overview"
 
+  // Nav handlers — defined early so they're available throughout the render
+  const handleNavHome = () => { setActiveNav("home"); };
+  const handleNavOverview = () => { setActiveNav("overview"); loadOverview(); };
+
   // Inject global button/interaction styles once on mount, and set page title/favicon
   useEffect(() => {
     // Set title and favicon directly — reliable across all screen transitions
@@ -2313,13 +2317,6 @@ export default function TriageSystem({ onBack }) {
       </NavShell>
     );
   }
-
-  // Nav handlers
-  const handleNavHome = () => { setActiveNav("home"); };
-  const handleNavOverview = () => {
-    setActiveNav("overview");
-    loadOverview();
-  };
 
   // Overview screen
   if (activeNav === "overview") {

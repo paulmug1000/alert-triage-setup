@@ -1603,7 +1603,7 @@ export default function TriageSystem({ onBack }) {
                 .overview-cards { display: none; }
                 @media (max-width: 700px) {
                   .overview-table { display: none; }
-                  .overview-cards { display: block; }
+                  .overview-cards { display: flex; }
                 }
               `}</style>
 
@@ -1648,7 +1648,7 @@ export default function TriageSystem({ onBack }) {
               </div>
 
               {/* Mobile: card layout */}
-              <div className="overview-cards" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div className="overview-cards" style={{ flexDirection: "column", gap: "10px" }}>
                 {overviewData.map((client, idx) => {
                   const hasFlags = !!client.flagsText;
                   return (

@@ -4657,19 +4657,31 @@ Return ONLY JSON, no other text.`;
               (details.includes("child row") || details.includes("invoice rows"));
           });
           console.log(`  ✓ Found ${retainerLogEntries.length} retainer creation entries in window`);
-          for (const entry of retainerLogEntries) {
+
+          // If nothing found in window, fall back to full AutoLog (last 90 days)
+          // This handles timing edge cases where the automation ran just before the window start
+          const retainerLogEntriesToUse = retainerLogEntries.length > 0 ? retainerLogEntries :
+            allAutoLogRows.filter(row => {
+              const details = String(row[3] || "");
+              return details.includes("Retainer") && details.includes("Added") &&
+                (details.includes("child row") || details.includes("invoice rows"));
+            });
+          if (retainerLogEntries.length === 0 && retainerLogEntriesToUse.length > 0) {
+            console.log(`  ↩ Fell back to full AutoLog — found ${retainerLogEntriesToUse.length} entries`);
+          }
+          for (const entry of retainerLogEntriesToUse) {
             console.log(`    [${entry[0]}] Details="${String(entry[3]||"").slice(0, 400)}"`);
           }
 
-          if (retainerLogEntries.length === 0) {
+          if (retainerLogEntriesToUse.length === 0) {
             results.push({
               status: "info",
-              message: `No retainer invoice creation entries found in AutoLog since flag was last cleared.`,
+              message: `No retainer invoice creation entries found in AutoLog since flag was last cleared. If invoices were recently created, click Re-run to refresh.`,
             });
           } else {
             // Parse all entries in the window
             const affectedRetainerJobs = [];
-            for (const entry of retainerLogEntries) {
+            for (const entry of retainerLogEntriesToUse) {
               const details = String(entry[3] || "");
 
               // Format A (new): "[Retainers - Confirmed] Added N child row(s) (Parent Row: N) for CLIENT | JOB"
@@ -4881,18 +4893,29 @@ Return ONLY JSON, no other text.`;
               (details.includes("child row") || details.includes("excess"));
           });
           console.log(`  ✓ Found ${deletedLogEntries.length} retainer deletion entries in window`);
-          for (const entry of deletedLogEntries) {
+
+          // Fall back to full AutoLog if nothing found in window
+          const deletedLogEntriesToUse = deletedLogEntries.length > 0 ? deletedLogEntries :
+            allAutoLogRows.filter(row => {
+              const details = String(row[3] || "");
+              return details.includes("Retainer") && details.includes("Trimmed") &&
+                (details.includes("child row") || details.includes("excess"));
+            });
+          if (deletedLogEntries.length === 0 && deletedLogEntriesToUse.length > 0) {
+            console.log(`  ↩ Fell back to full AutoLog — found ${deletedLogEntriesToUse.length} entries`);
+          }
+          for (const entry of deletedLogEntriesToUse) {
             console.log(`    [${entry[0]}] Details="${String(entry[3]||"").slice(0, 400)}"`);
           }
 
-          if (deletedLogEntries.length === 0) {
+          if (deletedLogEntriesToUse.length === 0) {
             results.push({
               status: "info",
-              message: `No retainer invoice deletion entries found in AutoLog since flag was last cleared.`,
+              message: `No retainer invoice deletion entries found in AutoLog since flag was last cleared. If invoices were recently deleted, click Re-run to refresh.`,
             });
           } else {
             const affectedRetainerJobs = [];
-            for (const entry of deletedLogEntries) {
+            for (const entry of deletedLogEntriesToUse) {
               const details = String(entry[3] || "");
               // Format: "[Retainers] Trimmed N excess child row(s) for CLIENT | JOB"
               const pattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\([^)]*\)\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;

@@ -409,6 +409,7 @@ export default function TriageSystem({ onBack }) {
       "crmCopiedConfUnchecked": "CRM copied to conf box UNchecked",
       "crmCopiedConfDelete": "CRM copied to conf box DELETE",
       "retainerInvoicesCreated": "Retainer invoices created",
+      "retainerInvoicesDeleted": "Retainer invoices deleted",
       "expenseDashboardDiscr": "Expense dashboard discr",
       "expenseAppDiscr": "Expense app discr",
       "expenseAdded": "Expense added",
@@ -653,13 +654,13 @@ export default function TriageSystem({ onBack }) {
     // A group is pre-checked only if:
     // (a) the client has flags in that group, AND
     // (b) there are no remaining unprocessed alerts for that group
-    const invoiceAlertTypes = new Set(["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated"]);
+    const invoiceAlertTypes = new Set(["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted"]);
     const crmAlertTypes = new Set(["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
       "crmPipeSkippedBlank", "crmConfSkippedBlank", "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"]);
     const expenseAlertTypes = new Set(["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"]);
 
     const remaining = remainingAlerts || [];
-    const hasInvoiceFlag = !!(f.invoiceDashboardDiscr || f.invoiceAppDiscr || f.invoiceStaleUnsentChanges || f.retainerInvoicesCreated);
+    const hasInvoiceFlag = !!(f.invoiceDashboardDiscr || f.invoiceAppDiscr || f.invoiceStaleUnsentChanges || f.retainerInvoicesCreated || f.retainerInvoicesDeleted);
     const hasCRMFlag = !!(f.crmPipeDashDiscr || f.crmPipeAppDiscr || f.crmConfDashDiscr || f.crmConfAppDiscr ||
       f.crmPipeSkippedBlank || f.crmConfSkippedBlank || f.crmCopiedConfChecked || f.crmCopiedConfUnchecked || f.crmCopiedConfDelete);
     const hasExpenseFlag = !!(f.expenseDashboardDiscr || f.expenseAppDiscr || f.expenseAdded || f.expenseUnreconGaps);
@@ -717,7 +718,7 @@ export default function TriageSystem({ onBack }) {
 
       // Map cleared groups back to individual flag keys
       const FLAG_GROUP_KEYS = {
-        invoice: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated"],
+        invoice: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted"],
         crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
               "crmPipeSkippedBlank", "crmConfSkippedBlank", "crmCopiedConfChecked",
               "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
@@ -1816,7 +1817,7 @@ export default function TriageSystem({ onBack }) {
               <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 {clientNoActionAlerts.map((na) => {
                   const isResolved = resolvedNoActionFlags.has(na.flagType);
-                  const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated"].includes(na.flagType);
+                  const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted"].includes(na.flagType);
                   const analysis = noActionAnalysis[na.flagType];
                   const isLoading = noActionAnalysisLoading[na.flagType];
 
@@ -2057,7 +2058,7 @@ export default function TriageSystem({ onBack }) {
         key: "invoice",
         label: "Invoice flags",
         sub: "Clears AS2 in DataChgAlert",
-        flags: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated"],
+        flags: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted"],
       },
       {
         key: "crm",

@@ -41,6 +41,7 @@ const FLAG_COLUMNS = {
   crmCopiedConfUnchecked: "FH",
   crmCopiedConfDelete: "FO",
   retainerInvoicesCreated: "FV",
+  retainerInvoicesDeleted: "HL",
   expenseDashboardDiscr: "GC",
   expenseAppDiscr: "GJ",
   expenseAdded: "GQ",
@@ -60,6 +61,7 @@ const NO_ACTION_FLAGS = [
   "crmCopiedConfUnchecked",
   "crmCopiedConfDelete",
   "retainerInvoicesCreated",
+  "retainerInvoicesDeleted",
   "expenseAppDiscr",
   "expenseAdded",
   "expenseUnreconGaps",
@@ -79,6 +81,7 @@ const FLAG_NAMES = {
   crmCopiedConfUnchecked: "CRM copied to conf box UNchecked",
   crmCopiedConfDelete: "CRM copied to conf box DELETE",
   retainerInvoicesCreated: "Retainer invoices created",
+  retainerInvoicesDeleted: "Retainer invoices deleted",
   expenseDashboardDiscr: "Expense dashboard discr",
   expenseAppDiscr: "Expense app discr",
   expenseAdded: "Expense added",
@@ -555,7 +558,7 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
     console.log(`⏱️ Fetching all flags at once (CW:HE)...`);
     const flagsResponse = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!CW2:HE1000",
+      range: "AutoUpdates!CW2:HL1000",
     });
     const flagRows = flagsResponse.data.values || [];
     console.log(`  ✓ Got ${flagRows.length} flag rows`);
@@ -620,6 +623,7 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         crmCopiedConfUnchecked: String(flagRow[63] || "").toUpperCase() === "TRUE", // FH
         crmCopiedConfDelete: String(flagRow[70] || "").toUpperCase() === "TRUE", // FO
         retainerInvoicesCreated: String(flagRow[77] || "").toUpperCase() === "TRUE", // FV
+        retainerInvoicesDeleted: String(flagRow[119] || "").toUpperCase() === "TRUE", // HL
         expenseDashboardDiscr: String(flagRow[84] || "").toUpperCase() === "TRUE", // GC
         expenseAppDiscr: String(flagRow[91] || "").toUpperCase() === "TRUE", // GJ
         expenseAdded: String(flagRow[98] || "").toUpperCase() === "TRUE", // GQ
@@ -642,6 +646,7 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         flags.invoiceAppDiscr = false;
         flags.invoiceStaleUnsentChanges = false;
         flags.retainerInvoicesCreated = false;
+        flags.retainerInvoicesDeleted = false;
       }
       if (clearAll || clearCRM) {
         flags.crmPipeDashDiscr = false;
@@ -4869,6 +4874,200 @@ Return ONLY JSON, no other text.`;
 
         } // end retainerInvoicesCreated
 
+        } else if (flagType === "retainerInvoicesDeleted") {
+
+          // Find AutoLog entries where retainer child rows were trimmed
+          const deletedLogEntries = autoLogRows.filter(row => {
+            const details = String(row[3] || "");
+            return details.includes("Retainer") && details.includes("Trimmed") &&
+              (details.includes("child row") || details.includes("excess"));
+          });
+          console.log(`  ✓ Found ${deletedLogEntries.length} retainer deletion entries in window`);
+          for (const entry of deletedLogEntries) {
+            console.log(`    [${entry[0]}] Details="${String(entry[3]||"").slice(0, 400)}"`);
+          }
+
+          if (deletedLogEntries.length === 0) {
+            results.push({
+              status: "info",
+              message: `No retainer invoice deletion entries found in AutoLog since flag was last cleared.`,
+            });
+          } else {
+            const affectedRetainerJobs = [];
+            for (const entry of deletedLogEntries) {
+              const details = String(entry[3] || "");
+              // Format: "[Retainers] Trimmed N excess child row(s) for CLIENT | JOB"
+              const pattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\([^)]*\)\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
+              let m;
+              while ((m = pattern.exec(details)) !== null) {
+                affectedRetainerJobs.push({
+                  clientNameFromLog: m[1].trim(),
+                  jobName: m[2].trim(),
+                  logTimestamp: String(entry[0] || "")
+                });
+              }
+            }
+
+            // Deduplicate by client + job
+            const seenJobs = new Set();
+            const dedupedJobs = affectedRetainerJobs.filter(j => {
+              const key = `${j.clientNameFromLog}|||${j.jobName}`;
+              if (seenJobs.has(key)) return false;
+              seenJobs.add(key);
+              return true;
+            });
+            console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
+
+            // Read Confirmed tab
+            const delConfirmedResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetIdClean,
+              range: "Confirmed!A1:BH5000",
+            });
+            const delConfirmedRows = delConfirmedResp.data.values || [];
+            const retainerChecks = [];
+
+            for (const job of dedupedJobs) {
+              const jobNameLower = job.jobName.toLowerCase();
+              const clientLower  = job.clientNameFromLog.toLowerCase();
+
+              // Find parent row by client + job name
+              let parentRowIdx = -1;
+              for (let ri = 0; ri < delConfirmedRows.length; ri++) {
+                const r = delConfirmedRows[ri];
+                const rClient = String(r[0] || "").trim().toLowerCase();
+                const rJob    = String(r[1] || "").trim().toLowerCase();
+                if (rClient === clientLower && rJob === jobNameLower) {
+                  parentRowIdx = ri;
+                  break;
+                }
+              }
+
+              if (parentRowIdx === -1) {
+                retainerChecks.push({
+                  jobName: job.jobName,
+                  clientName: job.clientNameFromLog,
+                  status: "issue",
+                  message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in Confirmed tab`,
+                  checks: [],
+                });
+                continue;
+              }
+
+              const parentRow    = delConfirmedRows[parentRowIdx];
+              const parentSheetRow = parentRowIdx + 1;
+              const jobClient    = String(parentRow[0] || "").trim();
+              const jobName2     = String(parentRow[1] || "").trim();
+              const projectCode  = String(parentRow[2] || "").trim();
+              const monthlyRevenue = parseFloat(String(parentRow[32] || "0").replace(/[£$€,\s]/g, "")) || 0;
+              const jobStart     = String(parentRow[37] || "").trim();
+              const jobEnd       = String(parentRow[38] || "").trim();
+
+              console.log(`  Found "${job.jobName}" (${job.clientNameFromLog}) at Confirmed row ${parentSheetRow}: start="${jobStart}", end="${jobEnd}"`);
+
+              // Collect child rows (same client + job, no revenue/start/end)
+              const childRows = [];
+              for (let ri = parentRowIdx + 1; ri < delConfirmedRows.length; ri++) {
+                const r = delConfirmedRows[ri];
+                const rClient = String(r[0] || "").trim().toLowerCase();
+                const rJob    = String(r[1] || "").trim().toLowerCase();
+                if (rClient !== clientLower || rJob !== jobNameLower) break;
+                if (r[32] || r[37] || r[38]) break; // has revenue/start/end = another parent
+                childRows.push({ row: r, sheetRow: ri + 1 });
+              }
+
+              const checks = [];
+
+              // Parse dates
+              const parseDate = (s) => {
+                if (!s) return null;
+                const months = { Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11 };
+                const m2 = String(s).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+                if (m2) {
+                  const yr = m2[3].length === 2 ? 2000 + parseInt(m2[3], 10) : parseInt(m2[3], 10);
+                  return new Date(yr, months[m2[2]], parseInt(m2[1], 10));
+                }
+                const d = new Date(s); return isNaN(d.getTime()) ? null : d;
+              };
+
+              const startDate = parseDate(jobStart);
+              const endDate   = parseDate(jobEnd);
+
+              if (!startDate || !endDate) {
+                retainerChecks.push({
+                  jobName: jobName2, clientName: jobClient, projectCode,
+                  parentSheetRow, status: "info",
+                  message: `No start/end dates set on this retainer — cannot verify row coverage`,
+                  checks: [],
+                });
+                continue;
+              }
+
+              // Determine period (monthly by default, infer from child row amounts)
+              let periodMonths = 1;
+              let periodLabel  = "monthly";
+              if (childRows.length > 0 && monthlyRevenue > 0) {
+                const firstInv = parseFloat(String(childRows[0].row[41] || "").replace(/[£$€,\s]/g, "")) || 0;
+                if (firstInv > 0) {
+                  const ratio = Math.round(firstInv / monthlyRevenue);
+                  if (ratio >= 2) {
+                    periodMonths = ratio;
+                    if (ratio === 3) periodLabel = "quarterly";
+                    else if (ratio === 6) periodLabel = "6-monthly";
+                    else if (ratio === 12) periodLabel = "annual";
+                    else periodLabel = `every ${ratio} months`;
+                  }
+                }
+              }
+
+              // Rolling 18-month runway: count rows with scheduled date ≤ end of current month
+              const parseConfDate = (val) => {
+                if (!val) return null;
+                if (val instanceof Date) return val;
+                const s2 = String(val).trim();
+                const months2 = { Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11 };
+                const m3 = s2.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+                if (m3) return new Date(2000 + parseInt(m3[3],10), months2[m3[2]], parseInt(m3[1],10));
+                const d = new Date(val); return isNaN(d.getTime()) ? null : d;
+              };
+              const today2 = new Date();
+              const endOfCurrentMonth = new Date(today2.getFullYear(), today2.getMonth() + 1, 0);
+              endOfCurrentMonth.setHours(23, 59, 59, 999);
+              const pastAndCurrentRows = childRows.filter(({ row: cr }) => {
+                const sentDate = parseConfDate(cr[43]);
+                return sentDate && sentDate <= endOfCurrentMonth;
+              }).length;
+              const monthsRemaining = Math.max(0,
+                (endDate.getFullYear() - today2.getFullYear()) * 12 +
+                (endDate.getMonth() - today2.getMonth())
+              );
+              const futureRows = Math.min(18 / periodMonths, Math.ceil(monthsRemaining / periodMonths));
+              const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
+              const actualChildRows   = childRows.length;
+              const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+              const monthsDiff = (endDate.getFullYear() - startDate.getFullYear()) * 12
+                + (endDate.getMonth() - startDate.getMonth()) + 1;
+
+              const durationOk = actualChildRows === expectedChildRows;
+              checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
+              checks.push({
+                ok: durationOk,
+                message: durationOk
+                  ? `✓ Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${Math.ceil(futureRows)} forward) — correct count`
+                  : `${actualChildRows > expectedChildRows ? "✗ Too many" : "✗ Too few"} child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${Math.ceil(futureRows)} forward)`,
+              });
+
+              retainerChecks.push({
+                jobName: jobName2, clientName: jobClient, projectCode,
+                parentSheetRow, status: durationOk ? "ok" : "issue",
+                periodLabel, checks,
+              });
+            }
+
+            results.push(...retainerChecks);
+          }
+
+        } // end retainerInvoicesDeleted
+
         const overallOk = results.every(r => r.status === "ok" || r.status === "info");
         console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);
         return res.status(200).json({ success: true, flagType, results, overallOk });
@@ -5101,7 +5300,7 @@ Return ONLY JSON, no other text.`;
           // Remove stale noAction analysis results for this client's cleared flags
           // so the next load forces a fresh Analyse rather than showing outdated results
           if (parsed.noActionAnalysisResults) {
-            const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated"];
+            const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted"];
             richFlags.forEach(flagType => {
               if (keysToZero.has(flagType)) {
                 delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`];

@@ -1935,13 +1935,70 @@ export default async function handler(req, res) {
       }
 
       try {
+        // Before overwriting, check if the existing cache has any flags that were
+        // recently cleared (false in Redis but true in new data from GAS).
+        // If so, preserve the cleared state for up to 10 minutes to allow the
+        // DataChgAlert sheet mechanism to propagate and actually clear the flag.
+        const CLEAR_PRESERVE_MS = 10 * 60 * 1000; // 10 minutes
+        let mergedClientsWithFlags = clientsWithFlags || [];
+        try {
+          const existingRaw = await redisClient.get(PRECOMPUTED_KEY);
+          if (existingRaw) {
+            const existing = JSON.parse(existingRaw);
+            const existingAge = Date.now() - (existing.computedAt || 0);
+            if (existingAge < CLEAR_PRESERVE_MS && existing.clientsWithFlags) {
+              // Build a map of existing cleared flags per client
+              const clearedInCache = {};
+              for (const c of existing.clientsWithFlags) {
+                clearedInCache[c.clientName] = Object.entries(c.flags || {})
+                  .filter(([, v]) => !v)
+                  .map(([k]) => k);
+              }
+              // Apply preserved clears to incoming data
+              mergedClientsWithFlags = mergedClientsWithFlags.map(c => {
+                const cleared = clearedInCache[c.clientName];
+                if (!cleared || cleared.length === 0) return c;
+                const mergedFlags = { ...c.flags };
+                cleared.forEach(k => { mergedFlags[k] = false; });
+                return { ...c, flags: mergedFlags };
+              });
+              console.log(`  store_precomputed: preserved recently-cleared flags from existing cache`);
+            }
+          }
+        } catch (mergeErr) {
+          console.log(`  store_precomputed: could not read existing cache for merge — using raw data`);
+        }
+
+        // Recount alerts after applying preserved clears
+        const ACTIONABLE_FLAG_KEYS = new Set([
+          "invoiceDashboardDiscr", "expenseDashboardDiscr",
+          "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
+        ]);
+        const NO_ACTION_FLAG_KEYS = new Set([
+          "invoiceAppDiscr", "crmPipeSkippedBlank", "crmConfSkippedBlank",
+          "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
+          "retainerInvoicesCreated", "retainerInvoicesDeleted", "expenseAppDiscr",
+          "expenseAdded", "expenseUnreconGaps", "invoiceStaleUnsentChanges",
+        ]);
+        const mergedAlerts = (alerts || []).filter(a => {
+          const client = mergedClientsWithFlags.find(c => c.clientName === a.clientName);
+          if (!client) return true;
+          const flagType = a.flagType || a.type;
+          return client.flags[flagType] !== false;
+        });
+        const mergedNoActionAlerts = (noActionAlerts || []).filter(na => {
+          const client = mergedClientsWithFlags.find(c => c.clientName === na.clientName);
+          if (!client) return true;
+          return client.flags[na.flagType] !== false;
+        });
+
         const precomputedData = {
           computedAt: computedAt || Date.now(),
-          totalAlerts: totalAlerts || 0,
-          noActionCount: noActionCount || 0,
-          alerts: alerts || [],
-          noActionAlerts: noActionAlerts || [],
-          clientsWithFlags: clientsWithFlags || [],
+          totalAlerts: mergedAlerts.length,
+          noActionCount: mergedNoActionAlerts.length,
+          alerts: mergedAlerts,
+          noActionAlerts: mergedNoActionAlerts,
+          clientsWithFlags: mergedClientsWithFlags,
           noActionAnalysisResults: noActionAnalysisResults || {},
         };
 

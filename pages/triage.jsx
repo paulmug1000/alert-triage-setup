@@ -689,6 +689,15 @@ export default function TriageSystem({ onBack }) {
       // Remove from client alerts
       const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
       setClientAlerts(updatedAlerts);
+
+      // Decrement the alert count for this client/flagType in clientsWithFlags
+      const acceptedFlagType = alert.flagType || alert.type || "";
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== selectedClient?.clientName) return c;
+        const updatedCounts = { ...c.alertCounts };
+        if (updatedCounts[acceptedFlagType] > 0) updatedCounts[acceptedFlagType]--;
+        return { ...c, alertCounts: updatedCounts };
+      }));
       
       if (updatedAlerts.length === 0) {
         // All actionable alerts processed — go to clearFlags only if no-action flags are all resolved
@@ -912,6 +921,15 @@ export default function TriageSystem({ onBack }) {
       const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
       setClientAlerts(updatedAlerts);
       setCurrentClientAlertIndex(0);
+
+      // Decrement the alert count for this client/flagType in clientsWithFlags
+      const ignoredFlagType = alert.flagType || alert.type || "";
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== selectedClient.clientName) return c;
+        const updatedCounts = { ...c.alertCounts };
+        if (updatedCounts[ignoredFlagType] > 0) updatedCounts[ignoredFlagType]--;
+        return { ...c, alertCounts: updatedCounts };
+      }));
 
       if (updatedAlerts.length === 0) {
         // Same gate as acceptOption — only go to clearFlags if no-action flags resolved too
@@ -1562,12 +1580,33 @@ export default function TriageSystem({ onBack }) {
               </div>
             )}
 
-            <button className="triage-btn"
-              onClick={() => { setAcceptError(""); setScreen("clientSelection"); }}
-              style={{ ...styles.buttonSecondary, marginTop: "20px" }}
-            >
-              ← Back to Clients
-            </button>
+            <div style={{ marginTop: "20px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <button className="triage-btn"
+                onClick={() => { setAcceptError(""); setScreen("clientSelection"); }}
+                style={styles.buttonSecondary}
+              >
+                ← Back to Clients
+              </button>
+              <button className="triage-btn"
+                onClick={async () => {
+                  try {
+                    setAcceptError("");
+                    const r = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "rehash_ignored_alerts", automationCommanderSheetId }) });
+                    const d = await r.json();
+                    if (d.success) {
+                      setAcceptError(`✓ Rehashed: ${d.updated} of ${d.total} ignored alerts updated. Click Refresh to reload.`);
+                    } else {
+                      setAcceptError(`Failed: ${d.error}`);
+                    }
+                  } catch (e) { setAcceptError(`Error: ${e.message}`); }
+                }}
+                style={{ ...styles.buttonSecondary, fontSize: "13px" }}
+                title="Fix ignored alerts that reappeared after a system update"
+              >
+                🔧 Fix stale hashes
+              </button>
+            </div>
           </div>
         </div>
       </NavShell>

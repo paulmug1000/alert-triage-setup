@@ -1586,55 +1586,119 @@ export default function TriageSystem({ onBack }) {
               {overviewLoading ? <><Spinner size={12} />Refreshing...</> : "↻ Refresh"}
             </button>
           </div>
-          <div style={{ background: "#fff", border: "1px solid #e0e0e0", borderRadius: "8px", overflow: "hidden" }}>
-            {overviewLoading && overviewData.length === 0 ? (
-              <div style={{ padding: "40px", textAlign: "center", color: "#666" }}>
-                <Spinner size={24} color="#0066cc" /><div style={{ marginTop: "12px" }}>Loading overview...</div>
+
+          {overviewLoading && overviewData.length === 0 ? (
+            <div style={{ padding: "40px", textAlign: "center", color: "#666", background: "#fff", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+              <Spinner size={24} color="#0066cc" /><div style={{ marginTop: "12px" }}>Loading overview...</div>
+            </div>
+          ) : overviewData.length === 0 ? (
+            <div style={{ padding: "40px", textAlign: "center", color: "#888", background: "#fff", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+              No client data available. Click Refresh to load.
+            </div>
+          ) : (
+            <>
+              {/* Desktop table — hidden on mobile via inline media query trick using a wrapper */}
+              <style>{`
+                .overview-table { display: table; }
+                .overview-cards { display: none; }
+                @media (max-width: 700px) {
+                  .overview-table { display: none; }
+                  .overview-cards { display: block; }
+                }
+              `}</style>
+
+              {/* Desktop: table layout */}
+              <div className="overview-table" style={{ background: "#fff", border: "1px solid #e0e0e0", borderRadius: "8px", overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                  <thead>
+                    <tr style={{ background: "#f8f8f8", borderBottom: "2px solid #e0e0e0" }}>
+                      <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "20%" }}>Client</th>
+                      <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "26%" }}>Invoices</th>
+                      <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "26%" }}>CRM</th>
+                      <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "26%" }}>Expenses</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {overviewData.map((client, idx) => {
+                      const hasFlags = !!client.flagsText;
+                      return (
+                        <tr key={idx} style={{
+                          borderBottom: "1px solid #eee",
+                          background: hasFlags ? "#fffde7" : idx % 2 === 0 ? "#fff" : "#fafafa",
+                        }}>
+                          <td style={{ padding: "8px 12px", verticalAlign: "top" }}>
+                            <div style={{ fontWeight: "600", fontSize: "13px", color: "#1a1a1a" }}>{client.clientName}</div>
+                            {hasFlags && (
+                              <div style={{ marginTop: "4px" }}>
+                                <button className="triage-btn" onClick={() => navigateToClientTriage(client.clientName)}
+                                  style={{ fontSize: "11px", color: "#c62828", background: "none", border: "1px solid #f5c6c6", borderRadius: "4px", padding: "2px 7px", cursor: "pointer" }}>
+                                  ⚠ {client.flagsText}
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                          <FeedbackCell seq={client.inv} />
+                          <FeedbackCell seq={client.crm} />
+                          <FeedbackCell seq={client.exp} />
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-            ) : overviewData.length === 0 ? (
-              <div style={{ padding: "40px", textAlign: "center", color: "#888" }}>No client data available. Click Refresh to load.</div>
-            ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-                <thead>
-                  <tr style={{ background: "#f8f8f8", borderBottom: "2px solid #e0e0e0" }}>
-                    <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "20%" }}>Client</th>
-                    <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "26%" }}>Invoices</th>
-                    <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "26%" }}>CRM</th>
-                    <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "26%" }}>Expenses</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {overviewData.map((client, idx) => {
-                    const hasFlags = !!client.flagsText;
-                    return (
-                      <tr key={idx} style={{
-                        borderBottom: "1px solid #eee",
-                        background: hasFlags ? "#fffde7" : idx % 2 === 0 ? "#fff" : "#fafafa",
-                      }}>
-                        <td style={{ padding: "8px 12px", verticalAlign: "top" }}>
-                          <div style={{ fontWeight: "600", fontSize: "13px", color: "#1a1a1a" }}>{client.clientName}</div>
-                          {hasFlags && (
-                            <div style={{ marginTop: "4px" }}>
-                              <button
-                                className="triage-btn"
-                                onClick={() => navigateToClientTriage(client.clientName)}
-                                style={{ fontSize: "11px", color: "#c62828", background: "none", border: "1px solid #f5c6c6", borderRadius: "4px", padding: "2px 7px", cursor: "pointer" }}
-                              >
-                                ⚠ {client.flagsText}
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                        <FeedbackCell seq={client.inv} />
-                        <FeedbackCell seq={client.crm} />
-                        <FeedbackCell seq={client.exp} />
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
+
+              {/* Mobile: card layout */}
+              <div className="overview-cards" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {overviewData.map((client, idx) => {
+                  const hasFlags = !!client.flagsText;
+                  return (
+                    <div key={idx} style={{
+                      background: hasFlags ? "#fffde7" : "#fff",
+                      border: `1px solid ${hasFlags ? "#f5c6a0" : "#e0e0e0"}`,
+                      borderRadius: "8px",
+                      padding: "12px 14px",
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: "#1a1a1a" }}>{client.clientName}</div>
+                        {hasFlags && (
+                          <button className="triage-btn" onClick={() => navigateToClientTriage(client.clientName)}
+                            style={{ fontSize: "11px", color: "#c62828", background: "none", border: "1px solid #f5c6c6", borderRadius: "4px", padding: "2px 7px", cursor: "pointer", flexShrink: 0, marginLeft: "8px" }}>
+                            ⚠ {client.flagsText}
+                          </button>
+                        )}
+                      </div>
+                      {[
+                        { label: "Invoices", seq: client.inv },
+                        { label: "CRM",      seq: client.crm },
+                        { label: "Expenses", seq: client.exp },
+                      ].map(({ label, seq }) => (
+                        <div key={label} style={{ display: "flex", gap: "8px", marginBottom: "5px", alignItems: "flex-start" }}>
+                          <div style={{ fontSize: "11px", fontWeight: "600", color: "#888", width: "60px", flexShrink: 0, paddingTop: "1px" }}>{label}</div>
+                          <div style={{ fontSize: "12px", color: "#444", flex: 1 }}>
+                            {seq ? (
+                              <>
+                                {seq.lastRunTime && <span style={{ fontWeight: "500", color: "#333" }}>{seq.lastRunTime} </span>}
+                                {seq.feedback && (
+                                  seq.feedback.raw ? (
+                                    <span style={{ color: "#666" }}>{seq.feedback.raw}</span>
+                                  ) : (
+                                    <span>
+                                      <span style={{ color: "#666" }}>Last: {seq.feedback.last ?? "—"}  Day: {seq.feedback.day ?? "—"}  Week: {seq.feedback.week ?? "—"} </span>
+                                      <span style={{ fontWeight: "600", color: seq.feedback.outcome?.toUpperCase() === "OK" ? "#2e7d32" : "#c62828" }}>| {seq.feedback.outcome}</span>
+                                    </span>
+                                  )
+                                )}
+                              </>
+                            ) : <span style={{ color: "#bbb" }}>—</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </div>
       </NavShell>
     );

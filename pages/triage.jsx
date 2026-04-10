@@ -2221,7 +2221,7 @@ export default function TriageSystem({ onBack }) {
                 No discrepancies detected. Your financial automation system is running smoothly!
               </div>
               <div style={styles.buttonGroup}>
-                <button className="triage-btn triage-btn-primary" onClick={startTriage} style={styles.button}>
+                <button className="triage-btn triage-btn-primary" onClick={refreshTriage} style={styles.button}>
                   ↻ Refresh
                 </button>
               </div>

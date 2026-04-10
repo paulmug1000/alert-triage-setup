@@ -54,7 +54,48 @@ const GLOBAL_STYLES = `
   .triage-client-card { transition: background 0.12s, border-color 0.12s, box-shadow 0.12s !important; }
   .triage-client-card:hover { background: #f0f4ff !important; border-color: #2196f3 !important; box-shadow: 0 2px 8px rgba(33,150,243,0.15) !important; }
   .triage-client-card:active { background: #e3ecff !important; transform: scale(0.995); }
+  .pulse-nav-item { transition: color 0.15s, border-color 0.15s !important; }
+  .pulse-nav-item:hover { color: #0066cc !important; }
 `;
+
+// Persistent top bar — rendered around every screen
+function NavShell({ activeNav, onHome, onOverview, children }) {
+  return (
+    <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
+      {/* Top identity bar */}
+      <div style={{ background: "#1a1a2e", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Triage System</span>
+      </div>
+      {/* Nav bar */}
+      <div style={{ background: "#fff", borderBottom: "1px solid #e0e0e0", padding: "0 20px", display: "flex", gap: "4px" }}>
+        <button
+          className="triage-btn pulse-nav-item"
+          onClick={onHome}
+          style={{
+            background: "none", border: "none", cursor: "pointer", padding: "12px 16px",
+            fontSize: "14px", fontWeight: activeNav === "home" ? "600" : "400",
+            color: activeNav === "home" ? "#0066cc" : "#444",
+            borderBottom: activeNav === "home" ? "2px solid #0066cc" : "2px solid transparent",
+            borderRadius: "0",
+          }}
+        >Home</button>
+        <button
+          className="triage-btn pulse-nav-item"
+          onClick={onOverview}
+          style={{
+            background: "none", border: "none", cursor: "pointer", padding: "12px 16px",
+            fontSize: "14px", fontWeight: activeNav === "overview" ? "600" : "400",
+            color: activeNav === "overview" ? "#0066cc" : "#444",
+            borderBottom: activeNav === "overview" ? "2px solid #0066cc" : "2px solid transparent",
+            borderRadius: "0",
+          }}
+        >Overview</button>
+      </div>
+      {/* Page content */}
+      <div>{children}</div>
+    </div>
+  );
+}
 
 export default function TriageSystem({ onBack }) {
   const AUTOMATION_COMMANDER_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
@@ -95,6 +136,9 @@ export default function TriageSystem({ onBack }) {
   const [proactiveLoading, setProactiveLoading] = useState(false);
   const [proactiveLoaded, setProactiveLoaded] = useState(false);
   const [proactiveSelectedClient, setProactiveSelectedClient] = useState(null);
+  const [overviewData, setOverviewData] = useState([]);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [activeNav, setActiveNav] = useState("home"); // "home" | "overview"
 
   // Inject global button/interaction styles once on mount, and set page title/favicon
   useEffect(() => {
@@ -924,6 +968,79 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
+  const loadOverview = async () => {
+    try {
+      setOverviewLoading(true);
+      const response = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_overview", automationCommanderSheetId }),
+      });
+      const data = await response.json();
+      if (data.success) setOverviewData(data.clients || []);
+    } catch (err) {
+      console.error("Failed to load overview:", err);
+    } finally {
+      setOverviewLoading(false);
+    }
+  };
+
+  // Navigate to a client's triage from the Overview screen
+  const navigateToClientTriage = async (clientName) => {
+    setActiveNav("home");
+    setScreen("initial");
+    setIsLoading(true);
+    try {
+      // Try precomputed first
+      const preResponse = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId }),
+      });
+      const preData = await preResponse.json();
+      let clientsData = [];
+      if (preData.success && preData.available) {
+        setSessionId(preData.sessionId);
+        setTotalAlerts(preData.totalAlerts || 0);
+        setNoActionCount(preData.noActionCount || 0);
+        setClientsWithFlags(preData.clientsWithFlags || []);
+        setAcknowledgedNoAction(new Set());
+        setProcessedAlerts(new Set());
+        if (preData.noActionAnalysisResults) setPrecomputedNoActionResults(preData.noActionAnalysisResults);
+        clientsData = preData.clientsWithFlags || [];
+      } else {
+        const response = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "start_triage", automationCommanderSheetId }),
+        });
+        const data = await response.json();
+        if (data.success) {
+          setSessionId(data.sessionId);
+          setTotalAlerts(data.totalAlerts || 0);
+          setNoActionCount(data.noActionCount || 0);
+          setClientsWithFlags(data.clientsWithFlags || []);
+          setAcknowledgedNoAction(new Set());
+          setProcessedAlerts(new Set());
+          clientsData = data.clientsWithFlags || [];
+        }
+      }
+      // Find and select the target client
+      const target = clientsData.find(c => c.clientName === clientName);
+      if (target) {
+        setIsLoading(false);
+        await selectClient(target);
+      } else {
+        setScreen("clientSelection");
+      }
+    } catch (err) {
+      setError(err.message);
+      setScreen("initial");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // AlertMemory: un-ignore an alert so it reappears in future triage runs
   const unignoreAlert = async (fingerprintHash) => {
     try {
@@ -1364,7 +1481,7 @@ export default function TriageSystem({ onBack }) {
   // Screen: Ignored Alerts
   if (screen === "ignoredAlerts") {
     return (
-      <>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Ignored Alerts</h1>
@@ -1420,7 +1537,7 @@ export default function TriageSystem({ onBack }) {
             </button>
           </div>
         </div>
-      </>
+      </NavShell>
     );
   }
 
@@ -1440,7 +1557,7 @@ export default function TriageSystem({ onBack }) {
     const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
     if (activeClients.length === 0) {
       return (
-        <>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
           <div style={styles.container}>
             <div style={styles.header}>
               <h1 style={styles.title}>All Done</h1>
@@ -1453,12 +1570,12 @@ export default function TriageSystem({ onBack }) {
               </button>
             </div>
           </div>
-        </>
+        </NavShell>
       );
     }
 
     return (
-      <>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Client</h1>
@@ -1633,7 +1750,7 @@ export default function TriageSystem({ onBack }) {
         </div>
 
         </div>
-      </>
+      </NavShell>
     );
   }
 
@@ -1649,7 +1766,7 @@ export default function TriageSystem({ onBack }) {
     };
 
     return (
-      <>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Proactive Alerts</h1>
@@ -1728,7 +1845,7 @@ export default function TriageSystem({ onBack }) {
             </div>
           </div>
         </div>
-      </>
+      </NavShell>
     );
   }
 
@@ -1747,7 +1864,7 @@ export default function TriageSystem({ onBack }) {
     const canProceed = allActionableDone && noActionDone;
 
     return (
-      <>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
@@ -2043,7 +2160,7 @@ export default function TriageSystem({ onBack }) {
           </div>
         </div>
         </div>
-      </>
+      </NavShell>
     );
   }
 
@@ -2077,7 +2194,7 @@ export default function TriageSystem({ onBack }) {
     ];
 
     return (
-      <>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Clear Flags</h1>
@@ -2164,17 +2281,118 @@ export default function TriageSystem({ onBack }) {
             </div>
           </div>
         </div>
-      </>
+      </NavShell>
+    );
+  }
+
+  // Nav handlers
+  const handleNavHome = () => { setActiveNav("home"); };
+  const handleNavOverview = () => {
+    setActiveNav("overview");
+    loadOverview();
+  };
+
+  // Overview screen
+  if (activeNav === "overview") {
+    const FeedbackCell = ({ seq }) => {
+      if (!seq) return <td style={{ padding: "8px 12px", color: "#bbb", fontSize: "12px" }}>—</td>;
+      const { lastRunTime, feedback } = seq;
+      const isOk = feedback?.outcome?.toUpperCase() === "OK";
+      const outcomeColor = isOk ? "#2e7d32" : "#c62828";
+      return (
+        <td style={{ padding: "8px 12px", verticalAlign: "top", minWidth: "140px" }}>
+          {lastRunTime && (
+            <div style={{ fontSize: "12px", color: "#555", marginBottom: "3px", fontWeight: "500" }}>
+              {lastRunTime}
+            </div>
+          )}
+          {feedback && (
+            feedback.raw ? (
+              <div style={{ fontSize: "11px", color: "#666" }}>{feedback.raw}</div>
+            ) : (
+              <div style={{ fontSize: "11px", lineHeight: "1.6" }}>
+                <span style={{ color: "#555" }}>Last: {feedback.last ?? "—"}</span>
+                <span style={{ color: "#555", margin: "0 6px" }}>Day: {feedback.day ?? "—"}</span>
+                <span style={{ color: "#555" }}>Week: {feedback.week ?? "—"}</span>
+                <span style={{ color: outcomeColor, fontWeight: "600", marginLeft: "6px" }}>| {feedback.outcome}</span>
+              </div>
+            )
+          )}
+        </td>
+      );
+    };
+
+    return (
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+        <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "24px 20px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+            <h2 style={{ fontSize: "22px", fontWeight: "700", color: "#1a1a1a", margin: 0 }}>Overview</h2>
+            <button className="triage-btn" onClick={loadOverview} disabled={overviewLoading}
+              style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "8px 16px", borderRadius: "6px", fontSize: "13px", cursor: "pointer" }}>
+              {overviewLoading ? <><Spinner size={12} />Refreshing...</> : "↻ Refresh"}
+            </button>
+          </div>
+          <div style={{ background: "#fff", border: "1px solid #e0e0e0", borderRadius: "8px", overflow: "hidden" }}>
+            {overviewLoading && overviewData.length === 0 ? (
+              <div style={{ padding: "40px", textAlign: "center", color: "#666" }}>
+                <Spinner size={24} color="#0066cc" /><div style={{ marginTop: "12px" }}>Loading overview...</div>
+              </div>
+            ) : overviewData.length === 0 ? (
+              <div style={{ padding: "40px", textAlign: "center", color: "#888" }}>No client data available. Click Refresh to load.</div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                <thead>
+                  <tr style={{ background: "#f8f8f8", borderBottom: "2px solid #e0e0e0" }}>
+                    <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "20%" }}>Client</th>
+                    <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "26%" }}>Invoices</th>
+                    <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "26%" }}>CRM</th>
+                    <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: "600", color: "#333", width: "26%" }}>Expenses</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {overviewData.map((client, idx) => {
+                    const hasFlags = !!client.flagsText;
+                    return (
+                      <tr key={idx} style={{
+                        borderBottom: "1px solid #eee",
+                        background: hasFlags ? "#fffde7" : idx % 2 === 0 ? "#fff" : "#fafafa",
+                      }}>
+                        <td style={{ padding: "8px 12px", verticalAlign: "top" }}>
+                          <div style={{ fontWeight: "600", fontSize: "13px", color: "#1a1a1a" }}>{client.clientName}</div>
+                          {hasFlags && (
+                            <div style={{ marginTop: "4px" }}>
+                              <button
+                                className="triage-btn"
+                                onClick={() => navigateToClientTriage(client.clientName)}
+                                style={{ fontSize: "11px", color: "#c62828", background: "none", border: "1px solid #f5c6c6", borderRadius: "4px", padding: "2px 7px", cursor: "pointer" }}
+                              >
+                                ⚠ {client.flagsText}
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                        <FeedbackCell seq={client.inv} />
+                        <FeedbackCell seq={client.crm} />
+                        <FeedbackCell seq={client.exp} />
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </NavShell>
     );
   }
 
   // Screen 1: Loading state (shown while startTriage runs on mount)
   if (!sessionId && !triageComplete) {
     return (
-      <>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
         <div style={styles.container}>
           <div style={styles.header}>
-            <h1 style={styles.title}>Alert Triage System</h1>
+            <h1 style={styles.title}>Automation Alerts</h1>
             <p style={styles.subtitle}>Review and resolve financial automation alerts</p>
           </div>
           <div style={styles.card}>
@@ -2196,13 +2414,14 @@ export default function TriageSystem({ onBack }) {
             )}
           </div>
         </div>
-      </>
+      </NavShell>
     );
   }
 
   // Screen 2: Triage complete with no alerts
   if (triageComplete && totalAlerts === 0 && noActionCount === 0) {
     return (
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>✓ All Clear</h1>
@@ -2234,6 +2453,7 @@ export default function TriageSystem({ onBack }) {
           )}
         </div>
       </div>
+      </NavShell>
     );
   }
 
@@ -2243,7 +2463,7 @@ export default function TriageSystem({ onBack }) {
     const progress = currentClientAlertIndex + 1;
 
     return (
-      <>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
@@ -2772,15 +2992,14 @@ export default function TriageSystem({ onBack }) {
           )}
         </div>
       </div>
-      </>
+      </NavShell>
     );
   }
-
-  // Screen 4: No-action alerts for acknowledgement
   if (showNoAction && noActionCount > 0) {
     const allAcknowledged = acknowledgedNoAction.size === noActionCount;
 
     return (
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Info-Only Alerts</h1>
@@ -2832,6 +3051,7 @@ export default function TriageSystem({ onBack }) {
           </div>
         </div>
       </div>
+      </NavShell>
     );
   }
 

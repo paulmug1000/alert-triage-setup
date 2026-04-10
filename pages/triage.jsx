@@ -97,6 +97,35 @@ function NavShell({ activeNav, onHome, onOverview, children }) {
   );
 }
 
+// Overview table cell showing run time and feedback metrics
+function FeedbackCell({ seq }) {
+  if (!seq) return <td style={{ padding: "8px 12px", color: "#bbb", fontSize: "12px" }}>—</td>;
+  const { lastRunTime, feedback } = seq;
+  const isOk = feedback?.outcome?.toUpperCase() === "OK";
+  const outcomeColor = isOk ? "#2e7d32" : "#c62828";
+  return (
+    <td style={{ padding: "8px 12px", verticalAlign: "top", minWidth: "140px" }}>
+      {lastRunTime && (
+        <div style={{ fontSize: "12px", color: "#555", marginBottom: "3px", fontWeight: "500" }}>
+          {lastRunTime}
+        </div>
+      )}
+      {feedback && (
+        feedback.raw ? (
+          <div style={{ fontSize: "11px", color: "#666" }}>{feedback.raw}</div>
+        ) : (
+          <div style={{ fontSize: "11px", lineHeight: "1.6" }}>
+            <span style={{ color: "#555" }}>Last: {feedback.last ?? "—"}</span>
+            <span style={{ color: "#555", margin: "0 6px" }}>Day: {feedback.day ?? "—"}</span>
+            <span style={{ color: "#555" }}>Week: {feedback.week ?? "—"}</span>
+            <span style={{ color: outcomeColor, fontWeight: "600", marginLeft: "6px" }}>| {feedback.outcome}</span>
+          </div>
+        )
+      )}
+    </td>
+  );
+}
+
 export default function TriageSystem({ onBack }) {
   const AUTOMATION_COMMANDER_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
   const [automationCommanderSheetId] = useState(AUTOMATION_COMMANDER_SHEET_ID);
@@ -2294,34 +2323,6 @@ export default function TriageSystem({ onBack }) {
 
   // Overview screen
   if (activeNav === "overview") {
-    const FeedbackCell = ({ seq }) => {
-      if (!seq) return <td style={{ padding: "8px 12px", color: "#bbb", fontSize: "12px" }}>—</td>;
-      const { lastRunTime, feedback } = seq;
-      const isOk = feedback?.outcome?.toUpperCase() === "OK";
-      const outcomeColor = isOk ? "#2e7d32" : "#c62828";
-      return (
-        <td style={{ padding: "8px 12px", verticalAlign: "top", minWidth: "140px" }}>
-          {lastRunTime && (
-            <div style={{ fontSize: "12px", color: "#555", marginBottom: "3px", fontWeight: "500" }}>
-              {lastRunTime}
-            </div>
-          )}
-          {feedback && (
-            feedback.raw ? (
-              <div style={{ fontSize: "11px", color: "#666" }}>{feedback.raw}</div>
-            ) : (
-              <div style={{ fontSize: "11px", lineHeight: "1.6" }}>
-                <span style={{ color: "#555" }}>Last: {feedback.last ?? "—"}</span>
-                <span style={{ color: "#555", margin: "0 6px" }}>Day: {feedback.day ?? "—"}</span>
-                <span style={{ color: "#555" }}>Week: {feedback.week ?? "—"}</span>
-                <span style={{ color: outcomeColor, fontWeight: "600", marginLeft: "6px" }}>| {feedback.outcome}</span>
-              </div>
-            )
-          )}
-        </td>
-      );
-    };
-
     return (
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
         <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "24px 20px" }}>

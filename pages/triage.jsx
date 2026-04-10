@@ -1671,7 +1671,7 @@ export default function TriageSystem({ onBack }) {
                         { label: "Invoices", seq: client.inv },
                         { label: "CRM",      seq: client.crm },
                         { label: "Expenses", seq: client.exp },
-                      ].map(({ label, seq }) => (
+                      ].filter(({ seq }) => seq && (seq.lastRunTime || seq.feedback)).map(({ label, seq }) => (
                         <div key={label} style={{ display: "flex", gap: "8px", marginBottom: "5px", alignItems: "flex-start" }}>
                           <div style={{ fontSize: "11px", fontWeight: "600", color: "#888", width: "60px", flexShrink: 0, paddingTop: "1px" }}>{label}</div>
                           <div style={{ fontSize: "12px", color: "#444", flex: 1 }}>

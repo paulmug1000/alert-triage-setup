@@ -3308,7 +3308,20 @@ Return ONLY JSON, no other text.`;
                 matchAnalysis: { matchConfidence: "N/A", reasonForChoice: invAmtText, discrepancies: `Invoice #${invoiceNo} amount mismatch` },
                 recommendedActions: [`Review invoice #${invoiceNo} manually`] }];
             }
-            return res.status(200).json({ success: true, options: invAmtOptions, alertId: alert.rowNumber });
+            // Write to AlertMemory cache
+            const invAmtSummary = alert.summary?.summary || `Invoice ${invoiceNo} £${grossAmount.toFixed(2)}`;
+            if (memoryRow) {
+              await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+                ...memoryRow, cachedOptionsJSON: JSON.stringify(invAmtOptions),
+              });
+            } else {
+              await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+                fingerprintHash, alertType: "invoice", clientName: alert.clientName || "",
+                alertSummary: invAmtSummary, cachedOptionsJSON: JSON.stringify(invAmtOptions), status: "cached",
+              });
+            }
+            console.log(`  💾 Inv amt mismatch options cached in AlertMemory`);
+            return res.status(200).json({ success: true, options: invAmtOptions, alertId: alert.rowNumber, previousIgnoreReason });
           }
         }
 

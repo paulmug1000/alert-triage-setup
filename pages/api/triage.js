@@ -3477,11 +3477,40 @@ Return ONLY the JSON array, no other text.`;
                 matchAnalysis: { matchConfidence: "N/A", reasonForChoice: invAmtText, discrepancies: `Invoice #${invoiceNo} amount mismatch` },
                 recommendedActions: [`Review invoice #${invoiceNo} manually`] }];
             }
-            // Inject jobName onto each option so the row re-verifier can find the job if rows shift
+            // Build slotBreakdown from pre-calculated allJobRows data — injected onto both options
+            // so the frontend can display the full invoice context without relying on Claude to enumerate it.
+            const slotBreakdownLines = [];
+            for (const { row, rowNum } of allJobRows) {
+              for (const { refIdx, amtIdx, slotNum, col } of INV_SLOTS) {
+                const ref = String(row[refIdx] || "").trim();
+                const rawAmt = row[amtIdx];
+                if (!ref && (rawAmt === undefined || rawAmt === "")) continue;
+                const isManual = ref.toUpperCase().startsWith("MANUAL-INV");
+                const isMatched = rowNum === matchedRowNum && slotNum === matchedSlot;
+                const amt = isMatched
+                  ? `£${correctAmount.toFixed(2)} (corrected from £${currentSlotAmt})`
+                  : rawAmt !== undefined && rawAmt !== ""
+                    ? `£${parseSlotAmt(rawAmt).toFixed(2)}`
+                    : "(no amount)";
+                const label = isManual ? `[MANUAL-INV]` : ref || "(blank ref)";
+                const tag = isMatched ? " ← this invoice" : "";
+                slotBreakdownLines.push(`Row ${rowNum} Inv${slotNum}: ${label} ${amt}${tag}`);
+              }
+            }
+            const slotBreakdown = {
+              lines: slotBreakdownLines,
+              correctedTotal: `£${newTotalInvoiced.toFixed(2)}`,
+              currentRevenue: `£${parentRevenue.toFixed(2)}`,
+              revenueRatio: `${revenueRatio.toFixed(1)}%`,
+            };
+
+            // Inject jobName and slotBreakdown onto each option so the row re-verifier can find
+            // the job if rows shift, and the frontend can display full invoice context.
             invAmtOptions = invAmtOptions.map(opt => ({
               ...opt,
               jobName: opt.jobName || jobName,
               jobRevenue: opt.jobRevenue || jobRevenue,
+              slotBreakdown,
             }));
             // Write to AlertMemory cache
             const invAmtSummary = alert.summary?.summary || `Invoice ${invoiceNo} £${grossAmount.toFixed(2)}`;

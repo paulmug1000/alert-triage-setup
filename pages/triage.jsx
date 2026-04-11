@@ -2752,6 +2752,19 @@ export default function TriageSystem({ onBack }) {
                             {option.explanation}
                           </div>
                         )}
+                        {option.slotBreakdown && option.slotBreakdown.lines && option.slotBreakdown.lines.length > 0 && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6", fontSize: "12px" }}>
+                            <strong style={{ color: "#1d4ed8", display: "block", marginBottom: "6px" }}>Invoice slots on this job:</strong>
+                            {option.slotBreakdown.lines.map((line, i) => (
+                              <div key={i} style={{ fontFamily: "monospace", color: line.includes("← this invoice") ? "#0f766e" : line.includes("MANUAL-INV") ? "#9333ea" : "#333", marginBottom: "2px", fontWeight: line.includes("← this invoice") ? "600" : "400" }}>
+                                {line}
+                              </div>
+                            ))}
+                            <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: "1px solid #bfdbfe", color: "#1e40af", fontWeight: "600" }}>
+                              New total invoiced: {option.slotBreakdown.correctedTotal} / Revenue: {option.slotBreakdown.currentRevenue} ({option.slotBreakdown.revenueRatio})
+                            </div>
+                          </div>
+                        )}
                         {option.revenueImpact && (
                           <div style={{ ...styles.optionDetail, marginTop: "6px", padding: "10px", backgroundColor: "#fef2f2", borderLeft: "3px solid #ef4444", fontSize: "13px", fontWeight: "500" }}>
                             ⚠ Revenue impact: {option.revenueImpact}

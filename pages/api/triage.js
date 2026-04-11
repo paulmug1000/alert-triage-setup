@@ -4977,9 +4977,10 @@ Return ONLY JSON, no other text.`;
         // Find the most recent row for this client where the relevant clear column = TRUE.
 
         const clearColForFlag = {
-          crmCopiedConfChecked:   [63, 66], // BL or BO
-          crmCopiedConfUnchecked: [63, 66], // BL or BO
+          crmCopiedConfChecked:    [63, 66], // BL or BO
+          crmCopiedConfUnchecked:  [63, 66], // BL or BO
           retainerInvoicesCreated: [61, 66], // BJ or BO
+          invoiceStaleUnsentChanges: [61, 66], // BJ (clear invoice) or BO (clear all)
         };
         const clearCols = clearColForFlag[flagType] || [66];
 
@@ -5772,6 +5773,77 @@ Return ONLY JSON, no other text.`;
           }
 
         } // end retainerInvoicesDeleted
+
+        // ── invoiceStaleUnsentChanges ──────────────────────────────────────
+        // Parse AutoLog entries where GAS moved stale unsent invoice dates.
+        // Format: "[Confirmed] Stale Invoice - Row N, CLIENT | JOB, Slot N: Date moved X -> Y"
+        // Returns one result per stale invoice entry found in the window.
+        if (flagType === "invoiceStaleUnsentChanges") {
+
+          const staleLogEntries = autoLogRows.filter(row => {
+            const details = String(row[3] || "");
+            return details.includes("Stale Invoice");
+          });
+          console.log(`  ✓ Found ${staleLogEntries.length} stale invoice entries in window`);
+
+          // Fall back to full AutoLog if nothing found in window
+          const staleEntriesToUse = staleLogEntries.length > 0 ? staleLogEntries :
+            allAutoLogRows.filter(row => String(row[3] || "").includes("Stale Invoice"));
+          if (staleLogEntries.length === 0 && staleEntriesToUse.length > 0) {
+            console.log(`  ↩ Fell back to full AutoLog — found ${staleEntriesToUse.length} stale entries`);
+          }
+
+          if (staleEntriesToUse.length === 0) {
+            results.push({
+              status: "info",
+              message: "No stale invoice entries found in AutoLog since flag was last cleared.",
+            });
+          } else {
+            // Each AutoLog row may contain multiple stale invoice lines in col D (details)
+            // Parse each line of the form:
+            // "[Confirmed] Stale Invoice - Row N, CLIENT | JOB, Slot N: Date moved DD-Mon-YY -> DD-Mon-YY"
+            const stalePattern = /\[([^\]]+)\]\s*Stale Invoice\s*[-–]\s*Row\s*(\d+),\s*([^|]+)\|\s*([^,\n]+),\s*Slot\s*(\d+):\s*Date moved\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
+
+            for (const entry of staleEntriesToUse) {
+              const details = String(entry[3] || "");
+              const timestamp = String(entry[0] || "");
+              let match;
+              while ((match = stalePattern.exec(details)) !== null) {
+                const tab       = match[1].trim();   // "Confirmed"
+                const rowNum    = match[2].trim();   // "118"
+                const jobClient = match[3].trim();   // "Shopify"
+                const jobName   = match[4].trim();   // "Mar 26 sales commission"
+                const slotNum   = match[5].trim();   // "1"
+                const oldDate   = match[6].trim();   // "28-Mar-26"
+                const newDate   = match[7].trim();   // "28-Apr-26"
+
+                results.push({
+                  status: "info",
+                  stale: true,
+                  tab,
+                  rowNum: parseInt(rowNum, 10),
+                  jobClient,
+                  jobName,
+                  slotNum: parseInt(slotNum, 10),
+                  oldDate,
+                  newDate,
+                  logTimestamp: timestamp,
+                  message: `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: date moved ${oldDate} → ${newDate}`,
+                });
+              }
+            }
+
+            if (results.length === 0) {
+              results.push({
+                status: "info",
+                message: "Stale invoice entries found in AutoLog but could not be parsed. Check the AutoLog tab manually.",
+              });
+            } else {
+              console.log(`  ✓ Parsed ${results.length} stale invoice entries`);
+            }
+          }
+
+        } // end invoiceStaleUnsentChanges
 
         const overallOk = results.every(r => r.status === "ok" || r.status === "info");
         console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);

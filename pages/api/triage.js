@@ -3301,6 +3301,91 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
             const currentSlotAmt = matchedSlot === 1 ? slot1.amt : matchedSlot === 2 ? slot2.amt : slot3.amt;
             const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
 
+            // Detect if this is a multi-row retainer (has child rows = Mode B retainer)
+            // Child rows: same client + job name as parent, but no revenue (AG/index 32), no start (AL/index 37)
+            const jobClientLower = jobClient.toLowerCase();
+            const jobNameLower   = jobName.toLowerCase();
+            const isMultiRowRetainer = isRetainer && (() => {
+              for (let ri = matchedRowNum; ri < invConfirmedRows.length; ri++) {
+                const r = invConfirmedRows[ri] || [];
+                const rClient = String(r[0] || "").trim().toLowerCase();
+                const rJob    = String(r[1] || "").trim().toLowerCase();
+                if (!rClient && !rJob) break;
+                if (rClient !== jobClientLower || rJob !== jobNameLower) break;
+                if (!String(r[32] || "").trim() && !String(r[37] || "").trim()) return true;
+              }
+              return false;
+            })();
+
+            // Find parent row for this job (the row with revenue in AG)
+            // The matched row may be a child row — scan upwards to find the parent
+            const isRealSlot = (ref) => {
+              const r = String(ref || "").trim();
+              return r && !r.toUpperCase().startsWith("MANUAL-INV");
+            };
+            const parseSlotAmt = (v) => parseFloat(String(v || "0").replace(/[£$€,]/g, "")) || 0;
+
+            let parentRowNum = matchedRowNum; // default: matched row is parent
+            let parentRevenue = parseSlotAmt(jobRevenue);
+            if (!String(matchedJob[32] || "").trim()) {
+              // Matched row has no revenue — scan upwards for parent
+              for (let ri = matchedRowNum - 2; ri >= 0; ri--) { // ri is 0-indexed in invConfirmedRows
+                const r = invConfirmedRows[ri] || [];
+                const rClient = String(r[0] || "").trim().toLowerCase();
+                const rJob    = String(r[1] || "").trim().toLowerCase();
+                if (rClient !== jobClientLower || rJob !== jobNameLower) break;
+                if (String(r[32] || "").trim()) { // has revenue
+                  parentRowNum = ri + 1; // 1-indexed
+                  parentRevenue = parseSlotAmt(String(r[32] || "").replace(/[£$€,]/g, ""));
+                  console.log(`  Found parent row at ${parentRowNum} for matched child row ${matchedRowNum}`);
+                  break;
+                }
+              }
+            }
+
+            // Sum ALL real invoice slots across ALL rows of this job (parent + children)
+            // replacing the matched slot with the correct amount
+            let newTotalInvoiced = 0;
+            let realInvoiceCount = 0;
+            // Collect all rows belonging to this job
+            const allJobRows = [];
+            // Find parent row index (0-indexed)
+            const parentIdx = parentRowNum - 1;
+            // Add parent row
+            if (invConfirmedRows[parentIdx]) allJobRows.push({ row: invConfirmedRows[parentIdx], rowNum: parentRowNum });
+            // Add child rows (scan downward from parent)
+            for (let ri = parentIdx + 1; ri < invConfirmedRows.length; ri++) {
+              const r = invConfirmedRows[ri] || [];
+              const rClient = String(r[0] || "").trim().toLowerCase();
+              const rJob    = String(r[1] || "").trim().toLowerCase();
+              if (!rClient && !rJob) break;
+              if (rClient !== jobClientLower || rJob !== jobNameLower) break;
+              if (String(r[32] || "").trim()) break; // another parent row
+              allJobRows.push({ row: r, rowNum: ri + 1 });
+            }
+
+            // Slot indices: Inv1 ref=42, amt=41; Inv2 ref=49, amt=48; Inv3 ref=56, amt=55
+            const INV_SLOTS = [
+              { refIdx: 42, amtIdx: 41, slotNum: 1, col: "AP" },
+              { refIdx: 49, amtIdx: 48, slotNum: 2, col: "AW" },
+              { refIdx: 56, amtIdx: 55, slotNum: 3, col: "BD" },
+            ];
+            for (const { row, rowNum } of allJobRows) {
+              for (const { refIdx, amtIdx, slotNum, col } of INV_SLOTS) {
+                const ref = String(row[refIdx] || "").trim();
+                if (!isRealSlot(ref)) continue;
+                // Use correct amount for the matched slot on the matched row
+                const amt = (rowNum === matchedRowNum && slotNum === matchedSlot)
+                  ? correctAmount
+                  : parseSlotAmt(row[amtIdx]);
+                newTotalInvoiced += amt;
+                realInvoiceCount++;
+              }
+            }
+
+            const revenueRatio = parentRevenue > 0 ? (newTotalInvoiced / parentRevenue) * 100 : 0;
+            console.log(`  Parent row: ${parentRowNum}, isMultiRowRetainer: ${isMultiRowRetainer}, realInvoices: ${realInvoiceCount}, newTotal: £${newTotalInvoiced.toFixed(2)}, revenue: £${parentRevenue.toFixed(2)}, ratio: ${revenueRatio.toFixed(1)}%`);
+
             const invAmtPrompt = `You are analysing an invoice amount mismatch between the accounting system and the dashboard.
 
 INVOICE FROM ACCOUNTING SYSTEM:
@@ -3314,47 +3399,69 @@ INVOICE FROM ACCOUNTING SYSTEM:
 • Status: ${invStatus}
 • Dashboard shows total: £${dashboardTotal.toFixed(2)}
 
-MATCHED JOB IN CONFIRMED TAB (Slot ${matchedSlot}, row ${matchedRowNum}):
+MATCHED JOB IN CONFIRMED TAB (Invoice in slot ${matchedSlot}, matched row ${matchedRowNum}, parent row ${parentRowNum}):
 ${jobSummary}
 ${retainerContext}
-The VAT scenarios (invoice with VAT/job no VAT, and invoice without VAT/job with VAT) have already been checked and ruled out.
-Rounding differences (< £1.00) have also been ruled out — this is a genuine amount discrepancy of £${amtDiff.toFixed(2)}.
+The VAT scenarios and rounding differences have already been ruled out — this is a genuine discrepancy of £${amtDiff.toFixed(2)}.
 
-The dashboard slot amount column is ${slotAmtCol}, currently showing £${currentSlotAmt}.
-The accounting system excl-VAT amount is £${correctAmount.toFixed(2)}.
+PRE-CALCULATED REVENUE IMPACT:
+• Corrected slot amount: £${correctAmount.toFixed(2)} (replacing £${currentSlotAmt} in ${slotAmtCol}${matchedRowNum})
+• After correction, new total invoiced across ALL job rows (real slots only) = £${newTotalInvoiced.toFixed(2)}
+• Real invoices on this job after correction = ${realInvoiceCount}
+• Current job revenue (col AG, parent row ${parentRowNum}) = £${parentRevenue.toFixed(2)}
+• New total as % of current revenue = ${revenueRatio.toFixed(1)}%
 
-YOUR TASK:
-1. Identify the most likely cause of the amount mismatch.
-2. Calculate the revenue impact of updating the slot to £${correctAmount.toFixed(2)}:
-   - Sum all REAL invoice slots (non-blank, non-MANUAL-INV refs) AFTER the update
-   - Compare to the job revenue (${jobRevenue})
-   - State clearly: "New total invoiced = £X. Job revenue = £Y. [Over/Under/Exactly matches]."
-3. Decide matchType:
-   - Use "existing_job" if the accounting system amount should be treated as authoritative (most cases where an invoice has been sent)
-   - Use "info" only if genuinely unclear which amount is correct (e.g. partial payment scenario)
-${isRetainer ? "4. For retainers: use the EFFECTIVE CONTRACT REVENUE (monthly × effective months) when assessing over/under-invoicing. Do NOT include placeholder (MANUAL-INV) slots in the total invoiced figure." : ""}
+YOUR TASK — provide EXACTLY TWO options:
 
-Format as JSON array:
-[{
-  "optionId": 1,
-  "title": "Brief description of the issue and recommended action",
-  "matchType": "existing_job" or "info",
-  "jobRow": ${matchedRowNum},
-  "explanation": "Detailed explanation including the revenue impact analysis",
-  "revenueImpact": "New total invoiced = £X. Job revenue = £Y. [Over by £Z — consider updating revenue / Under by £Z — gap remains / Exactly matches].",
-  "recommendedActions": [
-    "Plain English summary of what will be done",
-    "write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount)"
-  ]
-}]
+OPTION 1: Update slot amount only
+Write the corrected amount to the slot. Revenue stays unchanged.
+Assess confidence: is the accounting system amount likely authoritative?
 
-IMPORTANT: If matchType is "existing_job", recommendedActions item 2 MUST be in the exact format "write VALUE to CELLREF (description)" so the system can execute the write automatically.
+OPTION 2: Update slot amount AND update job revenue to match new total invoiced${isMultiRowRetainer ? `
+⚠ This is a multi-row retainer. Option 2 MUST have matchType "info" with explanation that revenue adjustment is not applicable for multi-row retainers — the monthly revenue figure should not be changed.` : `
+Write corrected slot amount AND update revenue in AG${parentRowNum} to £${newTotalInvoiced.toFixed(2)}.
+Assess confidence based on:
+- Number of real invoices (${realInvoiceCount}): more = higher confidence revenue needs updating
+- % of revenue (${revenueRatio.toFixed(1)}%): >110% = very high (over-invoiced, must update); 90-110% = high; 75-90% = medium; <75% = low
+- If new total exactly equals current revenue: very high confidence`}
 
-Return ONLY JSON, no other text.`;
+Format as JSON array with EXACTLY 2 options:
+[
+  {
+    "optionId": 1,
+    "title": "Update slot amount only — [brief reason]",
+    "matchType": "existing_job",
+    "jobRow": ${matchedRowNum},
+    "confidence": "High/Medium/Low",
+    "explanation": "Brief explanation of the mismatch cause",
+    "revenueImpact": "New total invoiced = £${newTotalInvoiced.toFixed(2)}. Job revenue = £${parentRevenue.toFixed(2)}. [Assessment].",
+    "recommendedActions": [
+      "Update invoice #${invoiceNo} amount from £${currentSlotAmt} to £${correctAmount.toFixed(2)} in the dashboard",
+      "write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount)"
+    ]
+  },
+  {
+    "optionId": 2,
+    "title": "${isMultiRowRetainer ? "Revenue adjustment not applicable for multi-row retainer" : `Update slot amount and adjust revenue to £${newTotalInvoiced.toFixed(2)}`}",
+    "matchType": "${isMultiRowRetainer ? "info" : "existing_job"}",
+    "jobRow": ${matchedRowNum},
+    "confidence": "${isMultiRowRetainer ? "N/A" : "High/Medium/Low — set based on % ratio above"}",
+    "explanation": "${isMultiRowRetainer ? "For multi-row retainers, the revenue figure represents the monthly amount and should not be adjusted to match total invoiced." : "Explanation of why revenue may need updating"}",
+    "revenueImpact": "New total invoiced = £${newTotalInvoiced.toFixed(2)}. Job revenue = £${parentRevenue.toFixed(2)}. [Assessment].",
+    "recommendedActions": [
+      "${isMultiRowRetainer ? `Review revenue for this retainer job manually` : `Update invoice #${invoiceNo} amount and adjust job revenue to £${newTotalInvoiced.toFixed(2)}`}",
+      "${isMultiRowRetainer ? "" : `write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount), write ${newTotalInvoiced.toFixed(2)} to AG${parentRowNum} (job revenue)`}"
+    ]
+  }
+]
+
+IMPORTANT: For "existing_job" options, recommendedActions item 2 MUST follow the exact format "write VALUE to CELLREF (description)" or "write VALUE to CELLREF (desc), write VALUE to CELLREF (desc)" for multiple writes. The system uses this to execute writes automatically.
+
+Return ONLY the JSON array, no other text.`;
 
             const invAmtMessage = await anthropic.messages.create({
               model: "claude-sonnet-4-20250514",
-              max_tokens: 1000,
+              max_tokens: 1500,
               messages: [{ role: "user", content: invAmtPrompt }],
             });
 
@@ -3370,6 +3477,12 @@ Return ONLY JSON, no other text.`;
                 matchAnalysis: { matchConfidence: "N/A", reasonForChoice: invAmtText, discrepancies: `Invoice #${invoiceNo} amount mismatch` },
                 recommendedActions: [`Review invoice #${invoiceNo} manually`] }];
             }
+            // Inject jobName onto each option so the row re-verifier can find the job if rows shift
+            invAmtOptions = invAmtOptions.map(opt => ({
+              ...opt,
+              jobName: opt.jobName || jobName,
+              jobRevenue: opt.jobRevenue || jobRevenue,
+            }));
             // Write to AlertMemory cache
             const invAmtSummary = alert.summary?.summary || `Invoice ${invoiceNo} £${grossAmount.toFixed(2)}`;
             if (memoryRow) {

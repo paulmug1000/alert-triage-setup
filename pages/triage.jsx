@@ -1273,9 +1273,12 @@ export default function TriageSystem({ onBack }) {
         body: JSON.stringify({ action: "get_proactive_alerts", automationCommanderSheetId }),
       });
       const data = await response.json();
+      console.log(`📋 get_proactive_alerts response: success=${data.success}, alerts=${data.alerts?.length ?? "none"}, countsByClient=${JSON.stringify(data.countsByClient)}`);
       if (data.success) {
         setProactiveAlerts(data.alerts || []);
         setProactiveCountsByClient(data.countsByClient || {});
+      } else {
+        console.error(`📋 get_proactive_alerts failed: ${data.error}`);
       }
       setProactiveLoadedAt(Date.now());
     } catch (err) {
@@ -1284,6 +1287,16 @@ export default function TriageSystem({ onBack }) {
       setProactiveLoading(false);
     }
   };
+
+  // When on All Clear screen and proactive alerts finish loading, redirect to clientSelection
+  useEffect(() => {
+    if (triageComplete && totalAlerts === 0 && noActionCount === 0
+        && proactiveLoadedAt > 0 && proactiveAlerts.length > 0
+        && activeNav !== "tasks" && activeNav !== "overview") {
+      console.log(`📋 Proactive alerts loaded (${proactiveAlerts.length}), redirecting to clientSelection`);
+      setScreen("clientSelection");
+    }
+  }, [proactiveAlerts, proactiveLoadedAt]);
 
   const acknowledgeProactiveAlert = async (alertKey) => {
     try {
@@ -2880,12 +2893,6 @@ export default function TriageSystem({ onBack }) {
     // Load proactive alerts if not already loaded or stale
     if (!proactiveLoading && (Date.now() - proactiveLoadedAt > 5 * 60 * 1000)) {
       loadProactiveAlerts();
-    }
-    // If proactive alerts exist, go straight to clientSelection so they appear normally
-    if (proactiveLoadedAt > 0 && proactiveAlerts.length > 0) {
-      setScreen("clientSelection");
-      // Return null briefly while screen state updates — avoids flash
-      return null;
     }
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>

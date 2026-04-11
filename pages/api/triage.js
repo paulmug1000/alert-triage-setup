@@ -4263,7 +4263,7 @@ Use EXACT column letters from the slot reference table above.
 Format as JSON array:
 [{
   "optionId": 1,
-  "title": "Brief descriptive title",
+  "title": "Brief descriptive title — for missing invoice placements, title MUST follow this exact format: 'Place in [job name] invoice position [N] (Row [R] Slot [S]) — [match description]'. Invoice position N = the sequential position of the target slot counting through ALL slots across ALL rows of the job in order (parent row slots 1/2/3 = positions 1/2/3, first child row slots 1/2/3 = positions 4/5/6, second child row slots 1/2/3 = positions 7/8/9, etc). Example: 'Place in Fix8 project invoice position 4 (Row 264 Slot 1) — exact amount and date match'",
   "jobRow": 52,
   "jobName": "Job Name",
   "facts": {

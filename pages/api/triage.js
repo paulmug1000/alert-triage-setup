@@ -3867,38 +3867,133 @@ Return ONLY the JSON array, no other text.`;
           }
 
           // ── Build slot match context block for Claude (if Signal B found) ──
-          // This is injected into the prompt so Claude can reason about both signals together.
+          // Group matches by job (client + jobName) so Claude sees the COMPLETE picture
+          // for each candidate job — all matching slots AND all other slots on the same job.
+          // This prevents Claude treating parent and child rows as separate jobs.
           let slotMatchContext = "";
           if (hasSlotMatches) {
-            const slotMatchLines = slotMatches.map(m => {
-              const dateNote = m.dateMatch === true  ? `sent date ${m.slotDate} ✓ within ${invMonthsTol}-month tolerance`
-                             : m.dateMatch === false ? `sent date ${m.slotDate} ✗ outside ${invMonthsTol}-month tolerance`
-                             : `no sent date recorded`;
-              const amtNote = isForeignCurrency
-                ? `amount £${m.slotAmt.toFixed(2)} within 10% of invoice £${invoiceAmtForMatch.toFixed(2)}`
-                : `amount £${m.slotAmt.toFixed(2)} within 5p of invoice £${invoiceAmtForMatch.toFixed(2)}`;
-              const slotType = m.isManual ? "MANUAL-INV placeholder" : "blank-ref placeholder";
-              return `Row ${m.rowNum} Inv${m.slotNum} (${slotType}): ${m.client} | ${m.jobName}${m.projectCode ? ` (${m.projectCode})` : ""} | Revenue: ${m.revenue} | ${amtNote} | ${dateNote}`;
-            }).join("\n");
+            // Group all slot matches by job key
+            const jobGroups = new Map(); // key = "client||jobName"
+            for (const m of slotMatches) {
+              const key = `${m.client}||${m.jobName}`;
+              if (!jobGroups.has(key)) {
+                jobGroups.set(key, {
+                  client: m.client, jobName: m.jobName,
+                  projectCode: m.projectCode, revenue: m.revenue,
+                  matchingSlots: [], parentRow: null,
+                });
+              }
+              jobGroups.get(key).matchingSlots.push(m);
+            }
 
-            const toleranceNote = isForeignCurrency
-              ? `(Foreign currency invoice — ${invoiceCurrency} vs primary ${primaryCurrency} — amount tolerance is 10%)`
-              : `(Domestic currency — amount tolerance is 5p)`;
+            // For each matched job, also collect ALL slots across ALL rows of that job
+            // (parent + children) from activeData so Claude sees the full invoice picture
+            const jobContextLines = [];
+            for (const [key, group] of jobGroups) {
+              const clientNorm = group.client.toLowerCase();
+              const jobNorm    = group.jobName.toLowerCase();
+
+              // Find parent row (has revenue) and all child rows for this job
+              const allJobRows = [];
+              let parentRevenue = group.revenue;
+              let parentStart = '', parentEnd = '', parentVAT = '', parentType = '';
+              let parentRowNum = null;
+              for (let ri = 1; ri < activeData.length; ri++) {
+                const r = activeData[ri] || [];
+                const rc = String(r[0] || "").trim().toLowerCase();
+                const rj = String(r[1] || "").trim().toLowerCase();
+                // Match on either explicit client/job OR inherited (blank) client/job after parent found
+                const directMatch = rc === clientNorm && rj === jobNorm;
+                const childInherited = allJobRows.length > 0 && !r[0] && !r[1]; // blank = child continuation
+                if (!directMatch && !childInherited) continue;
+                const sheetRow = ri + 1; // activeData[0]=header=row1, ri=1→row2
+                const hasRevenue = !!(String(r[32] || "").trim());
+                if (directMatch && hasRevenue && parentRowNum === null) {
+                  parentRowNum = sheetRow;
+                  parentRevenue = String(r[32] || "").trim();
+                  parentStart   = String(r[37] || "").trim();
+                  parentEnd     = String(r[38] || "").trim();
+                  parentVAT     = String(r[34] || "").trim();
+                  parentType    = String(r[35] || "").trim();
+                }
+                allJobRows.push({ row: r, sheetRow, isParent: directMatch && hasRevenue });
+              }
+
+              // Build complete slot picture across all job rows
+              const allSlotLines = [];
+              for (const { row: r, sheetRow, isParent } of allJobRows) {
+                const rowLabel = isParent ? "parent" : "child";
+                const slotDefs = [
+                  { amtIdx:41, refIdx:42, sentIdx:43, slotNum:1 },
+                  { amtIdx:48, refIdx:49, sentIdx:50, slotNum:2 },
+                  { amtIdx:55, refIdx:56, sentIdx:57, slotNum:3 },
+                ];
+                for (const sd of slotDefs) {
+                  const ref    = String(r[sd.refIdx] || "").trim();
+                  const rawAmt = r[sd.amtIdx];
+                  const slotDate = String(r[sd.sentIdx] || "").trim();
+                  const amt    = rawAmt !== undefined && rawAmt !== "" ? parseFloat(String(rawAmt).replace(/[£$€,]/g,"")) || 0 : null;
+                  const isManual  = ref.toUpperCase().startsWith("MANUAL-INV");
+                  const isReal    = ref && !isManual;
+                  const isEmpty   = !ref && (amt === null || amt === 0);
+
+                  // Is this one of the backend-matched slots?
+                  const isMatched = group.matchingSlots.some(m => m.rowNum === sheetRow && m.slotNum === sd.slotNum);
+
+                  let slotDesc;
+                  if (isEmpty) {
+                    slotDesc = "(empty)";
+                  } else if (isReal) {
+                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [REAL — do not overwrite]`;
+                  } else if (isManual) {
+                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [MANUAL-INV placeholder]`;
+                  } else {
+                    // Blank-ref placeholder
+                    const dateResult = dateWithinTolerance(slotDate);
+                    const dateTag = dateResult === true
+                      ? `date ${slotDate} ✓ matches invoice (diff: ${Math.abs((parseConfirmedDate(slotDate) - invSentDateParsed) / (1000*60*60*24*30.4)).toFixed(1)} months)`
+                      : dateResult === false
+                        ? `date ${slotDate} ✗ outside tolerance (diff: ${Math.abs((parseConfirmedDate(slotDate) - invSentDateParsed) / (1000*60*60*24*30.4)).toFixed(1)} months)`
+                        : "no date";
+                    slotDesc = `[blank-ref placeholder] £${amt?.toFixed(2) || "?"} ${dateTag}${isMatched ? " ← AMOUNT MATCHES THIS INVOICE" : ""}`;
+                  }
+                  allSlotLines.push(`    Row ${sheetRow} (${rowLabel}) Inv${sd.slotNum}: ${slotDesc}`);
+                }
+              }
+
+              const matchCount = group.matchingSlots.length;
+              const bestDateMatch = group.matchingSlots.some(m => m.dateMatch === true);
+              const toleranceNote = isForeignCurrency
+                ? `10% foreign currency tolerance`
+                : `5p domestic tolerance`;
+
+              jobContextLines.push(
+                `JOB: ${group.client} | ${group.jobName}${group.projectCode ? ` (${group.projectCode})` : ""} | Revenue: ${parentRevenue}${parentType ? ` | Type: ${parentType}` : ""}${parentStart ? ` | ${parentStart}→${parentEnd}` : ""}
+  ${matchCount} slot(s) with amount matching invoice £${invoiceAmtForMatch.toFixed(2)} (${toleranceNote}) — date ${bestDateMatch ? "✓ at least one slot within tolerance" : "✗ no slot within date tolerance"}
+  ALL SLOTS FOR THIS JOB (${allJobRows.length} row${allJobRows.length > 1 ? "s" : ""} = ${allJobRows.length * 3} slots total — parent + child rows combined):
+${allSlotLines.join("\n")}`
+              );
+            }
+
+            const toleranceHeader = isForeignCurrency
+              ? `(Foreign currency — ${invoiceCurrency} vs primary ${primaryCurrency} — amount tolerance 10%)`
+              : `(Domestic currency — amount tolerance 5p, date tolerance ±${invMonthsTol} months)`;
 
             slotMatchContext = `
-AMOUNT/DATE PLACEHOLDER MATCHES FOUND — PRE-COMPUTED BY BACKEND ${toleranceNote}:
-The following non-real invoice slots have an amount that matches this invoice within tolerance.
-These are strong candidates for this invoice — the placeholder was likely created in anticipation of this exact invoice.
-A date match (✓) increases confidence; a date mismatch (✗) or missing date reduces it.
+PLACEHOLDER SLOT MATCHES — PRE-COMPUTED BY BACKEND ${toleranceHeader}:
+The backend found non-real invoice slots whose amounts match this invoice within tolerance.
+CRITICAL: Parent and child rows below belong to the SAME JOB — treat them as a single unit with up to ${3 * (slotMatches[0] ? (jobGroups.get(`${slotMatches[0].client}||${slotMatches[0].jobName}`)?.matchingSlots?.length || 1) : 1)} slots total.
+Invoice amount to place: £${invoiceAmtForMatch.toFixed(2)}, sent date: ${sentDate || "unknown"}
 
-${slotMatchLines}
+${jobContextLines.join("\n\n")}
 
-When assessing these candidates, consider:
-- Amount match is confirmed by the backend — treat it as reliable
-- Date match/mismatch is supporting evidence only; date mismatches reduce but do not eliminate confidence
-- Client name may differ from invoice client (parent/subsidiary relationships are common)
-- If a slot match and a client-name match point to the same job, confidence is very high
-- Present each distinct slot match candidate as a separate option if confidence levels differ materially`;
+INSTRUCTIONS FOR USING THESE MATCHES:
+- Slots marked "← AMOUNT MATCHES THIS INVOICE" are the backend-confirmed candidates
+- A slot with both amount match AND date match (✓) is the most likely target
+- A slot with amount match but date mismatch (✗) is still a valid option, with lower confidence — state the actual date difference
+- NEVER describe a date-tolerance match as "exact" — state the actual difference in months
+- The job's total revenue is split across ALL slots (parent + child rows combined)
+- When recommending a slot, use the actual sheet row number shown (e.g. Row 263 or Row 264)`;
           }
 
           // Inject both signals into the prompt via a pre-analysis block that Claude receives

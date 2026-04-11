@@ -60,7 +60,7 @@ const GLOBAL_STYLES = `
 `;
 
 // Persistent top bar — rendered around every screen
-function NavShell({ activeNav, onHome, onOverview, children }) {
+function NavShell({ activeNav, onHome, onOverview, onTasks, children }) {
   return (
     <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
       {/* Top identity bar */}
@@ -91,6 +91,17 @@ function NavShell({ activeNav, onHome, onOverview, children }) {
             borderRadius: "0",
           }}
         >Overview</button>
+        <button
+          className="triage-btn pulse-nav-item"
+          onClick={onTasks}
+          style={{
+            background: "none", border: "none", cursor: "pointer", padding: "12px 16px",
+            fontSize: "14px", fontWeight: activeNav === "tasks" ? "600" : "400",
+            color: activeNav === "tasks" ? "#0066cc" : "#444",
+            borderBottom: activeNav === "tasks" ? "2px solid #0066cc" : "2px solid transparent",
+            borderRadius: "0",
+          }}
+        >Tasks</button>
       </div>
       {/* Page content */}
       <div>{children}</div>
@@ -170,11 +181,275 @@ export default function TriageSystem({ onBack }) {
   const [proactiveSelectedClient, setProactiveSelectedClient] = useState(null);
   const [overviewData, setOverviewData] = useState([]);
   const [overviewLoading, setOverviewLoading] = useState(false);
-  const [activeNav, setActiveNav] = useState("home"); // "home" | "overview"
+  const [activeNav, setActiveNav] = useState("home"); // "home" | "overview" | "tasks"
+
+  // ── Tasks state ───────────────────────────────────────────────────────────
+  const [tasks, setTasks] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [tasksFilter, setTasksFilter] = useState("active"); // "active" | "snoozed" | "resolved"
+  const [selectedTask, setSelectedTask] = useState(null); // task object when viewing detail
+  const [taskDetailOptions, setTaskDetailOptions] = useState([]); // parsed options for selected task
+  const [taskDetailAnalyzing, setTaskDetailAnalyzing] = useState(false);
+  const [taskNoteInput, setTaskNoteInput] = useState("");
+  const [taskNoteSubmitting, setTaskNoteSubmitting] = useState(false);
+  const [showTaskModal, setShowTaskModal] = useState(false); // "create task" modal
+  const [taskModalNote, setTaskModalNote] = useState("");
+  const [taskModalSubmitting, setTaskModalSubmitting] = useState(false);
+  const [taskModalAlert, setTaskModalAlert] = useState(null); // alert being turned into task
+  const [taskModalIsProactive, setTaskModalIsProactive] = useState(false);
+  const [taskSnoozeDate, setTaskSnoozeDate] = useState(""); // ISO date string for snooze
+  const [taskSnoozeTime, setTaskSnoozeTime] = useState("09:00");
+  const [taskSnoozeSubmitting, setTaskSnoozeSubmitting] = useState(false);
+  const [taskActionError, setTaskActionError] = useState("");
+  const [existingTaskBanner, setExistingTaskBanner] = useState(null); // {task, dataChanged}
+  const [existingTaskChecking, setExistingTaskChecking] = useState(false);
 
   // Nav handlers — defined early so they're available throughout the render
   const handleNavHome = () => { setActiveNav("home"); };
   const handleNavOverview = () => { setActiveNav("overview"); loadOverview(); };
+  const handleNavTasks = () => { setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active"); };
+
+  // ── Task handlers ─────────────────────────────────────────────────────────
+
+  const loadTasks = async (filter = "active") => {
+    try {
+      setTasksLoading(true);
+      setTaskActionError("");
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId, filter }),
+      });
+      const data = await res.json();
+      if (data.success) setTasks(data.tasks || []);
+      else setTaskActionError(data.error || "Failed to load tasks");
+    } catch (e) {
+      setTaskActionError(e.message);
+    } finally {
+      setTasksLoading(false);
+    }
+  };
+
+  // Open the "Create task" modal for an alert (automation or proactive)
+  const openCreateTaskModal = (alert, isProactive = false) => {
+    setTaskModalAlert(alert);
+    setTaskModalIsProactive(isProactive);
+    setTaskModalNote("");
+    setShowTaskModal(true);
+    setTaskActionError("");
+  };
+
+  const submitCreateTask = async () => {
+    if (!taskModalAlert) return;
+    try {
+      setTaskModalSubmitting(true);
+      setTaskActionError("");
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create_task",
+          alert: taskModalAlert,
+          taskNote: taskModalNote,
+          automationCommanderSheetId,
+          isProactive: taskModalIsProactive,
+          proactiveAlertKey: taskModalIsProactive ? taskModalAlert.alertKey : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setTaskActionError(data.error || "Failed to create task");
+        return;
+      }
+      setShowTaskModal(false);
+      setTaskModalNote("");
+
+      // Remove alert from active list (same as ignore/accept)
+      if (!taskModalIsProactive) {
+        const alert = taskModalAlert;
+        const alertId = `${alert.sheetName}-${alert.rowNumber}`;
+        setProcessedAlerts(prev => new Set([...prev, alertId]));
+        if (sessionId) {
+          fetch("/api/triage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
+          }).catch(() => {});
+        }
+        const updatedAlerts = clientAlerts.filter(a => `${a.sheetName}-${a.rowNumber}` !== alertId);
+        setClientAlerts(updatedAlerts);
+        const taskFlagType = alert.flagType || alert.type || "";
+        setClientsWithFlags(prev => prev.map(c => {
+          if (c.clientName !== selectedClient?.clientName) return c;
+          const updatedCounts = { ...c.alertCounts };
+          if (updatedCounts[taskFlagType] > 0) updatedCounts[taskFlagType]--;
+          return { ...c, alertCounts: updatedCounts };
+        }));
+        if (updatedAlerts.length === 0) {
+          if (allNoActionResolved()) { setFlagsToClear(computeFlagGroups(selectedClient, [])); setScreen("clearFlags"); }
+          else setScreen("alertSelection");
+        } else {
+          setScreen("alertSelection");
+        }
+      } else {
+        // Proactive: remove from proactive list
+        setProactiveAlerts(prev => {
+          const remaining = prev.filter(a => a.alertKey !== taskModalAlert.alertKey);
+          const counts = {};
+          remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+          setProactiveCountsByClient(counts);
+          return remaining;
+        });
+      }
+    } catch (e) {
+      setTaskActionError(e.message);
+    } finally {
+      setTaskModalSubmitting(false);
+    }
+  };
+
+  // Open a task for detail view
+  const openTask = async (task) => {
+    setSelectedTask(task);
+    setTaskDetailOptions([]);
+    setTaskActionError("");
+    setTaskNoteInput("");
+    setTaskSnoozeDate("");
+    setTaskSnoozeTime("09:00");
+
+    // Parse cached options
+    if (task.cachedOptionsJSON) {
+      try {
+        const opts = JSON.parse(task.cachedOptionsJSON);
+        if (Array.isArray(opts) && opts.length > 0 && opts[0].title) {
+          setTaskDetailOptions(opts);
+          return;
+        }
+      } catch (e) {}
+    }
+
+    // If no cached options but we have alert data, re-analyze
+    if (task.alertDataJSON) {
+      try {
+        const alertObj = JSON.parse(task.alertDataJSON);
+        setTaskDetailAnalyzing(true);
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "analyze_alert", alert: alertObj, automationCommanderSheetId }),
+        });
+        const data = await res.json();
+        if (data.success && data.options) setTaskDetailOptions(data.options);
+      } catch (e) {
+        console.error("Failed to re-analyze task alert:", e);
+      } finally {
+        setTaskDetailAnalyzing(false);
+      }
+    }
+  };
+
+  const submitTaskNote = async () => {
+    if (!selectedTask || !taskNoteInput.trim()) return;
+    try {
+      setTaskNoteSubmitting(true);
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add_task_note",
+          fingerprintHash: selectedTask.fingerprintHash,
+          noteText: taskNoteInput.trim(),
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const newNote = { text: taskNoteInput.trim(), timestamp: new Date().toISOString() };
+        setSelectedTask(prev => ({ ...prev, furtherNotes: [...(prev.furtherNotes || []), newNote] }));
+        setTasks(prev => prev.map(t => t.fingerprintHash === selectedTask.fingerprintHash
+          ? { ...t, furtherNotes: [...(t.furtherNotes || []), newNote] } : t));
+        setTaskNoteInput("");
+      } else setTaskActionError(data.error || "Failed to add note");
+    } catch (e) { setTaskActionError(e.message); }
+    finally { setTaskNoteSubmitting(false); }
+  };
+
+  const submitSnoozeTask = async () => {
+    if (!selectedTask || !taskSnoozeDate) return;
+    const snoozedUntil = `${taskSnoozeDate}T${taskSnoozeTime}:00`;
+    try {
+      setTaskSnoozeSubmitting(true);
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "snooze_task",
+          fingerprintHash: selectedTask.fingerprintHash,
+          snoozedUntil,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTasks(prev => prev.filter(t => t.fingerprintHash !== selectedTask.fingerprintHash));
+        setSelectedTask(null);
+      } else setTaskActionError(data.error || "Failed to snooze task");
+    } catch (e) { setTaskActionError(e.message); }
+    finally { setTaskSnoozeSubmitting(false); }
+  };
+
+  const resolveTask = async (fingerprintHash) => {
+    try {
+      setTaskActionError("");
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resolve_task", fingerprintHash, automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
+        if (selectedTask?.fingerprintHash === fingerprintHash) setSelectedTask(null);
+      } else setTaskActionError(data.error || "Failed to resolve task");
+    } catch (e) { setTaskActionError(e.message); }
+  };
+
+  // Accept an option from within the task detail view
+  const acceptTaskOption = async (option) => {
+    if (!selectedTask?.alertDataJSON) return;
+    try {
+      const alertObj = JSON.parse(selectedTask.alertDataJSON);
+      setIsAccepting(true);
+      setTaskActionError("");
+      const action = option.matchType === "delete" ? "delete_job" : "accept_option";
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, alert: alertObj, option, automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (!data.success) { setTaskActionError(`Failed: ${data.error || "Unknown error"}`); return; }
+      // Mark task as resolved
+      await resolveTask(selectedTask.fingerprintHash);
+    } catch (e) { setTaskActionError(e.message); }
+    finally { setIsAccepting(false); }
+  };
+
+  // Check if incoming alert has existing task (called from analyzeAlert)
+  const checkExistingTask = async (alert) => {
+    try {
+      setExistingTaskChecking(true);
+      setExistingTaskBanner(null);
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "check_existing_task", alert, automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success && data.found) setExistingTaskBanner(data.task);
+    } catch (e) { /* silent */ }
+    finally { setExistingTaskChecking(false); }
+  };
 
   // Inject global button/interaction styles once on mount, and set page title/favicon
   useEffect(() => {
@@ -634,6 +909,9 @@ export default function TriageSystem({ onBack }) {
       setPreviousIgnoreReason(data.previousIgnoreReason || "");
       setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
       setIsAnalyzing(false);
+
+      // Check for existing task (fire-and-forget, non-blocking)
+      checkExistingTask(alert);
     } catch (err) {
       console.error(`❌ selectAlert error: ${err.message}`);
       setAcceptError(`Failed to analyze alert: ${err.message}`);
@@ -1533,10 +1811,44 @@ export default function TriageSystem({ onBack }) {
     },
   };
 
+  // Wrap any screen JSX with the task creation modal overlay (rendered above everything)
+  const withModal = (jsx) => showTaskModal ? (
+    <>
+      {jsx}
+      <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowTaskModal(false); }}>
+        <div style={styles.modalCard}>
+          <h3 style={styles.modalTitle}>Create Task</h3>
+          <p style={styles.modalSubtitle}>
+            This alert will be marked as resolved and added to your task list for follow-up.
+            {taskModalIsProactive ? " (Proactive alert)" : ""}
+          </p>
+          {taskModalAlert && (
+            <div style={{ fontSize: "13px", color: "#555", marginBottom: "12px", padding: "8px 10px", background: "#f5f5f5", borderRadius: "4px" }}>
+              <strong>{taskModalAlert.clientName}</strong>
+              {taskModalIsProactive
+                ? ` · ${taskModalAlert.heading || taskModalAlert.alertType || "Proactive alert"}`
+                : ` · ${getAlertSummary(taskModalAlert)}`}
+            </div>
+          )}
+          <textarea value={taskModalNote} onChange={e => setTaskModalNote(e.target.value)}
+            placeholder="Add a note for this task (optional)..." style={styles.modalTextarea} autoFocus />
+          {taskActionError && <div style={{ ...styles.errorBanner, marginTop: "8px" }}>{taskActionError}</div>}
+          <div style={styles.modalButtons}>
+            <button className="triage-btn" onClick={() => { setShowTaskModal(false); setTaskModalNote(""); setTaskActionError(""); }} style={styles.buttonSecondary}>Cancel</button>
+            <button className="triage-btn" onClick={submitCreateTask} disabled={taskModalSubmitting}
+              style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px", cursor: "pointer", opacity: taskModalSubmitting ? 0.5 : 1 }}>
+              {taskModalSubmitting ? <><Spinner />Creating...</> : "📋 Create Task"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  ) : jsx;
+
   // Screen: Ignored Alerts
   if (screen === "ignoredAlerts") {
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Ignored Alerts</h1>
@@ -1619,8 +1931,8 @@ export default function TriageSystem({ onBack }) {
 
   // Overview screen — must come before all screen-based checks so nav always works
   if (activeNav === "overview") {
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "24px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "#1a1a1a", margin: 0 }}>Overview</h2>
@@ -1763,7 +2075,7 @@ export default function TriageSystem({ onBack }) {
     const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
     if (activeClients.length === 0) {
       return (
-        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
           <div style={styles.container}>
             <div style={styles.header}>
               <h1 style={styles.title}>All Done</h1>
@@ -1780,8 +2092,8 @@ export default function TriageSystem({ onBack }) {
       );
     }
 
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Client</h1>
@@ -1971,8 +2283,8 @@ export default function TriageSystem({ onBack }) {
       return "annual";
     };
 
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Proactive Alerts</h1>
@@ -2027,13 +2339,22 @@ export default function TriageSystem({ onBack }) {
                       <div style={{ fontSize: "11px", color: "#aaa" }}>
                         First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}
                       </div>
-                      <button
-                        className="triage-btn"
-                        onClick={() => acknowledgeProactiveAlert(alert.alertKey)}
-                        style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
-                      >
-                        ✓ Acknowledge
-                      </button>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button
+                          className="triage-btn"
+                          onClick={() => openCreateTaskModal(alert, true)}
+                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
+                        >
+                          📋 Create Task
+                        </button>
+                        <button
+                          className="triage-btn"
+                          onClick={() => acknowledgeProactiveAlert(alert.alertKey)}
+                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                        >
+                          ✓ Acknowledge
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -2069,8 +2390,8 @@ export default function TriageSystem({ onBack }) {
     const allActionableDone = clientAlerts.length === 0;
     const canProceed = allActionableDone && noActionDone;
 
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
@@ -2399,8 +2720,8 @@ export default function TriageSystem({ onBack }) {
       },
     ];
 
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Clear Flags</h1>
@@ -2493,8 +2814,8 @@ export default function TriageSystem({ onBack }) {
 
   // Screen 1: Loading state (shown while startTriage runs on mount)
   if (!sessionId && !triageComplete) {
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Automation Alerts</h1>
@@ -2525,8 +2846,8 @@ export default function TriageSystem({ onBack }) {
 
   // Screen 2: Triage complete with no alerts
   if (triageComplete && totalAlerts === 0 && noActionCount === 0) {
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>✓ All Clear</h1>
@@ -2567,8 +2888,8 @@ export default function TriageSystem({ onBack }) {
     const alert = clientAlerts[currentClientAlertIndex];
     const progress = currentClientAlertIndex + 1;
 
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
@@ -3075,6 +3396,12 @@ export default function TriageSystem({ onBack }) {
             >
               🚫 Ignore Forever
             </button>
+            <button className="triage-btn"
+              onClick={() => openCreateTaskModal(clientAlerts[currentClientAlertIndex], false)}
+              style={{ ...styles.buttonSecondary, color: "#7c3aed", borderColor: "#c4b5fd" }}
+            >
+              📋 Create Task
+            </button>
             {(selectedClient?.clientSheetId || selectedClient?.masterSheetId) && (
               <button className="triage-btn"
                 onClick={() => {
@@ -3093,6 +3420,70 @@ export default function TriageSystem({ onBack }) {
               </button>
             )}
           </div>
+
+          {/* Existing task banner */}
+          {existingTaskBanner && (
+            <div style={{ marginTop: "12px", padding: "12px 16px", background: "#f3e8ff", border: "1px solid #c4b5fd", borderRadius: "6px" }}>
+              <div style={{ fontSize: "13px", fontWeight: "600", color: "#7c3aed", marginBottom: "6px" }}>
+                📋 This alert has an existing task{existingTaskBanner.dataChanged ? " — underlying data has changed since the task was created" : ""}
+              </div>
+              <div style={{ fontSize: "12px", color: "#555", marginBottom: "8px" }}>
+                Created: {existingTaskBanner.taskCreatedAt ? new Date(existingTaskBanner.taskCreatedAt).toLocaleDateString("en-GB") : "unknown"}
+                {existingTaskBanner.taskNote ? ` · Note: "${existingTaskBanner.taskNote}"` : ""}
+                {existingTaskBanner.isSnoozed ? ` · Snoozed until ${new Date(existingTaskBanner.snoozedUntil).toLocaleString("en-GB")}` : ""}
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button className="triage-btn" onClick={() => { handleNavTasks(); setActiveNav("tasks"); }}
+                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>
+                  View Task
+                </button>
+                {existingTaskBanner.dataChanged && (
+                  <>
+                    <button className="triage-btn"
+                      onClick={async () => {
+                        const alert = clientAlerts[currentClientAlertIndex];
+                        await fetch("/api/triage", {
+                          method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            action: "update_task",
+                            fingerprintHash: existingTaskBanner.fingerprintHash,
+                            newCachedOptionsJSON: claudeAnalysis,
+                            newAlertData: JSON.stringify(alert),
+                            unsnooze: false,
+                            automationCommanderSheetId,
+                          }),
+                        });
+                        setExistingTaskBanner(prev => ({ ...prev, dataChanged: false }));
+                      }}
+                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}>
+                      Update Task
+                    </button>
+                    {existingTaskBanner.isSnoozed && (
+                      <button className="triage-btn"
+                        onClick={async () => {
+                          const alert = clientAlerts[currentClientAlertIndex];
+                          await fetch("/api/triage", {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              action: "update_task",
+                              fingerprintHash: existingTaskBanner.fingerprintHash,
+                              newCachedOptionsJSON: claudeAnalysis,
+                              newAlertData: JSON.stringify(alert),
+                              unsnooze: true,
+                              automationCommanderSheetId,
+                            }),
+                          });
+                          setExistingTaskBanner(prev => ({ ...prev, dataChanged: false, isSnoozed: false }));
+                        }}
+                        style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>
+                        Update &amp; Unsnooze
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Ignore reason modal */}
           {showIgnoreModal && (
@@ -3136,8 +3527,8 @@ export default function TriageSystem({ onBack }) {
   if (showNoAction && noActionCount > 0) {
     const allAcknowledged = acknowledgedNoAction.size === noActionCount;
 
-    return (
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview}>
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Info-Only Alerts</h1>
@@ -3193,5 +3584,324 @@ export default function TriageSystem({ onBack }) {
     );
   }
 
-  return null;
+  // ── Tasks screens ─────────────────────────────────────────────────────────
+
+  // Helper: format alert type label
+  const formatAlertType = (type) => {
+    const map = {
+      invoiceDashboardDiscr: "Invoice discrepancy", invoice: "Invoice",
+      expenseDashboardDiscr: "Expense discrepancy", expense: "Expense",
+      crmPipeDashDiscr: "CRM pipeline", crmConfDashDiscr: "CRM confirmed",
+      crmPipeAppDiscr: "CRM pipeline (app)", crmConfAppDiscr: "CRM confirmed (app)",
+      retainerInvoicesCreated: "Retainer invoices", retainerInvoicesDeleted: "Retainer deleted",
+      proactive: "Proactive alert",
+    };
+    return map[type] || type || "Alert";
+  };
+
+  // Task list screen
+  if (activeNav === "tasks" && !selectedTask) {
+    const filterTabs = [
+      { key: "active", label: "Active" },
+      { key: "snoozed", label: "Snoozed" },
+      { key: "resolved", label: "Completed" },
+    ];
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
+        <div style={styles.container}>
+          <div style={styles.header}>
+            <h1 style={styles.title}>Tasks</h1>
+            <p style={styles.subtitle}>Alerts deferred for follow-up</p>
+          </div>
+
+          {taskActionError && <div style={styles.errorBanner}>{taskActionError}</div>}
+
+          {/* Filter tabs */}
+          <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
+            {filterTabs.map(tab => (
+              <button key={tab.key} className="triage-btn pulse-nav-item"
+                onClick={() => { setTasksFilter(tab.key); loadTasks(tab.key); }}
+                style={{
+                  background: "none", border: "none", cursor: "pointer", padding: "10px 20px",
+                  fontSize: "14px", fontWeight: tasksFilter === tab.key ? "600" : "400",
+                  color: tasksFilter === tab.key ? "#0066cc" : "#555",
+                  borderBottom: tasksFilter === tab.key ? "2px solid #0066cc" : "2px solid transparent",
+                  borderRadius: "0",
+                }}
+              >{tab.label}</button>
+            ))}
+            <button className="triage-btn" onClick={() => loadTasks(tasksFilter)}
+              style={{ ...styles.buttonSecondary, marginLeft: "auto", fontSize: "12px", padding: "6px 14px", alignSelf: "center" }}>
+              ↻ Refresh
+            </button>
+          </div>
+
+          {tasksLoading ? (
+            <div style={{ textAlign: "center", padding: "40px", color: "#888" }}><Spinner size={20} color="#0066cc" /> Loading tasks...</div>
+          ) : tasks.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px", color: "#888", fontSize: "14px" }}>
+              {tasksFilter === "active" ? "No active tasks" : tasksFilter === "snoozed" ? "No snoozed tasks" : "No completed tasks"}
+            </div>
+          ) : (
+            <div>
+              {tasks.map(task => (
+                <div key={task.fingerprintHash}
+                  className="triage-client-card"
+                  onClick={() => openTask(task)}
+                  style={{ ...styles.card, cursor: "pointer", marginBottom: "12px", padding: "16px 20px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                        <span style={{ fontSize: "13px", fontWeight: "700", color: "#1a1a1a" }}>{task.clientName}</span>
+                        <span style={{ fontSize: "11px", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>
+                          {formatAlertType(task.alertType)}
+                        </span>
+                        {task.isProactive && (
+                          <span style={{ fontSize: "11px", background: "#fff3e0", color: "#e65100", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>Proactive</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: "13px", color: "#555", marginBottom: "4px" }}>{task.alertSummary}</div>
+                      {task.taskNote && (
+                        <div style={{ fontSize: "12px", color: "#7c3aed", fontStyle: "italic" }}>📋 {task.taskNote}</div>
+                      )}
+                      {task.furtherNotes?.length > 0 && (
+                        <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>
+                          {task.furtherNotes.length} note{task.furtherNotes.length > 1 ? "s" : ""} · Last: {new Date(task.furtherNotes[task.furtherNotes.length - 1].timestamp).toLocaleDateString("en-GB")}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontSize: "11px", color: "#aaa" }}>
+                        {task.taskCreatedAt ? new Date(task.taskCreatedAt).toLocaleDateString("en-GB") : "—"}
+                      </div>
+                      {task.isSnoozed && (
+                        <div style={{ fontSize: "11px", color: "#d97706", marginTop: "2px" }}>
+                          Snoozed → {new Date(task.snoozedUntil).toLocaleDateString("en-GB")}
+                        </div>
+                      )}
+                      {task.isResolved && task.resolvedAt && (
+                        <div style={{ fontSize: "11px", color: "#2e7d32", marginTop: "2px" }}>
+                          Resolved {new Date(task.resolvedAt).toLocaleDateString("en-GB")}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </NavShell>
+    );
+  }
+
+  // Task detail screen
+  if (activeNav === "tasks" && selectedTask) {
+    const taskAlert = (() => { try { return JSON.parse(selectedTask.alertDataJSON || "{}"); } catch(e) { return {}; } })();
+    // Snooze date min = tomorrow
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().split("T")[0];
+
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
+        <div style={styles.container}>
+          {/* Back button */}
+          <button className="triage-btn" onClick={() => setSelectedTask(null)} style={{ ...styles.buttonSecondary, marginBottom: "16px" }}>
+            ← Back to Tasks
+          </button>
+
+          {taskActionError && <div style={styles.errorBanner}>{taskActionError}</div>}
+
+          {/* Task header */}
+          <div style={{ ...styles.card, borderLeft: "4px solid #7c3aed", paddingTop: "16px", paddingBottom: "16px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+              <div>
+                <div style={{ fontSize: "16px", fontWeight: "700", color: "#1a1a1a", marginBottom: "4px" }}>
+                  {selectedTask.clientName}
+                  <span style={{ marginLeft: "8px", fontSize: "12px", fontWeight: "600", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px" }}>
+                    {formatAlertType(selectedTask.alertType)}
+                  </span>
+                </div>
+                <div style={{ fontSize: "13px", color: "#555", marginBottom: "4px" }}>{selectedTask.alertSummary}</div>
+                <div style={{ fontSize: "12px", color: "#888" }}>
+                  Created: {selectedTask.taskCreatedAt ? new Date(selectedTask.taskCreatedAt).toLocaleString("en-GB") : "—"}
+                  {selectedTask.isSnoozed && <span style={{ color: "#d97706", marginLeft: "8px" }}>· Snoozed until {new Date(selectedTask.snoozedUntil).toLocaleString("en-GB")}</span>}
+                </div>
+              </div>
+              <button className="triage-btn"
+                onClick={() => resolveTask(selectedTask.fingerprintHash)}
+                style={{ ...styles.buttonSecondary, color: "#2e7d32", borderColor: "#a5d6a7", whiteSpace: "nowrap", flexShrink: 0 }}>
+                ✓ Mark Resolved
+              </button>
+            </div>
+
+            {/* Initial note */}
+            {selectedTask.taskNote && (
+              <div style={{ marginTop: "12px", padding: "10px 12px", background: "#f3e8ff", borderRadius: "6px", fontSize: "13px", color: "#4c1d95" }}>
+                <strong>Note:</strong> {selectedTask.taskNote}
+              </div>
+            )}
+
+            {/* Further notes log */}
+            {selectedTask.furtherNotes?.length > 0 && (
+              <div style={{ marginTop: "12px" }}>
+                <div style={{ fontSize: "12px", fontWeight: "600", color: "#888", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Notes Log</div>
+                {selectedTask.furtherNotes.map((n, i) => (
+                  <div key={i} style={{ padding: "8px 12px", background: n.system ? "#f0f9ff" : "#fafafa", borderLeft: `3px solid ${n.system ? "#3b82f6" : "#7c3aed"}`, marginBottom: "6px", borderRadius: "0 4px 4px 0" }}>
+                    <div style={{ fontSize: "12px", color: "#888", marginBottom: "2px" }}>
+                      {new Date(n.timestamp).toLocaleString("en-GB")}{n.system ? " · System" : ""}
+                    </div>
+                    <div style={{ fontSize: "13px", color: "#333" }}>{n.text}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Alert summary card (replayed from stored alert data) */}
+          {taskAlert.summary && (
+            <div style={{ ...styles.alertSummary, marginBottom: "16px" }}>
+              <div style={{ fontWeight: "700", fontSize: "13px", marginBottom: "8px", color: "#b45309" }}>ALERT DETAILS</div>
+              {taskAlert.summary.invoiceNo && <div style={{ fontSize: "13px" }}><strong>Invoice:</strong> {taskAlert.summary.invoiceNo}</div>}
+              {taskAlert.summary.amount && <div style={{ fontSize: "13px" }}><strong>Amount:</strong> £{parseFloat(taskAlert.summary.amount || 0).toFixed(2)}{taskAlert.summary.vatIncluded > 0 ? " +VAT" : ""}</div>}
+              {taskAlert.summary.client && <div style={{ fontSize: "13px" }}><strong>Client:</strong> {taskAlert.summary.client}</div>}
+              {taskAlert.summary.sentDate && <div style={{ fontSize: "13px" }}><strong>Sent:</strong> {taskAlert.summary.sentDate}</div>}
+              {taskAlert.summary.status && <div style={{ fontSize: "13px" }}><strong>Status:</strong> {taskAlert.summary.status}</div>}
+              {taskAlert.heading && <div style={{ fontSize: "13px" }}><strong>Alert:</strong> {taskAlert.heading}</div>}
+              {taskAlert.detail && <div style={{ fontSize: "13px", marginTop: "4px", color: "#555" }}>{taskAlert.detail}</div>}
+            </div>
+          )}
+
+          {/* Options */}
+          <div style={{ ...styles.card, marginBottom: "16px" }}>
+            <div style={{ fontSize: "15px", fontWeight: "700", color: "#1a1a1a", marginBottom: "12px" }}>Potential Actions</div>
+            {taskDetailAnalyzing && (
+              <div style={{ textAlign: "center", padding: "20px", color: "#666" }}><Spinner size={18} color="#0066cc" /> Re-analysing alert...</div>
+            )}
+            {!taskDetailAnalyzing && taskDetailOptions.length === 0 && (
+              <div style={{ color: "#888", fontSize: "13px" }}>No options available — the alert may have been resolved already.</div>
+            )}
+            {taskDetailOptions.map((option, idx) => (
+              <div key={idx} style={{ ...styles.optionCard, marginBottom: "12px" }}>
+                <div style={styles.optionTitle}>Option {idx + 1}: {option.title}</div>
+                {option.matchType !== "info" && option.explanation && (
+                  <div style={{ padding: "8px 10px", background: "#fff8e1", borderLeft: "3px solid #f59e0b", fontSize: "13px", marginBottom: "8px", borderRadius: "0 4px 4px 0" }}>
+                    {option.explanation}
+                  </div>
+                )}
+                {option.facts && (
+                  <ul style={{ margin: "0 0 8px 0", paddingLeft: "18px", fontSize: "13px", color: "#333" }}>
+                    {option.facts.jobType && <li><strong>Type:</strong> {option.facts.jobType}</li>}
+                    {option.facts.totalRevenue && <li><strong>Revenue:</strong> £{option.facts.totalRevenue?.toLocaleString?.() || option.facts.totalRevenue}</li>}
+                    {option.facts.invoiceMatchStatus && <li><strong>{option.facts.invoiceMatchStatus}</strong></li>}
+                  </ul>
+                )}
+                {option.recommendedActions?.length > 0 && (
+                  <div style={{ fontSize: "13px", marginBottom: "8px" }}>
+                    <strong>Actions:</strong>
+                    {option.recommendedActions.map((a, i) => (
+                      <div key={i} style={{ marginTop: "3px" }}>{i === 0 ? <strong style={{ color: "#059669" }}>✓ {a}</strong> : `• ${a}`}</div>
+                    ))}
+                  </div>
+                )}
+                {option.matchType !== "info" && (
+                  <button className="triage-btn triage-btn-primary"
+                    onClick={() => acceptTaskOption(option)}
+                    disabled={isAccepting}
+                    style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px" }}>
+                    {isAccepting ? <><Spinner />Applying...</> : `✓ Accept Option ${idx + 1}`}
+                  </button>
+                )}
+                {option.matchType === "info" && (
+                  <button className="triage-btn triage-btn-primary"
+                    onClick={() => resolveTask(selectedTask.fingerprintHash)}
+                    style={{ ...styles.decisionButton, ...styles.approveButton, width: "100%", marginTop: "4px" }}>
+                    ✓ Mark as Resolved
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Add note */}
+          <div style={{ ...styles.card, marginBottom: "16px" }}>
+            <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: "10px" }}>Add Note</div>
+            <textarea
+              value={taskNoteInput}
+              onChange={e => setTaskNoteInput(e.target.value)}
+              placeholder="Add a note to the task log..."
+              style={{ ...styles.modalTextarea, minHeight: "60px" }}
+            />
+            <button className="triage-btn"
+              onClick={submitTaskNote}
+              disabled={taskNoteSubmitting || !taskNoteInput.trim()}
+              style={{ ...styles.buttonSecondary, marginTop: "8px", opacity: !taskNoteInput.trim() ? 0.5 : 1 }}>
+              {taskNoteSubmitting ? <><Spinner />Adding...</> : "Add Note"}
+            </button>
+          </div>
+
+          {/* Snooze */}
+          {!selectedTask.isResolved && (
+            <div style={{ ...styles.card, marginBottom: "16px" }}>
+              <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: "10px" }}>
+                {selectedTask.isSnoozed ? "Update Snooze" : "Snooze Task"}
+              </div>
+              {selectedTask.isSnoozed && (
+                <div style={{ fontSize: "13px", color: "#d97706", marginBottom: "8px" }}>
+                  Currently snoozed until {new Date(selectedTask.snoozedUntil).toLocaleString("en-GB")}
+                  <button className="triage-btn" onClick={async () => {
+                    await fetch("/api/triage", {
+                      method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "snooze_task", fingerprintHash: selectedTask.fingerprintHash, unsnooze: true, automationCommanderSheetId }),
+                    });
+                    setSelectedTask(prev => ({ ...prev, isSnoozed: false, snoozedUntil: "" }));
+                    setTasks(prev => prev.map(t => t.fingerprintHash === selectedTask.fingerprintHash ? { ...t, isSnoozed: false, snoozedUntil: "" } : t));
+                  }} style={{ ...styles.linkButton, marginLeft: "10px", fontSize: "12px" }}>
+                    Unsnooze
+                  </button>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+                <div>
+                  <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "3px" }}>Date</label>
+                  <input type="date" min={tomorrowStr} value={taskSnoozeDate} onChange={e => setTaskSnoozeDate(e.target.value)}
+                    style={{ border: "1px solid #ddd", borderRadius: "4px", padding: "6px 10px", fontSize: "13px" }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "3px" }}>Time</label>
+                  <input type="time" value={taskSnoozeTime} onChange={e => setTaskSnoozeTime(e.target.value)}
+                    style={{ border: "1px solid #ddd", borderRadius: "4px", padding: "6px 10px", fontSize: "13px" }} />
+                </div>
+                <button className="triage-btn"
+                  onClick={submitSnoozeTask}
+                  disabled={taskSnoozeSubmitting || !taskSnoozeDate}
+                  style={{ ...styles.buttonSecondary, color: "#d97706", borderColor: "#fbbf24", alignSelf: "flex-end", opacity: !taskSnoozeDate ? 0.5 : 1 }}>
+                  {taskSnoozeSubmitting ? <><Spinner />Snoozing...</> : "⏰ Snooze"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </NavShell>
+    );
+  }
+
+  // ── Home screen (initial / loading) ──────────────────────────────────────
+  return withModal(
+    <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <h1 style={styles.title}>Alert Triage System</h1>
+          <p style={styles.subtitle}>{isLoading ? "Loading..." : error ? error : "Initialising..."}</p>
+        </div>
+        {error && <div style={styles.errorBanner}>{error}</div>}
+        {isLoading && (
+          <div style={{ textAlign: "center", padding: "40px" }}>
+            <Spinner size={28} color="#0066cc" />
+            <div style={{ marginTop: "12px", color: "#666" }}>Loading triage data...</div>
+          </div>
+        )}
+      </div>
+    </NavShell>
+  );
 }

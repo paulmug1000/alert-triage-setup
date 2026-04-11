@@ -6539,6 +6539,385 @@ Return ONLY JSON, no other text.`;
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "create_task") {
+      // Create a task from an alert (automation or proactive).
+      // Stores in AlertMemory with status="task", copies proactive alerts into AlertMemory.
+      // Also checks for existing task with same clientName+alertType+ref to prevent duplicates.
+      const { alert, taskNote, automationCommanderSheetId: acId, isProactive, proactiveAlertKey } = req.body;
+      if (!alert || !acId) return res.status(400).json({ success: false, error: "Missing alert or automationCommanderSheetId" });
+
+      try {
+        console.log(`\n📋 Creating task for ${alert.clientName}`);
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+
+        const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+        const now = new Date().toISOString();
+        const today = now.split("T")[0];
+
+        // Build stable task key: clientName + alertType + ref (invoice/job/alertKey)
+        const taskRef = alert.summary?.invoiceNo || alert.summary?.reference
+          || alert.summary?.jobName || alert.alertKey || fingerprintHash.slice(0, 8);
+        const taskKey = `${alert.clientName}||${alert.type || alert.flagType || "alert"}||${taskRef}`;
+
+        // Check for existing task with same key (different hash = data changed)
+        const existingTask = memoryRows.find(r =>
+          r.status === "task" && r.taskKey === taskKey
+        );
+        if (existingTask) {
+          return res.status(409).json({
+            success: false,
+            error: "A task already exists for this alert",
+            existingTaskHash: existingTask.fingerprintHash,
+          });
+        }
+
+        const alertSummary = alert.summary?.summary
+          || `${alert.type || alert.flagType || "alert"} ${alert.summary?.invoiceNo || alert.summary?.reference || ""} ${alert.summary?.amount ? "£" + alert.summary.amount : ""}`.trim();
+
+        const dataSnapshot = JSON.stringify({
+          alertType:     alert.type || alert.flagType || "",
+          invoiceNo:     alert.summary?.invoiceNo     || "",
+          reference:     alert.summary?.reference     || "",
+          amount:        String(alert.summary?.amount || ""),
+          status:        alert.summary?.status        || "",
+          flagType:      alert.flagType               || "",
+          masterSheetId: alert.masterSheetId          || "",
+          taskKey,
+        });
+
+        // Get cached options if available
+        let cachedOptionsJSON = "";
+        if (memoryRow?.cachedOptionsJSON) {
+          cachedOptionsJSON = memoryRow.cachedOptionsJSON;
+        }
+
+        // Task-specific extra columns (L-O) encoded as JSON in col K (dataSnapshot extended)
+        // We reuse the existing 11-column schema and pack task fields into dataSnapshot
+        const taskMeta = {
+          taskNote:      taskNote || "",
+          taskCreatedAt: now,
+          snoozedUntil:  "",
+          furtherNotes:  [], // [{text, timestamp}]
+          taskKey,
+          isProactive:   !!isProactive,
+          proactiveAlertKey: proactiveAlertKey || "",
+          alertData:     JSON.stringify(alert), // full alert for replaying options
+        };
+
+        if (memoryRow) {
+          await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, {
+            ...memoryRow,
+            status: "task",
+            ignoreReason: "",
+            cachedOptionsJSON,
+            dataSnapshot: JSON.stringify({ ...JSON.parse(memoryRow.dataSnapshot || "{}"), ...taskMeta }),
+          });
+        } else {
+          await appendAlertMemoryRow(sheets, acId, {
+            fingerprintHash,
+            alertType: alert.type || alert.flagType || alert.alertType || "alert",
+            clientName: alert.clientName || "",
+            alertSummary,
+            cachedOptionsJSON,
+            status: "task",
+            ignoreReason: "",
+            dataSnapshot: JSON.stringify(taskMeta),
+          });
+        }
+
+        // If from ProactiveAlerts tab, mark it as "task" there too
+        if (isProactive && proactiveAlertKey) {
+          try {
+            const all = await readProactiveAlerts(sheets, acId);
+            const proRow = all.find(r => r.alertKey === proactiveAlertKey);
+            if (proRow) {
+              await sheets.spreadsheets.values.update({
+                spreadsheetId: acId,
+                range: `${PROACTIVE_ALERTS_TAB}!F${proRow.rowIndex}`,
+                valueInputOption: "RAW",
+                requestBody: { values: [["task"]] },
+              });
+            }
+          } catch (e) {
+            console.log(`  ⚠️ Could not update ProactiveAlerts tab: ${e.message}`);
+          }
+        }
+
+        // Invalidate task cache
+        await redisClient.del("triage_tasks_cache").catch(() => {});
+
+        console.log(`  ✅ Task created: ${taskKey}`);
+        return res.status(200).json({ success: true, taskKey });
+      } catch (err) {
+        console.error(`❌ Error in create_task:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_tasks") {
+      // Returns all tasks from AlertMemory, with Redis caching.
+      // Filter: active | snoozed | resolved
+      const { automationCommanderSheetId: acId, filter } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+
+      const TASK_CACHE_KEY = "triage_tasks_cache";
+      const TASK_CACHE_TTL_S = 300; // 5 minutes
+
+      try {
+        // Try cache first
+        let allTasks = null;
+        try {
+          const cached = await redisClient.get(TASK_CACHE_KEY);
+          if (cached) {
+            allTasks = JSON.parse(cached);
+            console.log(`  ✅ Tasks from Redis cache (${allTasks.length} rows)`);
+          }
+        } catch (e) { /* cache miss */ }
+
+        if (!allTasks) {
+          const sheets = await getSheetsClient();
+          await ensureAlertMemoryTab(sheets, acId);
+          const rows = await readAlertMemory(sheets, acId);
+          allTasks = rows.filter(r => r.status === "task" || r.status === "task_resolved");
+          await redisClient.set(TASK_CACHE_KEY, JSON.stringify(allTasks), { EX: TASK_CACHE_TTL_S });
+          console.log(`  ✅ Tasks from sheet (${allTasks.length} rows), cached`);
+        }
+
+        const now = new Date();
+        const parsed = allTasks.map(r => {
+          let taskMeta = {};
+          try { taskMeta = JSON.parse(r.dataSnapshot || "{}"); } catch (e) {}
+          const snoozedUntil = taskMeta.snoozedUntil ? new Date(taskMeta.snoozedUntil) : null;
+          const isSnoozed = snoozedUntil && snoozedUntil > now;
+          const isResolved = r.status === "task_resolved";
+          return {
+            fingerprintHash:   r.fingerprintHash,
+            alertType:         r.alertType,
+            clientName:        r.clientName,
+            alertSummary:      r.alertSummary,
+            firstSeen:         r.firstSeen,
+            lastSeen:          r.lastSeen,
+            taskNote:          taskMeta.taskNote || "",
+            taskCreatedAt:     taskMeta.taskCreatedAt || r.firstSeen || "",
+            snoozedUntil:      taskMeta.snoozedUntil || "",
+            isSnoozed,
+            isResolved,
+            furtherNotes:      taskMeta.furtherNotes || [],
+            taskKey:           taskMeta.taskKey || "",
+            isProactive:       !!taskMeta.isProactive,
+            cachedOptionsJSON: r.cachedOptionsJSON || "",
+            alertDataJSON:     taskMeta.alertData || "",
+            resolvedAt:        taskMeta.resolvedAt || "",
+          };
+        });
+
+        // Apply filter
+        const requestedFilter = filter || "active";
+        let filtered;
+        if (requestedFilter === "snoozed") {
+          filtered = parsed.filter(t => t.isSnoozed && !t.isResolved);
+        } else if (requestedFilter === "resolved") {
+          filtered = parsed.filter(t => t.isResolved);
+        } else {
+          // active = not snoozed, not resolved
+          filtered = parsed.filter(t => !t.isSnoozed && !t.isResolved);
+        }
+
+        // Sort oldest first (by taskCreatedAt)
+        filtered.sort((a, b) => new Date(a.taskCreatedAt || 0) - new Date(b.taskCreatedAt || 0));
+
+        return res.status(200).json({ success: true, tasks: filtered, filter: requestedFilter });
+      } catch (err) {
+        console.error(`❌ Error in get_tasks:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "add_task_note") {
+      // Append a timestamped note to a task's furtherNotes log
+      const { fingerprintHash, noteText, automationCommanderSheetId: acId } = req.body;
+      if (!fingerprintHash || !noteText || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
+
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+        if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+
+        let taskMeta = {};
+        try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+        const notes = Array.isArray(taskMeta.furtherNotes) ? taskMeta.furtherNotes : [];
+        notes.push({ text: noteText, timestamp: new Date().toISOString() });
+        taskMeta.furtherNotes = notes;
+
+        await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, {
+          ...memoryRow,
+          dataSnapshot: JSON.stringify(taskMeta),
+        });
+        await redisClient.del("triage_tasks_cache").catch(() => {});
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error(`❌ Error in add_task_note:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "snooze_task") {
+      // Snooze a task until a given datetime, optionally also update with new analysis
+      const { fingerprintHash, snoozedUntil, automationCommanderSheetId: acId,
+              unsnooze, // if true: clear snooze (unsnooze)
+              updateCachedOptions, newCachedOptionsJSON, alertData } = req.body;
+      if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
+
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+        if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+
+        let taskMeta = {};
+        try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+        if (unsnooze) {
+          taskMeta.snoozedUntil = "";
+        } else {
+          taskMeta.snoozedUntil = snoozedUntil || "";
+        }
+        // Optional: update cached options and alert data (for "update and unsnooze" flow)
+        if (updateCachedOptions && newCachedOptionsJSON) {
+          taskMeta.furtherNotes = [
+            ...(taskMeta.furtherNotes || []),
+            { text: `Alert data changed — analysis updated${unsnooze ? " and task unsnoozed" : ""}`, timestamp: new Date().toISOString(), system: true },
+          ];
+          if (alertData) taskMeta.alertData = alertData;
+        }
+
+        await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, {
+          ...memoryRow,
+          cachedOptionsJSON: updateCachedOptions && newCachedOptionsJSON ? newCachedOptionsJSON : memoryRow.cachedOptionsJSON,
+          dataSnapshot: JSON.stringify(taskMeta),
+        });
+        await redisClient.del("triage_tasks_cache").catch(() => {});
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error(`❌ Error in snooze_task:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "resolve_task") {
+      // Mark a task as resolved (moves to completed archive)
+      const { fingerprintHash, automationCommanderSheetId: acId } = req.body;
+      if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
+
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+        if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+
+        let taskMeta = {};
+        try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+        taskMeta.resolvedAt = new Date().toISOString();
+
+        await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, {
+          ...memoryRow,
+          status: "task_resolved",
+          dataSnapshot: JSON.stringify(taskMeta),
+        });
+        await redisClient.del("triage_tasks_cache").catch(() => {});
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error(`❌ Error in resolve_task:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "update_task") {
+      // Update a task with new analysis (when underlying data has changed).
+      // Optionally unsnooze. Appends a system note to the furtherNotes log.
+      const { fingerprintHash, newCachedOptionsJSON, newAlertData,
+              unsnooze, automationCommanderSheetId: acId } = req.body;
+      if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
+
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+        if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+
+        let taskMeta = {};
+        try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+        taskMeta.furtherNotes = [
+          ...(taskMeta.furtherNotes || []),
+          {
+            text: `Alert data changed — analysis updated${unsnooze ? " and task unsnoozed" : ""}`,
+            timestamp: new Date().toISOString(),
+            system: true,
+          },
+        ];
+        if (unsnooze) taskMeta.snoozedUntil = "";
+        if (newAlertData) taskMeta.alertData = newAlertData;
+
+        await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, {
+          ...memoryRow,
+          cachedOptionsJSON: newCachedOptionsJSON || memoryRow.cachedOptionsJSON,
+          dataSnapshot: JSON.stringify(taskMeta),
+        });
+        await redisClient.del("triage_tasks_cache").catch(() => {});
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error(`❌ Error in update_task:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "check_existing_task") {
+      // Check if an incoming alert matches an existing task (by clientName + alertType + ref).
+      // Returns the existing task if found, so the frontend can show the "existing task" banner.
+      const { alert, automationCommanderSheetId: acId } = req.body;
+      if (!alert || !acId) return res.status(400).json({ success: false, error: "Missing alert or automationCommanderSheetId" });
+
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+
+        const taskRef = alert.summary?.invoiceNo || alert.summary?.reference
+          || alert.summary?.jobName || alert.alertKey || "";
+        const taskKey = `${alert.clientName}||${alert.type || alert.flagType || "alert"}||${taskRef}`;
+
+        // Find active (non-resolved) task with same key
+        const match = memoryRows.find(r =>
+          (r.status === "task") &&
+          (() => { try { return JSON.parse(r.dataSnapshot || "{}").taskKey === taskKey; } catch(e) { return false; } })()
+        );
+
+        if (!match) return res.status(200).json({ success: true, found: false });
+
+        let taskMeta = {};
+        try { taskMeta = JSON.parse(match.dataSnapshot || "{}"); } catch (e) {}
+        const snoozedUntil = taskMeta.snoozedUntil ? new Date(taskMeta.snoozedUntil) : null;
+
+        return res.status(200).json({
+          success: true,
+          found: true,
+          task: {
+            fingerprintHash: match.fingerprintHash,
+            taskKey,
+            taskNote: taskMeta.taskNote || "",
+            taskCreatedAt: taskMeta.taskCreatedAt || match.firstSeen || "",
+            isSnoozed: !!(snoozedUntil && snoozedUntil > new Date()),
+            snoozedUntil: taskMeta.snoozedUntil || "",
+            furtherNotes: taskMeta.furtherNotes || [],
+            dataChanged: match.fingerprintHash !== (alert.fingerprintHash || buildAlertFingerprint(alert)),
+          },
+        });
+      } catch (err) {
+        console.error(`❌ Error in check_existing_task:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else {
       res.status(400).json({ error: "Invalid action" });
     }

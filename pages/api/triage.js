@@ -3596,17 +3596,183 @@ Return ONLY the JSON array, no other text.`;
         const activeData = confirmedData.slice(0, lastDataRow + 1);
         console.log(`  📊 Using ${activeData.length} non-blank rows for Claude analysis`);
 
-        // ── Pre-check: if missing invoice and no matching client found, skip Claude ──
-        // Build newJobData directly from the alert — we already have all the fields we need.
-        if (isMissingInvoice) {
-          const normClient = (s) => String(s || "").toLowerCase().trim();
-          const alertClientNorm = normClient(alert.summary?.client || invoiceClient);
-          const clientFound = alertClientNorm && activeData.some(row =>
-            normClient(row[0]).includes(alertClientNorm) || alertClientNorm.includes(normClient(row[0]))
-          );
+        // Fetch tolerances here — needed by both the pre-check and the prompt builder below
+        const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
 
-          if (!clientFound) {
-            console.log(`  No matching client "${invoiceClient}" found in Confirmed tab — returning hardcoded create_new option`);
+        // ── Pre-check: fuzzy client matching + amount/date slot sweep ─────────
+        // Two independent matching signals are computed before sending to Claude:
+        //
+        // Signal A — Fuzzy client name match: checks whether any Confirmed tab client
+        //   name is plausibly the same entity as the invoice client name, using:
+        //   - noise-word stripping (ltd, limited, plc, inc, llc, the, and, &, group, co)
+        //   - normalisation (punctuation, whitespace, case)
+        //   - word-overlap: any single meaningful word shared between names
+        //   - abbreviation detection: initials of one name spell the other
+        //
+        // Signal B — Amount + date sweep of non-real slots (blank ref OR MANUAL-INV):
+        //   - Amount tolerance: 5p domestic, 10% foreign (mirrors GAS automation)
+        //   - Date tolerance: ±invoiceMonthsTolerance months
+        //   - Only considers slots with no real invoice reference (available placeholders)
+        //
+        // Outcomes:
+        //   - Signal A found, Signal B found → Claude receives full table + slot match candidates
+        //   - Signal A found only           → Claude receives full table (existing flow)
+        //   - Signal A NOT found, Signal B found → Claude receives slot match candidates only
+        //   - Neither found                 → hardcoded create_new (no Claude call)
+
+        if (isMissingInvoice) {
+
+          // ── Noise-word stripping & normalisation ──────────────────────────
+          const NOISE_WORDS = new Set([
+            "ltd","limited","plc","inc","llc","llp","the","and","&",
+            "group","co","corp","corporation","holdings","international",
+            "uk","us","solutions","services","consulting","consultancy",
+          ]);
+          const normClientWords = (s) => {
+            return String(s || "")
+              .toLowerCase()
+              .replace(/['\-.,()]/g, " ")   // punctuation → space
+              .replace(/\s+/g, " ")
+              .trim()
+              .split(" ")
+              .filter(w => w.length > 1 && !NOISE_WORDS.has(w));
+          };
+
+          // Check if words in name A form the abbreviation of name B (or vice versa)
+          const isAbbreviationOf = (abbrev, full) => {
+            const abbrevClean = abbrev.replace(/\./g, "").toLowerCase();
+            const fullWords = normClientWords(full);
+            if (fullWords.length < 2 || abbrevClean.length < 2) return false;
+            // Initials of full words should spell the abbreviation
+            const initials = fullWords.map(w => w[0]).join("");
+            return initials === abbrevClean || initials.startsWith(abbrevClean);
+          };
+
+          const fuzzyClientMatch = (invoiceClientStr, confirmedClientStr) => {
+            const invWords  = normClientWords(invoiceClientStr);
+            const confWords = normClientWords(confirmedClientStr);
+            if (invWords.length === 0 || confWords.length === 0) return false;
+            // Any single meaningful word overlap
+            if (invWords.some(w => confWords.includes(w))) return true;
+            // Substring containment after noise-stripping (catches "Peoples Health" vs "Peoples Health Trust")
+            const invJoined  = invWords.join(" ");
+            const confJoined = confWords.join(" ");
+            if (confJoined.includes(invJoined) || invJoined.includes(confJoined)) return true;
+            // Abbreviation: invoice client is abbreviation of confirmed client or vice versa
+            if (isAbbreviationOf(invJoined.replace(/\s/g,""), confirmedClientStr)) return true;
+            if (isAbbreviationOf(confJoined.replace(/\s/g,""), invoiceClientStr))  return true;
+            return false;
+          };
+
+          const alertClientStr = alert.summary?.client || invoiceClient;
+          const clientFound = alertClientStr && activeData.some(row =>
+            fuzzyClientMatch(alertClientStr, String(row[0] || ""))
+          );
+          console.log(`  Fuzzy client match for "${alertClientStr}": ${clientFound}`);
+
+          // ── Amount + date sweep of non-real slots ─────────────────────────
+          // Fetch primary currency from client KeyInfo!B17 to determine tolerance type
+          let primaryCurrency = "GBP";
+          try {
+            const keyInfoResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: "KeyInfo!B17",
+            });
+            primaryCurrency = String(keyInfoResp.data.values?.[0]?.[0] || "GBP").trim().toUpperCase();
+          } catch (e) {
+            console.log(`  ⚠️ Could not read KeyInfo!B17 — defaulting to GBP`);
+          }
+
+          const invoiceCurrency = String(alert.summary?.currency || "GBP").trim().toUpperCase();
+          const isForeignCurrency = invoiceCurrency && invoiceCurrency !== primaryCurrency;
+          console.log(`  Currency: invoice=${invoiceCurrency}, primary=${primaryCurrency}, foreign=${isForeignCurrency}`);
+
+          // Amount tolerance: 5p domestic, 10% of invoice amount for foreign
+          const invoiceAmtForMatch = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
+          const amtToleranceFn = (slotAmt) => {
+            if (isForeignCurrency) {
+              return Math.abs(slotAmt - invoiceAmtForMatch) <= invoiceAmtForMatch * 0.10;
+            }
+            // Domestic: 5p tolerance (compare in pennies to avoid float errors)
+            return Math.abs(Math.round(slotAmt * 100) - Math.round(invoiceAmtForMatch * 100)) <= 5;
+          };
+
+          // Date tolerance: ±invoiceMonthsTolerance months from invoice sent date
+          const invMonthsTol = Number(tolerances.invoiceMonthsTolerance) || 2;
+          const parseConfirmedDate = (d) => {
+            if (!d) return null;
+            const MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+            const parts = String(d).split(/[-\/]/);
+            if (parts.length === 3) {
+              const mNum = MONTHS_MAP[parts[1]?.toLowerCase()?.substring(0,3)];
+              if (mNum !== undefined) {
+                const yr = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
+                return new Date(yr, mNum, parseInt(parts[0]));
+              }
+            }
+            return null;
+          };
+          const invSentDateParsed = parseConfirmedDate(sentDate);
+          const dateWithinTolerance = (slotDateStr) => {
+            if (!invSentDateParsed || !slotDateStr) return null; // null = unknown (no date to compare)
+            const slotDate = parseConfirmedDate(slotDateStr);
+            if (!slotDate) return null;
+            const diffMonths = (slotDate.getFullYear() - invSentDateParsed.getFullYear()) * 12
+              + (slotDate.getMonth() - invSentDateParsed.getMonth());
+            return Math.abs(diffMonths) <= invMonthsTol;
+          };
+
+          // Sweep all non-real slots across all active Confirmed rows
+          // Non-real = no ref, OR ref starts with MANUAL-INV
+          const INV_SLOT_DEFS = [
+            { amtIdx: 41, refIdx: 42, sentIdx: 43, slotNum: 1, amtCol: "AP", refCol: "AQ", sentCol: "AR", daysCol: "AS", statusCol: "AT" },
+            { amtIdx: 48, refIdx: 49, sentIdx: 50, slotNum: 2, amtCol: "AW", refCol: "AX", sentCol: "AY", daysCol: "AZ", statusCol: "BA" },
+            { amtIdx: 55, refIdx: 56, sentIdx: 57, slotNum: 3, amtCol: "BD", refCol: "BE", sentCol: "BF", daysCol: "BG", statusCol: "BH" },
+          ];
+
+          const slotMatches = []; // { rowNum, client, jobName, projectCode, revenue, slotNum, slotAmt, slotDate, amtMatch, dateMatch, amtCol, refCol, sentCol, daysCol, statusCol, isManual }
+          for (let ri = 1; ri < activeData.length; ri++) {
+            const row = activeData[ri] || [];
+            const rowClient  = String(row[0] || "").trim();
+            const rowJob     = String(row[1] || "").trim();
+            const rowCode    = String(row[2] || "").trim();
+            const rowRevenue = String(row[32] || "").trim();
+            if (!rowClient && !rowJob) continue;
+
+            for (const sd of INV_SLOT_DEFS) {
+              const ref    = String(row[sd.refIdx] || "").trim();
+              const rawAmt = row[sd.amtIdx];
+              const slotDate = String(row[sd.sentIdx] || "").trim();
+
+              // Non-real: blank ref OR MANUAL-INV prefix
+              const isManual = ref.toUpperCase().startsWith("MANUAL-INV");
+              const isNonReal = !ref || isManual;
+              if (!isNonReal) continue;
+
+              // Must have an amount to match against
+              const slotAmt = parseFloat(String(rawAmt || "").replace(/[£$€,]/g, "")) || 0;
+              if (slotAmt === 0) continue;
+
+              const amtMatch  = amtToleranceFn(slotAmt);
+              if (!amtMatch) continue; // amount must match — date is supporting evidence only
+
+              const dateOk = dateWithinTolerance(slotDate); // true / false / null
+              slotMatches.push({
+                rowNum: ri + 1, // 1-indexed sheet row (activeData[0] = header, ri=1 → sheet row 2)
+                client: rowClient, jobName: rowJob, projectCode: rowCode, revenue: rowRevenue,
+                slotNum: sd.slotNum, slotAmt, slotDate, amtMatch, dateMatch: dateOk,
+                amtCol: sd.amtCol, refCol: sd.refCol, sentCol: sd.sentCol,
+                daysCol: sd.daysCol, statusCol: sd.statusCol, isManual,
+              });
+            }
+          }
+          console.log(`  Amount/date slot sweep: ${slotMatches.length} non-real slot(s) with matching amount`);
+
+          const hasSlotMatches = slotMatches.length > 0;
+
+          // ── Neither signal found → hardcoded create_new, no Claude ──────────
+          if (!clientFound && !hasSlotMatches) {
+            console.log(`  No client match and no slot match — returning hardcoded create_new option`);
             const vatYesNo = vatIncluded > 0 ? "Yes" : "No";
             const hardcodedOption = {
               optionId: 1,
@@ -3639,15 +3805,13 @@ Return ONLY the JSON array, no other text.`;
               },
               matchAnalysis: {
                 matchConfidence: "N/A",
-                reasonForChoice: `No existing job found for client "${invoiceClient}" in the Confirmed tab. A new job row will be created with the invoice details.`,
+                reasonForChoice: `No existing job or placeholder slot found for client "${invoiceClient}" in the Confirmed tab. A new job row will be created with the invoice details.`,
                 discrepancies: "New client/job — no existing data to compare",
               },
               recommendedActions: [
                 `Create new job for ${invoiceClient}${invoiceJob ? " — " + invoiceJob : ""}, revenue £${(totalExclVAT > 0 ? totalExclVAT : invoiceAmount).toFixed(2)} ${vatYesNo === "Yes" ? "+VAT" : "(no VAT)"}, and place invoice ${invoiceRef} in slot 1`,
               ],
             };
-
-            // Cache and return
             const invSummary = alert.summary?.summary || `Invoice ${invoiceRef} ${invoiceClient}`;
             await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
             const memRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
@@ -3664,6 +3828,54 @@ Return ONLY the JSON array, no other text.`;
             }
             return res.status(200).json({ success: true, options: [hardcodedOption], alertId: alert.rowNumber, previousIgnoreReason });
           }
+
+          // ── Build slot match context block for Claude (if Signal B found) ──
+          // This is injected into the prompt so Claude can reason about both signals together.
+          let slotMatchContext = "";
+          if (hasSlotMatches) {
+            const slotMatchLines = slotMatches.map(m => {
+              const dateNote = m.dateMatch === true  ? `sent date ${m.slotDate} ✓ within ${invMonthsTol}-month tolerance`
+                             : m.dateMatch === false ? `sent date ${m.slotDate} ✗ outside ${invMonthsTol}-month tolerance`
+                             : `no sent date recorded`;
+              const amtNote = isForeignCurrency
+                ? `amount £${m.slotAmt.toFixed(2)} within 10% of invoice £${invoiceAmtForMatch.toFixed(2)}`
+                : `amount £${m.slotAmt.toFixed(2)} within 5p of invoice £${invoiceAmtForMatch.toFixed(2)}`;
+              const slotType = m.isManual ? "MANUAL-INV placeholder" : "blank-ref placeholder";
+              return `Row ${m.rowNum} Inv${m.slotNum} (${slotType}): ${m.client} | ${m.jobName}${m.projectCode ? ` (${m.projectCode})` : ""} | Revenue: ${m.revenue} | ${amtNote} | ${dateNote}`;
+            }).join("\n");
+
+            const toleranceNote = isForeignCurrency
+              ? `(Foreign currency invoice — ${invoiceCurrency} vs primary ${primaryCurrency} — amount tolerance is 10%)`
+              : `(Domestic currency — amount tolerance is 5p)`;
+
+            slotMatchContext = `
+AMOUNT/DATE PLACEHOLDER MATCHES FOUND — PRE-COMPUTED BY BACKEND ${toleranceNote}:
+The following non-real invoice slots have an amount that matches this invoice within tolerance.
+These are strong candidates for this invoice — the placeholder was likely created in anticipation of this exact invoice.
+A date match (✓) increases confidence; a date mismatch (✗) or missing date reduces it.
+
+${slotMatchLines}
+
+When assessing these candidates, consider:
+- Amount match is confirmed by the backend — treat it as reliable
+- Date match/mismatch is supporting evidence only; date mismatches reduce but do not eliminate confidence
+- Client name may differ from invoice client (parent/subsidiary relationships are common)
+- If a slot match and a client-name match point to the same job, confidence is very high
+- Present each distinct slot match candidate as a separate option if confidence levels differ materially`;
+          }
+
+          // Inject both signals into the prompt via a pre-analysis block that Claude receives
+          // alongside (or instead of) the full confirmed tab table.
+          // Store on a variable that the prompt builder below will pick up.
+          // We set a flag so the prompt knows to include the slot match section.
+          alert._preAnalysis = {
+            clientFound,
+            hasSlotMatches,
+            slotMatchContext,
+            isForeignCurrency,
+            invoiceCurrency,
+            primaryCurrency,
+          };
         }
         
         // Build table for Claude
@@ -3719,9 +3931,6 @@ Return ONLY the JSON array, no other text.`;
         } else {
           console.log(`  ⚠️ No automationCommanderSheetId in request body, skipping AIKnowledgeBase`);
         }
-        
-        // Get tolerance values from DataChgAlert
-        const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
         
         // Build knowledge base context for Claude
         let kbRules = "";
@@ -3790,6 +3999,11 @@ Return ONLY the JSON array, no other text.`;
           ? discrepancyTypes.join("\n• ")
           : "UNSPECIFIED DISCREPANCY";
 
+        // Retrieve pre-analysis signals stored during the Step 1 pre-check (missing invoice only)
+        const preAnalysis = alert._preAnalysis || {};
+        const slotMatchContext = preAnalysis.slotMatchContext || "";
+        const clientFoundSignal = preAnalysis.clientFound !== false; // true if not missing invoice case
+
         // Build Claude prompt with knowledge base and tolerances
         const prompt = `You are a financial advisor helping to resolve an invoice discrepancy. Analyze the invoice against the Confirmed tab data and suggest the best course of action.
 
@@ -3803,13 +4017,14 @@ INVOICE DETAILS (from accounting system):
 
 DISCREPANCY TYPE(S) FLAGGED:
 • ${discrepancySummary}
-
+${slotMatchContext ? `\n${slotMatchContext}\n` : ""}
 CONFIRMED TAB DATA (All non-blank rows):
 ${confirmedTabTable}
 
 MATCHING RULES & TOLERANCES:
 ${kbRules || "- Default matching rules apply"}
 - Date tolerance: ±${tolerances.invoiceMonthsTolerance} months
+- Client name matching: the invoice client name may differ from the Confirmed tab client name due to parent/subsidiary relationships or abbreviations — use judgement, don't require exact name matches
 ${SHEET_STRUCTURE_BLOCK}
 
 **Invoice Slot Column Reference (Confirmed tab):**
@@ -3843,10 +4058,15 @@ A placeholder slot has an AMOUNT set but a BLANK reference (or a reference begin
 **YOUR TASK — depends on the discrepancy type(s) flagged above:**
 
 **IF MISSING INVOICE:**
-1. Search the Confirmed tab for a job matching this invoice by client name and/or job description
-2. TWO OUTCOMES — one of these MUST always be suggested:
-   a) **Job found**: Place the invoice in the correct slot (see slot rules below)
-   b) **No job found**: Suggest creating a new job row (matchType: "create_new") — this is ALWAYS a valid option when no match exists. Never say "no action possible" — creating a new job IS the action.
+1. Use ALL available matching signals to find the best job:
+   a) **Client name match** (fuzzy — the backend has already confirmed ${clientFoundSignal ? "at least one client name in the Confirmed tab is plausibly the same entity as the invoice client" : "no close client name match was found — rely on the slot matches below if present"})
+   b) **Amount/date placeholder matches** (pre-computed by the backend and listed above if found — treat these as strong candidates)
+   c) **Job description match** — the invoice job description field may contain clues about the job
+2. THREE OUTCOMES — consider all signals together and present the most confident matches as separate options:
+   a) **High-confidence job match** (client name + amount/date slot both point to same job, or strong name+description match): Place the invoice in the correct slot
+   b) **Lower-confidence match** (amount/date slot matches but client name differs materially, or client name matches but no slot): Present as a separate option with lower confidence and explain the uncertainty
+   c) **No job found**: Suggest creating a new job row (matchType: "create_new") — always include this as the final option when uncertainty remains. Never say "no action possible".
+   Present each materially different candidate as a separate option. Do not combine distinct candidates into one option.
 3. For slot placement (when job found):
    - A "real" invoice slot = has a reference that does NOT start with MANUAL-INV and is not blank
    - A "non-real" slot = empty OR has a MANUAL-INV reference (automation-managed placeholder)

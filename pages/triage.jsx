@@ -376,7 +376,9 @@ export default function TriageSystem({ onBack }) {
 
   const submitSnoozeTask = async () => {
     if (!selectedTask || !taskSnoozeDate) return;
-    const snoozedUntil = `${taskSnoozeDate}T${taskSnoozeTime}:00`;
+    // Build ISO string with local timezone offset so Node.js interprets it correctly
+    const localDt = new Date(`${taskSnoozeDate}T${taskSnoozeTime}:00`);
+    const snoozedUntil = localDt.toISOString(); // always UTC ISO — consistent on both sides
     try {
       setTaskSnoozeSubmitting(true);
       const res = await fetch("/api/triage", {
@@ -391,8 +393,9 @@ export default function TriageSystem({ onBack }) {
       });
       const data = await res.json();
       if (data.success) {
-        setTasks(prev => prev.filter(t => t.fingerprintHash !== selectedTask.fingerprintHash));
         setSelectedTask(null);
+        setTasksFilter("snoozed");
+        loadTasks("snoozed");
       } else setTaskActionError(data.error || "Failed to snooze task");
     } catch (e) { setTaskActionError(e.message); }
     finally { setTaskSnoozeSubmitting(false); }

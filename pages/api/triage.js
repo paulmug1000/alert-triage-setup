@@ -94,7 +94,7 @@ const FLAG_NAMES = {
 // ============================================================================
 
 const ALERT_MEMORY_TAB = "AlertMemory";
-const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:I`;
+const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:K`;
 const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
 const PROACTIVE_ALERTS_TAB = "ProactiveAlerts";
 

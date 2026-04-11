@@ -3702,8 +3702,8 @@ export default function TriageSystem({ onBack }) {
   if (activeNav === "tasks" && selectedTask) {
     const taskAlert = (() => { try { return JSON.parse(selectedTask.alertDataJSON || "{}"); } catch(e) { return {}; } })();
     // Snooze date min = tomorrow
-    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toISOString().split("T")[0];
+    const today = new Date();
+    const todayStr = today.toISOString().split("T")[0];
 
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
@@ -3867,7 +3867,7 @@ export default function TriageSystem({ onBack }) {
               <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
                 <div>
                   <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "3px" }}>Date</label>
-                  <input type="date" min={tomorrowStr} value={taskSnoozeDate} onChange={e => setTaskSnoozeDate(e.target.value)}
+                  <input type="date" min={todayStr} value={taskSnoozeDate} onChange={e => setTaskSnoozeDate(e.target.value)}
                     style={{ border: "1px solid #ddd", borderRadius: "4px", padding: "6px 10px", fontSize: "13px" }} />
                 </div>
                 <div>

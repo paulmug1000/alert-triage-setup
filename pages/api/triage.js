@@ -3599,6 +3599,43 @@ Return ONLY the JSON array, no other text.`;
         // Fetch tolerances here — needed by both the pre-check and the prompt builder below
         const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
 
+        // Extract invoice details — declared here so they're available to both the
+        // pre-check block and the prompt builder below (avoids temporal dead zone in prod build)
+        const invoiceAmount = parseFloat(alert.summary?.amount) || 0;
+        const invoiceRef = alert.summary?.invoiceNo || '(unmatched)';
+        const invoiceClient = alert.summary?.client || '';
+        const invoiceJob = alert.summary?.job || '';
+        const sentDate = alert.summary?.sentDate || '';
+        const invoiceStatus = alert.summary?.status || '';
+        const datePaid = alert.summary?.datePaid || '';
+
+        // Days to pay: if Paid, calculate from sentDate → datePaid; otherwise use DataChgAlert!B52
+        let daysToPayValue = tolerances.defaultDaysToPay;
+        if (invoiceStatus.toLowerCase() === 'paid' && sentDate && datePaid) {
+          try {
+            const parseDate = (d) => {
+              const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+              const parts = d.split(/[-\/]/);
+              if (parts.length === 3) {
+                const monthNum = months[parts[1]?.toLowerCase()?.substring(0,3)];
+                if (monthNum !== undefined) {
+                  const year = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
+                  return new Date(year, monthNum, parseInt(parts[0]));
+                }
+                if (parts[0].length === 4) return new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
+                return new Date(parseInt(parts[2]), parseInt(parts[1])-1, parseInt(parts[0]));
+              }
+              return new Date(d);
+            };
+            const sent = parseDate(sentDate);
+            const paid = parseDate(datePaid);
+            const diffDays = Math.round((paid - sent) / (1000 * 60 * 60 * 24));
+            if (diffDays > 0) daysToPayValue = diffDays;
+          } catch (e) {
+            console.log(`  ⚠️ Could not calculate days to pay from dates: ${e.message}`);
+          }
+        }
+
         // ── Pre-check: fuzzy client matching + amount/date slot sweep ─────────
         // Two independent matching signals are computed before sending to Claude:
         //
@@ -3944,46 +3981,6 @@ When assessing these candidates, consider:
           console.log(`  ⚠️ No AIKnowledgeBase rules found`);
         }
         
-        // Extract invoice details
-        const invoiceAmount = parseFloat(alert.summary?.amount) || 0;
-        const invoiceRef = alert.summary?.invoiceNo || '(unmatched)';
-        const invoiceClient = alert.summary?.client || '';
-        const invoiceJob = alert.summary?.job || '';
-        const sentDate = alert.summary?.sentDate || '';
-        const invoiceStatus = alert.summary?.status || '';
-        const datePaid = alert.summary?.datePaid || '';
-
-        // Days to pay: if Paid, calculate from sentDate → datePaid; otherwise use DataChgAlert!B52
-        let daysToPayValue = tolerances.defaultDaysToPay;
-        if (invoiceStatus.toLowerCase() === 'paid' && sentDate && datePaid) {
-          try {
-            const parseDate = (d) => {
-              // Handle formats like "20-Mar-26", "20/03/2026", "2026-03-20"
-              const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-              const parts = d.split(/[-\/]/);
-              if (parts.length === 3) {
-                // dd-Mon-yy or dd-Mon-yyyy
-                const monthNum = months[parts[1]?.toLowerCase()?.substring(0,3)];
-                if (monthNum !== undefined) {
-                  const year = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
-                  return new Date(year, monthNum, parseInt(parts[0]));
-                }
-                // yyyy-mm-dd
-                if (parts[0].length === 4) return new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
-                // dd/mm/yyyy
-                return new Date(parseInt(parts[2]), parseInt(parts[1])-1, parseInt(parts[0]));
-              }
-              return new Date(d);
-            };
-            const sent = parseDate(sentDate);
-            const paid = parseDate(datePaid);
-            const diffDays = Math.round((paid - sent) / (1000 * 60 * 60 * 24));
-            if (diffDays > 0) daysToPayValue = diffDays;
-          } catch (e) {
-            console.log(`  ⚠️ Could not calculate days to pay from dates: ${e.message}`);
-          }
-        }
-
         // Determine which discrepancy types are present from InvComp flags (S:Y, indices 0-6)
         // S(0)=missing invoice, T(1)=client mismatch, U(2)=amount mismatch,
         // V(3)=sent date mismatch, X(5)=date paid mismatch, Y(6)=status mismatch

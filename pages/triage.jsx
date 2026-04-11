@@ -2877,6 +2877,16 @@ export default function TriageSystem({ onBack }) {
 
   // Screen 2: Triage complete with no alerts
   if (triageComplete && totalAlerts === 0 && noActionCount === 0 && activeNav !== "tasks" && activeNav !== "overview") {
+    // Load proactive alerts if not already loaded or stale
+    if (!proactiveLoading && (Date.now() - proactiveLoadedAt > 5 * 60 * 1000)) {
+      loadProactiveAlerts();
+    }
+    // If proactive alerts exist, go straight to clientSelection so they appear normally
+    if (proactiveLoadedAt > 0 && proactiveAlerts.length > 0) {
+      setScreen("clientSelection");
+      // Return null briefly while screen state updates — avoids flash
+      return null;
+    }
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
       <div style={styles.container}>
@@ -2909,6 +2919,69 @@ export default function TriageSystem({ onBack }) {
             </>
           )}
         </div>
+
+        {/* Proactive alerts — shown even when no automation alerts */}
+        <div style={{ ...styles.card, marginTop: "16px" }}>
+          <h2 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
+            Proactive Alerts {!proactiveLoading && proactiveAlerts.length > 0 && `(${proactiveAlerts.length})`}
+          </h2>
+          {proactiveLoading ? (
+            <div style={{ textAlign: "center", padding: "20px", color: "#666", fontSize: "13px" }}>
+              <Spinner size={20} color="#0066cc" />
+              <div style={{ marginTop: "8px" }}>Loading proactive alerts...</div>
+            </div>
+          ) : proactiveAlerts.length === 0 && proactiveLoadedAt > 0 ? (
+            <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
+              ✓ No proactive alerts
+            </div>
+          ) : proactiveAlerts.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
+              Checking for proactive alerts...
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {(() => {
+                const typeLabels = {
+                  retainer_invoice:      "Retainer invoice",
+                  crm_wipe:              "CRM data wipe",
+                  revenue_mismatch:      "Revenue / invoiced mismatch",
+                  direct_costs_mismatch: "Direct costs / expenses mismatch",
+                };
+                const grouped = {};
+                proactiveAlerts.forEach(a => {
+                  if (!grouped[a.clientName]) grouped[a.clientName] = [];
+                  grouped[a.clientName].push(a);
+                });
+                return Object.entries(grouped).map(([clientName, alerts], idx) => {
+                  const typeCounts = {};
+                  alerts.forEach(a => {
+                    const label = typeLabels[a.alertType] || a.alertType || "Alert";
+                    typeCounts[label] = (typeCounts[label] || 0) + 1;
+                  });
+                  return (
+                    <button key={idx} className="triage-client-card"
+                      onClick={() => { setProactiveSelectedClient(clientName); setScreen("proactiveReview"); }}
+                      style={{ ...styles.optionButton, textAlign: "left", padding: "16px", border: "1px solid #ddd", borderRadius: "6px", backgroundColor: "#f9f9f9", width: "100%" }}>
+                      <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px" }}>{clientName}</div>
+                      {Object.entries(typeCounts).map(([type, count], i) => (
+                        <div key={i} style={{ fontSize: "13px", color: "#d97706", marginBottom: "2px" }}>
+                          • {type} ({count} alert{count !== 1 ? "s" : ""})
+                        </div>
+                      ))}
+                    </button>
+                  );
+                });
+              })()}
+            </div>
+          )}
+          <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid #eee", display: "flex", justifyContent: "flex-end" }}>
+            <button className="triage-btn" onClick={loadProactiveAlerts} disabled={proactiveLoading}
+              style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: proactiveLoading ? 0.5 : 1 }}>
+              {proactiveLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
+            </button>
+          </div>
+        </div>
+
       </div>
       </NavShell>
     );

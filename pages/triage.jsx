@@ -2087,9 +2087,9 @@ export default function TriageSystem({ onBack }) {
       loadProactiveAlerts();
     }
 
-    // If all clients have had their flags zeroed out, show complete screen
+    // If all clients have had their flags zeroed out AND no proactive alerts, show complete screen
     const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
-    if (activeClients.length === 0) {
+    if (activeClients.length === 0 && proactiveAlerts.length === 0 && proactiveLoadedAt > 0) {
       return (
         <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
           <div style={styles.container}>
@@ -2102,6 +2102,19 @@ export default function TriageSystem({ onBack }) {
               <button className="triage-btn" onClick={refreshTriage} disabled={isLoading} style={{ ...styles.buttonSecondary, marginTop: "16px", opacity: isLoading ? 0.5 : 1 }}>
                 {isLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
               </button>
+            </div>
+          </div>
+        </NavShell>
+      );
+    }
+    // If still loading proactive alerts, wait before deciding
+    if (activeClients.length === 0 && proactiveLoadedAt === 0) {
+      return (
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
+          <div style={styles.container}>
+            <div style={{ textAlign: "center", padding: "60px 20px", color: "#888" }}>
+              <Spinner size={28} color="#0066cc" />
+              <div style={{ marginTop: "12px", fontSize: "14px" }}>Checking for alerts...</div>
             </div>
           </div>
         </NavShell>

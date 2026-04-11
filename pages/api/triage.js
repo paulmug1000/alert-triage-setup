@@ -3969,6 +3969,7 @@ Return ONLY the JSON array, no other text.`;
 
               jobContextLines.push(
                 `JOB: ${group.client} | ${group.jobName}${group.projectCode ? ` (${group.projectCode})` : ""} | Revenue: ${parentRevenue}${parentType ? ` | Type: ${parentType}` : ""}${parentStart ? ` | ${parentStart}→${parentEnd}` : ""}
+  Dashboard client name: "${group.client}" | Invoice client name: "${alertClientStr}"${group.client.toLowerCase() !== alertClientStr.toLowerCase() ? ` ← NAMES DIFFER — if you recommend this job, also write "${alertClientStr}" to col A of ALL rows for this job (rows: ${allJobRows.map(r => r.sheetRow).join(", ")})` : " ← names match"}
   ${matchCount} slot(s) with amount matching invoice £${invoiceAmtForMatch.toFixed(2)} (${toleranceNote}) — date ${bestDateMatch ? "✓ at least one slot within tolerance" : "✗ no slot within date tolerance"}
   ALL SLOTS FOR THIS JOB (${allJobRows.length} row${allJobRows.length > 1 ? "s" : ""} = ${allJobRows.length * 3} slots total — parent + child rows combined):
 ${allSlotLines.join("\n")}`
@@ -3993,7 +3994,8 @@ INSTRUCTIONS FOR USING THESE MATCHES:
 - A slot with amount match but date mismatch (✗) is still a valid option, with lower confidence — state the actual date difference
 - NEVER describe a date-tolerance match as "exact" — state the actual difference in months
 - The job's total revenue is split across ALL slots (parent + child rows combined)
-- When recommending a slot, use the actual sheet row number shown (e.g. Row 263 or Row 264)`;
+- When recommending a slot, use the actual sheet row number shown (e.g. Row 263 or Row 264)
+- CLIENT NAME MISMATCH: If the dashboard client name and invoice client name differ (marked "← NAMES DIFFER"), you MUST include writes of the invoice client name to column A of ALL rows for that job as part of recommendedActions — the accounting system name is authoritative`;
           }
 
           // Inject both signals into the prompt via a pre-analysis block that Claude receives

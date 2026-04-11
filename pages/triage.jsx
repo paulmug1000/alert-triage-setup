@@ -45,6 +45,7 @@ function Spinner({ size = 14, color = "currentColor" }) {
 
 // Global styles injected once — handles :hover/:active which React inline styles can't do
 const GLOBAL_STYLES = `
+  html, body { margin: 0; padding: 0; scroll-behavior: auto; }
   @keyframes triage-spin { to { transform: rotate(360deg); } }
   .triage-btn { transition: filter 0.15s, transform 0.1s, background 0.15s, box-shadow 0.15s !important; }
   .triage-btn:hover:not(:disabled) { filter: brightness(0.92); box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
@@ -146,6 +147,8 @@ export default function TriageSystem({ onBack }) {
   
   // NEW: Client selection states
   const [screen, setScreen] = useState("initial"); // initial | clientSelection | alertSelection | triageAnalysis | ignoredAlerts
+  // Scroll to top on every screen transition
+  useEffect(() => { window.scrollTo(0, 0); }, [screen]);
   const [clientsWithFlags, setClientsWithFlags] = useState([]);
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientAlerts, setClientAlerts] = useState([]);
@@ -175,6 +178,7 @@ export default function TriageSystem({ onBack }) {
 
   // Inject global button/interaction styles once on mount, and set page title/favicon
   useEffect(() => {
+    window.scrollTo(0, 0);
     // Set title and favicon directly — reliable across all screen transitions
     document.title = "Triage System";
     let favicon = document.querySelector("link[rel~='icon']");

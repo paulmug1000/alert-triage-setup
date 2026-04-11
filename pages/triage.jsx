@@ -2761,7 +2761,7 @@ export default function TriageSystem({ onBack }) {
                               </div>
                             ))}
                             <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: "1px solid #bfdbfe", color: "#1e40af", fontWeight: "600" }}>
-                              New total invoiced: {option.slotBreakdown.correctedTotal} / Revenue: {option.slotBreakdown.currentRevenue} ({option.slotBreakdown.revenueRatio})
+                              New real total invoiced (excl. MANUAL-INV): {option.slotBreakdown.correctedTotal} / Revenue: {option.slotBreakdown.currentRevenue} ({option.slotBreakdown.revenueRatio})
                             </div>
                           </div>
                         )}

@@ -3915,7 +3915,17 @@ When assessing these candidates, consider:
           };
         }
         
-        // Build table for Claude
+        // Build table for Claude — propagate parent client/job name to child rows so Claude
+        // can correctly associate all invoice slots with their job, regardless of row type.
+        let lastParentClient = '';
+        let lastParentJob = '';
+        let lastParentCode = '';
+        let lastParentRevenue = '';
+        let lastParentVAT = '';
+        let lastParentType = '';
+        let lastParentStart = '';
+        let lastParentEnd = '';
+
         const confirmedTabTable = activeData
           .map((row, idx) => {
             const client = row[0] || '';
@@ -3926,7 +3936,38 @@ When assessing these candidates, consider:
             const projType = row[35] || '';
             const startDate = row[37] || '';
             const endDate = row[38] || '';
-            
+
+            // Detect parent vs child:
+            // Parent = has revenue OR start date OR end date (or is the header row idx=0)
+            // Child  = same client+job as parent above, but revenue/start/end blank
+            const isParent = idx === 0 || !!(revenue || startDate || endDate || (client && (!lastParentClient || client !== lastParentClient)));
+            const isChildRow = !isParent && !revenue && !startDate && !endDate
+              && (client === lastParentClient || !client)
+              && (jobName === lastParentJob || !jobName);
+
+            // For rendering: use parent values on child rows so Claude sees the job context
+            const displayClient     = client     || (isChildRow ? lastParentClient : '');
+            const displayJob        = jobName    || (isChildRow ? lastParentJob    : '');
+            const displayCode       = projectCode|| (isChildRow ? lastParentCode   : '');
+            const displayRevenue    = isChildRow ? '(child row — see parent)' : revenue;
+            const displayVAT        = vat        || (isChildRow ? lastParentVAT    : '');
+            const displayType       = projType   || (isChildRow ? lastParentType   : '');
+            const displayStart      = startDate  || (isChildRow ? lastParentStart  : '');
+            const displayEnd        = endDate    || (isChildRow ? lastParentEnd    : '');
+            const rowLabel          = isChildRow ? '[child row]' : '[parent row]';
+
+            // Update parent tracking whenever we see a row with revenue/dates
+            if (!isChildRow && client) {
+              lastParentClient  = client;
+              lastParentJob     = jobName;
+              lastParentCode    = projectCode;
+              lastParentRevenue = revenue;
+              lastParentVAT     = vat;
+              lastParentType    = projType;
+              lastParentStart   = startDate;
+              lastParentEnd     = endDate;
+            }
+
             // Invoice slot column layout (0-indexed):
             // Slot 1: Amount=AP(41), Ref=AQ(42), SentDate=AR(43), DaysToPay=AS(44), Status=AT(45)
             // Slot 2: Amount=AW(48), Ref=AX(49), SentDate=AY(50), DaysToPay=AZ(51), Status=BA(52)
@@ -3953,8 +3994,8 @@ When assessing these candidates, consider:
             const inv1 = formatSlot(41, 42, 43, 44, 45);
             const inv2 = formatSlot(48, 49, 50, 51, 52);
             const inv3 = formatSlot(55, 56, 57, 58, 59);
-            
-            return `Row ${idx + 1} | ${client} | ${jobName} | Code: ${projectCode} | Revenue: ${revenue} | VAT: ${vat} | Type: ${projType} | Start: ${startDate} | End: ${endDate} | Inv1: ${inv1} | Inv2: ${inv2} | Inv3: ${inv3}`;
+
+            return `Row ${idx + 1} ${rowLabel} | ${displayClient} | ${displayJob} | Code: ${displayCode} | Revenue: ${displayRevenue} | VAT: ${displayVAT} | Type: ${displayType} | Start: ${displayStart} | End: ${displayEnd} | Inv1: ${inv1} | Inv2: ${inv2} | Inv3: ${inv3}`;
           })
           .join('\n');
         

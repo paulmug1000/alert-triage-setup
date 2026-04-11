@@ -2813,7 +2813,7 @@ export default function TriageSystem({ onBack }) {
   }
 
   // Screen 1: Loading state (shown while startTriage runs on mount)
-  if (!sessionId && !triageComplete) {
+  if (!sessionId && !triageComplete && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={styles.container}>
@@ -2845,7 +2845,7 @@ export default function TriageSystem({ onBack }) {
   }
 
   // Screen 2: Triage complete with no alerts
-  if (triageComplete && totalAlerts === 0 && noActionCount === 0) {
+  if (triageComplete && totalAlerts === 0 && noActionCount === 0 && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
       <div style={styles.container}>

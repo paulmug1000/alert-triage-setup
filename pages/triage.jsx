@@ -1846,7 +1846,7 @@ export default function TriageSystem({ onBack }) {
   ) : jsx;
 
   // Screen: Ignored Alerts
-  if (screen === "ignoredAlerts") {
+  if (screen === "ignoredAlerts" && activeNav !== "tasks") {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks}>
         <div style={styles.container}>
@@ -2060,7 +2060,7 @@ export default function TriageSystem({ onBack }) {
   }
 
   // Screen 1b: Client Selection Screen
-  if (screen === "clientSelection" && sessionId) {
+  if (screen === "clientSelection" && sessionId && activeNav !== "tasks") {
     const ACTIONABLE_FLAG_KEYS = [
       "invoiceDashboardDiscr", "expenseDashboardDiscr",
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
@@ -2273,7 +2273,7 @@ export default function TriageSystem({ onBack }) {
   }
 
   // Screen 1b: Proactive Alert Review Screen
-  if (screen === "proactiveReview" && proactiveSelectedClient) {
+  if (screen === "proactiveReview" && proactiveSelectedClient && activeNav !== "tasks") {
     const clientAlertsList = proactiveAlerts.filter(a => a.clientName === proactiveSelectedClient);
     const freqLabel = (days) => {
       if (days <= 31) return "monthly";
@@ -2377,7 +2377,7 @@ export default function TriageSystem({ onBack }) {
   }
 
   // Screen 1c: Alert Selection Screen
-  if (screen === "alertSelection" && selectedClient) {
+  if (screen === "alertSelection" && selectedClient && activeNav !== "tasks") {
     // Group actionable alerts by type
     const groupedAlerts = {};
     clientAlerts.forEach(alert => {
@@ -2692,7 +2692,7 @@ export default function TriageSystem({ onBack }) {
   }
 
   // Screen 1d: Clear Flags Screen
-  if (screen === "clearFlags" && selectedClient) {
+  if (screen === "clearFlags" && selectedClient && activeNav !== "tasks") {
     const allChecked = flagsToClear.invoice && flagsToClear.crm && flagsToClear.expense;
     const noneChecked = !flagsToClear.invoice && !flagsToClear.crm && !flagsToClear.expense;
     const anyActive = flagsToClear.invoice || flagsToClear.crm || flagsToClear.expense;
@@ -2884,7 +2884,7 @@ export default function TriageSystem({ onBack }) {
   }
 
   // Screen 3b: Display individual alert with Claude analysis (NEW CLIENT-BASED FLOW)
-  if (screen === "triageAnalysis" && selectedClient && clientAlerts.length > 0) {
+  if (screen === "triageAnalysis" && selectedClient && clientAlerts.length > 0 && activeNav !== "tasks") {
     const alert = clientAlerts[currentClientAlertIndex];
     const progress = currentClientAlertIndex + 1;
 
@@ -3524,7 +3524,7 @@ export default function TriageSystem({ onBack }) {
       </NavShell>
     );
   }
-  if (showNoAction && noActionCount > 0) {
+  if (showNoAction && noActionCount > 0 && activeNav !== "tasks") {
     const allAcknowledged = acknowledgedNoAction.size === noActionCount;
 
     return withModal(

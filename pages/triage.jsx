@@ -177,7 +177,7 @@ export default function TriageSystem({ onBack }) {
   const [proactiveAlerts, setProactiveAlerts] = useState([]);
   const [proactiveCountsByClient, setProactiveCountsByClient] = useState({});
   const [proactiveLoading, setProactiveLoading] = useState(false);
-  const [proactiveLoaded, setProactiveLoaded] = useState(false);
+  const [proactiveLoadedAt, setProactiveLoadedAt] = useState(0); // epoch ms of last load
   const [proactiveSelectedClient, setProactiveSelectedClient] = useState(null);
   const [overviewData, setOverviewData] = useState([]);
   const [overviewLoading, setOverviewLoading] = useState(false);
@@ -1266,7 +1266,7 @@ export default function TriageSystem({ onBack }) {
   const loadProactiveAlerts = async () => {
     try {
       setProactiveLoading(true);
-      setProactiveLoaded(false);
+      setProactiveLoadedAt(0);
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1277,7 +1277,7 @@ export default function TriageSystem({ onBack }) {
         setProactiveAlerts(data.alerts || []);
         setProactiveCountsByClient(data.countsByClient || {});
       }
-      setProactiveLoaded(true);
+      setProactiveLoadedAt(Date.now());
     } catch (err) {
       console.error("Failed to load proactive alerts:", err);
     } finally {
@@ -2070,7 +2070,7 @@ export default function TriageSystem({ onBack }) {
     ];
 
     // Load proactive alerts once when this screen first renders
-    if (!proactiveLoaded && !proactiveLoading) {
+    if (!proactiveLoading && (Date.now() - proactiveLoadedAt > 5 * 60 * 1000)) {
       loadProactiveAlerts();
     }
 
@@ -2228,9 +2228,15 @@ export default function TriageSystem({ onBack }) {
                   grouped[a.clientName].push(a);
                 });
                 return Object.entries(grouped).map(([clientName, alerts], idx) => {
+                  const typeLabels = {
+                    retainer_invoice:    "Retainer invoice",
+                    crm_wipe:            "CRM data wipe",
+                    revenue_mismatch:    "Revenue / invoiced mismatch",
+                    direct_costs_mismatch: "Direct costs / expenses mismatch",
+                  };
                   const typeCounts = {};
                   alerts.forEach(a => {
-                    const label = a.alertType === "retainer_invoice" ? "Retainer invoice" : "CRM data wipe";
+                    const label = typeLabels[a.alertType] || a.alertType || "Alert";
                     typeCounts[label] = (typeCounts[label] || 0) + 1;
                   });
                   return (
@@ -2335,6 +2341,28 @@ export default function TriageSystem({ onBack }) {
                             </div>
                           </div>
                         )}
+                      </div>
+                    )}
+
+                    {/* Revenue / invoiced mismatch detail */}
+                    {alert.alertType === "revenue_mismatch" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef3c7", border: "1px solid #fcd34d", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.jobClient && <div><strong>End client:</strong> {m.jobClient}</div>}
+                        {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
+                        {m.projectCode && <div><strong>Code:</strong> {m.projectCode}</div>}
+                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                        {m.isRetainer && <div><strong>Type:</strong> Retainer</div>}
+                      </div>
+                    )}
+
+                    {/* Direct costs / expenses mismatch detail */}
+                    {alert.alertType === "direct_costs_mismatch" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fce7f3", border: "1px solid #f9a8d4", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.jobClient && <div><strong>End client:</strong> {m.jobClient}</div>}
+                        {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
+                        {m.projectCode && <div><strong>Code:</strong> {m.projectCode}</div>}
+                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                        {m.isRetainer && <div><strong>Type:</strong> Retainer</div>}
                       </div>
                     )}
 

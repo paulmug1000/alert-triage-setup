@@ -3948,14 +3948,23 @@ Return ONLY the JSON array, no other text.`;
                   } else if (isManual) {
                     slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [MANUAL-INV placeholder]`;
                   } else {
-                    // Blank-ref placeholder
+                    // Blank-ref placeholder — show explicit date comparison vs invoice sent date
                     const dateResult = dateWithinTolerance(slotDate);
-                    const dateTag = dateResult === true
-                      ? `date ${slotDate} ✓ matches invoice (diff: ${Math.abs((parseConfirmedDate(slotDate) - invSentDateParsed) / (1000*60*60*24*30.4)).toFixed(1)} months)`
-                      : dateResult === false
-                        ? `date ${slotDate} ✗ outside tolerance (diff: ${Math.abs((parseConfirmedDate(slotDate) - invSentDateParsed) / (1000*60*60*24*30.4)).toFixed(1)} months)`
-                        : "no date";
-                    slotDesc = `[blank-ref placeholder] £${amt?.toFixed(2) || "?"} ${dateTag}${isMatched ? " ← AMOUNT MATCHES THIS INVOICE" : ""}`;
+                    let dateTag;
+                    if (!slotDate) {
+                      dateTag = "no date recorded";
+                    } else if (invSentDateParsed && parseConfirmedDate(slotDate)) {
+                      const diffMonths = Math.abs((parseConfirmedDate(slotDate) - invSentDateParsed) / (1000*60*60*24*30.4));
+                      const direction = parseConfirmedDate(slotDate) > invSentDateParsed ? "after" : "before";
+                      if (diffMonths < 0.1) {
+                        dateTag = `slot date ${slotDate} vs invoice ${sentDate} = EXACT MATCH`;
+                      } else {
+                        dateTag = `slot date ${slotDate} vs invoice ${sentDate} = ${diffMonths.toFixed(1)} months ${direction} invoice ${dateResult ? "✓ within tolerance" : "✗ outside tolerance"}`;
+                      }
+                    } else {
+                      dateTag = `slot date ${slotDate} (invoice sent: ${sentDate || "unknown"})`;
+                    }
+                    slotDesc = `[blank-ref placeholder] £${amt?.toFixed(2) || "?"} | ${dateTag}${isMatched ? " ← AMOUNT MATCHES THIS INVOICE" : ""}`;
                   }
                   allSlotLines.push(`    Row ${sheetRow} (${rowLabel}) Inv${sd.slotNum}: ${slotDesc}`);
                 }
@@ -4262,11 +4271,11 @@ Format as JSON array:
     "totalRevenue": 15950,
     "startDate": "3-Mar-26",
     "endDate": "31-Aug-26",
-    "existingInvoices": "Description of all existing invoice slots including placeholders",
+    "existingInvoices": "One line per slot, format: Row N SlotX: [type] £amount | ref: REF | sent: DATE | days: N | status: STATUS. Example: Row 263 Slot1: blank placeholder £3200.00 | ref: (none) | sent: 10-Apr-26 | days: 30 | status: (none). Row 263 Slot2: blank placeholder £3200.00 | ref: (none) | sent: 15-May-26 | days: 30 | status: (none). Include ALL slots across ALL rows of the job — parent and child.",
     "currentTotalInvoiced": 13700,
     "newTotalIfAccepted": 15950,
     "remainingAfterAccepting": 0,
-    "invoiceMatchStatus": "EXACT MATCH / AMOUNT MISMATCH / etc",
+    "invoiceMatchStatus": "Describe the match quality. For date comparisons, ALWAYS state the slot's actual sent date vs the invoice sent date and the difference in months — never use the word 'exact' unless the dates are identical. Example: 'Amount exact match (£3,200). Slot date 10-Apr-26 vs invoice date 10-Apr-26 = exact date match.' Or: 'Amount exact match. Slot date 15-Jul-26 vs invoice date 15-Sep-26 = 2.0 months before invoice, within 2-month tolerance.'",
     "placeholderImpact": "Description of any placeholder slots being cleared or adjusted",
     "revenueImpact": "No change / Suggest increasing revenue to X / Gap created — automation will handle"
   },

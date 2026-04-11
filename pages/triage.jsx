@@ -2953,7 +2953,16 @@ export default function TriageSystem({ onBack }) {
                               {option.facts.totalRevenue && <li><strong>Total revenue:</strong> £{option.facts.totalRevenue.toLocaleString()}</li>}
                               {option.facts.startDate && <li><strong>Start date:</strong> {option.facts.startDate}</li>}
                               {option.facts.endDate && <li><strong>End date:</strong> {option.facts.endDate}</li>}
-                              {option.facts.existingInvoices && <li><strong>Existing invoices:</strong> {option.facts.existingInvoices}</li>}
+                              {option.facts.existingInvoices && (
+                                <li>
+                                  <strong>Existing invoices:</strong>
+                                  <div style={{ marginTop: "4px", fontFamily: "monospace", fontSize: "11px", color: "#333", lineHeight: "1.6" }}>
+                                    {option.facts.existingInvoices.split(/\.\s+(?=Row )/).map((line, i) => (
+                                      <div key={i} style={{ paddingLeft: "4px", borderLeft: "2px solid #e0e0e0", marginBottom: "2px" }}>{line.trim()}</div>
+                                    ))}
+                                  </div>
+                                </li>
+                              )}
                               {option.facts.remainingToInvoice && <li><strong>Left to invoice:</strong> £{option.facts.remainingToInvoice.toLocaleString()}</li>}
                               {option.facts.invoiceMatchStatus && <li><strong>{option.facts.invoiceMatchStatus}</strong></li>}
                             </ul>

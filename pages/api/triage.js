@@ -4180,11 +4180,11 @@ ${SHEET_STRUCTURE_BLOCK}
 
 **Placeholder invoices:**
 A placeholder slot has an AMOUNT set but a BLANK reference (or a reference beginning with MANUAL-INV).
-- Blank-reference placeholders: Claude CAN adjust or clear these as part of recommendations
-- MANUAL-INV references (shown as [MANUAL ONLY]): These are managed by automation elsewhere — do NOT modify them
-- CRITICAL RULE: After all recommended writes are applied, the total invoiced (sum of all non-MANUAL-ONLY slot amounts) must equal the job revenue, OR a documented gap must remain for automation to fill. It must NEVER exceed revenue.
-- "Clear a slot" means writing "" to all 5 fields of that slot (Amount, Reference, Sent Date, Days to Pay, Status)
-- When placing a new invoice causes the total to exceed revenue, clear blank-reference placeholder slots (starting from the last slot and working backwards) until the total balances
+- Blank-reference placeholders: These represent planned/expected invoices. When placing a real invoice into one, write ONLY the 5 fields of the target slot (amount, reference, sent date, days to pay, status). Do NOT clear or modify any other placeholder slots — the automation manages them.
+- MANUAL-INV references (shown as [MANUAL ONLY]): These are managed by automation elsewhere — do NOT modify them under any circumstances.
+- CRITICAL RULE: Write ONLY to the single target slot. Do not touch any other slot on any other row.
+- "Clear a slot" ONLY applies when a blank-reference placeholder needs to be removed because placing the invoice would cause real invoices alone to EXCEED total revenue. Even then, only clear the minimum number of slots necessary, working backwards from the last slot.
+- In practice: if the job has blank-ref placeholder slots, placing this invoice will NOT cause an overage (the placeholders represent future invoices, not committed amounts). Only suggest clearing if real invoice total would exceed revenue after placement.
 
 **How to Calculate Total Invoiced and Remaining:**
 1. Find the job's parent row (has Revenue value)
@@ -4289,7 +4289,7 @@ Return ONLY JSON, no other text.`;
 
         const message = await anthropic.messages.create({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 2000,
+          max_tokens: 4000,
           messages: [
             { role: "user", content: prompt }
           ],

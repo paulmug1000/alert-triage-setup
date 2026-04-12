@@ -192,6 +192,7 @@ export default function TriageSystem({ onBack }) {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [activeNav, setActiveNav] = useState("home"); // "home" | "overview" | "tasks"
   const [navTaskCount, setNavTaskCount] = useState(0); // active task count for badge
+  const [allClientsMap, setAllClientsMap] = useState({}); // {clientName: {clientSheetId, masterSheetId}} — always populated
 
   // ── Tasks state ───────────────────────────────────────────────────────────
   const [tasks, setTasks] = useState([]);
@@ -1033,6 +1034,11 @@ export default function TriageSystem({ onBack }) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId: AUTOMATION_COMMANDER_SHEET_ID, filter: "active" }),
     }).then(r => r.json()).then(d => { if (d.success) setNavTaskCount(d.tasks?.length || 0); }).catch(() => {});
+    // Load full client map for sheet URL lookups (needed when no automation alerts)
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId: AUTOMATION_COMMANDER_SHEET_ID }),
+    }).then(r => r.json()).then(d => { if (d.success) setAllClientsMap(d.clients || {}); }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Compute which flag groups (invoice/crm/expense) are active for a client
@@ -2417,7 +2423,8 @@ export default function TriageSystem({ onBack }) {
                       </div>
                       <div style={{ display: "flex", gap: "8px" }}>
                         {(() => {
-                          const clientInfo = clientsWithFlags.find(c => c.clientName === proactiveSelectedClient);
+                          const clientInfo = clientsWithFlags.find(c => c.clientName === proactiveSelectedClient)
+                            || allClientsMap[proactiveSelectedClient];
                           if (!clientInfo?.clientSheetId && !clientInfo?.masterSheetId) return null;
                           return (
                             <button className="triage-btn"

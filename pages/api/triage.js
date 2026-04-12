@@ -1430,7 +1430,40 @@ export default async function handler(req, res) {
 
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 
-    if (action === "get_overview") {
+    if (action === "get_all_clients") {
+      // Returns a lightweight map of all clients with their sheet IDs.
+      // Used by the frontend when clientsWithFlags is empty (no automation alerts)
+      // so proactive alerts still have access to sheet URLs.
+      const { automationCommanderSheetId } = req.body;
+      if (!automationCommanderSheetId) {
+        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: automationCommanderSheetId,
+          range: "AutoUpdates!A2:M500",
+        });
+        const rows = resp.data.values || [];
+        const clients = {};
+        for (const row of rows) {
+          const clientName = String(row[0] || "").trim();
+          const clientSheetUrl = row[11];
+          const masterSheetUrl = row[12];
+          if (!clientName || !clientSheetUrl || !masterSheetUrl) continue;
+          const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
+          const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
+          if (clientSheetId && masterSheetId) {
+            clients[clientName] = { clientSheetId, masterSheetId };
+          }
+        }
+        return res.status(200).json({ success: true, clients });
+      } catch (err) {
+        console.error("❌ get_all_clients error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_overview") {
       // Read AutoUpdates tab fresh for the Overview screen.
       // Returns per-client run times, feedback summaries, and flag text.
       const { automationCommanderSheetId } = req.body;

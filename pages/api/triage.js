@@ -6786,22 +6786,24 @@ Return ONLY JSON, no other text.`;
     } else if (action === "get_tasks") {
       // Returns all tasks from AlertMemory, with Redis caching.
       // Filter: active | snoozed | resolved
-      const { automationCommanderSheetId: acId, filter } = req.body;
+      const { automationCommanderSheetId: acId, filter, bypassCache } = req.body;
       if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
 
       const TASK_CACHE_KEY = "triage_tasks_cache";
       const TASK_CACHE_TTL_S = 300; // 5 minutes
 
       try {
-        // Try cache first
+        // Try cache first (unless bypassed)
         let allTasks = null;
-        try {
-          const cached = await redisClient.get(TASK_CACHE_KEY);
-          if (cached) {
-            allTasks = JSON.parse(cached);
-            console.log(`  ✅ Tasks from Redis cache (${allTasks.length} rows)`);
-          }
-        } catch (e) { /* cache miss */ }
+        if (!bypassCache) {
+          try {
+            const cached = await redisClient.get(TASK_CACHE_KEY);
+            if (cached) {
+              allTasks = JSON.parse(cached);
+              console.log(`  ✅ Tasks from Redis cache (${allTasks.length} rows)`);
+            }
+          } catch (e) { /* cache miss */ }
+        }
 
         if (!allTasks) {
           const sheets = await getSheetsClient();

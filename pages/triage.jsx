@@ -219,18 +219,18 @@ export default function TriageSystem({ onBack }) {
   // Nav handlers — defined early so they're available throughout the render
   const handleNavHome = () => { setActiveNav("home"); };
   const handleNavOverview = () => { setActiveNav("overview"); loadOverview(); };
-  const handleNavTasks = () => { setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active"); };
+  const handleNavTasks = () => { setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
 
   // ── Task handlers ─────────────────────────────────────────────────────────
 
-  const loadTasks = async (filter = "active") => {
+  const loadTasks = async (filter = "active", bypassCache = false) => {
     try {
       setTasksLoading(true);
       setTaskActionError("");
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId, filter }),
+        body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId, filter, bypassCache }),
       });
       const data = await res.json();
       if (data.success) {
@@ -1350,11 +1350,11 @@ export default function TriageSystem({ onBack }) {
     if (activeNav !== "tasks") return;
     // Reload if stale (older than 5 minutes) and not already loading
     if (!tasksLoading && Date.now() - tasksLoadedAt > 5 * 60 * 1000) {
-      loadTasks(tasksFilter);
+      loadTasks(tasksFilter, true);
     }
     // Set up an interval to keep reloading every 5 minutes while on the Tasks screen
     const interval = setInterval(() => {
-      if (!tasksLoading) loadTasks(tasksFilter);
+      if (!tasksLoading) loadTasks(tasksFilter, true);
     }, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, [activeNav, tasksFilter]);

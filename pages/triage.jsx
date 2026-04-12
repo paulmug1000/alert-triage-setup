@@ -1291,7 +1291,6 @@ export default function TriageSystem({ onBack }) {
   const loadProactiveAlerts = async () => {
     try {
       setProactiveLoading(true);
-      setProactiveLoadedAt(0);
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1324,7 +1323,22 @@ export default function TriageSystem({ onBack }) {
     }
   }, [proactiveAlerts, proactiveLoadedAt]);
 
-  const acknowledgeProactiveAlert = async (alertKey) => {
+  // Load proactive alerts when we arrive at a screen that needs them.
+  // Using a useEffect (not render-time calls) to prevent cascading re-renders.
+  useEffect(() => {
+    const needsProactive = (
+      screen === "clientSelection" ||
+      (triageComplete && totalAlerts === 0 && noActionCount === 0)
+    ) && activeNav !== "tasks" && activeNav !== "overview";
+
+    if (!needsProactive) return;
+    // Only fetch if not already loading and data is absent or stale (5 min)
+    if (!proactiveLoading && (Date.now() - proactiveLoadedAt > 5 * 60 * 1000)) {
+      loadProactiveAlerts();
+    }
+  }, [screen, triageComplete, totalAlerts, noActionCount, activeNav]);
+
+  const acknowledgeProactiveAlert = async (alertKey, rowIndex) => {
     try {
       const res = await fetch("/api/triage", {
         method: "POST",
@@ -1334,22 +1348,19 @@ export default function TriageSystem({ onBack }) {
       const data = await res.json();
       if (!data.success) {
         console.error(`❌ acknowledge_proactive_alert failed: ${data.error}`);
-        return; // Don't remove from UI if backend failed
+        return;
       }
-      console.log(`✅ Acknowledged alert: ${alertKey}`);
+      console.log(`✅ Acknowledged alert: ${alertKey} (rowIndex ${rowIndex})`);
       setProactiveAlerts(prev => {
-        const remaining = prev.filter(a => a.alertKey !== alertKey);
+        // Remove by rowIndex (unique) not alertKey — prevents removing duplicates at once
+        const remaining = rowIndex
+          ? prev.filter(a => a.rowIndex !== rowIndex)
+          : prev.filter(a => a.alertKey !== alertKey);
         const counts = {};
         remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
         setProactiveCountsByClient(counts);
         const remainingForClient = remaining.filter(a => a.clientName === proactiveSelectedClient);
-        console.log(`🔍 acknowledge: alertKey=${alertKey}, proactiveSelectedClient="${proactiveSelectedClient}", remainingForClient=${remainingForClient.length}, totalRemaining=${remaining.length}`);
-        if (remainingForClient.length === 0) {
-          console.log(`🔍 → navigating to clientSelection`);
-          setScreen("clientSelection");
-        } else {
-          console.log(`🔍 → staying on proactiveReview`);
-        }
+        if (remainingForClient.length === 0) setScreen("clientSelection");
         return remaining;
       });
     } catch (err) {
@@ -2122,11 +2133,6 @@ export default function TriageSystem({ onBack }) {
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
     ];
 
-    // Load proactive alerts once when this screen first renders
-    if (!proactiveLoading && (Date.now() - proactiveLoadedAt > 5 * 60 * 1000)) {
-      loadProactiveAlerts();
-    }
-
     // If all clients have had their flags zeroed out AND no proactive alerts, show complete screen
     const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
     if (activeClients.length === 0 && proactiveAlerts.length === 0 && proactiveLoadedAt > 0) {
@@ -2508,7 +2514,7 @@ export default function TriageSystem({ onBack }) {
                         </button>
                         <button
                           className="triage-btn"
-                          onClick={() => acknowledgeProactiveAlert(alert.alertKey)}
+                          onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)}
                           style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
                         >
                           ✓ Acknowledge
@@ -3005,10 +3011,6 @@ export default function TriageSystem({ onBack }) {
 
   // Screen 2: Triage complete with no alerts
   if (triageComplete && totalAlerts === 0 && noActionCount === 0 && activeNav !== "tasks" && activeNav !== "overview") {
-    // Load proactive alerts if not already loaded or stale
-    if (!proactiveLoading && (Date.now() - proactiveLoadedAt > 5 * 60 * 1000)) {
-      loadProactiveAlerts();
-    }
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>

@@ -1326,11 +1326,17 @@ export default function TriageSystem({ onBack }) {
 
   const acknowledgeProactiveAlert = async (alertKey) => {
     try {
-      await fetch("/api/triage", {
+      const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "acknowledge_proactive_alert", alertKey, automationCommanderSheetId }),
       });
+      const data = await res.json();
+      if (!data.success) {
+        console.error(`❌ acknowledge_proactive_alert failed: ${data.error}`);
+        return; // Don't remove from UI if backend failed
+      }
+      console.log(`✅ Acknowledged alert: ${alertKey}`);
       setProactiveAlerts(prev => {
         const remaining = prev.filter(a => a.alertKey !== alertKey);
         const counts = {};
@@ -2369,7 +2375,7 @@ export default function TriageSystem({ onBack }) {
                       {alert.heading}
                     </div>
                     <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                      {alert.detail}
+                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" ? null : alert.detail}
                     </div>
 
                     {/* Retainer invoice detail */}

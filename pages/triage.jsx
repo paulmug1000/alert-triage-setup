@@ -1317,7 +1317,8 @@ export default function TriageSystem({ onBack }) {
   useEffect(() => {
     if (triageComplete && totalAlerts === 0 && noActionCount === 0
         && proactiveLoadedAt > 0 && proactiveAlerts.length > 0
-        && activeNav !== "tasks" && activeNav !== "overview") {
+        && activeNav !== "tasks" && activeNav !== "overview"
+        && screen !== "proactiveReview" && screen !== "clientSelection") {
       console.log(`📋 Proactive alerts loaded (${proactiveAlerts.length}), redirecting to clientSelection`);
       setScreen("clientSelection");
     }

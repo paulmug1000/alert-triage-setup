@@ -309,9 +309,11 @@ export default function TriageSystem({ onBack }) {
           setScreen("alertSelection");
         }
       } else {
-        // Proactive: remove from proactive list
+        // Proactive: remove from proactive list — use rowIndex (unique) not alertKey
         setProactiveAlerts(prev => {
-          const remaining = prev.filter(a => a.alertKey !== taskModalAlert.alertKey);
+          const remaining = taskModalAlert.rowIndex
+            ? prev.filter(a => a.rowIndex !== taskModalAlert.rowIndex)
+            : prev.filter(a => a.alertKey !== taskModalAlert.alertKey);
           const counts = {};
           remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
           setProactiveCountsByClient(counts);

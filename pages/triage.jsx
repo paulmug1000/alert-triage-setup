@@ -2416,6 +2416,21 @@ export default function TriageSystem({ onBack }) {
                         First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}
                       </div>
                       <div style={{ display: "flex", gap: "8px" }}>
+                        {(() => {
+                          const clientInfo = clientsWithFlags.find(c => c.clientName === proactiveSelectedClient);
+                          if (!clientInfo?.clientSheetId && !clientInfo?.masterSheetId) return null;
+                          return (
+                            <button className="triage-btn"
+                              onClick={() => {
+                                if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
+                                if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
+                              }}
+                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
+                            >
+                              📊 Open Sheets
+                            </button>
+                          );
+                        })()}
                         <button
                           className="triage-btn"
                           onClick={() => openCreateTaskModal(alert, true)}

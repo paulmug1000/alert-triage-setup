@@ -2407,22 +2407,68 @@ export default function TriageSystem({ onBack }) {
                     {/* Revenue / invoiced mismatch detail */}
                     {alert.alertType === "revenue_mismatch" && (
                       <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef3c7", border: "1px solid #fcd34d", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {m.jobClient && <div><strong>End client:</strong> {m.jobClient}</div>}
-                        {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
-                        {m.projectCode && <div><strong>Code:</strong> {m.projectCode}</div>}
-                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
-                        {m.isRetainer && <div><strong>Type:</strong> Retainer</div>}
+                        {(() => {
+                          const detail = alert.detail || "";
+                          const mismatchIdx = detail.indexOf("Mismatched rows:");
+                          if (mismatchIdx === -1) {
+                            // No mismatch breakdown — just show the whole detail bolded
+                            return <div style={{ fontWeight: "600" }}>{detail}</div>;
+                          }
+                          const header = detail.slice(0, mismatchIdx).trim();
+                          const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
+                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
+                          return (
+                            <>
+                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
+                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
+                              {rows.map((row, i) => {
+                                // Bold the "— diff £X" part
+                                const diffIdx = row.indexOf("— diff");
+                                if (diffIdx === -1) {
+                                  return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
+                                }
+                                return (
+                                  <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>
+                                    • {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong>
+                                  </div>
+                                );
+                              })}
+                            </>
+                          );
+                        })()}
                       </div>
                     )}
 
                     {/* Direct costs / expenses mismatch detail */}
                     {alert.alertType === "direct_costs_mismatch" && (
                       <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fce7f3", border: "1px solid #f9a8d4", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {m.jobClient && <div><strong>End client:</strong> {m.jobClient}</div>}
-                        {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
-                        {m.projectCode && <div><strong>Code:</strong> {m.projectCode}</div>}
-                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
-                        {m.isRetainer && <div><strong>Type:</strong> Retainer</div>}
+                        {(() => {
+                          const detail = alert.detail || "";
+                          const mismatchIdx = detail.indexOf("Mismatched rows:");
+                          if (mismatchIdx === -1) {
+                            return <div style={{ fontWeight: "600" }}>{detail}</div>;
+                          }
+                          const header = detail.slice(0, mismatchIdx).trim();
+                          const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
+                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
+                          return (
+                            <>
+                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
+                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
+                              {rows.map((row, i) => {
+                                const diffIdx = row.indexOf("— diff");
+                                if (diffIdx === -1) {
+                                  return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
+                                }
+                                return (
+                                  <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>
+                                    • {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong>
+                                  </div>
+                                );
+                              })}
+                            </>
+                          );
+                        })()}
                       </div>
                     )}
 

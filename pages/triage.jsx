@@ -193,6 +193,7 @@ export default function TriageSystem({ onBack }) {
   const [activeNav, setActiveNav] = useState("home"); // "home" | "overview" | "tasks"
   const [navTaskCount, setNavTaskCount] = useState(0); // active task count for badge
   const [allClientsMap, setAllClientsMap] = useState({}); // {clientName: {clientSheetId, masterSheetId}} — always populated
+  const [tasksLoadedAt, setTasksLoadedAt] = useState(0); // epoch ms of last task load
 
   // ── Tasks state ───────────────────────────────────────────────────────────
   const [tasks, setTasks] = useState([]);
@@ -232,8 +233,10 @@ export default function TriageSystem({ onBack }) {
         body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId, filter }),
       });
       const data = await res.json();
-      if (data.success) setTasks(data.tasks || []);
-      else setTaskActionError(data.error || "Failed to load tasks");
+      if (data.success) {
+        setTasks(data.tasks || []);
+        setTasksLoadedAt(Date.now());
+      } else setTaskActionError(data.error || "Failed to load tasks");
       // Keep nav badge in sync whenever active tasks are loaded
       if (filter === "active" && data.success) setNavTaskCount(data.tasks?.length || 0);
     } catch (e) {
@@ -1340,6 +1343,21 @@ export default function TriageSystem({ onBack }) {
       loadProactiveAlerts();
     }
   }, [screen, triageComplete, totalAlerts, noActionCount, activeNav, proactiveLoadedAt]);
+
+  // Auto-refresh active tasks every 5 minutes while on the Tasks screen,
+  // so snoozed tasks reappear promptly when their snooze expires.
+  useEffect(() => {
+    if (activeNav !== "tasks") return;
+    // Reload if stale (older than 5 minutes) and not already loading
+    if (!tasksLoading && Date.now() - tasksLoadedAt > 5 * 60 * 1000) {
+      loadTasks(tasksFilter);
+    }
+    // Set up an interval to keep reloading every 5 minutes while on the Tasks screen
+    const interval = setInterval(() => {
+      if (!tasksLoading) loadTasks(tasksFilter);
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [activeNav, tasksFilter]);
 
   const acknowledgeProactiveAlert = async (alertKey, rowIndex) => {
     try {
@@ -4000,6 +4018,14 @@ export default function TriageSystem({ onBack }) {
               {taskAlert.summary.status && <div style={{ fontSize: "13px" }}><strong>Status:</strong> {taskAlert.summary.status}</div>}
               {taskAlert.heading && <div style={{ fontSize: "13px" }}><strong>Alert:</strong> {taskAlert.heading}</div>}
               {taskAlert.detail && <div style={{ fontSize: "13px", marginTop: "4px", color: "#555" }}>{taskAlert.detail}</div>}
+            </div>
+          )}
+          {/* Proactive alert detail (no summary object — use heading/detail directly) */}
+          {!taskAlert.summary && taskAlert.heading && (
+            <div style={{ ...styles.alertSummary, marginBottom: "16px" }}>
+              <div style={{ fontWeight: "700", fontSize: "13px", marginBottom: "8px", color: "#b45309" }}>ALERT DETAILS</div>
+              <div style={{ fontSize: "13px", fontWeight: "600", marginBottom: "4px" }}>{taskAlert.heading}</div>
+              {taskAlert.detail && <div style={{ fontSize: "13px", color: "#555", marginTop: "4px" }}>{taskAlert.detail}</div>}
             </div>
           )}
 

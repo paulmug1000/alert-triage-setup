@@ -6701,7 +6701,8 @@ Return ONLY JSON, no other text.`;
         }
 
         const alertSummary = alert.summary?.summary
-          || `${alert.type || alert.flagType || "alert"} ${alert.summary?.invoiceNo || alert.summary?.reference || ""} ${alert.summary?.amount ? "£" + alert.summary.amount : ""}`.trim();
+          || alert.heading
+          || `${alert.type || alert.flagType || alert.alertType || "alert"} ${alert.summary?.invoiceNo || alert.summary?.reference || ""} ${alert.summary?.amount ? "£" + alert.summary.amount : ""}`.trim();
 
         const dataSnapshot = JSON.stringify({
           alertType:     alert.type || alert.flagType || "",

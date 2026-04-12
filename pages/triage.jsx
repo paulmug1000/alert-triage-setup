@@ -1335,9 +1335,14 @@ export default function TriageSystem({ onBack }) {
         const counts = {};
         remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
         setProactiveCountsByClient(counts);
-        // If no alerts remain for this client, go back to client selection
         const remainingForClient = remaining.filter(a => a.clientName === proactiveSelectedClient);
-        if (remainingForClient.length === 0) setScreen("clientSelection");
+        console.log(`🔍 acknowledge: alertKey=${alertKey}, proactiveSelectedClient="${proactiveSelectedClient}", remainingForClient=${remainingForClient.length}, totalRemaining=${remaining.length}`);
+        if (remainingForClient.length === 0) {
+          console.log(`🔍 → navigating to clientSelection`);
+          setScreen("clientSelection");
+        } else {
+          console.log(`🔍 → staying on proactiveReview`);
+        }
         return remaining;
       });
     } catch (err) {

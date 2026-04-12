@@ -1314,6 +1314,7 @@ export default function TriageSystem({ onBack }) {
 
   // When on All Clear screen and proactive alerts finish loading, redirect to clientSelection
   useEffect(() => {
+    console.log(`📋 redirect useEffect: triageComplete=${triageComplete}, totalAlerts=${totalAlerts}, proactiveLoadedAt=${proactiveLoadedAt}, proactiveAlerts.length=${proactiveAlerts.length}, screen=${screen}, activeNav=${activeNav}`);
     if (triageComplete && totalAlerts === 0 && noActionCount === 0
         && proactiveLoadedAt > 0 && proactiveAlerts.length > 0
         && activeNav !== "tasks" && activeNav !== "overview"

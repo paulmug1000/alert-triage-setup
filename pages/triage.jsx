@@ -603,6 +603,9 @@ export default function TriageSystem({ onBack }) {
       setIsLoading(true);
       setError("");
       setAcceptError("");
+      // Invalidate proactive alerts so they reload fresh after refresh
+      setProactiveLoadedAt(0);
+      setProactiveAlerts([]);
 
       const response = await fetch("/api/triage", {
         method: "POST",
@@ -1314,7 +1317,6 @@ export default function TriageSystem({ onBack }) {
 
   // When on All Clear screen and proactive alerts finish loading, redirect to clientSelection
   useEffect(() => {
-    console.log(`📋 redirect useEffect: triageComplete=${triageComplete}, totalAlerts=${totalAlerts}, proactiveLoadedAt=${proactiveLoadedAt}, proactiveAlerts.length=${proactiveAlerts.length}, screen=${screen}, activeNav=${activeNav}`);
     if (triageComplete && totalAlerts === 0 && noActionCount === 0
         && proactiveLoadedAt > 0 && proactiveAlerts.length > 0
         && activeNav !== "tasks" && activeNav !== "overview"
@@ -1325,6 +1327,7 @@ export default function TriageSystem({ onBack }) {
   }, [proactiveAlerts, proactiveLoadedAt]);
 
   // Load proactive alerts when we arrive at a screen that needs them.
+  // Only fires when proactiveLoadedAt is 0 (never loaded or explicitly invalidated).
   // Using a useEffect (not render-time calls) to prevent cascading re-renders.
   useEffect(() => {
     const needsProactive = (
@@ -1333,11 +1336,10 @@ export default function TriageSystem({ onBack }) {
     ) && activeNav !== "tasks" && activeNav !== "overview";
 
     if (!needsProactive) return;
-    // Only fetch if not already loading and data is absent or stale (5 min)
-    if (!proactiveLoading && (Date.now() - proactiveLoadedAt > 5 * 60 * 1000)) {
+    if (!proactiveLoading && proactiveLoadedAt === 0) {
       loadProactiveAlerts();
     }
-  }, [screen, triageComplete, totalAlerts, noActionCount, activeNav]);
+  }, [screen, triageComplete, totalAlerts, noActionCount, activeNav, proactiveLoadedAt]);
 
   const acknowledgeProactiveAlert = async (alertKey, rowIndex) => {
     try {

@@ -6549,21 +6549,42 @@ Return ONLY JSON, no other text.`;
         const sheets = await getSheetsClient();
         await ensureProactiveAlertsTab(sheets, acId);
         const existing = await readProactiveAlerts(sheets, acId);
+
+        // Build two lookup maps:
+        // 1. By exact alertKey (primary)
+        // 2. By clientName+alertType+confirmedRow (fallback — handles key format changes between GAS runs)
         const existingByKey = {};
-        for (const row of existing) existingByKey[row.alertKey] = row;
+        const existingBySignature = {};
+        for (const row of existing) {
+          existingByKey[row.alertKey] = row;
+          const confirmedRow = (row.metadata && row.metadata.confirmedRow) ? row.metadata.confirmedRow : "";
+          const sig = `${row.clientName}|||${row.alertType}|||${confirmedRow}`;
+          // Keep the most recent row per signature (last writer wins)
+          if (!existingBySignature[sig] || row.rowIndex > existingBySignature[sig].rowIndex) {
+            existingBySignature[sig] = row;
+          }
+        }
+
         const nowISO = new Date().toISOString().split("T")[0];
         let stored = 0, updated = 0, dismissed = 0;
         const writes = [];
+
         for (const alert of incomingAlerts) {
-          const ex = existingByKey[alert.alertKey];
+          // Build the signature for this incoming alert
+          const incomingConfirmedRow = alert.confirmedRow || (alert.metadata && alert.metadata.confirmedRow) || "";
+          const sig = `${alert.clientName}|||${alert.alertType}|||${incomingConfirmedRow}`;
+
+          // Look up by exact key first, then by signature
+          const ex = existingByKey[alert.alertKey] || existingBySignature[sig];
+
           if (ex) {
             if (ex.status === "acknowledged") { dismissed++; continue; }
-            // Update lastSeen
+            // Active match found — update lastSeen and alertKey (in case key format changed)
+            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!A${ex.rowIndex}`, values: [[alert.alertKey]] });
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!H${ex.rowIndex}`, values: [[nowISO]] });
             updated++;
           } else {
-            // Append new row
-            // Build metadata object from extra fields
+            // No match — append new row
             const metadata = {};
             const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
               "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet"];
@@ -6619,25 +6640,25 @@ Return ONLY JSON, no other text.`;
 
     } else if (action === "acknowledge_proactive_alert") {
       // Marks a proactive alert as acknowledged so it won't reappear.
+      // Updates ALL rows with the matching alertKey (handles duplicates from repeated GAS runs).
       const { alertKey, automationCommanderSheetId: acId } = req.body;
       if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
       try {
         const sheets = await getSheetsClient();
         const all = await readProactiveAlerts(sheets, acId);
-        const row = all.find(r => r.alertKey === alertKey);
-        if (!row) return res.status(404).json({ success: false, error: "Alert not found" });
+        const matchingRows = all.filter(r => r.alertKey === alertKey);
+        if (matchingRows.length === 0) return res.status(404).json({ success: false, error: "Alert not found" });
         const nowISO = new Date().toISOString();
+        const writeData = [];
+        for (const row of matchingRows) {
+          writeData.push({ range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["acknowledged"]] });
+          writeData.push({ range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] });
+        }
         await sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: acId,
-          requestBody: {
-            data: [
-              { range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["acknowledged"]] },
-              { range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] },
-            ],
-            valueInputOption: "RAW",
-          },
+          requestBody: { data: writeData, valueInputOption: "RAW" },
         });
-        console.log(`  ✅ Acknowledged proactive alert: ${alertKey}`);
+        console.log(`  ✅ Acknowledged ${matchingRows.length} row(s) for alertKey: ${alertKey}`);
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error(`❌ Error in acknowledge_proactive_alert:`, err);

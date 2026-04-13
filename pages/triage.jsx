@@ -194,6 +194,7 @@ export default function TriageSystem({ onBack }) {
   const [navTaskCount, setNavTaskCount] = useState(0); // active task count for badge
   const [allClientsMap, setAllClientsMap] = useState({}); // {clientName: {clientSheetId, masterSheetId}} — always populated
   const [tasksLoadedAt, setTasksLoadedAt] = useState(0); // epoch ms of last task load
+  const [snoozedTaskCount, setSnoozedTaskCount] = useState(0); // snoozed task count for badge
 
   // ── Tasks state ───────────────────────────────────────────────────────────
   const [tasks, setTasks] = useState([]);
@@ -238,7 +239,15 @@ export default function TriageSystem({ onBack }) {
         setTasksLoadedAt(Date.now());
       } else setTaskActionError(data.error || "Failed to load tasks");
       // Keep nav badge in sync whenever active tasks are loaded
-      if (filter === "active" && data.success) setNavTaskCount(data.tasks?.length || 0);
+      if (filter === "active" && data.success) {
+        setNavTaskCount(data.tasks?.length || 0);
+        // Also refresh snoozed count in background
+        fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId, filter: "snoozed", bypassCache }),
+        }).then(r => r.json()).then(d => { if (d.success) setSnoozedTaskCount(d.tasks?.length || 0); }).catch(() => {});
+      }
+      if (filter === "snoozed" && data.success) setSnoozedTaskCount(data.tasks?.length || 0);
     } catch (e) {
       setTaskActionError(e.message);
     } finally {
@@ -413,8 +422,10 @@ export default function TriageSystem({ onBack }) {
       const data = await res.json();
       if (data.success) {
         setSelectedTask(null);
-        setTasksFilter("snoozed");
-        loadTasks("snoozed");
+        setNavTaskCount(prev => Math.max(0, prev - 1));
+        setSnoozedTaskCount(prev => prev + 1);
+        setTasksFilter("active");
+        loadTasks("active", true);
       } else setTaskActionError(data.error || "Failed to snooze task");
     } catch (e) { setTaskActionError(e.message); }
     finally { setTaskSnoozeSubmitting(false); }
@@ -3853,9 +3864,9 @@ export default function TriageSystem({ onBack }) {
   // Task list screen
   if (activeNav === "tasks" && !selectedTask) {
     const filterTabs = [
-      { key: "active", label: "Active" },
-      { key: "snoozed", label: "Snoozed" },
-      { key: "resolved", label: "Completed" },
+      { key: "active", label: "Active", count: navTaskCount },
+      { key: "snoozed", label: "Snoozed", count: snoozedTaskCount },
+      { key: "resolved", label: "Completed", count: 0 },
     ];
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
@@ -3877,9 +3888,18 @@ export default function TriageSystem({ onBack }) {
                   fontSize: "14px", fontWeight: tasksFilter === tab.key ? "600" : "400",
                   color: tasksFilter === tab.key ? "#0066cc" : "#555",
                   borderBottom: tasksFilter === tab.key ? "2px solid #0066cc" : "2px solid transparent",
-                  borderRadius: "0",
-                }}
-              >{tab.label}</button>
+                  borderRadius: "0", display: "flex", alignItems: "center", gap: "6px",
+                }}>
+                {tab.label}
+                {tab.count > 0 && (
+                  <span style={{
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    background: "#e53e3e", color: "#fff", borderRadius: "10px",
+                    fontSize: "10px", fontWeight: "700", minWidth: "17px", height: "17px",
+                    padding: "0 5px", lineHeight: "1",
+                  }}>{tab.count > 99 ? "99+" : tab.count}</span>
+                )}
+              </button>
             ))}
             <button className="triage-btn" onClick={() => loadTasks(tasksFilter)}
               style={{ ...styles.buttonSecondary, marginLeft: "auto", fontSize: "12px", padding: "6px 14px", alignSelf: "center" }}>

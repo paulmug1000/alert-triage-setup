@@ -6678,7 +6678,11 @@ Return ONLY JSON, no other text.`;
         await ensureAlertMemoryTab(sheets, acId);
         const memoryRows = await readAlertMemory(sheets, acId);
 
-        const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+        // For proactive alerts, use alertKey as the fingerprint basis so each
+        // alert gets a unique hash. Automation alerts already carry fingerprintHash.
+        const fingerprintHash = alert.fingerprintHash
+          || (alert.alertKey ? createHash("sha256").update(alert.alertKey).digest("hex").substring(0, 16) : null)
+          || buildAlertFingerprint(alert);
         const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
         const now = new Date().toISOString();
         const today = now.split("T")[0];

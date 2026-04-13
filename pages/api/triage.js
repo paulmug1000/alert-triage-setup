@@ -3090,7 +3090,7 @@ Return ONLY JSON, no other text.`;
 
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
-            max_tokens: 1500,
+            max_tokens: 4000,
             messages: [
               { role: "user", content: crmPrompt }
             ],
@@ -3098,10 +3098,17 @@ Return ONLY JSON, no other text.`;
 
           let options = [];
           const responseText = message.content[0].type === "text" ? message.content[0].text : "";
-          const cleanedText = responseText
+          // Strip markdown fences and extract the JSON array
+          let cleanedText = responseText
             .replace(/```json/g, "")
             .replace(/```/g, "")
             .trim();
+          // If response starts with text before the JSON array, extract just the array
+          const arrayStart = cleanedText.indexOf("[");
+          const arrayEnd = cleanedText.lastIndexOf("]");
+          if (arrayStart !== -1 && arrayEnd !== -1 && arrayEnd > arrayStart) {
+            cleanedText = cleanedText.slice(arrayStart, arrayEnd + 1);
+          }
           
           try {
             options = JSON.parse(cleanedText);
@@ -4337,10 +4344,15 @@ Return ONLY JSON, no other text.`;
 
         let options = [];
         const responseText = message.content[0].type === "text" ? message.content[0].text : "";
-        const cleanedText = responseText
+        let cleanedText = responseText
           .replace(/```json/g, "")
           .replace(/```/g, "")
           .trim();
+        const arrayStart = cleanedText.indexOf("[");
+        const arrayEnd = cleanedText.lastIndexOf("]");
+        if (arrayStart !== -1 && arrayEnd !== -1 && arrayEnd > arrayStart) {
+          cleanedText = cleanedText.slice(arrayStart, arrayEnd + 1);
+        }
         
         try {
           options = JSON.parse(cleanedText);

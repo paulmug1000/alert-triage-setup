@@ -4031,7 +4031,8 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
-          {/* Options */}
+          {/* Options — only shown for automation alert tasks, not proactive */}
+          {!selectedTask.isProactive && (
           <div style={{ ...styles.card, marginBottom: "16px" }}>
             <div style={{ fontSize: "15px", fontWeight: "700", color: "#1a1a1a", marginBottom: "12px" }}>Potential Actions</div>
             {taskDetailAnalyzing && (
@@ -4081,6 +4082,7 @@ export default function TriageSystem({ onBack }) {
               </div>
             ))}
           </div>
+          )} {/* end !selectedTask.isProactive */}
 
           {/* Add note */}
           <div style={{ ...styles.card, marginBottom: "16px" }}>

@@ -2057,6 +2057,13 @@ export default async function handler(req, res) {
         return;
       }
 
+      // Proactive alerts (revenue_mismatch, direct_costs_mismatch, retainer_invoice etc.)
+      // don't have automation options to generate — they have heading/detail only.
+      // Return empty options gracefully rather than crashing on missing alert.type/clientId.
+      if (!alert.type && !alert.data && alert.alertKey) {
+        return res.status(200).json({ success: true, options: [], isProactive: true });
+      }
+
       try {
         console.log(`\n🤖 Generating options for ${alert.type || alert.flagType} alert (${alert.clientName})`);
         

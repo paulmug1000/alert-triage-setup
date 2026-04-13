@@ -3979,11 +3979,32 @@ export default function TriageSystem({ onBack }) {
                   {selectedTask.isSnoozed && <span style={{ color: "#d97706", marginLeft: "8px" }}>· Snoozed until {new Date(selectedTask.snoozedUntil).toLocaleString("en-GB")}</span>}
                 </div>
               </div>
-              <button className="triage-btn"
-                onClick={() => resolveTask(selectedTask.fingerprintHash)}
-                style={{ ...styles.buttonSecondary, color: "#2e7d32", borderColor: "#a5d6a7", whiteSpace: "nowrap", flexShrink: 0 }}>
-                ✓ Mark Resolved
-              </button>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", flexShrink: 0 }}>
+                {(() => {
+                  // Sheet URLs: automation alerts use clientId/masterSheetId from taskAlert,
+                  // proactive alerts fall back to allClientsMap
+                  const clientSheetId = taskAlert.clientId || allClientsMap[selectedTask.clientName]?.clientSheetId;
+                  const masterSheetId = taskAlert.masterSheetId || allClientsMap[selectedTask.clientName]?.masterSheetId;
+                  if (!clientSheetId && !masterSheetId) return null;
+                  return (
+                    <button className="triage-btn"
+                      onClick={() => {
+                        if (clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientSheetId}/edit`, "_blank");
+                        if (masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${masterSheetId}/edit`, "_blank");
+                      }}
+                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
+                      📊 Open Sheets
+                    </button>
+                  );
+                })()}
+                {!selectedTask.isResolved && (
+                  <button className="triage-btn"
+                    onClick={() => resolveTask(selectedTask.fingerprintHash)}
+                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#16a34a", borderColor: "#86efac" }}>
+                    ✓ Resolve Task
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Initial note */}

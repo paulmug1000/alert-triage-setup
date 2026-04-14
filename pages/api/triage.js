@@ -5312,16 +5312,18 @@ Return ONLY JSON, no other text.`;
                   if (!ddOk) allOk = false;
                 }
 
-                // Secondary check: job exists in Confirmed — search by job name (and project code if available)
-                // Row numbers are unreliable (rows can shift), so we match on col B (job name) and optionally col C (project code)
+                // Secondary check: job exists in Confirmed — search by project code first, then job+client name
+                // Row numbers are unreliable (rows can shift), so we match on col C (project code) or cols A+B
                 const pipelineProjectCode = pipelineJob?.projectCode || "";
+                // Use the resolved client name from pipelineJob (more reliable than AutoLog-parsed clientParsed)
+                const resolvedClientLower = (pipelineJob?.clientName || "").toLowerCase() || clientParsedLower;
                 for (let cri = 0; cri < confirmedRows.length; cri++) {
                   const cr = confirmedRows[cri];
                   const crJobName     = String(cr[1] || "").trim();
                   const crClientName  = String(cr[0] || "").trim();
                   const crProjectCode = String(cr[2] || "").trim();
                   // Primary match: project code (most reliable, unique per job)
-                  if (pipelineProjectCode && crProjectCode && crProjectCode === pipelineProjectCode) {
+                  if (pipelineProjectCode && crProjectCode && crProjectCode.toLowerCase() === pipelineProjectCode.toLowerCase()) {
                     confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
                     break;
                   }
@@ -5329,7 +5331,8 @@ Return ONLY JSON, no other text.`;
                   const jobNameIsBlankConf = !jobNameLower || jobNameLower === "-";
                   if (jobNameIsBlankConf) continue; // can't match on blank name — project code is the only key
                   if (crJobName.toLowerCase() !== jobNameLower) continue;
-                  if (clientParsedLower && crClientName && !crClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(crClientName.toLowerCase())) continue;
+                  // Use resolvedClientLower (from pipelineJob) for a more accurate client match
+                  if (resolvedClientLower && crClientName && !crClientName.toLowerCase().includes(resolvedClientLower) && !resolvedClientLower.includes(crClientName.toLowerCase())) continue;
                   confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
                   break;
                 }
@@ -5344,7 +5347,9 @@ Return ONLY JSON, no other text.`;
                   ok: confExists,
                   message: confExists
                     ? `✓ Confirmed tab: "${confirmedMatch.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confirmedRowStr}${clientStr} found`
-                    : `✗ Confirmed tab: job "${job.jobName}" not found — copy may have failed`,
+                    : pipelineProjectCode
+                      ? `✗ Confirmed tab: job "${job.jobName}" not found by project code (${pipelineProjectCode}) or name — Confirmed col C may be blank for this job, or copy may have failed`
+                      : `✗ Confirmed tab: job "${job.jobName}" not found — copy may have failed`,
                 });
                 if (!confExists) allOk = false;
 

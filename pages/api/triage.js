@@ -5031,6 +5031,7 @@ Return ONLY JSON, no other text.`;
         const clearColForFlag = {
           crmCopiedConfChecked:    [63, 66], // BL or BO
           crmCopiedConfUnchecked:  [63, 66], // BL or BO
+          crmCopiedConfDelete:     [63, 66], // BL or BO
           retainerInvoicesCreated: [61, 66], // BJ or BO
           invoiceStaleUnsentChanges: [61, 66], // BJ (clear invoice) or BO (clear all)
         };
@@ -5896,6 +5897,163 @@ Return ONLY JSON, no other text.`;
           }
 
         } // end invoiceStaleUnsentChanges
+
+        // ── crmCopiedConfDelete ────────────────────────────────────────────────
+        // Parse AutoLog entries where jobs were deleted from Confirmed via the
+        // "copied to conf box DELETE" action. Then verify:
+        //   1. Job is no longer present in Confirmed tab (by project code)
+        //   2. Job status in Pipeline tab (% likelihood, copied-to-conf column)
+        if (flagType === "crmCopiedConfDelete") {
+
+          // Find AutoLog entries containing deletion records
+          const deleteLogEntries = autoLogRows.filter(row => {
+            const details = String(row[3] || "");
+            return details.includes("Deleted Job:") && details.includes("[Confirmed]");
+          });
+          console.log(`  ✓ Found ${deleteLogEntries.length} delete log entries in window`);
+
+          // Fall back to full AutoLog if nothing in window
+          const deleteEntriesToUse = deleteLogEntries.length > 0 ? deleteLogEntries :
+            allAutoLogRows.filter(row => {
+              const details = String(row[3] || "");
+              return details.includes("Deleted Job:") && details.includes("[Confirmed]");
+            });
+          if (deleteLogEntries.length === 0 && deleteEntriesToUse.length > 0) {
+            console.log(`  ↩ Fell back to full AutoLog — found ${deleteEntriesToUse.length} entries`);
+          }
+
+          if (deleteEntriesToUse.length === 0) {
+            results.push({
+              status: "info",
+              message: "No deletion entries found in AutoLog since flag was last cleared.",
+            });
+          } else {
+            // Parse each deletion entry
+            // Format: "[Confirmed] Deleted Job: Row N, CLIENT | JOB (ID: CRM-XXXX)"
+            const deletedJobs = [];
+            const deletePattern = /\[Confirmed\]\s*Deleted Job:\s*Row\s*(\d+),\s*([^|]+)\|\s*([^(\n]+)\(ID:\s*([^)]+)\)/gi;
+
+            for (const entry of deleteEntriesToUse) {
+              const details = String(entry[3] || "");
+              const timestamp = String(entry[0] || "");
+              let match;
+              while ((match = deletePattern.exec(details)) !== null) {
+                const rowNum     = match[1].trim();
+                const clientName = match[2].trim();
+                const jobName    = match[3].trim();
+                const projectCode = match[4].trim(); // e.g. "CRM-1576"
+                // Deduplicate by project code
+                if (!deletedJobs.find(j => j.projectCode === projectCode)) {
+                  deletedJobs.push({ rowNum, clientName, jobName, projectCode, logTimestamp: timestamp });
+                }
+              }
+            }
+
+            if (deletedJobs.length === 0) {
+              results.push({
+                status: "info",
+                message: "Deletion entries found in AutoLog but could not be parsed. Check the AutoLog tab manually.",
+              });
+            } else {
+              console.log(`  ✓ Parsed ${deletedJobs.length} deleted job(s): ${JSON.stringify(deletedJobs.map(j => j.projectCode))}`);
+
+              // Read Confirmed tab (cols A:C = client, job, project code)
+              const confirmedResp = await sheets.spreadsheets.values.get({
+                spreadsheetId: clientSheetIdClean,
+                range: "Confirmed!A1:C5000",
+              });
+              const confirmedRows = confirmedResp.data.values || [];
+
+              // Read Pipeline tab (cols A:C for lookup, AN for % likelihood, DD for copied status)
+              // DD = col 110 (0-indexed), AN = col 39 (0-indexed)
+              const pipelineResp = await sheets.spreadsheets.values.get({
+                spreadsheetId: clientSheetIdClean,
+                range: "Pipeline!A1:DD5000",
+              });
+              const pipelineRows = pipelineResp.data.values || [];
+
+              for (const job of deletedJobs) {
+                const checks = [];
+                const jobClientLower = job.clientName.toLowerCase();
+                const jobNameLower   = job.jobName.toLowerCase();
+                const projectCodeLower = job.projectCode.toLowerCase();
+
+                // ── Check 1: Confirmed tab ──────────────────────────────────
+                // Search by project code (col C = index 2), fallback client+job (cols A+B)
+                let confirmedRowIdx = -1;
+                for (let ri = 1; ri < confirmedRows.length; ri++) {
+                  const r = confirmedRows[ri] || [];
+                  const pc = String(r[2] || "").trim().toLowerCase();
+                  if (pc === projectCodeLower) { confirmedRowIdx = ri; break; }
+                }
+                // Fallback: client + job name
+                if (confirmedRowIdx === -1) {
+                  for (let ri = 1; ri < confirmedRows.length; ri++) {
+                    const r = confirmedRows[ri] || [];
+                    const rc = String(r[0] || "").trim().toLowerCase();
+                    const rj = String(r[1] || "").trim().toLowerCase();
+                    if (rc === jobClientLower && rj === jobNameLower) { confirmedRowIdx = ri; break; }
+                  }
+                }
+
+                if (confirmedRowIdx === -1) {
+                  checks.push({ ok: true,  message: `✓ Not found in Confirmed tab — job successfully removed` });
+                } else {
+                  checks.push({ ok: false, message: `✗ Job still exists in Confirmed tab at row ${confirmedRowIdx + 1} — deletion may have failed` });
+                }
+
+                // ── Check 2: Pipeline tab ───────────────────────────────────
+                // Search by project code (col C = index 2), fallback client+job
+                let pipelineRowIdx = -1;
+                for (let ri = 1; ri < pipelineRows.length; ri++) {
+                  const r = pipelineRows[ri] || [];
+                  const pc = String(r[2] || "").trim().toLowerCase();
+                  if (pc === projectCodeLower) { pipelineRowIdx = ri; break; }
+                }
+                if (pipelineRowIdx === -1) {
+                  for (let ri = 1; ri < pipelineRows.length; ri++) {
+                    const r = pipelineRows[ri] || [];
+                    const rc = String(r[0] || "").trim().toLowerCase();
+                    const rj = String(r[1] || "").trim().toLowerCase();
+                    if (rc === jobClientLower && rj === jobNameLower) { pipelineRowIdx = ri; break; }
+                  }
+                }
+
+                if (pipelineRowIdx === -1) {
+                  checks.push({ ok: false, message: `⚠ Job not found in Pipeline tab — notable, as deleted Confirmed jobs are usually still in Pipeline` });
+                } else {
+                  const pipeRow = pipelineRows[pipelineRowIdx];
+                  // AN = col 39 (0-indexed), DD = col 109 (0-indexed)
+                  // DD is col 110 in 1-indexed: D=4, D=4 → 4*26+4=108? Let me recalculate:
+                  // A=1...Z=26, AA=27...AZ=52, BA=53...DD=?
+                  // D=4, D=4: (4-1)*26 + 4 = 82? No: col letter to number:
+                  // DD: first D=4, second D=4 → (4)*26 + 4 = 108 (1-indexed) → index 107
+                  // AN: A=1, N=14 → 1*26+14 = 40 (1-indexed) → index 39
+                  const likelihood  = String(pipeRow[39] || "").trim();   // AN
+                  const copiedStatus = String(pipeRow[107] || "").trim(); // DD
+                  checks.push({
+                    ok: true,
+                    message: `Job found in Pipeline tab at row ${pipelineRowIdx + 1}` +
+                      ` — likelihood: ${likelihood || "(blank)"}` +
+                      `, "Copied to conf?" = ${copiedStatus || "(blank)"}`,
+                  });
+                }
+
+                results.push({
+                  status: checks.every(c => c.ok) ? "ok" : "issue",
+                  jobName:      job.jobName,
+                  clientName:   job.clientName,
+                  projectCode:  job.projectCode,
+                  confirmedRow: parseInt(job.rowNum, 10),
+                  logTimestamp: job.logTimestamp,
+                  checks,
+                  message: `${job.clientName} | ${job.jobName} (${job.projectCode}) — deleted from Confirmed row ${job.rowNum}`,
+                });
+              }
+            }
+          }
+
+        } // end crmCopiedConfDelete
 
         const overallOk = results.every(r => r.status === "ok" || r.status === "info");
         console.log(`  ✅ Analysis complete: ${results.length} items, overall ${overallOk ? "OK" : "ISSUES FOUND"}`);

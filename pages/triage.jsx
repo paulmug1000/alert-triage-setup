@@ -2335,10 +2335,11 @@ export default function TriageSystem({ onBack }) {
                 });
                 return Object.entries(grouped).map(([clientName, alerts], idx) => {
                   const typeLabels = {
-                    retainer_invoice:    "Retainer invoice",
-                    crm_wipe:            "CRM data wipe",
-                    revenue_mismatch:    "Revenue / invoiced mismatch",
-                    direct_costs_mismatch: "Direct costs / expenses mismatch",
+                    retainer_invoice:           "Retainer invoice",
+                    crm_wipe:                   "CRM data wipe",
+                    revenue_mismatch:            "Revenue / invoiced mismatch",
+                    direct_costs_mismatch:       "Direct costs / expenses mismatch",
+                    pipeline_confirmed_overlap:  "Pipeline / Confirmed overlap",
                   };
                   const typeCounts = {};
                   alerts.forEach(a => {
@@ -2415,7 +2416,7 @@ export default function TriageSystem({ onBack }) {
                       {alert.heading}
                     </div>
                     <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" ? null : alert.detail}
+                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" ? null : alert.detail}
                     </div>
 
                     {/* Retainer invoice detail */}
@@ -2517,6 +2518,29 @@ export default function TriageSystem({ onBack }) {
                         })()}
                       </div>
                     )}
+
+                    {/* Pipeline / Confirmed overlap detail */}
+                    {alert.alertType === "pipeline_confirmed_overlap" && (() => {
+                      const md = alert.metadata || {};
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0fdf4", border: "1px solid #86efac", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Job exists in both tabs but Pipeline is not closed out</div>
+                          <div style={{ marginBottom: "4px" }}><strong>Confirmed tab</strong></div>
+                          {md.confirmedRow  && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
+                          {md.clientName    && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.clientName}</div>}
+                          {md.jobName       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
+                          {md.projectCode   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
+                          {md.jobType       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
+                          <div style={{ marginBottom: "4px", marginTop: "6px" }}><strong>Pipeline tab</strong></div>
+                          {md.pipelineRow   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.pipelineRow}</div>}
+                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood || "(blank)"}</strong></div>
+                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>"Copied to confirmed?": <strong>{md.copiedToConf || "(blank)"}</strong></div>
+                          <div style={{ marginTop: "6px", color: "#166534", fontStyle: "italic" }}>
+                            Expected fix: set Pipeline likelihood to 0% or mark "Copied to confirmed?" as Yes.
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <div style={{ fontSize: "11px", color: "#aaa" }}>
@@ -3111,10 +3135,11 @@ export default function TriageSystem({ onBack }) {
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               {(() => {
                 const typeLabels = {
-                  retainer_invoice:      "Retainer invoice",
-                  crm_wipe:              "CRM data wipe",
-                  revenue_mismatch:      "Revenue / invoiced mismatch",
-                  direct_costs_mismatch: "Direct costs / expenses mismatch",
+                  retainer_invoice:           "Retainer invoice",
+                  crm_wipe:                   "CRM data wipe",
+                  revenue_mismatch:           "Revenue / invoiced mismatch",
+                  direct_costs_mismatch:      "Direct costs / expenses mismatch",
+                  pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
                 };
                 const grouped = {};
                 proactiveAlerts.forEach(a => {

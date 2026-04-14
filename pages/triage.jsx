@@ -2679,6 +2679,17 @@ export default function TriageSystem({ onBack }) {
                             {na.flagName || getFlagName(na.flagType)}
                           </span>
                           <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                            {selectedClient?.clientSheetId && (
+                              <button className="triage-btn"
+                                onClick={() => {
+                                  if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
+                                  if (selectedClient.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`, "_blank");
+                                }}
+                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}
+                              >
+                                📊 Open Sheets
+                              </button>
+                            )}
                             {!analysis && !isLoading && (
                               <button className="triage-btn"
                                 onClick={() => analyzeNoActionFlag(na.flagType)}

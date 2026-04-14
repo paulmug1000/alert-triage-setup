@@ -5253,8 +5253,9 @@ Return ONLY JSON, no other text.`;
                   if (pr) {
                     const prJobName    = String(pr[1] || "").trim();
                     const prClientName = String(pr[0] || "").trim();
-                    // Validate the row still contains the expected job
-                    const jobNameMatches   = prJobName.toLowerCase() === jobNameLower;
+                    // When job name is blank or a placeholder "-", skip name validation and trust the row number
+                    const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
+                    const jobNameMatches = jobNameIsBlank || prJobName.toLowerCase() === jobNameLower;
                     const clientNameMatches = !clientParsedLower || !prClientName ||
                       prClientName.toLowerCase().includes(clientParsedLower) ||
                       clientParsedLower.includes(prClientName.toLowerCase());
@@ -5272,14 +5273,17 @@ Return ONLY JSON, no other text.`;
                   }
                 }
 
-                // Fallback: search by job name + client name
+                // Fallback: search by job name + client name (skipped when job name is blank/placeholder)
                 if (!pipelineJob) {
+                  const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
                   for (let pri = 0; pri < pipelineRows.length; pri++) {
                     const pr = pipelineRows[pri];
                     const pJobName    = String(pr[1] || "").trim();
                     const pClientName = String(pr[0] || "").trim();
-                    if (!pJobName || pJobName.toLowerCase() !== jobNameLower) continue;
-                    if (clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+                    // If job name is blank/placeholder, match on client name only (less reliable — only use as last resort)
+                    if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
+                    if (jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+                    if (!jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
                     pipelineJob = {
                       clientName: pClientName,
                       jobName: pJobName,
@@ -5321,7 +5325,9 @@ Return ONLY JSON, no other text.`;
                     confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
                     break;
                   }
-                  // Fallback: job name + client name
+                  // Fallback: job name + client name (skip if job name is blank/placeholder)
+                  const jobNameIsBlankConf = !jobNameLower || jobNameLower === "-";
+                  if (jobNameIsBlankConf) continue; // can't match on blank name — project code is the only key
                   if (crJobName.toLowerCase() !== jobNameLower) continue;
                   if (clientParsedLower && crClientName && !crClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(crClientName.toLowerCase())) continue;
                   confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };

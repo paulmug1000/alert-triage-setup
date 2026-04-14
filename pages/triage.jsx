@@ -2843,7 +2843,20 @@ export default function TriageSystem({ onBack }) {
                                 {/* Check lines */}
                                 {(r.checks || []).map((chk, ci) => (
                                   <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
-                                    {chk.message}
+                                    {(() => {
+                                      // Split message on (LONG_CODE) tokens and render codes via TruncatedCode
+                                      const parts = [];
+                                      const re = /\(([^)]{17,})\)/g;
+                                      let last = 0, m;
+                                      const msg = chk.message || "";
+                                      while ((m = re.exec(msg)) !== null) {
+                                        if (m.index > last) parts.push(msg.slice(last, m.index));
+                                        parts.push(<TruncatedCode key={m.index} code={m[1]} />);
+                                        last = m.index + m[0].length;
+                                      }
+                                      if (last < msg.length) parts.push(msg.slice(last));
+                                      return parts.length > 1 ? parts : msg;
+                                    })()}
                                   </div>
                                 ))}
                               </div>

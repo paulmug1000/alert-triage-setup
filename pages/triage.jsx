@@ -2660,7 +2660,7 @@ export default function TriageSystem({ onBack }) {
               <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 {clientNoActionAlerts.map((na) => {
                   const isResolved = resolvedNoActionFlags.has(na.flagType);
-                  const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted"].includes(na.flagType);
+                  const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges"].includes(na.flagType);
                   const analysis = noActionAnalysis[na.flagType];
                   const isLoading = noActionAnalysisLoading[na.flagType];
 

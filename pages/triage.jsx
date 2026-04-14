@@ -2722,11 +2722,11 @@ export default function TriageSystem({ onBack }) {
                     return (
                       <div key={na.flagType} style={{ border: `1px solid ${borderColor}`, borderRadius: "6px", background: bgColor, padding: "12px" }}>
                         {/* Header row */}
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0" }}>
-                          <span style={{ fontSize: "13px", fontWeight: "600", color: "#444" }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
+                          <span style={{ fontSize: "13px", fontWeight: "600", color: "#444", flexShrink: 1, minWidth: 0 }}>
                             {na.flagName || getFlagName(na.flagType)}
                           </span>
-                          <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                          <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
                             {selectedClient?.clientSheetId && (
                               <button className="triage-btn"
                                 onClick={() => {

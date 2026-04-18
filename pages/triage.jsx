@@ -2361,9 +2361,10 @@ export default function TriageSystem({ onBack }) {
                   const typeLabels = {
                     retainer_invoice:           "Retainer invoice",
                     crm_wipe:                   "CRM data wipe",
-                    revenue_mismatch:            "Revenue / invoiced mismatch",
-                    direct_costs_mismatch:       "Direct costs / expenses mismatch",
-                    pipeline_confirmed_overlap:  "Pipeline / Confirmed overlap",
+                    revenue_mismatch:           "Revenue / invoiced mismatch",
+                    direct_costs_mismatch:      "Direct costs / expenses mismatch",
+                    pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
+                    retainer_shrink_blocked:    "Retainer row blocked from trimming",
                   };
                   const typeCounts = {};
                   alerts.forEach(a => {
@@ -2440,7 +2441,7 @@ export default function TriageSystem({ onBack }) {
                       {alert.heading}
                     </div>
                     <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" ? null : alert.detail}
+                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" ? null : alert.detail}
                     </div>
 
                     {/* Retainer invoice detail */}
@@ -2561,6 +2562,22 @@ export default function TriageSystem({ onBack }) {
                           <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>"Copied to confirmed?": <strong>{md.copiedToConf || "(blank)"}</strong></div>
                           <div style={{ marginTop: "6px", color: "#166534", fontStyle: "italic" }}>
                             Expected fix: set Pipeline likelihood to 0% or mark "Copied to confirmed?" as Yes.
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Retainer shrink blocked detail */}
+                    {alert.alertType === "retainer_shrink_blocked" && (() => {
+                      const md = alert.metadata || {};
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Retainer contract shrunk — excess child row could not be removed automatically</div>
+                          {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
+                          {md.childRowNum  && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
+                          {md.timestamp    && <div style={{ marginBottom: "6px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
+                          <div style={{ color: "#92400e", fontStyle: "italic" }}>
+                            Row {md.childRowNum} falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.
                           </div>
                         </div>
                       );
@@ -3177,6 +3194,7 @@ export default function TriageSystem({ onBack }) {
                   revenue_mismatch:           "Revenue / invoiced mismatch",
                   direct_costs_mismatch:      "Direct costs / expenses mismatch",
                   pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
+                  retainer_shrink_blocked:    "Retainer row blocked from trimming",
                 };
                 const grouped = {};
                 proactiveAlerts.forEach(a => {

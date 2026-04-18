@@ -6775,7 +6775,8 @@ Return ONLY JSON, no other text.`;
             // No match — append new row
             const metadata = {};
             const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
-              "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet"];
+              "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
+              "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType"];
             for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
 
             await sheets.spreadsheets.values.append({

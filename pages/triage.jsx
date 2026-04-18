@@ -333,8 +333,12 @@ export default function TriageSystem({ onBack }) {
       setTaskModalNote("");
       setTaskModalSnoozeDate("");
       setTaskModalSnoozeTime("09:00");
-      setNavTaskCount(prev => prev + 1);
-      setNavTaskCount(prev => prev + 1);
+      // Only increment active task badge if the task is NOT being immediately snoozed
+      if (!taskModalSnoozeDate) {
+        setNavTaskCount(prev => prev + 1);
+      } else {
+        setSnoozedTaskCount(prev => prev + 1);
+      }
 
       // Remove alert from active list (same as ignore/accept)
       if (!taskModalIsProactive) {

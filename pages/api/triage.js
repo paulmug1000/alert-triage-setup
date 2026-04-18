@@ -5593,17 +5593,17 @@ Return ONLY JSON, no other text.`;
                 return sentDate && sentDate <= endOfCurrentMonth;
               }).length;
 
-              const monthsRemainingInContract = Math.max(0,
-                (endDate.getFullYear() - today.getFullYear()) * 12 +
-                (endDate.getMonth() - today.getMonth())
-              );
+              const remainingTime = Math.max(0, endDate.getTime() - today.getTime());
+              const remainingDays = Math.round(remainingTime / (1000 * 60 * 60 * 24));
+              const monthsRemainingInContract = Math.round(remainingDays / 30.4375);
               const futureRows = Math.min(18 / periodMonths, Math.ceil(monthsRemainingInContract / periodMonths));
               const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
               const actualChildRows = childRows.length;
               const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 
-              const monthsDiff = (endDate.getFullYear() - startDate.getFullYear()) * 12
-                + (endDate.getMonth() - startDate.getMonth()) + 1;
+              const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+              const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+              const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
               const durationOk = actualChildRows >= expectedChildRows;
               checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
               checks.push({
@@ -5806,16 +5806,16 @@ Return ONLY JSON, no other text.`;
                 const sentDate = parseConfDate(cr[43]);
                 return sentDate && sentDate <= endOfCurrentMonth;
               }).length;
-              const monthsRemaining = Math.max(0,
-                (endDate.getFullYear() - today2.getFullYear()) * 12 +
-                (endDate.getMonth() - today2.getMonth())
-              );
+              const remainingTime2 = Math.max(0, endDate.getTime() - today2.getTime());
+              const remainingDays2 = Math.round(remainingTime2 / (1000 * 60 * 60 * 24));
+              const monthsRemaining = Math.round(remainingDays2 / 30.4375);
               const futureRows = Math.min(18 / periodMonths, Math.ceil(monthsRemaining / periodMonths));
               const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
               const actualChildRows   = childRows.length;
               const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
-              const monthsDiff = (endDate.getFullYear() - startDate.getFullYear()) * 12
-                + (endDate.getMonth() - startDate.getMonth()) + 1;
+              const diffTime2 = Math.abs(endDate.getTime() - startDate.getTime());
+              const diffDays2 = Math.round(diffTime2 / (1000 * 60 * 60 * 24));
+              const monthsDiff = Math.max(1, Math.round(diffDays2 / 30.4375));
 
               const durationOk = actualChildRows === expectedChildRows;
               checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });

@@ -234,6 +234,8 @@ export default function TriageSystem({ onBack }) {
   const [taskModalSubmitting, setTaskModalSubmitting] = useState(false);
   const [taskModalAlert, setTaskModalAlert] = useState(null); // alert being turned into task
   const [taskModalIsProactive, setTaskModalIsProactive] = useState(false);
+  const [taskModalSnoozeDate, setTaskModalSnoozeDate] = useState(""); // optional: create as snoozed
+  const [taskModalSnoozeTime, setTaskModalSnoozeTime] = useState("09:00");
   const [taskSnoozeDate, setTaskSnoozeDate] = useState(""); // ISO date string for snooze
   const [taskSnoozeTime, setTaskSnoozeTime] = useState("09:00");
   const [taskSnoozeSubmitting, setTaskSnoozeSubmitting] = useState(false);
@@ -310,8 +312,28 @@ export default function TriageSystem({ onBack }) {
         setTaskActionError(data.error || "Failed to create task");
         return;
       }
+
+      // If the user set a snooze date, immediately snooze the newly created task
+      if (taskModalSnoozeDate && data.fingerprintHash) {
+        const localDt = new Date(`${taskModalSnoozeDate}T${taskModalSnoozeTime}:00`);
+        const snoozedUntil = localDt.toISOString();
+        await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "snooze_task",
+            fingerprintHash: data.fingerprintHash,
+            snoozedUntil,
+            automationCommanderSheetId,
+          }),
+        }).catch(() => {}); // best-effort — task already created, snooze failure is non-critical
+      }
+
       setShowTaskModal(false);
       setTaskModalNote("");
+      setTaskModalSnoozeDate("");
+      setTaskModalSnoozeTime("09:00");
+      setNavTaskCount(prev => prev + 1);
       setNavTaskCount(prev => prev + 1);
 
       // Remove alert from active list (same as ignore/accept)
@@ -1940,7 +1962,7 @@ export default function TriageSystem({ onBack }) {
   const withModal = (jsx) => showTaskModal ? (
     <>
       {jsx}
-      <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowTaskModal(false); }}>
+      <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) { setShowTaskModal(false); setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("09:00"); } }}>
         <div style={styles.modalCard}>
           <h3 style={styles.modalTitle}>Create Task</h3>
           <p style={styles.modalSubtitle}>
@@ -1957,12 +1979,48 @@ export default function TriageSystem({ onBack }) {
           )}
           <textarea value={taskModalNote} onChange={e => setTaskModalNote(e.target.value)}
             placeholder="Add a note for this task (optional)..." style={styles.modalTextarea} autoFocus />
+
+          {/* Optional snooze */}
+          <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
+            <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", marginBottom: "8px" }}>
+              Snooze until (optional)
+            </div>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <input
+                type="date"
+                value={taskModalSnoozeDate}
+                min={new Date().toISOString().split("T")[0]}
+                onChange={e => setTaskModalSnoozeDate(e.target.value)}
+                style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", color: taskModalSnoozeDate ? "#333" : "#999" }}
+              />
+              {taskModalSnoozeDate && (
+                <>
+                  <input
+                    type="time"
+                    value={taskModalSnoozeTime}
+                    onChange={e => setTaskModalSnoozeTime(e.target.value)}
+                    style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", width: "100px" }}
+                  />
+                  <button className="triage-btn" onClick={() => { setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("09:00"); }}
+                    style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>
+                    ✕ Clear
+                  </button>
+                </>
+              )}
+            </div>
+            {taskModalSnoozeDate && (
+              <div style={{ fontSize: "12px", color: "#d97706", marginTop: "6px" }}>
+                Task will be created and immediately snoozed until {new Date(`${taskModalSnoozeDate}T${taskModalSnoozeTime}:00`).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}.
+              </div>
+            )}
+          </div>
+
           {taskActionError && <div style={{ ...styles.errorBanner, marginTop: "8px" }}>{taskActionError}</div>}
           <div style={styles.modalButtons}>
-            <button className="triage-btn" onClick={() => { setShowTaskModal(false); setTaskModalNote(""); setTaskActionError(""); }} style={styles.buttonSecondary}>Cancel</button>
+            <button className="triage-btn" onClick={() => { setShowTaskModal(false); setTaskModalNote(""); setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("09:00"); setTaskActionError(""); }} style={styles.buttonSecondary}>Cancel</button>
             <button className="triage-btn" onClick={submitCreateTask} disabled={taskModalSubmitting}
-              style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px", cursor: "pointer", opacity: taskModalSubmitting ? 0.5 : 1 }}>
-              {taskModalSubmitting ? <><Spinner />Creating...</> : "📋 Create Task"}
+              style={{ background: taskModalSnoozeDate ? "#d97706" : "#7c3aed", color: "white", border: "none", borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px", cursor: "pointer", opacity: taskModalSubmitting ? 0.5 : 1 }}>
+              {taskModalSubmitting ? <><Spinner />Creating...</> : taskModalSnoozeDate ? "📋 Create & Snooze" : "📋 Create Task"}
             </button>
           </div>
         </div>

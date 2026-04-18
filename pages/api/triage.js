@@ -6969,7 +6969,7 @@ Return ONLY JSON, no other text.`;
         await redisClient.del("triage_tasks_cache").catch(() => {});
 
         console.log(`  ✅ Task created: ${taskKey}`);
-        return res.status(200).json({ success: true, taskKey });
+        return res.status(200).json({ success: true, taskKey, fingerprintHash });
       } catch (err) {
         console.error(`❌ Error in create_task:`, err);
         return res.status(500).json({ success: false, error: err.message });

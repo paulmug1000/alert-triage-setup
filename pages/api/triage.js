@@ -6337,12 +6337,14 @@ Return ONLY JSON, no other text.`;
 
     } else if (action === "resolve_noaction_flag") {
       // Mark a noAction flag as resolved in the Redis session so it persists across reloads.
-      // resolvedNoActionFlags is stored as a set of "clientName___flagType" strings.
-      const { sessionId, clientName, flagType } = req.body;
+      // Also writes a clear timestamp to the Automation Commander log tab so that the
+      // windowStart for analyze_noaction_flag advances past stale AutoLog entries.
+      const { sessionId, clientName, flagType, automationCommanderSheetId: acId } = req.body;
       if (!sessionId || !clientName || !flagType) {
         return res.status(400).json({ success: false, error: "Missing sessionId, clientName, or flagType" });
       }
       try {
+        // 1. Persist resolution in Redis session
         const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
         if (!sessionData) return res.status(200).json({ success: true, notFound: true });
         const parsed = JSON.parse(sessionData);
@@ -6353,6 +6355,54 @@ Return ONLY JSON, no other text.`;
         }
         await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 });
         console.log(`  resolve_noaction_flag: marked "${key}" as resolved`);
+
+        // 2. Write clear timestamp to Automation Commander log tab so windowStart advances.
+        // The analyze_noaction_flag windowStart search looks for rows in Log-MonYY tabs where:
+        //   col A = timestamp, col B = clientName, col BJ (idx 61) or BO (idx 66) = TRUE
+        // retainerInvoicesCreated uses col BJ (idx 61); default fallback uses col BO (idx 66).
+        if (acId) {
+          try {
+            const sheets = await getSheetsClient();
+            const acIdClean = extractSheetIdFromUrl(acId) || acId;
+            const clearColForFlag = {
+              crmCopiedConfChecked:    63, // BL (1-indexed)
+              crmCopiedConfUnchecked:  63,
+              crmCopiedConfDelete:     63,
+              retainerInvoicesCreated: 61, // BJ
+              retainerInvoicesDeleted: 61,
+              invoiceStaleUnsentChanges: 61,
+            };
+            const clearCol = clearColForFlag[flagType] || 66; // default BO
+
+            // Find or create the current month's log tab
+            const now = new Date();
+            const mon = now.toLocaleString("en-GB", { month: "short" });
+            const yr = String(now.getFullYear()).slice(2);
+            const tabName = `Log-${mon}${yr}`;
+
+            // Append a row: [timestamp, clientName, "", ..., TRUE in clearCol]
+            // Build a sparse row — col A (1) = NOW serial, col B (2) = clientName, clearCol = TRUE
+            // Sheets API append accepts a values array; we build up to clearCol width.
+            const nowSerial = (now.getTime() / 86400000) + 25569; // JS Date → Sheets serial
+            const rowWidth = clearCol; // 1-indexed col number = array length needed
+            const rowData = new Array(rowWidth).fill("");
+            rowData[0] = nowSerial;   // col A
+            rowData[1] = clientName;  // col B
+            rowData[clearCol - 1] = true; // clearCol (1-indexed → 0-indexed)
+
+            await sheets.spreadsheets.values.append({
+              spreadsheetId: acIdClean,
+              range: `${tabName}!A:A`,
+              valueInputOption: "RAW",
+              requestBody: { values: [rowData] },
+            });
+            console.log(`  ✅ Wrote clear timestamp to ${tabName} col ${clearCol} for "${clientName}" / "${flagType}"`);
+          } catch (sheetErr) {
+            // Non-fatal — Redis resolution still succeeded
+            console.log(`  ⚠ Could not write clear timestamp to log tab: ${sheetErr.message}`);
+          }
+        }
+
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error("❌ Error resolving noAction flag:", err);

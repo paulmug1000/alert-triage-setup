@@ -2849,7 +2849,7 @@ export default function TriageSystem({ onBack }) {
                                   fetch("/api/triage", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType }),
+                                    body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, automationCommanderSheetId }),
                                   }).catch(() => {});
                                   fetch("/api/triage", {
                                     method: "POST",
@@ -2993,7 +2993,7 @@ export default function TriageSystem({ onBack }) {
                                   fetch("/api/triage", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType }),
+                                    body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, automationCommanderSheetId }),
                                   }).catch(() => {});
                                   fetch("/api/triage", {
                                     method: "POST",

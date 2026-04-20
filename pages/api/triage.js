@@ -5530,9 +5530,19 @@ Return ONLY JSON, no other text.`;
               const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
               const parseDate = (v) => {
                 if (!v) return null;
-                if (v instanceof Date) return v;
+                if (v instanceof Date) {
+                  if (isNaN(v.getTime())) return null;
+                  // JS Date treats 2-digit years as 1900s — correct to 2000s for years < 100
+                  if (v.getFullYear() < 100) {
+                    v.setFullYear(v.getFullYear() + 2000);
+                  }
+                  return v;
+                }
                 const d = new Date(v);
-                if (!isNaN(d.getTime())) return d;
+                if (!isNaN(d.getTime())) {
+                  if (d.getFullYear() < 100) d.setFullYear(d.getFullYear() + 2000);
+                  return d;
+                }
                 const serial = parseFloat(v);
                 if (!isNaN(serial)) return new Date((serial - 25569) * 86400 * 1000);
                 return null;
@@ -5756,7 +5766,17 @@ Return ONLY JSON, no other text.`;
                   const yr = m2[3].length === 2 ? 2000 + parseInt(m2[3], 10) : parseInt(m2[3], 10);
                   return new Date(yr, months[m2[2]], parseInt(m2[1], 10));
                 }
-                const d = new Date(s); return isNaN(d.getTime()) ? null : d;
+                if (s instanceof Date) {
+                  if (isNaN(s.getTime())) return null;
+                  if (s.getFullYear() < 100) s.setFullYear(s.getFullYear() + 2000);
+                  return s;
+                }
+                const d = new Date(s);
+                if (!isNaN(d.getTime())) {
+                  if (d.getFullYear() < 100) d.setFullYear(d.getFullYear() + 2000);
+                  return d;
+                }
+                return null;
               };
 
               const startDate = parseDate(jobStart);

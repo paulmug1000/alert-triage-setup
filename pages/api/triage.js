@@ -5533,10 +5533,15 @@ Return ONLY JSON, no other text.`;
                 if (v instanceof Date) {
                   if (isNaN(v.getTime())) return null;
                   // JS Date treats 2-digit years as 1900s — correct to 2000s for years < 100
-                  if (v.getFullYear() < 100) {
-                    v.setFullYear(v.getFullYear() + 2000);
-                  }
+                  if (v.getFullYear() < 100) v.setFullYear(v.getFullYear() + 2000);
                   return v;
+                }
+                // Handle DD-Mon-YY or DD-Mon-YYYY strings e.g. "31-Jul-50", "1-May-2026"
+                const monMap = { Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11 };
+                const monMatch = String(v).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+                if (monMatch) {
+                  const yr = monMatch[3].length === 2 ? 2000 + parseInt(monMatch[3], 10) : parseInt(monMatch[3], 10);
+                  return new Date(yr, monMap[monMatch[2]], parseInt(monMatch[1], 10));
                 }
                 const d = new Date(v);
                 if (!isNaN(d.getTime())) {
@@ -5610,6 +5615,8 @@ Return ONLY JSON, no other text.`;
               const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
               const actualChildRows = childRows.length;
               const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+
+              // DEBUG — log raw values and intermediate calculations
 
               const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
               const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));

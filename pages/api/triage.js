@@ -5198,16 +5198,44 @@ Return ONLY JSON, no other text.`;
             affectedJobs.push(...deduped);
             console.log(`  ✓ Parsed ${affectedJobs.length} affected jobs: ${JSON.stringify(affectedJobs)}`);
           } else {
-            // UNchecked: look at most recent entry only (same logic as before)
-            if (relevantEntries.length > 0) {
-              const mostRecent = relevantEntries[0];
-              const details = String(mostRecent[3] || "");
-              const uncheckedPattern = new RegExp("Row\\s*(\\d+),\\s*[^|]*\\|\\s*([^-\\n]+).*?Copied Status:.*?->\\s*['\"]?No['\"]?", "gi");
-              let m;
-              while ((m = uncheckedPattern.exec(details)) !== null) {
-                affectedJobs.push({ pipelineRow: parseInt(m[1], 10), jobName: m[2].trim(), logTimestamp: String(mostRecent[0] || "") });
+            // UNchecked: parse all relevant entries (not just most recent), same line-by-line
+            // approach as the checked branch for consistency and robustness.
+            for (const entry of relevantEntries) {
+              const details = String(entry[3] || "");
+              const lines = details.split('\n');
+              for (const line of lines) {
+                if (!line.includes("Copied Status:")) continue;
+                if (!line.includes("-> 'No'") && !line.includes("-> \"No\"") &&
+                    !line.includes("Removed Confirmed Job:") && !line.includes("Deleted Confirmed Job:")) continue;
+                const pipeIdx = line.indexOf("|");
+                if (pipeIdx !== -1) {
+                  const rowMatch = line.match(/Row\s*(\d+),\s*([^|]*)/);
+                  const pipelineRowFromLog = rowMatch ? parseInt(rowMatch[1], 10) : null;
+                  const clientParsed = rowMatch ? rowMatch[2].trim() : "";
+                  const afterPipe = line.slice(pipeIdx + 1).trim();
+                  const knownFields = ["Start date:", "End date:", "Job name:", "Date originally",
+                    "Direct costs:", "Prod. line:", "% likel.", "Copied Status:", "Revenue:", "Type:", "VAT"];
+                  let firstFieldPos = afterPipe.length;
+                  for (const field of knownFields) {
+                    const idx = afterPipe.indexOf(field);
+                    if (idx !== -1 && idx < firstFieldPos) firstFieldPos = idx;
+                  }
+                  const chunk = afterPipe.slice(0, firstFieldPos);
+                  const lastSep = chunk.lastIndexOf(" - ");
+                  const jobName = (lastSep !== -1 ? chunk.slice(0, lastSep) : chunk).trim();
+                  affectedJobs.push({ jobName: jobName || "-", clientParsed, pipelineRowFromLog, logTimestamp: String(entry[0] || "") });
+                }
               }
             }
+            // Deduplicate by clientParsed + jobName
+            const seenU = new Set();
+            const dedupedU = affectedJobs.filter(j => {
+              const k = `${j.clientParsed}|||${j.jobName}`;
+              if (seenU.has(k)) return false;
+              seenU.add(k); return true;
+            });
+            affectedJobs.length = 0;
+            affectedJobs.push(...dedupedU);
           }
 
           console.log(`  ✓ Parsed ${affectedJobs.length} affected jobs: ${JSON.stringify(affectedJobs)}`);
@@ -5355,37 +5383,107 @@ Return ONLY JSON, no other text.`;
 
               } else {
                 // UNchecked: Pipeline DD should be No/blank, job should NOT be in Confirmed
-                for (const pr of pipelineRows) {
-                  const pJobName = String(pr[1] || "").trim(); // col B
-                  if (pJobName && pJobName.toLowerCase() === job.jobName.toLowerCase()) {
-                    pipelineJob = { copiedToConf: String(pr[107] || "").trim() };
+                const jobNameLower = job.jobName ? job.jobName.toLowerCase() : "";
+                const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
+                const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
+
+                // Look up Pipeline row — use log row number first, then name search
+                if (job.pipelineRowFromLog) {
+                  const prIdx = job.pipelineRowFromLog - 6;
+                  const pr = prIdx >= 0 ? pipelineRows[prIdx] : null;
+                  if (pr) {
+                    const prJobName = String(pr[1] || "").trim();
+                    const prClientName = String(pr[0] || "").trim();
+                    const nameOk = jobNameIsBlank || prJobName.toLowerCase() === jobNameLower;
+                    const clientOk = !clientParsedLower || !prClientName ||
+                      prClientName.toLowerCase().includes(clientParsedLower) ||
+                      clientParsedLower.includes(prClientName.toLowerCase());
+                    if (nameOk && clientOk) {
+                      pipelineJob = {
+                        copiedToConf: String(pr[107] || "").trim(),
+                        rowNumber: job.pipelineRowFromLog,
+                        clientName: prClientName,
+                        jobName: prJobName,
+                        projectCode: String(pr[2] || "").trim(),
+                      };
+                    }
+                  }
+                }
+                if (!pipelineJob) {
+                  for (let pri = 0; pri < pipelineRows.length; pri++) {
+                    const pr = pipelineRows[pri];
+                    const pJobName = String(pr[1] || "").trim();
+                    const pClientName = String(pr[0] || "").trim();
+                    if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
+                    if (clientParsedLower && pClientName &&
+                      !pClientName.toLowerCase().includes(clientParsedLower) &&
+                      !clientParsedLower.includes(pClientName.toLowerCase())) continue;
+                    pipelineJob = {
+                      copiedToConf: String(pr[107] || "").trim(),
+                      rowNumber: pri + 6,
+                      clientName: pClientName,
+                      jobName: pJobName,
+                      projectCode: String(pr[2] || "").trim(),
+                    };
                     break;
                   }
                 }
+
                 if (pipelineJob) {
                   const ddVal = pipelineJob.copiedToConf.toLowerCase();
                   const ddOk = ddVal === "no" || ddVal === "" || ddVal === "false";
+                  const pRowStr = pipelineJob.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
+                  const cliStr = pipelineJob.clientName ? ` — ${pipelineJob.clientName}` : "";
                   checks.push({
                     ok: ddOk,
                     message: ddOk
-                      ? `✓ Pipeline col DD: "${pipelineJob.copiedToConf}" — No/blank (correct)`
-                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" — expected No or blank`,
+                      ? `✓ Pipeline col DD: "${pipelineJob.copiedToConf || "blank"}" — No/blank (correct)${pRowStr}${cliStr}`
+                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" — expected No or blank${pRowStr}${cliStr}`,
                   });
                   if (!ddOk) allOk = false;
+                } else {
+                  checks.push({ ok: false, message: `✗ Job "${job.jobName}" not found in Pipeline tab` });
+                  allOk = false;
                 }
 
-                const inConfirmed = confirmedRows.some(cr => String(cr[1] || "").trim() === job.jobName);
+                // Check Confirmed — search by project code first, then job+client name
+                const uncheckedProjectCode = pipelineJob?.projectCode || "";
+                for (let cri = 0; cri < confirmedRows.length; cri++) {
+                  const cr = confirmedRows[cri];
+                  const crJobName    = String(cr[1] || "").trim();
+                  const crClientName = String(cr[0] || "").trim();
+                  const crProjectCode = String(cr[2] || "").trim();
+                  if (uncheckedProjectCode && crProjectCode &&
+                    crProjectCode.toLowerCase() === uncheckedProjectCode.toLowerCase()) {
+                    confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
+                    break;
+                  }
+                  if (!jobNameIsBlank && crJobName.toLowerCase() === jobNameLower) {
+                    const clientOk = !clientParsedLower || !crClientName ||
+                      crClientName.toLowerCase().includes(clientParsedLower) ||
+                      clientParsedLower.includes(crClientName.toLowerCase());
+                    if (clientOk) {
+                      confirmedMatch = { jobName: crJobName, projectCode: crProjectCode, clientName: crClientName, rowNumber: cri + 1 };
+                      break;
+                    }
+                  }
+                }
+                const inConfirmed = confirmedMatch !== null;
+                const confRowStr = confirmedMatch?.rowNumber ? ` (Confirmed row ${confirmedMatch.rowNumber})` : "";
+                const confCliStr = confirmedMatch?.clientName ? ` — ${confirmedMatch.clientName}` : "";
                 checks.push({
                   ok: !inConfirmed,
                   message: !inConfirmed
                     ? `✓ Confirmed tab: job not present (correct)`
-                    : `✗ "${job.jobName}" still exists in Confirmed — should have been removed`,
+                    : `✗ "${confirmedMatch.jobName || job.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confRowStr}${confCliStr} still exists in Confirmed — should have been removed`,
                 });
                 if (inConfirmed) allOk = false;
               }
 
               results.push({
-                jobName: job.jobName || `(${job.clientParsed} — job name not in log)`,
+                jobName: (job.jobName && job.jobName !== "-") ? job.jobName
+                  : pipelineJob?.jobName || confirmedMatch?.jobName
+                  || (job.clientParsed ? `(${job.clientParsed} — job name not in log)` : "(job name not in log)"),
                 projectCode: pipelineJob?.projectCode || confirmedMatch?.projectCode || "",
                 clientName: job.clientParsed || pipelineJob?.clientName || confirmedMatch?.clientName || "",
                 pipelineRow: pipelineJob?.rowNumber || null,

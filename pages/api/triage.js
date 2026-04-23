@@ -5198,15 +5198,17 @@ Return ONLY JSON, no other text.`;
             affectedJobs.push(...deduped);
             console.log(`  ✓ Parsed ${affectedJobs.length} affected jobs: ${JSON.stringify(affectedJobs)}`);
           } else {
-            // UNchecked: parse all relevant entries (not just most recent), same line-by-line
-            // approach as the checked branch for consistency and robustness.
+            // UNchecked: parse all relevant entries, same line-by-line approach as checked branch.
+            // Only match lines that are genuine Pipeline field update entries:
+            // Format: "Updated Pipeline: Row N, ClientName | JobName - ... Copied Status: 'Yes' -> 'No'"
             for (const entry of relevantEntries) {
               const details = String(entry[3] || "");
               const lines = details.split('\n');
               for (const line of lines) {
+                // Must be a Pipeline update line
+                if (!line.includes("Updated Pipeline:")) continue;
                 if (!line.includes("Copied Status:")) continue;
-                if (!line.includes("-> 'No'") && !line.includes("-> \"No\"") &&
-                    !line.includes("Removed Confirmed Job:") && !line.includes("Deleted Confirmed Job:")) continue;
+                if (!line.includes("-> 'No'") && !line.includes("-> \"No\"")) continue;
                 const pipeIdx = line.indexOf("|");
                 if (pipeIdx !== -1) {
                   const rowMatch = line.match(/Row\s*(\d+),\s*([^|]*)/);
@@ -5482,8 +5484,7 @@ Return ONLY JSON, no other text.`;
 
               results.push({
                 jobName: (job.jobName && job.jobName !== "-") ? job.jobName
-                  : pipelineJob?.jobName || confirmedMatch?.jobName
-                  || (job.clientParsed ? `(${job.clientParsed} — job name not in log)` : "(job name not in log)"),
+                  : pipelineJob?.jobName || confirmedMatch?.jobName || "-",
                 projectCode: pipelineJob?.projectCode || confirmedMatch?.projectCode || "",
                 clientName: job.clientParsed || pipelineJob?.clientName || confirmedMatch?.clientName || "",
                 pipelineRow: pipelineJob?.rowNumber || null,

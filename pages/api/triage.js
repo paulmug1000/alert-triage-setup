@@ -5710,16 +5710,17 @@ Return ONLY JSON, no other text.`;
               const remainingTime = Math.max(0, endDate.getTime() - today.getTime());
               const remainingDays = Math.round(remainingTime / (1000 * 60 * 60 * 24));
               const monthsRemainingInContract = Math.round(remainingDays / 30.4375);
-              const futureRows = Math.min(18 / periodMonths, Math.ceil(monthsRemainingInContract / periodMonths));
-              const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
-              const actualChildRows = childRows.length;
-              const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
-
-              // DEBUG — log raw values and intermediate calculations
 
               const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
               const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
               const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
+
+              // futureRows = months remaining from today, but capped at total contract months.
+              // Without the cap, a future-starting contract counts months before its start date.
+              const futureRows = Math.min(18 / periodMonths, Math.ceil(Math.min(monthsRemainingInContract, monthsDiff) / periodMonths));
+              const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
+              const actualChildRows = childRows.length;
+              const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
               const durationOk = actualChildRows >= expectedChildRows;
               checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
               checks.push({
@@ -5935,13 +5936,14 @@ Return ONLY JSON, no other text.`;
               const remainingTime2 = Math.max(0, endDate.getTime() - today2.getTime());
               const remainingDays2 = Math.round(remainingTime2 / (1000 * 60 * 60 * 24));
               const monthsRemaining = Math.round(remainingDays2 / 30.4375);
-              const futureRows = Math.min(18 / periodMonths, Math.ceil(monthsRemaining / periodMonths));
-              const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
-              const actualChildRows   = childRows.length;
-              const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
               const diffTime2 = Math.abs(endDate.getTime() - startDate.getTime());
               const diffDays2 = Math.round(diffTime2 / (1000 * 60 * 60 * 24));
               const monthsDiff = Math.max(1, Math.round(diffDays2 / 30.4375));
+              // Cap at total contract months to avoid over-counting for future-starting retainers
+              const futureRows = Math.min(18 / periodMonths, Math.ceil(Math.min(monthsRemaining, monthsDiff) / periodMonths));
+              const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
+              const actualChildRows   = childRows.length;
+              const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 
               const durationOk = actualChildRows === expectedChildRows;
               checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });

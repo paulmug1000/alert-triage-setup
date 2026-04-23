@@ -6903,6 +6903,47 @@ Return ONLY JSON, no other text.`;
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "check_new_fingerprints") {
+      // Called by the full sweep GAS function to determine which client/alertType
+      // combinations have at least one fingerprint not already handled in AlertMemory.
+      // "Handled" means status is ignored, task, or superseded.
+      // "Cached" is NOT handled — it means the alert exists but has not been triaged yet.
+      const { automationCommanderSheetId: acId, sweepItems } = req.body;
+      if (!acId || !sweepItems) {
+        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId or sweepItems" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+
+        // Build set of handled fingerprints — ignored, task, or superseded
+        const handledHashes = new Set(
+          memoryRows
+            .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded")
+            .map(r => r.fingerprintHash)
+            .filter(Boolean)
+        );
+
+        console.log(`  check_new_fingerprints: ${memoryRows.length} AlertMemory rows, ${handledHashes.size} handled hashes`);
+
+        const newItems = [];
+        for (const item of sweepItems) {
+          if (!item.fingerprints || item.fingerprints.length === 0) continue;
+          const hasNew = item.fingerprints.some(hash => hash && !handledHashes.has(hash));
+          if (hasNew) {
+            newItems.push({ clientName: item.clientName, alertType: item.alertType });
+            console.log(`  New fingerprint(s) found: ${item.clientName} / ${item.alertType}`);
+          }
+        }
+
+        console.log(`  check_new_fingerprints: ${newItems.length} items need flag raising`);
+        return res.status(200).json({ success: true, newItems });
+      } catch (err) {
+        console.error("Error in check_new_fingerprints:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "store_proactive_alerts") {
       // Called by GAS overnight checks to store/update alerts in ProactiveAlerts tab.
       const { alerts: incomingAlerts, automationCommanderSheetId: acId } = req.body;

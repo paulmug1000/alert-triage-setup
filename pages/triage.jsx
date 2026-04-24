@@ -1351,6 +1351,9 @@ export default function TriageSystem({ onBack }) {
       setBulkSubmitting(false);
     }
   };
+
+  useEffect(() => {
+    startTriage();
     // Load active task count for nav badge
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },

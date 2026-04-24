@@ -1088,12 +1088,13 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
 
       if (mode === "Pipeline") {
         if (alertType === "crmPipeDashDiscr") {
-          // Left section: X:AJ (CRM), AO:AW (Pipeline), AY:BF (flags)
+          // Left section: X:AJ (CRM data, 13 cols), AK:AN gap (4 cols), AO:AW (sheet data, 9 cols), AX gap, AY:BF (flags, 8 cols)
+          // Relative to X (col 24): CRM=0-12, gap=13-16, sheetData=17-25, gap=26, flags=27-34
           dataRange = "CRMComp!X6:BF1000";
-          crmDataCols = [0, 13]; // X:AJ (indices 0-12)
-          sheetDataCols = [14, 24]; // AO:AW (indices 14-23)
-          flagCols = [24, 32]; // AY:BF (indices 24-31)
-          flagStartIdx = 24;
+          crmDataCols   = [0, 13];  // X:AJ  (indices 0-12)
+          sheetDataCols = [17, 26]; // AO:AW (indices 17-25)
+          flagCols      = [27, 35]; // AY:BF (indices 27-34)
+          flagStartIdx  = 27;
         } else if (alertType === "crmPipeAppDiscr") {
           // Right section: EF:EQ (Pipeline), EU:FD (CRM), FE:FL (flags)
           dataRange = "CRMComp!EF6:FL1000";
@@ -1104,12 +1105,12 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
         }
       } else if (mode === "Confirmed") {
         if (alertType === "crmConfDashDiscr") {
-          // Left section: X:AJ (CRM), AO:AW (Confirmed), AY:BF (flags)
+          // Same layout as Pipeline dash discrepancy
           dataRange = "CRMComp!X6:BF1000";
-          crmDataCols = [0, 13]; // X:AJ (indices 0-12)
-          sheetDataCols = [14, 24]; // AO:AW (indices 14-23)
-          flagCols = [24, 32]; // AY:BF (indices 24-31)
-          flagStartIdx = 24;
+          crmDataCols   = [0, 13];  // X:AJ  (indices 0-12)
+          sheetDataCols = [17, 26]; // AO:AW (indices 17-25)
+          flagCols      = [27, 35]; // AY:BF (indices 27-34)
+          flagStartIdx  = 27;
         } else if (alertType === "crmConfAppDiscr") {
           // Right section: EF:EQ (Confirmed), EU:FD (CRM), FE:FL (flags)
           dataRange = "CRMComp!EF6:FL1000";

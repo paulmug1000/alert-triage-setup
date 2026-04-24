@@ -3028,7 +3028,17 @@ export default function TriageSystem({ onBack }) {
                 <div key={type} style={{ marginBottom: "20px" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
                     <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#2196f3", margin: 0 }}>
-                      {getFlagName(type)}
+                      {(() => {
+                        const isDash = type === "crmPipeDashDiscr" || type === "crmConfDashDiscr";
+                        if (isDash) {
+                          const hasNotFound = groupAlerts.some(a => !a.subType || a.subType === "not_found");
+                          const hasMismatch = groupAlerts.some(a => a.subType === "field_mismatch");
+                          const tab = type === "crmPipeDashDiscr" ? "Pipeline" : "Confirmed";
+                          if (hasMismatch && !hasNotFound) return `CRM discrepancy — field mismatch (${tab})`;
+                          if (hasMismatch && hasNotFound)  return `CRM discrepancy — ${tab} (mixed)`;
+                        }
+                        return getFlagName(type);
+                      })()}
                     </h3>
                     {bulkMode && groupAlerts.length > 1 && (
                       <button className="triage-btn" onClick={() => {

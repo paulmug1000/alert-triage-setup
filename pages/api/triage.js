@@ -1066,10 +1066,44 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
   }
 }
 
-async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
+async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, masterSheetId) {
   try {
     console.log(`\n📖 Reading CRMComp alerts (${mode} mode) for ${alertTypes.join(", ")}...`);
-    
+
+    // Read DataChgAlert triage settings once per client
+    // Rows 59-66 = dashboard (col C = pipeline, col F = confirmed)
+    // Rows 72-79 = CRM compare (col C = pipeline, col F = confirmed)
+    let triageSettings = null;
+    const dcaSheetId = masterSheetId || spreadsheetId;
+    try {
+      const [dashPipeResp, dashConfResp, crmPipeResp, crmConfResp] = await Promise.all([
+        sheets.spreadsheets.values.get({ spreadsheetId: dcaSheetId, range: "DataChgAlert!C59:C66" }),
+        sheets.spreadsheets.values.get({ spreadsheetId: dcaSheetId, range: "DataChgAlert!F59:F66" }),
+        sheets.spreadsheets.values.get({ spreadsheetId: dcaSheetId, range: "DataChgAlert!C72:C79" }),
+        sheets.spreadsheets.values.get({ spreadsheetId: dcaSheetId, range: "DataChgAlert!F72:F79" }),
+      ]);
+      const SETTING_ROWS = ["missing_job","client_mismatch","job_name_mismatch","revenue_mismatch",
+                            "direct_costs_mismatch","start_date_mismatch","end_date_mismatch","likelihood_mismatch"];
+      const parseSettings = (resp) => {
+        const vals = resp.data.values || [];
+        const s = {};
+        SETTING_ROWS.forEach((k, i) => {
+          const v = String((vals[i] || [])[0] || "").trim().toLowerCase();
+          s[k] = v !== "exclude";
+        });
+        return s;
+      };
+      triageSettings = {
+        dashPipe: parseSettings(dashPipeResp),
+        dashConf: parseSettings(dashConfResp),
+        crmPipe:  parseSettings(crmPipeResp),
+        crmConf:  parseSettings(crmConfResp),
+      };
+      console.log(`  ✓ DataChgAlert settings loaded`);
+    } catch(e) {
+      console.log(`  ⚠ Could not read DataChgAlert settings: ${e.message} — including all discrepancy types`);
+    }
+
     // Set CRM mode
     console.log(`  Setting B2 = "${mode}" in CRMComp...`);
     await setCRMMode(sheets, spreadsheetId, mode);
@@ -1086,6 +1120,14 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
       console.log(`  Processing ${alertType}...`);
       let dataRange, crmDataCols, sheetDataCols, flagCols, flagStartIdx;
 
+      // Select settings block for this alert type
+      const isDash = alertType === "crmPipeDashDiscr" || alertType === "crmConfDashDiscr";
+      const isPipe = alertType === "crmPipeDashDiscr" || alertType === "crmPipeAppDiscr";
+      const settingsBlock = triageSettings
+        ? (isDash ? (isPipe ? triageSettings.dashPipe : triageSettings.dashConf)
+                  : (isPipe ? triageSettings.crmPipe  : triageSettings.crmConf))
+        : null;
+
       if (mode === "Pipeline") {
         if (alertType === "crmPipeDashDiscr") {
           // Left section: X:AJ (CRM data, 13 cols), AK:AN gap (4 cols), AO:AW (sheet data, 9 cols), AX gap, AY:BF (flags, 8 cols)
@@ -1096,12 +1138,13 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
           flagCols      = [27, 35]; // AY:BF (indices 27-34)
           flagStartIdx  = 27;
         } else if (alertType === "crmPipeAppDiscr") {
-          // Right section: EF:EQ (Pipeline), EU:FD (CRM), FE:FL (flags)
+          // EF:ER = sheet data (13 cols, indices 0-12), ES:ET = gap (2), EU:FD = CRM data (10, indices 15-24)
+          // FE = missing job flag (index 25), FF:FL = field mismatch flags (indices 26-32)
           dataRange = "CRMComp!EF6:FL1000";
-          sheetDataCols = [0, 12]; // EF:EQ (indices 0-11)
-          crmDataCols = [13, 23]; // EU:FD (indices 13-23)
-          flagCols = [24, 32]; // FE:FL (indices 24-31)
-          flagStartIdx = 24;
+          sheetDataCols = [0, 13];  // EF:ER (indices 0-12)
+          crmDataCols   = [15, 25]; // EU:FD (indices 15-24)
+          flagCols      = [25, 33]; // FE:FL (indices 25-32)
+          flagStartIdx  = 25;
         }
       } else if (mode === "Confirmed") {
         if (alertType === "crmConfDashDiscr") {
@@ -1112,12 +1155,12 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
           flagCols      = [27, 35]; // AY:BF (indices 27-34)
           flagStartIdx  = 27;
         } else if (alertType === "crmConfAppDiscr") {
-          // Right section: EF:EQ (Confirmed), EU:FD (CRM), FE:FL (flags)
+          // Same layout as Pipeline app discrepancy
           dataRange = "CRMComp!EF6:FL1000";
-          sheetDataCols = [0, 12]; // EF:EQ (indices 0-11)
-          crmDataCols = [13, 23]; // EU:FD (indices 13-23)
-          flagCols = [24, 32]; // FE:FL (indices 24-31)
-          flagStartIdx = 24;
+          sheetDataCols = [0, 13];  // EF:ER (indices 0-12)
+          crmDataCols   = [15, 25]; // EU:FD (indices 15-24)
+          flagCols      = [25, 33]; // FE:FL (indices 25-32)
+          flagStartIdx  = 25;
         }
       }
 
@@ -1137,13 +1180,24 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
         const hasDiscrepancy = flagValues.some(v => v === "1");
         if (!hasDiscrepancy) continue;
 
-        // Split: flag[0] (AY) = not found; flags[1-7] (AZ:BF) = field mismatches
-        const isNotFound    = flagValues[0] === "1";
-        const mismatchFlags = flagValues.slice(1); // [AZ, BA, BB, BC, BD, BE, BF]
+        // Apply DataChgAlert settings filtering if provided
+        const SETTING_KEYS = ["missing_job","client_mismatch","job_name_mismatch","revenue_mismatch",
+                              "direct_costs_mismatch","start_date_mismatch","end_date_mismatch","likelihood_mismatch"];
+        const filteredFlags = settingsBlock
+          ? flagValues.map((v, fi) => {
+              if (v !== "1") return v;
+              const sk = SETTING_KEYS[fi];
+              return (sk && settingsBlock[sk] === false) ? "0" : v;
+            })
+          : flagValues;
+        if (!filteredFlags.some(v => v === "1")) continue;
+
+        // Split: flag[0] = not found / missing job; flags[1-7] = field mismatches
+        const isNotFound    = filteredFlags[0] === "1";
+        const mismatchFlags = filteredFlags.slice(1);
         const hasMismatch   = mismatchFlags.some(v => v === "1");
         const subType       = isNotFound ? "not_found" : "field_mismatch";
 
-        // Named mismatch fields for human-readable rendering
         const MISMATCH_FIELD_NAMES = ["Client name", "Job name", "Revenue", "Direct costs", "Start date", "End date", "% Likelihood"];
         const mismatchFields = mismatchFlags.map((v, i) => v === "1" ? MISMATCH_FIELD_NAMES[i] : null).filter(Boolean);
 
@@ -1158,7 +1212,7 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
           data: {
             crmData:   row.slice(crmDataCols[0], crmDataCols[1]),
             sheetData: row.slice(sheetDataCols[0], sheetDataCols[1]),
-            flags:     flagValues,
+            flags:     filteredFlags,
           },
         });
       }
@@ -1691,7 +1745,8 @@ export default async function handler(req, res) {
               sheets,
               client.masterSheetId,
               "Pipeline",
-              pipelineAlerts
+              pipelineAlerts,
+              client.masterSheetId
             );
             crmAlerts.forEach((alert) => {
               alert.clientId = client.clientSheetId;
@@ -1706,7 +1761,8 @@ export default async function handler(req, res) {
               sheets,
               client.masterSheetId,
               "Confirmed",
-              confirmedAlerts
+              confirmedAlerts,
+              client.masterSheetId
             );
             crmAlerts.forEach((alert) => {
               alert.clientId = client.clientSheetId;
@@ -2827,61 +2883,132 @@ Return ONLY JSON, no other text.`;
           if (alertType === "crmConfAppDiscr" || alertType === "crmPipeAppDiscr") {
             const tabName = alertType === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
             const src = alert.data?.sheetData || [];
-            const client     = src[0] || alert.clientName || "";
-            const jobName    = src[1] || "";
+            // sheetData: EF=client[0], EG=job[1], EH=code[2], EI=revenue[3], EJ=dirCosts[4], EK=start[5], EL=end[6], EM=likelihood[7]
+            const client      = src[0] || alert.clientName || "";
+            const jobName     = src[1] || "";
             const projectCode = src[2] || "";
-            const revenue    = src[3] || "";
-            const startDate  = src[5] || "";
-            const endDate    = src[6] || "";
+            const revenue     = src[3] || "";
+            const dirCosts    = src[4] || "";
+            const startDate   = src[5] || "";
+            const endDate     = src[6] || "";
+            const likelihood  = src[7] || "";
             const jobDesc = [client, jobName, projectCode].filter(Boolean).join(" — ");
 
-            const options = [
-              {
-                optionId: 1,
-                title: `IGNORE — Job "${jobName || projectCode || "unknown"}" is legitimate and CRM discrepancy can be disregarded`,
-                matchType: "ignore",
-                jobRow: alert.rowNumber,
-                jobName,
-                matchingDetails: {
-                  unmatchedJobSummary: {
-                    clientName: client,
-                    jobName,
-                    projectCode,
-                    revenue,
-                    startDate,
-                    endDate,
-                  },
-                },
-                recommendedActions: [
-                  `Verify that "${jobDesc}" is intentionally absent from the CRM`,
-                  `If confirmed, mark this alert as ignored to prevent it recurring`,
-                ],
-              },
-              {
-                optionId: 2,
-                title: `DELETE — Remove job "${jobName || projectCode || "unknown"}" from ${tabName} tab as it should not exist`,
-                matchType: "delete",
-                jobRow: alert.rowNumber,
-                jobName,
-                matchingDetails: {
-                  unmatchedJobSummary: {
-                    clientName: client,
-                    jobName,
-                    projectCode,
-                    revenue,
-                    startDate,
-                    endDate,
-                  },
-                },
-                recommendedActions: [
-                  `Blank all cells for "${jobDesc}" and its child rows in the ${tabName} tab`,
-                  `All columns A:G, AG:AM, AP:BH, BX:CR will be cleared across the parent row and all child rows`,
-                  `Verify no invoices or expenses are linked to this job before accepting`,
-                ],
-              },
-            ];
+            let options = [];
 
-            console.log(`  ✅ App discr — returning 2 hardcoded options (ignore/delete) for ${jobDesc}`);
+            if (alert.subType === "field_mismatch") {
+              // Job exists in both sheet and CRM but fields differ
+              // crmData: EU=code[0], EV=client[1], EW=job[2], EX=revenue[3], EY=dirCosts[4], EZ=start[5], FA=end[6], FB=likelihood[7]
+              const crmSrc = alert.data?.crmData || [];
+              const crmCode      = crmSrc[0] || "";
+              const crmClient    = crmSrc[1] || "";
+              const crmJob       = crmSrc[2] || "";
+              const crmRevenue   = crmSrc[3] || "";
+              const crmDirCosts  = crmSrc[4] || "";
+              const crmStart     = crmSrc[5] || "";
+              const crmEnd       = crmSrc[6] || "";
+              const crmLikely    = crmSrc[7] || "";
+
+              // Look up job row in tab for precise cell writes
+              const tabStartRow = tabName === "Pipeline" ? 6 : 1;
+              const tabResp = await sheets.spreadsheets.values.get({
+                spreadsheetId: alert.clientId,
+                range: `${tabName}!A1:AM5000`,
+              });
+              const tabRows = tabResp.data.values || [];
+              let jobRow = null;
+              const codeToFind   = (projectCode || crmCode).toLowerCase();
+              const clientToFind = (client || crmClient).toLowerCase();
+              const jobToFind    = (jobName || crmJob).toLowerCase();
+              for (let tr = tabName === "Pipeline" ? 5 : 0; tr < tabRows.length; tr++) {
+                const r = tabRows[tr] || [];
+                const rCode = String(r[2] || "").trim().toLowerCase();
+                const rClient = String(r[0] || "").trim().toLowerCase();
+                const rJob = String(r[1] || "").trim().toLowerCase();
+                if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; break; }
+                if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; break; }
+              }
+
+              const mismatchFields = alert.mismatchFields || [];
+              const APP_FIELD_CONFIG = [
+                { name: "Client name",  sheet: client,    crm: crmClient,   col: "A",  writable: false },
+                { name: "Job name",     sheet: jobName,   crm: crmJob,      col: "B",  writable: false },
+                { name: "Revenue",      sheet: revenue,   crm: crmRevenue,  col: "AG", writable: true  },
+                { name: "Direct costs", sheet: dirCosts,  crm: crmDirCosts, col: "AH", writable: true  },
+                { name: "Start date",   sheet: startDate, crm: crmStart,    col: "AL", writable: true  },
+                { name: "End date",     sheet: endDate,   crm: crmEnd,      col: "AM", writable: true  },
+                { name: "% Likelihood", sheet: likelihood,crm: crmLikely,   col: "AN", writable: tabName === "Pipeline" },
+              ];
+
+              for (const fc of APP_FIELD_CONFIG) {
+                if (!mismatchFields.includes(fc.name)) continue;
+                if (fc.writable && jobRow) {
+                  options.push({
+                    optionId: options.length + 1,
+                    title: `UPDATE ${tabName} ${fc.name} to match CRM: "${fc.crm}"`,
+                    matchType: "existing_job", jobRow, jobName,
+                    matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode } },
+                    matchAnalysis: {
+                      matchConfidence: "High",
+                      reasonForChoice: `${fc.name} mismatch. ${tabName}: "${fc.sheet}" vs CRM: "${fc.crm}"`,
+                      discrepancies: `${fc.name}: ${tabName}="${fc.sheet}" vs CRM="${fc.crm}"`,
+                    },
+                    recommendedActions: [
+                      `Update ${fc.name} in ${tabName} tab (row ${jobRow}) to match CRM value "${fc.crm}"`,
+                      `Write "${fc.crm}" to ${fc.col}${jobRow}`,
+                    ],
+                  });
+                } else {
+                  options.push({
+                    optionId: options.length + 1,
+                    title: `REVIEW ${fc.name} mismatch — manual update required`,
+                    matchType: "info", jobName,
+                    matchAnalysis: {
+                      matchConfidence: "N/A",
+                      reasonForChoice: `${fc.name} differs: ${tabName}="${fc.sheet}" vs CRM="${fc.crm}". Cannot update automatically.`,
+                    },
+                    recommendedActions: [ `Review and correct ${fc.name} manually — ${tabName}: "${fc.sheet}", CRM: "${fc.crm}"` ],
+                  });
+                }
+              }
+              options.push({
+                optionId: options.length + 1,
+                title: `IGNORE — CRM data is wrong or discrepancy can be disregarded`,
+                matchType: "ignore", jobRow: jobRow || alert.rowNumber, jobName,
+                matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode } },
+                recommendedActions: [ `Mark this field mismatch as ignored — no changes will be made` ],
+              });
+
+            } else {
+              // not_found: job in sheet but not in CRM
+              options = [
+                {
+                  optionId: 1,
+                  title: `IGNORE — Job "${jobName || projectCode || "unknown"}" is legitimate and CRM discrepancy can be disregarded`,
+                  matchType: "ignore",
+                  jobRow: alert.rowNumber, jobName,
+                  matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate } },
+                  recommendedActions: [
+                    `Verify that "${jobDesc}" is intentionally absent from the CRM`,
+                    `If confirmed, mark this alert as ignored to prevent it recurring`,
+                  ],
+                },
+                {
+                  optionId: 2,
+                  title: `DELETE — Remove job "${jobName || projectCode || "unknown"}" from ${tabName} tab as it should not exist`,
+                  matchType: "delete",
+                  jobRow: alert.rowNumber, jobName,
+                  matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate } },
+                  recommendedActions: [
+                    `Blank all cells for "${jobDesc}" and its child rows in the ${tabName} tab`,
+                    `All columns A:G, AG:AM, AP:BH, BX:CR will be cleared across the parent row and all child rows`,
+                    `Verify no invoices or expenses are linked to this job before accepting`,
+                  ],
+                },
+              ];
+            }
+
+            console.log(`  ✅ App discr (${alert.subType || "not_found"}) — ${options.length} options for ${jobDesc}`);
 
             // Cache these options
             const crmSummary = `CRM ${alertType} ${jobDesc}`.trim();
@@ -7047,8 +7174,8 @@ Return ONLY JSON, no other text.`;
             } else if (alertType === "expense") {
               freshAlerts = await readDirCompAlerts(sheets, masterSheetId);
             } else if (alertType === "crm") {
-              const pipe = await readCRMCompAlerts(sheets, masterSheetId, "Pipeline", ["crmPipeDashDiscr"]);
-              const conf = await readCRMCompAlerts(sheets, masterSheetId, "Confirmed", ["crmConfDashDiscr"]);
+              const pipe = await readCRMCompAlerts(sheets, masterSheetId, "Pipeline", ["crmPipeDashDiscr"], masterSheetId);
+              const conf = await readCRMCompAlerts(sheets, masterSheetId, "Confirmed", ["crmConfDashDiscr"], masterSheetId);
               freshAlerts = [...pipe, ...conf];
             }
           } catch (e) {

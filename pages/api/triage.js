@@ -5168,6 +5168,31 @@ Return ONLY JSON, no other text.`;
           },
         });
         console.log(`  ✅ Decision logged to TriageLog`);
+
+        // Update AlertMemory to "accepted" so runFullSweep doesn't re-raise this flag
+        try {
+          await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+          const memoryRowsFinal = await readAlertMemory(sheets, automationCommanderSheetId);
+          const fpHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+          const memRowFinal = findMemoryRow(memoryRowsFinal, fpHash);
+          const alertSummaryFinal = alert.summary?.summary || `${alert.type || alert.flagType} ${fpHash}`;
+          if (memRowFinal) {
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memRowFinal.rowIndex, {
+              ...memRowFinal, status: "accepted",
+            });
+          } else {
+            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+              fingerprintHash: fpHash,
+              alertType: alert.type || alert.flagType || "unknown",
+              clientName: alert.clientName || "",
+              alertSummary: alertSummaryFinal,
+              cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
+            });
+          }
+          console.log(`  ✅ AlertMemory updated to accepted`);
+        } catch (memErr) {
+          console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
+        }
         
         return res.status(200).json({
           success: true,
@@ -5293,6 +5318,29 @@ Return ONLY JSON, no other text.`;
             ]],
           },
         });
+
+        // Update AlertMemory so runFullSweep doesn't re-raise this flag
+        try {
+          await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+          const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+          const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+          const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+          if (memoryRow) {
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+              ...memoryRow, status: "accepted",
+            });
+          } else {
+            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+              fingerprintHash,
+              alertType: alert.alertType || alert.type || "crm",
+              clientName: alert.clientName || "",
+              alertSummary: `Deleted: ${option.jobName}`,
+              cachedOptionsJSON: "", status: "accepted", ignoreReason: "",
+            });
+          }
+        } catch (memErr) {
+          console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
+        }
 
         return res.status(200).json({
           success: true,
@@ -7364,7 +7412,7 @@ Return ONLY JSON, no other text.`;
         await ensureAlertMemoryTab(sheets, acId);
         const memoryRows = await readAlertMemory(sheets, acId);
         const handledHashes = memoryRows
-          .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded")
+          .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded" || r.status === "accepted")
           .map(r => r.fingerprintHash)
           .filter(Boolean);
         console.log(`  get_handled_fingerprints: ${handledHashes.length} handled of ${memoryRows.length} total`);
@@ -7388,10 +7436,10 @@ Return ONLY JSON, no other text.`;
         await ensureAlertMemoryTab(sheets, acId);
         const memoryRows = await readAlertMemory(sheets, acId);
 
-        // Build set of handled fingerprints — ignored, task, or superseded
+        // Build set of handled fingerprints — ignored, task, superseded, or accepted
         const handledHashes = new Set(
           memoryRows
-            .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded")
+            .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded" || r.status === "accepted")
             .map(r => r.fingerprintHash)
             .filter(Boolean)
         );

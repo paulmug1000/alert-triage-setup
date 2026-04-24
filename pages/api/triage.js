@@ -51,7 +51,7 @@ const FLAG_COLUMNS = {
 
 // Precomputed triage data — stored by cron job, consumed by frontend on Start
 const PRECOMPUTED_KEY = "triage_precomputed";
-const PRECOMPUTED_MAX_AGE_MS = 45 * 60 * 1000; // 45 minutes (GAS precompute runs every 30 min)
+const PRECOMPUTED_MAX_AGE_MS = 90 * 60 * 1000; // 90 minutes (GAS precompute runs every 60 min)
 
 const NO_ACTION_FLAGS = [
   "invoiceAppDiscr",

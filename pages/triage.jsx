@@ -362,7 +362,7 @@ export default function TriageSystem({ onBack }) {
           return { ...c, alertCounts: updatedCounts };
         }));
         if (updatedAlerts.length === 0) {
-          if (allNoActionResolved()) { setFlagsToClear(computeFlagGroups(selectedClient, [])); setScreen("clearFlags"); }
+          if (allNoActionResolved()) { handlePostClear([], resolvedNoActionFlags); }
           else setScreen("alertSelection");
         } else {
           setScreen("alertSelection");
@@ -936,9 +936,8 @@ export default function TriageSystem({ onBack }) {
       if (filteredAlerts.length === 0) {
         // No actionable alerts — only go to clearFlags if no-action flags are all resolved too
         if (filteredNoAction.length === 0 || filteredNoAction.every(na => resolvedNoActionFlags.has(na.flagType))) {
-          console.log(`  → No unprocessed alerts and all no-action flags resolved, going to clearFlags screen`);
-          setFlagsToClear(computeFlagGroups(client, []));
-          setScreen("clearFlags");
+          console.log(`  → No unprocessed alerts and all no-action flags resolved, auto-clearing`);
+          handlePostClear([], resolvedNoActionFlags);
         } else {
           console.log(`  → No actionable alerts but ${filteredNoAction.length} non-actionable flag(s) need resolving`);
           setScreen("alertSelection");
@@ -1069,10 +1068,9 @@ export default function TriageSystem({ onBack }) {
       }));
       
       if (updatedAlerts.length === 0) {
-        // All actionable alerts processed — go to clearFlags only if no-action flags are all resolved
+        // All actionable alerts processed — auto-clear if noAction flags resolved too
         if (allNoActionResolved()) {
-          setFlagsToClear(computeFlagGroups(selectedClient, []));
-          setScreen("clearFlags");
+          handlePostClear([], resolvedNoActionFlags);
         } else {
           // Still have unresolved non-actionable flags — go back to alertSelection to show them
           setScreen("alertSelection");
@@ -1095,7 +1093,102 @@ export default function TriageSystem({ onBack }) {
   const allNoActionResolved = () =>
     clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.flagType));
 
-  // Auto-trigger triage on mount — skips the home screen entirely
+  // Rich noAction flags that belong to CRM or invoice groups —
+  // when marked resolved, trigger auto-clear for their parent group
+  const RICH_NOACTION_FLAG_GROUP = {
+    crmCopiedConfChecked:    "crm",
+    crmCopiedConfUnchecked:  "crm",
+    crmCopiedConfDelete:     "crm",
+    retainerInvoicesCreated: "invoice",
+    retainerInvoicesDeleted: "invoice",
+    invoiceStaleUnsentChanges: "invoice",
+  };
+
+  // Silently fires clear_flags for any flag groups that are now fully resolved.
+  // Called after every alert action and after rich noAction "Mark resolved".
+  // Does NOT navigate to clearFlags screen — clears happen in the background.
+  // Returns the set of groups that were auto-cleared (for downstream use).
+  const autoClearFlags = async (remainingAlerts, resolvedNoActionFlagsOverride) => {
+    if (!selectedClient) return new Set();
+    const resolvedSet = resolvedNoActionFlagsOverride || resolvedNoActionFlags;
+
+    // Compute which groups are fully resolved
+    const groups = computeFlagGroups(selectedClient, remainingAlerts);
+
+    // For auto-clear, also require that noAction flags in that group are resolved
+    const invoiceNoActionFlags = ["retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
+    const crmNoActionFlags     = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
+
+    const invoiceNoActionDone = invoiceNoActionFlags
+      .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
+      .every(f => resolvedSet.has(f));
+    const crmNoActionDone = crmNoActionFlags
+      .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
+      .every(f => resolvedSet.has(f));
+
+    const toClear = {
+      invoice: groups.invoice && invoiceNoActionDone,
+      crm:     groups.crm     && crmNoActionDone,
+      expense: groups.expense, // expense has no rich noAction flags
+    };
+
+    const selected = Object.entries(toClear)
+      .filter(([, v]) => v)
+      .map(([k]) => k);
+
+    if (selected.length === 0) return new Set();
+
+    try {
+      await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "clear_flags",
+          masterSheetId: selectedClient.masterSheetId,
+          automationCommanderSheetId,
+          flagsToClear: selected,
+          clientName: selectedClient.clientName,
+        }),
+      });
+      console.log(`Auto-cleared flags: ${selected.join(", ")} for ${selectedClient.clientName}`);
+    } catch (e) {
+      console.log(`Auto-clear failed (non-fatal): ${e.message}`);
+    }
+    return new Set(selected);
+  };
+
+  // After processing alerts/noAction flags, decide whether to show clearFlags screen
+  // or skip it (if auto-clear handled everything) or go back to client selection.
+  const handlePostClear = async (remainingAlerts, resolvedNoActionFlagsOverride) => {
+    const autoCleared = await autoClearFlags(remainingAlerts, resolvedNoActionFlagsOverride);
+    const groups = computeFlagGroups(selectedClient, remainingAlerts);
+    const resolvedSet = resolvedNoActionFlagsOverride || resolvedNoActionFlags;
+
+    // Check what's left that wasn't auto-cleared
+    const invoiceNoActionFlags = ["retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
+    const crmNoActionFlags     = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
+    const invoiceNoActionDone  = invoiceNoActionFlags
+      .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
+      .every(f => resolvedSet.has(f));
+    const crmNoActionDone      = crmNoActionFlags
+      .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
+      .every(f => resolvedSet.has(f));
+
+    const remainingGroups = {
+      invoice: groups.invoice && !autoCleared.has("invoice"),
+      crm:     groups.crm     && !autoCleared.has("crm"),
+      expense: groups.expense && !autoCleared.has("expense"),
+    };
+    const anyRemaining = remainingGroups.invoice || remainingGroups.crm || remainingGroups.expense;
+
+    if (anyRemaining) {
+      setFlagsToClear(remainingGroups);
+      setScreen("clearFlags");
+    } else {
+      // Everything cleared — go back to client selection
+      setScreen("clientSelection");
+    }
+  };
   useEffect(() => {
     startTriage();
     // Load active task count for nav badge
@@ -1313,8 +1406,7 @@ export default function TriageSystem({ onBack }) {
       if (updatedAlerts.length === 0) {
         // Same gate as acceptOption — only go to clearFlags if no-action flags resolved too
         if (allNoActionResolved()) {
-          setFlagsToClear(computeFlagGroups(selectedClient, []));
-          setScreen("clearFlags");
+          handlePostClear([], resolvedNoActionFlags);
         } else {
           setScreen("alertSelection");
         }
@@ -2877,7 +2969,8 @@ export default function TriageSystem({ onBack }) {
                             )}
                             <button className="triage-btn"
                               onClick={() => {
-                                setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
+                                const newResolved = new Set([...resolvedNoActionFlags, na.flagType]);
+                                setResolvedNoActionFlags(newResolved);
                                 // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
                                 setClientsWithFlags(prev => prev.map(c => {
                                   if (c.clientName !== selectedClient?.clientName) return c;
@@ -2895,6 +2988,10 @@ export default function TriageSystem({ onBack }) {
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
                                   }).catch(() => {});
+                                }
+                                // Auto-clear this flag group if it qualifies (rich noAction flags only)
+                                if (RICH_NOACTION_FLAG_GROUP[na.flagType]) {
+                                  autoClearFlags(clientAlerts, newResolved).catch(() => {});
                                 }
                               }}
                               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
@@ -3513,7 +3610,7 @@ export default function TriageSystem({ onBack }) {
                                 const updatedAlerts = clientAlerts.filter((_, i) => i !== currentClientAlertIndex);
                                 setClientAlerts(updatedAlerts);
                                 if (updatedAlerts.length === 0) {
-                                  if (allNoActionResolved()) { setFlagsToClear(computeFlagGroups(selectedClient, [])); setScreen("clearFlags"); }
+                                  if (allNoActionResolved()) { handlePostClear([], resolvedNoActionFlags); }
                                   else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
                                 } else { setScreen("alertSelection"); setCurrentClientAlertIndex(0); }
                               }}
@@ -3838,7 +3935,10 @@ export default function TriageSystem({ onBack }) {
                 const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
                 setClientAlerts(updatedAlerts);
                 setCurrentClientAlertIndex(0);
-                setScreen(updatedAlerts.length === 0 ? "clearFlags" : "alertSelection");
+                if (updatedAlerts.length === 0) {
+                  if (allNoActionResolved()) { handlePostClear([], resolvedNoActionFlags); }
+                  else setScreen("alertSelection");
+                } else { setScreen("alertSelection"); }
               }}
               style={{ ...styles.buttonSecondary, color: "#d97706", borderColor: "#d97706" }}
             >

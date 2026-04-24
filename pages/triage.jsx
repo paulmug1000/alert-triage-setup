@@ -238,6 +238,17 @@ export default function TriageSystem({ onBack }) {
   const [taskModalIsProactive, setTaskModalIsProactive] = useState(false);
   const [taskModalSnoozeDate, setTaskModalSnoozeDate] = useState(""); // optional: create as snoozed
   const [taskModalSnoozeTime, setTaskModalSnoozeTime] = useState("09:00");
+
+  // Bulk action state
+  const [bulkMode, setBulkMode]                 = useState(false);       // bulk selection active
+  const [bulkSelected, setBulkSelected]         = useState(new Set());   // Set of "type|||idx" keys
+  const [showBulkIgnoreModal, setShowBulkIgnoreModal] = useState(false);
+  const [showBulkTaskModal, setShowBulkTaskModal]     = useState(false);
+  const [bulkIgnoreReason, setBulkIgnoreReason] = useState("");
+  const [bulkTaskNote, setBulkTaskNote]         = useState("");
+  const [bulkTaskSnoozeDate, setBulkTaskSnoozeDate] = useState("");
+  const [bulkTaskSnoozeTime, setBulkTaskSnoozeTime] = useState("09:00");
+  const [bulkSubmitting, setBulkSubmitting]     = useState(false);
   const [taskSnoozeDate, setTaskSnoozeDate] = useState(""); // ISO date string for snooze
   const [taskSnoozeTime, setTaskSnoozeTime] = useState("09:00");
   const [taskSnoozeSubmitting, setTaskSnoozeSubmitting] = useState(false);
@@ -959,6 +970,8 @@ export default function TriageSystem({ onBack }) {
 
   // NEW: Select an alert and analyze it
   const selectAlert = async (alert) => {
+    setBulkMode(false);
+    setBulkSelected(new Set());
     try {
       console.log(`\n📍 selectAlert called for: ${alert.sheetName}-${alert.rowNumber}`);
       
@@ -1194,8 +1207,150 @@ export default function TriageSystem({ onBack }) {
       setScreen("clientSelection");
     }
   };
-  useEffect(() => {
-    startTriage();
+
+  // Hoist groupedAlerts so bulk helpers can reference it
+  const groupedAlerts = React.useMemo(() => {
+    const g = {};
+    (clientAlerts || []).forEach(alert => {
+      const type = alert.flagType || alert.alertType || alert.type || "unknown";
+      if (!g[type]) g[type] = [];
+      g[type].push(alert);
+    });
+    return g;
+  }, [clientAlerts]);
+
+  // ── Bulk action helpers ──────────────────────────────────────────────────
+
+  const getBulkSelectedAlerts = () => {
+    const alerts = [];
+    for (const key of bulkSelected) {
+      const sepIdx = key.lastIndexOf("|||");
+      const type   = key.slice(0, sepIdx);
+      const idx    = parseInt(key.slice(sepIdx + 3), 10);
+      const alert  = (groupedAlerts[type] || [])[idx];
+      if (alert) alerts.push(alert);
+    }
+    return alerts;
+  };
+
+  const bulkIgnore = async () => {
+    const alerts = getBulkSelectedAlerts();
+    if (!alerts.length) return;
+    try {
+      setBulkSubmitting(true);
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "bulk_ignore_alerts", alerts, ignoreReason: bulkIgnoreReason, automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (!data.success) { setAcceptError(data.error || "Bulk ignore failed"); return; }
+
+      const alertSet = new Set(alerts);
+      const updatedAlerts = clientAlerts.filter(a => !alertSet.has(a));
+
+      if (sessionId) {
+        for (const alert of alerts) {
+          const alertId = `${alert.sheetName}-${alert.rowNumber}`;
+          setProcessedAlerts(prev => new Set([...prev, alertId]));
+          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "remove_alert", sessionId, alertId }) }).catch(() => {});
+        }
+      }
+
+      const countDeltas = {};
+      for (const a of alerts) {
+        const ft = a.flagType || a.type || "";
+        countDeltas[ft] = (countDeltas[ft] || 0) + 1;
+      }
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== selectedClient?.clientName) return c;
+        const updatedCounts = { ...c.alertCounts };
+        for (const [ft, delta] of Object.entries(countDeltas)) {
+          if ((updatedCounts[ft] || 0) > 0) updatedCounts[ft] -= delta;
+        }
+        return { ...c, alertCounts: updatedCounts };
+      }));
+
+      setClientAlerts(updatedAlerts);
+      setBulkSelected(new Set());
+      setBulkMode(false);
+      setShowBulkIgnoreModal(false);
+      setBulkIgnoreReason("");
+
+      if (updatedAlerts.length === 0 && allNoActionResolved()) {
+        handlePostClear([], resolvedNoActionFlags);
+      }
+    } catch (err) {
+      setAcceptError(`Bulk ignore error: ${err.message}`);
+    } finally {
+      setBulkSubmitting(false);
+    }
+  };
+
+  const bulkCreateTasks = async () => {
+    const alerts = getBulkSelectedAlerts();
+    if (!alerts.length) return;
+    try {
+      setBulkSubmitting(true);
+      const snoozedUntil = bulkTaskSnoozeDate
+        ? new Date(`${bulkTaskSnoozeDate}T${bulkTaskSnoozeTime}:00`).toISOString()
+        : null;
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "bulk_create_tasks", alerts, taskNote: bulkTaskNote, snoozedUntil, automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (!data.success) { setAcceptError(data.error || "Bulk task creation failed"); return; }
+
+      const alertSet = new Set(alerts);
+      const updatedAlerts = clientAlerts.filter(a => !alertSet.has(a));
+
+      if (sessionId) {
+        for (const alert of alerts) {
+          const alertId = `${alert.sheetName}-${alert.rowNumber}`;
+          setProcessedAlerts(prev => new Set([...prev, alertId]));
+          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "remove_alert", sessionId, alertId }) }).catch(() => {});
+        }
+      }
+
+      const countDeltas = {};
+      for (const a of alerts) {
+        const ft = a.flagType || a.type || "";
+        countDeltas[ft] = (countDeltas[ft] || 0) + 1;
+      }
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== selectedClient?.clientName) return c;
+        const updatedCounts = { ...c.alertCounts };
+        for (const [ft, delta] of Object.entries(countDeltas)) {
+          if ((updatedCounts[ft] || 0) > 0) updatedCounts[ft] -= delta;
+        }
+        return { ...c, alertCounts: updatedCounts };
+      }));
+
+      const tasksAdded = (data.results || []).filter(r => !r.error).length;
+      if (!bulkTaskSnoozeDate) setNavTaskCount(prev => prev + tasksAdded);
+      else setSnoozedTaskCount(prev => prev + tasksAdded);
+
+      setClientAlerts(updatedAlerts);
+      setBulkSelected(new Set());
+      setBulkMode(false);
+      setShowBulkTaskModal(false);
+      setBulkTaskNote("");
+      setBulkTaskSnoozeDate("");
+      setBulkTaskSnoozeTime("09:00");
+
+      if (updatedAlerts.length === 0 && allNoActionResolved()) {
+        handlePostClear([], resolvedNoActionFlags);
+      }
+    } catch (err) {
+      setAcceptError(`Bulk task error: ${err.message}`);
+    } finally {
+      setBulkSubmitting(false);
+    }
+  };
     // Load active task count for nav badge
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -2801,13 +2956,7 @@ export default function TriageSystem({ onBack }) {
 
   // Screen 1c: Alert Selection Screen
   if (screen === "alertSelection" && selectedClient && activeNav !== "tasks") {
-    // Group actionable alerts by type
-    const groupedAlerts = {};
-    clientAlerts.forEach(alert => {
-      const type = alert.flagType || alert.alertType || alert.type || "unknown";
-      if (!groupedAlerts[type]) groupedAlerts[type] = [];
-      groupedAlerts[type].push(alert);
-    });
+    // groupedAlerts is hoisted above as a useMemo
 
     const noActionDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.flagType));
     const allActionableDone = clientAlerts.length === 0;
@@ -2823,6 +2972,17 @@ export default function TriageSystem({ onBack }) {
 
         <div style={styles.card}>
           {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
+
+          {/* Bulk mode toggle — only show when there are multiple alerts */}
+          {clientAlerts.length > 1 && (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
+              <button className="triage-btn" onClick={() => { setBulkMode(v => !v); setBulkSelected(new Set()); }}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px",
+                  ...(bulkMode ? { background: "#ede9fe", borderColor: "#7c3aed", color: "#5b21b6" } : {}) }}>
+                {bulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
+              </button>
+            </div>
+          )}
           
           {/* Actionable alerts */}
           {Object.keys(groupedAlerts).length === 0 ? (
@@ -2833,13 +2993,68 @@ export default function TriageSystem({ onBack }) {
             </div>
           ) : (
             <div>
-              {Object.keys(groupedAlerts).map((type) => (
+              {Object.keys(groupedAlerts).map((type) => {
+                const groupAlerts = groupedAlerts[type];
+                const groupKeys   = groupAlerts.map((_, idx) => `${type}|||${idx}`);
+                const allSelected = groupKeys.every(k => bulkSelected.has(k));
+                const anySelected = groupKeys.some(k => bulkSelected.has(k));
+                return (
                 <div key={type} style={{ marginBottom: "20px" }}>
-                  <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#2196f3", marginBottom: "10px" }}>
-                    {getFlagName(type)}
-                  </h3>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+                    <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#2196f3", margin: 0 }}>
+                      {getFlagName(type)}
+                    </h3>
+                    {bulkMode && groupAlerts.length > 1 && (
+                      <button className="triage-btn" onClick={() => {
+                        const newSel = new Set(bulkSelected);
+                        if (allSelected) { groupKeys.forEach(k => newSel.delete(k)); }
+                        else             { groupKeys.forEach(k => newSel.add(k)); }
+                        setBulkSelected(newSel);
+                      }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "3px 8px" }}>
+                        {allSelected ? "Deselect all" : "Select all"}
+                      </button>
+                    )}
+                  </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {groupedAlerts[type].map((alert, idx) => (
+                    {groupAlerts.map((alert, idx) => {
+                      const selKey    = `${type}|||${idx}`;
+                      const isChecked = bulkSelected.has(selKey);
+                      return bulkMode ? (
+                        <div key={idx}
+                          onClick={() => {
+                            const newSel = new Set(bulkSelected);
+                            if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
+                            setBulkSelected(newSel);
+                          }}
+                          style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "12px",
+                            border: `1px solid ${isChecked ? "#7c3aed" : "#e0e0e0"}`,
+                            borderRadius: "4px", cursor: "pointer",
+                            backgroundColor: isChecked ? "#ede9fe" : "#fff", fontSize: "13px" }}>
+                          <input type="checkbox" checked={isChecked} onChange={() => {}}
+                            style={{ marginTop: "2px", accentColor: "#7c3aed", flexShrink: 0 }} />
+                          <div style={{ flex: 1, pointerEvents: "none" }}>
+                            {(() => {
+                              const ft = alert.flagType || alert.alertType || "";
+                              const isAppDiscr  = ft === "crmConfAppDiscr" || ft === "crmPipeAppDiscr";
+                              const isDashDiscr = ft === "crmPipeDashDiscr" || ft === "crmConfDashDiscr";
+                              if (isAppDiscr) {
+                                const sd = alert.data?.sheetData || [];
+                                const client = sd[1] || sd[0] || ""; const job = sd[2] || sd[1] || ""; const code = sd[0] || sd[2] || "";
+                                return <div><div style={{ fontWeight: "600" }}>{client}{job ? ` — ${job}` : ""}</div>{code && <div style={{ fontSize: "11px", color: "#888" }}>Code: {code}</div>}</div>;
+                              }
+                              if (isDashDiscr) {
+                                const cd = alert.data?.crmData || [];
+                                const isMismatch = alert.subType === "field_mismatch";
+                                return <div><div style={{ fontWeight: "600" }}>{cd[0]}{cd[1] ? ` — ${cd[1]}` : ""}</div>
+                                  <div style={{ fontSize: "11px", color: isMismatch ? "#d97706" : "#c62828" }}>
+                                    {isMismatch ? `⚠ ${(alert.mismatchFields || []).join(", ")}` : "In CRM — not in sheet"}
+                                  </div></div>;
+                              }
+                              return <div>{getAlertSummary(alert)}</div>;
+                            })()}
+                          </div>
+                        </div>
+                      ) : (
                       <button className="triage-btn"
                         key={idx}
                         onClick={() => selectAlert(alert)}
@@ -2913,10 +3128,99 @@ export default function TriageSystem({ onBack }) {
                           return getAlertSummary(alert);
                         })()}
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
-              ))}
+                );
+              })}
+            </div>
+          )}
+
+          {/* Sticky bulk action bar */}
+          {bulkMode && bulkSelected.size > 0 && (
+            <div style={{ position: "sticky", bottom: 0, background: "#fff", borderTop: "2px solid #7c3aed",
+              padding: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
+              boxShadow: "0 -2px 8px rgba(0,0,0,0.08)", zIndex: 10, marginTop: "12px" }}>
+              <span style={{ fontSize: "13px", color: "#5b21b6", fontWeight: "600", flex: 1 }}>
+                {bulkSelected.size} alert{bulkSelected.size !== 1 ? "s" : ""} selected
+              </span>
+              <button className="triage-btn" onClick={() => setShowBulkIgnoreModal(true)}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#dc2626", borderColor: "#fca5a5" }}>
+                🚫 Ignore selected
+              </button>
+              <button className="triage-btn" onClick={() => setShowBulkTaskModal(true)}
+                style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
+                  padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer" }}>
+                📋 Create tasks
+              </button>
+            </div>
+          )}
+
+          {/* Bulk ignore modal */}
+          {showBulkIgnoreModal && (
+            <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowBulkIgnoreModal(false); }}>
+              <div style={styles.modalCard}>
+                <h3 style={styles.modalTitle}>Ignore {bulkSelected.size} Alert{bulkSelected.size !== 1 ? "s" : ""}</h3>
+                <p style={styles.modalSubtitle}>These alerts will be marked as ignored and removed from future triage runs.</p>
+                <textarea value={bulkIgnoreReason} onChange={e => setBulkIgnoreReason(e.target.value)}
+                  placeholder="Reason for ignoring (optional)..." style={styles.modalTextarea} autoFocus />
+                <div style={styles.modalButtons}>
+                  <button className="triage-btn" onClick={() => setShowBulkIgnoreModal(false)} style={styles.buttonSecondary}>Cancel</button>
+                  <button className="triage-btn" onClick={bulkIgnore} disabled={bulkSubmitting}
+                    style={{ background: "#dc2626", color: "white", border: "none", borderRadius: "6px",
+                      padding: "9px 18px", fontWeight: "600", fontSize: "13px", cursor: "pointer",
+                      opacity: bulkSubmitting ? 0.5 : 1 }}>
+                    {bulkSubmitting ? <><Spinner />Ignoring...</> : `🚫 Ignore ${bulkSelected.size} alert${bulkSelected.size !== 1 ? "s" : ""}`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Bulk create tasks modal */}
+          {showBulkTaskModal && (
+            <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowBulkTaskModal(false); }}>
+              <div style={styles.modalCard}>
+                <h3 style={styles.modalTitle}>Create {bulkSelected.size} Task{bulkSelected.size !== 1 ? "s" : ""}</h3>
+                <p style={styles.modalSubtitle}>These alerts will be added to your task list for follow-up.</p>
+                <textarea value={bulkTaskNote} onChange={e => setBulkTaskNote(e.target.value)}
+                  placeholder="Shared note for all tasks (optional)..." style={styles.modalTextarea} autoFocus />
+                <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", marginBottom: "8px" }}>Snooze until (optional)</div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                    <input type="date" value={bulkTaskSnoozeDate}
+                      min={new Date().toISOString().split("T")[0]}
+                      onChange={e => setBulkTaskSnoozeDate(e.target.value)}
+                      style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px" }} />
+                    {bulkTaskSnoozeDate && (
+                      <>
+                        <input type="time" value={bulkTaskSnoozeTime}
+                          onChange={e => setBulkTaskSnoozeTime(e.target.value)}
+                          style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", width: "100px" }} />
+                        <button className="triage-btn" onClick={() => { setBulkTaskSnoozeDate(""); setBulkTaskSnoozeTime("09:00"); }}
+                          style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>✕ Clear</button>
+                      </>
+                    )}
+                  </div>
+                  {bulkTaskSnoozeDate && (
+                    <div style={{ fontSize: "12px", color: "#d97706", marginTop: "6px" }}>
+                      Tasks will be snoozed until {new Date(`${bulkTaskSnoozeDate}T${bulkTaskSnoozeTime}:00`).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}.
+                    </div>
+                  )}
+                </div>
+                <div style={styles.modalButtons}>
+                  <button className="triage-btn" onClick={() => setShowBulkTaskModal(false)} style={styles.buttonSecondary}>Cancel</button>
+                  <button className="triage-btn" onClick={bulkCreateTasks} disabled={bulkSubmitting}
+                    style={{ background: bulkTaskSnoozeDate ? "#d97706" : "#7c3aed", color: "white", border: "none",
+                      borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px",
+                      cursor: "pointer", opacity: bulkSubmitting ? 0.5 : 1 }}>
+                    {bulkSubmitting ? <><Spinner />Creating...</> : bulkTaskSnoozeDate
+                      ? `📋 Create & Snooze ${bulkSelected.size} task${bulkSelected.size !== 1 ? "s" : ""}`
+                      : `📋 Create ${bulkSelected.size} task${bulkSelected.size !== 1 ? "s" : ""}`}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

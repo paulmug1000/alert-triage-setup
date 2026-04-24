@@ -6778,6 +6778,117 @@ Return ONLY JSON, no other text.`;
         console.error(`❌ Error recording decision:`, err);
         return res.status(500).json({ success: false, error: err.message });
       }
+    } else if (action === "bulk_ignore_alerts") {
+      // Bulk ignore multiple alerts in one call — same logic as ignore_alert but batched.
+      const { alerts: alertsToIgnore, ignoreReason, automationCommanderSheetId: acId } = req.body;
+      if (!alertsToIgnore?.length || !acId) {
+        return res.status(400).json({ success: false, error: "Missing alerts or automationCommanderSheetId" });
+      }
+      try {
+        console.log(`\n🚫 Bulk ignoring ${alertsToIgnore.length} alerts`);
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const rowsToAppend = [];
+        const rowsToUpdate = [];
+
+        for (const alert of alertsToIgnore) {
+          const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+          const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+          const alertSummary = alert.summary?.summary
+            || `${alert.type || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
+          const dataSnapshot = JSON.stringify({
+            alertType: alert.type || alert.flagType || "",
+            invoiceNo: alert.summary?.invoiceNo || "",
+            amount:    String(alert.summary?.amount || ""),
+            flagType:  alert.flagType || "",
+            masterSheetId: alert.masterSheetId || "",
+          });
+          if (memoryRow) {
+            rowsToUpdate.push({ rowIndex: memoryRow.rowIndex, row: { ...memoryRow, status: "ignored", ignoreReason: ignoreReason || "", dataSnapshot } });
+          } else {
+            rowsToAppend.push({ fingerprintHash, alertType: alert.type || alert.flagType || "unknown",
+              clientName: alert.clientName || "", alertSummary, cachedOptionsJSON: "",
+              status: "ignored", ignoreReason: ignoreReason || "", dataSnapshot });
+          }
+        }
+
+        // Apply updates and appends
+        for (const u of rowsToUpdate) {
+          await updateAlertMemoryRow(sheets, acId, u.rowIndex, u.row);
+        }
+        for (const a of rowsToAppend) {
+          await appendAlertMemoryRow(sheets, acId, a);
+        }
+
+        console.log(`  ✅ Bulk ignored: ${rowsToUpdate.length} updated, ${rowsToAppend.length} appended`);
+        return res.status(200).json({ success: true, count: alertsToIgnore.length });
+      } catch (err) {
+        console.error("❌ Error in bulk_ignore_alerts:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "bulk_create_tasks") {
+      // Bulk create tasks for multiple alerts — same logic as create_task but batched.
+      // Returns array of { fingerprintHash } so the caller can snooze all if needed.
+      const { alerts: alertsToTask, taskNote, snoozedUntil, automationCommanderSheetId: acId } = req.body;
+      if (!alertsToTask?.length || !acId) {
+        return res.status(400).json({ success: false, error: "Missing alerts or automationCommanderSheetId" });
+      }
+      try {
+        console.log(`\n📋 Bulk creating ${alertsToTask.length} tasks`);
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const results = [];
+
+        for (const alert of alertsToTask) {
+          try {
+            const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
+            const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+            const taskRef = `TASK-${Date.now()}-${Math.random().toString(36).slice(2,7).toUpperCase()}`;
+            const taskKey = `${alert.clientName}||${alert.type || alert.flagType || "alert"}||${taskRef}`;
+            const alertSummary = alert.summary?.summary
+              || `${alert.type || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
+
+            const taskRow = {
+              fingerprintHash, alertType: alert.type || alert.flagType || "unknown",
+              clientName: alert.clientName || "", alertSummary,
+              cachedOptionsJSON: memoryRow?.cachedOptionsJSON || "",
+              status: "task", taskNote: taskNote || "", taskKey,
+              dataSnapshot: JSON.stringify({ alertType: alert.type || alert.flagType || "",
+                flagType: alert.flagType || "", masterSheetId: alert.masterSheetId || "" }),
+            };
+
+            if (memoryRow) {
+              await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, taskRow);
+            } else {
+              await appendAlertMemoryRow(sheets, acId, taskRow);
+            }
+
+            // Snooze if requested
+            if (snoozedUntil) {
+              const freshRows = await readAlertMemory(sheets, acId);
+              const taskMemRow = findMemoryRow(freshRows, fingerprintHash);
+              if (taskMemRow) {
+                await updateAlertMemoryRow(sheets, acId, taskMemRow.rowIndex, { ...taskMemRow, snoozedUntil });
+              }
+            }
+
+            results.push({ fingerprintHash, taskKey });
+          } catch (alertErr) {
+            console.error(`  ⚠ Error creating task for ${alert.clientName}: ${alertErr.message}`);
+            results.push({ fingerprintHash: null, error: alertErr.message });
+          }
+        }
+
+        console.log(`  ✅ Bulk tasks created: ${results.filter(r => !r.error).length}/${alertsToTask.length}`);
+        return res.status(200).json({ success: true, results });
+      } catch (err) {
+        console.error("❌ Error in bulk_create_tasks:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "ignore_alert") {
       // Permanently ignore an alert by fingerprint — removes it from future triage runs
       const { alert, ignoreReason, automationCommanderSheetId } = req.body;

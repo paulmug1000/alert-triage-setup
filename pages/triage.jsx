@@ -1161,15 +1161,54 @@ export default function TriageSystem({ onBack }) {
       .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
       .every(f => resolvedSet.has(f));
 
+    // Groups where all actionable alerts are gone — used for visual update regardless of noAction blocking
+    const toZeroVisually = {
+      invoice: groups.invoice,
+      crm:     groups.crm,
+      expense: groups.expense,
+    };
+    const visualGroups = Object.entries(toZeroVisually).filter(([, v]) => v).map(([k]) => k);
+
+    // Groups that can actually be cleared in AutoUpdates (requires noAction flags resolved too)
     const toClear = {
       invoice: groups.invoice && invoiceNoActionDone,
       crm:     groups.crm     && crmNoActionDone,
-      expense: groups.expense, // expense has no rich noAction flags
+      expense: groups.expense,
+    };
+    const selected = Object.entries(toClear).filter(([, v]) => v).map(([k]) => k);
+
+    // Always zero ACTIONABLE flag types visually (removes blue items from client card)
+    // even if noAction blocking flags prevent the full clear_flags API call
+    const ACTIONABLE_FLAG_TYPE_MAP = {
+      invoice: ["invoiceDashboardDiscr","invoiceAppDiscr","retainerInvoicesCreated","retainerInvoicesDeleted","invoiceStaleUnsentChanges"],
+      crm:     ["crmPipeDashDiscr","crmPipeAppDiscr","crmConfDashDiscr","crmConfAppDiscr","crmPipeSkippedBlank","crmConfSkippedBlank"],
+      expense: ["expenseDashboardDiscr","expenseAppDiscr","expenseAdded","expenseUnreconGaps"],
+    };
+    const FULL_FLAG_TYPE_MAP = {
+      invoice: [...ACTIONABLE_FLAG_TYPE_MAP.invoice],
+      crm:     [...ACTIONABLE_FLAG_TYPE_MAP.crm, "crmCopiedConfChecked","crmCopiedConfUnchecked","crmCopiedConfDelete"],
+      expense: [...ACTIONABLE_FLAG_TYPE_MAP.expense],
     };
 
-    const selected = Object.entries(toClear)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
+    if (visualGroups.length > 0) {
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== client.clientName) return c;
+        const updatedFlags = { ...c.flags };
+        const updatedCounts = { ...c.alertCounts };
+        // For groups being fully cleared (API call too), zero all flags including noAction
+        // For groups only visually clearing (noAction blocking), zero only actionable flags
+        for (const group of visualGroups) {
+          const flagList = selected.includes(group)
+            ? FULL_FLAG_TYPE_MAP[group]
+            : ACTIONABLE_FLAG_TYPE_MAP[group];
+          for (const ft of (flagList || [])) {
+            updatedFlags[ft] = false;
+            updatedCounts[ft] = 0;
+          }
+        }
+        return { ...c, flags: updatedFlags, alertCounts: updatedCounts };
+      }));
+    }
 
     if (selected.length === 0) return new Set();
 
@@ -1186,26 +1225,6 @@ export default function TriageSystem({ onBack }) {
         }),
       });
       console.log(`Auto-cleared flags: ${selected.join(", ")} for ${client.clientName}`);
-
-      // Immediately zero flag columns in local state so badge disappears without waiting for precompute
-      const FLAG_TYPE_MAP = {
-        invoice: ["invoiceDashboardDiscr","invoiceAppDiscr","retainerInvoicesCreated","retainerInvoicesDeleted","invoiceStaleUnsentChanges"],
-        crm:     ["crmPipeDashDiscr","crmPipeAppDiscr","crmConfDashDiscr","crmConfAppDiscr",
-                  "crmPipeSkippedBlank","crmConfSkippedBlank","crmCopiedConfChecked","crmCopiedConfUnchecked","crmCopiedConfDelete"],
-        expense: ["expenseDashboardDiscr","expenseAppDiscr","expenseAdded","expenseUnreconGaps"],
-      };
-      setClientsWithFlags(prev => prev.map(c => {
-        if (c.clientName !== client.clientName) return c;
-        const updatedFlags = { ...c.flags };
-        const updatedCounts = { ...c.alertCounts };
-        for (const group of selected) {
-          for (const ft of (FLAG_TYPE_MAP[group] || [])) {
-            updatedFlags[ft] = false;
-            updatedCounts[ft] = 0;
-          }
-        }
-        return { ...c, flags: updatedFlags, alertCounts: updatedCounts };
-      }));
     } catch (e) {
       console.log(`Auto-clear failed (non-fatal): ${e.message}`);
     }

@@ -7353,6 +7353,27 @@ Return ONLY JSON, no other text.`;
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "get_handled_fingerprints") {
+      // Called by GAS precompute Stage 1 to get the set of already-handled fingerprints.
+      // Returns hashes with status ignored, task, or superseded — these can be skipped
+      // entirely during the alert-building loop, avoiding unnecessary Vercel API calls.
+      const { automationCommanderSheetId: acId } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const handledHashes = memoryRows
+          .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded")
+          .map(r => r.fingerprintHash)
+          .filter(Boolean);
+        console.log(`  get_handled_fingerprints: ${handledHashes.length} handled of ${memoryRows.length} total`);
+        return res.status(200).json({ success: true, handledHashes });
+      } catch (err) {
+        console.error("❌ Error in get_handled_fingerprints:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "check_new_fingerprints") {
       // Called by the full sweep GAS function to determine which client/alertType
       // combinations have at least one fingerprint not already handled in AlertMemory.

@@ -1089,7 +1089,7 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
         const s = {};
         SETTING_ROWS.forEach((k, i) => {
           const v = String((vals[i] || [])[0] || "").trim().toLowerCase();
-          s[k] = v !== "exclude";
+          s[k] = v !== "ignore";
         });
         return s;
       };

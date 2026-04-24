@@ -954,7 +954,11 @@ export default function TriageSystem({ onBack }) {
           const keyClient = key.slice(0, sepIdx);
           const keyFlag = key.slice(sepIdx + sep.length);
           if (keyClient === client.clientName) {
-            precomputedForClient[keyFlag] = result;
+            // Normalise: precompute stores just the results array; frontend expects {success, results, overallOk}
+            const normalised = Array.isArray(result)
+              ? { success: true, results: result, overallOk: result.every(r => r.status === "ok" || r.status === "info") }
+              : result;
+            precomputedForClient[keyFlag] = normalised;
             console.log(`    ✓ Matched precomputed result: ${keyFlag}`);
           }
         }

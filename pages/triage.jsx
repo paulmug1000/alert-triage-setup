@@ -840,24 +840,24 @@ export default function TriageSystem({ onBack }) {
   // NEW: Helper function to get flag name from flag key
   const getFlagName = (flagKey) => {
     const flagNames = {
-      "invoiceDashboardDiscr": "Invoice dashboard discr",
-      "invoiceAppDiscr": "Invoice app discr",
-      "crmPipeDashDiscr": "CRM pipe dash discr",
-      "crmPipeAppDiscr": "CRM pipe app discr",
-      "crmConfDashDiscr": "CRM conf dash discr",
-      "crmConfAppDiscr": "CRM conf app discr",
-      "crmPipeSkippedBlank": "CRM pipe skipped with blank",
-      "crmConfSkippedBlank": "CRM conf skipped with blank",
-      "crmCopiedConfChecked": "CRM copied to conf box checked",
-      "crmCopiedConfUnchecked": "CRM copied to conf box UNchecked",
-      "crmCopiedConfDelete": "CRM copied to conf box DELETE",
+      "invoiceDashboardDiscr": "Invoice discrepancy",
+      "invoiceAppDiscr":       "Invoice app discrepancy",
+      "crmPipeDashDiscr":      "CRM discrepancy — in CRM, not in Pipeline",
+      "crmPipeAppDiscr":       "CRM discrepancy — in Pipeline, not in CRM",
+      "crmConfDashDiscr":      "CRM discrepancy — in CRM, not in Confirmed",
+      "crmConfAppDiscr":       "CRM discrepancy — in Confirmed, not in CRM",
+      "crmPipeSkippedBlank":   "CRM pipeline skipped (blank)",
+      "crmConfSkippedBlank":   "CRM confirmed skipped (blank)",
+      "crmCopiedConfChecked":  "CRM copied to conf box checked",
+      "crmCopiedConfUnchecked":"CRM copied to conf box UNchecked",
+      "crmCopiedConfDelete":   "CRM copied to conf box DELETE",
       "retainerInvoicesCreated": "Retainer invoices created",
       "retainerInvoicesDeleted": "Retainer invoices deleted",
-      "expenseDashboardDiscr": "Expense dashboard discr",
-      "expenseAppDiscr": "Expense app discr",
-      "expenseAdded": "Expense added",
-      "expenseUnreconGaps": "Expense unrecon gaps",
-      "invoiceStaleUnsentChanges": "Invoice stale unsent changes",
+      "expenseDashboardDiscr": "Expense discrepancy",
+      "expenseAppDiscr":       "Expense app discrepancy",
+      "expenseAdded":          "Expense added",
+      "expenseUnreconGaps":    "Expense reconciliation gaps",
+      "invoiceStaleUnsentChanges": "Invoice stale/unsent changes",
     };
     return flagNames[flagKey] || flagKey;
   };
@@ -2758,12 +2758,12 @@ export default function TriageSystem({ onBack }) {
                           transition: "all 0.2s",
                         }}
                         onMouseEnter={(e) => {
-                          e.target.style.backgroundColor = "#f5f5f5";
-                          e.target.style.borderColor = "#2196f3";
+                          e.currentTarget.style.backgroundColor = "#f5f5f5";
+                          e.currentTarget.style.borderColor = "#2196f3";
                         }}
                         onMouseLeave={(e) => {
-                          e.target.style.backgroundColor = "#fff";
-                          e.target.style.borderColor = "#e0e0e0";
+                          e.currentTarget.style.backgroundColor = "#fff";
+                          e.currentTarget.style.borderColor = "#e0e0e0";
                         }}
                       >
                         {(() => {

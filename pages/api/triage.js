@@ -4228,7 +4228,10 @@ ${SHEET_STRUCTURE_BLOCK}
 |  2   |   AW   |    AX     |    AY     |     AZ      |   BA   |
 |  3   |   BD   |    BE     |    BF     |     BG      |   BH   |
 
-**Placeholder invoices:**
+**CRITICAL RULE — Never overwrite a real sent or paid invoice:**
+A slot is "locked" if it contains a non-blank, non-MANUAL-INV reference AND its status is "Sent" or "Paid". You must NEVER suggest writing to a locked slot under any circumstances. If the best-matching slot is locked, this indicates a potential duplicate invoice — flag this as a concern and recommend investigation rather than placement. Do NOT suggest clearing or replacing a locked slot.
+
+
 A placeholder slot has an AMOUNT set but a BLANK reference (or a reference beginning with MANUAL-INV).
 - Blank-reference placeholders: These represent planned/expected invoices. When placing a real invoice into one, write ONLY the 5 fields of the target slot (amount, reference, sent date, days to pay, status). Do NOT clear or modify any other placeholder slots — the automation manages them.
 - MANUAL-INV references (shown as [MANUAL ONLY]): These are managed by automation elsewhere — do NOT modify them under any circumstances.

@@ -752,8 +752,23 @@ export default function TriageSystem({ onBack }) {
           // Store precomputed noAction analysis results in persistent state (keyed by "clientName___flagType")
           // This survives client switches — unpacked per-client on selection
           if (preData.noActionAnalysisResults && Object.keys(preData.noActionAnalysisResults).length > 0) {
-            setPrecomputedNoActionResults(preData.noActionAnalysisResults);
-            console.log(`  ✅ Pre-populated ${Object.keys(preData.noActionAnalysisResults).length} noAction analysis results`);
+            // Normalise: GAS stores as { clientName: { flagType: results } }
+            // Frontend expects flat { "clientName___flagType": results }
+            const raw = preData.noActionAnalysisResults;
+            const flat = {};
+            Object.entries(raw).forEach(([keyOrClient, val]) => {
+              if (keyOrClient.includes("___")) {
+                // Already flat format
+                flat[keyOrClient] = val;
+              } else {
+                // Nested format — flatten it
+                Object.entries(val || {}).forEach(([flagType, results]) => {
+                  flat[`${keyOrClient}___${flagType}`] = results;
+                });
+              }
+            });
+            setPrecomputedNoActionResults(flat);
+            console.log(`  ✅ Pre-populated ${Object.keys(flat).length} noAction analysis results`);
           }
 
           // Go to clientSelection if any clients have flags (actionable or noAction-only).
@@ -1769,7 +1784,15 @@ export default function TriageSystem({ onBack }) {
         setClientsWithFlags(preData.clientsWithFlags || []);
         setAcknowledgedNoAction(new Set());
         setProcessedAlerts(new Set());
-        if (preData.noActionAnalysisResults) setPrecomputedNoActionResults(preData.noActionAnalysisResults);
+        if (preData.noActionAnalysisResults) {
+          const raw2 = preData.noActionAnalysisResults;
+          const flat2 = {};
+          Object.entries(raw2).forEach(([k, v]) => {
+            if (k.includes("___")) { flat2[k] = v; }
+            else { Object.entries(v || {}).forEach(([ft, r]) => { flat2[`${k}___${ft}`] = r; }); }
+          });
+          setPrecomputedNoActionResults(flat2);
+        }
         clientsData = preData.clientsWithFlags || [];
       } else {
         const response = await fetch("/api/triage", {

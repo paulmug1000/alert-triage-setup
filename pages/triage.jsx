@@ -1117,14 +1117,17 @@ export default function TriageSystem({ onBack }) {
     // Compute which groups are fully resolved
     const groups = computeFlagGroups(selectedClient, remainingAlerts);
 
-    // For auto-clear, also require that noAction flags in that group are resolved
-    const invoiceNoActionFlags = ["retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
-    const crmNoActionFlags     = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
+    // For auto-clear, also require that noAction flags in that group are resolved —
+    // BUT only for flags that have their OWN clear mechanism (i.e. the user must
+    // explicitly mark them resolved). Flags like retainerInvoicesCreated are cleared
+    // by the invoice DataChgAlert write anyway, so don't block on them.
+    const invoiceBlockingFlags  = ["invoiceStaleUnsentChanges"]; // only these need explicit resolution
+    const crmBlockingFlags      = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
 
-    const invoiceNoActionDone = invoiceNoActionFlags
+    const invoiceNoActionDone = invoiceBlockingFlags
       .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
       .every(f => resolvedSet.has(f));
-    const crmNoActionDone = crmNoActionFlags
+    const crmNoActionDone = crmBlockingFlags
       .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
       .every(f => resolvedSet.has(f));
 
@@ -1167,12 +1170,12 @@ export default function TriageSystem({ onBack }) {
     const resolvedSet = resolvedNoActionFlagsOverride || resolvedNoActionFlags;
 
     // Check what's left that wasn't auto-cleared
-    const invoiceNoActionFlags = ["retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
-    const crmNoActionFlags     = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
-    const invoiceNoActionDone  = invoiceNoActionFlags
+    const invoiceBlockingFlags  = ["invoiceStaleUnsentChanges"];
+    const crmBlockingFlags      = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
+    const invoiceNoActionDone  = invoiceBlockingFlags
       .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
       .every(f => resolvedSet.has(f));
-    const crmNoActionDone      = crmNoActionFlags
+    const crmNoActionDone      = crmBlockingFlags
       .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
       .every(f => resolvedSet.has(f));
 

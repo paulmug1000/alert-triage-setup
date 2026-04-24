@@ -1132,27 +1132,34 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes) {
         const row = rows[rowIdx];
         if (!row || row.length === 0) continue;
 
-        // Check if any flag = "1"
-        const hasDiscrepancy = [flagStartIdx, flagStartIdx + 1, flagStartIdx + 2,
-          flagStartIdx + 3, flagStartIdx + 4, flagStartIdx + 5,
-          flagStartIdx + 6, flagStartIdx + 7].some(
-          (idx) => String(row[idx] || "").trim() === "1"
-        );
+        const flagValues = [0,1,2,3,4,5,6,7].map(i => String(row[flagStartIdx + i] || "").trim());
+        const hasDiscrepancy = flagValues.some(v => v === "1");
+        if (!hasDiscrepancy) continue;
 
-        if (hasDiscrepancy) {
-          alerts.push({
-            type: "crm",
-            alertType,
-            mode,
-            sheetName: "CRMComp",
-            rowNumber: 7 + rowIdx,
-            data: {
-              crmData: row.slice(crmDataCols[0], crmDataCols[1]),
-              sheetData: row.slice(sheetDataCols[0], sheetDataCols[1]),
-              flags: row.slice(flagStartIdx, flagStartIdx + 8),
-            },
-          });
-        }
+        // Split: flag[0] (AY) = not found; flags[1-7] (AZ:BF) = field mismatches
+        const isNotFound    = flagValues[0] === "1";
+        const mismatchFlags = flagValues.slice(1); // [AZ, BA, BB, BC, BD, BE, BF]
+        const hasMismatch   = mismatchFlags.some(v => v === "1");
+        const subType       = isNotFound ? "not_found" : "field_mismatch";
+
+        // Named mismatch fields for human-readable rendering
+        const MISMATCH_FIELD_NAMES = ["Client name", "Job name", "Revenue", "Direct costs", "Start date", "End date", "% Likelihood"];
+        const mismatchFields = mismatchFlags.map((v, i) => v === "1" ? MISMATCH_FIELD_NAMES[i] : null).filter(Boolean);
+
+        alerts.push({
+          type: "crm",
+          alertType,
+          subType,
+          mismatchFields,
+          mode,
+          sheetName: "CRMComp",
+          rowNumber: 7 + rowIdx,
+          data: {
+            crmData:   row.slice(crmDataCols[0], crmDataCols[1]),
+            sheetData: row.slice(sheetDataCols[0], sheetDataCols[1]),
+            flags:     flagValues,
+          },
+        });
       }
     }
 
@@ -2895,11 +2902,171 @@ Return ONLY JSON, no other text.`;
 
             return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
           }
-          
+
+          // ── Field mismatch handler (no Claude needed) ──────────────────────
+          // subType === "field_mismatch": job exists in both CRM and sheet,
+          // but one or more fields differ. Generate hardcoded options per field.
+          if (alert.subType === "field_mismatch") {
+            const tabName = alert.alertType === "crmPipeDashDiscr" ? "Pipeline" : "Confirmed";
+            const crmArr  = alert.data?.crmData  || [];
+            const shtArr  = alert.data?.sheetData || [];
+
+            // CRM layout: [0]=client, [1]=job, [2]=code, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood
+            // Sheet layout: [0]=code, [1]=client, [2]=job, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood
+            const crmClient    = crmArr[0] || "";
+            const crmJob       = crmArr[1] || "";
+            const crmCode      = crmArr[2] || "";
+            const crmRevenue   = crmArr[3] || "";
+            const crmDirCosts  = crmArr[4] || "";
+            const crmStart     = crmArr[5] || "";
+            const crmEnd       = crmArr[6] || "";
+            const crmLikely    = crmArr[7] || "";
+
+            const shtCode      = shtArr[0] || "";
+            const shtClient    = shtArr[1] || "";
+            const shtJob       = shtArr[2] || "";
+            const shtRevenue   = shtArr[3] || "";
+            const shtDirCosts  = shtArr[4] || "";
+            const shtStart     = shtArr[5] || "";
+            const shtEnd       = shtArr[6] || "";
+            const shtLikely    = shtArr[7] || "";
+
+            // Find the job row in Pipeline/Confirmed by project code (or client+job fallback)
+            const tabStartRow = tabName === "Pipeline" ? 6 : 1;
+            const tabResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: `${tabName}!A1:AM5000`,
+            });
+            const tabRows = tabResp.data.values || [];
+            let jobRow = null;
+            const codeToFind = (shtCode || crmCode).toLowerCase();
+            const clientToFind = (shtClient || crmClient).toLowerCase();
+            const jobToFind    = (shtJob    || crmJob).toLowerCase();
+
+            for (let tr = tabStartRow === 6 ? 5 : 0; tr < tabRows.length; tr++) {
+              const r = tabRows[tr] || [];
+              const rCode   = String(r[2]  || "").trim().toLowerCase();
+              const rClient = String(r[0]  || "").trim().toLowerCase();
+              const rJob    = String(r[1]  || "").trim().toLowerCase();
+              // Match by project code first, then client+job
+              if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; break; }
+              if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; break; }
+            }
+
+            const rowRef = jobRow ? ` (${tabName} row ${jobRow})` : "";
+            const jobLabel = `${shtClient || crmClient} — ${shtJob || crmJob}${crmCode ? ` (${crmCode})` : ""}`;
+
+            // Build one option per mismatched field
+            const mismatchFields = alert.mismatchFields || [];
+            const options = [];
+
+            // Field config: [flagName, crmValue, sheetValue, tabCol, isWritable, note]
+            const FIELD_CONFIG = [
+              { name: "Client name",    crm: crmClient,   sheet: shtClient,   col: "A",  writable: false },
+              { name: "Job name",       crm: crmJob,      sheet: shtJob,      col: "B",  writable: false },
+              { name: "Revenue",        crm: crmRevenue,  sheet: shtRevenue,  col: "AG", writable: true  },
+              { name: "Direct costs",   crm: crmDirCosts, sheet: shtDirCosts, col: "AH", writable: true  },
+              { name: "Start date",     crm: crmStart,    sheet: shtStart,    col: "AL", writable: true  },
+              { name: "End date",       crm: crmEnd,      sheet: shtEnd,      col: "AM", writable: true  },
+              { name: "% Likelihood",   crm: crmLikely,   sheet: shtLikely,   col: "AN", writable: tabName === "Pipeline" },
+            ];
+
+            for (let fi = 0; fi < FIELD_CONFIG.length; fi++) {
+              const fc = FIELD_CONFIG[fi];
+              if (!mismatchFields.includes(fc.name)) continue;
+
+              if (fc.writable && jobRow) {
+                options.push({
+                  optionId: options.length + 1,
+                  title: `UPDATE ${tabName} ${fc.name} to match CRM: "${fc.crm}"`,
+                  matchType: "existing_job",
+                  jobRow,
+                  jobName: shtJob || crmJob,
+                  matchingDetails: {
+                    unmatchedJobSummary: { clientName: shtClient || crmClient, jobName: shtJob || crmJob, projectCode: shtCode || crmCode },
+                  },
+                  matchAnalysis: {
+                    matchConfidence: "High",
+                    reasonForChoice: `${fc.name} differs between CRM and ${tabName} tab. CRM value: "${fc.crm}". ${tabName} value: "${fc.sheet}". Updating ${tabName} to match CRM.`,
+                    discrepancies: `${fc.name} mismatch: CRM="${fc.crm}" vs ${tabName}="${fc.sheet}"`,
+                  },
+                  recommendedActions: [
+                    `Update ${fc.name} in ${tabName} tab${rowRef} to match CRM value "${fc.crm}"`,
+                    `Write "${fc.crm}" to ${fc.col}${jobRow} (${fc.name})`,
+                  ],
+                });
+              } else if (!fc.writable) {
+                options.push({
+                  optionId: options.length + 1,
+                  title: `REVIEW ${fc.name} mismatch — manual update required`,
+                  matchType: "info",
+                  jobName: shtJob || crmJob,
+                  matchAnalysis: {
+                    matchConfidence: "N/A",
+                    reasonForChoice: `${fc.name} differs between CRM and ${tabName} tab but cannot be updated automatically. CRM: "${fc.crm}". ${tabName}: "${fc.sheet}". Review both systems and correct the one that is wrong.`,
+                    discrepancies: `${fc.name} mismatch: CRM="${fc.crm}" vs ${tabName}="${fc.sheet}"`,
+                  },
+                  recommendedActions: [
+                    `Review ${fc.name}: CRM has "${fc.crm}", ${tabName} tab has "${fc.sheet}"`,
+                    `Correct the wrong value in whichever system is out of date`,
+                  ],
+                  explanation: `${fc.name} cannot be updated automatically — review both systems and correct manually.`,
+                });
+              } else if (fc.writable && !jobRow) {
+                options.push({
+                  optionId: options.length + 1,
+                  title: `REVIEW ${fc.name} mismatch — job row not found in ${tabName}`,
+                  matchType: "info",
+                  jobName: shtJob || crmJob,
+                  matchAnalysis: {
+                    matchConfidence: "Low",
+                    reasonForChoice: `${fc.name} mismatch detected but could not locate the job row in ${tabName} tab by project code or client+job name. Manual review required.`,
+                    discrepancies: `${fc.name}: CRM="${fc.crm}" vs ${tabName}="${fc.sheet}"`,
+                  },
+                  recommendedActions: [
+                    `Locate "${jobLabel}" in ${tabName} tab and update ${fc.name} from "${fc.sheet}" to "${fc.crm}"`,
+                  ],
+                  explanation: `Job row could not be located automatically — update manually.`,
+                });
+              }
+            }
+
+            // Always add an ignore option at the end
+            options.push({
+              optionId: options.length + 1,
+              title: `IGNORE — CRM data is wrong or discrepancy can be disregarded`,
+              matchType: "ignore",
+              jobRow: jobRow || alert.rowNumber,
+              jobName: shtJob || crmJob,
+              matchingDetails: {
+                unmatchedJobSummary: { clientName: shtClient || crmClient, jobName: shtJob || crmJob, projectCode: shtCode || crmCode },
+              },
+              recommendedActions: [
+                `Mark this discrepancy as ignored — no changes will be made to either system`,
+              ],
+            });
+
+            console.log(`  ✅ Field mismatch — ${mismatchFields.join(", ")} — returning ${options.length} options for ${jobLabel}`);
+
+            const crmSummaryMismatch = `CRM mismatch ${jobLabel} [${mismatchFields.join(", ")}]`.trim();
+            if (memoryRow) {
+              await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+                ...memoryRow, cachedOptionsJSON: JSON.stringify(options),
+              });
+            } else {
+              await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+                fingerprintHash, alertType: "crm", clientName: alert.clientName || "",
+                alertSummary: crmSummaryMismatch, cachedOptionsJSON: JSON.stringify(options), status: "cached",
+              });
+            }
+
+            return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+          }
+
           // Determine which tab to match against (Pipeline or Confirmed)
           const crmMode = await getCRMMatchingMode(sheets, alert.masterSheetId || alert.clientId);
           console.log(`  Mode: ${crmMode}`);
-          
+
           const tabName = crmMode === "Pipeline" ? "Pipeline" : "Confirmed";
           
           const jobsResponse = await sheets.spreadsheets.values.get({
@@ -6329,7 +6496,7 @@ Return ONLY JSON, no other text.`;
             const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
             // Map flag groups to their AutoUpdates columns (A=1, CW=101, FA=157, etc.)
             const FLAG_GROUP_COLUMNS = {
-              invoice: ["CW", "DD", "HE"],   // invoiceDashboardDiscr, invoiceAppDiscr, invoiceStaleUnsentChanges
+              invoice: ["CW", "DD", "FV", "HL", "HE"],   // invoiceDashboardDiscr, invoiceAppDiscr, retainerInvoicesCreated, retainerInvoicesDeleted, invoiceStaleUnsentChanges
               crm:     ["DK", "DR", "DY", "EF", "EM", "ET", "FA", "FH", "FO"], // all CRM flags
               expense: ["GC", "GJ", "GQ", "GX"], // all expense flags
             };

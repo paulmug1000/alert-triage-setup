@@ -948,9 +948,12 @@ export default function TriageSystem({ onBack }) {
       
       if (filteredAlerts.length === 0) {
         // No actionable alerts — only go to clearFlags if no-action flags are all resolved too
-        if (filteredNoAction.length === 0 || filteredNoAction.every(na => resolvedNoActionFlags.has(na.flagType))) {
+        // Use restoredResolved directly — resolvedNoActionFlags state update is async
+        const noActionAllDone = filteredNoAction.length === 0 ||
+          filteredNoAction.every(na => restoredResolved.has(na.flagType));
+        if (noActionAllDone) {
           console.log(`  → No unprocessed alerts and all no-action flags resolved, auto-clearing`);
-          handlePostClear([], resolvedNoActionFlags);
+          handlePostClear([], restoredResolved, client);
         } else {
           console.log(`  → No actionable alerts but ${filteredNoAction.length} non-actionable flag(s) need resolving`);
           setScreen("alertSelection");
@@ -1123,25 +1126,23 @@ export default function TriageSystem({ onBack }) {
   // Called after every alert action and after rich noAction "Mark resolved".
   // Does NOT navigate to clearFlags screen — clears happen in the background.
   // Returns the set of groups that were auto-cleared (for downstream use).
-  const autoClearFlags = async (remainingAlerts, resolvedNoActionFlagsOverride) => {
-    if (!selectedClient) return new Set();
+  const autoClearFlags = async (remainingAlerts, resolvedNoActionFlagsOverride, clientOverride) => {
+    const client = clientOverride || selectedClient;
+    if (!client) return new Set();
     const resolvedSet = resolvedNoActionFlagsOverride || resolvedNoActionFlags;
+    const activeNoActionAlerts = clientOverride ? [] : clientNoActionAlerts;
 
     // Compute which groups are fully resolved
-    const groups = computeFlagGroups(selectedClient, remainingAlerts);
+    const groups = computeFlagGroups(client, remainingAlerts);
 
-    // For auto-clear, also require that noAction flags in that group are resolved —
-    // BUT only for flags that have their OWN clear mechanism (i.e. the user must
-    // explicitly mark them resolved). Flags like retainerInvoicesCreated are cleared
-    // by the invoice DataChgAlert write anyway, so don't block on them.
-    const invoiceBlockingFlags  = ["invoiceStaleUnsentChanges"]; // only these need explicit resolution
+    const invoiceBlockingFlags  = ["invoiceStaleUnsentChanges"];
     const crmBlockingFlags      = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
 
     const invoiceNoActionDone = invoiceBlockingFlags
-      .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
+      .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
       .every(f => resolvedSet.has(f));
     const crmNoActionDone = crmBlockingFlags
-      .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
+      .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
       .every(f => resolvedSet.has(f));
 
     const toClear = {
@@ -1162,13 +1163,33 @@ export default function TriageSystem({ onBack }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "clear_flags",
-          masterSheetId: selectedClient.masterSheetId,
+          masterSheetId: client.masterSheetId,
           automationCommanderSheetId,
           flagsToClear: selected,
-          clientName: selectedClient.clientName,
+          clientName: client.clientName,
         }),
       });
-      console.log(`Auto-cleared flags: ${selected.join(", ")} for ${selectedClient.clientName}`);
+      console.log(`Auto-cleared flags: ${selected.join(", ")} for ${client.clientName}`);
+
+      // Immediately zero flag columns in local state so badge disappears without waiting for precompute
+      const FLAG_TYPE_MAP = {
+        invoice: ["invoiceDashboardDiscr","invoiceAppDiscr","retainerInvoicesCreated","retainerInvoicesDeleted","invoiceStaleUnsentChanges"],
+        crm:     ["crmPipeDashDiscr","crmPipeAppDiscr","crmConfDashDiscr","crmConfAppDiscr",
+                  "crmPipeSkippedBlank","crmConfSkippedBlank","crmCopiedConfChecked","crmCopiedConfUnchecked","crmCopiedConfDelete"],
+        expense: ["expenseDashboardDiscr","expenseAppDiscr","expenseAdded","expenseUnreconGaps"],
+      };
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== client.clientName) return c;
+        const updatedFlags = { ...c.flags };
+        const updatedCounts = { ...c.alertCounts };
+        for (const group of selected) {
+          for (const ft of (FLAG_TYPE_MAP[group] || [])) {
+            updatedFlags[ft] = false;
+            updatedCounts[ft] = 0;
+          }
+        }
+        return { ...c, flags: updatedFlags, alertCounts: updatedCounts };
+      }));
     } catch (e) {
       console.log(`Auto-clear failed (non-fatal): ${e.message}`);
     }
@@ -1177,19 +1198,21 @@ export default function TriageSystem({ onBack }) {
 
   // After processing alerts/noAction flags, decide whether to show clearFlags screen
   // or skip it (if auto-clear handled everything) or go back to client selection.
-  const handlePostClear = async (remainingAlerts, resolvedNoActionFlagsOverride) => {
-    const autoCleared = await autoClearFlags(remainingAlerts, resolvedNoActionFlagsOverride);
-    const groups = computeFlagGroups(selectedClient, remainingAlerts);
+  const handlePostClear = async (remainingAlerts, resolvedNoActionFlagsOverride, clientOverride) => {
+    const client = clientOverride || selectedClient;
+    const autoCleared = await autoClearFlags(remainingAlerts, resolvedNoActionFlagsOverride, clientOverride);
+    const groups = computeFlagGroups(client, remainingAlerts);
     const resolvedSet = resolvedNoActionFlagsOverride || resolvedNoActionFlags;
+    const activeNoActionAlerts = clientOverride ? [] : clientNoActionAlerts;
 
     // Check what's left that wasn't auto-cleared
     const invoiceBlockingFlags  = ["invoiceStaleUnsentChanges"];
     const crmBlockingFlags      = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
     const invoiceNoActionDone  = invoiceBlockingFlags
-      .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
+      .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
       .every(f => resolvedSet.has(f));
     const crmNoActionDone      = crmBlockingFlags
-      .filter(f => clientNoActionAlerts.some(na => na.flagType === f))
+      .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
       .every(f => resolvedSet.has(f));
 
     const remainingGroups = {

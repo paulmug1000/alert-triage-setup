@@ -2943,7 +2943,7 @@ export default function TriageSystem({ onBack }) {
                                       <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> — {r.periodLabel}</span>
                                     )}
                                     {r.parentSheetRow && (
-                                      <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>Confirmed row {r.parentSheetRow}</span>
+                                      <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>{r.tab || "Confirmed"} row {r.parentSheetRow}</span>
                                     )}
                                     {(r.pipelineRow || r.confirmedRow) && (
                                       <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>

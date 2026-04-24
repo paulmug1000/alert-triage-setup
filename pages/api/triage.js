@@ -5536,14 +5536,17 @@ Return ONLY JSON, no other text.`;
               const details = String(entry[3] || "");
 
               // Format A (new): "[Retainers - Confirmed] Added N child row(s) (Parent Row: N) for CLIENT | JOB"
-              const newPattern = /Added\s+\d+\s+child\s+rows?\([^)]*\)\s*\(Parent\s+Row:\s*(\d+)\)\s+for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
+              //                 "[Retainers - Pipeline] Added N child row(s) (Parent Row: N) for CLIENT | JOB"
+              const newPattern = /\[Retainers\s*-\s*(Confirmed|Pipeline)\]\s*Added\s+(\d+)\s+child\s+rows?\(s?\)\s*\(Parent\s+Row:\s*(\d+)\)\s+for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
               let m;
               while ((m = newPattern.exec(details)) !== null) {
                 affectedRetainerJobs.push({
-                  logSheetRow: parseInt(m[1], 10),
-                  clientNameFromLog: m[2].trim(),
-                  jobName: m[3].trim(),
-                  logTimestamp: String(entry[0] || "")
+                  tab:               m[1].trim(),   // "Confirmed" or "Pipeline"
+                  childRowsCreated:  parseInt(m[2], 10),
+                  logSheetRow:       parseInt(m[3], 10),
+                  clientNameFromLog: m[4].trim(),
+                  jobName:           m[5].trim(),
+                  logTimestamp:      String(entry[0] || "")
                 });
               }
 
@@ -5586,14 +5589,18 @@ Return ONLY JSON, no other text.`;
             const retainerChecks = [];
 
             for (const job of dedupedJobs) {
-              // Find the parent row by matching client name AND job name — never by row number
+              const targetTab   = job.tab || "Confirmed"; // default to Confirmed for old-format entries
+              const tabRows     = targetTab === "Pipeline" ? retPipelineRows : retConfirmedRows;
+              const tabStartRow = targetTab === "Pipeline" ? 6 : 1; // Pipeline data starts at row 6
+
+              // Find the parent row by matching client name AND job name
               const jobNameLower = job.jobName.toLowerCase();
-              const clientLower = job.clientNameFromLog.toLowerCase();
-              let parentRowIdx = -1;
-              for (let ri = 0; ri < retConfirmedRows.length; ri++) {
-                const r = retConfirmedRows[ri];
+              const clientLower  = job.clientNameFromLog.toLowerCase();
+              let parentRowIdx   = -1;
+              for (let ri = 0; ri < tabRows.length; ri++) {
+                const r       = tabRows[ri];
                 const rClient = String(r[0] || "").trim().toLowerCase();
-                const rJob = String(r[1] || "").trim().toLowerCase();
+                const rJob    = String(r[1] || "").trim().toLowerCase();
                 if (rClient === clientLower && rJob === jobNameLower) {
                   parentRowIdx = ri;
                   break;
@@ -5601,59 +5608,60 @@ Return ONLY JSON, no other text.`;
               }
 
               if (parentRowIdx === -1) {
-                // Not found in Confirmed — check Pipeline before reporting as missing
-                let pipelineRowIdx = -1;
-                for (let ri = 0; ri < retPipelineRows.length; ri++) {
-                  const r = retPipelineRows[ri];
+                // Not found in target tab — check the other tab as fallback
+                const fallbackTab  = targetTab === "Pipeline" ? "Confirmed" : "Pipeline";
+                const fallbackRows = targetTab === "Pipeline" ? retConfirmedRows : retPipelineRows;
+                let fallbackIdx    = -1;
+                for (let ri = 0; ri < fallbackRows.length; ri++) {
+                  const r       = fallbackRows[ri];
                   const rClient = String(r[0] || "").trim().toLowerCase();
                   const rJob    = String(r[1] || "").trim().toLowerCase();
                   if (rClient === clientLower && rJob === jobNameLower) {
-                    pipelineRowIdx = ri;
+                    fallbackIdx = ri;
                     break;
                   }
                 }
-                if (pipelineRowIdx !== -1) {
-                  const pr = retPipelineRows[pipelineRowIdx];
+                if (fallbackIdx !== -1) {
+                  const fallbackStartRow = fallbackTab === "Pipeline" ? 6 : 1;
                   retainerChecks.push({
-                    jobName: job.jobName,
+                    jobName:    job.jobName,
                     clientName: job.clientNameFromLog,
-                    status: "info",
-                    checks: [{ ok: true, message: `✓ Job "${job.jobName}" (${job.clientNameFromLog}) found in Pipeline tab (row ${pipelineRowIdx + 6}) — not yet in Confirmed` }],
+                    status:     "info",
+                    checks:     [{ ok: true, message: `✓ Job "${job.jobName}" (${job.clientNameFromLog}) moved to ${fallbackTab} tab (row ${fallbackIdx + fallbackStartRow}) — originally created in ${targetTab}` }],
                   });
                 } else {
                   retainerChecks.push({
-                    jobName: job.jobName,
+                    jobName:    job.jobName,
                     clientName: job.clientNameFromLog,
-                    status: "issue",
-                    checks: [{ ok: false, message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in Confirmed or Pipeline tabs` }],
+                    status:     "issue",
+                    checks:     [{ ok: false, message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in ${targetTab} or ${targetTab === "Pipeline" ? "Confirmed" : "Pipeline"} tabs` }],
                   });
                 }
                 continue;
               }
 
-              const parentRow = retConfirmedRows[parentRowIdx];
-              const clientN = String(parentRow[0] || "").trim();
-              const jobName = String(parentRow[1] || "").trim();
-              const projectCode = String(parentRow[2] || "").trim();
-              const revenue = parentRow[32];
-              const startRaw = parentRow[37];
-              const endRaw = parentRow[38];
-              const confirmedSheetRow = parentRowIdx + 1; // 1-indexed for display
-              console.log(`  Found "${jobName}" (${clientN}) at Confirmed row ${confirmedSheetRow}: start="${startRaw}", end="${endRaw}"`);
+              const parentRow    = tabRows[parentRowIdx];
+              const clientN      = String(parentRow[0] || "").trim();
+              const jobName      = String(parentRow[1] || "").trim();
+              const projectCode  = String(parentRow[2] || "").trim();
+              const revenue      = parentRow[32];
+              const startRaw     = parentRow[37];
+              const endRaw       = parentRow[38];
+              const confirmedSheetRow = parentRowIdx + tabStartRow;
+              console.log(`  Found "${jobName}" (${clientN}) at ${targetTab} row ${confirmedSheetRow}: start="${startRaw}", end="${endRaw}"`);
 
-              // Collect child rows — start immediately after the parent row we found by name
-              // Child row: same client (col A), same job name (col B), no revenue (col AG=32),
-              // no direct costs (col AH=33), no start date (col AL=37)
+              // Collect child rows — same tab, immediately after parent
+              // Child row: same client+job, no revenue, no start date
               const childRows = [];
               let ci = parentRowIdx + 1;
-              while (ci < retConfirmedRows.length) {
-                const next = retConfirmedRows[ci] || [];
-                const nc = String(next[0] || "").trim();
-                const nj = String(next[1] || "").trim();
-                if (nc === clientN && nj === jobName && !next[32] && !next[33] && !next[37]) {
-                  childRows.push({ row: next, sheetRow: ci + 1 });
-                  ci++;
-                } else { break; }
+              while (ci < tabRows.length) {
+                const next    = tabRows[ci] || [];
+                const nClient = String(next[0] || "").trim().toLowerCase();
+                const nJob    = String(next[1] || "").trim().toLowerCase();
+                if (nClient !== clientLower || nJob !== jobNameLower) break;
+                if (next[32] || next[37] || next[38]) break; // has revenue/start/end = another parent
+                childRows.push({ row: next, sheetRow: ci + tabStartRow });
+                ci++;
               }
 
               const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
@@ -5772,6 +5780,7 @@ Return ONLY JSON, no other text.`;
               retainerChecks.push({
                 jobName, clientName: clientN, projectCode,
                 parentSheetRow: confirmedSheetRow,
+                tab: targetTab,
                 status: durationOk && allHaveInvoice ? "ok" : "issue",
                 periodLabel, checks,
               });

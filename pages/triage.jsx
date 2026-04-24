@@ -15,16 +15,18 @@ function getAlertSummary(alert) {
     const crm = alert.data;
     const flagType = alert.alertType || alert.flagType || "";
 
-    // App discr (crmConfAppDiscr / crmPipeAppDiscr): job exists in sheet but not CRM
-    //   → read from sheetData (EF:EQ): 0=Client, 1=Job, 2=ProjectCode, 3=Revenue
-    // Dash discr (crmConfDashDiscr / crmPipeDashDiscr): job exists in CRM but not sheet
-    //   → read from crmData (X:AJ): 0=Client, 1=Job, 2=ProjectCode, 3=Revenue
-    const isAppDiscr = flagType === "crmConfAppDiscr" || flagType === "crmPipeAppDiscr";
+    const isAppDiscr  = flagType === "crmConfAppDiscr" || flagType === "crmPipeAppDiscr";
+    const isDashDiscr = flagType === "crmPipeDashDiscr" || flagType === "crmConfDashDiscr";
     const src = isAppDiscr ? crm?.sheetData : crm?.crmData;
-    const client = src?.[0] || "";
-    const job    = src?.[1] || "";
-    const code   = src?.[2] || "";
-    return `${client}${job ? " — " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
+    // crmData: [0]=client, [1]=job, [2]=code; sheetData: [0]=code, [1]=client, [2]=job
+    const client = isAppDiscr ? (src?.[1] || "") : (src?.[0] || "");
+    const job    = isAppDiscr ? (src?.[2] || "") : (src?.[1] || "");
+    const code   = isAppDiscr ? (src?.[0] || "") : (src?.[2] || "");
+    const base   = `${client}${job ? " — " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
+    if (isDashDiscr && alert.subType === "field_mismatch" && alert.mismatchFields?.length) {
+      return `${base} — ⚠ ${alert.mismatchFields.join(", ")} mismatch`;
+    }
+    return base;
   }
   return "Alert";
 }
@@ -2881,18 +2883,27 @@ export default function TriageSystem({ onBack }) {
                           }
                           if (isDashDiscr) {
                             const cd = alert.data?.crmData || [];
+                            const sd = alert.data?.sheetData || [];
                             const client = cd[0] || ""; const job = cd[1] || ""; const code = cd[2] || "";
                             const rev = cd[3] ? `£${parseFloat(String(cd[3]).replace(/[£$€,\s]/g,""))||0}` : "";
-                            const start = cd[4] || ""; const end = cd[5] || "";
+                            const start = cd[5] || ""; const end = cd[6] || "";
+                            const isMismatch = alert.subType === "field_mismatch";
+                            const mismatchFields = alert.mismatchFields || [];
                             return (
                               <div>
                                 <div style={{ fontWeight: "600" }}>{client}{job ? ` — ${job}` : ""}</div>
                                 {code   && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
                                 {rev    && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
                                 {start  && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-                                <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
-                                  {ft === "crmPipeDashDiscr" ? "In CRM — not in Pipeline" : "In CRM — not in Confirmed"}
-                                </div>
+                                {isMismatch ? (
+                                  <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>
+                                    ⚠ Field mismatch: {mismatchFields.join(", ")}
+                                  </div>
+                                ) : (
+                                  <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
+                                    {ft === "crmPipeDashDiscr" ? "In CRM — not in Pipeline" : "In CRM — not in Confirmed"}
+                                  </div>
+                                )}
                               </div>
                             );
                           }

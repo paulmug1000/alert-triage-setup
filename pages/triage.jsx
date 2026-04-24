@@ -2766,7 +2766,46 @@ export default function TriageSystem({ onBack }) {
                           e.target.style.borderColor = "#e0e0e0";
                         }}
                       >
-                        {getAlertSummary(alert)}
+                        {(() => {
+                          const ft = alert.flagType || alert.alertType || "";
+                          const isAppDiscr = ft === "crmConfAppDiscr" || ft === "crmPipeAppDiscr";
+                          const isDashDiscr = ft === "crmPipeDashDiscr" || ft === "crmConfDashDiscr";
+                          if (isAppDiscr) {
+                            const sd = alert.data?.sheetData || [];
+                            const client = sd[0] || ""; const job = sd[1] || ""; const code = sd[2] || "";
+                            const rev = sd[3] ? `£${parseFloat(String(sd[3]).replace(/[£$€,\s]/g,""))||0}` : "";
+                            const start = sd[5] || ""; const end = sd[6] || "";
+                            return (
+                              <div>
+                                <div style={{ fontWeight: "600" }}>{client}{job ? ` — ${job}` : ""}</div>
+                                {code   && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
+                                {rev    && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
+                                {start  && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
+                                <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
+                                  {ft === "crmPipeAppDiscr" ? "In Pipeline — not in CRM" : "In Confirmed — not in CRM"}
+                                </div>
+                              </div>
+                            );
+                          }
+                          if (isDashDiscr) {
+                            const cd = alert.data?.crmData || [];
+                            const client = cd[0] || ""; const job = cd[1] || ""; const code = cd[2] || "";
+                            const rev = cd[3] ? `£${parseFloat(String(cd[3]).replace(/[£$€,\s]/g,""))||0}` : "";
+                            const start = cd[4] || ""; const end = cd[5] || "";
+                            return (
+                              <div>
+                                <div style={{ fontWeight: "600" }}>{client}{job ? ` — ${job}` : ""}</div>
+                                {code   && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
+                                {rev    && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
+                                {start  && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
+                                <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
+                                  {ft === "crmPipeDashDiscr" ? "In CRM — not in Pipeline" : "In CRM — not in Confirmed"}
+                                </div>
+                              </div>
+                            );
+                          }
+                          return getAlertSummary(alert);
+                        })()}
                       </button>
                     ))}
                   </div>

@@ -2975,19 +2975,22 @@ Return ONLY JSON, no other text.`;
             console.log(`  ⚠️ No AIKnowledgeBase rules found`);
           }
           
-          // Extract CRM details
-          const crmProjectCode = alert.summary?.projectCode || alert.data?.projectCode || "(unknown)";
-          const crmJobName = alert.summary?.jobName || alert.data?.jobName || "";
-          const crmRevenue = parseFloat(alert.summary?.revenue) || parseFloat(alert.data?.revenue) || 0;
-          const crmStartDate = alert.summary?.startDate || alert.data?.startDate || "";
-          const crmEndDate = alert.summary?.endDate || alert.data?.endDate || "";
+          // Extract CRM details from crmData array (X:AJ cols, 0-indexed):
+          // [0]=clientName, [1]=jobName, [2]=projectCode, [3]=revenue, [4]=startDate, [5]=endDate
+          const crmDataArr = alert.data?.crmData || [];
+          const crmProjectCode = crmDataArr[2] || alert.summary?.projectCode || "(unknown)";
+          const crmJobName     = crmDataArr[1] || alert.summary?.jobName || "";
+          const crmClientName  = crmDataArr[0] || alert.summary?.clientName || "";
+          const crmRevenue     = parseFloat(String(crmDataArr[3] || alert.summary?.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+          const crmStartDate   = crmDataArr[4] || alert.summary?.startDate || "";
+          const crmEndDate     = crmDataArr[5] || alert.summary?.endDate || "";
           
           // Build CRM prompt with detailed matching analysis
           const crmPrompt = `You are analyzing a CRM discrepancy between the Dashboard and CRM system.
 
 UNMATCHED CRM JOB:
 • Project Code: ${crmProjectCode}
-• Client: ${alert.clientName || ""}
+• Client: ${crmClientName}
 • Job Name: ${crmJobName}
 • Revenue: £${crmRevenue.toFixed(2)}
 • Start Date: ${crmStartDate}
@@ -5573,6 +5576,13 @@ Return ONLY JSON, no other text.`;
               range: "Confirmed!A1:BH5000",
             });
             const retConfirmedRows = retConfirmedResp.data.values || [];
+
+            const retPipelineResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetIdClean,
+              range: "Pipeline!A6:BH5000",
+            });
+            const retPipelineRows = retPipelineResp.data.values || [];
+
             const retainerChecks = [];
 
             for (const job of dedupedJobs) {
@@ -5591,13 +5601,33 @@ Return ONLY JSON, no other text.`;
               }
 
               if (parentRowIdx === -1) {
-                // Not found by name — report clearly
-                retainerChecks.push({
-                  jobName: job.jobName,
-                  clientName: job.clientNameFromLog,
-                  status: "issue",
-                  checks: [{ ok: false, message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in Confirmed tab` }],
-                });
+                // Not found in Confirmed — check Pipeline before reporting as missing
+                let pipelineRowIdx = -1;
+                for (let ri = 0; ri < retPipelineRows.length; ri++) {
+                  const r = retPipelineRows[ri];
+                  const rClient = String(r[0] || "").trim().toLowerCase();
+                  const rJob    = String(r[1] || "").trim().toLowerCase();
+                  if (rClient === clientLower && rJob === jobNameLower) {
+                    pipelineRowIdx = ri;
+                    break;
+                  }
+                }
+                if (pipelineRowIdx !== -1) {
+                  const pr = retPipelineRows[pipelineRowIdx];
+                  retainerChecks.push({
+                    jobName: job.jobName,
+                    clientName: job.clientNameFromLog,
+                    status: "info",
+                    checks: [{ ok: true, message: `✓ Job "${job.jobName}" (${job.clientNameFromLog}) found in Pipeline tab (row ${pipelineRowIdx + 6}) — not yet in Confirmed` }],
+                  });
+                } else {
+                  retainerChecks.push({
+                    jobName: job.jobName,
+                    clientName: job.clientNameFromLog,
+                    status: "issue",
+                    checks: [{ ok: false, message: `✗ Job "${job.jobName}" (${job.clientNameFromLog}) not found in Confirmed or Pipeline tabs` }],
+                  });
+                }
                 continue;
               }
 

@@ -2124,6 +2124,91 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "rehash_alert_memory") {
+      // One-time migration: recomputes fingerprints for all AlertMemory rows using the
+      // current normalisation (DD-Mon-YY with zero-padded day). Rows whose hash changes
+      // are updated in-place. Run once after deploying the normalisation fix.
+      // Uses the stored alertDataJSON or reconstructs from alertSummary — but since
+      // we don't have raw alert data in AlertMemory, we instead look for rows that
+      // have a corresponding new-hash row and mark the old one superseded.
+      // 
+      // Simpler approach: scan AlertMemory for rows where fingerprintHash appears in
+      // the current precomputed blob under a DIFFERENT hash for the same alert summary.
+      // For rows that are superseded/cached with an ignoreReason, copy the ignoreReason
+      // to any newer cached row with the same alertSummary + clientName + alertType.
+      const { automationCommanderSheetId: acId } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+
+        // Find all superseded rows that have an ignoreReason
+        const supersededWithReason = memoryRows.filter(r =>
+          r.status === "superseded" && r.ignoreReason
+        );
+
+        // For each, find any cached row with same clientName + alertType + alertSummary (first 40 chars)
+        // and promote it to ignored with the same reason
+        let promoted = 0;
+        const now = new Date().toISOString().split("T")[0];
+
+        for (const sup of supersededWithReason) {
+          const sigKey = (r) => \`\${r.clientName}|\${r.alertType}|\${(r.alertSummary || "").slice(0, 40)}\`;
+          const supSig = sigKey(sup);
+          const matchingCached = memoryRows.filter(r =>
+            r.status === "cached" &&
+            r.fingerprintHash !== sup.fingerprintHash &&
+            sigKey(r) === supSig
+          );
+          for (const cached of matchingCached) {
+            await updateAlertMemoryRow(sheets, acId, cached.rowIndex, {
+              ...cached,
+              status: "ignored",
+              ignoreReason: sup.ignoreReason,
+            });
+            promoted++;
+          }
+        }
+
+        // Also deduplicate: remove lower-priority duplicates
+        const priority = (status) => {
+          if (status === "ignored" || status === "accepted" || status === "task") return 3;
+          if (status === "cached") return 2;
+          return 1;
+        };
+        const byHash = {};
+        // Re-read after updates
+        const freshRows = await readAlertMemory(sheets, acId);
+        for (const row of freshRows) {
+          if (!row.fingerprintHash) continue;
+          if (!byHash[row.fingerprintHash]) byHash[row.fingerprintHash] = [];
+          byHash[row.fingerprintHash].push(row);
+        }
+        const toDelete = [];
+        for (const rows of Object.values(byHash)) {
+          if (rows.length <= 1) continue;
+          rows.sort((a, b) => {
+            const pd = priority(b.status) - priority(a.status);
+            if (pd !== 0) return pd;
+            return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+          });
+          for (let i = 1; i < rows.length; i++) toDelete.push(rows[i].rowIndex);
+        }
+        if (toDelete.length > 0) await deleteAlertMemoryRows(sheets, acId, toDelete);
+
+        console.log(\`rehash_alert_memory: promoted \${promoted} cached→ignored, deleted \${toDelete.length} duplicates\`);
+        return res.status(200).json({
+          success: true,
+          promoted,
+          duplicatesRemoved: toDelete.length,
+          totalRows: memoryRows.length,
+        });
+      } catch (err) {
+        console.error("❌ rehash_alert_memory error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "get_precomputed") {
       // Return the latest precomputed triage data if it exists and is fresh enough
       try {

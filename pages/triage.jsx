@@ -2761,13 +2761,13 @@ export default function TriageSystem({ onBack }) {
                   setDebugLoading(true);
                   try {
                     const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ action: "cleanup_alert_memory", automationCommanderSheetId }) });
+                      body: JSON.stringify({ action: "rehash_alert_memory", automationCommanderSheetId }) });
                     setDebugResult(await res.json());
                   } catch(e) { setDebugResult({ error: e.message }); }
                   finally { setDebugLoading(false); }
                 }} disabled={debugLoading}
-                  style={{ background: "#dc2626", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: "pointer" }}>
-                  🧹 Dedupe
+                  style={{ background: "#0369a1", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: "pointer" }}>
+                  🔄 Rehash
                 </button>
               </div>
               {debugResult && (

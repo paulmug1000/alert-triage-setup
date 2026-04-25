@@ -2154,7 +2154,7 @@ export default async function handler(req, res) {
         const now = new Date().toISOString().split("T")[0];
 
         for (const sup of supersededWithReason) {
-          const sigKey = (r) => \`\${r.clientName}|\${r.alertType}|\${(r.alertSummary || "").slice(0, 40)}\`;
+          const sigKey = (r) => `${r.clientName}|${r.alertType}|${(r.alertSummary || "").slice(0, 40)}`;
           const supSig = sigKey(sup);
           const matchingCached = memoryRows.filter(r =>
             r.status === "cached" &&
@@ -2197,7 +2197,7 @@ export default async function handler(req, res) {
         }
         if (toDelete.length > 0) await deleteAlertMemoryRows(sheets, acId, toDelete);
 
-        console.log(\`rehash_alert_memory: promoted \${promoted} cached→ignored, deleted \${toDelete.length} duplicates\`);
+        console.log(`rehash_alert_memory: promoted ${promoted} cached→ignored, deleted ${toDelete.length} duplicates`);
         return res.status(200).json({
           success: true,
           promoted,

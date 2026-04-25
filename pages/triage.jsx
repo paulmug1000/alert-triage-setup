@@ -2402,13 +2402,16 @@ export default function TriageSystem({ onBack }) {
             ) : (
               <div>
                 {ignoredAlerts.map((a) => (
-                  <div key={a.fingerprintHash} style={styles.ignoredAlertCard}>
+                  <div key={a.fingerprintHash} style={{
+                    ...styles.ignoredAlertCard,
+                    ...(a.status === "superseded" ? { background: "#fff8f2", borderColor: "#fed7aa" } : {}),
+                  }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a" }}>
                         {a.alertSummary || "(no summary)"}
                       </div>
                       <div style={styles.ignoredAlertMeta}>
-                        {a.clientName} · {a.alertType} · Ignored {a.lastSeen}
+                        {a.clientName} · {a.alertType} · {a.status === "superseded" ? "⚠ Data changed since ignored" : `Ignored ${a.lastSeen}`}
                       </div>
                       {a.ignoreReason && (
                         <div style={{ fontSize: "12px", color: "#888", marginTop: "4px", fontStyle: "italic" }}>
@@ -2416,16 +2419,18 @@ export default function TriageSystem({ onBack }) {
                         </div>
                       )}
                     </div>
-                    <button className="triage-btn"
-                      onClick={() => unignoreAlert(a.fingerprintHash)}
-                      disabled={isUnignoring === a.fingerprintHash}
-                      style={{
-                        ...styles.unignoreButton,
-                        opacity: isUnignoring === a.fingerprintHash ? 0.5 : 1,
-                      }}
-                    >
-                      {isUnignoring === a.fingerprintHash ? "Restoring..." : "↩ Un-ignore"}
-                    </button>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", flexShrink: 0 }}>
+                      <button className="triage-btn"
+                        onClick={() => unignoreAlert(a.fingerprintHash)}
+                        disabled={isUnignoring === a.fingerprintHash}
+                        style={{
+                          ...styles.unignoreButton,
+                          opacity: isUnignoring === a.fingerprintHash ? 0.5 : 1,
+                        }}
+                      >
+                        {isUnignoring === a.fingerprintHash ? "Restoring..." : "↩ Un-ignore"}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

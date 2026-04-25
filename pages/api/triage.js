@@ -7670,7 +7670,7 @@ Return ONLY JSON, no other text.`;
         await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
         const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
         const ignoredAlerts = memoryRows
-          .filter(r => r.status === "ignored")
+          .filter(r => r.status === "ignored" || (r.status === "superseded" && r.ignoreReason))
           .map(r => ({
             fingerprintHash: r.fingerprintHash,
             alertType:       r.alertType,
@@ -7679,6 +7679,7 @@ Return ONLY JSON, no other text.`;
             ignoreReason:    r.ignoreReason,
             firstSeen:       r.firstSeen,
             lastSeen:        r.lastSeen,
+            status:          r.status, // include so UI can show "superseded" differently if needed
           }));
 
         console.log(`  ✅ Found ${ignoredAlerts.length} ignored alerts`);

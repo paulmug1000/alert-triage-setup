@@ -6927,139 +6927,78 @@ Return ONLY JSON, no other text.`;
 
     } else if (action === "clear_flags") {
 
-      // Clear flags by writing directly to DataChgAlert in the client's Master Sheet.
+      // Clear flags by writing FALSE directly to the sticky flag columns in AutoUpdates.
+      // The triage system is the sole owner of clearing flags — no DataChgAlert intermediary.
       // flagsToClear is an array of: "invoice", "crm", "expense" (any combination).
-      // Each maps to a specific cell in DataChgAlert:
-      //   invoice → AS2
-      //   crm     → AT2 + AU2
-      //   expense → AV2
-      const { masterSheetId, automationCommanderSheetId, flagsToClear, clientName } = req.body;
-      
-      if (!masterSheetId || !automationCommanderSheetId || !flagsToClear || flagsToClear.length === 0) {
-        return res.status(400).json({ 
-          success: false, 
-          error: "Missing masterSheetId, automationCommanderSheetId, or flagsToClear" 
+      const { automationCommanderSheetId, flagsToClear, clientName } = req.body;
+
+      if (!automationCommanderSheetId || !flagsToClear || flagsToClear.length === 0 || !clientName) {
+        return res.status(400).json({
+          success: false,
+          error: "Missing automationCommanderSheetId, clientName, or flagsToClear",
         });
       }
 
       try {
-        console.log(`\n🔄 Clearing flags for client: ${masterSheetId}`);
+        console.log(`\n🔄 Clearing flags for client: ${clientName}`);
         console.log(`   Flag groups to clear: ${flagsToClear.join(", ")}`);
-        
+
         const sheets = await getSheetsClient();
+        const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
 
-        // Open the Master Sheet and find the DataChgAlert tab
-        // masterSheetId may be a full URL or a bare sheet ID
-        const masterSheetIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+        // Map flag groups to their AutoUpdates sticky columns
+        const FLAG_GROUP_COLUMNS = {
+          invoice: ["CW", "DD", "FV", "HL", "HE"], // invoiceDashboardDiscr, invoiceAppDiscr, retainerInvoicesCreated, retainerInvoicesDeleted, invoiceStaleUnsentChanges
+          crm:     ["DK", "DR", "DY", "EF", "EM", "ET", "FA", "FH", "FO"], // all CRM flags
+          expense: ["GC", "GJ", "GQ", "GX"], // all expense flags
+        };
 
-        const masterSS = await sheets.spreadsheets.get({
-          spreadsheetId: masterSheetIdClean,
+        // Find the client row in AutoUpdates
+        const namesResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: acIdClean,
+          range: "AutoUpdates!A2:A1000",
         });
-
-        // Find the DataChgAlert sheet
-        const dataChgAlertSheet = masterSS.data.sheets?.find(
-          s => s.properties.title === "DataChgAlert"
-        );
-        if (!dataChgAlertSheet) {
-          return res.status(400).json({
-            success: false,
-            error: "DataChgAlert tab not found in Master Sheet",
-          });
+        const nameRows = namesResp.data.values || [];
+        let clientRowNum = -1;
+        for (let i = 0; i < nameRows.length; i++) {
+          if (String(nameRows[i]?.[0] || "").trim() === clientName.trim()) {
+            clientRowNum = i + 2; // 1-indexed, starts at row 2
+            break;
+          }
+        }
+        if (clientRowNum === -1) {
+          return res.status(404).json({ success: false, error: `Client "${clientName}" not found in AutoUpdates` });
         }
 
-        // Build the list of cells to write TRUE to in DataChgAlert
-        const cellsToWrite = [];
-        if (flagsToClear.includes("invoice")) {
-          cellsToWrite.push("DataChgAlert!AS2");
-        }
-        if (flagsToClear.includes("crm")) {
-          cellsToWrite.push("DataChgAlert!AT2");
-          cellsToWrite.push("DataChgAlert!AU2");
-        }
-        if (flagsToClear.includes("expense")) {
-          cellsToWrite.push("DataChgAlert!AV2");
-        }
-
-        if (cellsToWrite.length === 0) {
+        const colsToZero = flagsToClear.flatMap(group => FLAG_GROUP_COLUMNS[group] || []);
+        if (colsToZero.length === 0) {
           return res.status(400).json({ success: false, error: "No valid flag groups specified" });
         }
 
-        // Batch write TRUE to all required cells
-        console.log(`  Writing TRUE to: ${cellsToWrite.join(", ")}`);
+        // Write FALSE to all sticky columns for this client in one batch
         await sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: masterSheetIdClean,
+          spreadsheetId: acIdClean,
           requestBody: {
             valueInputOption: "RAW",
-            data: cellsToWrite.map(range => ({
-              range,
-              values: [["TRUE"]],
+            data: colsToZero.map(col => ({
+              range: `AutoUpdates!${col}${clientRowNum}`,
+              values: [["FALSE"]],
             })),
           },
         });
 
-        console.log(`  ✅ Flags cleared successfully`);
+        console.log(`  ✅ AutoUpdates cleared for ${clientName} row ${clientRowNum}: ${colsToZero.join(", ")}`);
 
-        // Also zero out the flag columns in AutoUpdates (Automation Commander) immediately.
-        // clear_flags writes to DataChgAlert which signals the GAS to clear AutoUpdates,
-        // but GAS only runs every 30 mins. If the user clicks Refresh before then,
-        // start_triage re-reads AutoUpdates and sees the flags as still active.
-        // Writing FALSE directly here ensures Refresh sees the correct state immediately.
-        if (clientName && automationCommanderSheetId) {
-          try {
-            const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
-            // Map flag groups to their AutoUpdates columns (A=1, CW=101, FA=157, etc.)
-            const FLAG_GROUP_COLUMNS = {
-              invoice: ["CW", "DD", "FV", "HL", "HE"],   // invoiceDashboardDiscr, invoiceAppDiscr, retainerInvoicesCreated, retainerInvoicesDeleted, invoiceStaleUnsentChanges
-              crm:     ["DK", "DR", "DY", "EF", "EM", "ET", "FA", "FH", "FO"], // all CRM flags
-              expense: ["GC", "GJ", "GQ", "GX"], // all expense flags
-            };
-            // Find the client row in AutoUpdates (col A = client name, starting row 2)
-            const namesResp = await sheets.spreadsheets.values.get({
-              spreadsheetId: acIdClean,
-              range: "AutoUpdates!A2:A1000",
-            });
-            const nameRows = namesResp.data.values || [];
-            let clientRowNum = -1;
-            for (let i = 0; i < nameRows.length; i++) {
-              if (String(nameRows[i]?.[0] || "").trim() === clientName.trim()) {
-                clientRowNum = i + 2; // 1-indexed, starts at row 2
-                break;
-              }
-            }
-            if (clientRowNum !== -1) {
-              const colsToZero = flagsToClear.flatMap(group => FLAG_GROUP_COLUMNS[group] || []);
-              if (colsToZero.length > 0) {
-                await sheets.spreadsheets.values.batchUpdate({
-                  spreadsheetId: acIdClean,
-                  requestBody: {
-                    valueInputOption: "RAW",
-                    data: colsToZero.map(col => ({
-                      range: `AutoUpdates!${col}${clientRowNum}`,
-                      values: [["FALSE"]],
-                    })),
-                  },
-                });
-                console.log(`  ✅ AutoUpdates zeroed for ${clientName} row ${clientRowNum}: ${colsToZero.join(", ")}`);
-              }
-            } else {
-              console.log(`  ⚠ Client "${clientName}" not found in AutoUpdates — skipping AutoUpdates zero`);
-            }
-          } catch (auErr) {
-            console.error(`  ⚠ Failed to zero AutoUpdates: ${auErr.message}`);
-            // Non-fatal — DataChgAlert write was the important part
-          }
-        }
-        
         return res.status(200).json({
           success: true,
           message: `Cleared: ${flagsToClear.join(", ")}`,
-          cellsWritten: cellsToWrite,
+          colsCleared: colsToZero,
         });
       } catch (err) {
         console.error(`❌ Error clearing flags:`, err);
-        return res.status(500).json({ 
-          success: false, 
-          error: `Failed to clear flags: ${err.message}` 
+        return res.status(500).json({
+          success: false,
+          error: `Failed to clear flags: ${err.message}`,
         });
       }
     } else if (action === "remove_alert") {

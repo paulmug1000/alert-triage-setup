@@ -1247,7 +1247,6 @@ export default function TriageSystem({ onBack }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "clear_flags",
-          masterSheetId: client.masterSheetId,
           automationCommanderSheetId,
           flagsToClear: selected,
           clientName: client.clientName,
@@ -1508,7 +1507,6 @@ export default function TriageSystem({ onBack }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "clear_flags",
-          masterSheetId: selectedClient.masterSheetId,
           automationCommanderSheetId,
           flagsToClear: selected,
           clientName: selectedClient.clientName,

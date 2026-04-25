@@ -2148,38 +2148,56 @@ export default async function handler(req, res) {
           r.status === "superseded" && r.ignoreReason
         );
 
-        // For each, find any cached row with same clientName + alertType + alertSummary (first 40 chars)
-        // and promote it to ignored with the same reason
-        let promoted = 0;
+        // For each superseded+ignored row, find cached rows with same signature and promote them.
+        // All updates are batched into a single Sheets API call to avoid quota errors.
+        const sigKey = (r) => `${r.clientName}|${r.alertType}|${(r.alertSummary || "").slice(0, 40)}`;
         const now = new Date().toISOString().split("T")[0];
 
+        // Build map: signature → ignoreReason from superseded rows
+        const reasonBySig = {};
         for (const sup of supersededWithReason) {
-          const sigKey = (r) => `${r.clientName}|${r.alertType}|${(r.alertSummary || "").slice(0, 40)}`;
-          const supSig = sigKey(sup);
-          const matchingCached = memoryRows.filter(r =>
-            r.status === "cached" &&
-            r.fingerprintHash !== sup.fingerprintHash &&
-            sigKey(r) === supSig
-          );
-          for (const cached of matchingCached) {
-            await updateAlertMemoryRow(sheets, acId, cached.rowIndex, {
-              ...cached,
-              status: "ignored",
-              ignoreReason: sup.ignoreReason,
-            });
-            promoted++;
+          const sig = sigKey(sup);
+          if (!reasonBySig[sig]) reasonBySig[sig] = sup.ignoreReason;
+        }
+
+        // Find cached rows that match a superseded signature
+        const promotions = []; // { row, ignoreReason }
+        for (const row of memoryRows) {
+          if (row.status !== "cached") continue;
+          const sig = sigKey(row);
+          if (reasonBySig[sig]) {
+            promotions.push({ row, ignoreReason: reasonBySig[sig] });
           }
         }
 
-        // Also deduplicate: remove lower-priority duplicates
+        // Batch all promotions in one batchUpdate call
+        let promoted = 0;
+        if (promotions.length > 0) {
+          const acIdClean = extractSheetIdFromUrl(acId) || acId;
+          const batchData = promotions.map(({ row, ignoreReason }) => ({
+            range: `${ALERT_MEMORY_TAB}!A${row.rowIndex}:K${row.rowIndex}`,
+            values: [[
+              row.fingerprintHash, row.alertType, row.clientName, row.alertSummary,
+              row.cachedOptionsJSON, "ignored", ignoreReason,
+              row.firstSeen, now, row.lastRechecked || now, row.dataSnapshot || "",
+            ]],
+          }));
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: acIdClean,
+            requestBody: { valueInputOption: "RAW", data: batchData },
+          });
+          promoted = promotions.length;
+        }
+
+        // Deduplicate: keep highest-priority row per hash, delete the rest
         const priority = (status) => {
           if (status === "ignored" || status === "accepted" || status === "task") return 3;
           if (status === "cached") return 2;
           return 1;
         };
-        const byHash = {};
-        // Re-read after updates
+        // Re-read after promotions to get current statuses
         const freshRows = await readAlertMemory(sheets, acId);
+        const byHash = {};
         for (const row of freshRows) {
           if (!row.fingerprintHash) continue;
           if (!byHash[row.fingerprintHash]) byHash[row.fingerprintHash] = [];

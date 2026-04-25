@@ -2757,6 +2757,18 @@ export default function TriageSystem({ onBack }) {
                   style={{ background: "#0066cc", color: "white", border: "none", borderRadius: "4px", padding: "6px 14px", fontSize: "12px", cursor: "pointer" }}>
                   {debugLoading ? "Running..." : "Run"}
                 </button>
+                <button className="triage-btn" onClick={async () => {
+                  setDebugLoading(true);
+                  try {
+                    const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "cleanup_alert_memory", automationCommanderSheetId }) });
+                    setDebugResult(await res.json());
+                  } catch(e) { setDebugResult({ error: e.message }); }
+                  finally { setDebugLoading(false); }
+                }} disabled={debugLoading}
+                  style={{ background: "#dc2626", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: "pointer" }}>
+                  🧹 Dedupe
+                </button>
               </div>
               {debugResult && (
                 <pre style={{ fontSize: "11px", color: "#a0e0a0", overflow: "auto", maxHeight: "400px", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>

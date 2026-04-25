@@ -221,8 +221,19 @@ function findMemoryRow(memoryRows, fingerprintHash) {
   const matches = memoryRows.filter(r => r.fingerprintHash === fingerprintHash);
   if (matches.length === 0) return null;
   if (matches.length === 1) return matches[0];
-  // Multiple rows — return the one with the most recent lastSeen date
-  return matches.sort((a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0))[0];
+  // Multiple rows with same fingerprint — prefer by status priority:
+  // handled statuses (ignored, accepted, task) > cached > superseded
+  // Within same priority tier, prefer most recent lastSeen
+  const priority = (status) => {
+    if (status === "ignored" || status === "accepted" || status === "task") return 3;
+    if (status === "cached") return 2;
+    return 1; // superseded
+  };
+  return matches.sort((a, b) => {
+    const pd = priority(b.status) - priority(a.status);
+    if (pd !== 0) return pd;
+    return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+  })[0];
 }
 
 /**
@@ -2045,6 +2056,64 @@ export default async function handler(req, res) {
         });
       } catch (err) {
         console.error("❌ debug_triage_state error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "cleanup_alert_memory") {
+      // Deduplicates AlertMemory by removing lower-priority duplicate rows.
+      // For each fingerprint hash, keeps the highest-priority row (ignored/accepted/task > cached > superseded).
+      // Should be run once after deploying the findMemoryRow fix.
+      const { automationCommanderSheetId: acId } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        console.log(`cleanup_alert_memory: ${memoryRows.length} total rows`);
+
+        const priority = (status) => {
+          if (status === "ignored" || status === "accepted" || status === "task") return 3;
+          if (status === "cached") return 2;
+          return 1;
+        };
+
+        // Group by fingerprint
+        const byHash = {};
+        for (const row of memoryRows) {
+          if (!row.fingerprintHash) continue;
+          if (!byHash[row.fingerprintHash]) byHash[row.fingerprintHash] = [];
+          byHash[row.fingerprintHash].push(row);
+        }
+
+        // Find rows to delete (all but the best per hash)
+        const rowsToDelete = [];
+        for (const [hash, rows] of Object.entries(byHash)) {
+          if (rows.length <= 1) continue;
+          // Sort by priority desc, then lastSeen desc
+          rows.sort((a, b) => {
+            const pd = priority(b.status) - priority(a.status);
+            if (pd !== 0) return pd;
+            return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+          });
+          // Keep rows[0], delete the rest
+          for (let i = 1; i < rows.length; i++) {
+            rowsToDelete.push(rows[i].rowIndex);
+          }
+        }
+
+        console.log(`cleanup_alert_memory: ${rowsToDelete.length} duplicate rows to delete`);
+        if (rowsToDelete.length > 0) {
+          await deleteAlertMemoryRows(sheets, acId, rowsToDelete);
+        }
+
+        return res.status(200).json({
+          success: true,
+          totalRows: memoryRows.length,
+          duplicatesRemoved: rowsToDelete.length,
+          uniqueHashes: Object.keys(byHash).length,
+        });
+      } catch (err) {
+        console.error("❌ cleanup_alert_memory error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

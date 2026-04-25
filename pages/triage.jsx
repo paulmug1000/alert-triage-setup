@@ -87,7 +87,7 @@ const GLOBAL_STYLES = `
 `;
 
 // Persistent top bar — rendered around every screen
-function NavShell({ activeNav, onHome, onOverview, onTasks, homeAlertCount, taskCount, children }) {
+function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, homeAlertCount, taskCount, children }) {
   const Badge = ({ count }) => count > 0 ? (
     <span style={{
       display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -138,6 +138,17 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, homeAlertCount, task
             borderRadius: "0", display: "flex", alignItems: "center",
           }}
         >Tasks<Badge count={taskCount} /></button>
+        <button
+          className="triage-btn pulse-nav-item"
+          onClick={onAppLog}
+          style={{
+            background: "none", border: "none", cursor: "pointer", padding: "12px 16px",
+            fontSize: "14px", fontWeight: activeNav === "appLog" ? "600" : "400",
+            color: activeNav === "appLog" ? "#0066cc" : "#444",
+            borderBottom: activeNav === "appLog" ? "2px solid #0066cc" : "2px solid transparent",
+            borderRadius: "0",
+          }}
+        >App Log</button>
       </div>
       {/* Page content */}
       <div>{children}</div>
@@ -217,7 +228,10 @@ export default function TriageSystem({ onBack }) {
   const [proactiveSelectedClient, setProactiveSelectedClient] = useState(null);
   const [overviewData, setOverviewData] = useState([]);
   const [overviewLoading, setOverviewLoading] = useState(false);
-  const [activeNav, setActiveNav] = useState("home"); // "home" | "overview" | "tasks"
+  const [activeNav, setActiveNav] = useState("home"); // "home" | "overview" | "tasks" | "appLog"
+  const [appLogData, setAppLogData] = useState([]);
+  const [appLogLoading, setAppLogLoading] = useState(false);
+  const [appLogLoadedAt, setAppLogLoadedAt] = useState(0);
   const [navTaskCount, setNavTaskCount] = useState(0); // active task count for badge
   const [allClientsMap, setAllClientsMap] = useState({}); // {clientName: {clientSheetId, masterSheetId}} — always populated
   const [tasksLoadedAt, setTasksLoadedAt] = useState(0); // epoch ms of last task load
@@ -286,6 +300,7 @@ export default function TriageSystem({ onBack }) {
   const handleNavHome = () => { setActiveNav("home"); setScreen("clientSelection"); };
   const handleNavOverview = () => { setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
+  const handleNavAppLog = () => { setActiveNav("appLog"); loadAppLog(); };
 
   // ── Task handlers ─────────────────────────────────────────────────────────
 
@@ -1762,6 +1777,18 @@ export default function TriageSystem({ onBack }) {
     return () => clearInterval(interval);
   }, [activeNav, tasksFilter]);
 
+  // Auto-refresh App Log every 15 minutes while on the App Log screen
+  useEffect(() => {
+    if (activeNav !== "appLog") return;
+    if (!appLogLoading && appLogLoadedAt > 0 && Date.now() - appLogLoadedAt > 15 * 60 * 1000) {
+      loadAppLog();
+    }
+    const interval = setInterval(() => {
+      if (!appLogLoading) loadAppLog();
+    }, 15 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [activeNav, appLogLoadedAt]);
+
   const acknowledgeProactiveAlert = async (alertKey, rowIndex) => {
     try {
       const res = await fetch("/api/triage", {
@@ -1806,6 +1833,26 @@ export default function TriageSystem({ onBack }) {
       console.error("Failed to load overview:", err);
     } finally {
       setOverviewLoading(false);
+    }
+  };
+
+  const loadAppLog = async () => {
+    try {
+      setAppLogLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_app_log", automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAppLogData(data.rows || []);
+        setAppLogLoadedAt(Date.now());
+      }
+    } catch (err) {
+      console.error("Failed to load App Log:", err);
+    } finally {
+      setAppLogLoading(false);
     }
   };
 
@@ -2383,7 +2430,7 @@ export default function TriageSystem({ onBack }) {
   // Screen: Ignored Alerts
   if (screen === "ignoredAlerts" && activeNav === "home") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Ignored Alerts</h1>
@@ -2469,10 +2516,113 @@ export default function TriageSystem({ onBack }) {
     );
   }
 
+  // App Log screen
+  if (activeNav === "appLog") {
+    // Derive column headers from first row, pad to 22 cols
+    const COL_COUNT = 22;
+    const colLabels = ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V"];
+    const lastRefresh = appLogLoadedAt
+      ? new Date(appLogLoadedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+      : null;
+
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+        <div style={{ padding: "20px 20px 0" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+            <div>
+              <h2 style={{ fontSize: "22px", fontWeight: "700", color: "#1a1a1a", margin: "0 0 4px 0" }}>App Log</h2>
+              {lastRefresh && <div style={{ fontSize: "12px", color: "#888" }}>Last refreshed {lastRefresh}</div>}
+            </div>
+            <button className="triage-btn" onClick={loadAppLog} disabled={appLogLoading}
+              style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "8px 16px", borderRadius: "6px", fontSize: "13px", cursor: "pointer" }}>
+              {appLogLoading ? <><Spinner size={12} />Refreshing...</> : "↻ Refresh"}
+            </button>
+          </div>
+        </div>
+
+        {appLogLoading && appLogData.length === 0 ? (
+          <div style={{ padding: "40px", textAlign: "center", color: "#666" }}>
+            <Spinner size={24} color="#0066cc" /><div style={{ marginTop: "12px" }}>Loading App Log...</div>
+          </div>
+        ) : appLogData.length === 0 ? (
+          <div style={{ padding: "40px", textAlign: "center", color: "#888", fontSize: "14px" }}>
+            No data available. Click Refresh to load.
+          </div>
+        ) : (
+          /* Outer wrapper: full viewport width, horizontally scrollable */
+          <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: "40px" }}>
+            <style>{`
+              .applog-table { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+              .applog-table th, .applog-table td {
+                border: 1px solid #e0e0e0;
+                padding: 6px 10px;
+                text-align: left;
+                vertical-align: top;
+                max-width: 220px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+              }
+              .applog-table th {
+                background: #f3f4f6;
+                font-weight: 600;
+                color: #555;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.4px;
+                position: sticky;
+                top: 0;
+                z-index: 1;
+              }
+              /* Freeze col A (client name) */
+              .applog-table th:first-child,
+              .applog-table td:first-child {
+                position: sticky;
+                left: 0;
+                z-index: 2;
+                background: #f9f9f9;
+                border-right: 2px solid #d0d0d0;
+                min-width: 140px;
+                font-weight: 600;
+              }
+              .applog-table th:first-child {
+                z-index: 3;
+                background: #f3f4f6;
+              }
+              .applog-table tr:nth-child(even) td { background: #fafafa; }
+              .applog-table tr:nth-child(even) td:first-child { background: #f5f5f5; }
+              .applog-table tr:hover td { background: #eef3ff; }
+              .applog-table tr:hover td:first-child { background: #e8efff; }
+            `}</style>
+            <table className="applog-table">
+              <thead>
+                <tr>
+                  {colLabels.map(label => (
+                    <th key={label}>{label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {appLogData.map((row, rowIdx) => (
+                  <tr key={rowIdx}>
+                    {colLabels.map((_, colIdx) => (
+                      <td key={colIdx} title={String(row[colIdx] ?? "")}>
+                        {String(row[colIdx] ?? "")}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </NavShell>
+    );
+  }
+
   // Overview screen — must come before all screen-based checks so nav always works
   if (activeNav === "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "24px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "#1a1a1a", margin: 0 }}>Overview</h2>
@@ -2610,7 +2760,7 @@ export default function TriageSystem({ onBack }) {
     const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
     if (activeClients.length === 0 && proactiveAlerts.length === 0 && proactiveLoadedAt > 0) {
       return (
-        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
           <div style={styles.container}>
             <div style={styles.header}>
               <h1 style={styles.title}>All Done</h1>
@@ -2629,7 +2779,7 @@ export default function TriageSystem({ onBack }) {
     // If still loading proactive alerts, wait before deciding
     if (activeClients.length === 0 && proactiveLoadedAt === 0) {
       return (
-        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
           <div style={styles.container}>
             <div style={{ textAlign: "center", padding: "60px 20px", color: "#888" }}>
               <Spinner size={28} color="#0066cc" />
@@ -2641,7 +2791,7 @@ export default function TriageSystem({ onBack }) {
     }
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Client</h1>
@@ -2885,7 +3035,7 @@ export default function TriageSystem({ onBack }) {
     };
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Proactive Alerts</h1>
@@ -3109,7 +3259,7 @@ export default function TriageSystem({ onBack }) {
     const canProceed = allActionableDone && noActionDone;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
@@ -3711,7 +3861,7 @@ export default function TriageSystem({ onBack }) {
     ];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Clear Flags</h1>
@@ -3805,7 +3955,7 @@ export default function TriageSystem({ onBack }) {
   // Screen 1: Loading state (shown while startTriage runs on mount)
   if (!sessionId && !triageComplete && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Automation Alerts</h1>
@@ -3837,7 +3987,7 @@ export default function TriageSystem({ onBack }) {
   // Screen 2: Triage complete with no alerts
   if (triageComplete && totalAlerts === 0 && noActionCount === 0 && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>✓ All Clear</h1>
@@ -3944,7 +4094,7 @@ export default function TriageSystem({ onBack }) {
     const progress = currentClientAlertIndex + 1;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
@@ -4586,7 +4736,7 @@ export default function TriageSystem({ onBack }) {
     const allAcknowledged = acknowledgedNoAction.size === noActionCount;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Info-Only Alerts</h1>
@@ -4665,7 +4815,7 @@ export default function TriageSystem({ onBack }) {
       { key: "resolved", label: "Completed", count: 0 },
     ];
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Tasks</h1>
@@ -4770,7 +4920,7 @@ export default function TriageSystem({ onBack }) {
     const todayStr = today.toISOString().split("T")[0];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           {/* Back button */}
           <button className="triage-btn" onClick={() => setSelectedTask(null)} style={{ ...styles.buttonSecondary, marginBottom: "16px" }}>
@@ -4986,7 +5136,7 @@ export default function TriageSystem({ onBack }) {
 
   // ── Home screen (initial / loading) ──────────────────────────────────────
   return withModal(
-    <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
+    <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>

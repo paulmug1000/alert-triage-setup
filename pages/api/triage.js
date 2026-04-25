@@ -1543,6 +1543,29 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "get_app_log") {
+      // Read AppLogPull tab from the App Log sheet (cols A:V).
+      // Only returns rows where at least one cell in the row is non-empty.
+      const APP_LOG_SHEET_ID = "1v1N5ymNkcUCSPfzEGJxE43ylgGN95iyZmhKgnz62OQQ";
+      try {
+        const sheets = await getSheetsClient();
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: APP_LOG_SHEET_ID,
+          range: "AppLogPull!A1:V1000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rawRows = resp.data.values || [];
+        // Filter out rows where every cell is empty/blank
+        const rows = rawRows.filter(row =>
+          row.some(cell => String(cell ?? "").trim() !== "")
+        );
+        console.log(`  ✅ App Log: ${rows.length} non-empty rows loaded`);
+        return res.status(200).json({ success: true, rows });
+      } catch (err) {
+        console.error("❌ get_app_log error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "get_overview") {
       // Read AutoUpdates tab fresh for the Overview screen.
       // Returns per-client run times, feedback summaries, and flag text.

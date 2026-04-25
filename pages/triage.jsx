@@ -257,7 +257,32 @@ export default function TriageSystem({ onBack }) {
   const [existingTaskBanner, setExistingTaskBanner] = useState(null); // {task, dataChanged}
   const [existingTaskChecking, setExistingTaskChecking] = useState(false);
 
-  // Nav handlers — defined early so they're available throughout the render
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+  const [debugClientName, setDebugClientName] = useState("");
+  const [debugResult, setDebugResult] = useState(null);
+  const [debugLoading, setDebugLoading] = useState(false);
+
+  const runDebug = async () => {
+    try {
+      setDebugLoading(true);
+      setDebugResult(null);
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "debug_triage_state",
+          clientName: debugClientName.trim() || undefined,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      setDebugResult(data);
+    } catch (e) {
+      setDebugResult({ success: false, error: e.message });
+    } finally {
+      setDebugLoading(false);
+    }
+  };
   const handleNavHome = () => { setActiveNav("home"); };
   const handleNavOverview = () => { setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
@@ -2698,27 +2723,48 @@ export default function TriageSystem({ onBack }) {
 
           <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <button className="triage-btn"
-              onClick={() => {
-                setScreen("ignoredAlerts");
-                loadIgnoredAlerts();
-              }}
+              onClick={() => { setScreen("ignoredAlerts"); loadIgnoredAlerts(); }}
               style={styles.linkButton}
             >
               View ignored alerts →
             </button>
-            <button className="triage-btn"
-              onClick={refreshTriage}
-              disabled={isLoading}
-              style={{
-                ...styles.buttonSecondary,
-                fontSize: "13px",
-                padding: "6px 14px",
-                opacity: isLoading ? 0.5 : 1,
-              }}
-            >
-              {isLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
-            </button>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button className="triage-btn"
+                onClick={() => setShowDebugPanel(v => !v)}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#888" }}
+              >
+                🔍 Debug
+              </button>
+              <button className="triage-btn"
+                onClick={refreshTriage}
+                disabled={isLoading}
+                style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1 }}
+              >
+                {isLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
+              </button>
+            </div>
           </div>
+
+          {/* Debug panel */}
+          {showDebugPanel && (
+            <div style={{ marginTop: "16px", padding: "16px", background: "#1a1a2e", borderRadius: "6px", color: "#e0e0e0" }}>
+              <div style={{ fontSize: "13px", fontWeight: "700", marginBottom: "10px", color: "#7dd3fc" }}>🔍 Triage State Debugger</div>
+              <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+                <input value={debugClientName} onChange={e => setDebugClientName(e.target.value)}
+                  placeholder="Client name (blank = all)"
+                  style={{ flex: 1, fontSize: "12px", padding: "6px 8px", borderRadius: "4px", border: "1px solid #444", background: "#2d2d4e", color: "#e0e0e0" }} />
+                <button className="triage-btn" onClick={runDebug} disabled={debugLoading}
+                  style={{ background: "#0066cc", color: "white", border: "none", borderRadius: "4px", padding: "6px 14px", fontSize: "12px", cursor: "pointer" }}>
+                  {debugLoading ? "Running..." : "Run"}
+                </button>
+              </div>
+              {debugResult && (
+                <pre style={{ fontSize: "11px", color: "#a0e0a0", overflow: "auto", maxHeight: "400px", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                  {JSON.stringify(debugResult, null, 2)}
+                </pre>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Proactive Alerts — separate card below */}

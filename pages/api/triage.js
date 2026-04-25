@@ -1932,6 +1932,122 @@ export default async function handler(req, res) {
         console.error("❌ Error retrieving alerts:", err);
         res.status(500).json({ success: false, error: err.message });
       }
+    } else if (action === "debug_triage_state") {
+      // Diagnostic action — dumps full triage state for a client to help debug
+      // alert reappearance and clearing issues.
+      const { clientName, automationCommanderSheetId: acId } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+
+        // 1. Read AlertMemory
+        await ensureAlertMemoryTab(sheets, acId);
+        const allMemoryRows = await readAlertMemory(sheets, acId);
+        const clientMemory = clientName
+          ? allMemoryRows.filter(r => r.clientName === clientName)
+          : allMemoryRows;
+        const memorySummary = clientMemory.map(r => ({
+          hash:        r.fingerprintHash,
+          alertType:   r.alertType,
+          status:      r.status,
+          summary:     r.alertSummary?.slice(0, 60),
+          ignoreReason: r.ignoreReason || "",
+        }));
+
+        // 2. Read precomputed blob from Redis
+        const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+        let precompSummary = null;
+        if (preRaw) {
+          const pre = JSON.parse(preRaw);
+          const preAlerts = (pre.alerts || []).filter(a => !clientName || a.clientName === clientName);
+          const preClients = (pre.clientsWithFlags || []).filter(c => !clientName || c.clientName === clientName);
+          precompSummary = {
+            computedAt:    pre.computedAt,
+            totalAlerts:   pre.totalAlerts,
+            clientAlerts:  preAlerts.map(a => ({
+              type:          a.type,
+              flagType:      a.flagType || a.alertType,
+              subType:       a.subType,
+              fingerprint:   a.fingerprintHash,
+              rowNumber:     a.rowNumber,
+            })),
+            clientFlags:   preClients.map(c => ({
+              clientName: c.clientName,
+              flags:      Object.entries(c.flags || {}).filter(([,v]) => v).map(([k]) => k),
+            })),
+          };
+        }
+
+        // 3. Read AutoUpdates flag columns for this client
+        const acIdClean = extractSheetIdFromUrl(acId) || acId;
+        const namesResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: acIdClean,
+          range: "AutoUpdates!A2:A1000",
+        });
+        const nameRows = namesResp.data.values || [];
+        let autoUpdatesRow = -1;
+        for (let i = 0; i < nameRows.length; i++) {
+          if (!clientName || String(nameRows[i]?.[0] || "").trim() === clientName.trim()) {
+            autoUpdatesRow = i + 2;
+            break;
+          }
+        }
+
+        let autoUpdatesFlags = null;
+        if (autoUpdatesRow !== -1) {
+          // Read CW:HL (cols 101-220 = 120 cols) — the flag columns
+          const flagResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: acIdClean,
+            range: `AutoUpdates!CW${autoUpdatesRow}:HL${autoUpdatesRow}`,
+          });
+          const flagRow = flagResp.data.values?.[0] || [];
+          const FLAG_COL_NAMES = {
+            0:  "invoiceDashboardDiscr (CW)",
+            7:  "invoiceAppDiscr (DD)",
+            14: "crmPipeDashDiscr (DK)",
+            21: "crmPipeAppDiscr (DR)",
+            28: "crmConfDashDiscr (DY)",
+            35: "crmConfAppDiscr (EF)",
+            42: "crmPipeSkippedBlank (EM)",
+            49: "crmConfSkippedBlank (ET)",
+            56: "crmCopiedConfChecked (FA)",
+            63: "crmCopiedConfUnchecked (FH)",
+            70: "crmCopiedConfDelete (FO)",
+            77: "retainerInvoicesCreated (FV)",
+            84: "expenseDashboardDiscr (GC)",
+            91: "expenseAppDiscr (GJ)",
+            98: "expenseAdded (GQ)",
+            105:"expenseUnreconGaps (GX)",
+            112:"invoiceStaleUnsentChanges (HE)",
+            119:"retainerInvoicesDeleted (HL)",
+          };
+          autoUpdatesFlags = {};
+          Object.entries(FLAG_COL_NAMES).forEach(([idx, name]) => {
+            const val = String(flagRow[parseInt(idx)] || "").trim().toUpperCase();
+            autoUpdatesFlags[name] = val === "TRUE" || val === "1";
+          });
+        }
+
+        // 4. Read DataChgAlert clear cells for this client (if masterSheetId provided)
+        // (skip — requires masterSheetId which we don't have here)
+
+        console.log(`debug_triage_state: ${clientMemory.length} AlertMemory rows, precomp=${!!preRaw}, autoUpdatesRow=${autoUpdatesRow}`);
+        return res.status(200).json({
+          success: true,
+          clientName,
+          alertMemory: {
+            totalRows: allMemoryRows.length,
+            clientRows: memorySummary,
+            statusCounts: allMemoryRows.reduce((acc, r) => { acc[r.status] = (acc[r.status]||0)+1; return acc; }, {}),
+          },
+          precomputed: precompSummary,
+          autoUpdates: { row: autoUpdatesRow, flags: autoUpdatesFlags },
+        });
+      } catch (err) {
+        console.error("❌ debug_triage_state error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "get_precomputed") {
       // Return the latest precomputed triage data if it exists and is fresh enough
       try {

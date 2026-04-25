@@ -283,7 +283,7 @@ export default function TriageSystem({ onBack }) {
       setDebugLoading(false);
     }
   };
-  const handleNavHome = () => { setActiveNav("home"); };
+  const handleNavHome = () => { setActiveNav("home"); setScreen("clientSelection"); };
   const handleNavOverview = () => { setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
 
@@ -2381,7 +2381,7 @@ export default function TriageSystem({ onBack }) {
   ) : jsx;
 
   // Screen: Ignored Alerts
-  if (screen === "ignoredAlerts" && activeNav !== "tasks") {
+  if (screen === "ignoredAlerts" && activeNav === "home") {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} homeAlertCount={totalAlerts + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>

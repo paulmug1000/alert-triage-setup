@@ -7469,6 +7469,9 @@ Return ONLY JSON, no other text.`;
           return res.status(200).json({ success: true, changed: [], unchanged: [] });
         }
 
+        const changed = [];
+        const unchanged = [];
+
         // Group by clientName + alertType to minimise tab reads
         const groups = {};
         for (const row of dueRows) {
@@ -7484,9 +7487,6 @@ Return ONLY JSON, no other text.`;
           if (!groups[key]) groups[key] = { masterSheetId, alertType: row.alertType, rows: [] };
           groups[key].rows.push(row);
         }
-
-        const changed = [];
-        const unchanged = [];
 
         for (const [key, group] of Object.entries(groups)) {
           const { masterSheetId, alertType, rows } = group;
@@ -7514,16 +7514,53 @@ Return ONLY JSON, no other text.`;
             continue;
           }
 
-          // Build set of current fingerprints from fresh data
-          const freshHashes = new Set(freshAlerts.map(a => buildAlertFingerprint(a)));
+          // Build map of current fingerprints → alert from fresh data
+          const freshHashToAlert = new Map(freshAlerts.map(a => [buildAlertFingerprint(a), a]));
+          const freshHashes = new Set(freshHashToAlert.keys());
 
+          // Also build a summary-based lookup for migration: if the stored hash doesn't
+          // match any fresh hash but a fresh alert has the same summary prefix, it means
+          // the hash format changed (normalisation migration) rather than the data changing.
+          // In that case, update the stored fingerprint rather than superseding the row.
+          const freshBySummaryPrefix = new Map();
+          for (const [hash, alert] of freshHashToAlert) {
+            const summaryKey = (alert.summary?.summary || JSON.stringify(alert.data || {}).slice(0, 60));
+            freshBySummaryPrefix.set(summaryKey, hash);
+          }
+
+          const rowsToUpdateHash = []; // { rowIndex, newHash } — hash migration
           for (const row of rows) {
             if (freshHashes.has(row.fingerprintHash)) {
               unchanged.push(row.rowIndex);
             } else {
-              console.log(`  CHANGED: ${row.fingerprintHash} (${row.clientName} / ${alertType})`);
-              changed.push({ rowIndex: row.rowIndex, fingerprintHash: row.fingerprintHash, clientName: row.clientName, alertType });
+              // Check if a fresh alert matches by alertSummary prefix (normalisation migration)
+              const summaryKey = (row.alertSummary || "").slice(0, 60);
+              const matchingFreshHash = freshBySummaryPrefix.get(summaryKey);
+              if (matchingFreshHash) {
+                // Same alert, hash format changed — update stored hash, treat as unchanged
+                console.log(`  HASH MIGRATION: ${row.fingerprintHash} → ${matchingFreshHash} (${row.clientName})`);
+                rowsToUpdateHash.push({ rowIndex: row.rowIndex, newHash: matchingFreshHash });
+                unchanged.push(row.rowIndex);
+              } else {
+                console.log(`  CHANGED: ${row.fingerprintHash} (${row.clientName} / ${alertType})`);
+                changed.push({ rowIndex: row.rowIndex, fingerprintHash: row.fingerprintHash, clientName: row.clientName, alertType });
+              }
             }
+          }
+
+          // Batch update migrated hashes
+          if (rowsToUpdateHash.length > 0) {
+            const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
+            await sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: acIdClean,
+              requestBody: {
+                valueInputOption: "RAW",
+                data: rowsToUpdateHash.map(({ rowIndex, newHash }) => ({
+                  range: `${ALERT_MEMORY_TAB}!A${rowIndex}`,
+                  values: [[newHash]],
+                })),
+              },
+            }).catch(e => console.log(`  ⚠ Hash migration write failed: ${e.message}`));
           }
         }
 

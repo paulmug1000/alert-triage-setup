@@ -2384,13 +2384,55 @@ export default async function handler(req, res) {
           return client.flags[na.flagType] !== false;
         });
 
+        // Zero out actionable flags in clientsWithFlags where no alerts exist in the blob.
+        // This prevents client cards appearing with no actionable items — which happens when
+        // recheckIgnoredAlerts_ raises a flag but get_handled_fingerprints correctly skips
+        // all those alerts (they're already handled). Without this, the flag stays TRUE in
+        // AutoUpdates and the client appears in the UI with an empty alert list.
+        const ACTIONABLE_FLAG_TO_ALERT_TYPE = {
+          invoiceDashboardDiscr: ["invoice"],
+          invoiceAppDiscr:       ["invoice"],
+          crmPipeDashDiscr:      ["crm"],
+          crmPipeAppDiscr:       ["crm"],
+          crmConfDashDiscr:      ["crm"],
+          crmConfAppDiscr:       ["crm"],
+          crmPipeSkippedBlank:   ["crm"],
+          crmConfSkippedBlank:   ["crm"],
+          expenseDashboardDiscr: ["expense"],
+          expenseAppDiscr:       ["expense"],
+          expenseAdded:          ["expense"],
+          expenseUnreconGaps:    ["expense"],
+        };
+
+        // Build set of clientName+flagType combinations that have at least one alert
+        const alertPresence = new Set();
+        for (const a of mergedAlerts) {
+          alertPresence.add(`${a.clientName}|||${a.flagType || a.type}`);
+        }
+
+        const reconciledClients = mergedClientsWithFlags.map(c => {
+          const reconciledFlags = { ...c.flags };
+          for (const [flagKey, alertTypes] of Object.entries(ACTIONABLE_FLAG_TO_ALERT_TYPE)) {
+            if (!reconciledFlags[flagKey]) continue;
+            // Flag is TRUE — check if any alert in the blob matches this client + flag
+            const hasAlert = alertPresence.has(`${c.clientName}|||${flagKey}`)
+              || alertTypes.some(at => alertPresence.has(`${c.clientName}|||${at}`));
+            if (!hasAlert) {
+              reconciledFlags[flagKey] = false;
+              console.log(`  store_precomputed: zeroing ${flagKey} for ${c.clientName} — no alerts in blob`);
+            }
+          }
+          return { ...c, flags: reconciledFlags };
+        }).filter(c => Object.values(c.flags).some(v => v));
+        // Remove clients where all flags were zeroed out
+
         const precomputedData = {
           computedAt: computedAt || Date.now(),
           totalAlerts: mergedAlerts.length,
           noActionCount: mergedNoActionAlerts.length,
           alerts: mergedAlerts,
           noActionAlerts: mergedNoActionAlerts,
-          clientsWithFlags: mergedClientsWithFlags,
+          clientsWithFlags: reconciledClients,
           noActionAnalysisResults: noActionAnalysisResults || {},
         };
 

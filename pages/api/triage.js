@@ -7493,6 +7493,12 @@ Return ONLY JSON, no other text.`;
         for (const row of dueRows) {
           const snap = row.dataSnapshot ? (() => { try { return JSON.parse(row.dataSnapshot); } catch(e) { return {}; } })() : {};
           const masterSheetId = snap.masterSheetId || clientMasterSheetIds[row.clientName] || null;
+          // If no dataSnapshot at all, we have nothing to compare against — treat as unchanged
+          // (these are rows promoted by rehash that never had a snapshot set)
+          if (!row.dataSnapshot) {
+            unchanged.push(row.rowIndex);
+            continue;
+          }
           const key = `${row.clientName}|||${row.alertType}|||${masterSheetId || ""}`;
           if (!groups[key]) groups[key] = { masterSheetId, alertType: row.alertType, rows: [] };
           groups[key].rows.push(row);
@@ -7535,7 +7541,7 @@ Return ONLY JSON, no other text.`;
               unchanged.push(row.rowIndex);
             } else {
               console.log(`  CHANGED: ${row.fingerprintHash} (${row.clientName} / ${alertType})`);
-              changed.push({ rowIndex: row.rowIndex, clientName: row.clientName, alertType });
+              changed.push({ rowIndex: row.rowIndex, fingerprintHash: row.fingerprintHash, clientName: row.clientName, alertType });
             }
           }
         }
@@ -7549,25 +7555,30 @@ Return ONLY JSON, no other text.`;
 
     } else if (action === "mark_superseded") {
       // Marks an AlertMemory row as "superseded" (data has changed since it was ignored).
-      // Also updates lastRechecked. Called by GAS precompute when a re-check detects changed data.
-      const { rowIndex, automationCommanderSheetId } = req.body;
-      if (!rowIndex || !automationCommanderSheetId) {
-        return res.status(400).json({ success: false, error: "Missing rowIndex or automationCommanderSheetId" });
+      // Accepts either rowIndex (legacy) or fingerprintHash (preferred — robust to row shifts).
+      const { rowIndex, fingerprintHash: fpHash, automationCommanderSheetId } = req.body;
+      if (!automationCommanderSheetId) {
+        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
       }
       try {
         const sheets = await getSheetsClient();
         const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-        const memoryRow = memoryRows.find(r => r.rowIndex === rowIndex);
+        // Prefer hash lookup (stable), fall back to rowIndex
+        const memoryRow = fpHash
+          ? findMemoryRow(memoryRows, fpHash)
+          : memoryRows.find(r => r.rowIndex === rowIndex);
         if (!memoryRow) {
-          return res.status(404).json({ success: false, error: `No AlertMemory row at index ${rowIndex}` });
+          // Row may have been deleted by dedupe — treat as non-fatal
+          console.log(`  ⚠ mark_superseded: row not found (hash=${fpHash}, idx=${rowIndex}) — skipping`);
+          return res.status(200).json({ success: true, skipped: true });
         }
         const nowISO = new Date().toISOString();
-        await updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, {
+        await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
           ...memoryRow,
           status: "superseded",
           lastRechecked: nowISO,
         });
-        console.log(`  ✅ Marked row ${rowIndex} as superseded (${memoryRow.fingerprintHash})`);
+        console.log(`  ✅ Marked row ${memoryRow.rowIndex} as superseded (${memoryRow.fingerprintHash})`);
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error(`❌ Error in mark_superseded:`, err);

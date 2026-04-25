@@ -2552,15 +2552,17 @@ export default function TriageSystem({ onBack }) {
           /* Outer wrapper: full viewport width, horizontally scrollable */
           <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: "40px" }}>
             <style>{`
-              .applog-table { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+              .applog-table { border-collapse: collapse; font-size: 12px; }
               .applog-table th, .applog-table td {
                 border: 1px solid #e0e0e0;
                 padding: 6px 10px;
                 text-align: left;
                 vertical-align: top;
-                max-width: 220px;
-                overflow: hidden;
-                text-overflow: ellipsis;
+                width: 200px;
+                min-width: 120px;
+                max-width: 260px;
+                word-break: break-word;
+                white-space: normal;
               }
               .applog-table th {
                 background: #f3f4f6;
@@ -2605,7 +2607,7 @@ export default function TriageSystem({ onBack }) {
                 {appLogData.map((row, rowIdx) => (
                   <tr key={rowIdx}>
                     {colLabels.map((_, colIdx) => (
-                      <td key={colIdx} title={String(row[colIdx] ?? "")}>
+                      <td key={colIdx}>
                         {String(row[colIdx] ?? "")}
                       </td>
                     ))}

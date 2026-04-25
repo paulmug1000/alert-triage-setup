@@ -105,8 +105,15 @@ const PROACTIVE_ALERTS_TAB = "ProactiveAlerts";
  */
 function normaliseForFingerprint(val) {
   if (typeof val !== "string") return String(val ?? "");
-  // Match DD-Mon-YYYY (4-digit year) → convert to DD-Mon-YY
-  return val.replace(/^(\d{1,2}-[A-Za-z]{3}-)(\d{4})$/, (_, prefix, year) => prefix + year.slice(-2));
+  // Match D-Mon-YY or DD-Mon-YY (with or without zero-padded day, 2 or 4-digit year)
+  const m = val.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
+  if (m) {
+    const day  = m[1].padStart(2, "0");
+    const mon  = m[2];
+    const year = m[3].length === 4 ? m[3].slice(-2) : m[3];
+    return `${day}-${mon}-${year}`;
+  }
+  return val;
 }
 
 function normaliseArrayForFingerprint(arr) {

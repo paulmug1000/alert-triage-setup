@@ -1308,13 +1308,7 @@ export default function TriageSystem({ onBack }) {
       setFlagsToClear(remainingGroups);
       setScreen("clearFlags");
     } else {
-      // Everything cleared — decrement the global noAction count by however many
-      // noAction flags this client had (so the badge reflects the resolution)
-      const clientNoActionResolved = (resolvedSet instanceof Set ? resolvedSet.size : 0);
-      if (clientNoActionResolved > 0) {
-        setTotalNoActionCount(prev => Math.max(0, prev - clientNoActionResolved));
-      }
-      // Go back to client selection
+      // Everything cleared — go back to client selection
       setScreen("clientSelection");
     }
   };
@@ -3659,6 +3653,7 @@ export default function TriageSystem({ onBack }) {
                               onClick={() => {
                                 const newResolved = new Set([...resolvedNoActionFlags, na.flagType]);
                                 setResolvedNoActionFlags(newResolved);
+                                setTotalNoActionCount(prev => Math.max(0, prev - 1));
                                 // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
                                 setClientsWithFlags(prev => prev.map(c => {
                                   if (c.clientName !== selectedClient?.clientName) return c;
@@ -3807,6 +3802,7 @@ export default function TriageSystem({ onBack }) {
                         <button className="triage-btn"
                           onClick={() => {
                                 setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
+                                setTotalNoActionCount(prev => Math.max(0, prev - 1));
                                 // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
                                 setClientsWithFlags(prev => prev.map(c => {
                                   if (c.clientName !== selectedClient?.clientName) return c;

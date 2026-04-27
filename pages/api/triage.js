@@ -6425,17 +6425,55 @@ Return ONLY JSON, no other text.`;
               const tabRows     = targetTab === "Pipeline" ? retPipelineRows : retConfirmedRows;
               const tabStartRow = targetTab === "Pipeline" ? 6 : 1; // Pipeline data starts at row 6
 
-              // Find the parent row by matching client name AND job name
+              // Find the parent row by matching client name AND job name.
+              // If the AutoLog has a row number, try that first (most reliable).
+              // If multiple rows match the same client+job name, warn rather than
+              // silently picking the wrong one.
               const jobNameLower = job.jobName.toLowerCase();
               const clientLower  = job.clientNameFromLog.toLowerCase();
               let parentRowIdx   = -1;
-              for (let ri = 0; ri < tabRows.length; ri++) {
-                const r       = tabRows[ri];
-                const rClient = String(r[0] || "").trim().toLowerCase();
-                const rJob    = String(r[1] || "").trim().toLowerCase();
-                if (rClient === clientLower && rJob === jobNameLower) {
-                  parentRowIdx = ri;
-                  break;
+              const allMatchingIdxs = [];
+
+              // First try: use row number from AutoLog if available
+              if (job.logSheetRow) {
+                const logIdx = job.logSheetRow - tabStartRow;
+                if (logIdx >= 0 && logIdx < tabRows.length) {
+                  const r = tabRows[logIdx];
+                  const rClient = String(r[0] || "").trim().toLowerCase();
+                  const rJob    = String(r[1] || "").trim().toLowerCase();
+                  if (rClient === clientLower && rJob === jobNameLower) {
+                    parentRowIdx = logIdx;
+                    console.log(`  ✓ Matched by row number: ${job.logSheetRow}`);
+                  } else {
+                    console.log(`  ⚠ Row ${job.logSheetRow} has "${r[1]}"/"${r[0]}" — expected "${job.jobName}"/"${job.clientNameFromLog}" — row may have shifted, falling back to name search`);
+                  }
+                }
+              }
+
+              // Second: name search — collect ALL matches to detect duplicates
+              if (parentRowIdx === -1) {
+                for (let ri = 0; ri < tabRows.length; ri++) {
+                  const r       = tabRows[ri];
+                  const rClient = String(r[0] || "").trim().toLowerCase();
+                  const rJob    = String(r[1] || "").trim().toLowerCase();
+                  const hasRevenue = !!(r[32]);
+                  if (rClient === clientLower && rJob === jobNameLower && hasRevenue) {
+                    allMatchingIdxs.push(ri);
+                  }
+                }
+                if (allMatchingIdxs.length === 1) {
+                  parentRowIdx = allMatchingIdxs[0];
+                } else if (allMatchingIdxs.length > 1) {
+                  retainerChecks.push({
+                    jobName:    job.jobName,
+                    clientName: job.clientNameFromLog,
+                    status:     "issue",
+                    checks:     [{
+                      ok: false,
+                      message: `✗ Found ${allMatchingIdxs.length} rows matching "${job.clientNameFromLog} | ${job.jobName}" in ${targetTab} (rows ${allMatchingIdxs.map(i => i + tabStartRow).join(", ")}) — cannot reliably identify which row the automation acted on. Ensure jobs have unique names within the same client.`,
+                    }],
+                  });
+                  continue;
                 }
               }
 

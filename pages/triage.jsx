@@ -193,6 +193,7 @@ export default function TriageSystem({ onBack }) {
   const [sessionId, setSessionId] = useState("");
   const [totalAlerts, setTotalAlerts] = useState(0);
   const [noActionCount, setNoActionCount] = useState(0);
+  const [totalNoActionCount, setTotalNoActionCount] = useState(0); // global across all clients for badge
   const [showNoAction, setShowNoAction] = useState(false);
   const [acknowledgedNoAction, setAcknowledgedNoAction] = useState(new Set());
   const [triageComplete, setTriageComplete] = useState(false);
@@ -746,6 +747,7 @@ export default function TriageSystem({ onBack }) {
       setSessionId(data.sessionId);
       setTotalAlerts(data.totalAlerts || 0);
       setNoActionCount(data.noActionCount || 0);
+      setTotalNoActionCount(data.noActionCount || 0);
       setClientsWithFlags(data.clientsWithFlags || []);
       setProcessedAlerts(new Set());
       setAcknowledgedNoAction(new Set());
@@ -785,6 +787,7 @@ export default function TriageSystem({ onBack }) {
           setSessionId(preData.sessionId);
           setTotalAlerts(preData.totalAlerts || 0);
           setNoActionCount(preData.noActionCount || 0);
+          setTotalNoActionCount(preData.noActionCount || 0);
           setClientsWithFlags(preData.clientsWithFlags || []);
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());
@@ -854,6 +857,7 @@ export default function TriageSystem({ onBack }) {
       setSessionId(data.sessionId);
       setTotalAlerts(data.totalAlerts || 0);
       setNoActionCount(data.noActionCount || 0);
+      setTotalNoActionCount(data.noActionCount || 0);
       setClientsWithFlags(data.clientsWithFlags || []);
       setAcknowledgedNoAction(new Set());
       setProcessedAlerts(new Set());
@@ -1304,7 +1308,13 @@ export default function TriageSystem({ onBack }) {
       setFlagsToClear(remainingGroups);
       setScreen("clearFlags");
     } else {
-      // Everything cleared — go back to client selection
+      // Everything cleared — decrement the global noAction count by however many
+      // noAction flags this client had (so the badge reflects the resolution)
+      const clientNoActionResolved = (resolvedSet instanceof Set ? resolvedSet.size : 0);
+      if (clientNoActionResolved > 0) {
+        setTotalNoActionCount(prev => Math.max(0, prev - clientNoActionResolved));
+      }
+      // Go back to client selection
       setScreen("clientSelection");
     }
   };
@@ -1322,6 +1332,8 @@ export default function TriageSystem({ onBack }) {
 
   // Live alert count — derived from clientsWithFlags alertCounts so it decrements
   // as each alert is actioned, rather than staying at the original snapshot value.
+  // Also includes noAction flags (retainer invoices created etc.) which are tracked
+  // separately and don't appear in alertCounts.
   const liveAlertCount = React.useMemo(() => {
     const ACTIONABLE_TYPES = [
       "invoiceDashboardDiscr", "invoiceAppDiscr",
@@ -1330,12 +1342,13 @@ export default function TriageSystem({ onBack }) {
       "expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps",
       "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted",
     ];
-    return clientsWithFlags.reduce((total, c) => {
+    const actionableCount = clientsWithFlags.reduce((total, c) => {
       return total + ACTIONABLE_TYPES.reduce((sum, ft) => {
         return sum + (c.alertCounts?.[ft] || 0);
       }, 0);
     }, 0);
-  }, [clientsWithFlags]);
+    return actionableCount + totalNoActionCount;
+  }, [clientsWithFlags, totalNoActionCount]);
 
   // ── Bulk action helpers ──────────────────────────────────────────────────
 
@@ -1891,6 +1904,7 @@ export default function TriageSystem({ onBack }) {
         setSessionId(preData.sessionId);
         setTotalAlerts(preData.totalAlerts || 0);
         setNoActionCount(preData.noActionCount || 0);
+        setTotalNoActionCount(preData.noActionCount || 0);
         setClientsWithFlags(preData.clientsWithFlags || []);
         setAcknowledgedNoAction(new Set());
         setProcessedAlerts(new Set());
@@ -1915,6 +1929,7 @@ export default function TriageSystem({ onBack }) {
           setSessionId(data.sessionId);
           setTotalAlerts(data.totalAlerts || 0);
           setNoActionCount(data.noActionCount || 0);
+          setTotalNoActionCount(data.noActionCount || 0);
           setClientsWithFlags(data.clientsWithFlags || []);
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());

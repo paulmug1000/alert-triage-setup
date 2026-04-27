@@ -4359,6 +4359,31 @@ export default function TriageSystem({ onBack }) {
                             )}
                           </div>
                         )}
+                        {/* VAT mismatch — show job context and exact cell that will be updated */}
+                        {option.discrepancyType === "inv_vat_mismatch" && option.matchType === "existing_job" && option.jobDetails && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>
+                            <strong style={{ color: "#1d4ed8", fontSize: "12px" }}>Job Details (Confirmed tab, row {option.jobRow}):</strong>
+                            <div style={{ marginTop: "6px", fontSize: "12px", color: "#333" }}>
+                              {option.jobDetails.clientName && <div><strong>Client:</strong> {option.jobDetails.clientName}</div>}
+                              {option.jobDetails.jobName && <div><strong>Job:</strong> {option.jobDetails.jobName}</div>}
+                              {option.jobDetails.projectCode && <div><strong>Code:</strong> {option.jobDetails.projectCode}</div>}
+                              {option.jobDetails.revenue && <div><strong>Revenue:</strong> {option.jobDetails.revenue}</div>}
+                              {option.jobDetails.vatSetting && <div><strong>Current VAT setting:</strong> {option.jobDetails.vatSetting}</div>}
+                              {option.jobDetails.startDate && <div><strong>Dates:</strong> {option.jobDetails.startDate} → {option.jobDetails.endDate || "?"}</div>}
+                              {option.jobDetails.slot1 && !option.jobDetails.slot1.startsWith("(empty)") && <div><strong>Inv 1:</strong> {option.jobDetails.slot1}</div>}
+                              {option.jobDetails.slot2 && !option.jobDetails.slot2.startsWith("(empty)") && <div><strong>Inv 2:</strong> {option.jobDetails.slot2}</div>}
+                              {option.jobDetails.slot3 && !option.jobDetails.slot3.startsWith("(empty)") && <div><strong>Inv 3:</strong> {option.jobDetails.slot3}</div>}
+                            </div>
+                          </div>
+                        )}
+                        {option.vatUpdate && (
+                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0fdf4", borderLeft: "3px solid #22c55e", fontSize: "13px" }}>
+                            <strong style={{ color: "#15803d" }}>If accepted, the following will be updated:</strong>
+                            <div style={{ marginTop: "6px", fontFamily: "monospace", fontSize: "12px", color: "#166534" }}>
+                              Cell {option.vatUpdate.cell}: "{option.vatUpdate.currentValue}" → "{option.vatUpdate.newValue}"
+                            </div>
+                          </div>
+                        )}
                         {/* CRM match analysis - ONLY show for CRM/invoices, not expenses, not VAT mismatches (those use explanation) */}
                         {option.matchAnalysis && typeof option.matchAnalysis === 'object' && !option.allocationBreakdown && option.discrepancyType !== "inv_vat_mismatch" && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#fef3c7", borderLeft: "3px solid #f59e0b" }}>

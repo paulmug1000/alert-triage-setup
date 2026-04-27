@@ -4359,8 +4359,8 @@ export default function TriageSystem({ onBack }) {
                             )}
                           </div>
                         )}
-                        {/* CRM match analysis - ONLY show for CRM/invoices, not expenses */}
-                        {option.matchAnalysis && typeof option.matchAnalysis === 'object' && !option.allocationBreakdown && (
+                        {/* CRM match analysis - ONLY show for CRM/invoices, not expenses, not VAT mismatches (those use explanation) */}
+                        {option.matchAnalysis && typeof option.matchAnalysis === 'object' && !option.allocationBreakdown && option.discrepancyType !== "inv_vat_mismatch" && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#fef3c7", borderLeft: "3px solid #f59e0b" }}>
                             <strong style={{ color: "#b45309" }}>Match Analysis:</strong>
                             {option.matchAnalysis.matchConfidence && (
@@ -4459,8 +4459,8 @@ export default function TriageSystem({ onBack }) {
                             )}
                           </div>
                         )}
-                        {/* NEW FORMAT: Display match analysis */}
-                        {option.matchAnalysis && typeof option.matchAnalysis === 'object' && (
+                        {/* Expense match analysis - only shown alongside allocation breakdown */}
+                        {option.matchAnalysis && typeof option.matchAnalysis === 'object' && option.allocationBreakdown && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#fef3c7", borderLeft: "3px solid #f59e0b" }}>
                             <strong style={{ color: "#b45309" }}>Match Analysis:</strong>
                             {option.matchAnalysis.matchConfidence && (
@@ -4528,7 +4528,7 @@ export default function TriageSystem({ onBack }) {
                             <div style={{ marginTop: "4px", color: "#555", fontStyle: "italic" }}>{option.businessLogic}</div>
                           </div>
                         )}
-                        {option.recommendedActions && Array.isArray(option.recommendedActions) && option.recommendedActions.length > 0 && (
+                        {option.recommendedActions && Array.isArray(option.recommendedActions) && option.recommendedActions.length > 0 && option.discrepancyType !== "inv_vat_mismatch" && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px" }}>
                             <strong>Actions:</strong>
                             {option.recommendedActions.map((action, i) => (

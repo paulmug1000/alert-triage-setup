@@ -193,7 +193,6 @@ export default function TriageSystem({ onBack }) {
   const [sessionId, setSessionId] = useState("");
   const [totalAlerts, setTotalAlerts] = useState(0);
   const [noActionCount, setNoActionCount] = useState(0);
-  const [totalNoActionCount, setTotalNoActionCount] = useState(0); // global across all clients for badge
   const [showNoAction, setShowNoAction] = useState(false);
   const [acknowledgedNoAction, setAcknowledgedNoAction] = useState(new Set());
   const [triageComplete, setTriageComplete] = useState(false);
@@ -747,7 +746,6 @@ export default function TriageSystem({ onBack }) {
       setSessionId(data.sessionId);
       setTotalAlerts(data.totalAlerts || 0);
       setNoActionCount(data.noActionCount || 0);
-      setTotalNoActionCount(data.noActionCount || 0);
       setClientsWithFlags(data.clientsWithFlags || []);
       setProcessedAlerts(new Set());
       setAcknowledgedNoAction(new Set());
@@ -787,7 +785,6 @@ export default function TriageSystem({ onBack }) {
           setSessionId(preData.sessionId);
           setTotalAlerts(preData.totalAlerts || 0);
           setNoActionCount(preData.noActionCount || 0);
-          setTotalNoActionCount(preData.noActionCount || 0);
           setClientsWithFlags(preData.clientsWithFlags || []);
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());
@@ -857,7 +854,6 @@ export default function TriageSystem({ onBack }) {
       setSessionId(data.sessionId);
       setTotalAlerts(data.totalAlerts || 0);
       setNoActionCount(data.noActionCount || 0);
-      setTotalNoActionCount(data.noActionCount || 0);
       setClientsWithFlags(data.clientsWithFlags || []);
       setAcknowledgedNoAction(new Set());
       setProcessedAlerts(new Set());
@@ -1326,25 +1322,29 @@ export default function TriageSystem({ onBack }) {
 
   // Live alert count — derived from clientsWithFlags alertCounts so it decrements
   // as each alert is actioned, rather than staying at the original snapshot value.
-  // Also includes noAction flags (retainer invoices created etc.) which are tracked
-  // separately and don't appear in alertCounts.
+  // Also includes informational (grey bullet) flags which are noAction flags that
+  // are TRUE in clientsWithFlags but not in the actionable set.
   const liveAlertCount = React.useMemo(() => {
-    const ACTIONABLE_TYPES = [
+    const ACTIONABLE_FLAG_KEYS_SET = new Set([
+      "invoiceDashboardDiscr", "expenseDashboardDiscr",
+      "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
+    ]);
+    const COUNTED_ALERT_TYPES = [
       "invoiceDashboardDiscr", "invoiceAppDiscr",
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
       "crmPipeSkippedBlank", "crmConfSkippedBlank",
       "expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps",
       "invoiceStaleUnsentChanges",
-      // retainerInvoicesCreated and retainerInvoicesDeleted are noAction flags —
-      // counted separately via totalNoActionCount, not here
     ];
-    const actionableCount = clientsWithFlags.reduce((total, c) => {
-      return total + ACTIONABLE_TYPES.reduce((sum, ft) => {
-        return sum + (c.alertCounts?.[ft] || 0);
-      }, 0);
+    return clientsWithFlags.reduce((total, c) => {
+      // Count actionable alerts from alertCounts
+      const actionable = COUNTED_ALERT_TYPES.reduce((sum, ft) => sum + (c.alertCounts?.[ft] || 0), 0);
+      // Count info flags (grey bullets) — flags that are TRUE but not in the actionable display set
+      const infoFlags = Object.entries(c.flags || {})
+        .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS_SET.has(key)).length;
+      return total + actionable + infoFlags;
     }, 0);
-    return actionableCount + totalNoActionCount;
-  }, [clientsWithFlags, totalNoActionCount]);
+  }, [clientsWithFlags]);
 
   // ── Bulk action helpers ──────────────────────────────────────────────────
 
@@ -1900,7 +1900,6 @@ export default function TriageSystem({ onBack }) {
         setSessionId(preData.sessionId);
         setTotalAlerts(preData.totalAlerts || 0);
         setNoActionCount(preData.noActionCount || 0);
-        setTotalNoActionCount(preData.noActionCount || 0);
         setClientsWithFlags(preData.clientsWithFlags || []);
         setAcknowledgedNoAction(new Set());
         setProcessedAlerts(new Set());
@@ -1925,7 +1924,6 @@ export default function TriageSystem({ onBack }) {
           setSessionId(data.sessionId);
           setTotalAlerts(data.totalAlerts || 0);
           setNoActionCount(data.noActionCount || 0);
-          setTotalNoActionCount(data.noActionCount || 0);
           setClientsWithFlags(data.clientsWithFlags || []);
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());
@@ -3655,7 +3653,6 @@ export default function TriageSystem({ onBack }) {
                               onClick={() => {
                                 const newResolved = new Set([...resolvedNoActionFlags, na.flagType]);
                                 setResolvedNoActionFlags(newResolved);
-                                setTotalNoActionCount(prev => Math.max(0, prev - 1));
                                 // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
                                 setClientsWithFlags(prev => prev.map(c => {
                                   if (c.clientName !== selectedClient?.clientName) return c;
@@ -3804,7 +3801,6 @@ export default function TriageSystem({ onBack }) {
                         <button className="triage-btn"
                           onClick={() => {
                                 setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
-                                setTotalNoActionCount(prev => Math.max(0, prev - 1));
                                 // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
                                 setClientsWithFlags(prev => prev.map(c => {
                                   if (c.clientName !== selectedClient?.clientName) return c;

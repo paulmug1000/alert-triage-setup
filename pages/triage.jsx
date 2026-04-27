@@ -3675,6 +3675,12 @@ export default function TriageSystem({ onBack }) {
                                 if (RICH_NOACTION_FLAG_GROUP[na.flagType]) {
                                   autoClearFlags(clientAlerts, newResolved).catch(() => {});
                                 }
+                                // If all noAction flags are now resolved AND no actionable alerts remain,
+                                // auto-proceed to clear flags and return to client selection
+                                const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.flagType));
+                                if (allResolved && clientAlerts.length === 0) {
+                                  handlePostClear([], newResolved);
+                                }
                               }}
                               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
                             >
@@ -3818,6 +3824,13 @@ export default function TriageSystem({ onBack }) {
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
                                   }).catch(() => {});
+                                }
+                                // If all noAction flags are now resolved AND no actionable alerts remain,
+                                // auto-proceed to clear flags and return to client selection
+                                const newResolved2 = new Set([...resolvedNoActionFlags, na.flagType]);
+                                const allResolved2 = clientNoActionAlerts.every(n => newResolved2.has(n.flagType));
+                                if (allResolved2 && clientAlerts.length === 0) {
+                                  handlePostClear([], newResolved2);
                                 }
                               }}
                           style={{

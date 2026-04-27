@@ -247,7 +247,8 @@ function findMemoryRow(memoryRows, fingerprintHash) {
  * Find any previous ignore reason for an alert that has since been superseded.
  * Matches superseded rows by client name + alert type + key identifier
  * (invoice number, reference, or job name from the dataSnapshot).
- * Returns the ignore reason string, or null if not found.
+ * Returns { ignoreReason, changeReason } or null if not found.
+ * changeReason explains WHY the alert resurfaced (what changed vs what was ignored).
  */
 async function findPreviousIgnoreReason(memoryRows, alert) {
   try {
@@ -265,20 +266,100 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
       if ((row.clientName || "").toLowerCase().trim() !== alertClient) continue;
       if ((row.alertType || "").toLowerCase() !== alertType) continue;
 
+      let matched = false;
+      let snap = null;
+
       // Try to match by invoice number or reference from dataSnapshot
       if (row.dataSnapshot) {
         try {
-          const snap = JSON.parse(row.dataSnapshot);
+          snap = JSON.parse(row.dataSnapshot);
           const snapInvNo = (snap.invoiceNo || "").trim();
           const snapRef   = (snap.reference || "").trim();
-          if (alertInvNo && snapInvNo && snapInvNo === alertInvNo) return row.ignoreReason;
-          if (alertRef   && snapRef   && snapRef   === alertRef)   return row.ignoreReason;
+          if (alertInvNo && snapInvNo && snapInvNo === alertInvNo) matched = true;
+          if (alertRef   && snapRef   && snapRef   === alertRef)   matched = true;
         } catch (e) { /* ignore parse errors */ }
       }
 
       // Fallback: match by alert summary substring
-      if (alertInvNo && (row.alertSummary || "").includes(alertInvNo)) return row.ignoreReason;
-      if (alertRef   && (row.alertSummary || "").includes(alertRef))   return row.ignoreReason;
+      if (!matched) {
+        if (alertInvNo && (row.alertSummary || "").includes(alertInvNo)) matched = true;
+        if (alertRef   && (row.alertSummary || "").includes(alertRef))   matched = true;
+      }
+
+      if (!matched) continue;
+
+      // Build changeReason by comparing snapshot values to current alert values
+      let changeReason = null;
+      try {
+        if (snap) {
+          const changes = [];
+
+          // Amount comparison
+          const snapAmt    = parseFloat(String(snap.amount || "").replace(/[£$€,]/g, "")) || null;
+          const currentAmt = parseFloat(String(alert.summary?.amount || "").replace(/[£$€,]/g, "")) || null;
+          if (snapAmt !== null && currentAmt !== null && Math.abs(snapAmt - currentAmt) > 0.005) {
+            changes.push(`amount changed from £${snapAmt.toFixed(2)} to £${currentAmt.toFixed(2)}`);
+          }
+
+          // VAT amount comparison
+          const snapVAT    = parseFloat(String(snap.vatIncluded || "").replace(/[£$€,]/g, "")) || null;
+          const currentVAT = parseFloat(String(alert.summary?.vatIncluded || "").replace(/[£$€,]/g, "")) || null;
+          if (snapVAT !== null && currentVAT !== null && Math.abs(snapVAT - currentVAT) > 0.005) {
+            changes.push(`VAT changed from £${snapVAT.toFixed(2)} to £${currentVAT.toFixed(2)}`);
+          }
+
+          // Status comparison
+          const snapStatus    = (snap.status || "").trim();
+          const currentStatus = (alert.summary?.status || "").trim();
+          if (snapStatus && currentStatus && snapStatus !== currentStatus) {
+            changes.push(`status changed from "${snapStatus}" to "${currentStatus}"`);
+          }
+
+          // Sent date comparison
+          const snapSent    = (snap.sentDate || "").trim();
+          const currentSent = (alert.summary?.sentDate || "").trim();
+          if (snapSent && currentSent && snapSent !== currentSent) {
+            changes.push(`sent date changed from "${snapSent}" to "${currentSent}"`);
+          }
+
+          // Date paid comparison
+          const snapPaid    = (snap.datePaid || "").trim();
+          const currentPaid = (alert.summary?.datePaid || "").trim();
+          if (snapPaid && currentPaid && snapPaid !== currentPaid) {
+            changes.push(`date paid changed from "${snapPaid}" to "${currentPaid}"`);
+          }
+
+          // Client comparison
+          const snapClient    = (snap.client || "").trim();
+          const currentClient = (alert.summary?.client || "").trim();
+          if (snapClient && currentClient && snapClient !== currentClient) {
+            changes.push(`client changed from "${snapClient}" to "${currentClient}"`);
+          }
+
+          // Job comparison
+          const snapJob    = (snap.job || "").trim();
+          const currentJob = (alert.summary?.job || "").trim();
+          if (snapJob && currentJob && snapJob !== currentJob) {
+            changes.push(`job changed from "${snapJob}" to "${currentJob}"`);
+          }
+
+          // For CRM alerts — summary/description change
+          const snapSummary    = (snap.alertSummary || "").trim();
+          const currentSummary = (alert.summary?.summary || "").trim();
+          if (snapSummary && currentSummary && snapSummary !== currentSummary && alertType.includes("crm")) {
+            changes.push(`discrepancy details changed`);
+          }
+
+          if (changes.length > 0) {
+            changeReason = changes.join("; ");
+          } else {
+            // No measurable data change found — likely a fingerprint normalisation migration
+            changeReason = "underlying data may have been updated (no specific field change detected)";
+          }
+        }
+      } catch (e) { /* ignore diff errors */ }
+
+      return { ignoreReason: row.ignoreReason, changeReason };
     }
     return null;
   } catch (e) {
@@ -7315,10 +7396,16 @@ Return ONLY JSON, no other text.`;
           const alertSummary = alert.summary?.summary
             || `${alert.type || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
           const dataSnapshot = JSON.stringify({
-            alertType: alert.type || alert.flagType || "",
-            invoiceNo: alert.summary?.invoiceNo || "",
-            amount:    String(alert.summary?.amount || ""),
-            flagType:  alert.flagType || "",
+            alertType:  alert.type || alert.flagType || "",
+            invoiceNo:  alert.summary?.invoiceNo || "",
+            amount:     String(alert.summary?.amount || ""),
+            vatIncluded: String(alert.summary?.vatIncluded || ""),
+            status:     String(alert.summary?.status || ""),
+            sentDate:   String(alert.summary?.sentDate || ""),
+            datePaid:   String(alert.summary?.datePaid || ""),
+            client:     String(alert.summary?.client || ""),
+            job:        String(alert.summary?.job || ""),
+            flagType:   alert.flagType || "",
             masterSheetId: alert.masterSheetId || "",
           });
           if (memoryRow) {

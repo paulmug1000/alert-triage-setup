@@ -220,7 +220,7 @@ export default function TriageSystem({ onBack }) {
   const [ignoreReason, setIgnoreReason] = useState("");
   const [isIgnoring, setIsIgnoring] = useState(false);
   const [selectingClient, setSelectingClient] = useState(null); // clientName being loaded
-  const [previousIgnoreReason, setPreviousIgnoreReason] = useState("");
+  const [previousIgnoreReason, setPreviousIgnoreReason] = useState(null);
   const [proactiveAlerts, setProactiveAlerts] = useState([]);
   const [proactiveCountsByClient, setProactiveCountsByClient] = useState({});
   const [proactiveLoading, setProactiveLoading] = useState(false);
@@ -683,7 +683,7 @@ export default function TriageSystem({ onBack }) {
       }
       
       console.log(`✅ Options generated:`, data.options?.length || 0);
-      setPreviousIgnoreReason(data.previousIgnoreReason || "");
+      const pir = data.previousIgnoreReason; setPreviousIgnoreReason(pir && typeof pir === "object" ? pir : pir ? { ignoreReason: pir, changeReason: null } : null);
       setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
     } catch (err) {
       setClaudeAnalysis(`Error generating options: ${err.message}`);
@@ -1070,7 +1070,7 @@ export default function TriageSystem({ onBack }) {
       
       console.log(`✅ Generated ${data.options?.length || 0} options${data.fromCache ? " (from cache)" : ""}`);
       setFromCache(!!data.fromCache);
-      setPreviousIgnoreReason(data.previousIgnoreReason || "");
+      const pir = data.previousIgnoreReason; setPreviousIgnoreReason(pir && typeof pir === "object" ? pir : pir ? { ignoreReason: pir, changeReason: null } : null);
       setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
       setIsAnalyzing(false);
 
@@ -4213,7 +4213,12 @@ export default function TriageSystem({ onBack }) {
             <div>
               {previousIgnoreReason && (
                 <div style={{ marginBottom: "12px", padding: "10px 14px", backgroundColor: "#fff8e1", borderLeft: "4px solid #f59e0b", borderRadius: "4px", fontSize: "13px", color: "#78350f" }}>
-                  <strong>⚠ Previously ignored:</strong> {previousIgnoreReason}
+                  <div><strong>⚠ Previously ignored:</strong> {previousIgnoreReason.ignoreReason}</div>
+                  {previousIgnoreReason.changeReason && (
+                    <div style={{ marginTop: "6px", color: "#92400e", fontStyle: "italic" }}>
+                      <strong>Resurfaced because:</strong> {previousIgnoreReason.changeReason}
+                    </div>
+                  )}
                 </div>
               )}
               <h3 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>

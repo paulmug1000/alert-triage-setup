@@ -3892,21 +3892,38 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
             // Evidence: VAT > 0 AND total excl VAT ≈ dashboard total
             if (vatIncluded > 0 && !jobVATYes && Math.abs(totalExclVAT - dashboardTotal) < epsilon) {
               console.log(`  VAT scenario A: invoice sent WITH VAT (£${vatIncluded}) but job marked NO VAT`);
-              const options = [{
-                optionId: 1,
-                title: `MANUAL INVESTIGATION — Invoice sent WITH VAT but job is marked NO VAT`,
-                matchType: "info",
-                discrepancyType: "inv_amt_mismatch",
-                explanation: `Invoice #${invoiceNo} was sent including VAT (£${vatIncluded.toFixed(2)}), but the job in the Confirmed tab is marked as "No VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the invoice amount excluding VAT (£${totalExclVAT.toFixed(2)}), confirming the mismatch. Either the job's VAT setting needs updating to "Yes", or the invoice needs to be re-issued excluding VAT.`,
-                jobDetails: {
-                  clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
-                  vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
-                  slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
-                  slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
-                  slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
+              const vatColA = `AI${matchedRowNum}`;
+              const options = [
+                {
+                  optionId: 1,
+                  title: `Update job VAT setting to "Yes" — invoice was sent WITH VAT (£${vatIncluded.toFixed(2)})`,
+                  matchType: "existing_job",
+                  discrepancyType: "inv_vat_mismatch",
+                  jobRow: matchedRowNum,
+                  jobName,
+                  explanation: `Invoice #${invoiceNo} was sent including VAT (£${vatIncluded.toFixed(2)}), confirming the job should be marked "Yes VAT". Updating the job VAT setting to "Yes" will resolve the discrepancy.`,
+                  recommendedActions: [`write Yes to ${vatColA}`],
+                  matchAnalysis: {
+                    matchConfidence: "HIGH",
+                    reasonForChoice: `Dashboard total (£${dashboardTotal.toFixed(2)}) matches invoice excluding VAT (£${totalExclVAT.toFixed(2)}), confirming job VAT setting should be "Yes".`,
+                  },
                 },
-                recommendedActions: [],
-              }];
+                {
+                  optionId: 2,
+                  title: `MANUAL INVESTIGATION — invoice was sent incorrectly and needs re-issuing without VAT`,
+                  matchType: "info",
+                  discrepancyType: "inv_vat_mismatch",
+                  explanation: `If the invoice was sent in error with VAT and should have been sent without VAT, the invoice needs to be re-issued excluding VAT and the job VAT setting should remain "No".`,
+                  jobDetails: {
+                    clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
+                    vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
+                    slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
+                    slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
+                    slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
+                  },
+                  recommendedActions: [`Re-issue invoice #${invoiceNo} excluding VAT, then mark as resolved`],
+                },
+              ];
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
@@ -3915,21 +3932,38 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
             // (InvComp calculates dashboard total as slot amount × 1.2 when job VAT = Yes)
             if (vatIncluded === 0 && jobVATYes && Math.abs(grossAmount * 1.2 - dashboardTotal) < epsilon) {
               console.log(`  VAT scenario B: invoice sent WITHOUT VAT (£${grossAmount}) but job marked YES VAT — dashboard shows £${dashboardTotal} (= £${grossAmount} × 1.2)`);
-              const options = [{
-                optionId: 1,
-                title: `MANUAL INVESTIGATION — Invoice sent WITHOUT VAT but job is marked YES VAT`,
-                matchType: "info",
-                discrepancyType: "inv_amt_mismatch",
-                explanation: `Invoice #${invoiceNo} was sent without VAT (VAT = £0.00), but the job in the Confirmed tab is marked as "Yes VAT". The dashboard is showing £${dashboardTotal.toFixed(2)} (£${grossAmount.toFixed(2)} + 20% VAT), but the invoice was sent for £${grossAmount.toFixed(2)} with no VAT. Either the job's VAT setting needs updating to "No", or the invoice needs to be re-issued including VAT.`,
-                jobDetails: {
-                  clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
-                  vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
-                  slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
-                  slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
-                  slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
+              const vatColB = `AI${matchedRowNum}`;
+              const options = [
+                {
+                  optionId: 1,
+                  title: `Update job VAT setting to "No" — invoice was sent WITHOUT VAT (£${grossAmount.toFixed(2)})`,
+                  matchType: "existing_job",
+                  discrepancyType: "inv_vat_mismatch",
+                  jobRow: matchedRowNum,
+                  jobName,
+                  explanation: `Invoice #${invoiceNo} was sent without VAT (VAT = £0.00), confirming the job should be marked "No VAT". Updating the job VAT setting to "No" will resolve the discrepancy — the dashboard will show £${grossAmount.toFixed(2)} matching the invoice.`,
+                  recommendedActions: [`write No to ${vatColB}`],
+                  matchAnalysis: {
+                    matchConfidence: "HIGH",
+                    reasonForChoice: `Dashboard shows £${dashboardTotal.toFixed(2)} (= £${grossAmount.toFixed(2)} × 1.2), but invoice was sent for £${grossAmount.toFixed(2)} with no VAT. Job VAT setting should be "No".`,
+                  },
                 },
-                recommendedActions: [],
-              }];
+                {
+                  optionId: 2,
+                  title: `MANUAL INVESTIGATION — invoice was sent incorrectly and needs re-issuing with VAT`,
+                  matchType: "info",
+                  discrepancyType: "inv_vat_mismatch",
+                  explanation: `If the invoice was sent in error without VAT and should have been sent with VAT, the invoice needs to be re-issued including VAT (£${(grossAmount * 1.2).toFixed(2)} total) and the job VAT setting should remain "Yes".`,
+                  jobDetails: {
+                    clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
+                    vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
+                    slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
+                    slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
+                    slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
+                  },
+                  recommendedActions: [`Re-issue invoice #${invoiceNo} including VAT (total £${(grossAmount * 1.2).toFixed(2)}), then mark as resolved`],
+                },
+              ];
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 

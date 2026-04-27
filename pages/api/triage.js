@@ -291,7 +291,7 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
       // Build changeReason by comparing snapshot values to current alert values
       let changeReason = null;
       try {
-        if (snap) {
+        if (snap && Object.keys(snap).length > 0) {
           const changes = [];
 
           // Amount comparison
@@ -356,6 +356,9 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
             // No measurable data change found — likely a fingerprint normalisation migration
             changeReason = "underlying data may have been updated (no specific field change detected)";
           }
+        } else {
+          // No snapshot stored — alert was ignored before snapshot tracking was added
+          changeReason = "alert was re-raised (no previous snapshot to compare against)";
         }
       } catch (e) { /* ignore diff errors */ }
 

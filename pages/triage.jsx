@@ -1334,7 +1334,9 @@ export default function TriageSystem({ onBack }) {
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
       "crmPipeSkippedBlank", "crmConfSkippedBlank",
       "expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps",
-      "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted",
+      "invoiceStaleUnsentChanges",
+      // retainerInvoicesCreated and retainerInvoicesDeleted are noAction flags —
+      // counted separately via totalNoActionCount, not here
     ];
     const actionableCount = clientsWithFlags.reduce((total, c) => {
       return total + ACTIONABLE_TYPES.reduce((sum, ft) => {

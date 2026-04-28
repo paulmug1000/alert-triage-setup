@@ -2528,12 +2528,18 @@ export default async function handler(req, res) {
           expenseAppDiscr:       ["expense"],
           expenseAdded:          ["expense"],
           expenseUnreconGaps:    ["expense"],
+          // noAction flags — cleared when no matching noAction alerts exist in the blob
+          retainerInvoicesCreated: ["retainerInvoicesCreated"],
+          retainerInvoicesDeleted: ["retainerInvoicesDeleted"],
         };
 
-        // Build set of clientName+flagType combinations that have at least one alert
+        // Build set of clientName+flagType combinations that have at least one alert OR noAction alert
         const alertPresence = new Set();
         for (const a of mergedAlerts) {
           alertPresence.add(`${a.clientName}|||${a.flagType || a.type}`);
+        }
+        for (const na of mergedNoActionAlerts) {
+          alertPresence.add(`${na.clientName}|||${na.flagType}`);
         }
 
         const ACTIONABLE_FLAG_TO_STICKY_COL = {
@@ -2549,6 +2555,8 @@ export default async function handler(req, res) {
           expenseAppDiscr:       "GJ",
           expenseAdded:          "GQ",
           expenseUnreconGaps:    "GX",
+          retainerInvoicesCreated: "FV",
+          retainerInvoicesDeleted: "HL",
         };
 
         // Track which flags need to be cleared in AutoUpdates

@@ -5898,79 +5898,40 @@ Return ONLY JSON, no other text.`;
         const acIdClean = extractSheetIdFromUrl(acId) || acId;
 
         // ── Step 1: Find when the flag was last cleared ──────────────────────────
-        // Search the monthly Log tabs in the Automation Commander sheet (back 90 days max).
-        // Each row: col A=timestamp, col B=client name, clear columns:
-        //   BJ(61) = clear invoice flags (also clears retainerInvoicesCreated)
-        //   BL(63) = clear copied-to-confirmed flags
-        //   BO(66) = clear ALL flags
-        // Find the most recent row for this client where the relevant clear column = TRUE.
+        // Read AlertMemory for the most recent flag_cleared record for this client.
+        // Written by clear_flags whenever the triage system clears flags.
 
-        const clearColForFlag = {
-          crmCopiedConfChecked:    [63, 66], // BL or BO
-          crmCopiedConfUnchecked:  [63, 66], // BL or BO
-          crmCopiedConfDelete:     [63, 66], // BL or BO
-          retainerInvoicesCreated: [61, 66], // BJ or BO
-          invoiceStaleUnsentChanges: [61, 66], // BJ (clear invoice) or BO (clear all)
-        };
-        const clearCols = clearColForFlag[flagType] || [66];
-
-        // Generate monthly tab names for the last 90 days
-        const monthTabNames = [];
         const now = new Date();
-        for (let m = 0; m < 4; m++) { // up to 4 months covers 90 days
-          const d = new Date(now.getFullYear(), now.getMonth() - m, 1);
-          const mon = d.toLocaleString("en-GB", { month: "short" }); // "Mar", "Feb" etc.
-          const yr = String(d.getFullYear()).slice(2); // "26"
-          monthTabNames.push(`Log-${mon}${yr}`);
-        }
-        console.log(`  📅 Checking log tabs: ${monthTabNames.join(", ")}`);
-
         let windowStart = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000); // default: 90 days ago
         let foundClear = false;
 
-        for (const tabName of monthTabNames) {
-          if (foundClear) break;
-          try {
-            // Use UNFORMATTED_VALUE to get raw serial numbers for dates (col A)
-            // This avoids locale-dependent date string parsing (e.g. "8/1/2026" being
-            // ambiguous between Jan 8 and Aug 1 depending on locale)
-            const logResp = await sheets.spreadsheets.values.get({
-              spreadsheetId: acIdClean,
-              range: `${tabName}!A3:BP30000`,
-              valueRenderOption: "UNFORMATTED_VALUE",
-            });
-            const logRows = logResp.data.values || [];
-            // Helper: convert Sheets serial number to JS Date
-            // Sheets epoch: Dec 30 1899. Serial 1 = Jan 1 1900.
-            const serialToDate = (serial) => {
-              if (!serial || typeof serial !== 'number') return null;
-              return new Date((serial - 25569) * 86400 * 1000);
-            };
-            // Search newest-first
-            for (let i = logRows.length - 1; i >= 0; i--) {
-              const row = logRows[i];
-              const rowClient = String(row[1] || "").trim(); // col B = client name
-              if (rowClient !== clientName.trim()) continue;
-              const wasCleared = clearCols.some(colIdx => {
-                const val = row[colIdx];
-                return val && String(val).toUpperCase() === "TRUE";
-              });
-              if (wasCleared) {
-                const ts = serialToDate(row[0]);
-                if (ts && !isNaN(ts.getTime())) {
-                  windowStart = ts;
-                  foundClear = true;
-                  console.log(`  ✓ Flag last cleared at ${ts.toISOString()} (${tabName})`);
-                  break;
-                }
-              }
+        try {
+          const memoryRows = await readAlertMemory(sheets, acIdClean);
+          const clearRows = memoryRows
+            .filter(r => r.alertType === "flag_cleared" && r.clientName === clientName)
+            .sort((a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0));
+          if (clearRows.length > 0) {
+            // Use dataSnapshot.clearedAt for precision (has time component), fall back to lastSeen date
+            let clearedAt = null;
+            try {
+              const snap = JSON.parse(clearRows[0].dataSnapshot || "{}");
+              if (snap.clearedAt) clearedAt = new Date(snap.clearedAt);
+            } catch(e) { /* ignore */ }
+            if (!clearedAt || isNaN(clearedAt.getTime())) {
+              clearedAt = new Date(clearRows[0].lastSeen || clearRows[0].firstSeen);
             }
-          } catch (e) {
-            console.log(`  ⚠ Could not read tab ${tabName}: ${e.message}`);
+            if (!isNaN(clearedAt.getTime())) {
+              windowStart = clearedAt;
+              foundClear = true;
+              console.log(`  ✓ Flag last cleared at ${clearedAt.toISOString()} (AlertMemory flag_cleared)`);
+            }
           }
+        } catch (e) {
+          console.log(`  ⚠ Could not read AlertMemory for clear timestamp: ${e.message}`);
         }
+
         if (!foundClear) {
-          console.log(`  ℹ No clear event found — using 90-day window from ${windowStart.toISOString()}`);
+          console.log(`  ℹ No clear record found in AlertMemory — using 90-day window from ${windowStart.toISOString()}`);
         }
 
         // ── Step 2: Read AutoLog and filter to entries after windowStart ──────────
@@ -7272,6 +7233,37 @@ Return ONLY JSON, no other text.`;
         });
 
         console.log(`  ✅ AutoUpdates cleared for ${clientName} row ${clientRowNum}: ${colsToZero.join(", ")}`);
+
+        // Write a flag_cleared record to AlertMemory so analyze_noaction_flag can
+        // determine the windowStart for AutoLog lookback without needing a separate tab.
+        try {
+          const nowISO = new Date().toISOString();
+          const nowDate = nowISO.split("T")[0];
+          const clearHash = `flag_cleared_${clientName.replace(/\s+/g, "_").toLowerCase()}_${Date.now()}`;
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: acIdClean,
+            range: `${ALERT_MEMORY_TAB}!A:K`,
+            valueInputOption: "RAW",
+            requestBody: {
+              values: [[
+                clearHash,
+                "flag_cleared",
+                clientName,
+                `Flags cleared: ${flagsToClear.join(", ")}`,
+                "", // cachedOptionsJSON
+                "accepted",
+                "", // ignoreReason
+                nowDate, // firstSeen
+                nowDate, // lastSeen
+                nowDate, // lastRechecked
+                JSON.stringify({ clearedGroups: flagsToClear, clearedCols: colsToZero, clearedAt: nowISO }),
+              ]],
+            },
+          });
+          console.log(`  ✅ AlertMemory flag_cleared record written for ${clientName}`);
+        } catch (amErr) {
+          console.error(`  ⚠ Could not write flag_cleared to AlertMemory: ${amErr.message}`);
+        }
 
         return res.status(200).json({
           success: true,

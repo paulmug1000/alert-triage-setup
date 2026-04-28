@@ -2468,13 +2468,13 @@ export default async function handler(req, res) {
         ]);
         const mergedAlerts = (alerts || []).filter(a => {
           const client = mergedClientsWithFlags.find(c => c.clientName === a.clientName);
-          if (!client) return true;
+          if (!client) return false; // client has no active flags — drop their alerts
           const flagType = a.flagType || a.type;
           return client.flags[flagType] !== false;
         });
         const mergedNoActionAlerts = (noActionAlerts || []).filter(na => {
           const client = mergedClientsWithFlags.find(c => c.clientName === na.clientName);
-          if (!client) return true;
+          if (!client) return false; // client has no active flags — drop their noAction alerts
           return client.flags[na.flagType] !== false;
         });
 

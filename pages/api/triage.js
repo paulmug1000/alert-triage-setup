@@ -2517,6 +2517,24 @@ export default async function handler(req, res) {
           alertPresence.add(`${a.clientName}|||${a.flagType || a.type}`);
         }
 
+        const ACTIONABLE_FLAG_TO_STICKY_COL = {
+          invoiceDashboardDiscr: "CW",
+          invoiceAppDiscr:       "DD",
+          crmPipeDashDiscr:      "DK",
+          crmPipeAppDiscr:       "DR",
+          crmConfDashDiscr:      "DY",
+          crmConfAppDiscr:       "EF",
+          crmPipeSkippedBlank:   "EM",
+          crmConfSkippedBlank:   "ET",
+          expenseDashboardDiscr: "GC",
+          expenseAppDiscr:       "GJ",
+          expenseAdded:          "GQ",
+          expenseUnreconGaps:    "GX",
+        };
+
+        // Track which flags need to be cleared in AutoUpdates
+        const flagsToClearInAutoUpdates = []; // { clientName, col, rowNum }
+
         const reconciledClients = mergedClientsWithFlags.map(c => {
           const reconciledFlags = { ...c.flags };
           for (const [flagKey, alertTypes] of Object.entries(ACTIONABLE_FLAG_TO_ALERT_TYPE)) {
@@ -2527,11 +2545,35 @@ export default async function handler(req, res) {
             if (!hasAlert) {
               reconciledFlags[flagKey] = false;
               console.log(`  store_precomputed: zeroing ${flagKey} for ${c.clientName} — no alerts in blob`);
+              const stickyCol = ACTIONABLE_FLAG_TO_STICKY_COL[flagKey];
+              if (stickyCol && c.autoUpdatesRow) {
+                flagsToClearInAutoUpdates.push({ col: stickyCol, rowNum: c.autoUpdatesRow });
+              }
             }
           }
           return { ...c, flags: reconciledFlags };
         }).filter(c => Object.values(c.flags).some(v => v));
         // Remove clients where all flags were zeroed out
+
+        // Write FALSE to AutoUpdates for any zeroed flags — triage system owns flag clearing
+        if (flagsToClearInAutoUpdates.length > 0) {
+          try {
+            const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
+            await sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: acIdClean,
+              requestBody: {
+                valueInputOption: "RAW",
+                data: flagsToClearInAutoUpdates.map(({ col, rowNum }) => ({
+                  range: `AutoUpdates!${col}${rowNum}`,
+                  values: [["FALSE"]],
+                })),
+              },
+            });
+            console.log(`  store_precomputed: cleared ${flagsToClearInAutoUpdates.length} zeroed flag(s) in AutoUpdates`);
+          } catch (auErr) {
+            console.error(`  store_precomputed: failed to clear AutoUpdates flags: ${auErr.message}`);
+          }
+        }
 
         const precomputedData = {
           computedAt: computedAt || Date.now(),

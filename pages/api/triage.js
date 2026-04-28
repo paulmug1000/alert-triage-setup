@@ -2071,13 +2071,31 @@ export default async function handler(req, res) {
         const clientMemory = clientName
           ? allMemoryRows.filter(r => r.clientName === clientName)
           : allMemoryRows;
-        const memorySummary = clientMemory.map(r => ({
-          hash:        r.fingerprintHash,
-          alertType:   r.alertType,
-          status:      r.status,
-          summary:     r.alertSummary?.slice(0, 60),
-          ignoreReason: r.ignoreReason || "",
-        }));
+        const memorySummary = clientMemory
+          .filter(r => r.alertType !== "flag_cleared")
+          .map(r => ({
+            hash:        r.fingerprintHash,
+            alertType:   r.alertType,
+            status:      r.status,
+            summary:     r.alertSummary?.slice(0, 60),
+            ignoreReason: r.ignoreReason || "",
+          }));
+
+        // Also show flag_cleared records for this client (or recent ones if no client filter)
+        const flagClearedRows = allMemoryRows
+          .filter(r => r.alertType === "flag_cleared" && (!clientName || r.clientName === clientName))
+          .sort((a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0))
+          .slice(0, 5)
+          .map(r => {
+            let snap = {};
+            try { snap = JSON.parse(r.dataSnapshot || "{}"); } catch(e) {}
+            return {
+              clientName: r.clientName,
+              clearedAt: snap.clearedAt || r.lastSeen,
+              clearedGroups: snap.clearedGroups,
+              clearedCols: snap.clearedCols,
+            };
+          });
 
         // 2. Read precomputed blob from Redis
         const preRaw = await redisClient.get(PRECOMPUTED_KEY);
@@ -2163,6 +2181,7 @@ export default async function handler(req, res) {
           alertMemory: {
             totalRows: allMemoryRows.length,
             clientRows: memorySummary,
+            flagClearedRecords: flagClearedRows,
             statusCounts: allMemoryRows.reduce((acc, r) => { acc[r.status] = (acc[r.status]||0)+1; return acc; }, {}),
           },
           precomputed: precompSummary,
@@ -5909,7 +5928,17 @@ Return ONLY JSON, no other text.`;
           const memoryRows = await readAlertMemory(sheets, acIdClean);
           const clearRows = memoryRows
             .filter(r => r.alertType === "flag_cleared" && r.clientName === clientName)
-            .sort((a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0));
+            .sort((a, b) => {
+              // Sort by clearedAt from dataSnapshot for precision (has time component)
+              const getTs = (row) => {
+                try {
+                  const snap = JSON.parse(row.dataSnapshot || "{}");
+                  if (snap.clearedAt) return new Date(snap.clearedAt).getTime();
+                } catch(e) { /* ignore */ }
+                return new Date(row.lastSeen || 0).getTime();
+              };
+              return getTs(b) - getTs(a);
+            });
           if (clearRows.length > 0) {
             // Use dataSnapshot.clearedAt for precision (has time component), fall back to lastSeen date
             let clearedAt = null;

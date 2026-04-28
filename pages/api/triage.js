@@ -8108,6 +8108,29 @@ Return ONLY JSON, no other text.`;
         let stored = 0, updated = 0, dismissed = 0;
         const writes = [];
 
+        // Auto-dismiss active alerts of the same alertType(s) that are NOT in the incoming list.
+        // This handles cases where a previously-valid alert is no longer triggered (e.g. invoice
+        // was sent, retainer was fully invoiced, etc.) — without this, stale alerts persist forever.
+        const incomingAlertTypes = new Set(incomingAlerts.map(a => a.alertType));
+        const incomingKeys = new Set(incomingAlerts.map(a => a.alertKey));
+        const incomingSignatures = new Set(incomingAlerts.map(a => {
+          const cr = a.confirmedRow || (a.metadata && a.metadata.confirmedRow) || "";
+          return `${a.clientName}|||${a.alertType}|||${cr}`;
+        }));
+        for (const row of existing) {
+          if (row.status !== "active") continue;
+          if (!incomingAlertTypes.has(row.alertType)) continue; // different type — don't touch
+          const cr = (row.metadata && row.metadata.confirmedRow) ? row.metadata.confirmedRow : "";
+          const sig = `${row.clientName}|||${row.alertType}|||${cr}`;
+          if (!incomingKeys.has(row.alertKey) && !incomingSignatures.has(sig)) {
+            // This alert was active but not in the incoming run — auto-dismiss
+            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["auto_dismissed"]] });
+            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] });
+            dismissed++;
+            console.log(`  Auto-dismissed stale ${row.alertType} alert for ${row.clientName}: ${row.alertKey}`);
+          }
+        }
+
         for (const alert of incomingAlerts) {
           // Build the signature for this incoming alert
           const incomingConfirmedRow = alert.confirmedRow || (alert.metadata && alert.metadata.confirmedRow) || "";
@@ -8117,7 +8140,7 @@ Return ONLY JSON, no other text.`;
           const ex = existingByKey[alert.alertKey] || existingBySignature[sig];
 
           if (ex) {
-            if (ex.status === "acknowledged") { dismissed++; continue; }
+            if (ex.status === "acknowledged" || ex.status === "auto_dismissed") { dismissed++; continue; }
             // Active match found — update lastSeen and alertKey (in case key format changed)
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!A${ex.rowIndex}`, values: [[alert.alertKey]] });
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!H${ex.rowIndex}`, values: [[nowISO]] });

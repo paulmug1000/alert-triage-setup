@@ -4824,7 +4824,8 @@ Return ONLY the JSON array, no other text.`;
                 const rj = String(r[1] || "").trim().toLowerCase();
                 // Match on either explicit client/job OR inherited (blank) client/job after parent found
                 const directMatch = rc === clientNorm && rj === jobNorm;
-                const childInherited = allJobRows.length > 0 && !r[0] && !r[1]; // blank = child continuation
+                const hasAnyContent = r.some(cell => String(cell || "").trim() !== "");
+                const childInherited = allJobRows.length > 0 && !r[0] && !r[1] && hasAnyContent; // blank client/job but has some data = child continuation
                 if (!directMatch && !childInherited) continue;
                 const sheetRow = ri + 1; // activeData[0]=header=row1, ri=1→row2
                 const hasRevenue = !!(String(r[32] || "").trim());

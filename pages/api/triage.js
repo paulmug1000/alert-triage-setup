@@ -2446,7 +2446,7 @@ export default async function handler(req, res) {
     } else if (action === "store_precomputed") {
       const { secret, alerts, noActionAlerts, clientsWithFlags,
               totalAlerts, noActionCount, computedAt,
-              noActionAnalysisResults } = req.body;
+              noActionAnalysisResults, automationCommanderSheetId } = req.body;
 
       if (secret !== process.env.CRON_SECRET) {
         return res.status(401).json({ success: false, error: "Unauthorised" });
@@ -2576,6 +2576,7 @@ export default async function handler(req, res) {
         // Write FALSE to AutoUpdates for any zeroed flags — triage system owns flag clearing
         if (flagsToClearInAutoUpdates.length > 0) {
           try {
+            const sheets = await getSheetsClient();
             const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
             await sheets.spreadsheets.values.batchUpdate({
               spreadsheetId: acIdClean,

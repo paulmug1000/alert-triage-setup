@@ -2563,12 +2563,8 @@ export default async function handler(req, res) {
         // were never written FALSE because the reconciliation loop never reached them.
         const reconciledClientNames = new Set(reconciledClients.map(c => c.clientName));
         console.log(`  store_precomputed: ${(clientsWithFlags||[]).length} incoming clients, ${reconciledClients.length} after reconciliation`);
-        console.log(`  store_precomputed: incoming clients: ${(clientsWithFlags||[]).map(c=>c.clientName).join(", ")}`);
-        console.log(`  store_precomputed: reconciled clients: ${reconciledClients.map(c=>c.clientName).join(", ")}`);
         for (const c of (clientsWithFlags || [])) {
-          if (reconciledClientNames.has(c.clientName)) continue; // still active — handled above
-          console.log(`  store_precomputed: second pass checking ${c.clientName} — flags: ${JSON.stringify(c.flags)}, autoUpdatesRow: ${c.autoUpdatesRow}`);
-          // This client was removed — clear all TRUE flags in AutoUpdates
+          if (reconciledClientNames.has(c.clientName)) continue;
           for (const [flagKey, stickyCol] of Object.entries(ACTIONABLE_FLAG_TO_STICKY_COL)) {
             if (c.flags?.[flagKey] && c.autoUpdatesRow) {
               flagsToClearInAutoUpdates.push({ col: stickyCol, rowNum: c.autoUpdatesRow });

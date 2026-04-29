@@ -4287,9 +4287,9 @@ export default function TriageSystem({ onBack }) {
                         {option.jobName && option.matchType !== "info" && (
                           <div style={styles.optionDetail}>
                             <strong>Job:</strong> {option.jobName} (Row {option.jobRow})
-                            {(option.jobDetails?.clientName || option.endClientName) && (
+                            {(option.jobDetails?.clientName || option.endClientName || option.matchingDetails?.matchedJobDetails?.clientName) && (
                               <span style={{ color: "#666", marginLeft: "8px" }}>
-                                · <strong>End client:</strong> {option.jobDetails?.clientName || option.endClientName}
+                                · <strong>End client:</strong> {option.jobDetails?.clientName || option.endClientName || option.matchingDetails?.matchedJobDetails?.clientName}
                               </span>
                             )}
                           </div>

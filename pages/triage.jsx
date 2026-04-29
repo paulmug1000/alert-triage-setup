@@ -4151,7 +4151,8 @@ export default function TriageSystem({ onBack }) {
                   <span style={styles.cacheBadge}>⚡ Cached</span>
                   <button className="triage-btn" onClick={async () => {
                     try {
-                      await fetch("/api/triage", {
+                      console.log("Bust cache for alert:", alert.fingerprint, "index:", currentClientAlertIndex, "alert keys:", Object.keys(alert || {}));
+                      const bustRes = await fetch("/api/triage", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -4160,7 +4161,14 @@ export default function TriageSystem({ onBack }) {
                           automationCommanderSheetId,
                         }),
                       });
+                      const bustData = await bustRes.json();
+                      if (!bustData.success) {
+                        console.error("Cache bust failed:", bustData.error);
+                        return;
+                      }
                       setFromCache(false);
+                      // Small delay to ensure Sheets write has committed before re-fetching
+                      await new Promise(r => setTimeout(r, 1000));
                       await selectAlert(clientAlerts[currentClientAlertIndex]);
                     } catch(e) { console.error("Cache bust failed:", e); }
                   }} style={{ fontSize: "11px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555" }}>

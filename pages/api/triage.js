@@ -2567,6 +2567,7 @@ export default async function handler(req, res) {
         console.log(`  store_precomputed: reconciled clients: ${reconciledClients.map(c=>c.clientName).join(", ")}`);
         for (const c of (clientsWithFlags || [])) {
           if (reconciledClientNames.has(c.clientName)) continue; // still active — handled above
+          console.log(`  store_precomputed: second pass checking ${c.clientName} — flags: ${JSON.stringify(c.flags)}, autoUpdatesRow: ${c.autoUpdatesRow}`);
           // This client was removed — clear all TRUE flags in AutoUpdates
           for (const [flagKey, stickyCol] of Object.entries(ACTIONABLE_FLAG_TO_STICKY_COL)) {
             if (c.flags?.[flagKey] && c.autoUpdatesRow) {

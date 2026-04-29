@@ -2550,6 +2550,22 @@ export default async function handler(req, res) {
         }).filter(c => Object.values(c.flags).some(v => v));
         // Remove clients where all flags were zeroed out
 
+        // Second pass: catch clients that were in the incoming clientsWithFlags (from GAS)
+        // but are NOT in reconciledClients — they've been fully reconciled away in a previous
+        // cycle and are no longer in mergedClientsWithFlags at all. Their AutoUpdates flags
+        // were never written FALSE because the reconciliation loop never reached them.
+        const reconciledClientNames = new Set(reconciledClients.map(c => c.clientName));
+        for (const c of (clientsWithFlags || [])) {
+          if (reconciledClientNames.has(c.clientName)) continue; // still active — handled above
+          // This client was removed — clear all TRUE flags in AutoUpdates
+          for (const [flagKey, stickyCol] of Object.entries(ACTIONABLE_FLAG_TO_STICKY_COL)) {
+            if (c.flags?.[flagKey] && c.autoUpdatesRow) {
+              flagsToClearInAutoUpdates.push({ col: stickyCol, rowNum: c.autoUpdatesRow });
+              console.log(`  store_precomputed: clearing ${flagKey} (${stickyCol}) for removed client ${c.clientName}`);
+            }
+          }
+        }
+
         // Write FALSE to AutoUpdates for any zeroed flags — triage system owns flag clearing
         if (flagsToClearInAutoUpdates.length > 0) {
           try {

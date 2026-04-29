@@ -3858,6 +3858,7 @@ Format as JSON array:
   "matchType": "existing_job" or "create_new",
   "jobRow": 52,
   "jobName": "Job Name (if matching existing)",
+  "endClientName": "End client name from the matched Confirmed tab job (col A) — the name of the agency's client",
   "newJobData": {
     "clientName": "Cybot A/S",
     "jobName": "Reverse Charge",
@@ -5187,6 +5188,7 @@ Format as JSON array:
   "title": "Brief descriptive title — for missing invoice placements, title MUST follow this exact format: 'Place in [job name] invoice position [N] (Row [R] Slot [S]) — [match description]'. Invoice position N = the sequential position of the target slot counting through ALL slots across ALL rows of the job in order (parent row slots 1/2/3 = positions 1/2/3, first child row slots 1/2/3 = positions 4/5/6, second child row slots 1/2/3 = positions 7/8/9, etc). Example: 'Place in Fix8 project invoice position 4 (Row 264 Slot 1) — exact amount and date match'",
   "jobRow": 52,
   "jobName": "Job Name",
+  "endClientName": "End client name from the matched Confirmed tab job (col A) — the name of the agency's client",
   "facts": {
     "jobType": "Project or Retainer",
     "totalRevenue": 15950,

@@ -4151,7 +4151,6 @@ export default function TriageSystem({ onBack }) {
                   <span style={styles.cacheBadge}>⚡ Cached</span>
                   <button className="triage-btn" onClick={async () => {
                     try {
-                      console.log("Bust cache for alert:", alert.fingerprintHash || alert.rowNumber, "sheetName:", alert.sheetName, "index:", currentClientAlertIndex);
                       const bustRes = await fetch("/api/triage", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
@@ -4284,15 +4283,6 @@ export default function TriageSystem({ onBack }) {
                         <div style={styles.optionTitle}>
                           Option {idx + 1}: {option.title}
                         </div>
-                        {/* TEMP DEBUG - remove after fixing */}
-                        {options && options.length > 0 && (
-                          <details style={{ marginBottom: "8px", fontSize: "11px" }}>
-                            <summary style={{ cursor: "pointer", color: "#888" }}>🔍 Debug: raw option[0] fields</summary>
-                            <pre style={{ background: "#f5f5f5", padding: "8px", borderRadius: "4px", overflow: "auto", maxHeight: "200px", fontSize: "10px" }}>
-                              {JSON.stringify(options[0], null, 2)}
-                            </pre>
-                          </details>
-                        )}
                         {option.jobName && option.matchType !== "info" && (
                           <div style={styles.optionDetail}>
                             <strong>Job:</strong> {option.jobName} (Row {option.jobRow})

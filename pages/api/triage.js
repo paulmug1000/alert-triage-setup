@@ -2562,6 +2562,9 @@ export default async function handler(req, res) {
         // cycle and are no longer in mergedClientsWithFlags at all. Their AutoUpdates flags
         // were never written FALSE because the reconciliation loop never reached them.
         const reconciledClientNames = new Set(reconciledClients.map(c => c.clientName));
+        console.log(`  store_precomputed: ${(clientsWithFlags||[]).length} incoming clients, ${reconciledClients.length} after reconciliation`);
+        console.log(`  store_precomputed: incoming clients: ${(clientsWithFlags||[]).map(c=>c.clientName).join(", ")}`);
+        console.log(`  store_precomputed: reconciled clients: ${reconciledClients.map(c=>c.clientName).join(", ")}`);
         for (const c of (clientsWithFlags || [])) {
           if (reconciledClientNames.has(c.clientName)) continue; // still active — handled above
           // This client was removed — clear all TRUE flags in AutoUpdates

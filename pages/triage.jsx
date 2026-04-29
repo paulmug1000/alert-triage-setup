@@ -4258,6 +4258,11 @@ export default function TriageSystem({ onBack }) {
                         {option.jobName && option.matchType !== "info" && (
                           <div style={styles.optionDetail}>
                             <strong>Job:</strong> {option.jobName} (Row {option.jobRow})
+                            {(option.jobDetails?.clientName || option.endClientName) && (
+                              <span style={{ color: "#666", marginLeft: "8px" }}>
+                                · <strong>End client:</strong> {option.jobDetails?.clientName || option.endClientName}
+                              </span>
+                            )}
                           </div>
                         )}
 

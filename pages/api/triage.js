@@ -2616,6 +2616,22 @@ export default async function handler(req, res) {
         console.error("❌ Error storing precomputed data:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
+    } else if (action === "bust_cache") {
+      // Clears cachedOptionsJSON for a specific fingerprint, forcing a fresh Claude analysis
+      const { fingerprintHash, automationCommanderSheetId: acId } = req.body;
+      if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing fingerprintHash or automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const row = findMemoryRow(memoryRows, fingerprintHash);
+        if (!row) return res.status(404).json({ success: false, error: "Alert not found in AlertMemory" });
+        await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, cachedOptionsJSON: "" });
+        console.log(`  ✅ Cache cleared for ${fingerprintHash}`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "analyze_alert") {
       // Generate matching options for an alert
       const { alert } = req.body;

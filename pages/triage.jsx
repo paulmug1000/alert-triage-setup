@@ -4147,7 +4147,26 @@ export default function TriageSystem({ onBack }) {
             <h2 style={styles.alertTitle}>
               {alert.clientName || alert.type || "Financial Alert"}
               {fromCache && (
-                <span style={styles.cacheBadge}>⚡ Cached</span>
+                <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={styles.cacheBadge}>⚡ Cached</span>
+                  <button className="triage-btn" onClick={async () => {
+                    try {
+                      await fetch("/api/triage", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          action: "bust_cache",
+                          fingerprintHash: alert.fingerprint,
+                          automationCommanderSheetId,
+                        }),
+                      });
+                      setFromCache(false);
+                      await selectAlert(clientAlerts[currentClientAlertIndex]);
+                    } catch(e) { console.error("Cache bust failed:", e); }
+                  }} style={{ fontSize: "11px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555" }}>
+                    ↻ Refresh
+                  </button>
+                </span>
               )}
             </h2>
             <span style={styles.alertCounter}>{progress}/{clientAlerts.length}</span>

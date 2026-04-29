@@ -2617,17 +2617,28 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "bust_cache") {
-      // Clears cachedOptionsJSON for a specific fingerprint, forcing a fresh Claude analysis
-      const { fingerprintHash, automationCommanderSheetId: acId } = req.body;
-      if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing fingerprintHash or automationCommanderSheetId" });
+      // Clears cachedOptionsJSON for a specific alert, forcing a fresh Claude analysis.
+      // Accepts fingerprintHash directly, or rowNumber+sheetName to look up the hash.
+      const { fingerprintHash, rowNumber, sheetName, automationCommanderSheetId: acId } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
       try {
         const sheets = await getSheetsClient();
         const memoryRows = await readAlertMemory(sheets, acId);
-        const row = findMemoryRow(memoryRows, fingerprintHash);
+        let row = null;
+        if (fingerprintHash) {
+          row = findMemoryRow(memoryRows, fingerprintHash);
+        } else if (rowNumber && sheetName) {
+          // Find by matching alertSummary rowNumber — look for cached rows where summary contains the rowNumber
+          row = memoryRows.find(r =>
+            r.status === "cached" &&
+            r.cachedOptionsJSON &&
+            r.alertSummary?.includes(String(rowNumber))
+          );
+        }
         if (!row) return res.status(404).json({ success: false, error: "Alert not found in AlertMemory" });
         await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, cachedOptionsJSON: "" });
-        console.log(`  ✅ Cache cleared for ${fingerprintHash}`);
-        return res.status(200).json({ success: true });
+        console.log(`  ✅ Cache cleared for row ${row.rowIndex} (${row.fingerprintHash})`);
+        return res.status(200).json({ success: true, fingerprintHash: row.fingerprintHash });
       } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
       }

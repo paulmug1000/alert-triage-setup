@@ -4151,13 +4151,15 @@ export default function TriageSystem({ onBack }) {
                   <span style={styles.cacheBadge}>⚡ Cached</span>
                   <button className="triage-btn" onClick={async () => {
                     try {
-                      console.log("Bust cache for alert:", alert.fingerprint, "index:", currentClientAlertIndex, "alert keys:", Object.keys(alert || {}));
+                      console.log("Bust cache for alert:", alert.fingerprintHash || alert.rowNumber, "sheetName:", alert.sheetName, "index:", currentClientAlertIndex);
                       const bustRes = await fetch("/api/triage", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                           action: "bust_cache",
-                          fingerprintHash: alert.fingerprint,
+                          fingerprintHash: alert.fingerprintHash || undefined,
+                          rowNumber: alert.rowNumber,
+                          sheetName: alert.sheetName,
                           automationCommanderSheetId,
                         }),
                       });

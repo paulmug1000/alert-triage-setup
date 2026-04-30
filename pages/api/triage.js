@@ -3172,7 +3172,7 @@ BUDGET AND REVENUE:
                     const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
                     const isAllocated = !!(appId && !appId.toUpperCase().includes('MANUAL-ENTRY'));
                     if (isAllocated) childAllocated += amtNum;
-                    childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s+1}`, descr, amt, date, appId, isAllocated, empty: false, sheetRow: childSheetRow, slotNum: s+1 });
+                    childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s+1}`, descr, amt, amtNum, date, appId, isAllocated, empty: false, sheetRow: childSheetRow, slotNum: s+1 });
                   }
                   candidateJobs.push({
                     parentRow: parentIdx + 1, parentClient, parentJob,
@@ -3205,7 +3205,7 @@ BUDGET AND REVENUE:
                     const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
                     const isAllocated = !!(appId && !appId.toUpperCase().includes('MANUAL-ENTRY'));
                     if (isAllocated) totalAllocated += amtNum;
-                    slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, descr, amt, date, appId, isAllocated, empty: false, sheetRow, slotNum: s+1 });
+                    slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, descr, amt, amtNum, date, appId, isAllocated, empty: false, sheetRow, slotNum: s+1 });
                   }
                 }
                 candidateJobs.push({
@@ -3227,7 +3227,11 @@ BUDGET AND REVENUE:
           const expenseConfirmedTabTable = candidateJobs.length > 0
             ? candidateJobs.map(job => {
                 const filled = job.slots.filter(s => !s.empty)
-                  .map(s => `${s.label}: ${s.descr} £${s.amt} ${s.date} (${s.isAllocated ? 'allocated' : 'NO App ID - placeholder'})`)
+                  .map(s => {
+                    const dateStr = s.date ? ` | date: ${s.date}` : '';
+                    const amtMatch = !s.isAllocated && s.amtNum && s.amtNum === expenseAmount ? ' ⚠️ EXACT AMOUNT MATCH' : '';
+                    return `${s.label}: ${s.descr || '(blank description)'} £${s.amt}${dateStr} (${s.isAllocated ? 'allocated' : 'NO App ID - placeholder'}${amtMatch})`;
+                  })
                   .join(' | ') || 'none';
                 const empty = job.slots.filter(s => s.empty).map(s => s.label).join(', ') || 'none';
                 if (job.isRetainer) {
@@ -3240,7 +3244,18 @@ BUDGET AND REVENUE:
               }).join('\n\n')
             : '(no jobs with DirectCostBudget > £0)'
           
-          // Build expense prompt with flat Confirmed tab data (same approach as invoices)
+          // Pre-compute exact amount matches on placeholder slots — tell Claude explicitly
+          const exactAmountPlaceholders = [];
+          for (const job of candidateJobs) {
+            for (const s of (job.slots || [])) {
+              if (!s.isAllocated && !s.empty && s.amtNum && Math.abs(s.amtNum - expenseAmount) < 0.01) {
+                exactAmountPlaceholders.push(`${s.label} in job "${job.parentJob}" (Row ${job.parentRow}) — placeholder with EXACT amount match £${s.amtNum.toFixed(2)}, blank App ID`);
+              }
+            }
+          }
+          const exactAmountPlaceholderText = exactAmountPlaceholders.length > 0
+            ? `\n⚠️ BACKEND PRE-COMPUTED: The following placeholder slots have an EXACT amount match to this expense (£${expenseAmount.toFixed(2)}) — these are the STRONGEST candidates for allocation:\n${exactAmountPlaceholders.map(p => `  • ${p}`).join('\n')}\n`
+            : '';
           const expensePrompt = `You are analyzing an unmatched business expense and must suggest the best ways to record it.
 
 The expense could be either:
@@ -3251,6 +3266,7 @@ The expense could be either:
 1. The expense description may contain a CLIENT name in brackets (e.g. "Design FC Ltd (Marmoris designs)"). The part in brackets is the CLIENT this work was done FOR — it is NOT a match signal. Match only on the VENDOR name (the part before the brackets).
 2. NEVER suggest a job with DirectCostBudget = £0 or blank. Only jobs with DirectCostBudget > £0 are candidates for direct cost allocation.
 3. A job with DirectCostBudget > £0 is a candidate even if no placeholder matches the vendor — remaining budget and job scope are sufficient for a STRONG MATCH.
+${exactAmountPlaceholderText}
 
 UNMATCHED EXPENSE:
 • Reference: ${expenseRef}
@@ -3325,8 +3341,8 @@ Format as JSON array:
   "allocationBreakdown": {
     "parentRow": 85,
     "jobDirectCostBudget": "£20,607",
-    "allocatedExpenses": ["Vendor A £1,050 (Row 86 ExpSlot1 — valid App ID)", "Vendor B £6,737.50 (Row 86 ExpSlot2 — valid App ID)"],
-    "placeholderExpenses": ["Design FC Ltd £700 (Row 86 ExpSlot3 — NO App ID, placeholder)"],
+    "allocatedExpenses": ["Vendor A £1,050 (Row 86 ExpSlot1 — allocated | date: 15-Mar-26 | App ID: APP123)", "Vendor B £6,737.50 (Row 86 ExpSlot2 — allocated | date: 20-Mar-26 | App ID: APP456)"],
+    "placeholderExpenses": ["Design FC Ltd £700 (Row 86 ExpSlot3 — NO App ID, placeholder | date: 28-Mar-26)"],
     "totalAllocated": "£7,787.50",
     "remainingBudget": "£12,819.50",
     "expenseCanFit": "YES — £${expenseAmount.toFixed(2)} fits within remaining £12,819.50"

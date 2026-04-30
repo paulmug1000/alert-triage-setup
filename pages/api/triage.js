@@ -1651,6 +1651,13 @@ export default async function handler(req, res) {
         const sheets = await getSheetsClient();
         const sheetIdClean = extractSheetIdFromUrl(sheetId) || sheetId;
 
+        // Check GAS expense lock first — if GAS is writing to DirComp, wait or abort
+        const expLock = await checkGASLock(sheets, sheetIdClean, "expense");
+        if (expLock.locked) {
+          console.log(`  ⚠ get_outgoings_inbox: GAS expense lock active — returning empty inbox to avoid stale data`);
+          return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Expense automation is currently running — try again in a moment" });
+        }
+
         await setMasterSwitch(sheets, sheetIdClean, "DirComp", true);
         const dataResp = await sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,

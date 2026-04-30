@@ -1922,7 +1922,10 @@ export default function TriageSystem({ onBack }) {
         const currentIdx = gridData.months.findIndex(m => (m.isoMonth || "").startsWith(curIso));
         if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
       }
-      if (inboxData.success) setOutgoingsInbox(inboxData.inbox || []);
+      if (inboxData.success) {
+        setOutgoingsInbox(inboxData.inbox || []);
+        if (inboxData.locked) console.warn("Outgoings inbox: GAS lock active —", inboxData.lockMessage);
+      }
     } catch(e) { console.error("loadOutgoings error:", e); }
     finally { setOutgoingsLoading(false); }
   };

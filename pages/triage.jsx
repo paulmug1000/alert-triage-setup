@@ -2990,6 +2990,8 @@ export default function TriageSystem({ onBack }) {
         </div>
       );
     };
+
+    const allClients = allOutgoingsClients.length > 0
       ? allOutgoingsClients
       : [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
     const noClient = !outgoingsClient || !outgoingsData;

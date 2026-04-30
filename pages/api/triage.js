@@ -5443,7 +5443,8 @@ Return ONLY JSON, no other text.`;
               const regex1 = /write\s+(.+?)\s+to\s+Col(?:umn)?\s+([A-Z]{1,3})(?:\s*[,.()\n]|$)/gi;
               let match1;
               while ((match1 = regex1.exec(actionString)) !== null) {
-                createCellUpdates.push({ cell: `${match1[2]}${newRow}`, value: match1[1].trim() });
+                const val1 = match1[1].trim().replace(/^["']|["']$/g, '').trim();
+                if (val1 && !/[A-Z]{1,3}\d+/.test(val1)) createCellUpdates.push({ cell: `${match1[2]}${newRow}`, value: val1 });
               }
             }
             if (createCellUpdates.length === 0) {
@@ -5452,7 +5453,8 @@ Return ONLY JSON, no other text.`;
                 const regex2 = /write\s+(.+?)\s+to\s+([A-Z]{1,3}\d+)(?:\s*[,(]|$)/gi;
                 let match2;
                 while ((match2 = regex2.exec(actionString)) !== null) {
-                  createCellUpdates.push({ cell: match2[2], value: match2[1].trim() });
+                  const val2 = match2[1].trim().replace(/^["']|["']$/g, '').trim();
+                  if (val2 && !/[A-Z]{1,3}\d+/.test(val2)) createCellUpdates.push({ cell: match2[2], value: val2 });
                 }
               }
             }
@@ -5549,9 +5551,17 @@ Return ONLY JSON, no other text.`;
               const regex = /write\s+(.+?)\s+to\s+([A-Z]{1,3}\d+)(?:\s*[,(]|$)/gi;
               let match;
               while ((match = regex.exec(actionString)) !== null) {
-                const value = match[1].trim();
+                let value = match[1].trim();
                 const cell = match[2];
-                if (cell) cellUpdates.push({ cell, value });
+                // Reject malformed captures where the value itself contains a cell reference
+                // e.g. "to CI51, write Received" — this means the regex caught too much
+                if (/[A-Z]{1,3}\d+/.test(value)) {
+                  console.log(`  ⚠ Skipping malformed write action — value "${value}" contains cell reference`);
+                  continue;
+                }
+                // Strip surrounding quotes if Claude wrapped the value in them
+                value = value.replace(/^["']|["']$/g, '').trim();
+                if (cell && value) cellUpdates.push({ cell, value });
               }
             }
           }
@@ -5691,10 +5701,25 @@ Return ONLY JSON, no other text.`;
             return v;
           };
 
+          // Columns that must always be stored as text, never as numbers.
+          // Invoice references (AQ/AX/BE), App IDs (BX/CF/CN), project codes (AC),
+          // client name (A), job name (B), VAT setting (AI).
+          const TEXT_ONLY_COLS = new Set(["A","B","AC","AI","AQ","AX","BE","BX","CF","CN"]);
+          const forceText = (cell, val) => {
+            // Extract column letters from cell reference e.g. "AQ65" → "AQ"
+            const colMatch = cell.match(/^([A-Z]+)/);
+            const col = colMatch ? colMatch[1] : "";
+            if (TEXT_ONLY_COLS.has(col) && /^\d+$/.test(String(val).trim())) {
+              // Prefix with apostrophe to force Sheets to treat as text
+              return `'${val}`;
+            }
+            return val;
+          };
+
           const batchRequest = {
             data: cellUpdates.map(({ cell, value }) => ({
               range: `${writeTab}!${cell}`,
-              values: [[sanitiseValue(value)]],
+              values: [[forceText(cell, sanitiseValue(value))]],
             })),
             valueInputOption: "USER_ENTERED",
           };

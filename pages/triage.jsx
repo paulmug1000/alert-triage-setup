@@ -2681,15 +2681,30 @@ export default function TriageSystem({ onBack }) {
         (contractor.cells[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))
       );
       const [saving, setSaving] = React.useState(false);
+      const [savedMsg, setSavedMsg] = React.useState("");
       const [splitAmts, setSplitAmts] = React.useState({});
+      // Track whether blocks have been modified since last write
+      const dirtyRef = React.useRef(false);
       const blocksRef = React.useRef(blocks);
       React.useEffect(() => { blocksRef.current = blocks; }, [blocks]);
 
-      const updateBlock = (i, field, val) => setBlocks(prev => prev.map((b, idx) => idx === i ? { ...b, [field]: val } : b));
-      const removeBlock = (i) => setBlocks(prev => prev.filter((_, idx) => idx !== i));
+      const updateBlock = (i, field, val) => {
+        dirtyRef.current = true;
+        setBlocks(prev => prev.map((b, idx) => idx === i ? { ...b, [field]: val } : b));
+      };
+      const removeBlock = (i) => {
+        dirtyRef.current = true;
+        setBlocks(prev => prev.filter((_, idx) => idx !== i));
+      };
+
       const save = async () => {
+        if (!dirtyRef.current) { setOutgoingsEditCell(null); return; }
         setSaving(true);
+        setSavedMsg("");
         await updateCell(contractor, colLetter, blocksRef.current);
+        setSaving(false);
+        setSavedMsg("Saved ✓");
+        await new Promise(r => setTimeout(r, 600));
         setOutgoingsEditCell(null);
       };
 
@@ -2702,16 +2717,18 @@ export default function TriageSystem({ onBack }) {
         const splitAmt = parseFloat(amt);
         if (!splitAmt || splitAmt <= 0 || splitAmt >= b.amount) return;
         const newSrcAmt = parseFloat((b.amount - splitAmt).toFixed(2));
-        // Update local state for source block
         const newBlocks = blocks.map((bl, i) => i === blockIdx ? { ...bl, amount: newSrcAmt } : bl);
+        blocksRef.current = newBlocks;
+        dirtyRef.current = false; // already written below — don't re-write on Save
         setBlocks(newBlocks);
-        // Immediately write the reduced source cell to Sheets
+        // Write reduced source cell immediately
         updateCell(contractor, colLetter, newBlocks);
-        // Add to target month
+        // Write split portion to target month
         const tb = [...(contractor.cells[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
         tb.push({ ...b, amount: splitAmt });
         updateCell(contractor, targetCol, tb);
         setSplitAmts(prev => ({ ...prev, [`${blockIdx}_${targetCol}`]: "" }));
+        setSavedMsg("Split saved ✓");
       };
 
       const doMove = (blockIdx, targetCol) => {
@@ -2817,11 +2834,14 @@ export default function TriageSystem({ onBack }) {
               );
             })}
 
-            <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end", borderTop: "1px solid #f0f0f0", paddingTop: "16px" }}>
+            <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end", borderTop: "1px solid #f0f0f0", paddingTop: "16px", alignItems: "center" }}>
+              {savedMsg && <span style={{ fontSize: "13px", color: "#2e7d32", fontWeight: "600", marginRight: "auto" }}>{savedMsg}</span>}
               <button onClick={() => setOutgoingsEditCell(null)}
-                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>
+                {dirtyRef.current ? "Cancel" : "Close"}
+              </button>
               <button onClick={save} disabled={saving}
-                style={{ padding: "8px 22px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.7 : 1 }}>
+                style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
                 {saving ? "Saving..." : "Save changes"}
               </button>
             </div>
@@ -3108,7 +3128,18 @@ export default function TriageSystem({ onBack }) {
                 </button>
               </div>
 
-              <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+              <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}
+                onDragOver={e => {
+                  // Auto-scroll the page when dragging near the bottom
+                  const threshold = 120;
+                  const distFromBottom = window.innerHeight - e.clientY;
+                  const distFromTop = e.clientY;
+                  if (distFromBottom < threshold) {
+                    window.scrollBy({ top: 8, behavior: "instant" });
+                  } else if (distFromTop < threshold) {
+                    window.scrollBy({ top: -8, behavior: "instant" });
+                  }
+                }}>
                 <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${190 + OUTGOINGS_WINDOW * 160}px` }}>
                   <colgroup>
                     <col style={{ width: "190px" }} />

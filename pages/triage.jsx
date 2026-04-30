@@ -243,6 +243,7 @@ export default function TriageSystem({ onBack }) {
   const [outgoingsInbox, setOutgoingsInbox] = useState([]); // unmatched expenses from DirComp
   const [outgoingsPlacing, setOutgoingsPlacing] = useState(null); // expense being placed { appId, amount, ... }
   const [outgoingsEstimate, setOutgoingsEstimate] = useState(null); // { contractor, colLetter, monthLabel }
+  const [outgoingsDragging, setOutgoingsDragging] = useState(null); // { contractor, colLetter, blockIdx, block }
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
   const OUTGOINGS_WINDOW = 7; // months visible at once
@@ -2876,7 +2877,6 @@ export default function TriageSystem({ onBack }) {
     const allClients = allOutgoingsClients.length > 0
       ? allOutgoingsClients
       : [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
-    const [dragging, setDragging] = React.useState(null); // { contractor, colLetter, blockIdx, block }
     const noClient = !outgoingsClient || !outgoingsData;
 
     return withModal(
@@ -3034,12 +3034,12 @@ export default function TriageSystem({ onBack }) {
 
                           return (
                             <td key={m.colLetter} onClick={handleCellClick}
-                              onDragOver={e => { if (dragging) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
+                              onDragOver={e => { if (outgoingsDragging) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
                               onDrop={async e => {
                                 e.preventDefault();
-                                if (!dragging) return;
-                                const { contractor: srcContractor, colLetter: srcCol, blockIdx, block } = dragging;
-                                setDragging(null);
+                                if (!outgoingsDragging) return;
+                                const { contractor: srcContractor, colLetter: srcCol, blockIdx, block } = outgoingsDragging;
+                                setOutgoingsDragging(null);
                                 if (srcContractor.sheetRow === contractor.sheetRow && srcCol === m.colLetter) return; // same cell
                                 // Remove from source
                                 const srcBlocks = (srcContractor.cells[srcCol]?.blocks || []).filter((_, i) => i !== blockIdx);
@@ -3048,11 +3048,11 @@ export default function TriageSystem({ onBack }) {
                                 const tgtBlocks = [...realBlocks, { ...block }];
                                 await updateCell(contractor, m.colLetter, tgtBlocks);
                               }}
-                              style={{ padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: dragging ? "copy" : "pointer", minHeight: "52px",
-                                background: dragging ? "#eef3ff" : isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",
-                                outline: dragging ? "2px dashed #6699ff" : isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px" }}
-                              onMouseEnter={e => { if (!dragging) e.currentTarget.style.background = "#f0f4ff"; }}
-                              onMouseLeave={e => { if (!dragging) e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8"; }}>
+                              style={{ padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: outgoingsDragging ? "copy" : "pointer", minHeight: "52px",
+                                background: outgoingsDragging ? "#eef3ff" : isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",
+                                outline: outgoingsDragging ? "2px dashed #6699ff" : isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px" }}
+                              onMouseEnter={e => { if (!outgoingsDragging) e.currentTarget.style.background = "#f0f4ff"; }}
+                              onMouseLeave={e => { if (!outgoingsDragging) e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8"; }}>
                               {!isEmpty ? (
                                 <>
                                   <div style={{ fontWeight: "700", fontSize: "12px", color: "#1a56db", marginBottom: "3px" }}>
@@ -3065,9 +3065,9 @@ export default function TriageSystem({ onBack }) {
                                         draggable
                                         onDragStart={e => {
                                           e.dataTransfer.effectAllowed = "move";
-                                          setDragging({ contractor, colLetter: m.colLetter, blockIdx: bi, block: b });
+                                          setOutgoingsDragging({ contractor, colLetter: m.colLetter, blockIdx: bi, block: b });
                                         }}
-                                        onDragEnd={() => setDragging(null)}
+                                        onDragEnd={() => setOutgoingsDragging(null)}
                                         style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "grab" }}>
                                         £{parseFloat(b.amount).toLocaleString("en-GB", { minimumFractionDigits: 0 })}{b.status ? ` · ${b.status}` : ""}{realBlocks.length > 1 ? " (split)" : ""}
                                       </div>

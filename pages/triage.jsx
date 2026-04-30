@@ -1520,7 +1520,7 @@ export default function TriageSystem({ onBack }) {
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId: AUTOMATION_COMMANDER_SHEET_ID }),
-    }).then(r => r.json()).then(d => { if (d.success) setAllClientsMap(d.clients || {}); }).catch(() => {});
+    }).then(r => r.json()).then(d => { if (d.success) setAllClientsMap(d.clientsMap || d.clients || {}); }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Compute which flag groups (invoice/crm/expense) are active for a client
@@ -2925,27 +2925,33 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
-          {!noClient && outgoingsInbox.length > 0 && (
-            <div style={{ background: "#fff", border: "1px solid #ffc107", borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
-              <div style={{ fontSize: "13px", fontWeight: "700", color: "#e65100", marginBottom: "6px" }}>
-                Unmatched expenses ({outgoingsInbox.length}) — click to select, then click a cell to place
+          {!noClient && (
+            <div style={{ background: "#fff", border: `1px solid ${outgoingsInbox.length > 0 ? "#ffc107" : "#e0e0e0"}`, borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
+              <div style={{ fontSize: "13px", fontWeight: "700", color: outgoingsInbox.length > 0 ? "#e65100" : "#888", marginBottom: outgoingsInbox.length > 0 ? "6px" : "0" }}>
+                {outgoingsInbox.length > 0
+                  ? `Unmatched expenses (${outgoingsInbox.length}) — click to select, then click a cell to place`
+                  : "No unmatched expenses — inbox is clear ✓"}
               </div>
-              <div style={{ fontSize: "11px", color: "#a04000", marginBottom: "10px" }}>
-                These are expenses from your accounting system not yet assigned to a month in the Outgoings tab. Refresh to pick up new ones.
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                {outgoingsInbox.map((exp, i) => {
-                  const isPlacing = outgoingsPlacing?.appId === exp.appId;
-                  return (
-                    <button key={i} onClick={() => setOutgoingsPlacing(isPlacing ? null : exp)}
-                      style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "pointer", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "all 0.15s" }}>
-                      <div style={{ fontWeight: "700" }}>{exp.description || exp.accountName}</div>
-                      <div style={{ marginTop: "2px", opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
-                      {isPlacing && <div style={{ fontSize: "10px", marginTop: "2px", opacity: 0.8 }}>Click a cell below</div>}
-                    </button>
-                  );
-                })}
-              </div>
+              {outgoingsInbox.length > 0 && (
+                <>
+                  <div style={{ fontSize: "11px", color: "#a04000", marginBottom: "10px" }}>
+                    These are expenses from your accounting system not yet assigned to a month in the Outgoings tab. Refresh to pick up new ones.
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    {outgoingsInbox.map((exp, i) => {
+                      const isPlacing = outgoingsPlacing?.appId === exp.appId;
+                      return (
+                        <button key={i} onClick={() => setOutgoingsPlacing(isPlacing ? null : exp)}
+                          style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "pointer", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "all 0.15s" }}>
+                          <div style={{ fontWeight: "700" }}>{exp.description || exp.accountName}</div>
+                          <div style={{ marginTop: "2px", opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
+                          {isPlacing && <div style={{ fontSize: "10px", marginTop: "2px", opacity: 0.8 }}>Click a cell below</div>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
           )}
 

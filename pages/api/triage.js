@@ -1608,9 +1608,8 @@ export default async function handler(req, res) {
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 
     if (action === "get_all_clients") {
-      // Returns a lightweight map of all clients with their sheet IDs.
-      // Used by the frontend when clientsWithFlags is empty (no automation alerts)
-      // so proactive alerts still have access to sheet URLs.
+      // Returns all clients from AutoUpdates as an array.
+      // Used by the frontend for the Outgoings client selector and when clientsWithFlags is empty.
       const { automationCommanderSheetId } = req.body;
       if (!automationCommanderSheetId) {
         return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
@@ -1622,19 +1621,21 @@ export default async function handler(req, res) {
           range: "AutoUpdates!A2:M500",
         });
         const rows = resp.data.values || [];
-        const clients = {};
+        // Build both array (for outgoings selector) and object (for proactive alerts compat)
+        const clientsArray = [];
+        const clientsObj = {};
         for (const row of rows) {
           const clientName = String(row[0] || "").trim();
           const clientSheetUrl = row[11];
           const masterSheetUrl = row[12];
-          if (!clientName || !clientSheetUrl || !masterSheetUrl) continue;
-          const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
-          const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
-          if (clientSheetId && masterSheetId) {
-            clients[clientName] = { clientSheetId, masterSheetId };
-          }
+          if (!clientName || !clientSheetUrl) continue;
+          const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
+          const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
+          clientsArray.push({ clientName, clientSheetId, masterSheetId });
+          if (clientSheetId && masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId };
         }
-        return res.status(200).json({ success: true, clients });
+        clientsArray.sort((a, b) => a.clientName.localeCompare(b.clientName));
+        return res.status(200).json({ success: true, clients: clientsArray, clientsMap: clientsObj });
       } catch (err) {
         console.error("❌ get_all_clients error:", err);
         return res.status(500).json({ success: false, error: err.message });
@@ -1791,33 +1792,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, contractors, months });
       } catch (err) {
         console.error("❌ get_outgoings error:", err);
-        return res.status(500).json({ success: false, error: err.message });
-      }
-
-    } else if (action === "get_all_clients") {
-      // Reads all clients from AutoUpdates tab.
-      // Col A = client name, Col L (index 11) = client sheet URL, Col M (index 12) = master sheet URL
-      const { automationCommanderSheetId: acId } = req.body;
-      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
-      try {
-        const sheets = await getSheetsClient();
-        const acIdClean = extractSheetIdFromUrl(acId) || acId;
-        const resp = await sheets.spreadsheets.values.get({
-          spreadsheetId: acIdClean,
-          range: "AutoUpdates!A2:M500",
-        });
-        const rows = resp.data.values || [];
-        const clients = rows
-          .filter(r => r[0] && r[11]) // must have name (col A) and client sheet URL (col L)
-          .map(r => ({
-            clientName:    String(r[0]).trim(),
-            clientSheetId: String(r[11]).trim(), // col L = client sheet URL
-            masterSheetId: String(r[12] || "").trim(), // col M = master sheet URL
-          }))
-          .sort((a, b) => a.clientName.localeCompare(b.clientName));
-        return res.status(200).json({ success: true, clients });
-      } catch (err) {
-        console.error("❌ get_all_clients error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

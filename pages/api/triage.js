@@ -1795,8 +1795,8 @@ export default async function handler(req, res) {
       }
 
     } else if (action === "get_all_clients") {
-      // Reads all clients from AutoUpdates tab (col A = client name, col B = clientSheetId, col C = masterSheetId)
-      // Used for the Outgoings client selector — not limited to clients with active flags.
+      // Reads all clients from AutoUpdates tab.
+      // Col A = client name, Col L (index 11) = client sheet URL, Col M (index 12) = master sheet URL
       const { automationCommanderSheetId: acId } = req.body;
       if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
       try {
@@ -1804,15 +1804,15 @@ export default async function handler(req, res) {
         const acIdClean = extractSheetIdFromUrl(acId) || acId;
         const resp = await sheets.spreadsheets.values.get({
           spreadsheetId: acIdClean,
-          range: "AutoUpdates!A2:C200",
+          range: "AutoUpdates!A2:M500",
         });
         const rows = resp.data.values || [];
         const clients = rows
-          .filter(r => r[0] && r[1])
+          .filter(r => r[0] && r[11]) // must have name (col A) and client sheet URL (col L)
           .map(r => ({
             clientName:    String(r[0]).trim(),
-            clientSheetId: String(r[1]).trim(),
-            masterSheetId: String(r[2] || "").trim(),
+            clientSheetId: String(r[11]).trim(), // col L = client sheet URL
+            masterSheetId: String(r[12] || "").trim(), // col M = master sheet URL
           }))
           .sort((a, b) => a.clientName.localeCompare(b.clientName));
         return res.status(200).json({ success: true, clients });

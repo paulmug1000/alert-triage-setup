@@ -1909,14 +1909,10 @@ export default function TriageSystem({ onBack }) {
       const [gridData, inboxData] = await Promise.all([gridRes.json(), inboxRes.json()]);
       if (gridData.success) {
         setOutgoingsData({ contractors: gridData.contractors, months: gridData.months });
-        // Centre on current month
+        // Centre on current month using isoMonth field
         const now = new Date();
-        const monthStr = now.toLocaleString("en-GB", { month: "short" });
-        const yearStr = String(now.getFullYear()).slice(-2);
-        const currentIdx = gridData.months.findIndex(m => {
-          const label = String(m.label);
-          return label.includes(monthStr) && label.includes(yearStr);
-        });
+        const curIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+        const currentIdx = gridData.months.findIndex(m => (m.isoMonth || "").startsWith(curIso));
         if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
       }
       if (inboxData.success) setOutgoingsInbox(inboxData.inbox || []);
@@ -2619,15 +2615,26 @@ export default function TriageSystem({ onBack }) {
       ? outgoingsData.months.slice(outgoingsMonthOffset, outgoingsMonthOffset + OUTGOINGS_WINDOW)
       : [];
 
-    const fmtMonthLabel = (label) => {
-      if (!label) return "";
-      try { const d = new Date(label); if (!isNaN(d)) return d.toLocaleString("en-GB", { month: "short", year: "2-digit" }); } catch(e) {}
-      return String(label).slice(0, 7);
+    const fmtMonthLabel = (labelOrIso) => {
+      if (!labelOrIso) return "";
+      // Try parsing as ISO month "2026-01" or ISO date "2026-01-01"
+      const isoMatch = String(labelOrIso).match(/^(\d{4})-(\d{2})/);
+      if (isoMatch) {
+        const d = new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, 1);
+        return d.toLocaleString("en-GB", { month: "short", year: "2-digit" });
+      }
+      // Already formatted (e.g. "Jan-26") — return as-is
+      return String(labelOrIso).slice(0, 7);
     };
 
-    const isCurrentMonth = (label) => {
+    const getIsoMonth = (m) => m.isoMonth || m.label || "";
+
+    const isCurrentMonth = (labelOrIso) => {
       const now = new Date();
-      return fmtMonthLabel(label) === now.toLocaleString("en-GB", { month: "short", year: "2-digit" });
+      const cur = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const isoMatch = String(labelOrIso).match(/^(\d{4})-(\d{2})/);
+      if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}` === cur;
+      return false;
     };
 
     const updateCell = async (contractor, colLetter, newBlocks) => {
@@ -2755,7 +2762,7 @@ export default function TriageSystem({ onBack }) {
                         const key = `${i}_${m.colLetter}`;
                         return (
                           <div key={m.colLetter} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                            <span style={{ fontSize: "11px", color: "#666" }}>{dir} {fmtMonthLabel(m.label)}:</span>
+                            <span style={{ fontSize: "11px", color: "#666" }}>{dir} {fmtMonthLabel(m.isoMonth || m.label)}:</span>
                             <input type="number" step="0.01" value={splitAmts[key] || ""}
                               onChange={e => setSplitAmts(prev => ({ ...prev, [key]: e.target.value }))}
                               placeholder="amt" style={{ width: "70px", padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "12px" }} />
@@ -2774,7 +2781,7 @@ export default function TriageSystem({ onBack }) {
                       style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "11px" }}>
                       <option value="">— select month —</option>
                       {(outgoingsData?.months || []).filter(m => m.colLetter !== colLetter).map(m => (
-                        <option key={m.colLetter} value={m.colLetter}>{m.label}</option>
+                        <option key={m.colLetter} value={m.colLetter}>{fmtMonthLabel(m.isoMonth || m.label)}</option>
                       ))}
                     </select>
                   </div>
@@ -2834,7 +2841,7 @@ export default function TriageSystem({ onBack }) {
                 <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Month *</label>
                 <select value={selectedMonthIdx} onChange={e => setSelectedMonthIdx(parseInt(e.target.value))}
                   style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px" }}>
-                  {(outgoingsData?.months || []).map((m, idx) => <option key={m.colLetter} value={idx}>{m.label}</option>)}
+                  {(outgoingsData?.months || []).map((m, idx) => <option key={m.colLetter} value={idx}>{fmtMonthLabel(m.isoMonth || m.label)}</option>)}
                 </select>
               </div>
               <div>
@@ -2869,6 +2876,7 @@ export default function TriageSystem({ onBack }) {
     const allClients = allOutgoingsClients.length > 0
       ? allOutgoingsClients
       : [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
+    const [dragging, setDragging] = React.useState(null); // { contractor, colLetter, blockIdx, block }
     const noClient = !outgoingsClient || !outgoingsData;
 
     return withModal(
@@ -2919,8 +2927,11 @@ export default function TriageSystem({ onBack }) {
 
           {!noClient && outgoingsInbox.length > 0 && (
             <div style={{ background: "#fff", border: "1px solid #ffc107", borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
-              <div style={{ fontSize: "13px", fontWeight: "700", color: "#e65100", marginBottom: "10px" }}>
-                Unmatched expenses ({outgoingsInbox.length}) — click to place in a month cell
+              <div style={{ fontSize: "13px", fontWeight: "700", color: "#e65100", marginBottom: "6px" }}>
+                Unmatched expenses ({outgoingsInbox.length}) — click to select, then click a cell to place
+              </div>
+              <div style={{ fontSize: "11px", color: "#a04000", marginBottom: "10px" }}>
+                These are expenses from your accounting system not yet assigned to a month in the Outgoings tab. Refresh to pick up new ones.
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                 {outgoingsInbox.map((exp, i) => {
@@ -2945,13 +2956,16 @@ export default function TriageSystem({ onBack }) {
                   disabled={outgoingsMonthOffset === 0}
                   style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsMonthOffset === 0 ? "default" : "pointer", opacity: outgoingsMonthOffset === 0 ? 0.4 : 1 }}>◀</button>
                 <span style={{ fontSize: "13px", color: "#555", minWidth: "140px", textAlign: "center" }}>
-                  {fmtMonthLabel(visibleMonths[0]?.label)} – {fmtMonthLabel(visibleMonths[visibleMonths.length - 1]?.label)}
+                  {fmtMonthLabel(visibleMonths[0]?.isoMonth || visibleMonths[0]?.label)} – {fmtMonthLabel(visibleMonths[visibleMonths.length - 1]?.isoMonth || visibleMonths[visibleMonths.length - 1]?.label)}
                 </span>
                 <button onClick={() => setOutgoingsMonthOffset(Math.min((outgoingsData.months.length - OUTGOINGS_WINDOW), outgoingsMonthOffset + 1))}
                   disabled={outgoingsMonthOffset >= outgoingsData.months.length - OUTGOINGS_WINDOW}
                   style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer" }}>▶</button>
-                <button onClick={() => loadOutgoings(outgoingsClient)}
-                  style={{ marginLeft: "auto", padding: "5px 14px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer", fontSize: "12px" }}>Refresh</button>
+                <button onClick={async () => { setOutgoingsLoading(true); await loadOutgoings(outgoingsClient); setOutgoingsLoading(false); }}
+                  disabled={outgoingsLoading}
+                  style={{ marginLeft: "auto", padding: "5px 14px", background: outgoingsLoading ? "#e0e0e0" : "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsLoading ? "default" : "pointer", fontSize: "12px" }}>
+                  {outgoingsLoading ? "Loading..." : "↻ Refresh"}
+                </button>
               </div>
 
               <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
@@ -2964,10 +2978,10 @@ export default function TriageSystem({ onBack }) {
                     <tr>
                       <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", left: 0, zIndex: 2 }}>Contractor</th>
                       {visibleMonths.map(m => {
-                        const isCurr = isCurrentMonth(m.label);
+                        const isCurr = isCurrentMonth(m.isoMonth || m.label);
                         return (
                           <th key={m.colLetter} style={{ padding: "9px 10px", background: isCurr ? "#e8f0fe" : "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "center", color: isCurr ? "#1a56db" : "#444" }}>
-                            {fmtMonthLabel(m.label)}
+                            {fmtMonthLabel(m.isoMonth || m.label)}
                           </th>
                         );
                       })}
@@ -2997,7 +3011,7 @@ export default function TriageSystem({ onBack }) {
                           const total = realBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
                           const isEmpty = realBlocks.length === 0;
                           const isTarget = !!outgoingsPlacing;
-                          const isCurr = isCurrentMonth(m.label);
+                          const isCurr = isCurrentMonth(m.isoMonth || m.label);
 
                           const handleCellClick = async () => {
                             if (outgoingsPlacing) {
@@ -3020,11 +3034,25 @@ export default function TriageSystem({ onBack }) {
 
                           return (
                             <td key={m.colLetter} onClick={handleCellClick}
-                              style={{ padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: "pointer", minHeight: "52px",
-                                background: isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",
-                                outline: isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px" }}
-                              onMouseEnter={e => { e.currentTarget.style.background = "#f0f4ff"; }}
-                              onMouseLeave={e => { e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8"; }}>
+                              onDragOver={e => { if (dragging) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
+                              onDrop={async e => {
+                                e.preventDefault();
+                                if (!dragging) return;
+                                const { contractor: srcContractor, colLetter: srcCol, blockIdx, block } = dragging;
+                                setDragging(null);
+                                if (srcContractor.sheetRow === contractor.sheetRow && srcCol === m.colLetter) return; // same cell
+                                // Remove from source
+                                const srcBlocks = (srcContractor.cells[srcCol]?.blocks || []).filter((_, i) => i !== blockIdx);
+                                await updateCell(srcContractor, srcCol, srcBlocks);
+                                // Add to target
+                                const tgtBlocks = [...realBlocks, { ...block }];
+                                await updateCell(contractor, m.colLetter, tgtBlocks);
+                              }}
+                              style={{ padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: dragging ? "copy" : "pointer", minHeight: "52px",
+                                background: dragging ? "#eef3ff" : isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",
+                                outline: dragging ? "2px dashed #6699ff" : isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px" }}
+                              onMouseEnter={e => { if (!dragging) e.currentTarget.style.background = "#f0f4ff"; }}
+                              onMouseLeave={e => { if (!dragging) e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8"; }}>
                               {!isEmpty ? (
                                 <>
                                   <div style={{ fontWeight: "700", fontSize: "12px", color: "#1a56db", marginBottom: "3px" }}>
@@ -3033,7 +3061,14 @@ export default function TriageSystem({ onBack }) {
                                   {realBlocks.map((b, bi) => {
                                     const sc = getStatusColour(b.status);
                                     return (
-                                      <div key={bi} style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                      <div key={bi}
+                                        draggable
+                                        onDragStart={e => {
+                                          e.dataTransfer.effectAllowed = "move";
+                                          setDragging({ contractor, colLetter: m.colLetter, blockIdx: bi, block: b });
+                                        }}
+                                        onDragEnd={() => setDragging(null)}
+                                        style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "grab" }}>
                                         £{parseFloat(b.amount).toLocaleString("en-GB", { minimumFractionDigits: 0 })}{b.status ? ` · ${b.status}` : ""}{realBlocks.length > 1 ? " (split)" : ""}
                                       </div>
                                     );

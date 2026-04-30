@@ -1642,13 +1642,14 @@ export default async function handler(req, res) {
       }
 
     } else if (action === "get_outgoings_inbox") {
-      // Reads DirComp for unmatched expenses that could be placed in Outgoings.
-      // Returns expenses with appId, amount, date, description, status.
-      const { clientSheetId } = req.body;
-      if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
+      // Reads DirComp for unmatched expenses (Missing cost flag = col AO index 40).
+      // DirComp lives on the master sheet, not the client sheet.
+      const { masterSheetId, clientSheetId } = req.body;
+      const sheetId = masterSheetId || clientSheetId;
+      if (!sheetId) return res.status(400).json({ success: false, error: "Missing masterSheetId or clientSheetId" });
       try {
         const sheets = await getSheetsClient();
-        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+        const sheetIdClean = extractSheetIdFromUrl(sheetId) || sheetId;
 
         await setMasterSwitch(sheets, sheetIdClean, "DirComp", true);
         const dataResp = await sheets.spreadsheets.values.get({
@@ -1661,10 +1662,11 @@ export default async function handler(req, res) {
         const inbox = [];
         for (const row of rows) {
           if (!row || row.length === 0) continue;
-          // Col index 40 = "Missing cost?" flag — value "1" means unmatched
+          // col AO (index 40) = "Missing cost?" flag
           const isMissing = String(row[40] || "").trim() === "1";
           if (!isMissing) continue;
 
+          // Accounting cols A-J (indices 0-9)
           const date        = String(row[0] || "").trim();
           const description = String(row[1] || "").trim();
           const amount      = parseFloat(String(row[2] || "0").replace(/,/g, "")) || 0;
@@ -1674,12 +1676,14 @@ export default async function handler(req, res) {
           const appId       = String(row[6] || "").trim();
           const datePaid    = String(row[7] || "").trim();
 
+          if (!appId) continue; // need an App ID to place in Outgoings note
           inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid });
         }
 
+        console.log(`  ✅ get_outgoings_inbox: ${inbox.length} unmatched expenses`);
         return res.status(200).json({ success: true, inbox });
       } catch (err) {
-        try { await setMasterSwitch(sheets, extractSheetIdFromUrl(clientSheetId) || clientSheetId, "DirComp", false); } catch(e) {}
+        try { await setMasterSwitch(sheets, extractSheetIdFromUrl(sheetId) || sheetId, "DirComp", false); } catch(e) {}
         console.error("❌ get_outgoings_inbox error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }

@@ -327,7 +327,13 @@ export default function TriageSystem({ onBack }) {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
       }).then(r => r.json()).then(data => {
-        if (data.success) { setAllOutgoingsClients(data.clients); setAllClientsLoaded(true); }
+        console.log("get_all_clients response:", data.success, "count:", Array.isArray(data.clients) ? data.clients.length : typeof data.clients);
+        if (data.success && Array.isArray(data.clients)) {
+          setAllOutgoingsClients(data.clients);
+          setAllClientsLoaded(true);
+        } else {
+          console.error("get_all_clients failed or returned non-array:", data);
+        }
       }).catch(e => console.error("get_all_clients error:", e));
     }
   };
@@ -1904,7 +1910,7 @@ export default function TriageSystem({ onBack }) {
         }),
         fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "get_outgoings_inbox", clientSheetId: client.clientSheetId }),
+          body: JSON.stringify({ action: "get_outgoings_inbox", clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId }),
         }),
       ]);
       const [gridData, inboxData] = await Promise.all([gridRes.json(), inboxRes.json()]);
@@ -2685,7 +2691,13 @@ export default function TriageSystem({ onBack }) {
         const b = blocks[blockIdx];
         const splitAmt = parseFloat(amt);
         if (!splitAmt || splitAmt <= 0 || splitAmt >= b.amount) return;
-        updateBlock(blockIdx, "amount", parseFloat((b.amount - splitAmt).toFixed(2)));
+        const newSrcAmt = parseFloat((b.amount - splitAmt).toFixed(2));
+        // Update local state for source block
+        const newBlocks = blocks.map((bl, i) => i === blockIdx ? { ...bl, amount: newSrcAmt } : bl);
+        setBlocks(newBlocks);
+        // Immediately write the reduced source cell to Sheets
+        updateCell(contractor, colLetter, newBlocks);
+        // Add to target month
         const tb = [...(contractor.cells[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
         tb.push({ ...b, amount: splitAmt });
         updateCell(contractor, targetCol, tb);
@@ -3047,12 +3059,32 @@ export default function TriageSystem({ onBack }) {
                                 const { contractor: srcContractor, colLetter: srcCol, blockIdx, block } = outgoingsDragging;
                                 setOutgoingsDragging(null);
                                 if (srcContractor.sheetRow === contractor.sheetRow && srcCol === m.colLetter) return; // same cell
-                                // Remove from source
-                                const srcBlocks = (srcContractor.cells[srcCol]?.blocks || []).filter((_, i) => i !== blockIdx);
-                                await updateCell(srcContractor, srcCol, srcBlocks);
-                                // Add to target
+                                // Compute new blocks for both cells
+                                const srcBlocks = (srcContractor.cells[srcCol]?.blocks || []).filter((b, i) => i !== blockIdx);
                                 const tgtBlocks = [...realBlocks, { ...block }];
-                                await updateCell(contractor, m.colLetter, tgtBlocks);
+                                // Update both cells atomically in one state update
+                                setOutgoingsData(prev => {
+                                  if (!prev) return prev;
+                                  return {
+                                    ...prev,
+                                    contractors: prev.contractors.map(c => {
+                                      if (c.sheetRow === srcContractor.sheetRow && c.sheetRow === contractor.sheetRow) {
+                                        // Same contractor, different months
+                                        return { ...c, cells: { ...c.cells, [srcCol]: { ...c.cells[srcCol], blocks: srcBlocks }, [m.colLetter]: { ...c.cells[m.colLetter], blocks: tgtBlocks } } };
+                                      } else if (c.sheetRow === srcContractor.sheetRow) {
+                                        return { ...c, cells: { ...c.cells, [srcCol]: { ...c.cells[srcCol], blocks: srcBlocks } } };
+                                      } else if (c.sheetRow === contractor.sheetRow) {
+                                        return { ...c, cells: { ...c.cells, [m.colLetter]: { ...c.cells[m.colLetter], blocks: tgtBlocks } } };
+                                      }
+                                      return c;
+                                    }),
+                                  };
+                                });
+                                // Write both to Sheets (fire and forget — optimistic update already applied)
+                                fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ action: "update_outgoing_note", clientSheetId: outgoingsClient?.clientSheetId, sheetRow: srcContractor.sheetRow, colLetter: srcCol, blocks: srcBlocks }) }).catch(console.error);
+                                fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ action: "update_outgoing_note", clientSheetId: outgoingsClient?.clientSheetId, sheetRow: contractor.sheetRow, colLetter: m.colLetter, blocks: tgtBlocks }) }).catch(console.error);
                               }}
                               style={{ padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: outgoingsDragging ? "copy" : "pointer", minHeight: "52px",
                                 background: outgoingsDragging ? "#eef3ff" : isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",

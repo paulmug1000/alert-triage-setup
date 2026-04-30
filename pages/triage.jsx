@@ -87,7 +87,7 @@ const GLOBAL_STYLES = `
 `;
 
 // Persistent top bar — rendered around every screen
-function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, homeAlertCount, taskCount, children }) {
+function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, homeAlertCount, taskCount, children }) {
   const Badge = ({ count }) => count > 0 ? (
     <span style={{
       display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -149,6 +149,12 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, homeAlertC
             borderRadius: "0",
           }}
         >App Log</button>
+        <button className="triage-btn pulse-nav-item" onClick={onOutgoings}
+          style={{ background:"none",border:"none",cursor:"pointer",padding:"12px 16px",fontSize:"14px",
+            fontWeight: activeNav==="outgoings"?"600":"400",
+            color: activeNav==="outgoings"?"#0066cc":"#444",
+            borderBottom: activeNav==="outgoings"?"2px solid #0066cc":"2px solid transparent",
+            borderRadius:"0" }}>Outgoings</button>
       </div>
       {/* Page content */}
       <div>{children}</div>
@@ -228,7 +234,16 @@ export default function TriageSystem({ onBack }) {
   const [proactiveSelectedClient, setProactiveSelectedClient] = useState(null);
   const [overviewData, setOverviewData] = useState([]);
   const [overviewLoading, setOverviewLoading] = useState(false);
-  const [activeNav, setActiveNav] = useState("home"); // "home" | "overview" | "tasks" | "appLog"
+  const [activeNav, setActiveNav] = useState("home"); // "home" | "overview" | "tasks" | "appLog" | "outgoings"
+  const [outgoingsData, setOutgoingsData] = useState(null); // { contractors, months }
+  const [outgoingsLoading, setOutgoingsLoading] = useState(false);
+  const [outgoingsClient, setOutgoingsClient] = useState(null); // which client's outgoings are loaded
+  const [outgoingsMonthOffset, setOutgoingsMonthOffset] = useState(0); // scroll offset
+  const [outgoingsEditCell, setOutgoingsEditCell] = useState(null); // { contractor, colLetter, blocks }
+  const [outgoingsInbox, setOutgoingsInbox] = useState([]); // unmatched expenses from DirComp
+  const [outgoingsPlacing, setOutgoingsPlacing] = useState(null); // expense being placed { appId, amount, ... }
+  const [outgoingsEstimate, setOutgoingsEstimate] = useState(null); // { contractor, colLetter, monthLabel }
+  const OUTGOINGS_WINDOW = 7; // months visible at once
   const [appLogData, setAppLogData] = useState([]);
   const [appLogLoading, setAppLogLoading] = useState(false);
   const [appLogLoadedAt, setAppLogLoadedAt] = useState(0);
@@ -301,6 +316,7 @@ export default function TriageSystem({ onBack }) {
   const handleNavOverview = () => { setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
   const handleNavAppLog = () => { setActiveNav("appLog"); loadAppLog(); };
+  const handleNavOutgoings = () => { setActiveNav("outgoings"); };
 
   // ── Task handlers ─────────────────────────────────────────────────────────
 
@@ -1862,7 +1878,38 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
-  const loadAppLog = async () => {
+  const loadOutgoings = async (client) => {
+    if (!client?.clientSheetId) return;
+    try {
+      setOutgoingsLoading(true);
+      setOutgoingsClient(client);
+      const [gridRes, inboxRes] = await Promise.all([
+        fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_outgoings", clientSheetId: client.clientSheetId }),
+        }),
+        fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_outgoings_inbox", clientSheetId: client.clientSheetId }),
+        }),
+      ]);
+      const [gridData, inboxData] = await Promise.all([gridRes.json(), inboxRes.json()]);
+      if (gridData.success) {
+        setOutgoingsData({ contractors: gridData.contractors, months: gridData.months });
+        // Centre on current month
+        const now = new Date();
+        const monthStr = now.toLocaleString("en-GB", { month: "short" });
+        const yearStr = String(now.getFullYear()).slice(-2);
+        const currentIdx = gridData.months.findIndex(m => {
+          const label = String(m.label);
+          return label.includes(monthStr) && label.includes(yearStr);
+        });
+        if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
+      }
+      if (inboxData.success) setOutgoingsInbox(inboxData.inbox || []);
+    } catch(e) { console.error("loadOutgoings error:", e); }
+    finally { setOutgoingsLoading(false); }
+  };
     try {
       setAppLogLoading(true);
       const res = await fetch("/api/triage", {
@@ -2456,7 +2503,7 @@ export default function TriageSystem({ onBack }) {
   // Screen: Ignored Alerts
   if (screen === "ignoredAlerts" && activeNav === "home") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Ignored Alerts</h1>
@@ -2543,6 +2590,794 @@ export default function TriageSystem({ onBack }) {
   }
 
   // App Log screen
+  // ── OUTGOINGS SCREEN ────────────────────────────────────────────────────────
+  if (activeNav === "outgoings") {
+    const STATUS_COLOURS = {
+      "Paid":     { bg: "#e8f5e9", border: "#4caf50", text: "#2e7d32" },
+      "Received": { bg: "#e3f2fd", border: "#2196f3", text: "#1565c0" },
+      "Draft":    { bg: "#fff8e1", border: "#ffc107", text: "#e65100" },
+      "":         { bg: "#f5f5f5", border: "#bdbdbd", text: "#616161" },
+    };
+    const getStatusColour = (s) => STATUS_COLOURS[s] || STATUS_COLOURS[""];
+
+    const visibleMonths = outgoingsData
+      ? outgoingsData.months.slice(outgoingsMonthOffset, outgoingsMonthOffset + OUTGOINGS_WINDOW)
+      : [];
+
+    const fmtMonthLabel = (label) => {
+      try {
+        const d = new Date(label);
+        if (!isNaN(d)) return d.toLocaleString("en-GB", { month: "short", year: "2-digit" });
+      } catch(e) {}
+      return String(label).slice(0, 7);
+    };
+
+    const isCurrentMonth = (label) => {
+      const now = new Date();
+      const m = fmtMonthLabel(label);
+      const cur = now.toLocaleString("en-GB", { month: "short", year: "2-digit" });
+      return m === cur;
+    };
+
+    const updateCell = async (contractor, colLetter, newBlocks) => {
+      setOutgoingsData(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          contractors: prev.contractors.map(c =>
+            c.sheetRow === contractor.sheetRow
+              ? { ...c, cells: { ...c.cells, [colLetter]: { ...c.cells[colLetter], blocks: newBlocks } } }
+              : c
+          ),
+        };
+      });
+      try {
+        await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_outgoing_note",
+            clientSheetId: outgoingsClient?.clientSheetId,
+            sheetRow: contractor.sheetRow,
+            colLetter,
+            blocks: newBlocks,
+          }),
+        });
+      } catch(e) { console.error("updateCell error:", e); }
+    };
+
+    // ── Edit modal (existing cell) ──────────────────────────────────────────
+    const EditModal = () => {
+      if (!outgoingsEditCell) return null;
+      const { contractor, colLetter, monthLabel } = outgoingsEditCell;
+      const [blocks, setBlocks] = React.useState(
+        (contractor.cells[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))
+      );
+      const [saving, setSaving] = React.useState(false);
+
+      const updateBlock = (i, field, val) => setBlocks(prev => prev.map((b, idx) => idx === i ? { ...b, [field]: val } : b));
+      const removeBlock = (i) => setBlocks(prev => prev.filter((_, idx) => idx !== i));
+
+      const save = async () => {
+        setSaving(true);
+        await updateCell(contractor, colLetter, blocks);
+        setOutgoingsEditCell(null);
+      };
+
+      const splitToMonth = (blockIdx, targetColLetter) => {
+        const b = blocks[blockIdx];
+        const splitAmt = parseFloat((b.amount / 2).toFixed(2));
+        setBlocks(prev => prev.map((bl, i) => i === blockIdx ? { ...bl, amount: splitAmt } : bl));
+        const targetBlocks = [...(contractor.cells[targetColLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))];
+        targetBlocks.push({ ...b, amount: splitAmt });
+        updateCell(contractor, targetColLetter, targetBlocks);
+      };
+
+      const currentMonthIdx = outgoingsData?.months.findIndex(m => m.colLetter === colLetter) ?? -1;
+      const prevMonth = currentMonthIdx > 0 ? outgoingsData.months[currentMonthIdx - 1] : null;
+      const nextMonth = currentMonthIdx >= 0 && currentMonthIdx < (outgoingsData?.months.length ?? 0) - 1
+        ? outgoingsData.months[currentMonthIdx + 1] : null;
+
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setOutgoingsEditCell(null); }}>
+          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 660px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{contractor.name}</h3>
+                <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>{fmtMonthLabel(monthLabel)}</div>
+              </div>
+              <button onClick={() => setOutgoingsEditCell(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999", lineHeight: 1 }}>×</button>
+            </div>
+
+            {blocks.length === 0 && (
+              <div style={{ color: "#bbb", fontSize: "13px", textAlign: "center", padding: "24px 0" }}>No expenses in this cell</div>
+            )}
+
+            {blocks.map((b, i) => {
+              const sc = getStatusColour(b.status);
+              const isManual = b.appId.startsWith("MANUAL-ENTRY");
+              return (
+                <div key={i} style={{ border: `1px solid ${sc.border}`, background: sc.bg, borderRadius: "8px", padding: "14px", marginBottom: "14px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
+                    <div style={{ fontSize: "10px", color: "#888", fontFamily: "monospace", wordBreak: "break-all", flex: 1, marginRight: "8px" }}>{b.appId}</div>
+                    <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px", whiteSpace: "nowrap" }}>✕ Remove</button>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                    <div>
+                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Amount (£)</label>
+                      <input type="number" step="0.01" value={b.amount}
+                        onChange={e => updateBlock(i, "amount", parseFloat(e.target.value) || 0)}
+                        style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Status</label>
+                      {isManual ? (
+                        <select value={b.status} onChange={e => updateBlock(i, "status", e.target.value)}
+                          style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px" }}>
+                          <option value="">—</option>
+                          <option>Received</option>
+                          <option>Paid</option>
+                          <option>Draft</option>
+                        </select>
+                      ) : (
+                        <div style={{ padding: "7px 9px", fontSize: "13px", fontWeight: "600", color: sc.text }}>{b.status || "—"}</div>
+                      )}
+                    </div>
+                    <div>
+                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Rec date</label>
+                      <div style={{ padding: "7px 9px", fontSize: "13px", color: "#333" }}>{b.recDate || "—"}</div>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Pay date{isManual ? " (editable)" : ""}</label>
+                      {isManual ? (
+                        <input type="text" value={b.payDate} placeholder="e.g. 28-Apr-26"
+                          onChange={e => updateBlock(i, "payDate", e.target.value)}
+                          style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
+                      ) : (
+                        <div style={{ padding: "7px 9px", fontSize: "13px", color: "#333" }}>{b.payDate || "—"}</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: "10px" }}>
+                    <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Description</label>
+                    <div style={{ padding: "7px 9px", fontSize: "12px", color: "#333", background: "rgba(255,255,255,0.7)", borderRadius: "4px", border: "1px solid rgba(0,0,0,0.06)" }}>{b.description || "—"}</div>
+                  </div>
+
+                  {/* Split controls */}
+                  <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    {prevMonth && (
+                      <button onClick={() => splitToMonth(i, prevMonth.colLetter)}
+                        style={{ fontSize: "11px", padding: "4px 10px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", color: "#3a57c4" }}>
+                        ◀ Split to {fmtMonthLabel(prevMonth.label)}
+                      </button>
+                    )}
+                    {nextMonth && (
+                      <button onClick={() => splitToMonth(i, nextMonth.colLetter)}
+                        style={{ fontSize: "11px", padding: "4px 10px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", color: "#3a57c4" }}>
+                        Split to {fmtMonthLabel(nextMonth.label)} ▶
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end", borderTop: "1px solid #f0f0f0", paddingTop: "16px" }}>
+              <button onClick={() => setOutgoingsEditCell(null)}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+              <button onClick={save} disabled={saving}
+                style={{ padding: "8px 22px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.7 : 1 }}>
+                {saving ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ── Estimate modal ───────────────────────────────────────────────────────
+    const EstimateModal = () => {
+      if (!outgoingsEstimate) return null;
+      const { contractor, colLetter, monthLabel } = outgoingsEstimate;
+      const [amount, setAmount] = React.useState("");
+      const [payDate, setPayDate] = React.useState("");
+      const [desc, setDesc] = React.useState("");
+      const [saving, setSaving] = React.useState(false);
+
+      const save = async () => {
+        if (!amount) return;
+        setSaving(true);
+        const manualId = `MANUAL-ENTRY-${Date.now()}`;
+        const existing = (contractor.cells[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"));
+        const newBlock = {
+          appId: manualId,
+          amount: parseFloat(amount),
+          status: "",
+          recDate: "",
+          payDate: payDate || "",
+          description: desc || `${contractor.name} estimate`,
+        };
+        await updateCell(contractor, colLetter, [...existing, newBlock]);
+        setOutgoingsEstimate(null);
+      };
+
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setOutgoingsEstimate(null); }}>
+          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 420px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Add estimate</h3>
+                <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>{contractor.name} — {fmtMonthLabel(monthLabel)}</div>
+              </div>
+              <button onClick={() => setOutgoingsEstimate(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <div>
+                <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Amount (£) *</label>
+                <input type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" autoFocus
+                  style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Expected pay date</label>
+                <input type="text" value={payDate} onChange={e => setPayDate(e.target.value)} placeholder="e.g. 28-Apr-26"
+                  style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Description</label>
+                <input type="text" value={desc} onChange={e => setDesc(e.target.value)} placeholder="Optional note"
+                  style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }} />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: "8px", marginTop: "20px", justifyContent: "flex-end" }}>
+              <button onClick={() => setOutgoingsEstimate(null)}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+              <button onClick={save} disabled={!amount || saving}
+                style={{ padding: "8px 22px", background: !amount ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: !amount ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                {saving ? "Adding…" : "Add estimate"}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // All available clients (may extend beyond just flagged clients)
+    const allClients = [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
+    const noClient = !outgoingsClient || !outgoingsData;
+
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        {outgoingsEditCell && <EditModal />}
+        {outgoingsEstimate && <EstimateModal />}
+
+        {/* Placing mode banner */}
+        {outgoingsPlacing && (
+          <div style={{ background: "#1a56db", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px" }}>
+            <span>📌 Placing: <strong>{outgoingsPlacing.description}</strong> — £{outgoingsPlacing.amount.toLocaleString()} · Click a contractor cell to place it</span>
+            <button onClick={() => setOutgoingsPlacing(null)}
+              style={{ background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", borderRadius: "4px", padding: "4px 12px", cursor: "pointer", fontSize: "12px" }}>Cancel</button>
+          </div>
+        )}
+
+        <div style={{ padding: "20px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+            <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>Outgoings — Contractors</h2>
+            {outgoingsClient && (
+              <span style={{ fontSize: "13px", color: "#666", display: "flex", alignItems: "center", gap: "8px" }}>
+                {outgoingsClient.clientName}
+                <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); setOutgoingsInbox([]); setOutgoingsPlacing(null); }}
+                  style={{ fontSize: "11px", padding: "3px 10px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer" }}>Change client</button>
+              </span>
+            )}
+          </div>
+
+          {/* Client selector */}
+          {noClient && (
+            <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
+              {outgoingsLoading ? (
+                <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading…</div>
+              ) : (
+                <>
+                  <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view their Outgoings tab:</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {allClients.map(c => (
+                      <button key={c.clientName} onClick={() => loadOutgoings(c)}
+                        style={{ padding: "10px 16px", background: "#f8f9ff", border: "1px solid #dde", borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500" }}>
+                        {c.clientName}
+                      </button>
+                    ))}
+                    {allClients.length === 0 && (
+                      <p style={{ color: "#999", fontSize: "13px" }}>No clients available — go to Home and refresh first.</p>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Inbox panel */}
+          {!noClient && outgoingsInbox.length > 0 && (
+            <div style={{ background: "#fff", border: "1px solid #ffc107", borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
+              <div style={{ fontSize: "13px", fontWeight: "700", color: "#e65100", marginBottom: "10px" }}>
+                ⚠ Unmatched expenses ({outgoingsInbox.length}) — click to place in a month cell
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                {outgoingsInbox.map((exp, i) => {
+                  const isPlacing = outgoingsPlacing?.appId === exp.appId;
+                  return (
+                    <button key={i} onClick={() => setOutgoingsPlacing(isPlacing ? null : exp)}
+                      style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "pointer", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "all 0.15s" }}>
+                      <div style={{ fontWeight: "700" }}>{exp.description || exp.accountName}</div>
+                      <div style={{ marginTop: "2px", opacity: 0.8 }}>£{exp.amount.toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
+                      {isPlacing && <div style={{ fontSize: "10px", marginTop: "2px", opacity: 0.8 }}>Click a cell below ▼</div>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Main grid */}
+          {!noClient && outgoingsData && (
+            <>
+              {/* Month navigation */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                <button onClick={() => setOutgoingsMonthOffset(Math.max(0, outgoingsMonthOffset - 1))}
+                  disabled={outgoingsMonthOffset === 0}
+                  style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsMonthOffset === 0 ? "default" : "pointer", opacity: outgoingsMonthOffset === 0 ? 0.4 : 1, fontSize: "14px" }}>◀</button>
+                <span style={{ fontSize: "13px", color: "#555", minWidth: "140px", textAlign: "center" }}>
+                  {fmtMonthLabel(visibleMonths[0]?.label)} – {fmtMonthLabel(visibleMonths[visibleMonths.length - 1]?.label)}
+                </span>
+                <button onClick={() => setOutgoingsMonthOffset(Math.min((outgoingsData.months.length - OUTGOINGS_WINDOW), outgoingsMonthOffset + 1))}
+                  disabled={outgoingsMonthOffset >= outgoingsData.months.length - OUTGOINGS_WINDOW}
+                  style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer", fontSize: "14px" }}>▶</button>
+                <button onClick={() => loadOutgoings(outgoingsClient)}
+                  style={{ marginLeft: "auto", padding: "5px 14px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer", fontSize: "12px" }}>↻ Refresh</button>
+              </div>
+
+              <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${180 + OUTGOINGS_WINDOW * 160}px` }}>
+                  <colgroup>
+                    <col style={{ width: "190px" }} />
+                    {visibleMonths.map(m => <col key={m.colLetter} style={{ width: "160px" }} />)}
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", left: 0, zIndex: 2, color: "#444" }}>
+                        Contractor
+                      </th>
+                      {visibleMonths.map(m => {
+                        const isCurr = isCurrentMonth(m.label);
+                        return (
+                          <th key={m.colLetter} style={{ padding: "9px 10px", background: isCurr ? "#e8f0fe" : "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "center", color: isCurr ? "#1a56db" : "#444" }}>
+                            {fmtMonthLabel(m.label)}
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {outgoingsData.contractors.map((contractor, rowIdx) => (
+                      <tr key={contractor.sheetRow} style={{ background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
+                        {/* Contractor name + estimate button */}
+                        <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "500", background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd", position: "sticky", left: 0, zIndex: 1, verticalAlign: "top" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                            <div>
+                              <div style={{ fontWeight: "600", color: "#222" }}>{contractor.name}</div>
+                              <div style={{ fontSize: "10px", color: "#aaa", marginTop: "1px" }}>VAT:{contractor.vatFlag} · Inv:{contractor.invTiming} · Pay:{contractor.payTiming}</div>
+                            </div>
+                            <button
+                              onClick={() => {
+                                // Open estimate modal for current or nearest visible month
+                                const curM = visibleMonths.find(m => isCurrentMonth(m.label)) || visibleMonths[3] || visibleMonths[0];
+                                if (curM) setOutgoingsEstimate({ contractor, colLetter: curM.colLetter, monthLabel: curM.label });
+                              }}
+                              title="Add estimate"
+                              style={{ background: "none", border: "1px solid #ddd", borderRadius: "4px", cursor: "pointer", color: "#888", fontSize: "14px", padding: "0 4px", lineHeight: "18px", flexShrink: 0, marginLeft: "4px" }}>+</button>
+                          </div>
+                        </td>
+
+                        {/* Month cells */}
+                        {visibleMonths.map(m => {
+                          const cell = contractor.cells[m.colLetter] || { blocks: [] };
+                          const realBlocks = (cell.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"));
+                          const total = realBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
+                          const isEmpty = realBlocks.length === 0;
+                          const isTarget = !!outgoingsPlacing;
+                          const isCurr = isCurrentMonth(m.label);
+
+                          const handleCellClick = async () => {
+                            if (outgoingsPlacing) {
+                              // Place the inbox expense into this cell
+                              const exp = outgoingsPlacing;
+                              const newBlock = {
+                                appId: exp.appId,
+                                amount: exp.amount,
+                                status: exp.status || "",
+                                recDate: exp.date || "",
+                                payDate: exp.datePaid || "",
+                                description: exp.description || exp.accountName || "",
+                              };
+                              const newBlocks = [...realBlocks, newBlock];
+                              await updateCell(contractor, m.colLetter, newBlocks);
+                              // Remove from inbox
+                              setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
+                              setOutgoingsPlacing(null);
+                            } else {
+                              setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label });
+                            }
+                          };
+
+                          return (
+                            <td key={m.colLetter}
+                              onClick={handleCellClick}
+                              style={{
+                                padding: "6px 8px",
+                                borderBottom: "1px solid #eee",
+                                borderRight: "1px solid #e0e0e0",
+                                verticalAlign: "top",
+                                cursor: "pointer",
+                                minHeight: "52px",
+                                background: isTarget && isEmpty ? "#f0f4ff"
+                                  : isTarget ? "#e8f0fe"
+                                  : isCurr && !isEmpty ? "#f0f8f0"
+                                  : isEmpty ? "transparent" : "#f8fff8",
+                                outline: isTarget ? "2px dashed #1a56db" : "none",
+                                outlineOffset: "-2px",
+                                transition: "background 0.1s",
+                              }}
+                              onMouseEnter={e => { e.currentTarget.style.background = isTarget ? "#dce8ff" : "#f0f4ff"; }}
+                              onMouseLeave={e => {
+                                e.currentTarget.style.background = isTarget && isEmpty ? "#f0f4ff"
+                                  : isTarget ? "#e8f0fe"
+                                  : isCurr && !isEmpty ? "#f0f8f0"
+                                  : isEmpty ? "transparent" : "#f8fff8";
+                              }}>
+                              {!isEmpty ? (
+                                <>
+                                  <div style={{ fontWeight: "700", fontSize: "12px", color: "#1a56db", marginBottom: "3px" }}>
+                                    £{total.toLocaleString("en-GB", { minimumFractionDigits: 2 })}
+                                  </div>
+                                  {realBlocks.map((b, bi) => {
+                                    const sc = getStatusColour(b.status);
+                                    return (
+                                      <div key={bi} style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                        £{parseFloat(b.amount).toLocaleString("en-GB", { minimumFractionDigits: 0 })}
+                                        {b.status ? ` · ${b.status}` : ""}
+                                        {realBlocks.length > 1 && <span style={{ opacity: 0.6 }}> (split)</span>}
+                                      </div>
+                                    );
+                                  })}
+                                </>
+                              ) : (
+                                <div style={{ color: isTarget ? "#1a56db" : "#d0d0d0", fontSize: isTarget ? "16px" : "14px", textAlign: "center", paddingTop: "6px" }}>
+                                  {isTarget ? "⊕" : "+"}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      </NavShell>
+    );
+  }
+
+    const visibleMonths = outgoingsData
+      ? outgoingsData.months.slice(outgoingsMonthOffset, outgoingsMonthOffset + OUTGOINGS_WINDOW)
+      : [];
+
+    const fmtMonthLabel = (label) => {
+      // Convert ISO date "2026-04-01" or "01/04/2026" to "Apr-26"
+      try {
+        const d = new Date(label);
+        if (!isNaN(d)) return d.toLocaleString("en-GB", { month: "short", year: "2-digit" });
+      } catch(e) {}
+      return String(label).slice(0, 7);
+    };
+
+    const updateCell = async (contractor, colLetter, newBlocks) => {
+      // Optimistic update
+      setOutgoingsData(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          contractors: prev.contractors.map(c =>
+            c.sheetRow === contractor.sheetRow
+              ? { ...c, cells: { ...c.cells, [colLetter]: { ...c.cells[colLetter], blocks: newBlocks } } }
+              : c
+          ),
+        };
+      });
+      // Write to Sheets
+      try {
+        await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_outgoing_note",
+            clientSheetId: outgoingsClient?.clientSheetId,
+            sheetRow: contractor.sheetRow,
+            colLetter,
+            blocks: newBlocks,
+          }),
+        });
+      } catch(e) { console.error("updateCell error:", e); }
+    };
+
+    const EditModal = () => {
+      if (!outgoingsEditCell) return null;
+      const { contractor, colLetter, monthLabel } = outgoingsEditCell;
+      const [blocks, setBlocks] = React.useState(
+        (contractor.cells[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))
+      );
+
+      const updateBlock = (i, field, val) => setBlocks(prev => prev.map((b, idx) => idx === i ? { ...b, [field]: val } : b));
+      const removeBlock = (i) => setBlocks(prev => prev.filter((_, idx) => idx !== i));
+
+      const save = async () => {
+        await updateCell(contractor, colLetter, blocks);
+        setOutgoingsEditCell(null);
+      };
+
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setOutgoingsEditCell(null); }}>
+          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(90vw, 640px)", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{contractor.name} — {fmtMonthLabel(monthLabel)}</h3>
+              <button onClick={() => setOutgoingsEditCell(null)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer", color: "#666" }}>×</button>
+            </div>
+
+            {blocks.length === 0 && (
+              <div style={{ color: "#999", fontSize: "13px", textAlign: "center", padding: "20px" }}>No expenses in this cell</div>
+            )}
+
+            {blocks.map((b, i) => {
+              const sc = getStatusColour(b.status);
+              const isManual = b.appId.startsWith("MANUAL-ENTRY");
+              return (
+                <div key={i} style={{ border: `1px solid ${sc.border}`, background: sc.bg, borderRadius: "8px", padding: "12px", marginBottom: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
+                    <div style={{ fontSize: "11px", color: "#888", fontFamily: "monospace" }}>{b.appId}</div>
+                    <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "13px", padding: "0" }}>✕ Remove</button>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                    <div>
+                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Amount (£)</label>
+                      <input type="number" value={b.amount} onChange={e => updateBlock(i, "amount", parseFloat(e.target.value) || 0)}
+                        style={{ width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "13px", boxSizing: "border-box" }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Status</label>
+                      {isManual ? (
+                        <select value={b.status} onChange={e => updateBlock(i, "status", e.target.value)}
+                          style={{ width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "13px" }}>
+                          <option value="">—</option>
+                          <option>Received</option>
+                          <option>Paid</option>
+                          <option>Draft</option>
+                        </select>
+                      ) : (
+                        <div style={{ padding: "6px 8px", fontSize: "13px", color: sc.text, fontWeight: "600" }}>{b.status || "—"}</div>
+                      )}
+                    </div>
+                    <div>
+                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Rec date</label>
+                      <div style={{ padding: "6px 8px", fontSize: "13px", color: "#333" }}>{b.recDate || "—"}</div>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Pay date{isManual ? " (editable)" : ""}</label>
+                      {isManual ? (
+                        <input type="text" value={b.payDate} placeholder="e.g. 28-Apr-26"
+                          onChange={e => updateBlock(i, "payDate", e.target.value)}
+                          style={{ width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "13px", boxSizing: "border-box" }} />
+                      ) : (
+                        <div style={{ padding: "6px 8px", fontSize: "13px", color: "#333" }}>{b.payDate || "—"}</div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ marginTop: "8px" }}>
+                    <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Description</label>
+                    <div style={{ padding: "6px 8px", fontSize: "13px", color: "#333", background: "#fff", borderRadius: "4px", border: "1px solid #eee" }}>{b.description || "—"}</div>
+                  </div>
+                  {/* Split button — copies this block to another month */}
+                  <div style={{ marginTop: "8px", display: "flex", gap: "8px" }}>
+                    <button onClick={() => {
+                      // Reduce amount in this cell, duplicate to adjacent month
+                      const splitAmt = b.amount / 2;
+                      updateBlock(i, "amount", splitAmt);
+                      // Find the next month column
+                      const currentMonthIdx = outgoingsData.months.findIndex(m => m.colLetter === colLetter);
+                      if (currentMonthIdx < outgoingsData.months.length - 1) {
+                        const nextMonth = outgoingsData.months[currentMonthIdx + 1];
+                        const nextBlocks = [...(contractor.cells[nextMonth.colLetter]?.blocks || [])];
+                        nextBlocks.push({ ...b, amount: splitAmt });
+                        updateCell(contractor, nextMonth.colLetter, nextBlocks);
+                      }
+                    }} style={{ fontSize: "11px", padding: "4px 10px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", color: "#3a57c4" }}>
+                      ⤵ Split to next month
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
+              <button onClick={() => setOutgoingsEditCell(null)}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+              <button onClick={save}
+                style={{ padding: "8px 20px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>Save changes</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // Client selector if no client loaded
+    const noClient = !outgoingsClient || !outgoingsData;
+
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        {outgoingsEditCell && <EditModal />}
+
+        <div style={{ padding: "20px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+            <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>Outgoings — Contractors</h2>
+            {outgoingsClient && (
+              <span style={{ fontSize: "13px", color: "#666" }}>
+                {outgoingsClient.clientName}
+                <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); }}
+                  style={{ marginLeft: "10px", fontSize: "11px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer" }}>Change client</button>
+              </span>
+            )}
+          </div>
+
+          {/* Client selector */}
+          {noClient && (
+            <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
+              {outgoingsLoading ? (
+                <div style={{ textAlign: "center", color: "#999", padding: "20px" }}>Loading…</div>
+              ) : (
+                <>
+                  <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view their Outgoings tab:</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {(clientsWithFlags || []).map(c => (
+                      <button key={c.clientName} onClick={() => loadOutgoings(c)}
+                        style={{ padding: "10px 16px", background: "#f8f9ff", border: "1px solid #dde", borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500" }}>
+                        {c.clientName}
+                      </button>
+                    ))}
+                    {(!clientsWithFlags || clientsWithFlags.length === 0) && (
+                      <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet — go to Home and refresh first.</p>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Main grid */}
+          {!noClient && outgoingsData && (
+            <>
+              {/* Month navigation */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+                <button onClick={() => setOutgoingsMonthOffset(Math.max(0, outgoingsMonthOffset - 1))}
+                  disabled={outgoingsMonthOffset === 0}
+                  style={{ padding: "6px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "6px", cursor: outgoingsMonthOffset === 0 ? "default" : "pointer", opacity: outgoingsMonthOffset === 0 ? 0.4 : 1 }}>◀</button>
+                <span style={{ fontSize: "13px", color: "#666" }}>
+                  {fmtMonthLabel(visibleMonths[0]?.label)} – {fmtMonthLabel(visibleMonths[visibleMonths.length - 1]?.label)}
+                </span>
+                <button onClick={() => setOutgoingsMonthOffset(Math.min(outgoingsData.months.length - OUTGOINGS_WINDOW, outgoingsMonthOffset + 1))}
+                  disabled={outgoingsMonthOffset >= outgoingsData.months.length - OUTGOINGS_WINDOW}
+                  style={{ padding: "6px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer" }}>▶</button>
+                <button onClick={() => loadOutgoings(outgoingsClient)}
+                  style={{ marginLeft: "auto", padding: "6px 14px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>↻ Refresh</button>
+              </div>
+
+              {/* Grid */}
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed" }}>
+                  <colgroup>
+                    <col style={{ width: "180px" }} />
+                    {visibleMonths.map(m => <col key={m.colLetter} style={{ width: "160px" }} />)}
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: "8px 10px", background: "#f5f5f5", border: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", left: 0, zIndex: 2 }}>Contractor</th>
+                      {visibleMonths.map(m => {
+                        const label = fmtMonthLabel(m.label);
+                        const isCurrentMonth = label === new Date().toLocaleString("en-GB", { month: "short", year: "2-digit" });
+                        return (
+                          <th key={m.colLetter} style={{ padding: "8px 10px", background: isCurrentMonth ? "#e8f0fe" : "#f5f5f5", border: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "center", color: isCurrentMonth ? "#1a56db" : "#333" }}>
+                            {label}
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {outgoingsData.contractors.map(contractor => (
+                      <tr key={contractor.sheetRow}>
+                        <td style={{ padding: "8px 10px", border: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "500", background: "#fafafa", position: "sticky", left: 0, zIndex: 1, verticalAlign: "top" }}>
+                          <div>{contractor.name}</div>
+                          <div style={{ fontSize: "10px", color: "#999", marginTop: "2px" }}>
+                            VAT:{contractor.vatFlag} · Inv:{contractor.invTiming} · Pay:{contractor.payTiming}
+                          </div>
+                        </td>
+                        {visibleMonths.map(m => {
+                          const cell = contractor.cells[m.colLetter] || { blocks: [] };
+                          const realBlocks = cell.blocks.filter(b => !b.appId.startsWith("UNRECON-GAP"));
+                          const total = realBlocks.reduce((s, b) => s + b.amount, 0);
+                          const isEmpty = realBlocks.length === 0;
+                          return (
+                            <td key={m.colLetter}
+                              onClick={() => setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label })}
+                              style={{ padding: "6px 8px", border: "1px solid #e0e0e0", verticalAlign: "top", cursor: "pointer", minHeight: "60px",
+                                background: isEmpty ? "#fff" : "#f8fff8",
+                                transition: "background 0.15s" }}
+                              onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"}
+                              onMouseLeave={e => e.currentTarget.style.background = isEmpty ? "#fff" : "#f8fff8"}>
+                              {!isEmpty && (
+                                <>
+                                  <div style={{ fontWeight: "700", fontSize: "12px", color: "#1a56db", marginBottom: "4px" }}>
+                                    £{total.toLocaleString("en-GB", { minimumFractionDigits: 2 })}
+                                  </div>
+                                  {realBlocks.map((b, bi) => {
+                                    const sc = getStatusColour(b.status);
+                                    return (
+                                      <div key={bi} style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text }}>
+                                        £{b.amount.toLocaleString()} {b.status ? `· ${b.status}` : ""}
+                                        {realBlocks.length > 1 && <span style={{ color: "#999" }}> (split)</span>}
+                                      </div>
+                                    );
+                                  })}
+                                </>
+                              )}
+                              {isEmpty && <div style={{ color: "#ccc", fontSize: "11px", textAlign: "center", paddingTop: "8px" }}>+</div>}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Inbox panel — unmatched DirComp expenses */}
+              {outgoingsInbox.length > 0 && (
+                <div style={{ marginTop: "20px", background: "#fff", border: "1px solid #e0e0e0", borderRadius: "12px", padding: "16px" }}>
+                  <h3 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#e65100" }}>
+                    ⚠ Unmatched expenses — drag to a month cell to place
+                  </h3>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    {outgoingsInbox.map((exp, i) => (
+                      <div key={i} style={{ background: "#fff8e1", border: "1px solid #ffc107", borderRadius: "8px", padding: "10px 14px", fontSize: "12px" }}>
+                        <div style={{ fontWeight: "700" }}>{exp.description}</div>
+                        <div style={{ color: "#666", marginTop: "2px" }}>£{exp.amount} · {exp.date}</div>
+                        <div style={{ fontSize: "10px", color: "#999", fontFamily: "monospace", marginTop: "2px" }}>{exp.appId}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </NavShell>
+    );
+  }
+
   if (activeNav === "appLog") {
     // Derive column headers from first row, pad to 22 cols
     const COL_COUNT = 22;
@@ -2552,7 +3387,7 @@ export default function TriageSystem({ onBack }) {
       : null;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ padding: "20px 20px 0" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <div>
@@ -2650,7 +3485,7 @@ export default function TriageSystem({ onBack }) {
   // Overview screen — must come before all screen-based checks so nav always works
   if (activeNav === "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "24px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "#1a1a1a", margin: 0 }}>Overview</h2>
@@ -2788,7 +3623,7 @@ export default function TriageSystem({ onBack }) {
     const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
     if (activeClients.length === 0 && proactiveAlerts.length === 0 && proactiveLoadedAt > 0) {
       return (
-        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
           <div style={styles.container}>
             <div style={styles.header}>
               <h1 style={styles.title}>All Done</h1>
@@ -2807,7 +3642,7 @@ export default function TriageSystem({ onBack }) {
     // If still loading proactive alerts, wait before deciding
     if (activeClients.length === 0 && proactiveLoadedAt === 0) {
       return (
-        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
           <div style={styles.container}>
             <div style={{ textAlign: "center", padding: "60px 20px", color: "#888" }}>
               <Spinner size={28} color="#0066cc" />
@@ -2819,7 +3654,7 @@ export default function TriageSystem({ onBack }) {
     }
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Client</h1>
@@ -3063,7 +3898,7 @@ export default function TriageSystem({ onBack }) {
     };
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Proactive Alerts</h1>
@@ -3287,7 +4122,7 @@ export default function TriageSystem({ onBack }) {
     const canProceed = allActionableDone && noActionDone;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
@@ -3902,7 +4737,7 @@ export default function TriageSystem({ onBack }) {
     ];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Clear Flags</h1>
@@ -3996,7 +4831,7 @@ export default function TriageSystem({ onBack }) {
   // Screen 1: Loading state (shown while startTriage runs on mount)
   if (!sessionId && !triageComplete && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Automation Alerts</h1>
@@ -4028,7 +4863,7 @@ export default function TriageSystem({ onBack }) {
   // Screen 2: Triage complete with no alerts
   if (triageComplete && totalAlerts === 0 && noActionCount === 0 && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>✓ All Clear</h1>
@@ -4135,7 +4970,7 @@ export default function TriageSystem({ onBack }) {
     const progress = currentClientAlertIndex + 1;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
@@ -4840,7 +5675,7 @@ export default function TriageSystem({ onBack }) {
     const allAcknowledged = acknowledgedNoAction.size === noActionCount;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Info-Only Alerts</h1>
@@ -4919,7 +5754,7 @@ export default function TriageSystem({ onBack }) {
       { key: "resolved", label: "Completed", count: 0 },
     ];
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Tasks</h1>
@@ -5024,7 +5859,7 @@ export default function TriageSystem({ onBack }) {
     const todayStr = today.toISOString().split("T")[0];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           {/* Back button */}
           <button className="triage-btn" onClick={() => setSelectedTask(null)} style={{ ...styles.buttonSecondary, marginBottom: "16px" }}>
@@ -5240,7 +6075,7 @@ export default function TriageSystem({ onBack }) {
 
   // ── Home screen (initial / loading) ──────────────────────────────────────
   return withModal(
-    <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+    <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>

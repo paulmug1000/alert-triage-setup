@@ -633,6 +633,19 @@ function colIndexToLetter(colNum) {
   return letter;
 }
 
+// Convert column letter(s) to 1-based number. E.g. A→1, AA→27
+function colLetterToNum(col) {
+  return String(col).toUpperCase().split("").reduce((acc, ch) => acc * 26 + ch.charCodeAt(0) - 64, 0);
+}
+
+// Get the sheetId (gid) for a named sheet tab
+async function getSheetGid(sheets, spreadsheetId, sheetName) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties" });
+  const sheet = meta.data.sheets?.find(s => s.properties.title === sheetName);
+  if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
+  return sheet.properties.sheetId;
+}
+
 // ============================================================================
 // FLAG READING
 // ============================================================================
@@ -1624,6 +1637,236 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, clients });
       } catch (err) {
         console.error("❌ get_all_clients error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_outgoings_inbox") {
+      // Reads DirComp for unmatched expenses that could be placed in Outgoings.
+      // Returns expenses with appId, amount, date, description, status.
+      const { clientSheetId } = req.body;
+      if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        await setMasterSwitch(sheets, sheetIdClean, "DirComp", true);
+        const dataResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "DirComp!A6:AV1000",
+        });
+        await setMasterSwitch(sheets, sheetIdClean, "DirComp", false);
+
+        const rows = dataResp.data.values || [];
+        const inbox = [];
+        for (const row of rows) {
+          if (!row || row.length === 0) continue;
+          // Col index 40 = "Missing cost?" flag — value "1" means unmatched
+          const isMissing = String(row[40] || "").trim() === "1";
+          if (!isMissing) continue;
+
+          const date        = String(row[0] || "").trim();
+          const description = String(row[1] || "").trim();
+          const amount      = parseFloat(String(row[2] || "0").replace(/,/g, "")) || 0;
+          const reference   = String(row[3] || "").trim();
+          const accountName = String(row[4] || "").trim();
+          const status      = String(row[5] || "").trim();
+          const appId       = String(row[6] || "").trim();
+          const datePaid    = String(row[7] || "").trim();
+
+          inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid });
+        }
+
+        return res.status(200).json({ success: true, inbox });
+      } catch (err) {
+        try { await setMasterSwitch(sheets, extractSheetIdFromUrl(clientSheetId) || clientSheetId, "DirComp", false); } catch(e) {}
+        console.error("❌ get_outgoings_inbox error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_outgoings") {
+      // Reads the Outgoings tab from the client sheet.
+      // Returns contractor rows (13-110), month columns (G onwards), and parsed note blocks.
+      const { clientSheetId } = req.body;
+      if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        // Read row 1 (month headers) and rows 13-110 (contractors), cols A-BG (cols 1-59)
+        const [headerResp, dataResp, notesMetaResp] = await Promise.all([
+          sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: "Outgoings!A1:BG1",
+            valueRenderOption: "FORMATTED_VALUE",
+          }),
+          sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: "Outgoings!A13:BG110",
+            valueRenderOption: "FORMATTED_VALUE",
+          }),
+          // We can't get notes via values API — use spreadsheets.get for notes
+          sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            ranges: ["Outgoings!A1:BG1", "Outgoings!A13:BG110"],
+            includeGridData: true,
+            fields: "sheets.data.rowData.values.note,sheets.data.rowData.values.formattedValue,sheets.data.startRow,sheets.data.startColumn",
+          }),
+        ]);
+
+        const headerRow = headerResp.data.values?.[0] || [];
+        const dataRows = dataResp.data.values || [];
+
+        // Find month columns from header row — cols G onwards (index 6+) that have date values
+        const months = [];
+        for (let i = 6; i < headerRow.length; i++) {
+          const val = headerRow[i];
+          if (val && String(val).match(/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec/i)) {
+            months.push({ colIndex: i, colLetter: colIndexToLetter(i + 1), label: val });
+          } else if (val && String(val).match(/^\d{4}/)) {
+            // ISO date format
+            months.push({ colIndex: i, colLetter: colIndexToLetter(i + 1), label: val });
+          }
+        }
+
+        // Parse notes from spreadsheets.get response
+        const notesByCell = {}; // key: "row_col" (0-indexed from data start)
+        const sheetsData = notesMetaResp.data.sheets?.[0]?.data || [];
+        for (const gridData of sheetsData) {
+          const startRow = gridData.startRow || 0;
+          const startCol = gridData.startColumn || 0;
+          for (let r = 0; r < (gridData.rowData || []).length; r++) {
+            const rowData = gridData.rowData[r];
+            for (let c = 0; c < (rowData?.values || []).length; c++) {
+              const cell = rowData.values[c];
+              if (cell?.note) {
+                notesByCell[`${startRow + r}_${startCol + c}`] = cell.note;
+              }
+            }
+          }
+        }
+
+        // Helper: parse note blocks from a note string
+        const parseNoteBlocks = (note) => {
+          if (!note) return [];
+          const blocks = [];
+          // Match each block: {App ID: ...}{Amt: ...}...{Description: ...}
+          const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
+          let match;
+          while ((match = blockRegex.exec(note)) !== null) {
+            blocks.push({
+              appId: match[1]?.trim() || "",
+              amount: parseFloat(match[2]) || 0,
+              status: match[3]?.trim() || "",
+              recDate: match[4]?.trim() || "",
+              payDate: match[5]?.trim() || "",
+              description: match[6]?.trim() || "",
+            });
+          }
+          return blocks;
+        };
+
+        // Build contractor rows
+        const contractors = [];
+        for (let r = 0; r < dataRows.length; r++) {
+          const row = dataRows[r];
+          const name = String(row[0] || "").trim();
+          if (!name) continue;
+
+          const vatFlag = String(row[1] || "").trim();
+          const invTiming = String(row[2] || "").trim();
+          const payTiming = String(row[3] || "").trim();
+
+          // Build month cells
+          const cells = {};
+          for (const month of months) {
+            const colIdx = month.colIndex;
+            const cellValue = row[colIdx] || "";
+            // Note key: row 13 = grid row 12 (0-indexed) + notes start at row 12 (1:BG1=row0, 13:=row12)
+            // The second grid data starts at row 12 (Outgoings!A13 = row index 12)
+            const noteKey = `${12 + r}_${colIdx}`;
+            const note = notesByCell[noteKey] || "";
+            const blocks = parseNoteBlocks(note);
+            cells[month.colLetter] = {
+              value: cellValue,
+              note,
+              blocks,
+            };
+          }
+
+          contractors.push({
+            sheetRow: 13 + r,
+            name,
+            vatFlag,
+            invTiming,
+            payTiming,
+            cells,
+          });
+        }
+
+        return res.status(200).json({ success: true, contractors, months });
+      } catch (err) {
+        console.error("❌ get_outgoings error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "update_outgoing_note") {
+      // Writes a new note to a specific Outgoings cell.
+      // blocks: array of { appId, amount, status, recDate, payDate, description }
+      // Also updates the cell value to the sum of non-UNRECON-GAP amounts.
+      const { clientSheetId, sheetRow, colLetter, blocks } = req.body;
+      if (!clientSheetId || !sheetRow || !colLetter) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId, sheetRow, or colLetter" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        // Build note string from blocks
+        const noteStr = (blocks || []).map(b =>
+          `{App ID: ${b.appId}}{Amt: ${b.amount}}{Status: ${b.status || ""}}{Rec date: ${b.recDate || ""}}{Pay date: ${b.payDate || ""}}{Description: ${b.description || ""}}`
+        ).join("\n");
+
+        // Calculate cell value = sum of non-UNRECON-GAP amounts
+        const cellTotal = (blocks || [])
+          .filter(b => !b.appId.startsWith("UNRECON-GAP"))
+          .reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
+
+        const cellRef = `Outgoings!${colLetter}${sheetRow}`;
+
+        // Write value and note separately
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: sheetIdClean,
+          range: cellRef,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [[cellTotal || ""]] },
+        });
+
+        // Write note using batchUpdate
+        const colIndex = colLetterToNum(colLetter) - 1; // 0-indexed
+        const rowIndex = sheetRow - 1; // 0-indexed
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: {
+            requests: [{
+              updateCells: {
+                range: {
+                  sheetId: await getSheetGid(sheets, sheetIdClean, "Outgoings"),
+                  startRowIndex: rowIndex,
+                  endRowIndex: rowIndex + 1,
+                  startColumnIndex: colIndex,
+                  endColumnIndex: colIndex + 1,
+                },
+                rows: [{ values: [{ note: noteStr }] }],
+                fields: "note",
+              },
+            }],
+          },
+        });
+
+        console.log(`  ✅ Outgoings note updated: ${cellRef}`);
+        return res.status(200).json({ success: true, cellRef, blockCount: (blocks || []).length, cellTotal });
+      } catch (err) {
+        console.error("❌ update_outgoing_note error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

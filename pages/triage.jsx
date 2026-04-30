@@ -1923,6 +1923,8 @@ export default function TriageSystem({ onBack }) {
     } catch(e) { console.error("loadOutgoings error:", e); }
     finally { setOutgoingsLoading(false); }
   };
+
+  const loadAppLog = async () => {
     try {
       setAppLogLoading(true);
       const res = await fetch("/api/triage", {
@@ -2618,18 +2620,14 @@ export default function TriageSystem({ onBack }) {
       : [];
 
     const fmtMonthLabel = (label) => {
-      try {
-        const d = new Date(label);
-        if (!isNaN(d)) return d.toLocaleString("en-GB", { month: "short", year: "2-digit" });
-      } catch(e) {}
+      if (!label) return "";
+      try { const d = new Date(label); if (!isNaN(d)) return d.toLocaleString("en-GB", { month: "short", year: "2-digit" }); } catch(e) {}
       return String(label).slice(0, 7);
     };
 
     const isCurrentMonth = (label) => {
       const now = new Date();
-      const m = fmtMonthLabel(label);
-      const cur = now.toLocaleString("en-GB", { month: "short", year: "2-digit" });
-      return m === cur;
+      return fmtMonthLabel(label) === now.toLocaleString("en-GB", { month: "short", year: "2-digit" });
     };
 
     const updateCell = async (contractor, colLetter, newBlocks) => {
@@ -2658,7 +2656,6 @@ export default function TriageSystem({ onBack }) {
       } catch(e) { console.error("updateCell error:", e); }
     };
 
-    // ── Edit modal (existing cell) ──────────────────────────────────────────
     const EditModal = () => {
       if (!outgoingsEditCell) return null;
       const { contractor, colLetter, monthLabel } = outgoingsEditCell;
@@ -2666,29 +2663,35 @@ export default function TriageSystem({ onBack }) {
         (contractor.cells[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))
       );
       const [saving, setSaving] = React.useState(false);
+      const [splitAmts, setSplitAmts] = React.useState({});
 
       const updateBlock = (i, field, val) => setBlocks(prev => prev.map((b, idx) => idx === i ? { ...b, [field]: val } : b));
       const removeBlock = (i) => setBlocks(prev => prev.filter((_, idx) => idx !== i));
-
-      const save = async () => {
-        setSaving(true);
-        await updateCell(contractor, colLetter, blocks);
-        setOutgoingsEditCell(null);
-      };
-
-      const splitToMonth = (blockIdx, targetColLetter) => {
-        const b = blocks[blockIdx];
-        const splitAmt = parseFloat((b.amount / 2).toFixed(2));
-        setBlocks(prev => prev.map((bl, i) => i === blockIdx ? { ...bl, amount: splitAmt } : bl));
-        const targetBlocks = [...(contractor.cells[targetColLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))];
-        targetBlocks.push({ ...b, amount: splitAmt });
-        updateCell(contractor, targetColLetter, targetBlocks);
-      };
+      const save = async () => { setSaving(true); await updateCell(contractor, colLetter, blocks); setOutgoingsEditCell(null); };
 
       const currentMonthIdx = outgoingsData?.months.findIndex(m => m.colLetter === colLetter) ?? -1;
       const prevMonth = currentMonthIdx > 0 ? outgoingsData.months[currentMonthIdx - 1] : null;
-      const nextMonth = currentMonthIdx >= 0 && currentMonthIdx < (outgoingsData?.months.length ?? 0) - 1
-        ? outgoingsData.months[currentMonthIdx + 1] : null;
+      const nextMonth = currentMonthIdx >= 0 && currentMonthIdx < (outgoingsData?.months.length ?? 0) - 1 ? outgoingsData.months[currentMonthIdx + 1] : null;
+
+      const doSplit = (blockIdx, targetCol, amt) => {
+        const b = blocks[blockIdx];
+        const splitAmt = parseFloat(amt);
+        if (!splitAmt || splitAmt <= 0 || splitAmt >= b.amount) return;
+        updateBlock(blockIdx, "amount", parseFloat((b.amount - splitAmt).toFixed(2)));
+        const tb = [...(contractor.cells[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
+        tb.push({ ...b, amount: splitAmt });
+        updateCell(contractor, targetCol, tb);
+        setSplitAmts(prev => ({ ...prev, [`${blockIdx}_${targetCol}`]: "" }));
+      };
+
+      const doMove = (blockIdx, targetCol) => {
+        if (!targetCol) return;
+        const b = blocks[blockIdx];
+        setBlocks(prev => prev.filter((_, idx) => idx !== blockIdx));
+        const tb = [...(contractor.cells[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
+        tb.push({ ...b });
+        updateCell(contractor, targetCol, tb);
+      };
 
       return (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -2699,12 +2702,10 @@ export default function TriageSystem({ onBack }) {
                 <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{contractor.name}</h3>
                 <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>{fmtMonthLabel(monthLabel)}</div>
               </div>
-              <button onClick={() => setOutgoingsEditCell(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999", lineHeight: 1 }}>×</button>
+              <button onClick={() => setOutgoingsEditCell(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>x</button>
             </div>
 
-            {blocks.length === 0 && (
-              <div style={{ color: "#bbb", fontSize: "13px", textAlign: "center", padding: "24px 0" }}>No expenses in this cell</div>
-            )}
+            {blocks.length === 0 && <div style={{ color: "#bbb", fontSize: "13px", textAlign: "center", padding: "24px 0" }}>No expenses in this cell</div>}
 
             {blocks.map((b, i) => {
               const sc = getStatusColour(b.status);
@@ -2713,14 +2714,12 @@ export default function TriageSystem({ onBack }) {
                 <div key={i} style={{ border: `1px solid ${sc.border}`, background: sc.bg, borderRadius: "8px", padding: "14px", marginBottom: "14px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
                     <div style={{ fontSize: "10px", color: "#888", fontFamily: "monospace", wordBreak: "break-all", flex: 1, marginRight: "8px" }}>{b.appId}</div>
-                    <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px", whiteSpace: "nowrap" }}>✕ Remove</button>
+                    <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px" }}>Remove</button>
                   </div>
-
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                     <div>
-                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Amount (£)</label>
-                      <input type="number" step="0.01" value={b.amount}
-                        onChange={e => updateBlock(i, "amount", parseFloat(e.target.value) || 0)}
+                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Amount</label>
+                      <input type="number" step="0.01" value={b.amount} onChange={e => updateBlock(i, "amount", parseFloat(e.target.value) || 0)}
                         style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
                     </div>
                     <div>
@@ -2729,92 +2728,66 @@ export default function TriageSystem({ onBack }) {
                         <select value={b.status} onChange={e => updateBlock(i, "status", e.target.value)}
                           style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px" }}>
                           <option value="">—</option>
-                          <option>Received</option>
-                          <option>Paid</option>
-                          <option>Draft</option>
+                          <option>Received</option><option>Paid</option><option>Draft</option>
                         </select>
-                      ) : (
-                        <div style={{ padding: "7px 9px", fontSize: "13px", fontWeight: "600", color: sc.text }}>{b.status || "—"}</div>
-                      )}
+                      ) : <div style={{ padding: "7px 9px", fontSize: "13px", fontWeight: "600", color: sc.text }}>{b.status || "—"}</div>}
                     </div>
                     <div>
                       <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Rec date</label>
-                      <div style={{ padding: "7px 9px", fontSize: "13px", color: "#333" }}>{b.recDate || "—"}</div>
+                      <div style={{ padding: "7px 9px", fontSize: "13px" }}>{b.recDate || "—"}</div>
                     </div>
                     <div>
                       <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Pay date{isManual ? " (editable)" : ""}</label>
                       {isManual ? (
-                        <input type="text" value={b.payDate} placeholder="e.g. 28-Apr-26"
-                          onChange={e => updateBlock(i, "payDate", e.target.value)}
+                        <input type="text" value={b.payDate} placeholder="e.g. 28-Apr-26" onChange={e => updateBlock(i, "payDate", e.target.value)}
                           style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
-                      ) : (
-                        <div style={{ padding: "7px 9px", fontSize: "13px", color: "#333" }}>{b.payDate || "—"}</div>
-                      )}
+                      ) : <div style={{ padding: "7px 9px", fontSize: "13px" }}>{b.payDate || "—"}</div>}
                     </div>
                   </div>
-
                   <div style={{ marginTop: "10px" }}>
                     <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Description</label>
                     <div style={{ padding: "7px 9px", fontSize: "12px", color: "#333", background: "rgba(255,255,255,0.7)", borderRadius: "4px", border: "1px solid rgba(0,0,0,0.06)" }}>{b.description || "—"}</div>
                   </div>
-
-                  {/* Split controls — enter a custom amount to split to an adjacent month */}
                   <div style={{ marginTop: "10px", borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: "10px" }}>
                     <div style={{ fontSize: "11px", color: "#888", marginBottom: "6px" }}>Split portion to another month:</div>
-                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
                       {[...(prevMonth ? [{ m: prevMonth, dir: "◀" }] : []), ...(nextMonth ? [{ m: nextMonth, dir: "▶" }] : [])].map(({ m, dir }) => {
-                        const splitKey = `split_${i}_${m.colLetter}`;
-                        const [splitAmt, setSplitAmt] = React.useState("");
-                        const doSplit = () => {
-                          const amt = parseFloat(splitAmt);
-                          if (!amt || amt <= 0 || amt >= b.amount) return;
-                          // Reduce this block's amount
-                          updateBlock(i, "amount", parseFloat((b.amount - amt).toFixed(2)));
-                          // Add to target month
-                          const targetBlocks = [...(contractor.cells[m.colLetter]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
-                          targetBlocks.push({ ...b, amount: amt });
-                          updateCell(contractor, m.colLetter, targetBlocks);
-                          setSplitAmt("");
-                        };
+                        const key = `${i}_${m.colLetter}`;
                         return (
                           <div key={m.colLetter} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                             <span style={{ fontSize: "11px", color: "#666" }}>{dir} {fmtMonthLabel(m.label)}:</span>
-                            <input type="number" step="0.01" value={splitAmt} onChange={e => setSplitAmt(e.target.value)}
-                              placeholder="£ amt" style={{ width: "80px", padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "12px" }} />
-                            <button onClick={doSplit} disabled={!splitAmt || parseFloat(splitAmt) <= 0 || parseFloat(splitAmt) >= b.amount}
-                              style={{ padding: "4px 8px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", fontSize: "11px", color: "#3a57c4" }}>
-                              Split
-                            </button>
+                            <input type="number" step="0.01" value={splitAmts[key] || ""}
+                              onChange={e => setSplitAmts(prev => ({ ...prev, [key]: e.target.value }))}
+                              placeholder="amt" style={{ width: "70px", padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "12px" }} />
+                            <button onClick={() => doSplit(i, m.colLetter, splitAmts[key])}
+                              disabled={!splitAmts[key] || parseFloat(splitAmts[key]) <= 0 || parseFloat(splitAmts[key]) >= b.amount}
+                              style={{ padding: "4px 8px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", fontSize: "11px", color: "#3a57c4" }}>Split</button>
                           </div>
                         );
                       })}
-                      {!prevMonth && !nextMonth && <span style={{ fontSize: "11px", color: "#bbb" }}>No adjacent months available</span>}
+                      {!prevMonth && !nextMonth && <span style={{ fontSize: "11px", color: "#bbb" }}>No adjacent months visible</span>}
                     </div>
                   </div>
-                  {/* Move entire expense to a different month */}
                   <div style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                    <span style={{ fontSize: "11px", color: "#888" }}>Move entire expense to:</span>
-                    <select defaultValue="" onChange={e => {
-                      const targetCol = e.target.value;
-                      if (!targetCol) return;
-                      // Remove from current cell
-                      setBlocks(prev => prev.filter((_, idx) => idx !== i));
-                      // Add to target month
-                      const targetBlocks = [...(contractor.cells[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
-                      targetBlocks.push({ ...b });
-                      updateCell(contractor, targetCol, targetBlocks);
-                    }} style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "11px" }}>
+                    <span style={{ fontSize: "11px", color: "#888" }}>Move to:</span>
+                    <select value="" onChange={e => doMove(i, e.target.value)}
+                      style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "11px" }}>
                       <option value="">— select month —</option>
                       {(outgoingsData?.months || []).filter(m => m.colLetter !== colLetter).map(m => (
                         <option key={m.colLetter} value={m.colLetter}>{m.label}</option>
                       ))}
                     </select>
                   </div>
+                </div>
+              );
+            })}
+
+            <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end", borderTop: "1px solid #f0f0f0", paddingTop: "16px" }}>
               <button onClick={() => setOutgoingsEditCell(null)}
                 style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
               <button onClick={save} disabled={saving}
                 style={{ padding: "8px 22px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.7 : 1 }}>
-                {saving ? "Saving…" : "Save changes"}
+                {saving ? "Saving..." : "Save changes"}
               </button>
             </div>
           </div>
@@ -2822,7 +2795,6 @@ export default function TriageSystem({ onBack }) {
       );
     };
 
-    // ── Estimate modal ───────────────────────────────────────────────────────
     const EstimateModal = () => {
       if (!outgoingsEstimate) return null;
       const { contractor } = outgoingsEstimate;
@@ -2830,9 +2802,8 @@ export default function TriageSystem({ onBack }) {
       const [payDate, setPayDate] = React.useState("");
       const [desc, setDesc] = React.useState("");
       const [saving, setSaving] = React.useState(false);
-      // Month picker — default to current or nearest visible month
-      const defaultMonthIdx = outgoingsData ? Math.max(0, outgoingsData.months.findIndex(m => m.colLetter === outgoingsEstimate.colLetter)) : 0;
-      const [selectedMonthIdx, setSelectedMonthIdx] = React.useState(defaultMonthIdx);
+      const defaultIdx = outgoingsData ? Math.max(0, outgoingsData.months.findIndex(m => m.colLetter === outgoingsEstimate.colLetter)) : 0;
+      const [selectedMonthIdx, setSelectedMonthIdx] = React.useState(defaultIdx);
       const selectedMonth = outgoingsData?.months[selectedMonthIdx];
 
       const save = async () => {
@@ -2840,15 +2811,10 @@ export default function TriageSystem({ onBack }) {
         setSaving(true);
         const manualId = `MANUAL-ENTRY-${Date.now()}`;
         const existing = (contractor.cells[selectedMonth.colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"));
-        const newBlock = {
-          appId: manualId,
-          amount: parseFloat(amount),
-          status: "",
-          recDate: "",
-          payDate: payDate || "",
+        await updateCell(contractor, selectedMonth.colLetter, [...existing, {
+          appId: manualId, amount: parseFloat(amount), status: "", recDate: "", payDate: payDate || "",
           description: desc || `${contractor.name} estimate`,
-        };
-        await updateCell(contractor, selectedMonth.colLetter, [...existing, newBlock]);
+        }]);
         setOutgoingsEstimate(null);
       };
 
@@ -2861,17 +2827,14 @@ export default function TriageSystem({ onBack }) {
                 <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Add estimate</h3>
                 <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>{contractor.name}</div>
               </div>
-              <button onClick={() => setOutgoingsEstimate(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
+              <button onClick={() => setOutgoingsEstimate(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>x</button>
             </div>
-
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               <div>
                 <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Month *</label>
                 <select value={selectedMonthIdx} onChange={e => setSelectedMonthIdx(parseInt(e.target.value))}
                   style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px" }}>
-                  {(outgoingsData?.months || []).map((m, idx) => (
-                    <option key={m.colLetter} value={idx}>{m.label}</option>
-                  ))}
+                  {(outgoingsData?.months || []).map((m, idx) => <option key={m.colLetter} value={idx}>{m.label}</option>)}
                 </select>
               </div>
               <div>
@@ -2890,13 +2853,12 @@ export default function TriageSystem({ onBack }) {
                   style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }} />
               </div>
             </div>
-
             <div style={{ display: "flex", gap: "8px", marginTop: "20px", justifyContent: "flex-end" }}>
               <button onClick={() => setOutgoingsEstimate(null)}
                 style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
               <button onClick={save} disabled={!amount || saving}
                 style={{ padding: "8px 22px", background: !amount ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: !amount ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
-                {saving ? "Adding…" : "Add estimate"}
+                {saving ? "Adding..." : "Add estimate"}
               </button>
             </div>
           </div>
@@ -2904,8 +2866,6 @@ export default function TriageSystem({ onBack }) {
       );
     };
 
-    // All available clients (may extend beyond just flagged clients)
-    // Use full client list from AutoUpdates, falling back to flagged clients if not loaded yet
     const allClients = allOutgoingsClients.length > 0
       ? allOutgoingsClients
       : [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
@@ -2916,10 +2876,9 @@ export default function TriageSystem({ onBack }) {
         {outgoingsEditCell && <EditModal />}
         {outgoingsEstimate && <EstimateModal />}
 
-        {/* Placing mode banner */}
         {outgoingsPlacing && (
           <div style={{ background: "#1a56db", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px" }}>
-            <span>📌 Placing: <strong>{outgoingsPlacing.description}</strong> — £{outgoingsPlacing.amount.toLocaleString()} · Click a contractor cell to place it</span>
+            <span>Placing: <strong>{outgoingsPlacing.description || outgoingsPlacing.accountName}</strong> — £{(outgoingsPlacing.amount || 0).toLocaleString()} · Click a contractor cell to place it</span>
             <button onClick={() => setOutgoingsPlacing(null)}
               style={{ background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", borderRadius: "4px", padding: "4px 12px", cursor: "pointer", fontSize: "12px" }}>Cancel</button>
           </div>
@@ -2937,11 +2896,10 @@ export default function TriageSystem({ onBack }) {
             )}
           </div>
 
-          {/* Client selector */}
           {noClient && (
             <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
               {outgoingsLoading ? (
-                <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading…</div>
+                <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading...</div>
               ) : (
                 <>
                   <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view their Outgoings tab:</p>
@@ -2952,20 +2910,17 @@ export default function TriageSystem({ onBack }) {
                         {c.clientName}
                       </button>
                     ))}
-                    {allClients.length === 0 && (
-                      <p style={{ color: "#999", fontSize: "13px" }}>No clients available — go to Home and refresh first.</p>
-                    )}
+                    {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet — go to Home and refresh first.</p>}
                   </div>
                 </>
               )}
             </div>
           )}
 
-          {/* Inbox panel */}
           {!noClient && outgoingsInbox.length > 0 && (
             <div style={{ background: "#fff", border: "1px solid #ffc107", borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
               <div style={{ fontSize: "13px", fontWeight: "700", color: "#e65100", marginBottom: "10px" }}>
-                ⚠ Unmatched expenses ({outgoingsInbox.length}) — click to place in a month cell
+                Unmatched expenses ({outgoingsInbox.length}) — click to place in a month cell
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                 {outgoingsInbox.map((exp, i) => {
@@ -2974,8 +2929,8 @@ export default function TriageSystem({ onBack }) {
                     <button key={i} onClick={() => setOutgoingsPlacing(isPlacing ? null : exp)}
                       style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "pointer", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "all 0.15s" }}>
                       <div style={{ fontWeight: "700" }}>{exp.description || exp.accountName}</div>
-                      <div style={{ marginTop: "2px", opacity: 0.8 }}>£{exp.amount.toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
-                      {isPlacing && <div style={{ fontSize: "10px", marginTop: "2px", opacity: 0.8 }}>Click a cell below ▼</div>}
+                      <div style={{ marginTop: "2px", opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
+                      {isPlacing && <div style={{ fontSize: "10px", marginTop: "2px", opacity: 0.8 }}>Click a cell below</div>}
                     </button>
                   );
                 })}
@@ -2983,35 +2938,31 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
-          {/* Main grid */}
           {!noClient && outgoingsData && (
             <>
-              {/* Month navigation */}
               <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
                 <button onClick={() => setOutgoingsMonthOffset(Math.max(0, outgoingsMonthOffset - 1))}
                   disabled={outgoingsMonthOffset === 0}
-                  style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsMonthOffset === 0 ? "default" : "pointer", opacity: outgoingsMonthOffset === 0 ? 0.4 : 1, fontSize: "14px" }}>◀</button>
+                  style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: outgoingsMonthOffset === 0 ? "default" : "pointer", opacity: outgoingsMonthOffset === 0 ? 0.4 : 1 }}>◀</button>
                 <span style={{ fontSize: "13px", color: "#555", minWidth: "140px", textAlign: "center" }}>
                   {fmtMonthLabel(visibleMonths[0]?.label)} – {fmtMonthLabel(visibleMonths[visibleMonths.length - 1]?.label)}
                 </span>
                 <button onClick={() => setOutgoingsMonthOffset(Math.min((outgoingsData.months.length - OUTGOINGS_WINDOW), outgoingsMonthOffset + 1))}
                   disabled={outgoingsMonthOffset >= outgoingsData.months.length - OUTGOINGS_WINDOW}
-                  style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer", fontSize: "14px" }}>▶</button>
+                  style={{ padding: "5px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer" }}>▶</button>
                 <button onClick={() => loadOutgoings(outgoingsClient)}
-                  style={{ marginLeft: "auto", padding: "5px 14px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer", fontSize: "12px" }}>↻ Refresh</button>
+                  style={{ marginLeft: "auto", padding: "5px 14px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "5px", cursor: "pointer", fontSize: "12px" }}>Refresh</button>
               </div>
 
               <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
-                <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${180 + OUTGOINGS_WINDOW * 160}px` }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${190 + OUTGOINGS_WINDOW * 160}px` }}>
                   <colgroup>
                     <col style={{ width: "190px" }} />
                     {visibleMonths.map(m => <col key={m.colLetter} style={{ width: "160px" }} />)}
                   </colgroup>
                   <thead>
                     <tr>
-                      <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", left: 0, zIndex: 2, color: "#444" }}>
-                        Contractor
-                      </th>
+                      <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", left: 0, zIndex: 2 }}>Contractor</th>
                       {visibleMonths.map(m => {
                         const isCurr = isCurrentMonth(m.label);
                         return (
@@ -3025,8 +2976,7 @@ export default function TriageSystem({ onBack }) {
                   <tbody>
                     {outgoingsData.contractors.map((contractor, rowIdx) => (
                       <tr key={contractor.sheetRow} style={{ background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
-                        {/* Contractor name + estimate button */}
-                        <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "500", background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd", position: "sticky", left: 0, zIndex: 1, verticalAlign: "top" }}>
+                        <td style={{ padding: "8px 12px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", fontSize: "12px", background: rowIdx % 2 === 0 ? "#fff" : "#fafbfd", position: "sticky", left: 0, zIndex: 1, verticalAlign: "top" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                             <div>
                               <div style={{ fontWeight: "600", color: "#222" }}>{contractor.name}</div>
@@ -3034,16 +2984,13 @@ export default function TriageSystem({ onBack }) {
                             </div>
                             <button
                               onClick={() => {
-                                // Open estimate modal for current or nearest visible month
                                 const curM = visibleMonths.find(m => isCurrentMonth(m.label)) || visibleMonths[3] || visibleMonths[0];
                                 if (curM) setOutgoingsEstimate({ contractor, colLetter: curM.colLetter, monthLabel: curM.label });
                               }}
                               title="Add estimate"
-                              style={{ background: "none", border: "1px solid #ddd", borderRadius: "4px", cursor: "pointer", color: "#888", fontSize: "14px", padding: "0 4px", lineHeight: "18px", flexShrink: 0, marginLeft: "4px" }}>+</button>
+                              style={{ background: "none", border: "1px solid #ddd", borderRadius: "4px", cursor: "pointer", color: "#888", fontSize: "16px", padding: "0 5px", lineHeight: "18px", flexShrink: 0, marginLeft: "4px" }}>+</button>
                           </div>
                         </td>
-
-                        {/* Month cells */}
                         {visibleMonths.map(m => {
                           const cell = contractor.cells[m.colLetter] || { blocks: [] };
                           const realBlocks = (cell.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"));
@@ -3054,30 +3001,16 @@ export default function TriageSystem({ onBack }) {
 
                           const handleCellClick = async () => {
                             if (outgoingsPlacing) {
-                              // Warn if vendor name doesn't seem to match contractor
                               const exp = outgoingsPlacing;
                               const expDesc = (exp.description || exp.accountName || "").toLowerCase();
-                              const contrName = contractor.name.toLowerCase().split("(")[0].trim(); // e.g. "Scott Coello"
-                              // Simple heuristic: first word of contractor name in description
-                              const firstWord = contrName.split(" ")[0];
-                              const nameMatch = expDesc.includes(firstWord) || contrName.split(" ").some(w => w.length > 3 && expDesc.includes(w));
+                              const contrWords = contractor.name.toLowerCase().replace(/[()]/g, " ").split(/\s+/).filter(w => w.length > 3);
+                              const nameMatch = contrWords.some(w => expDesc.includes(w));
                               if (!nameMatch) {
-                                const ok = window.confirm(
-                                  `⚠️ Vendor mismatch?\n\nExpense: "${exp.description || exp.accountName}"\nContractor: "${contractor.name}"\n\nThe expense description doesn't obviously match this contractor. Place anyway?`
-                                );
+                                const ok = window.confirm("Vendor mismatch?\n\nExpense: \"" + (exp.description || exp.accountName) + "\"\nContractor: \"" + contractor.name + "\"\n\nPlace anyway?");
                                 if (!ok) return;
                               }
-                              const newBlock = {
-                                appId: exp.appId,
-                                amount: exp.amount,
-                                status: exp.status || "",
-                                recDate: exp.date || "",
-                                payDate: exp.datePaid || "",
-                                description: exp.description || exp.accountName || "",
-                              };
-                              const newBlocks = [...realBlocks, newBlock];
-                              await updateCell(contractor, m.colLetter, newBlocks);
-                              // Remove from inbox
+                              const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
+                              await updateCell(contractor, m.colLetter, [...realBlocks, newBlock]);
                               setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
                               setOutgoingsPlacing(null);
                             } else {
@@ -3086,30 +3019,12 @@ export default function TriageSystem({ onBack }) {
                           };
 
                           return (
-                            <td key={m.colLetter}
-                              onClick={handleCellClick}
-                              style={{
-                                padding: "6px 8px",
-                                borderBottom: "1px solid #eee",
-                                borderRight: "1px solid #e0e0e0",
-                                verticalAlign: "top",
-                                cursor: "pointer",
-                                minHeight: "52px",
-                                background: isTarget && isEmpty ? "#f0f4ff"
-                                  : isTarget ? "#e8f0fe"
-                                  : isCurr && !isEmpty ? "#f0f8f0"
-                                  : isEmpty ? "transparent" : "#f8fff8",
-                                outline: isTarget ? "2px dashed #1a56db" : "none",
-                                outlineOffset: "-2px",
-                                transition: "background 0.1s",
-                              }}
-                              onMouseEnter={e => { e.currentTarget.style.background = isTarget ? "#dce8ff" : "#f0f4ff"; }}
-                              onMouseLeave={e => {
-                                e.currentTarget.style.background = isTarget && isEmpty ? "#f0f4ff"
-                                  : isTarget ? "#e8f0fe"
-                                  : isCurr && !isEmpty ? "#f0f8f0"
-                                  : isEmpty ? "transparent" : "#f8fff8";
-                              }}>
+                            <td key={m.colLetter} onClick={handleCellClick}
+                              style={{ padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: "pointer", minHeight: "52px",
+                                background: isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",
+                                outline: isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px" }}
+                              onMouseEnter={e => { e.currentTarget.style.background = "#f0f4ff"; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8"; }}>
                               {!isEmpty ? (
                                 <>
                                   <div style={{ fontWeight: "700", fontSize: "12px", color: "#1a56db", marginBottom: "3px" }}>
@@ -3119,17 +3034,13 @@ export default function TriageSystem({ onBack }) {
                                     const sc = getStatusColour(b.status);
                                     return (
                                       <div key={bi} style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                        £{parseFloat(b.amount).toLocaleString("en-GB", { minimumFractionDigits: 0 })}
-                                        {b.status ? ` · ${b.status}` : ""}
-                                        {realBlocks.length > 1 && <span style={{ opacity: 0.6 }}> (split)</span>}
+                                        £{parseFloat(b.amount).toLocaleString("en-GB", { minimumFractionDigits: 0 })}{b.status ? ` · ${b.status}` : ""}{realBlocks.length > 1 ? " (split)" : ""}
                                       </div>
                                     );
                                   })}
                                 </>
                               ) : (
-                                <div style={{ color: isTarget ? "#1a56db" : "#d0d0d0", fontSize: isTarget ? "16px" : "14px", textAlign: "center", paddingTop: "6px" }}>
-                                  {isTarget ? "⊕" : "+"}
-                                </div>
+                                <div style={{ color: isTarget ? "#1a56db" : "#d0d0d0", fontSize: "18px", textAlign: "center", paddingTop: "4px" }}>{isTarget ? "+" : "+"}</div>
                               )}
                             </td>
                           );
@@ -3146,309 +3057,6 @@ export default function TriageSystem({ onBack }) {
     );
   }
 
-    const visibleMonths = outgoingsData
-      ? outgoingsData.months.slice(outgoingsMonthOffset, outgoingsMonthOffset + OUTGOINGS_WINDOW)
-      : [];
-
-    const fmtMonthLabel = (label) => {
-      // Convert ISO date "2026-04-01" or "01/04/2026" to "Apr-26"
-      try {
-        const d = new Date(label);
-        if (!isNaN(d)) return d.toLocaleString("en-GB", { month: "short", year: "2-digit" });
-      } catch(e) {}
-      return String(label).slice(0, 7);
-    };
-
-    const updateCell = async (contractor, colLetter, newBlocks) => {
-      // Optimistic update
-      setOutgoingsData(prev => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          contractors: prev.contractors.map(c =>
-            c.sheetRow === contractor.sheetRow
-              ? { ...c, cells: { ...c.cells, [colLetter]: { ...c.cells[colLetter], blocks: newBlocks } } }
-              : c
-          ),
-        };
-      });
-      // Write to Sheets
-      try {
-        await fetch("/api/triage", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "update_outgoing_note",
-            clientSheetId: outgoingsClient?.clientSheetId,
-            sheetRow: contractor.sheetRow,
-            colLetter,
-            blocks: newBlocks,
-          }),
-        });
-      } catch(e) { console.error("updateCell error:", e); }
-    };
-
-    const EditModal = () => {
-      if (!outgoingsEditCell) return null;
-      const { contractor, colLetter, monthLabel } = outgoingsEditCell;
-      const [blocks, setBlocks] = React.useState(
-        (contractor.cells[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))
-      );
-
-      const updateBlock = (i, field, val) => setBlocks(prev => prev.map((b, idx) => idx === i ? { ...b, [field]: val } : b));
-      const removeBlock = (i) => setBlocks(prev => prev.filter((_, idx) => idx !== i));
-
-      const save = async () => {
-        await updateCell(contractor, colLetter, blocks);
-        setOutgoingsEditCell(null);
-      };
-
-      return (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={e => { if (e.target === e.currentTarget) setOutgoingsEditCell(null); }}>
-          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(90vw, 640px)", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{contractor.name} — {fmtMonthLabel(monthLabel)}</h3>
-              <button onClick={() => setOutgoingsEditCell(null)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer", color: "#666" }}>×</button>
-            </div>
-
-            {blocks.length === 0 && (
-              <div style={{ color: "#999", fontSize: "13px", textAlign: "center", padding: "20px" }}>No expenses in this cell</div>
-            )}
-
-            {blocks.map((b, i) => {
-              const sc = getStatusColour(b.status);
-              const isManual = b.appId.startsWith("MANUAL-ENTRY");
-              return (
-                <div key={i} style={{ border: `1px solid ${sc.border}`, background: sc.bg, borderRadius: "8px", padding: "12px", marginBottom: "12px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
-                    <div style={{ fontSize: "11px", color: "#888", fontFamily: "monospace" }}>{b.appId}</div>
-                    <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "13px", padding: "0" }}>✕ Remove</button>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-                    <div>
-                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Amount (£)</label>
-                      <input type="number" value={b.amount} onChange={e => updateBlock(i, "amount", parseFloat(e.target.value) || 0)}
-                        style={{ width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "13px", boxSizing: "border-box" }} />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Status</label>
-                      {isManual ? (
-                        <select value={b.status} onChange={e => updateBlock(i, "status", e.target.value)}
-                          style={{ width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "13px" }}>
-                          <option value="">—</option>
-                          <option>Received</option>
-                          <option>Paid</option>
-                          <option>Draft</option>
-                        </select>
-                      ) : (
-                        <div style={{ padding: "6px 8px", fontSize: "13px", color: sc.text, fontWeight: "600" }}>{b.status || "—"}</div>
-                      )}
-                    </div>
-                    <div>
-                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Rec date</label>
-                      <div style={{ padding: "6px 8px", fontSize: "13px", color: "#333" }}>{b.recDate || "—"}</div>
-                    </div>
-                    <div>
-                      <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Pay date{isManual ? " (editable)" : ""}</label>
-                      {isManual ? (
-                        <input type="text" value={b.payDate} placeholder="e.g. 28-Apr-26"
-                          onChange={e => updateBlock(i, "payDate", e.target.value)}
-                          style={{ width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "13px", boxSizing: "border-box" }} />
-                      ) : (
-                        <div style={{ padding: "6px 8px", fontSize: "13px", color: "#333" }}>{b.payDate || "—"}</div>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ marginTop: "8px" }}>
-                    <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "2px" }}>Description</label>
-                    <div style={{ padding: "6px 8px", fontSize: "13px", color: "#333", background: "#fff", borderRadius: "4px", border: "1px solid #eee" }}>{b.description || "—"}</div>
-                  </div>
-                  {/* Split button — copies this block to another month */}
-                  <div style={{ marginTop: "8px", display: "flex", gap: "8px" }}>
-                    <button onClick={() => {
-                      // Reduce amount in this cell, duplicate to adjacent month
-                      const splitAmt = b.amount / 2;
-                      updateBlock(i, "amount", splitAmt);
-                      // Find the next month column
-                      const currentMonthIdx = outgoingsData.months.findIndex(m => m.colLetter === colLetter);
-                      if (currentMonthIdx < outgoingsData.months.length - 1) {
-                        const nextMonth = outgoingsData.months[currentMonthIdx + 1];
-                        const nextBlocks = [...(contractor.cells[nextMonth.colLetter]?.blocks || [])];
-                        nextBlocks.push({ ...b, amount: splitAmt });
-                        updateCell(contractor, nextMonth.colLetter, nextBlocks);
-                      }
-                    }} style={{ fontSize: "11px", padding: "4px 10px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", color: "#3a57c4" }}>
-                      ⤵ Split to next month
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-
-            <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
-              <button onClick={() => setOutgoingsEditCell(null)}
-                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
-              <button onClick={save}
-                style={{ padding: "8px 20px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>Save changes</button>
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    // Client selector if no client loaded
-    const noClient = !outgoingsClient || !outgoingsData;
-
-    return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
-        {outgoingsEditCell && <EditModal />}
-
-        <div style={{ padding: "20px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-            <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>Outgoings — Contractors</h2>
-            {outgoingsClient && (
-              <span style={{ fontSize: "13px", color: "#666" }}>
-                {outgoingsClient.clientName}
-                <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); }}
-                  style={{ marginLeft: "10px", fontSize: "11px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer" }}>Change client</button>
-              </span>
-            )}
-          </div>
-
-          {/* Client selector */}
-          {noClient && (
-            <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
-              {outgoingsLoading ? (
-                <div style={{ textAlign: "center", color: "#999", padding: "20px" }}>Loading…</div>
-              ) : (
-                <>
-                  <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view their Outgoings tab:</p>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {(clientsWithFlags || []).map(c => (
-                      <button key={c.clientName} onClick={() => loadOutgoings(c)}
-                        style={{ padding: "10px 16px", background: "#f8f9ff", border: "1px solid #dde", borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500" }}>
-                        {c.clientName}
-                      </button>
-                    ))}
-                    {(!clientsWithFlags || clientsWithFlags.length === 0) && (
-                      <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet — go to Home and refresh first.</p>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Main grid */}
-          {!noClient && outgoingsData && (
-            <>
-              {/* Month navigation */}
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                <button onClick={() => setOutgoingsMonthOffset(Math.max(0, outgoingsMonthOffset - 1))}
-                  disabled={outgoingsMonthOffset === 0}
-                  style={{ padding: "6px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "6px", cursor: outgoingsMonthOffset === 0 ? "default" : "pointer", opacity: outgoingsMonthOffset === 0 ? 0.4 : 1 }}>◀</button>
-                <span style={{ fontSize: "13px", color: "#666" }}>
-                  {fmtMonthLabel(visibleMonths[0]?.label)} – {fmtMonthLabel(visibleMonths[visibleMonths.length - 1]?.label)}
-                </span>
-                <button onClick={() => setOutgoingsMonthOffset(Math.min(outgoingsData.months.length - OUTGOINGS_WINDOW, outgoingsMonthOffset + 1))}
-                  disabled={outgoingsMonthOffset >= outgoingsData.months.length - OUTGOINGS_WINDOW}
-                  style={{ padding: "6px 12px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer" }}>▶</button>
-                <button onClick={() => loadOutgoings(outgoingsClient)}
-                  style={{ marginLeft: "auto", padding: "6px 14px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>↻ Refresh</button>
-              </div>
-
-              {/* Grid */}
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed" }}>
-                  <colgroup>
-                    <col style={{ width: "180px" }} />
-                    {visibleMonths.map(m => <col key={m.colLetter} style={{ width: "160px" }} />)}
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th style={{ padding: "8px 10px", background: "#f5f5f5", border: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", left: 0, zIndex: 2 }}>Contractor</th>
-                      {visibleMonths.map(m => {
-                        const label = fmtMonthLabel(m.label);
-                        const isCurrentMonth = label === new Date().toLocaleString("en-GB", { month: "short", year: "2-digit" });
-                        return (
-                          <th key={m.colLetter} style={{ padding: "8px 10px", background: isCurrentMonth ? "#e8f0fe" : "#f5f5f5", border: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "center", color: isCurrentMonth ? "#1a56db" : "#333" }}>
-                            {label}
-                          </th>
-                        );
-                      })}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {outgoingsData.contractors.map(contractor => (
-                      <tr key={contractor.sheetRow}>
-                        <td style={{ padding: "8px 10px", border: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "500", background: "#fafafa", position: "sticky", left: 0, zIndex: 1, verticalAlign: "top" }}>
-                          <div>{contractor.name}</div>
-                          <div style={{ fontSize: "10px", color: "#999", marginTop: "2px" }}>
-                            VAT:{contractor.vatFlag} · Inv:{contractor.invTiming} · Pay:{contractor.payTiming}
-                          </div>
-                        </td>
-                        {visibleMonths.map(m => {
-                          const cell = contractor.cells[m.colLetter] || { blocks: [] };
-                          const realBlocks = cell.blocks.filter(b => !b.appId.startsWith("UNRECON-GAP"));
-                          const total = realBlocks.reduce((s, b) => s + b.amount, 0);
-                          const isEmpty = realBlocks.length === 0;
-                          return (
-                            <td key={m.colLetter}
-                              onClick={() => setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label })}
-                              style={{ padding: "6px 8px", border: "1px solid #e0e0e0", verticalAlign: "top", cursor: "pointer", minHeight: "60px",
-                                background: isEmpty ? "#fff" : "#f8fff8",
-                                transition: "background 0.15s" }}
-                              onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"}
-                              onMouseLeave={e => e.currentTarget.style.background = isEmpty ? "#fff" : "#f8fff8"}>
-                              {!isEmpty && (
-                                <>
-                                  <div style={{ fontWeight: "700", fontSize: "12px", color: "#1a56db", marginBottom: "4px" }}>
-                                    £{total.toLocaleString("en-GB", { minimumFractionDigits: 2 })}
-                                  </div>
-                                  {realBlocks.map((b, bi) => {
-                                    const sc = getStatusColour(b.status);
-                                    return (
-                                      <div key={bi} style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text }}>
-                                        £{b.amount.toLocaleString()} {b.status ? `· ${b.status}` : ""}
-                                        {realBlocks.length > 1 && <span style={{ color: "#999" }}> (split)</span>}
-                                      </div>
-                                    );
-                                  })}
-                                </>
-                              )}
-                              {isEmpty && <div style={{ color: "#ccc", fontSize: "11px", textAlign: "center", paddingTop: "8px" }}>+</div>}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Inbox panel — unmatched DirComp expenses */}
-              {outgoingsInbox.length > 0 && (
-                <div style={{ marginTop: "20px", background: "#fff", border: "1px solid #e0e0e0", borderRadius: "12px", padding: "16px" }}>
-                  <h3 style={{ margin: "0 0 12px", fontSize: "14px", fontWeight: "700", color: "#e65100" }}>
-                    ⚠ Unmatched expenses — drag to a month cell to place
-                  </h3>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                    {outgoingsInbox.map((exp, i) => (
-                      <div key={i} style={{ background: "#fff8e1", border: "1px solid #ffc107", borderRadius: "8px", padding: "10px 14px", fontSize: "12px" }}>
-                        <div style={{ fontWeight: "700" }}>{exp.description}</div>
-                        <div style={{ color: "#666", marginTop: "2px" }}>£{exp.amount} · {exp.date}</div>
-                        <div style={{ fontSize: "10px", color: "#999", fontFamily: "monospace", marginTop: "2px" }}>{exp.appId}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </NavShell>
-    );
-  }
 
   if (activeNav === "appLog") {
     // Derive column headers from first row, pad to 22 cols

@@ -1628,7 +1628,9 @@ export default async function handler(req, res) {
           const clientName = String(row[0] || "").trim();
           const clientSheetUrl = row[11];
           const masterSheetUrl = row[12];
+          // Skip header row and any row where name looks like a header
           if (!clientName || !clientSheetUrl) continue;
+          if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
           const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
           const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
           clientsArray.push({ clientName, clientSheetId, masterSheetId });
@@ -1692,6 +1694,43 @@ export default async function handler(req, res) {
       } catch (err) {
         try { await setMasterSwitch(sheets, extractSheetIdFromUrl(sheetId) || sheetId, "DirComp", false); } catch(e) {}
         console.error("❌ get_outgoings_inbox error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "create_outgoings_vendor") {
+      // Inserts a new vendor row at the end of the Contractors section (row 110) in the Outgoings tab.
+      // Cols: A=vendorName, B=vatFlag, C=invTiming, D=payTiming
+      const { clientSheetId, vendorName, vatFlag, invTiming, payTiming } = req.body;
+      if (!clientSheetId || !vendorName) return res.status(400).json({ success: false, error: "Missing clientSheetId or vendorName" });
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        // Find the last used row in the contractors section (rows 13-110)
+        const checkResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Outgoings!A13:A110",
+        });
+        const rows = checkResp.data.values || [];
+        // Find last non-empty row
+        let lastRow = 12; // 0-indexed, row 13
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if (rows[i]?.[0]) { lastRow = 12 + i; break; }
+        }
+        const newRow = lastRow + 2; // one row after last, 1-indexed
+        if (newRow > 110) return res.status(400).json({ success: false, error: "Contractors section is full (max row 110)" });
+
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: sheetIdClean,
+          range: `Outgoings!A${newRow}:D${newRow}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [[vendorName, vatFlag || "Yes", invTiming || "Curr", payTiming || "Curr"]] },
+        });
+
+        console.log(`  ✅ Created new Outgoings vendor "${vendorName}" at row ${newRow}`);
+        return res.status(200).json({ success: true, sheetRow: newRow });
+      } catch (err) {
+        console.error("❌ create_outgoings_vendor error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

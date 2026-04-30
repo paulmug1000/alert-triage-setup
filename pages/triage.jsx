@@ -244,6 +244,7 @@ export default function TriageSystem({ onBack }) {
   const [outgoingsPlacing, setOutgoingsPlacing] = useState(null); // expense being placed { appId, amount, ... }
   const [outgoingsEstimate, setOutgoingsEstimate] = useState(null); // { contractor, colLetter, monthLabel }
   const [outgoingsDragging, setOutgoingsDragging] = useState(null); // { contractor, colLetter, blockIdx, block }
+  const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null); // { exp } — inbox item to place as new vendor
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
   const OUTGOINGS_WINDOW = 7; // months visible at once
@@ -2681,10 +2682,16 @@ export default function TriageSystem({ onBack }) {
       );
       const [saving, setSaving] = React.useState(false);
       const [splitAmts, setSplitAmts] = React.useState({});
+      const blocksRef = React.useRef(blocks);
+      React.useEffect(() => { blocksRef.current = blocks; }, [blocks]);
 
       const updateBlock = (i, field, val) => setBlocks(prev => prev.map((b, idx) => idx === i ? { ...b, [field]: val } : b));
       const removeBlock = (i) => setBlocks(prev => prev.filter((_, idx) => idx !== i));
-      const save = async () => { setSaving(true); await updateCell(contractor, colLetter, blocks); setOutgoingsEditCell(null); };
+      const save = async () => {
+        setSaving(true);
+        await updateCell(contractor, colLetter, blocksRef.current);
+        setOutgoingsEditCell(null);
+      };
 
       const currentMonthIdx = outgoingsData?.months.findIndex(m => m.colLetter === colLetter) ?? -1;
       const prevMonth = currentMonthIdx > 0 ? outgoingsData.months[currentMonthIdx - 1] : null;
@@ -2719,7 +2726,12 @@ export default function TriageSystem({ onBack }) {
       return (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
           onClick={e => { if (e.target === e.currentTarget) setOutgoingsEditCell(null); }}>
-          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 660px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 660px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)", position: "relative" }}>
+            {saving && (
+              <div style={{ position: "absolute", inset: 0, background: "rgba(255,255,255,0.8)", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10, fontSize: "14px", color: "#0066cc", fontWeight: "600" }}>
+                Saving changes...
+              </div>
+            )}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{contractor.name}</h3>
@@ -2736,7 +2748,7 @@ export default function TriageSystem({ onBack }) {
               return (
                 <div key={i} style={{ border: `1px solid ${sc.border}`, background: sc.bg, borderRadius: "8px", padding: "14px", marginBottom: "14px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
-                    <div style={{ fontSize: "10px", color: "#888", fontFamily: "monospace", wordBreak: "break-all", flex: 1, marginRight: "8px" }}>{b.appId}</div>
+                    <div style={{ fontSize: "11px", color: "#888", fontFamily: "monospace", wordBreak: "break-all", flex: 1, marginRight: "8px" }}>{b.appId}</div>
                     <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px" }}>Remove</button>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
@@ -2889,7 +2901,95 @@ export default function TriageSystem({ onBack }) {
       );
     };
 
-    const allClients = allOutgoingsClients.length > 0
+    const NewVendorModal = () => {
+      if (!outgoingsNewVendor) return null;
+      const { exp } = outgoingsNewVendor;
+      const [vendorName, setVendorName] = React.useState(exp.description || exp.accountName || "");
+      const [vatFlag, setVatFlag] = React.useState("Yes");
+      const [invTiming, setInvTiming] = React.useState("Curr");
+      const [payTiming, setPayTiming] = React.useState("Curr");
+      const [saving, setSaving] = React.useState(false);
+      const [error, setError] = React.useState("");
+
+      const save = async () => {
+        if (!vendorName.trim()) { setError("Please enter a vendor name"); return; }
+        setSaving(true);
+        try {
+          const res = await fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "create_outgoings_vendor",
+              clientSheetId: outgoingsClient?.clientSheetId,
+              vendorName: vendorName.trim(),
+              vatFlag, invTiming, payTiming,
+            }),
+          });
+          const data = await res.json();
+          if (!data.success) { setError(data.error || "Failed to create vendor"); setSaving(false); return; }
+          // Refresh outgoings to pick up new row
+          await loadOutgoings(outgoingsClient);
+          setOutgoingsNewVendor(null);
+        } catch(e) { setError(e.message); setSaving(false); }
+      };
+
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setOutgoingsNewVendor(null); }}>
+          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 440px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Create new vendor</h3>
+              <button onClick={() => setOutgoingsNewVendor(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>x</button>
+            </div>
+            <div style={{ fontSize: "12px", color: "#888", background: "#f8f8f8", borderRadius: "6px", padding: "10px", marginBottom: "16px" }}>
+              <strong>Expense to place:</strong> {exp.description || exp.accountName} — £{exp.amount}<br/>
+              <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{exp.appId}</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <div>
+                <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Vendor name (col A) *</label>
+                <input type="text" value={vendorName} onChange={e => setVendorName(e.target.value)} autoFocus
+                  style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px" }}>
+                <div>
+                  <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>VAT?</label>
+                  <select value={vatFlag} onChange={e => setVatFlag(e.target.value)}
+                    style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px" }}>
+                    <option>Yes</option><option>No</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Inv timing</label>
+                  <select value={invTiming} onChange={e => setInvTiming(e.target.value)}
+                    style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px" }}>
+                    <option>Curr</option><option>Next</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Pay timing</label>
+                  <select value={payTiming} onChange={e => setPayTiming(e.target.value)}
+                    style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px" }}>
+                    <option>Curr</option><option>Next</option>
+                  </select>
+                </div>
+              </div>
+              {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px" }}>{error}</div>}
+            </div>
+            <p style={{ fontSize: "11px", color: "#999", margin: "12px 0 0" }}>
+              A new row will be inserted in the Contractors section of the Outgoings tab. You can then place the expense in the correct month cell.
+            </p>
+            <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
+              <button onClick={() => setOutgoingsNewVendor(null)}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+              <button onClick={save} disabled={saving || !vendorName.trim()}
+                style={{ padding: "8px 22px", background: saving || !vendorName.trim() ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                {saving ? "Creating..." : "Create vendor"}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
       ? allOutgoingsClients
       : [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
     const noClient = !outgoingsClient || !outgoingsData;
@@ -2898,6 +2998,7 @@ export default function TriageSystem({ onBack }) {
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {outgoingsEditCell && <EditModal />}
         {outgoingsEstimate && <EstimateModal />}
+        {outgoingsNewVendor && <NewVendorModal />}
 
         {outgoingsPlacing && (
           <div style={{ background: "#1a56db", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px" }}>
@@ -2956,12 +3057,28 @@ export default function TriageSystem({ onBack }) {
                     {outgoingsInbox.map((exp, i) => {
                       const isPlacing = outgoingsPlacing?.appId === exp.appId;
                       return (
-                        <button key={i} onClick={() => setOutgoingsPlacing(isPlacing ? null : exp)}
-                          style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "pointer", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "all 0.15s" }}>
+                        <div key={i} style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
+                        <button key={i}
+                          draggable
+                          onDragStart={e => {
+                            e.dataTransfer.effectAllowed = "copy";
+                            setOutgoingsPlacing(exp);
+                          }}
+                          onDragEnd={() => {
+                            // Only clear if it wasn't placed (placed clears it in onDrop)
+                          }}
+                          onClick={() => setOutgoingsPlacing(isPlacing ? null : exp)}
+                          style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "grab", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "all 0.15s", display: "flex", flexDirection: "column", gap: "2px" }}>
                           <div style={{ fontWeight: "700" }}>{exp.description || exp.accountName}</div>
-                          <div style={{ marginTop: "2px", opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
-                          {isPlacing && <div style={{ fontSize: "10px", marginTop: "2px", opacity: 0.8 }}>Click a cell below</div>}
+                          <div style={{ opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
+                          {isPlacing && <div style={{ fontSize: "10px", opacity: 0.8 }}>Click a cell or drag below</div>}
                         </button>
+                        <button onClick={e => { e.stopPropagation(); setOutgoingsNewVendor({ exp }); }}
+                          title="Create new vendor row for this expense"
+                          style={{ fontSize: "10px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555", whiteSpace: "nowrap" }}>
+                          + New vendor
+                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -3055,24 +3172,46 @@ export default function TriageSystem({ onBack }) {
 
                           return (
                             <td key={m.colLetter} onClick={handleCellClick}
-                              onDragOver={e => { if (outgoingsDragging) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
+                              onDragOver={e => { if (outgoingsDragging || outgoingsPlacing) { e.preventDefault(); e.dataTransfer.dropEffect = outgoingsDragging ? "move" : "copy"; } }}
                               onDrop={async e => {
                                 e.preventDefault();
+
+                                // Case 1: Dragging from inbox
+                                if (outgoingsPlacing && !outgoingsDragging) {
+                                  const exp = outgoingsPlacing;
+                                  const expDesc = (exp.description || exp.accountName || "").toLowerCase();
+                                  const contrWords = contractor.name.toLowerCase().replace(/[()]/g, " ").split(/\s+/).filter(w => w.length > 3);
+                                  const nameMatch = contrWords.some(w => expDesc.includes(w));
+                                  if (!nameMatch) {
+                                    const ok = window.confirm("Vendor mismatch?\n\nExpense: \"" + (exp.description || exp.accountName) + "\"\nContractor: \"" + contractor.name + "\"\n\nPlace anyway?");
+                                    if (!ok) { setOutgoingsPlacing(null); return; }
+                                  }
+                                  const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
+                                  const newBlocks = [...realBlocks, newBlock];
+                                  setOutgoingsData(prev => {
+                                    if (!prev) return prev;
+                                    return { ...prev, contractors: prev.contractors.map(c => c.sheetRow === contractor.sheetRow ? { ...c, cells: { ...c.cells, [m.colLetter]: { ...c.cells[m.colLetter], blocks: newBlocks } } } : c) };
+                                  });
+                                  setOutgoingsInbox(prev => prev.filter(ex => ex.appId !== exp.appId));
+                                  setOutgoingsPlacing(null);
+                                  fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ action: "update_outgoing_note", clientSheetId: outgoingsClient?.clientSheetId, sheetRow: contractor.sheetRow, colLetter: m.colLetter, blocks: newBlocks }) }).catch(console.error);
+                                  return;
+                                }
+
+                                // Case 2: Dragging from another cell
                                 if (!outgoingsDragging) return;
                                 const { contractor: srcContractor, colLetter: srcCol, blockIdx, block } = outgoingsDragging;
                                 setOutgoingsDragging(null);
-                                if (srcContractor.sheetRow === contractor.sheetRow && srcCol === m.colLetter) return; // same cell
-                                // Compute new blocks for both cells
+                                if (srcContractor.sheetRow === contractor.sheetRow && srcCol === m.colLetter) return;
                                 const srcBlocks = (srcContractor.cells[srcCol]?.blocks || []).filter((b, i) => i !== blockIdx);
                                 const tgtBlocks = [...realBlocks, { ...block }];
-                                // Update both cells atomically in one state update
                                 setOutgoingsData(prev => {
                                   if (!prev) return prev;
                                   return {
                                     ...prev,
                                     contractors: prev.contractors.map(c => {
                                       if (c.sheetRow === srcContractor.sheetRow && c.sheetRow === contractor.sheetRow) {
-                                        // Same contractor, different months
                                         return { ...c, cells: { ...c.cells, [srcCol]: { ...c.cells[srcCol], blocks: srcBlocks }, [m.colLetter]: { ...c.cells[m.colLetter], blocks: tgtBlocks } } };
                                       } else if (c.sheetRow === srcContractor.sheetRow) {
                                         return { ...c, cells: { ...c.cells, [srcCol]: { ...c.cells[srcCol], blocks: srcBlocks } } };
@@ -3083,7 +3222,6 @@ export default function TriageSystem({ onBack }) {
                                     }),
                                   };
                                 });
-                                // Write both to Sheets (fire and forget — optimistic update already applied)
                                 fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify({ action: "update_outgoing_note", clientSheetId: outgoingsClient?.clientSheetId, sheetRow: srcContractor.sheetRow, colLetter: srcCol, blocks: srcBlocks }) }).catch(console.error);
                                 fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },

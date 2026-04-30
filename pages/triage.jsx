@@ -243,6 +243,8 @@ export default function TriageSystem({ onBack }) {
   const [outgoingsInbox, setOutgoingsInbox] = useState([]); // unmatched expenses from DirComp
   const [outgoingsPlacing, setOutgoingsPlacing] = useState(null); // expense being placed { appId, amount, ... }
   const [outgoingsEstimate, setOutgoingsEstimate] = useState(null); // { contractor, colLetter, monthLabel }
+  const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
+  const [allClientsLoaded, setAllClientsLoaded] = useState(false);
   const OUTGOINGS_WINDOW = 7; // months visible at once
   const [appLogData, setAppLogData] = useState([]);
   const [appLogLoading, setAppLogLoading] = useState(false);
@@ -316,7 +318,18 @@ export default function TriageSystem({ onBack }) {
   const handleNavOverview = () => { setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
   const handleNavAppLog = () => { setActiveNav("appLog"); loadAppLog(); };
-  const handleNavOutgoings = () => { setActiveNav("outgoings"); };
+  const handleNavOutgoings = () => {
+    setActiveNav("outgoings");
+    if (!allClientsLoaded) {
+      // Load all clients from AutoUpdates tab
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
+      }).then(r => r.json()).then(data => {
+        if (data.success) { setAllOutgoingsClients(data.clients); setAllClientsLoaded(true); }
+      }).catch(e => console.error("get_all_clients error:", e));
+    }
+  };
 
   // ── Task handlers ─────────────────────────────────────────────────────────
 
@@ -2745,26 +2758,58 @@ export default function TriageSystem({ onBack }) {
                     <div style={{ padding: "7px 9px", fontSize: "12px", color: "#333", background: "rgba(255,255,255,0.7)", borderRadius: "4px", border: "1px solid rgba(0,0,0,0.06)" }}>{b.description || "—"}</div>
                   </div>
 
-                  {/* Split controls */}
-                  <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                    {prevMonth && (
-                      <button onClick={() => splitToMonth(i, prevMonth.colLetter)}
-                        style={{ fontSize: "11px", padding: "4px 10px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", color: "#3a57c4" }}>
-                        ◀ Split to {fmtMonthLabel(prevMonth.label)}
-                      </button>
-                    )}
-                    {nextMonth && (
-                      <button onClick={() => splitToMonth(i, nextMonth.colLetter)}
-                        style={{ fontSize: "11px", padding: "4px 10px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", color: "#3a57c4" }}>
-                        Split to {fmtMonthLabel(nextMonth.label)} ▶
-                      </button>
-                    )}
+                  {/* Split controls — enter a custom amount to split to an adjacent month */}
+                  <div style={{ marginTop: "10px", borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: "10px" }}>
+                    <div style={{ fontSize: "11px", color: "#888", marginBottom: "6px" }}>Split portion to another month:</div>
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                      {[...(prevMonth ? [{ m: prevMonth, dir: "◀" }] : []), ...(nextMonth ? [{ m: nextMonth, dir: "▶" }] : [])].map(({ m, dir }) => {
+                        const splitKey = `split_${i}_${m.colLetter}`;
+                        const [splitAmt, setSplitAmt] = React.useState("");
+                        const doSplit = () => {
+                          const amt = parseFloat(splitAmt);
+                          if (!amt || amt <= 0 || amt >= b.amount) return;
+                          // Reduce this block's amount
+                          updateBlock(i, "amount", parseFloat((b.amount - amt).toFixed(2)));
+                          // Add to target month
+                          const targetBlocks = [...(contractor.cells[m.colLetter]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
+                          targetBlocks.push({ ...b, amount: amt });
+                          updateCell(contractor, m.colLetter, targetBlocks);
+                          setSplitAmt("");
+                        };
+                        return (
+                          <div key={m.colLetter} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                            <span style={{ fontSize: "11px", color: "#666" }}>{dir} {fmtMonthLabel(m.label)}:</span>
+                            <input type="number" step="0.01" value={splitAmt} onChange={e => setSplitAmt(e.target.value)}
+                              placeholder="£ amt" style={{ width: "80px", padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "12px" }} />
+                            <button onClick={doSplit} disabled={!splitAmt || parseFloat(splitAmt) <= 0 || parseFloat(splitAmt) >= b.amount}
+                              style={{ padding: "4px 8px", background: "#f0f4ff", border: "1px solid #c5cff0", borderRadius: "4px", cursor: "pointer", fontSize: "11px", color: "#3a57c4" }}>
+                              Split
+                            </button>
+                          </div>
+                        );
+                      })}
+                      {!prevMonth && !nextMonth && <span style={{ fontSize: "11px", color: "#bbb" }}>No adjacent months available</span>}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-
-            <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end", borderTop: "1px solid #f0f0f0", paddingTop: "16px" }}>
+                  {/* Move entire expense to a different month */}
+                  <div style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: "11px", color: "#888" }}>Move entire expense to:</span>
+                    <select defaultValue="" onChange={e => {
+                      const targetCol = e.target.value;
+                      if (!targetCol) return;
+                      // Remove from current cell
+                      setBlocks(prev => prev.filter((_, idx) => idx !== i));
+                      // Add to target month
+                      const targetBlocks = [...(contractor.cells[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
+                      targetBlocks.push({ ...b });
+                      updateCell(contractor, targetCol, targetBlocks);
+                    }} style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "11px" }}>
+                      <option value="">— select month —</option>
+                      {(outgoingsData?.months || []).filter(m => m.colLetter !== colLetter).map(m => (
+                        <option key={m.colLetter} value={m.colLetter}>{m.label}</option>
+                      ))}
+                    </select>
+                  </div>
               <button onClick={() => setOutgoingsEditCell(null)}
                 style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
               <button onClick={save} disabled={saving}
@@ -2780,17 +2825,21 @@ export default function TriageSystem({ onBack }) {
     // ── Estimate modal ───────────────────────────────────────────────────────
     const EstimateModal = () => {
       if (!outgoingsEstimate) return null;
-      const { contractor, colLetter, monthLabel } = outgoingsEstimate;
+      const { contractor } = outgoingsEstimate;
       const [amount, setAmount] = React.useState("");
       const [payDate, setPayDate] = React.useState("");
       const [desc, setDesc] = React.useState("");
       const [saving, setSaving] = React.useState(false);
+      // Month picker — default to current or nearest visible month
+      const defaultMonthIdx = outgoingsData ? Math.max(0, outgoingsData.months.findIndex(m => m.colLetter === outgoingsEstimate.colLetter)) : 0;
+      const [selectedMonthIdx, setSelectedMonthIdx] = React.useState(defaultMonthIdx);
+      const selectedMonth = outgoingsData?.months[selectedMonthIdx];
 
       const save = async () => {
-        if (!amount) return;
+        if (!amount || !selectedMonth) return;
         setSaving(true);
         const manualId = `MANUAL-ENTRY-${Date.now()}`;
-        const existing = (contractor.cells[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"));
+        const existing = (contractor.cells[selectedMonth.colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"));
         const newBlock = {
           appId: manualId,
           amount: parseFloat(amount),
@@ -2799,23 +2848,32 @@ export default function TriageSystem({ onBack }) {
           payDate: payDate || "",
           description: desc || `${contractor.name} estimate`,
         };
-        await updateCell(contractor, colLetter, [...existing, newBlock]);
+        await updateCell(contractor, selectedMonth.colLetter, [...existing, newBlock]);
         setOutgoingsEstimate(null);
       };
 
       return (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
           onClick={e => { if (e.target === e.currentTarget) setOutgoingsEstimate(null); }}>
-          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 420px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 440px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Add estimate</h3>
-                <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>{contractor.name} — {fmtMonthLabel(monthLabel)}</div>
+                <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>{contractor.name}</div>
               </div>
               <button onClick={() => setOutgoingsEstimate(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <div>
+                <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Month *</label>
+                <select value={selectedMonthIdx} onChange={e => setSelectedMonthIdx(parseInt(e.target.value))}
+                  style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px" }}>
+                  {(outgoingsData?.months || []).map((m, idx) => (
+                    <option key={m.colLetter} value={idx}>{m.label}</option>
+                  ))}
+                </select>
+              </div>
               <div>
                 <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px" }}>Amount (£) *</label>
                 <input type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" autoFocus
@@ -2847,7 +2905,10 @@ export default function TriageSystem({ onBack }) {
     };
 
     // All available clients (may extend beyond just flagged clients)
-    const allClients = [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
+    // Use full client list from AutoUpdates, falling back to flagged clients if not loaded yet
+    const allClients = allOutgoingsClients.length > 0
+      ? allOutgoingsClients
+      : [...(clientsWithFlags || [])].sort((a, b) => a.clientName.localeCompare(b.clientName));
     const noClient = !outgoingsClient || !outgoingsData;
 
     return withModal(
@@ -2870,7 +2931,7 @@ export default function TriageSystem({ onBack }) {
             {outgoingsClient && (
               <span style={{ fontSize: "13px", color: "#666", display: "flex", alignItems: "center", gap: "8px" }}>
                 {outgoingsClient.clientName}
-                <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); setOutgoingsInbox([]); setOutgoingsPlacing(null); }}
+                <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); setOutgoingsInbox([]); setOutgoingsPlacing(null); setAllOutgoingsClients([]); setAllClientsLoaded(false); }}
                   style={{ fontSize: "11px", padding: "3px 10px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer" }}>Change client</button>
               </span>
             )}
@@ -2993,8 +3054,19 @@ export default function TriageSystem({ onBack }) {
 
                           const handleCellClick = async () => {
                             if (outgoingsPlacing) {
-                              // Place the inbox expense into this cell
+                              // Warn if vendor name doesn't seem to match contractor
                               const exp = outgoingsPlacing;
+                              const expDesc = (exp.description || exp.accountName || "").toLowerCase();
+                              const contrName = contractor.name.toLowerCase().split("(")[0].trim(); // e.g. "Scott Coello"
+                              // Simple heuristic: first word of contractor name in description
+                              const firstWord = contrName.split(" ")[0];
+                              const nameMatch = expDesc.includes(firstWord) || contrName.split(" ").some(w => w.length > 3 && expDesc.includes(w));
+                              if (!nameMatch) {
+                                const ok = window.confirm(
+                                  `⚠️ Vendor mismatch?\n\nExpense: "${exp.description || exp.accountName}"\nContractor: "${contractor.name}"\n\nThe expense description doesn't obviously match this contractor. Place anyway?`
+                                );
+                                if (!ok) return;
+                              }
                               const newBlock = {
                                 appId: exp.appId,
                                 amount: exp.amount,

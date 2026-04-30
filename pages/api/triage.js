@@ -1685,80 +1685,78 @@ export default async function handler(req, res) {
 
     } else if (action === "get_outgoings") {
       // Reads the Outgoings tab from the client sheet.
-      // Returns contractor rows (13-110), month columns (G onwards), and parsed note blocks.
+      // Returns contractor rows (rows 13-110), month columns (G+), and parsed note blocks.
       const { clientSheetId } = req.body;
       if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
       try {
         const sheets = await getSheetsClient();
         const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
-        // Read row 1 (month headers) and rows 13-110 (contractors), cols A-BG (cols 1-59)
-        const [headerResp, dataResp, notesMetaResp] = await Promise.all([
-          sheets.spreadsheets.values.get({
-            spreadsheetId: sheetIdClean,
-            range: "Outgoings!A1:BG1",
-            valueRenderOption: "FORMATTED_VALUE",
-          }),
-          sheets.spreadsheets.values.get({
-            spreadsheetId: sheetIdClean,
-            range: "Outgoings!A13:BG110",
-            valueRenderOption: "FORMATTED_VALUE",
-          }),
-          // We can't get notes via values API — use spreadsheets.get for notes
-          sheets.spreadsheets.get({
-            spreadsheetId: sheetIdClean,
-            ranges: ["Outgoings!A1:BG1", "Outgoings!A13:BG110"],
-            includeGridData: true,
-            fields: "sheets.data.rowData.values.note,sheets.data.rowData.values.formattedValue,sheets.data.startRow,sheets.data.startColumn",
-          }),
-        ]);
+        // Use spreadsheets.get with includeGridData to get both values AND notes in one call.
+        // FORMATTED_VALUE gives us the rendered date string for month headers.
+        const gridResp = await sheets.spreadsheets.get({
+          spreadsheetId: sheetIdClean,
+          ranges: ["Outgoings!A1:BG1", "Outgoings!A13:BG110"],
+          includeGridData: true,
+          fields: "sheets.data.rowData.values(formattedValue,note,effectiveValue)",
+          // Don't use startRow/startColumn as fields — they're properties of data, not values
+        });
 
-        const headerRow = headerResp.data.values?.[0] || [];
-        const dataRows = dataResp.data.values || [];
+        const sheetGrids = gridResp.data.sheets?.[0]?.data || [];
+        // sheetGrids[0] = row 1 (header), sheetGrids[1] = rows 13-110 (contractors)
+        const headerGridData = sheetGrids[0];
+        const contractorGridData = sheetGrids[1];
 
-        // Find month columns from header row — cols G onwards (index 6+) that have date values
+        const headerCells = headerGridData?.rowData?.[0]?.values || [];
+        const contractorRows = contractorGridData?.rowData || [];
+
+        // Find month columns from header (col G = index 6 onwards).
+        // The header contains date formula results — they come back as effectiveValue.numberValue
+        // (Sheets serial date) and formattedValue (e.g. "01/04/2026" or "Apr-26").
+        // We accept any col G+ that has a numeric effectiveValue (date serial) or
+        // a formattedValue that looks like a date.
+        const SHEET_EPOCH = new Date(1899, 11, 30); // Sheets serial date epoch
         const months = [];
-        for (let i = 6; i < headerRow.length; i++) {
-          const val = headerRow[i];
-          if (val && String(val).match(/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec/i)) {
-            months.push({ colIndex: i, colLetter: colIndexToLetter(i + 1), label: val });
-          } else if (val && String(val).match(/^\d{4}/)) {
-            // ISO date format
-            months.push({ colIndex: i, colLetter: colIndexToLetter(i + 1), label: val });
+        for (let i = 6; i < headerCells.length; i++) {
+          const cell = headerCells[i];
+          if (!cell) continue;
+          const fv = cell.formattedValue || "";
+          const ev = cell.effectiveValue;
+
+          // Skip total columns (contain "total" in formatted value)
+          if (fv.toLowerCase().includes("total") || fv.toLowerCase().includes("fy")) continue;
+
+          let dateObj = null;
+          if (ev?.numberValue) {
+            // Sheets serial date → JS Date
+            const d = new Date(SHEET_EPOCH.getTime() + ev.numberValue * 86400000);
+            if (!isNaN(d.getTime()) && d.getFullYear() > 2020) dateObj = d;
+          }
+          if (!dateObj && fv) {
+            const d = new Date(fv);
+            if (!isNaN(d.getTime()) && d.getFullYear() > 2020) dateObj = d;
+          }
+
+          if (dateObj) {
+            const label = dateObj.toLocaleString("en-GB", { month: "short", year: "2-digit" });
+            const isoMonth = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}`;
+            months.push({ colIndex: i, colLetter: colIndexToLetter(i + 1), label, isoMonth, dateObj: dateObj.toISOString() });
           }
         }
 
-        // Parse notes from spreadsheets.get response
-        const notesByCell = {}; // key: "row_col" (0-indexed from data start)
-        const sheetsData = notesMetaResp.data.sheets?.[0]?.data || [];
-        for (const gridData of sheetsData) {
-          const startRow = gridData.startRow || 0;
-          const startCol = gridData.startColumn || 0;
-          for (let r = 0; r < (gridData.rowData || []).length; r++) {
-            const rowData = gridData.rowData[r];
-            for (let c = 0; c < (rowData?.values || []).length; c++) {
-              const cell = rowData.values[c];
-              if (cell?.note) {
-                notesByCell[`${startRow + r}_${startCol + c}`] = cell.note;
-              }
-            }
-          }
-        }
-
-        // Helper: parse note blocks from a note string
+        // Helper: parse note blocks
         const parseNoteBlocks = (note) => {
           if (!note) return [];
           const blocks = [];
-          // Match each block: {App ID: ...}{Amt: ...}...{Description: ...}
           const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
           let match;
           while ((match = blockRegex.exec(note)) !== null) {
             blocks.push({
-              appId: match[1]?.trim() || "",
-              amount: parseFloat(match[2]) || 0,
-              status: match[3]?.trim() || "",
-              recDate: match[4]?.trim() || "",
-              payDate: match[5]?.trim() || "",
+              appId:       match[1]?.trim() || "",
+              amount:      parseFloat(match[2]) || 0,
+              status:      match[3]?.trim() || "",
+              recDate:     match[4]?.trim() || "",
+              payDate:     match[5]?.trim() || "",
               description: match[6]?.trim() || "",
             });
           }
@@ -1767,47 +1765,63 @@ export default async function handler(req, res) {
 
         // Build contractor rows
         const contractors = [];
-        for (let r = 0; r < dataRows.length; r++) {
-          const row = dataRows[r];
-          const name = String(row[0] || "").trim();
+        for (let r = 0; r < contractorRows.length; r++) {
+          const rowCells = contractorRows[r]?.values || [];
+          const name = String(rowCells[0]?.formattedValue || "").trim();
           if (!name) continue;
+          // Skip section header rows (e.g. "Contractors", totals)
+          if (name.toLowerCase() === "contractors" || name.startsWith("Total") || name.startsWith("=")) continue;
 
-          const vatFlag = String(row[1] || "").trim();
-          const invTiming = String(row[2] || "").trim();
-          const payTiming = String(row[3] || "").trim();
+          const vatFlag   = String(rowCells[1]?.formattedValue || "").trim();
+          const invTiming = String(rowCells[2]?.formattedValue || "").trim();
+          const payTiming = String(rowCells[3]?.formattedValue || "").trim();
 
-          // Build month cells
           const cells = {};
           for (const month of months) {
-            const colIdx = month.colIndex;
-            const cellValue = row[colIdx] || "";
-            // Note key: row 13 = grid row 12 (0-indexed) + notes start at row 12 (1:BG1=row0, 13:=row12)
-            // The second grid data starts at row 12 (Outgoings!A13 = row index 12)
-            const noteKey = `${12 + r}_${colIdx}`;
-            const note = notesByCell[noteKey] || "";
-            const blocks = parseNoteBlocks(note);
-            cells[month.colLetter] = {
-              value: cellValue,
-              note,
-              blocks,
-            };
+            const cellData = rowCells[month.colIndex];
+            const note = cellData?.note || "";
+            const value = cellData?.formattedValue || "";
+            cells[month.colLetter] = { value, note, blocks: parseNoteBlocks(note) };
           }
 
-          contractors.push({
-            sheetRow: 13 + r,
-            name,
-            vatFlag,
-            invTiming,
-            payTiming,
-            cells,
-          });
+          contractors.push({ sheetRow: 13 + r, name, vatFlag, invTiming, payTiming, cells });
         }
 
+        console.log(`  ✅ get_outgoings: ${contractors.length} contractors, ${months.length} months`);
         return res.status(200).json({ success: true, contractors, months });
       } catch (err) {
         console.error("❌ get_outgoings error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
+
+    } else if (action === "get_all_clients") {
+      // Reads all clients from AutoUpdates tab (col A = client name, col B = clientSheetId, col C = masterSheetId)
+      // Used for the Outgoings client selector — not limited to clients with active flags.
+      const { automationCommanderSheetId: acId } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const acIdClean = extractSheetIdFromUrl(acId) || acId;
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: acIdClean,
+          range: "AutoUpdates!A2:C200",
+        });
+        const rows = resp.data.values || [];
+        const clients = rows
+          .filter(r => r[0] && r[1])
+          .map(r => ({
+            clientName:    String(r[0]).trim(),
+            clientSheetId: String(r[1]).trim(),
+            masterSheetId: String(r[2] || "").trim(),
+          }))
+          .sort((a, b) => a.clientName.localeCompare(b.clientName));
+        return res.status(200).json({ success: true, clients });
+      } catch (err) {
+        console.error("❌ get_all_clients error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_app_log") {
 
     } else if (action === "update_outgoing_note") {
       // Writes a new note to a specific Outgoings cell.

@@ -258,7 +258,9 @@ export default function TriageSystem({ onBack }) {
   const outgoingsPlacingRef = React.useRef(null);
   const setOutgoingsPlacing = (val) => { outgoingsPlacingRef.current = val; setOutgoingsPlacingState(val); };
   const [outgoingsEstimate, setOutgoingsEstimate] = useState(null); // { contractor, colLetter, monthLabel }
-  const [outgoingsDragging, setOutgoingsDragging] = useState(null); // { contractor, colLetter, blockIdx, block }
+  const [outgoingsDragging, setOutgoingsDraggingState] = useState(null); // { contractor, colLetter, blockIdx, block }
+  const outgoingsDraggingRef = React.useRef(null);
+  const setOutgoingsDragging = (val) => { outgoingsDraggingRef.current = val; setOutgoingsDraggingState(val); };
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null); // { exp } — inbox item to place as new vendor
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
@@ -3101,15 +3103,21 @@ export default function TriageSystem({ onBack }) {
                         <div key={i} style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
                         <div
                           draggable
-                          onMouseDown={() => setOutgoingsPlacing(exp)}
+                          onMouseDown={() => { setOutgoingsPlacing(exp); }}
                           onDragStart={e => {
                             e.dataTransfer.effectAllowed = "copy";
                             e.dataTransfer.setData("text/plain", exp.appId);
+                            // Mark as dragging so onClick doesn't toggle it off
+                            e.currentTarget._wasDragged = true;
                           }}
                           onDragEnd={e => {
                             if (e.dataTransfer.dropEffect === "none") setOutgoingsPlacing(null);
+                            e.currentTarget._wasDragged = false;
                           }}
-                          onClick={() => setOutgoingsPlacing(isPlacing ? null : exp)}
+                          onClick={e => {
+                            if (e.currentTarget._wasDragged) return;
+                            setOutgoingsPlacing(outgoingsPlacingRef.current?.appId === exp.appId ? null : exp);
+                          }}
                           style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "grab", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "background 0.1s, border-color 0.1s", display: "flex", flexDirection: "column", gap: "2px", userSelect: "none" }}>
                           <div style={{ fontWeight: "700" }}>{exp.description || exp.accountName}</div>
                           <div style={{ opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
@@ -3205,8 +3213,8 @@ export default function TriageSystem({ onBack }) {
                           const isCurr = isCurrentMonth(m.isoMonth || m.label);
 
                           const handleCellClick = async () => {
-                            if (outgoingsPlacing) {
-                              const exp = outgoingsPlacing;
+                            if (outgoingsPlacingRef.current) {
+                              const exp = outgoingsPlacingRef.current;
                               const expDesc = (exp.description || exp.accountName || "").toLowerCase();
                               const contrWords = contractor.name.toLowerCase().replace(/[()]/g, " ").split(/\s+/).filter(w => w.length > 3);
                               const nameMatch = contrWords.some(w => expDesc.includes(w));
@@ -3225,12 +3233,17 @@ export default function TriageSystem({ onBack }) {
 
                           return (
                             <td key={m.colLetter} onClick={handleCellClick}
-                              onDragOver={e => { if (outgoingsDragging || outgoingsPlacingRef.current) { e.preventDefault(); e.dataTransfer.dropEffect = outgoingsDragging ? "move" : "copy"; } }}
+                              onDragOver={e => {
+                                if (outgoingsDraggingRef.current || outgoingsPlacingRef.current) {
+                                  e.preventDefault();
+                                  e.dataTransfer.dropEffect = outgoingsDraggingRef.current ? "move" : "copy";
+                                }
+                              }}
                               onDrop={async e => {
                                 e.preventDefault();
 
                                 // Case 1: Dragging from inbox
-                                if (outgoingsPlacingRef.current && !outgoingsDragging) {
+                                if (outgoingsPlacingRef.current && !outgoingsDraggingRef.current) {
                                   const exp = outgoingsPlacingRef.current;
                                   const expDesc = (exp.description || exp.accountName || "").toLowerCase();
                                   const contrWords = contractor.name.toLowerCase().replace(/[()]/g, " ").split(/\s+/).filter(w => w.length > 3);
@@ -3253,8 +3266,8 @@ export default function TriageSystem({ onBack }) {
                                 }
 
                                 // Case 2: Dragging from another cell
-                                if (!outgoingsDragging) return;
-                                const { contractor: srcContractor, colLetter: srcCol, blockIdx, block } = outgoingsDragging;
+                                if (!outgoingsDraggingRef.current) return;
+                                const { contractor: srcContractor, colLetter: srcCol, blockIdx, block } = outgoingsDraggingRef.current;
                                 setOutgoingsDragging(null);
                                 if (srcContractor.sheetRow === contractor.sheetRow && srcCol === m.colLetter) return;
                                 const srcBlocks = (srcContractor.cells[srcCol]?.blocks || []).filter((b, i) => i !== blockIdx);

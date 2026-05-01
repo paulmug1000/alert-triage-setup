@@ -88,6 +88,8 @@ const GLOBAL_STYLES = `
 
 // Persistent top bar — rendered around every screen
 function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, homeAlertCount, taskCount, children }) {
+  const [showMore, setShowMore] = React.useState(false);
+
   const Badge = ({ count }) => count > 0 ? (
     <span style={{
       display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -97,66 +99,73 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoing
     }}>{count > 99 ? "99+" : count}</span>
   ) : null;
 
+  const navBtnStyle = (name) => ({
+    background: "none", border: "none", cursor: "pointer", padding: "12px 14px",
+    fontSize: "14px", fontWeight: activeNav === name ? "600" : "400",
+    color: activeNav === name ? "#0066cc" : "#444",
+    borderBottom: activeNav === name ? "2px solid #0066cc" : "2px solid transparent",
+    borderRadius: "0", display: "flex", alignItems: "center", whiteSpace: "nowrap",
+  });
+
+  // Primary nav items (always visible)
+  const primaryItems = [
+    <button key="home" className="triage-btn pulse-nav-item" onClick={onHome} style={navBtnStyle("home")}>Home<Badge count={homeAlertCount} /></button>,
+    <button key="overview" className="triage-btn pulse-nav-item" onClick={onOverview} style={navBtnStyle("overview")}>Overview</button>,
+    <button key="tasks" className="triage-btn pulse-nav-item" onClick={onTasks} style={navBtnStyle("tasks")}>Tasks<Badge count={taskCount} /></button>,
+  ];
+
+  // Secondary nav items (shown in overflow on mobile)
+  const secondaryItems = [
+    <button key="appLog" className="triage-btn pulse-nav-item" onClick={() => { onAppLog(); setShowMore(false); }} style={navBtnStyle("appLog")}>App Log</button>,
+    <button key="outgoings" className="triage-btn pulse-nav-item" onClick={() => { onOutgoings(); setShowMore(false); }} style={navBtnStyle("outgoings")}>Outgoings</button>,
+  ];
+
+  // Check if a secondary item is active (to show it in the primary bar on mobile)
+  const activeIsSecondary = activeNav === "appLog" || activeNav === "outgoings";
+
   return (
     <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
-      {/* Top identity bar */}
       <div style={{ background: "#1a1a2e", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Triage System</span>
       </div>
       {/* Nav bar */}
-      <div style={{ background: "#fff", borderBottom: "1px solid #e0e0e0", padding: "0 20px", display: "flex", gap: "4px" }}>
-        <button
-          className="triage-btn pulse-nav-item"
-          onClick={onHome}
-          style={{
-            background: "none", border: "none", cursor: "pointer", padding: "12px 16px",
-            fontSize: "14px", fontWeight: activeNav === "home" ? "600" : "400",
-            color: activeNav === "home" ? "#0066cc" : "#444",
-            borderBottom: activeNav === "home" ? "2px solid #0066cc" : "2px solid transparent",
-            borderRadius: "0", display: "flex", alignItems: "center",
-          }}
-        >Home<Badge count={homeAlertCount} /></button>
-        <button
-          className="triage-btn pulse-nav-item"
-          onClick={onOverview}
-          style={{
-            background: "none", border: "none", cursor: "pointer", padding: "12px 16px",
-            fontSize: "14px", fontWeight: activeNav === "overview" ? "600" : "400",
-            color: activeNav === "overview" ? "#0066cc" : "#444",
-            borderBottom: activeNav === "overview" ? "2px solid #0066cc" : "2px solid transparent",
-            borderRadius: "0",
-          }}
-        >Overview</button>
-        <button
-          className="triage-btn pulse-nav-item"
-          onClick={onTasks}
-          style={{
-            background: "none", border: "none", cursor: "pointer", padding: "12px 16px",
-            fontSize: "14px", fontWeight: activeNav === "tasks" ? "600" : "400",
-            color: activeNav === "tasks" ? "#0066cc" : "#444",
-            borderBottom: activeNav === "tasks" ? "2px solid #0066cc" : "2px solid transparent",
-            borderRadius: "0", display: "flex", alignItems: "center",
-          }}
-        >Tasks<Badge count={taskCount} /></button>
-        <button
-          className="triage-btn pulse-nav-item"
-          onClick={onAppLog}
-          style={{
-            background: "none", border: "none", cursor: "pointer", padding: "12px 16px",
-            fontSize: "14px", fontWeight: activeNav === "appLog" ? "600" : "400",
-            color: activeNav === "appLog" ? "#0066cc" : "#444",
-            borderBottom: activeNav === "appLog" ? "2px solid #0066cc" : "2px solid transparent",
-            borderRadius: "0",
-          }}
-        >App Log</button>
-        <button className="triage-btn pulse-nav-item" onClick={onOutgoings}
-          style={{ background:"none",border:"none",cursor:"pointer",padding:"12px 16px",fontSize:"14px",
-            fontWeight: activeNav==="outgoings"?"600":"400",
-            color: activeNav==="outgoings"?"#0066cc":"#444",
-            borderBottom: activeNav==="outgoings"?"2px solid #0066cc":"2px solid transparent",
-            borderRadius:"0" }}>Outgoings</button>
+      <div style={{ background: "#fff", borderBottom: "1px solid #e0e0e0", padding: "0 12px", display: "flex", gap: "0px", position: "relative", overflowX: "hidden" }}>
+        {primaryItems}
+        {/* On desktop: show all secondary items inline */}
+        <div className="nav-secondary-desktop" style={{ display: "flex" }}>
+          {secondaryItems}
+        </div>
+        {/* On mobile: show "•••" overflow button */}
+        <div className="nav-secondary-mobile" style={{ display: "none", marginLeft: "auto", alignItems: "center" }}>
+          {activeIsSecondary && (
+            <button className="triage-btn pulse-nav-item"
+              onClick={activeNav === "appLog" ? onAppLog : onOutgoings}
+              style={navBtnStyle(activeNav)}>
+              {activeNav === "appLog" ? "App Log" : "Outgoings"}
+            </button>
+          )}
+          <button onClick={() => setShowMore(v => !v)}
+            style={{ background: showMore ? "#f0f0f0" : "none", border: "none", cursor: "pointer", padding: "12px 14px", fontSize: "18px", color: "#666", lineHeight: 1, borderBottom: "2px solid transparent" }}>
+            {showMore ? "✕" : "•••"}
+          </button>
+        </div>
+        {/* Dropdown when •••  is open */}
+        {showMore && (
+          <div style={{ position: "absolute", top: "100%", right: "0", background: "#fff", border: "1px solid #e0e0e0", borderRadius: "0 0 8px 8px", boxShadow: "0 4px 12px rgba(0,0,0,0.12)", zIndex: 100, display: "flex", flexDirection: "column", minWidth: "140px" }}>
+            {secondaryItems.map((item, i) => (
+              <div key={i} style={{ borderBottom: i < secondaryItems.length - 1 ? "1px solid #f0f0f0" : "none" }}>
+                {React.cloneElement(item, { style: { ...navBtnStyle(item.key === "appLog" ? "appLog" : "outgoings"), borderBottom: "none", width: "100%", justifyContent: "flex-start" } })}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
-      {/* Page content */}
+      <style>{`
+        @media (max-width: 600px) {
+          .nav-secondary-desktop { display: none !important; }
+          .nav-secondary-mobile { display: flex !important; }
+        }
+      `}</style>
       <div>{children}</div>
     </div>
   );
@@ -2765,7 +2774,7 @@ export default function TriageSystem({ onBack }) {
               return (
                 <div key={i} style={{ border: `1px solid ${sc.border}`, background: sc.bg, borderRadius: "8px", padding: "14px", marginBottom: "14px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
-                    <div style={{ fontSize: "11px", color: "#888", fontFamily: "monospace", wordBreak: "break-all", flex: 1, marginRight: "8px" }}>{b.appId}</div>
+                    <div style={{ fontSize: "13px", color: "#888", fontFamily: "monospace", wordBreak: "break-all", flex: 1, marginRight: "8px" }}>{b.appId}</div>
                     <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px" }}>Remove</button>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
@@ -3031,15 +3040,15 @@ export default function TriageSystem({ onBack }) {
         )}
 
         <div style={{ padding: "20px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-            <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>Outgoings — Contractors</h2>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
             {outgoingsClient && (
-              <span style={{ fontSize: "13px", color: "#666", display: "flex", alignItems: "center", gap: "8px" }}>
-                {outgoingsClient.clientName}
-                <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); setOutgoingsInbox([]); setOutgoingsPlacing(null); setAllOutgoingsClients([]); setAllClientsLoaded(false); }}
-                  style={{ fontSize: "11px", padding: "3px 10px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer" }}>Change client</button>
-              </span>
+              <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); setOutgoingsInbox([]); setOutgoingsPlacing(null); }}
+                style={{ background: "none", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer", padding: "4px 10px", fontSize: "16px", color: "#555", lineHeight: 1 }}
+                title="Back to client list">&#8592;</button>
             )}
+            <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
+              {outgoingsClient ? outgoingsClient.clientName : "Outgoings — Contractors"}
+            </h2>
           </div>
 
           {noClient && (
@@ -3080,21 +3089,22 @@ export default function TriageSystem({ onBack }) {
                       const isPlacing = outgoingsPlacing?.appId === exp.appId;
                       return (
                         <div key={i} style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
-                        <button key={i}
+                        <div
                           draggable
+                          onMouseDown={() => setOutgoingsPlacing(exp)}
                           onDragStart={e => {
                             e.dataTransfer.effectAllowed = "copy";
-                            setOutgoingsPlacing(exp);
+                            e.dataTransfer.setData("text/plain", exp.appId);
                           }}
-                          onDragEnd={() => {
-                            // Only clear if it wasn't placed (placed clears it in onDrop)
+                          onDragEnd={e => {
+                            if (e.dataTransfer.dropEffect === "none") setOutgoingsPlacing(null);
                           }}
                           onClick={() => setOutgoingsPlacing(isPlacing ? null : exp)}
-                          style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "grab", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "all 0.15s", display: "flex", flexDirection: "column", gap: "2px" }}>
+                          style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "grab", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "background 0.1s, border-color 0.1s", display: "flex", flexDirection: "column", gap: "2px", userSelect: "none" }}>
                           <div style={{ fontWeight: "700" }}>{exp.description || exp.accountName}</div>
                           <div style={{ opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
-                          {isPlacing && <div style={{ fontSize: "10px", opacity: 0.8 }}>Click a cell or drag below</div>}
-                        </button>
+                          <div style={{ fontSize: "10px", opacity: 0.7 }}>{isPlacing ? "Drag to a cell or click a cell below" : "Drag or click to place"}</div>
+                        </div>
                         <button onClick={e => { e.stopPropagation(); setOutgoingsNewVendor({ exp }); }}
                           title="Create new vendor row for this expense"
                           style={{ fontSize: "10px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555", whiteSpace: "nowrap" }}>
@@ -3281,7 +3291,14 @@ export default function TriageSystem({ onBack }) {
                                         }}
                                         onDragEnd={() => setOutgoingsDragging(null)}
                                         style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "grab" }}>
-                                        £{parseFloat(b.amount).toLocaleString("en-GB", { minimumFractionDigits: 0 })}{b.status ? ` · ${b.status}` : ""}{realBlocks.length > 1 ? " (split)" : ""}
+                                        £{parseFloat(b.amount).toLocaleString("en-GB", { minimumFractionDigits: 0 })}{b.status ? ` · ${b.status}` : ""}{
+                                          // Show (split) if this App ID appears in any OTHER month column for this contractor
+                                          !b.appId.startsWith("MANUAL-ENTRY") && !b.appId.startsWith("UNRECON-GAP") &&
+                                          (outgoingsData?.months || []).some(mo =>
+                                            mo.colLetter !== m.colLetter &&
+                                            (contractor.cells[mo.colLetter]?.blocks || []).some(ob => ob.appId === b.appId)
+                                          ) ? " (split)" : ""
+                                        }
                                       </div>
                                     );
                                   })}

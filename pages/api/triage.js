@@ -1845,8 +1845,6 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
-    } else if (action === "get_app_log") {
-
     } else if (action === "update_outgoing_note") {
       // Writes a new note to a specific Outgoings cell.
       // blocks: array of { appId, amount, status, recDate, payDate, description }

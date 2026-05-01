@@ -89,88 +89,28 @@ const GLOBAL_STYLES = `
 // Persistent top bar — rendered around every screen
 function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, homeAlertCount, taskCount, children }) {
   const [showMore, setShowMore] = React.useState(false);
+  const [isMobile, setIsMobile] = React.useState(false);
+
+  React.useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth <= 600);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
+  // Close dropdown when clicking outside
+  React.useEffect(() => {
+    if (!showMore) return;
+    const close = (e) => {
+      if (!e.target.closest(".nav-more-dropdown") && !e.target.closest(".nav-more-btn")) {
+        setShowMore(false);
+      }
+    };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [showMore]);
 
   const Badge = ({ count }) => count > 0 ? (
-    <span style={{
-      display: "inline-flex", alignItems: "center", justifyContent: "center",
-      background: "#e53e3e", color: "#fff", borderRadius: "10px",
-      fontSize: "10px", fontWeight: "700", minWidth: "17px", height: "17px",
-      padding: "0 5px", marginLeft: "5px", lineHeight: "1", verticalAlign: "middle",
-    }}>{count > 99 ? "99+" : count}</span>
-  ) : null;
-
-  const navBtnStyle = (name) => ({
-    background: "none", border: "none", cursor: "pointer", padding: "12px 14px",
-    fontSize: "14px", fontWeight: activeNav === name ? "600" : "400",
-    color: activeNav === name ? "#0066cc" : "#444",
-    borderBottom: activeNav === name ? "2px solid #0066cc" : "2px solid transparent",
-    borderRadius: "0", display: "flex", alignItems: "center", whiteSpace: "nowrap",
-  });
-
-  // Primary nav items (always visible)
-  const primaryItems = [
-    <button key="home" className="triage-btn pulse-nav-item" onClick={onHome} style={navBtnStyle("home")}>Home<Badge count={homeAlertCount} /></button>,
-    <button key="overview" className="triage-btn pulse-nav-item" onClick={onOverview} style={navBtnStyle("overview")}>Overview</button>,
-    <button key="tasks" className="triage-btn pulse-nav-item" onClick={onTasks} style={navBtnStyle("tasks")}>Tasks<Badge count={taskCount} /></button>,
-  ];
-
-  // Secondary nav items (shown in overflow on mobile)
-  const secondaryItems = [
-    <button key="appLog" className="triage-btn pulse-nav-item" onClick={() => { onAppLog(); setShowMore(false); }} style={navBtnStyle("appLog")}>App Log</button>,
-    <button key="outgoings" className="triage-btn pulse-nav-item" onClick={() => { onOutgoings(); setShowMore(false); }} style={navBtnStyle("outgoings")}>Outgoings</button>,
-  ];
-
-  // Check if a secondary item is active (to show it in the primary bar on mobile)
-  const activeIsSecondary = activeNav === "appLog" || activeNav === "outgoings";
-
-  return (
-    <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
-      <div style={{ background: "#1a1a2e", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Triage System</span>
-      </div>
-      {/* Nav bar */}
-      <div style={{ background: "#fff", borderBottom: "1px solid #e0e0e0", padding: "0 12px", display: "flex", gap: "0px", position: "relative", overflowX: "hidden" }}>
-        {primaryItems}
-        {/* On desktop: show all secondary items inline */}
-        <div className="nav-secondary-desktop" style={{ display: "flex" }}>
-          {secondaryItems}
-        </div>
-        {/* On mobile: show "•••" overflow button */}
-        <div className="nav-secondary-mobile" style={{ display: "none", marginLeft: "auto", alignItems: "center" }}>
-          {activeIsSecondary && (
-            <button className="triage-btn pulse-nav-item"
-              onClick={activeNav === "appLog" ? onAppLog : onOutgoings}
-              style={navBtnStyle(activeNav)}>
-              {activeNav === "appLog" ? "App Log" : "Outgoings"}
-            </button>
-          )}
-          <button onClick={() => setShowMore(v => !v)}
-            style={{ background: showMore ? "#f0f0f0" : "none", border: "none", cursor: "pointer", padding: "12px 14px", fontSize: "18px", color: "#666", lineHeight: 1, borderBottom: "2px solid transparent" }}>
-            {showMore ? "✕" : "•••"}
-          </button>
-        </div>
-        {/* Dropdown when •••  is open */}
-        {showMore && (
-          <div style={{ position: "absolute", top: "100%", right: "0", background: "#fff", border: "1px solid #e0e0e0", borderRadius: "0 0 8px 8px", boxShadow: "0 4px 12px rgba(0,0,0,0.12)", zIndex: 100, display: "flex", flexDirection: "column", minWidth: "140px" }}>
-            {secondaryItems.map((item, i) => (
-              <div key={i} style={{ borderBottom: i < secondaryItems.length - 1 ? "1px solid #f0f0f0" : "none" }}>
-                {React.cloneElement(item, { style: { ...navBtnStyle(item.key === "appLog" ? "appLog" : "outgoings"), borderBottom: "none", width: "100%", justifyContent: "flex-start" } })}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-      <style>{`
-        @media (max-width: 600px) {
-          .nav-secondary-desktop { display: none !important; }
-          .nav-secondary-mobile { display: flex !important; }
-        }
-      `}</style>
-      <div>{children}</div>
-    </div>
-  );
-}
-
 // Overview table cell showing run time and feedback metrics
 function FeedbackCell({ seq }) {
   if (!seq) return <td style={{ padding: "8px 12px", color: "#bbb", fontSize: "12px" }}>—</td>;
@@ -250,7 +190,9 @@ export default function TriageSystem({ onBack }) {
   const [outgoingsMonthOffset, setOutgoingsMonthOffset] = useState(0); // scroll offset
   const [outgoingsEditCell, setOutgoingsEditCell] = useState(null); // { contractor, colLetter, blocks }
   const [outgoingsInbox, setOutgoingsInbox] = useState([]); // unmatched expenses from DirComp
-  const [outgoingsPlacing, setOutgoingsPlacing] = useState(null); // expense being placed { appId, amount, ... }
+  const [outgoingsPlacing, setOutgoingsPlacingState] = useState(null); // expense being placed { appId, amount, ... }
+  const outgoingsPlacingRef = React.useRef(null);
+  const setOutgoingsPlacing = (val) => { outgoingsPlacingRef.current = val; setOutgoingsPlacingState(val); };
   const [outgoingsEstimate, setOutgoingsEstimate] = useState(null); // { contractor, colLetter, monthLabel }
   const [outgoingsDragging, setOutgoingsDragging] = useState(null); // { contractor, colLetter, blockIdx, block }
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null); // { exp } — inbox item to place as new vendor
@@ -331,8 +273,12 @@ export default function TriageSystem({ onBack }) {
   const handleNavAppLog = () => { setActiveNav("appLog"); loadAppLog(); };
   const handleNavOutgoings = () => {
     setActiveNav("outgoings");
+    // Always go back to client selection when navigating to Outgoings
+    setOutgoingsData(null);
+    setOutgoingsClient(null);
+    setOutgoingsInbox([]);
+    setOutgoingsPlacing(null);
     if (!allClientsLoaded) {
-      // Load all clients from AutoUpdates tab
       fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
@@ -3215,13 +3161,13 @@ export default function TriageSystem({ onBack }) {
 
                           return (
                             <td key={m.colLetter} onClick={handleCellClick}
-                              onDragOver={e => { if (outgoingsDragging || outgoingsPlacing) { e.preventDefault(); e.dataTransfer.dropEffect = outgoingsDragging ? "move" : "copy"; } }}
+                              onDragOver={e => { if (outgoingsDragging || outgoingsPlacingRef.current) { e.preventDefault(); e.dataTransfer.dropEffect = outgoingsDragging ? "move" : "copy"; } }}
                               onDrop={async e => {
                                 e.preventDefault();
 
                                 // Case 1: Dragging from inbox
-                                if (outgoingsPlacing && !outgoingsDragging) {
-                                  const exp = outgoingsPlacing;
+                                if (outgoingsPlacingRef.current && !outgoingsDragging) {
+                                  const exp = outgoingsPlacingRef.current;
                                   const expDesc = (exp.description || exp.accountName || "").toLowerCase();
                                   const contrWords = contractor.name.toLowerCase().replace(/[()]/g, " ").split(/\s+/).filter(w => w.length > 3);
                                   const nameMatch = contrWords.some(w => expDesc.includes(w));

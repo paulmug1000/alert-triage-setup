@@ -2788,6 +2788,25 @@ export default function TriageSystem({ onBack }) {
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
                     <div style={{ fontSize: "13px", color: "#888", fontFamily: "monospace", wordBreak: "break-all", flex: 1, marginRight: "8px" }}>{b.appId}</div>
                     <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px" }}>Remove</button>
+                    {!b.appId.startsWith("MANUAL-ENTRY") && !b.appId.startsWith("UNRECON-GAP") && (
+                      <button onClick={() => {
+                        removeBlock(i);
+                        // Return to inbox — reconstruct the inbox entry from block data
+                        setOutgoingsInbox(prev => {
+                          // Only add if not already in inbox
+                          if (prev.some(e => e.appId === b.appId)) return prev;
+                          return [...prev, {
+                            appId: b.appId,
+                            amount: b.amount,
+                            date: b.recDate || "",
+                            datePaid: b.payDate || "",
+                            description: b.description || "",
+                            accountName: b.description || "",
+                            status: b.status || "",
+                          }];
+                        });
+                      }} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "12px" }}>↩ Return to inbox</button>
+                    )}
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                     <div>

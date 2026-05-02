@@ -4726,6 +4726,22 @@ Return ONLY the JSON array, no other text.`;
               jobName: opt.jobName || jobName,
               jobRevenue: opt.jobRevenue || jobRevenue,
               slotBreakdown,
+              jobDetails: opt.jobDetails || {
+                clientName: jobClient,
+                jobName,
+                projectCode: jobCode,
+                revenue: jobRevenue,
+                vatSetting: jobVAT,
+                jobType: isRetainer ? "Retainer" : "Project",
+                startDate: jobStart,
+                endDate: jobEnd,
+              },
+              rowContext: {
+                matchedRow: matchedRowNum,
+                parentRow: parentRowNum,
+                isChildRow: matchedRowNum !== parentRowNum,
+                matchedSlot,
+              },
             }));
             // Write to AlertMemory cache
             const invAmtSummary = alert.summary?.summary || `Invoice ${invoiceNo} £${grossAmount.toFixed(2)}`;

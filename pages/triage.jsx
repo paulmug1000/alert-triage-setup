@@ -5108,12 +5108,34 @@ export default function TriageSystem({ onBack }) {
                           Option {idx + 1}: {option.title}
                         </div>
                         {option.jobName && option.matchType !== "info" && (
-                          <div style={styles.optionDetail}>
-                            <strong>Job:</strong> {option.jobName} (Row {option.jobRow})
-                            {(option.jobDetails?.clientName || option.endClientName || option.matchingDetails?.matchedJobDetails?.clientName) && (
-                              <span style={{ color: "#666", marginLeft: "8px" }}>
-                                · <strong>End client:</strong> {option.jobDetails?.clientName || option.endClientName || option.matchingDetails?.matchedJobDetails?.clientName}
-                              </span>
+                          <div style={{ ...styles.optionDetail, padding: "10px 12px", background: "#f8faff", borderLeft: "3px solid #3b82f6", borderRadius: "0 4px 4px 0", fontSize: "12px", marginBottom: "4px" }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "baseline" }}>
+                              <span><strong>Job:</strong> {option.jobName}</span>
+                              {(option.jobDetails?.clientName || option.endClientName) && (
+                                <span><strong>End client:</strong> {option.jobDetails?.clientName || option.endClientName}</span>
+                              )}
+                              {(option.jobDetails?.revenue || option.jobRevenue) && (
+                                <span><strong>Revenue:</strong> £{option.jobDetails?.revenue || option.jobRevenue}</span>
+                              )}
+                              {option.jobDetails?.vatSetting && (
+                                <span><strong>VAT:</strong> {option.jobDetails.vatSetting}</span>
+                              )}
+                              {option.jobDetails?.jobType && (
+                                <span style={{ fontWeight: "600", color: option.jobDetails.jobType === "Retainer" ? "#7c3aed" : "#0369a1" }}>
+                                  {option.jobDetails.jobType}
+                                </span>
+                              )}
+                            </div>
+                            {option.rowContext && (
+                              <div style={{ marginTop: "4px", color: "#666" }}>
+                                {option.rowContext.isChildRow
+                                  ? <span>Invoice in <strong>child row</strong> {option.rowContext.matchedRow} · Parent row {option.rowContext.parentRow} · Slot {option.rowContext.matchedSlot}</span>
+                                  : <span>Invoice in <strong>parent row</strong> {option.rowContext.matchedRow} · Slot {option.rowContext.matchedSlot}</span>
+                                }
+                              </div>
+                            )}
+                            {!option.rowContext && option.jobRow && (
+                              <div style={{ marginTop: "4px", color: "#666" }}>Row {option.jobRow}</div>
                             )}
                           </div>
                         )}

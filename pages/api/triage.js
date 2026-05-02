@@ -3740,10 +3740,11 @@ Return ONLY JSON, no other text.`;
               const tabStartRow = tabName === "Pipeline" ? 6 : 1;
               const tabResp = await sheets.spreadsheets.values.get({
                 spreadsheetId: alert.clientId,
-                range: `${tabName}!A1:AM5000`,
+                range: `${tabName}!A1:DE5000`, // extend to DE to include col DD (index 107) = "Copied to Confirmed?"
               });
               const tabRows = tabResp.data.values || [];
               let jobRow = null;
+              let copiedToConf = "";
               const codeToFind   = (projectCode || crmCode).toLowerCase();
               const clientToFind = (client || crmClient).toLowerCase();
               const jobToFind    = (jobName || crmJob).toLowerCase();
@@ -3752,8 +3753,8 @@ Return ONLY JSON, no other text.`;
                 const rCode = String(r[2] || "").trim().toLowerCase();
                 const rClient = String(r[0] || "").trim().toLowerCase();
                 const rJob = String(r[1] || "").trim().toLowerCase();
-                if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; break; }
-                if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; break; }
+                if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; copiedToConf = String(r[107] || "").trim(); break; }
+                if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; copiedToConf = String(r[107] || "").trim(); break; }
               }
 
               const mismatchFields = alert.mismatchFields || [];
@@ -3837,6 +3838,11 @@ Return ONLY JSON, no other text.`;
 
             console.log(`  ✅ App discr (${alert.subType || "not_found"}) — ${options.length} options for ${jobDesc}`);
 
+            // Inject Pipeline-specific fields onto options
+            if (tabName === "Pipeline" && copiedToConf !== undefined) {
+              options = options.map(o => ({ ...o, copiedToConf }));
+            }
+
             // Cache these options
             const crmSummary = `CRM ${alertType} ${jobDesc}`.trim();
             if (memoryRow) {
@@ -3890,10 +3896,11 @@ Return ONLY JSON, no other text.`;
             const tabStartRow = tabName === "Pipeline" ? 6 : 1;
             const tabResp = await sheets.spreadsheets.values.get({
               spreadsheetId: alert.clientId,
-              range: `${tabName}!A1:AM5000`,
+              range: `${tabName}!A1:DE5000`, // extend to DE to include col DD (index 107) = "Copied to Confirmed?"
             });
             const tabRows = tabResp.data.values || [];
             let jobRow = null;
+            let copiedToConf = "";
             const codeToFind = (shtCode || crmCode).toLowerCase();
             const clientToFind = (shtClient || crmClient).toLowerCase();
             const jobToFind    = (shtJob    || crmJob).toLowerCase();
@@ -3904,8 +3911,8 @@ Return ONLY JSON, no other text.`;
               const rClient = String(r[0]  || "").trim().toLowerCase();
               const rJob    = String(r[1]  || "").trim().toLowerCase();
               // Match by project code first, then client+job
-              if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; break; }
-              if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; break; }
+              if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; copiedToConf = String(r[107] || "").trim(); break; }
+              if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; copiedToConf = String(r[107] || "").trim(); break; }
             }
 
             const rowRef = jobRow ? ` (${tabName} row ${jobRow})` : "";
@@ -4002,6 +4009,11 @@ Return ONLY JSON, no other text.`;
             });
 
             console.log(`  ✅ Field mismatch — ${mismatchFields.join(", ")} — returning ${options.length} options for ${jobLabel}`);
+
+            // Inject Pipeline-specific fields onto options
+            if (tabName === "Pipeline" && copiedToConf !== undefined) {
+              options = options.map(o => ({ ...o, copiedToConf }));
+            }
 
             const crmSummaryMismatch = `CRM mismatch ${jobLabel} [${mismatchFields.join(", ")}]`.trim();
             if (memoryRow) {

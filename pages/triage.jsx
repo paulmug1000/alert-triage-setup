@@ -3976,6 +3976,11 @@ export default function TriageSystem({ onBack }) {
                     {/* Direct costs / expenses mismatch detail */}
                     {alert.alertType === "direct_costs_mismatch" && (
                       <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fce7f3", border: "1px solid #f9a8d4", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {alert.metadata?.tab && (
+                          <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: alert.metadata.tab === "Pipeline" ? "#fef3c7" : "#dbeafe", color: alert.metadata.tab === "Pipeline" ? "#92400e" : "#1e40af", border: `1px solid ${alert.metadata.tab === "Pipeline" ? "#fcd34d" : "#93c5fd"}` }}>
+                            {alert.metadata.tab} tab
+                          </span>
+                        )}
                         {(() => {
                           const detail = alert.detail || "";
                           const mismatchIdx = detail.indexOf("Mismatched rows:");
@@ -5123,6 +5128,14 @@ export default function TriageSystem({ onBack }) {
                               {option.jobDetails?.jobType && (
                                 <span style={{ fontWeight: "600", color: option.jobDetails.jobType === "Retainer" ? "#7c3aed" : "#0369a1" }}>
                                   {option.jobDetails.jobType}
+                                </span>
+                              )}
+                              {option.copiedToConf !== undefined && option.copiedToConf !== null && (
+                                <span style={{ padding: "1px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "700",
+                                  background: option.copiedToConf?.toLowerCase() === "yes" ? "#dcfce7" : "#fef9c3",
+                                  color: option.copiedToConf?.toLowerCase() === "yes" ? "#166534" : "#713f12",
+                                  border: `1px solid ${option.copiedToConf?.toLowerCase() === "yes" ? "#86efac" : "#fde047"}` }}>
+                                  Copied to confirmed? {option.copiedToConf || "(blank)"}
                                 </span>
                               )}
                             </div>

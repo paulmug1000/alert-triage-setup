@@ -5048,6 +5048,61 @@ Return ONLY the JSON array, no other text.`;
           }
           console.log(`  Amount/date slot sweep: ${slotMatches.length} non-real slot(s) with matching amount`);
 
+          // ── Secondary sweep: job-level MANUAL-INV total match ──────────────
+          // If no individual slot matched, check whether the invoice amount equals the
+          // TOTAL of all MANUAL-INV slots across a job. This handles the common case
+          // where automation splits a job's revenue across multiple MANUAL-INV placeholders
+          // (e.g. £435 + £435 = £870) but the real invoice covers the full amount.
+          if (!slotMatches.some(m => !m.isManual || true)) { // always run this check
+            // Group MANUAL-INV slots by job (client+jobName)
+            const jobManualSlots = new Map(); // key → { slots: [], client, jobName, projectCode, revenue }
+            for (let ri = 1; ri < activeData.length; ri++) {
+              const row = activeData[ri] || [];
+              const rowClient  = String(row[0] || "").trim();
+              const rowJob     = String(row[1] || "").trim();
+              const rowCode    = String(row[2] || "").trim();
+              const rowRevenue = String(row[32] || "").trim();
+              if (!rowClient && !rowJob) continue;
+              const key = `${rowClient}||${rowJob}`;
+              for (const sd of INV_SLOT_DEFS) {
+                const ref = String(row[sd.refIdx] || "").trim();
+                if (!ref.toUpperCase().startsWith("MANUAL-INV")) continue;
+                const rawAmt = row[sd.amtIdx];
+                const slotAmt = parseFloat(String(rawAmt || "").replace(/[£$€,]/g, "")) || 0;
+                if (slotAmt === 0) continue;
+                const slotDate = String(row[sd.sentIdx] || "").trim();
+                if (!jobManualSlots.has(key)) {
+                  jobManualSlots.set(key, { slots: [], client: rowClient, jobName: rowJob, projectCode: rowCode, revenue: rowRevenue });
+                }
+                jobManualSlots.get(key).slots.push({ rowNum: ri + 1, slotNum: sd.slotNum, slotAmt, slotDate, ref, ...sd });
+              }
+            }
+            // Check each job's total MANUAL-INV amount against invoice
+            for (const [, job] of jobManualSlots) {
+              const totalManual = job.slots.reduce((s, sl) => s + sl.slotAmt, 0);
+              if (amtToleranceFn(totalManual)) {
+                // Total matches — flag slot 1 (first slot) as the target
+                const firstSlot = job.slots.sort((a, b) => a.rowNum - b.rowNum || a.slotNum - b.slotNum)[0];
+                // Only add if not already in slotMatches
+                const alreadyMatched = slotMatches.some(m => m.rowNum === firstSlot.rowNum && m.slotNum === firstSlot.slotNum);
+                if (!alreadyMatched) {
+                  const dateOk = dateWithinTolerance(firstSlot.slotDate);
+                  slotMatches.push({
+                    rowNum: firstSlot.rowNum,
+                    client: job.client, jobName: job.jobName, projectCode: job.projectCode, revenue: job.revenue,
+                    slotNum: firstSlot.slotNum, slotAmt: totalManual, slotDate: firstSlot.slotDate,
+                    amtMatch: true, dateMatch: dateOk,
+                    amtCol: firstSlot.amtCol, refCol: firstSlot.refCol, sentCol: firstSlot.sentCol,
+                    daysCol: firstSlot.daysCol, statusCol: firstSlot.statusCol, isManual: true,
+                    isJobTotalMatch: true, // flag so Claude knows this is a total-match scenario
+                    manualSlotsToClear: job.slots.length, // how many MANUAL-INV slots exist
+                  });
+                  console.log(`  Job-level MANUAL-INV total match: ${job.client} | ${job.jobName} — total £${totalManual} matches invoice £${invoiceAmtForMatch}`);
+                }
+              }
+            }
+          }
+
           const hasSlotMatches = slotMatches.length > 0;
 
           // ── Neither signal found → hardcoded create_new, no Claude ──────────
@@ -5191,7 +5246,10 @@ Return ONLY the JSON array, no other text.`;
                     slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [REAL — do not overwrite]`;
                   } else if (isManual) {
                     const manualAmtMatch = amt && Math.abs(amt - invoiceAmount) < 0.01;
-                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [MANUAL-INV placeholder${manualAmtMatch ? " ← AMOUNT MATCHES THIS INVOICE" : ""}]`;
+                    // Check if this is part of a job-total match (invoice covers full job revenue via multiple MANUAL-INV slots)
+                    const isJobTotalMatch = group.matchingSlots.some(m => m.isJobTotalMatch && m.rowNum === sheetRow && m.slotNum === sd.slotNum);
+                    const jobTotalNote = isJobTotalMatch ? ` ← INVOICE COVERS FULL JOB REVENUE — PLACE HERE AND CLEAR ALL OTHER MANUAL-INV SLOTS` : (manualAmtMatch ? " ← AMOUNT MATCHES THIS INVOICE" : "");
+                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [MANUAL-INV placeholder${jobTotalNote}]`;
                   } else {
                     // Blank-ref placeholder — show explicit date comparison vs invoice sent date
                     const dateResult = dateWithinTolerance(slotDate);
@@ -5244,6 +5302,7 @@ ${jobContextLines.join("\n\n")}
 
 INSTRUCTIONS FOR USING THESE MATCHES:
 - Slots marked "← AMOUNT MATCHES THIS INVOICE" are the backend-confirmed candidates
+- Slots marked "← INVOICE COVERS FULL JOB REVENUE — PLACE HERE AND CLEAR ALL OTHER MANUAL-INV SLOTS" mean the invoice amount equals the total of all MANUAL-INV placeholders on this job. In this case: place the invoice in that slot (slot 1), write all 5 invoice fields to it, and clear ALL other MANUAL-INV slots on this job (write blank to all 5 fields of each remaining MANUAL-INV slot).
 - A slot with both amount match AND date match (✓) is the most likely target
 - A slot with amount match but date mismatch (✗) is still a valid option, with lower confidence — state the actual date difference
 - NEVER describe a date-tolerance match as "exact" — state the actual difference in months

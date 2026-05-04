@@ -5428,18 +5428,20 @@ A slot is "locked" if it contains a non-blank, non-MANUAL-INV reference AND its 
 
 A placeholder slot has an AMOUNT set but a BLANK reference (or a reference beginning with MANUAL-INV).
 - Blank-reference placeholders: These represent planned/expected invoices. When placing a real invoice into one, write ONLY the 5 fields of the target slot (amount, reference, sent date, days to pay, status). Do NOT clear or modify any other placeholder slots — the automation manages them.
-- MANUAL-INV references (shown as [MANUAL ONLY]): These are managed by automation elsewhere — do NOT modify them under any circumstances.
-- CRITICAL RULE: Write ONLY to the single target slot. Do not touch any other slot on any other row.
-- "Clear a slot" ONLY applies when a blank-reference placeholder needs to be removed because placing the invoice would cause real invoices alone to EXCEED total revenue. Even then, only clear the minimum number of slots necessary, working backwards from the last slot.
-- In practice: if the job has blank-ref placeholder slots, placing this invoice will NOT cause an overage (the placeholders represent future invoices, not committed amounts). Only suggest clearing if real invoice total would exceed revenue after placement.
+- MANUAL-INV references (shown as [MANUAL ONLY]): These are automation-managed placeholders. Do NOT modify them UNLESS the post-placement real invoice total equals or exceeds the job revenue — in that case, clear any remaining MANUAL-INV slots (working backwards from the last slot) because there is nothing left to bill and they would cause a permanent overage.
+- CRITICAL RULE: Write ONLY to the single target slot, EXCEPT when clearing excess MANUAL-INV slots as described above.
+- "Clear a slot" means writing blank values to all 5 fields of that slot (amount, reference, sent date, days to pay, status).
+- After placing the invoice, check: if (sum of all REAL invoice amounts including the new one) >= job revenue, then clear ALL remaining MANUAL-INV slots on this job (parent and child rows) to prevent overage. Work backwards from the last slot.
+- If the real invoice total after placement is LESS than job revenue, leave all MANUAL-INV slots untouched — future invoices are still expected.
 
 **How to Calculate Total Invoiced and Remaining:**
 1. Find the job's parent row (has Revenue value)
 2. Find all child rows (same Client + Job name, no Revenue)
 3. Sum amounts across ALL slots on parent AND child rows
-4. EXCLUDE [MANUAL ONLY] slots from the total (they're planned but automation-managed)
+4. EXCLUDE [MANUAL ONLY] slots from the "total invoiced" figure (they're planned but not yet real)
 5. INCLUDE blank-reference placeholder amounts in the total (they represent planned invoices)
 6. Remaining to Invoice = Revenue − (sum of all non-MANUAL-ONLY invoice amounts)
+7. POST-PLACEMENT OVERAGE CHECK: After placing the new invoice, recalculate the sum of REAL invoices only (excluding all MANUAL-INV slots). If this sum >= Revenue, flag that remaining MANUAL-INV slots must be cleared — they would cause a permanent overage since billing is now complete.
 
 **Days to Pay value to use:** ${daysToPayValue}
 (${invoiceStatus.toLowerCase() === 'paid' && datePaid ? `Calculated from sent date ${sentDate} to paid date ${datePaid}` : `Default from DataChgAlert!B52`})
@@ -5504,6 +5506,7 @@ Item 2 — Exact cell writes only:
 - To CLEAR a slot field: write "" to [COL][ROW]
 - Include ALL writes including clears for superseded placeholders
 - For revenue updates: write [amount] to AG[parentRow] (revenue)
+- MANUAL-INV clearing: If after placing this invoice the sum of all REAL invoice slots (non-MANUAL-INV, non-blank) >= job revenue, include additional writes to clear every remaining MANUAL-INV slot on this job (all 5 fields: amount=AP, ref=AQ, sent=AR, days=AS, status=AT for slot 2; AW/AX/AY/AZ/BA for slot 3). Work backwards — clear the last slot first.
 
 Use EXACT column letters from the slot reference table above.
 
@@ -5524,7 +5527,7 @@ Format as JSON array:
     "newTotalIfAccepted": 15950,
     "remainingAfterAccepting": 0,
     "invoiceMatchStatus": "Describe the match quality. For date comparisons, ALWAYS state the slot's actual sent date vs the invoice sent date and the difference in months — never use the word 'exact' unless the dates are identical. Example: 'Amount exact match (£3,200). Slot date 10-Apr-26 vs invoice date 10-Apr-26 = exact date match.' Or: 'Amount exact match. Slot date 15-Jul-26 vs invoice date 15-Sep-26 = 2.0 months before invoice, within 2-month tolerance.'",
-    "placeholderImpact": "Description of any placeholder slots being cleared or adjusted",
+    "placeholderImpact": "REQUIRED: After placement, check if real invoice total >= revenue. If yes: list every MANUAL-INV slot being cleared (e.g. 'Clearing slot 2 Row 63 (MANUAL-INV £435) — billing complete'). If no: state 'No MANUAL-INV slots cleared — further invoices expected.'.",
     "revenueImpact": "No change / Suggest increasing revenue to X / Gap created — automation will handle"
   },
   "recommendedActions": [

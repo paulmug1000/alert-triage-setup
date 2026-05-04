@@ -3920,7 +3920,7 @@ Return ONLY JSON, no other text.`;
 
             // Build one option per mismatched field
             const mismatchFields = alert.mismatchFields || [];
-            const options = [];
+            let options = [];
 
             // Field config: [flagName, crmValue, sheetValue, tabCol, isWritable, note]
             const FIELD_CONFIG = [

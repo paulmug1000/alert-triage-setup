@@ -5871,7 +5871,8 @@ Return ONLY JSON, no other text.`;
                 }
                 // Strip surrounding quotes if Claude wrapped the value in them
                 value = value.replace(/^["']|["']$/g, '').trim();
-                if (cell && value) cellUpdates.push({ cell, value });
+                // Allow empty string writes — these are intentional slot clears (e.g. clearing a MANUAL-INV placeholder)
+                if (cell && value !== undefined) cellUpdates.push({ cell, value });
               }
             }
           }

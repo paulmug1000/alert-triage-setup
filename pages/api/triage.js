@@ -5190,7 +5190,8 @@ Return ONLY the JSON array, no other text.`;
                   } else if (isReal) {
                     slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [REAL — do not overwrite]`;
                   } else if (isManual) {
-                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [MANUAL-INV placeholder]`;
+                    const manualAmtMatch = amt && Math.abs(amt - invoiceAmount) < 0.01;
+                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [MANUAL-INV placeholder${manualAmtMatch ? " ← AMOUNT MATCHES THIS INVOICE" : ""}]`;
                   } else {
                     // Blank-ref placeholder — show explicit date comparison vs invoice sent date
                     const dateResult = dateWithinTolerance(slotDate);
@@ -5464,10 +5465,10 @@ A placeholder slot has an AMOUNT set but a BLANK reference (or a reference begin
    - A "real" invoice slot = has a reference that does NOT start with MANUAL-INV and is not blank
    - A "non-real" slot = empty OR has a MANUAL-INV reference (automation-managed placeholder)
    - ALWAYS place the new invoice in the FIRST non-real slot (slot 1 > slot 2 > slot 3)
+   - CRITICAL: The status of a MANUAL-INV slot (even "Sent") does NOT make it locked or unavailable. MANUAL-INV slots are always available for replacement regardless of their status — status on a MANUAL-INV is set by automation and does not indicate a real sent invoice.
    - Do NOT skip a MANUAL-INV slot in favour of an empty slot — MANUAL-INV slots are available for real invoices
+   - Example: if slot 1 = MANUAL-INV (any status), slot 2 = MANUAL-INV, slot 3 = empty → place in slot 1 (first non-real slot)
    - Example: if slot 1 = real invoice, slot 2 = MANUAL-INV, slot 3 = empty → place in slot 2
-   - Example: if slot 1 = MANUAL-INV, slot 2 = MANUAL-INV, slot 3 = empty → place in slot 1
-   - Only write to the target slot — leave other MANUAL-INV slots for automation to adjust
 4. After placing the invoice, calculate the new total invoiced:
    - Count all REAL invoice slots (non-MANUAL-INV, non-blank) including the new one
    - EXCLUDE all [MANUAL ONLY] slots — automation will adjust these to cover any remaining gap

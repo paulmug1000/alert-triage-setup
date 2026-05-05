@@ -5296,10 +5296,15 @@ export default function TriageSystem({ onBack }) {
                           </div>
                         )}
                         {option.vatUpdate && (
-                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0fdf4", borderLeft: "3px solid #22c55e", fontSize: "13px" }}>
+                          <div style={{ marginTop: "12px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "6px", padding: "10px 14px" }}>
                             <strong style={{ color: "#15803d" }}>If accepted, the following will be updated:</strong>
-                            <div style={{ marginTop: "6px", fontFamily: "monospace", fontSize: "12px", color: "#166534" }}>
-                              Cell {option.vatUpdate.cell}: "{option.vatUpdate.currentValue}" → "{option.vatUpdate.newValue}"
+                            <div style={{ fontFamily: "monospace", fontSize: "12px", marginTop: "4px" }}>
+                              {option.vatUpdate.cells
+                                ? option.vatUpdate.cells.map(cell => (
+                                    <div key={cell}>Cell {cell}: "{option.vatUpdate.currentValue}" → "{option.vatUpdate.newValue}"</div>
+                                  ))
+                                : <div>Cell {option.vatUpdate.cell}: "{option.vatUpdate.currentValue}" → "{option.vatUpdate.newValue}"</div>
+                              }
                             </div>
                           </div>
                         )}

@@ -4370,6 +4370,8 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
 
             // Scenario A: Invoice sent WITH VAT, job marked as NO VAT
             // Evidence: VAT > 0 AND total excl VAT ≈ dashboard total
+            let vatMismatchOptions = null;
+            let vatMismatchNewValue = null;
             if (vatIncluded > 0 && !jobVATYes && Math.abs(totalExclVAT - dashboardTotal) < epsilon) {
               console.log(`  VAT scenario A: invoice sent WITH VAT (£${vatIncluded}) but job marked NO VAT`);
               const vatColA = `AI${matchedRowNum}`;
@@ -4384,13 +4386,14 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
                   explanation: `Invoice #${invoiceNo} was sent including VAT (£${vatIncluded.toFixed(2)}), confirming the job should be marked "Yes VAT". The dashboard total (£${dashboardTotal.toFixed(2)}) matches the invoice amount excluding VAT (£${totalExclVAT.toFixed(2)}), confirming the mismatch.`,
                   jobDetails: {
                     clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
-                    vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
+                    vatSetting: jobVAT, jobType: isRetainer ? "Retainer" : "Project",
+                    startDate: jobStart, endDate: jobEnd,
                     slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
                     slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
                     slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
                   },
                   vatUpdate: { cell: vatColA, newValue: "Yes", currentValue: jobVAT },
-                  recommendedActions: [`write Yes to ${vatColA}`],
+                  recommendedActions: [`write Yes to ${vatColA}`], // will be replaced below with all-rows update
                 },
                 {
                   optionId: 2,
@@ -4408,7 +4411,7 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
                   recommendedActions: [`Re-issue invoice #${invoiceNo} excluding VAT, then mark as resolved`],
                 },
               ];
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+              vatMismatchOptions = options; vatMismatchNewValue = "Yes";
             }
 
             // Scenario B: Invoice sent WITHOUT VAT, job marked to INCLUDE VAT
@@ -4428,13 +4431,14 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
                   explanation: `Invoice #${invoiceNo} was sent without VAT (VAT = £0.00), but the job is marked "Yes VAT". The dashboard shows £${dashboardTotal.toFixed(2)} (= £${grossAmount.toFixed(2)} × 1.2), but the invoice was sent for £${grossAmount.toFixed(2)} with no VAT. Updating the job VAT setting to "No" will resolve the discrepancy.`,
                   jobDetails: {
                     clientName: jobClient, jobName, projectCode: jobCode, revenue: jobRevenue,
-                    vatSetting: jobVAT, startDate: jobStart, endDate: jobEnd,
+                    vatSetting: jobVAT, jobType: isRetainer ? "Retainer" : "Project",
+                    startDate: jobStart, endDate: jobEnd,
                     slot1: `${slot1.ref||"(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}`.trim(),
                     slot2: `${slot2.ref||"(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}`.trim(),
                     slot3: `${slot3.ref||"(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`.trim(),
                   },
                   vatUpdate: { cell: vatColB, newValue: "No", currentValue: jobVAT },
-                  recommendedActions: [`write No to ${vatColB}`],
+                  recommendedActions: [`write No to ${vatColB}`], // will be replaced below with all-rows update
                 },
                 {
                   optionId: 2,
@@ -4452,7 +4456,7 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
                   recommendedActions: [`Re-issue invoice #${invoiceNo} including VAT (total £${(grossAmount * 1.2).toFixed(2)}), then mark as resolved`],
                 },
               ];
-              return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+              vatMismatchOptions = options; vatMismatchNewValue = "No";
             }
 
             // Step 3: Not a VAT scenario — check for rounding difference first
@@ -4589,6 +4593,31 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
               if (rClient !== jobClientLower || rJob !== jobNameLower) break;
               if (String(r[32] || "").trim()) break; // another parent row
               allJobRows.push({ row: r, rowNum: ri + 1 });
+            }
+
+            // ── VAT mismatch: update ALL rows and return ──────────────────
+            if (vatMismatchOptions && vatMismatchNewValue) {
+              const jobType = isRetainer ? "Retainer" : "Project";
+              // Build write list: AI column for every row in the job
+              const vatWrites = allJobRows.map(({ rowNum }) => `AI${rowNum}`);
+              vatMismatchOptions = vatMismatchOptions.map(opt => {
+                if (opt.matchType !== "existing_job") return opt;
+                return {
+                  ...opt,
+                  jobDetails: {
+                    ...(opt.jobDetails || {}),
+                    jobType,
+                  },
+                  vatUpdate: { cells: vatWrites, newValue: vatMismatchNewValue, currentValue: jobVAT },
+                  recommendedActions: [
+                    vatWrites.length > 1
+                      ? `Update VAT setting to "${vatMismatchNewValue}" on all ${vatWrites.length} rows of this job (${vatWrites.join(", ")})`
+                      : `Update VAT setting to "${vatMismatchNewValue}" on row ${allJobRows[0]?.rowNum}`,
+                    vatWrites.map(cell => `write ${vatMismatchNewValue} to ${cell}`).join(", "),
+                  ],
+                };
+              });
+              return res.status(200).json({ success: true, options: vatMismatchOptions, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             // Slot indices: Inv1 ref=42, amt=41; Inv2 ref=49, amt=48; Inv3 ref=56, amt=55

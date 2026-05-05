@@ -5196,15 +5196,23 @@ Return ONLY the JSON array, no other text.`;
               let parentRevenue = group.revenue;
               let parentStart = '', parentEnd = '', parentVAT = '', parentType = '';
               let parentRowNum = null;
+              let lastCollectedRi = -1; // track last collected row index for contiguity check
               for (let ri = 1; ri < activeData.length; ri++) {
                 const r = activeData[ri] || [];
                 const rc = String(r[0] || "").trim().toLowerCase();
                 const rj = String(r[1] || "").trim().toLowerCase();
-                // Match on either explicit client/job OR inherited (blank) client/job after parent found
                 const directMatch = rc === clientNorm && rj === jobNorm;
                 const hasAnyContent = r.some(cell => String(cell || "").trim() !== "");
-                const childInherited = allJobRows.length > 0 && !r[0] && !r[1] && hasAnyContent; // blank client/job but has some data = child continuation
-                if (!directMatch && !childInherited) continue;
+                // Child row: blank client/job, has content, AND is contiguous with last collected row
+                const childInherited = allJobRows.length > 0
+                  && !r[0] && !r[1]
+                  && hasAnyContent
+                  && ri === lastCollectedRi + 1; // must be immediately after last collected row
+                if (!directMatch && !childInherited) {
+                  // If we've already found the parent and hit a non-matching, non-child row, stop
+                  if (parentRowNum !== null && !directMatch) break;
+                  continue;
+                }
                 const sheetRow = ri + 1; // activeData[0]=header=row1, ri=1→row2
                 const hasRevenue = !!(String(r[32] || "").trim());
                 if (directMatch && hasRevenue && parentRowNum === null) {
@@ -5216,6 +5224,7 @@ Return ONLY the JSON array, no other text.`;
                   parentType    = String(r[35] || "").trim();
                 }
                 allJobRows.push({ row: r, sheetRow, isParent: directMatch && hasRevenue });
+                lastCollectedRi = ri;
               }
 
               // Build complete slot picture across all job rows

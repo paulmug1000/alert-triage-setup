@@ -3459,7 +3459,7 @@ export default function TriageSystem({ onBack }) {
                 </div>
                 <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
                   <button onClick={saveSettings} disabled={settingsSaving}
-                    style={{ padding: "8px 20px", background: saving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: settingsSaving ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                    style={{ padding: "8px 20px", background: settingsSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: settingsSaving ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
                     {settingsSaving ? "Saving..." : "Save changes"}
                   </button>
                   {settingsSaveMsg && <span style={{ fontSize: "13px", color: settingsSaveMsg.startsWith("✓") ? "#166534" : "#dc2626" }}>{settingsSaveMsg}</span>}

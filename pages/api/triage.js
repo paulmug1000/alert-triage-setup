@@ -634,6 +634,44 @@ function colIndexToLetter(colNum) {
 }
 
 // Convert column letter(s) to 1-based number. E.g. A→1, AA→27
+/** Ensure ClaudeUsage tab exists in Automation Commander with correct headers and config */
+async function ensureClaudeUsageTab_(sheets, spreadsheetId) {
+  try {
+    // Check if tab exists
+    const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
+    const exists = meta.data.sheets.some(s => s.properties.title === "ClaudeUsage");
+    if (!exists) {
+      // Create the tab
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: { requests: [{ addSheet: { properties: { title: "ClaudeUsage" } } }] },
+      });
+      // Write config section and headers
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          valueInputOption: "RAW",
+          data: [
+            { range: "ClaudeUsage!A1:B6", values: [
+              ["Claude API Usage & Settings", ""],
+              ["hourly_limit", 10],
+              ["daily_limit", 30],
+              ["anomaly_threshold", 15],
+              ["Pricing: Sonnet 4 ($/1M tokens)", "input: $3, output: $15"],
+              ["", ""],
+            ]},
+            { range: "ClaudeUsage!A7:F7", values: [
+              ["Timestamp", "Source", "Client", "Alert Type", "Tokens", "Cost (USD)"],
+            ]},
+          ],
+        },
+      });
+    }
+  } catch(e) {
+    console.error("ensureClaudeUsageTab_ error:", e.message);
+  }
+}
+
 function colLetterToNum(col) {
   return String(col).toUpperCase().split("").reduce((acc, ch) => acc * 26 + ch.charCodeAt(0) - 64, 0);
 }
@@ -1904,6 +1942,160 @@ export default async function handler(req, res) {
       } catch (err) {
         console.error("❌ update_outgoing_note error:", err);
         return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_claude_settings") {
+      // Read config and usage from ClaudeUsage tab
+      const { automationCommanderSheetId: acId } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const acIdClean = extractSheetIdFromUrl(acId) || acId;
+        await ensureClaudeUsageTab_(sheets, acIdClean);
+
+        // Read config (A1:B5) and all usage rows (A8 onwards)
+        const [cfgResp, usageResp] = await Promise.all([
+          sheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!A1:B6" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!A8:F2000" }),
+        ]);
+        const cfg = cfgResp.data.values || [];
+        const cfgMap = {};
+        for (const row of cfg) { if (row[0] && row[1] !== undefined) cfgMap[String(row[0]).trim()] = String(row[1]).trim(); }
+
+        const hourlyLimit = parseInt(cfgMap["hourly_limit"] || "10");
+        const dailyLimit  = parseInt(cfgMap["daily_limit"]  || "30");
+        const anomalyThreshold = parseInt(cfgMap["anomaly_threshold"] || "15");
+
+        // Parse usage rows
+        const usageRows = (usageResp.data.values || []).filter(r => r[0]);
+        const now = new Date();
+        const todayStr = now.toISOString().slice(0, 10);
+        const curHour = now.getUTCHours();
+
+        let todayCalls = 0, todayCost = 0, hourCalls = 0, hourCost = 0, weeklyCalls = 0, weeklyCost = 0;
+        const weekAgo = new Date(now.getTime() - 7 * 86400000);
+        const recentRows = [];
+
+        for (const row of usageRows) {
+          const ts = row[0] ? new Date(row[0]) : null;
+          if (!ts || isNaN(ts)) continue;
+          const cost = parseFloat(row[5] || "0") || 0;
+          if (ts >= weekAgo) { weeklyCalls++; weeklyCost += cost; }
+          if (ts.toISOString().slice(0, 10) === todayStr) {
+            todayCalls++; todayCost += cost;
+            if (ts.getUTCHours() === curHour) { hourCalls++; hourCost += cost; }
+          }
+          recentRows.push({ ts: row[0], action: row[1], client: row[2], alertType: row[3], tokens: row[4], cost: row[5] });
+        }
+        // Return most recent 50 rows for display
+        recentRows.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+
+        return res.status(200).json({
+          success: true,
+          config: { hourlyLimit, dailyLimit, anomalyThreshold },
+          usage: {
+            today: { calls: todayCalls, cost: todayCost.toFixed(4) },
+            thisHour: { calls: hourCalls, cost: hourCost.toFixed(4) },
+            week: { calls: weeklyCalls, cost: weeklyCost.toFixed(4) },
+          },
+          recentRows: recentRows.slice(0, 50),
+        });
+      } catch(err) {
+        console.error("❌ get_claude_settings error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "save_claude_settings") {
+      const { automationCommanderSheetId: acId, hourlyLimit, dailyLimit, anomalyThreshold } = req.body;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const acIdClean = extractSheetIdFromUrl(acId) || acId;
+        await ensureClaudeUsageTab_(sheets, acIdClean);
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: acIdClean,
+          range: "ClaudeUsage!B2:B4",
+          valueInputOption: "RAW",
+          requestBody: { values: [[parseInt(hourlyLimit) || 10], [parseInt(dailyLimit) || 30], [parseInt(anomalyThreshold) || 15]] },
+        });
+        return res.status(200).json({ success: true });
+      } catch(err) {
+        console.error("❌ save_claude_settings error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "check_claude_budget") {
+      // Called by GAS Stage 2 before each Claude-requiring alert
+      // Returns { allowed: true/false, reason: string }
+      const { automationCommanderSheetId: acId } = req.body;
+      if (!acId) return res.status(200).json({ allowed: true }); // fail open
+      try {
+        const sheets = await getSheetsClient();
+        const acIdClean = extractSheetIdFromUrl(acId) || acId;
+        await ensureClaudeUsageTab_(sheets, acIdClean);
+
+        const [cfgResp, usageResp] = await Promise.all([
+          sheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!B2:B4" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: acIdClean, range: "ClaudeUsage!A8:A2000" }),
+        ]);
+        const cfgVals = cfgResp.data.values || [];
+        const hourlyLimit = parseInt(cfgVals[0]?.[0] || "10");
+        const dailyLimit  = parseInt(cfgVals[1]?.[0] || "30");
+
+        const now = new Date();
+        const todayStr = now.toISOString().slice(0, 10);
+        const curHour = now.getUTCHours();
+        let hourCalls = 0, dayCalls = 0;
+
+        for (const row of (usageResp.data.values || [])) {
+          const ts = row[0] ? new Date(row[0]) : null;
+          if (!ts || isNaN(ts)) continue;
+          if (ts.toISOString().slice(0, 10) === todayStr) {
+            dayCalls++;
+            if (ts.getUTCHours() === curHour) hourCalls++;
+          }
+        }
+
+        if (dayCalls >= dailyLimit)  return res.status(200).json({ allowed: false, reason: `Daily limit reached (${dayCalls}/${dailyLimit})` });
+        if (hourCalls >= hourlyLimit) return res.status(200).json({ allowed: false, reason: `Hourly limit reached (${hourCalls}/${hourlyLimit})` });
+        return res.status(200).json({ allowed: true, hourCalls, dayCalls, hourlyLimit, dailyLimit });
+      } catch(err) {
+        console.error("❌ check_claude_budget error:", err);
+        return res.status(200).json({ allowed: true }); // fail open
+      }
+
+    } else if (action === "log_claude_usage") {
+      // Log a Claude API call to ClaudeUsage tab
+      const { automationCommanderSheetId: acId, source, clientName, alertType, inputTokens, outputTokens } = req.body;
+      if (!acId) return res.status(200).json({ success: true }); // non-critical
+      try {
+        const sheets = await getSheetsClient();
+        const acIdClean = extractSheetIdFromUrl(acId) || acId;
+        await ensureClaudeUsageTab_(sheets, acIdClean);
+
+        // Sonnet 4 pricing: $3/M input, $15/M output
+        const costUsd = ((inputTokens || 0) / 1000000 * 3) + ((outputTokens || 0) / 1000000 * 15);
+        const totalTokens = (inputTokens || 0) + (outputTokens || 0);
+
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: acIdClean,
+          range: "ClaudeUsage!A:F",
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [[
+              new Date().toISOString(),
+              source || "precompute",
+              clientName || "",
+              alertType || "",
+              totalTokens,
+              costUsd.toFixed(6),
+            ]],
+          },
+        });
+        return res.status(200).json({ success: true });
+      } catch(err) {
+        console.error("❌ log_claude_usage error:", err);
+        return res.status(200).json({ success: false }); // non-critical
       }
 
     } else if (action === "get_app_log") {
@@ -3658,6 +3850,13 @@ Return ONLY JSON, no other text.`;
             max_tokens: 3000,
             messages: [{ role: "user", content: expensePrompt }],
           });
+          // Log Claude API usage (fire-and-forget, non-blocking)
+          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "log_claude_usage", automationCommanderSheetId,
+              source: "precompute", clientName: alert.clientName || "",
+              alertType: alert.type || alert.flagType || "",
+              inputTokens: message.usage?.input_tokens || 0,
+              outputTokens: message.usage?.output_tokens || 0 }) }).catch(() => {});
 
           let options = [];
           const responseText = message.content[0].type === "text" ? message.content[0].text : "";
@@ -3740,7 +3939,7 @@ Return ONLY JSON, no other text.`;
               const tabStartRow = tabName === "Pipeline" ? 6 : 1;
               const tabResp = await sheets.spreadsheets.values.get({
                 spreadsheetId: alert.clientId,
-                range: `${tabName}!A1:DE5000`, // extend to DE to include col DD (index 107) = "Copied to Confirmed?"
+                range: `${tabName}!A1:AM5000`,
               });
               const tabRows = tabResp.data.values || [];
               let jobRow = null;
@@ -3753,8 +3952,8 @@ Return ONLY JSON, no other text.`;
                 const rCode = String(r[2] || "").trim().toLowerCase();
                 const rClient = String(r[0] || "").trim().toLowerCase();
                 const rJob = String(r[1] || "").trim().toLowerCase();
-                if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; copiedToConf = String(r[107] || "").trim(); break; }
-                if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; copiedToConf = String(r[107] || "").trim(); break; }
+                if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; break; }
+                if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; break; }
               }
 
               const mismatchFields = alert.mismatchFields || [];
@@ -3836,6 +4035,17 @@ Return ONLY JSON, no other text.`;
               ];
             }
 
+            // For Pipeline tab: fetch Copied to Confirmed? (col DD, index 107) for matched row
+            if (tabName === "Pipeline" && jobRow) {
+              try {
+                const ddResp = await sheets.spreadsheets.values.get({
+                  spreadsheetId: alert.clientId,
+                  range: `Pipeline!DD${jobRow}`,
+                });
+                copiedToConf = String(ddResp.data.values?.[0]?.[0] || "").trim();
+              } catch(e) { console.log("  copiedToConf read failed:", e.message); }
+            }
+
             console.log(`  ✅ App discr (${alert.subType || "not_found"}) — ${options.length} options for ${jobDesc}`);
 
             // Inject Pipeline-specific fields onto options
@@ -3896,7 +4106,7 @@ Return ONLY JSON, no other text.`;
             const tabStartRow = tabName === "Pipeline" ? 6 : 1;
             const tabResp = await sheets.spreadsheets.values.get({
               spreadsheetId: alert.clientId,
-              range: `${tabName}!A1:DE5000`, // extend to DE to include col DD (index 107) = "Copied to Confirmed?"
+              range: `${tabName}!A1:AM5000`,
             });
             const tabRows = tabResp.data.values || [];
             let jobRow = null;
@@ -4007,6 +4217,17 @@ Return ONLY JSON, no other text.`;
                 `Mark this discrepancy as ignored — no changes will be made to either system`,
               ],
             });
+
+            // For Pipeline tab: fetch Copied to Confirmed? (col DD, index 107) for matched row
+            if (tabName === "Pipeline" && jobRow) {
+              try {
+                const ddResp = await sheets.spreadsheets.values.get({
+                  spreadsheetId: alert.clientId,
+                  range: `Pipeline!DD${jobRow}`,
+                });
+                copiedToConf = String(ddResp.data.values?.[0]?.[0] || "").trim();
+              } catch(e) { console.log("  copiedToConf read failed:", e.message); }
+            }
 
             console.log(`  ✅ Field mismatch — ${mismatchFields.join(", ")} — returning ${options.length} options for ${jobLabel}`);
 
@@ -4233,6 +4454,13 @@ Return ONLY JSON, no other text.`;
               { role: "user", content: crmPrompt }
             ],
           });
+          // Log Claude API usage (fire-and-forget, non-blocking)
+          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "log_claude_usage", automationCommanderSheetId,
+              source: "precompute", clientName: alert.clientName || "",
+              alertType: alert.type || alert.flagType || "",
+              inputTokens: message.usage?.input_tokens || 0,
+              outputTokens: message.usage?.output_tokens || 0 }) }).catch(() => {});
 
           let options = [];
           const responseText = message.content[0].type === "text" ? message.content[0].text : "";
@@ -4720,6 +4948,13 @@ Return ONLY the JSON array, no other text.`;
               max_tokens: 1500,
               messages: [{ role: "user", content: invAmtPrompt }],
             });
+            // Log Claude API usage (fire-and-forget, non-blocking)
+            fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "log_claude_usage", automationCommanderSheetId,
+                source: "precompute", clientName: alert.clientName || "",
+                alertType: alert.type || alert.flagType || "",
+                inputTokens: invAmtMessage.usage?.input_tokens || 0,
+                outputTokens: invAmtMessage.usage?.output_tokens || 0 }) }).catch(() => {});
 
             let invAmtOptions = [];
             const invAmtText = invAmtMessage.content[0]?.type === "text" ? invAmtMessage.content[0].text : "";
@@ -5643,6 +5878,13 @@ Return ONLY JSON, no other text.`;
             { role: "user", content: prompt }
           ],
         });
+        // Log Claude API usage (fire-and-forget, non-blocking)
+        fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "log_claude_usage", automationCommanderSheetId,
+            source: "precompute", clientName: alert.clientName || "",
+            alertType: alert.type || alert.flagType || "",
+            inputTokens: message.usage?.input_tokens || 0,
+            outputTokens: message.usage?.output_tokens || 0 }) }).catch(() => {});
 
         let options = [];
         const responseText = message.content[0].type === "text" ? message.content[0].text : "";

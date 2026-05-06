@@ -267,6 +267,11 @@ export default function TriageSystem({ onBack }) {
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
   const [settingsData, setSettingsData] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsEditHourly, setSettingsEditHourly] = useState(10);
+  const [settingsEditDaily, setSettingsEditDaily] = useState(30);
+  const [settingsEditAnomaly, setSettingsEditAnomaly] = useState(15);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaveMsg, setSettingsSaveMsg] = useState("");
   const OUTGOINGS_WINDOW = 7; // months visible at once
   const [appLogData, setAppLogData] = useState([]);
   const [appLogLoading, setAppLogLoading] = useState(false);
@@ -345,7 +350,14 @@ export default function TriageSystem({ onBack }) {
     setSettingsLoading(true);
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "get_claude_settings", automationCommanderSheetId }) })
-      .then(r => r.json()).then(d => { if (d.success) setSettingsData(d); })
+      .then(r => r.json()).then(d => {
+        if (d.success) {
+          setSettingsData(d);
+          setSettingsEditHourly(d.config?.hourlyLimit ?? 10);
+          setSettingsEditDaily(d.config?.dailyLimit ?? 30);
+          setSettingsEditAnomaly(d.config?.anomalyThreshold ?? 15);
+        }
+      })
       .catch(e => console.error("get_claude_settings error:", e))
       .finally(() => setSettingsLoading(false));
   };
@@ -3381,34 +3393,20 @@ export default function TriageSystem({ onBack }) {
 
   // ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
   if (activeNav === "settings") {
-    const [editHourly, setEditHourly] = React.useState(settingsData?.config?.hourlyLimit ?? 10);
-    const [editDaily, setEditDaily] = React.useState(settingsData?.config?.dailyLimit ?? 30);
-    const [editAnomaly, setEditAnomaly] = React.useState(settingsData?.config?.anomalyThreshold ?? 15);
-    const [saving, setSaving] = React.useState(false);
-    const [saveMsg, setSaveMsg] = React.useState("");
-
-    // Sync edit fields when data loads
-    React.useEffect(() => {
-      if (settingsData?.config) {
-        setEditHourly(settingsData.config.hourlyLimit);
-        setEditDaily(settingsData.config.dailyLimit);
-        setEditAnomaly(settingsData.config.anomalyThreshold);
-      }
-    }, [settingsData]);
 
     const saveSettings = async () => {
-      setSaving(true); setSaveMsg("");
+      setSettingsSaving(true); setSettingsSaveMsg("");
       try {
         const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "save_claude_settings", automationCommanderSheetId,
-            hourlyLimit: editHourly, dailyLimit: editDaily, anomalyThreshold: editAnomaly }) });
+            hourlyLimit: settingsEditHourly, dailyLimit: settingsEditDaily, anomalyThreshold: settingsEditAnomaly }) });
         const d = await res.json();
         if (d.success) {
-          setSaveMsg("✓ Saved");
-          handleNavSettings(); // reload
-        } else { setSaveMsg("Error: " + d.error); }
-      } catch(e) { setSaveMsg("Error: " + e.message); }
-      finally { setSaving(false); }
+          setSettingsSaveMsg("✓ Saved");
+          handleNavSettings();
+        } else { setSettingsSaveMsg("Error: " + d.error); }
+      } catch(e) { setSettingsSaveMsg("Error: " + e.message); }
+      finally { setSettingsSaving(false); }
     };
 
     const u = settingsData?.usage;
@@ -3446,9 +3444,9 @@ export default function TriageSystem({ onBack }) {
                 <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Usage Limits (precompute only)</h3>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "16px", marginBottom: "14px" }}>
                   {[
-                    { label: "Hourly limit", val: editHourly, set: setEditHourly, hint: "Max Claude calls per hour during precompute" },
-                    { label: "Daily limit", val: editDaily, set: setEditDaily, hint: "Max Claude calls per day during precompute" },
-                    { label: "Anomaly threshold", val: editAnomaly, set: setEditAnomaly, hint: "If a client has ≥ this many invoice/expense alerts, skip ALL precompute Claude calls for that client" },
+                    { label: "Hourly limit", val: settingsEditHourly, set: setSettingsEditHourly, hint: "Max Claude calls per hour during precompute" },
+                    { label: "Daily limit", val: settingsEditDaily, set: setSettingsEditDaily, hint: "Max Claude calls per day during precompute" },
+                    { label: "Anomaly threshold", val: settingsEditAnomaly, set: setSettingsEditAnomaly, hint: "If a client has ≥ this many invoice/expense alerts, skip ALL precompute Claude calls for that client" },
                   ].map(({ label, val, set, hint }) => (
                     <div key={label}>
                       <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>{label}</label>
@@ -3460,11 +3458,11 @@ export default function TriageSystem({ onBack }) {
                   ))}
                 </div>
                 <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                  <button onClick={saveSettings} disabled={saving}
-                    style={{ padding: "8px 20px", background: saving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
-                    {saving ? "Saving..." : "Save changes"}
+                  <button onClick={saveSettings} disabled={settingsSaving}
+                    style={{ padding: "8px 20px", background: saving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: settingsSaving ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                    {settingsSaving ? "Saving..." : "Save changes"}
                   </button>
-                  {saveMsg && <span style={{ fontSize: "13px", color: saveMsg.startsWith("✓") ? "#166534" : "#dc2626" }}>{saveMsg}</span>}
+                  {settingsSaveMsg && <span style={{ fontSize: "13px", color: settingsSaveMsg.startsWith("✓") ? "#166534" : "#dc2626" }}>{settingsSaveMsg}</span>}
                 </div>
                 <div style={{ marginTop: "12px", fontSize: "12px", color: "#888" }}>
                   Note: limits apply to automated precompute only. On-demand analysis (clicking an alert) is always unrestricted.

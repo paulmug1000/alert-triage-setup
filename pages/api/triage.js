@@ -6604,10 +6604,17 @@ Return ONLY JSON, no other text.`;
 
       try {
         console.log(`\n🗑️ DELETE_JOB for ${alert.clientName}: ${option.jobName}`);
+        console.log(`  alert.clientId="${alert.clientId}" alertType="${alert.alertType || alert.flagType}"`);
         const sheets = await getSheetsClient();
 
         const tabName = (alert.alertType || alert.flagType || "") === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
         const clientSheetId = alert.clientId;
+
+        if (!clientSheetId) {
+          console.error("  ❌ clientSheetId missing from alert");
+          return res.status(400).json({ success: false, error: "Cannot delete: clientSheetId missing from alert — please re-analyse this alert and try again." });
+        }
+        console.log(`  Reading ${tabName} tab from sheet ${clientSheetId.slice(0, 20)}...`);
 
         // Fresh read of the tab
         const tabResp = await sheets.spreadsheets.values.get({

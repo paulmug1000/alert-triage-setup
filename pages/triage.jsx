@@ -5394,6 +5394,7 @@ export default function TriageSystem({ onBack }) {
                                   {option.matchingDetails.unmatchedJobSummary.jobName && <div>Job: {option.matchingDetails.unmatchedJobSummary.jobName}</div>}
                                   {option.matchingDetails.unmatchedJobSummary.projectCode && <div>Code: {option.matchingDetails.unmatchedJobSummary.projectCode}</div>}
                                   {option.matchingDetails.unmatchedJobSummary.revenue && <div>Revenue: {option.matchingDetails.unmatchedJobSummary.revenue}</div>}
+                                  {option.matchingDetails.unmatchedJobSummary.likelihood && <div>Likelihood: {option.matchingDetails.unmatchedJobSummary.likelihood}%</div>}
                                   {option.matchingDetails.unmatchedJobSummary.startDate && <div>Dates: {option.matchingDetails.unmatchedJobSummary.startDate} → {option.matchingDetails.unmatchedJobSummary.endDate || "?"}</div>}
                                 </div>
                               </div>
@@ -5411,6 +5412,7 @@ export default function TriageSystem({ onBack }) {
                                     {option.matchingDetails.matchedJobDetails.clientName && <div>Client: {option.matchingDetails.matchedJobDetails.clientName}</div>}
                                     {option.matchingDetails.matchedJobDetails.jobName && <div>Job: {option.matchingDetails.matchedJobDetails.jobName}</div>}
                                     {option.matchingDetails.matchedJobDetails.revenue && <div>Revenue: {option.matchingDetails.matchedJobDetails.revenue}</div>}
+                                    {option.matchingDetails.matchedJobDetails.likelihood && <div>Likelihood: {option.matchingDetails.matchedJobDetails.likelihood}%</div>}
                                     {option.matchingDetails.matchedJobDetails.startDate && <div>Dates: {option.matchingDetails.matchedJobDetails.startDate} → {option.matchingDetails.matchedJobDetails.endDate}</div>}
                                   </div>
                                 )}

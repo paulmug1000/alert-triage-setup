@@ -4014,7 +4014,7 @@ Return ONLY JSON, no other text.`;
                   title: `IGNORE — Job "${jobName || projectCode || "unknown"}" is legitimate and CRM discrepancy can be disregarded`,
                   matchType: "ignore",
                   jobRow: alert.rowNumber, jobName,
-                  matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate } },
+                  matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
                   recommendedActions: [
                     `Verify that "${jobDesc}" is intentionally absent from the CRM`,
                     `If confirmed, mark this alert as ignored to prevent it recurring`,
@@ -4025,7 +4025,7 @@ Return ONLY JSON, no other text.`;
                   title: `DELETE — Remove job "${jobName || projectCode || "unknown"}" from ${tabName} tab as it should not exist`,
                   matchType: "delete",
                   jobRow: alert.rowNumber, jobName,
-                  matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate } },
+                  matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
                   recommendedActions: [
                     `Blank all cells for "${jobDesc}" and its child rows in the ${tabName} tab`,
                     `All columns A:G, AG:AM, AP:BH, BX:CR will be cleared across the parent row and all child rows`,

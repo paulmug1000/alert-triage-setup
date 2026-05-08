@@ -4165,7 +4165,7 @@ export default function TriageSystem({ onBack }) {
                           {md.jobType       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
                           <div style={{ marginBottom: "4px", marginTop: "6px" }}><strong>Pipeline tab</strong></div>
                           {md.pipelineRow   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.pipelineRow}</div>}
-                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood || "(blank)"}</strong></div>
+                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
                           <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>"Copied to confirmed?": <strong>{md.copiedToConf || "(blank)"}</strong></div>
                           <div style={{ marginTop: "6px", color: "#166534", fontStyle: "italic" }}>
                             Expected fix: set Pipeline likelihood to 0% or mark "Copied to confirmed?" as Yes.
@@ -4356,7 +4356,7 @@ export default function TriageSystem({ onBack }) {
                                     {code && <div style={{ fontSize: "11px", color: "#888" }}>Code: {code}</div>}
                                     {rev  && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
                                     {start && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-                                    {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {likely}</div>}
+                                    {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
                                     {isMismatch
                                       ? <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>⚠ {(alert.mismatchFields||[]).join(", ")}</div>
                                       : <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>{isPipeline ? "In Pipeline — not in CRM" : "In Confirmed — not in CRM"}</div>
@@ -4418,7 +4418,7 @@ export default function TriageSystem({ onBack }) {
                                 {code    && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
                                 {rev     && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
                                 {start   && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-                                {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {likely}</div>}
+                                {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
                                 {isMismatch ? (
                                   <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>
                                     ⚠ Field mismatch: {(alert.mismatchFields || []).join(", ")}
@@ -4445,7 +4445,7 @@ export default function TriageSystem({ onBack }) {
                                 {code    && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
                                 {rev     && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
                                 {start   && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-                                {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {likely}</div>}
+                                {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
                                 {isMismatch ? (
                                   <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>
                                     ⚠ Field mismatch: {mismatchFields.join(", ")}
@@ -5394,7 +5394,7 @@ export default function TriageSystem({ onBack }) {
                                   {option.matchingDetails.unmatchedJobSummary.jobName && <div>Job: {option.matchingDetails.unmatchedJobSummary.jobName}</div>}
                                   {option.matchingDetails.unmatchedJobSummary.projectCode && <div>Code: {option.matchingDetails.unmatchedJobSummary.projectCode}</div>}
                                   {option.matchingDetails.unmatchedJobSummary.revenue && <div>Revenue: {option.matchingDetails.unmatchedJobSummary.revenue}</div>}
-                                  {option.matchingDetails.unmatchedJobSummary.likelihood && <div>Likelihood: {option.matchingDetails.unmatchedJobSummary.likelihood}%</div>}
+                                  {option.matchingDetails.unmatchedJobSummary.likelihood && <div>Likelihood: {(parseFloat(option.matchingDetails.unmatchedJobSummary.likelihood) * 100).toFixed(0)}%</div>}
                                   {option.matchingDetails.unmatchedJobSummary.startDate && <div>Dates: {option.matchingDetails.unmatchedJobSummary.startDate} → {option.matchingDetails.unmatchedJobSummary.endDate || "?"}</div>}
                                 </div>
                               </div>
@@ -5412,7 +5412,7 @@ export default function TriageSystem({ onBack }) {
                                     {option.matchingDetails.matchedJobDetails.clientName && <div>Client: {option.matchingDetails.matchedJobDetails.clientName}</div>}
                                     {option.matchingDetails.matchedJobDetails.jobName && <div>Job: {option.matchingDetails.matchedJobDetails.jobName}</div>}
                                     {option.matchingDetails.matchedJobDetails.revenue && <div>Revenue: {option.matchingDetails.matchedJobDetails.revenue}</div>}
-                                    {option.matchingDetails.matchedJobDetails.likelihood && <div>Likelihood: {option.matchingDetails.matchedJobDetails.likelihood}%</div>}
+                                    {option.matchingDetails.matchedJobDetails.likelihood && <div>Likelihood: {(parseFloat(option.matchingDetails.matchedJobDetails.likelihood) * 100).toFixed(0)}%</div>}
                                     {option.matchingDetails.matchedJobDetails.startDate && <div>Dates: {option.matchingDetails.matchedJobDetails.startDate} → {option.matchingDetails.matchedJobDetails.endDate}</div>}
                                   </div>
                                 )}

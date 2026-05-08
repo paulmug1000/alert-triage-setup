@@ -4008,12 +4008,34 @@ Return ONLY JSON, no other text.`;
 
             } else {
               // not_found: job in sheet but not in CRM
+              // Search the tab to find the actual Pipeline/Confirmed row number
+              if (client || jobName || projectCode) {
+                try {
+                  const tabSearchResp = await sheets.spreadsheets.values.get({
+                    spreadsheetId: alert.clientId,
+                    range: `${tabName}!A1:C5000`,
+                  });
+                  const tabSearchRows = tabSearchResp.data.values || [];
+                  const codeToFind2   = (projectCode || "").toLowerCase();
+                  const clientToFind2 = (client || "").toLowerCase();
+                  const jobToFind2    = (jobName || "").toLowerCase();
+                  for (let tr2 = tabName === "Pipeline" ? 5 : 0; tr2 < tabSearchRows.length; tr2++) {
+                    const r2 = tabSearchRows[tr2] || [];
+                    const rCode2   = String(r2[2] || "").trim().toLowerCase();
+                    const rClient2 = String(r2[0] || "").trim().toLowerCase();
+                    const rJob2    = String(r2[1] || "").trim().toLowerCase();
+                    if (codeToFind2 && rCode2 === codeToFind2) { jobRow = tr2 + 1; break; }
+                    if (!codeToFind2 && rClient2 === clientToFind2 && rJob2 === jobToFind2) { jobRow = tr2 + 1; break; }
+                  }
+                } catch(e) { console.log("  not_found tab search failed:", e.message); }
+              }
+
               options = [
                 {
                   optionId: 1,
                   title: `IGNORE — Job "${jobName || projectCode || "unknown"}" is legitimate and CRM discrepancy can be disregarded`,
                   matchType: "ignore",
-                  jobRow: alert.rowNumber, jobName,
+                  jobRow: jobRow || alert.rowNumber, jobName,
                   matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
                   recommendedActions: [
                     `Verify that "${jobDesc}" is intentionally absent from the CRM`,
@@ -4024,7 +4046,7 @@ Return ONLY JSON, no other text.`;
                   optionId: 2,
                   title: `DELETE — Remove job "${jobName || projectCode || "unknown"}" from ${tabName} tab as it should not exist`,
                   matchType: "delete",
-                  jobRow: alert.rowNumber, jobName,
+                  jobRow: jobRow || alert.rowNumber, jobName,
                   matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
                   recommendedActions: [
                     `Blank all cells for "${jobDesc}" and its child rows in the ${tabName} tab`,

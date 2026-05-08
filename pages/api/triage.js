@@ -6628,14 +6628,25 @@ Return ONLY JSON, no other text.`;
 
         const targetClient = (option.matchingDetails?.unmatchedJobSummary?.clientName || "").trim().toLowerCase();
         const targetJob = (option.jobName || "").trim().toLowerCase();
-        console.log(`  Searching for: client="${targetClient}" job="${targetJob}"`);
+        const targetCode = (option.matchingDetails?.unmatchedJobSummary?.projectCode || "").trim().toLowerCase();
+        console.log(`  Searching for: client="${targetClient}" job="${targetJob}" code="${targetCode}"`);
+        console.log(`  option.matchingDetails.unmatchedJobSummary.clientName="${option.matchingDetails?.unmatchedJobSummary?.clientName}"`);
+        console.log(`  alert.clientName="${alert.clientName}" (this is the AGENCY name, should NOT be used for row search)`);
 
+        // Pipeline tab: client name only appears on parent rows — propagate to child rows
         let parentRowIdx = -1;
+        let lastSeenClient = "";
         for (let i = 1; i < tabRows.length; i++) {
           const r = tabRows[i] || [];
-          const rClient = String(r[0] || "").trim().toLowerCase();
+          const rClientRaw = String(r[0] || "").trim();
           const rJob = String(r[1] || "").trim().toLowerCase();
-          if (rClient === targetClient && rJob === targetJob) {
+          const rCode = String(r[2] || "").trim().toLowerCase();
+          if (rClientRaw) lastSeenClient = rClientRaw.toLowerCase();
+          const effectiveClient = rClientRaw ? rClientRaw.toLowerCase() : lastSeenClient;
+          const clientMatch = effectiveClient === targetClient;
+          const jobMatch = rJob === targetJob;
+          const codeMatch = targetCode && rCode === targetCode;
+          if ((codeMatch || (clientMatch && jobMatch))) {
             parentRowIdx = i;
             break;
           }
@@ -6647,7 +6658,7 @@ Return ONLY JSON, no other text.`;
           console.log(`  ❌ Not found. Sample rows: ${sample}`);
           return res.status(404).json({
             success: false,
-            error: `Job "${option.jobName}" not found in ${tabName} tab.`,
+            error: `Job "${option.jobName}" not found in ${tabName} tab — client name or job name may not match exactly.`,
           });
         }
 

@@ -4050,7 +4050,7 @@ Return ONLY JSON, no other text.`;
                   matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
                   recommendedActions: [
                     `Blank all cells for "${jobDesc}" and its child rows in the ${tabName} tab`,
-                    `All columns A:G, AG:AM, AP:BH, BX:CR will be cleared across the parent row and all child rows`,
+                    `All columns A:G, AG:AM, AN, AP:BH, BX:CR, DD will be cleared across the parent row and all child rows`,
                     `Verify no invoices or expenses are linked to this job before accepting`,
                   ],
                 },
@@ -6033,8 +6033,10 @@ Return ONLY JSON, no other text.`;
             for (const row of rows) {
               ranges.push(`${tabName}!A${row}:G${row}`);
               ranges.push(`${tabName}!AG${row}:AM${row}`);
+              ranges.push(`${tabName}!AN${row}`);
               ranges.push(`${tabName}!AP${row}:BH${row}`);
               ranges.push(`${tabName}!BX${row}:CR${row}`);
+              ranges.push(`${tabName}!DD${row}`);
             }
             return ranges;
           };
@@ -6679,13 +6681,16 @@ Return ONLY JSON, no other text.`;
         }
         console.log(`  Rows to blank: ${rowsToBlank.map(r => r + 1).join(", ")} (${rowsToBlank.length} rows)`);
 
-        // Build column ranges to blank: A:G (1-7), AG:AM (33-39), AP:BH (42-60), BX:CR (76-96)
+        // Build column ranges to blank: A:G (1-7), AG:AM (33-39), AN (40), AP:BH (42-60), BX:CR (76-96), DD (108)
+        // AN = likelihood (40), DD = "Copied to Confirmed?" (108) — Pipeline-specific fields
         // In A1 notation: colNum is 1-indexed
         const colRanges = [
           [1, 7],    // A:G
           [33, 39],  // AG:AM
+          [40, 40],  // AN (likelihood)
           [42, 60],  // AP:BH
           [76, 96],  // BX:CR
+          [108, 108], // DD (Copied to Confirmed?)
         ];
 
         const blankData = [];

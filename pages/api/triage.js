@@ -3921,6 +3921,8 @@ Return ONLY JSON, no other text.`;
             const jobDesc = [client, jobName, projectCode].filter(Boolean).join(" — ");
 
             let options = [];
+            let jobRow = null;      // declared here so both branches can set it and the DD read below can use it
+            let copiedToConf = "";
 
             if (alert.subType === "field_mismatch") {
               // Job exists in both sheet and CRM but fields differ
@@ -3942,8 +3944,6 @@ Return ONLY JSON, no other text.`;
                 range: `${tabName}!A1:AM5000`,
               });
               const tabRows = tabResp.data.values || [];
-              let jobRow = null;
-              let copiedToConf = "";
               const codeToFind   = (projectCode || crmCode).toLowerCase();
               const clientToFind = (client || crmClient).toLowerCase();
               const jobToFind    = (jobName || crmJob).toLowerCase();

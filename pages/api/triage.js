@@ -6616,12 +6616,14 @@ Return ONLY JSON, no other text.`;
         }
         console.log(`  Reading ${tabName} tab from sheet ${clientSheetId.slice(0, 20)}...`);
 
-        // Fresh read of the tab
+        // Only read cols A:B (client, job) and AG (revenue — to identify parent vs child)
+        // This is much faster than reading A1:CR2000
         const tabResp = await sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetId,
-          range: `${tabName}!A1:CR2000`,
+          range: `${tabName}!A1:AG2000`,
           valueRenderOption: "UNFORMATTED_VALUE",
         });
+        console.log(`  Tab read complete, ${(tabResp.data.values || []).length} rows`);
         const tabRows = tabResp.data.values || [];
 
         // Find parent row by client + job name match (never by cached row number)

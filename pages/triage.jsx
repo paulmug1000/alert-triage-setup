@@ -1174,6 +1174,8 @@ export default function TriageSystem({ onBack }) {
       setAcceptError("");
       
       console.log(`Accepting option: ${option.title}`);
+      console.log(`Alert object keys: ${Object.keys(alert || {}).join(", ")}`);
+      console.log(`alert.clientId: ${alert?.clientId}, alert.alertType: ${alert?.alertType || alert?.flagType}`);
 
       // delete matchType uses a dedicated action that does a fresh sheet read
       const action = option.matchType === "delete" ? "delete_job" : "accept_option";

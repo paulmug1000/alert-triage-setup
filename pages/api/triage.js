@@ -6623,12 +6623,12 @@ Return ONLY JSON, no other text.`;
           range: `${tabName}!A1:AG2000`,
           valueRenderOption: "UNFORMATTED_VALUE",
         });
-        console.log(`  Tab read complete, ${(tabResp.data.values || []).length} rows`);
         const tabRows = tabResp.data.values || [];
+        console.log(`  Tab read complete, ${tabRows.length} rows`);
 
-        // Find parent row by client + job name match (never by cached row number)
         const targetClient = (option.matchingDetails?.unmatchedJobSummary?.clientName || "").trim().toLowerCase();
         const targetJob = (option.jobName || "").trim().toLowerCase();
+        console.log(`  Searching for: client="${targetClient}" job="${targetJob}"`);
 
         let parentRowIdx = -1;
         for (let i = 1; i < tabRows.length; i++) {
@@ -6640,15 +6640,18 @@ Return ONLY JSON, no other text.`;
             break;
           }
         }
+        console.log(`  Search result: parentRowIdx=${parentRowIdx}`);
 
         if (parentRowIdx === -1) {
+          const sample = tabRows.slice(1,4).map(r => `"${r[0]||""}/${r[1]||""}"`).join(", ");
+          console.log(`  ❌ Not found. Sample rows: ${sample}`);
           return res.status(404).json({
             success: false,
-            error: `Job "${option.jobName}" not found in ${tabName} tab — it may have already been deleted or the sheet has changed.`,
+            error: `Job "${option.jobName}" not found in ${tabName} tab.`,
           });
         }
 
-        const parentSheetRow = parentRowIdx + 1; // 1-indexed
+        const parentSheetRow = parentRowIdx + 1;
         console.log(`  Found parent at row ${parentSheetRow}`);
 
         // Collect child rows: same client + job, no revenue (32) + no direct costs (33) + no start date (37)
@@ -6688,6 +6691,7 @@ Return ONLY JSON, no other text.`;
           }
         }
 
+        console.log(`  Blanking ${blankData.length} ranges across ${rowsToBlank.length} rows`);
         await sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: clientSheetId,
           requestBody: { valueInputOption: "RAW", data: blankData },

@@ -5975,6 +5975,100 @@ Return ONLY JSON, no other text.`;
         
         const sheets = await getSheetsClient();
 
+        // ── IGNORE — mark alert as ignored in AlertMemory ────────────────────
+        if (option.matchType === "ignore") {
+          console.log(`  → Ignoring alert (CRM not_found — job is legitimate)`);
+          await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+          const memRows = await readAlertMemory(sheets, automationCommanderSheetId);
+          const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
+          const mr = findMemoryRow(memRows, fp);
+          const alertSummary = `CRM ${alert.alertType} ${alert.clientName} — ${option.jobName || ""}`.trim();
+          const dataSnapshot = JSON.stringify({ alertType: alert.type || alert.flagType || "", flagType: alert.flagType || "", masterSheetId: alert.masterSheetId || "" });
+          if (mr) {
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "ignored", ignoreReason: "Accepted IGNORE option — job is legitimate", dataSnapshot });
+          } else {
+            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+              fingerprintHash: fp, alertType: alert.type || alert.flagType || "crm",
+              clientName: alert.clientName || "", alertSummary,
+              cachedOptionsJSON: "", status: "ignored",
+              ignoreReason: "Accepted IGNORE option — job is legitimate", dataSnapshot,
+            });
+          }
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H",
+            valueInputOption: "USER_ENTERED",
+            requestBody: { values: [[new Date().toISOString(), alert.type || alert.flagType, `${alert.sheetName}-${alert.rowNumber}`, alert.clientName || "", "", JSON.stringify({ jobName: option.jobName }), "IGNORED", option.title]] },
+          });
+          return res.status(200).json({ success: true, message: "Alert marked as ignored", cellsWritten: 0 });
+        }
+
+        // ── DELETE — blank all cells for the job in Pipeline/Confirmed tab ──
+        if (option.matchType === "delete") {
+          const tabName = (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr") ? "Pipeline" : "Confirmed";
+          const jobRowNum = option.jobRow;
+          if (!jobRowNum) return res.status(400).json({ success: false, error: "Cannot delete: job row number not found" });
+
+          console.log(`  → Deleting job row(s) from ${tabName} tab, starting at row ${jobRowNum}`);
+          const tabResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: alert.clientId,
+            range: `${tabName}!A${jobRowNum}:CR${jobRowNum + 50}`,
+          });
+          const tabRows = tabResp.data.values || [];
+
+          // Collect parent row + contiguous child rows (blank client/job)
+          const rowsToClear = [jobRowNum];
+          for (let ri = 1; ri < tabRows.length; ri++) {
+            const r = tabRows[ri] || [];
+            const hasContent = r.some(c => String(c || "").trim() !== "");
+            const isChild = !r[0] && !r[1] && hasContent;
+            if (!isChild) break;
+            rowsToClear.push(jobRowNum + ri);
+          }
+          console.log(`  Clearing ${rowsToClear.length} rows: ${rowsToClear.join(", ")}`);
+
+          // Column ranges to clear per the option description: A:G, AG:AM, AP:BH, BX:CR
+          const CLEAR_RANGES = ["A", "B", "C", "D", "E", "F", "G"];
+          const buildRangeList = (rows) => {
+            const ranges = [];
+            for (const row of rows) {
+              ranges.push(`${tabName}!A${row}:G${row}`);
+              ranges.push(`${tabName}!AG${row}:AM${row}`);
+              ranges.push(`${tabName}!AP${row}:BH${row}`);
+              ranges.push(`${tabName}!BX${row}:CR${row}`);
+            }
+            return ranges;
+          };
+
+          const clearRanges = buildRangeList(rowsToClear);
+          await sheets.spreadsheets.values.batchClear({
+            spreadsheetId: alert.clientId,
+            requestBody: { ranges: clearRanges },
+          });
+
+          // Mark alert as accepted in AlertMemory
+          await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+          const memRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
+          const fp2 = alert.fingerprintHash || buildAlertFingerprint(alert);
+          const mr2 = findMemoryRow(memRows2, fp2);
+          const summary2 = `CRM ${alert.alertType} ${alert.clientName} — ${option.jobName || ""}`.trim();
+          if (mr2) {
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr2.rowIndex, { ...mr2, status: "accepted" });
+          } else {
+            await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+              fingerprintHash: fp2, alertType: alert.type || alert.flagType || "crm",
+              clientName: alert.clientName || "", alertSummary: summary2,
+              cachedOptionsJSON: "", status: "accepted", ignoreReason: "", dataSnapshot: "",
+            });
+          }
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "TriageLog!A:H",
+            valueInputOption: "USER_ENTERED",
+            requestBody: { values: [[new Date().toISOString(), alert.type || alert.flagType, `${alert.sheetName}-${alert.rowNumber}`, alert.clientName || "", "", JSON.stringify({ jobName: option.jobName, rowsCleared: rowsToClear }), "ACCEPTED", option.title]] },
+          });
+
+          return res.status(200).json({ success: true, message: `Cleared ${rowsToClear.length} row(s) from ${tabName} tab`, cellsWritten: clearRanges.length });
+        }
+
         // ── OUTGOINGS WRITE (expense category match) ─────────────────────────
         // When an expense is matched to an Outgoings category (not a Confirmed job),
         // we use structured outgoingsData from the option rather than cell references.

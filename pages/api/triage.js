@@ -6606,7 +6606,6 @@ Return ONLY JSON, no other text.`;
 
       try {
         console.log(`\n🗑️ DELETE_JOB for ${alert.clientName}: ${option.jobName}`);
-        console.log(`  alert.clientId="${alert.clientId}" alertType="${alert.alertType || alert.flagType}"`);
         const sheets = await getSheetsClient();
 
         const tabName = (alert.alertType || alert.flagType || "") === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
@@ -6616,7 +6615,6 @@ Return ONLY JSON, no other text.`;
           console.error("  ❌ clientSheetId missing from alert");
           return res.status(400).json({ success: false, error: "Cannot delete: clientSheetId missing from alert — please re-analyse this alert and try again." });
         }
-        console.log(`  Reading ${tabName} tab from sheet ${clientSheetId.slice(0, 20)}...`);
 
         // Only read cols A:B (client, job) and AG (revenue — to identify parent vs child)
         // This is much faster than reading A1:CR2000
@@ -6631,9 +6629,6 @@ Return ONLY JSON, no other text.`;
         const targetClient = (option.matchingDetails?.unmatchedJobSummary?.clientName || "").trim().toLowerCase();
         const targetJob = (option.jobName || "").trim().toLowerCase();
         const targetCode = (option.matchingDetails?.unmatchedJobSummary?.projectCode || "").trim().toLowerCase();
-        console.log(`  Searching for: client="${targetClient}" job="${targetJob}" code="${targetCode}"`);
-        console.log(`  option.matchingDetails.unmatchedJobSummary.clientName="${option.matchingDetails?.unmatchedJobSummary?.clientName}"`);
-        console.log(`  alert.clientName="${alert.clientName}" (this is the AGENCY name, should NOT be used for row search)`);
 
         // Pipeline tab: client name only appears on parent rows — propagate to child rows
         let parentRowIdx = -1;
@@ -6653,11 +6648,9 @@ Return ONLY JSON, no other text.`;
             break;
           }
         }
-        console.log(`  Search result: parentRowIdx=${parentRowIdx}`);
 
         if (parentRowIdx === -1) {
           const sample = tabRows.slice(1,4).map(r => `"${r[0]||""}/${r[1]||""}"`).join(", ");
-          console.log(`  ❌ Not found. Sample rows: ${sample}`);
           return res.status(404).json({
             success: false,
             error: `Job "${option.jobName}" not found in ${tabName} tab — client name or job name may not match exactly.`,
@@ -6707,7 +6700,6 @@ Return ONLY JSON, no other text.`;
           }
         }
 
-        console.log(`  Blanking ${blankData.length} ranges across ${rowsToBlank.length} rows`);
         await sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: clientSheetId,
           requestBody: { valueInputOption: "RAW", data: blankData },

@@ -634,6 +634,30 @@ function colIndexToLetter(colNum) {
 }
 
 // Convert column letter(s) to 1-based number. E.g. A→1, AA→27
+/** Log a Claude API call directly to ClaudeUsage tab */
+async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens) {
+  if (!automationCommanderSheetId) return;
+  const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
+  await ensureClaudeUsageTab_(sheets, acIdClean);
+  const costUsd = ((inputTokens || 0) / 1000000 * 3) + ((outputTokens || 0) / 1000000 * 15);
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: acIdClean,
+    range: "ClaudeUsage!A:F",
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        new Date().toISOString(),
+        "precompute",
+        clientName || "",
+        alertType || "",
+        (inputTokens || 0) + (outputTokens || 0),
+        costUsd.toFixed(6),
+      ]],
+    },
+  });
+  console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} — ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
+}
+
 /** Ensure ClaudeUsage tab exists in Automation Commander with correct headers and config */
 async function ensureClaudeUsageTab_(sheets, spreadsheetId) {
   try {
@@ -3850,13 +3874,8 @@ Return ONLY JSON, no other text.`;
             max_tokens: 3000,
             messages: [{ role: "user", content: expensePrompt }],
           });
-          // Log Claude API usage (fire-and-forget, non-blocking)
-          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "log_claude_usage", automationCommanderSheetId,
-              source: "precompute", clientName: alert.clientName || "",
-              alertType: alert.type || alert.flagType || "",
-              inputTokens: message.usage?.input_tokens || 0,
-              outputTokens: message.usage?.output_tokens || 0 }) }).catch(() => {});
+          // Log Claude API usage directly to sheet
+          await logClaudeUsage_(sheets, automationCommanderSheetId, alert.clientName || "", alert.type || alert.flagType || "", message.usage?.input_tokens || 0, message.usage?.output_tokens || 0).catch(e => console.error("logClaudeUsage_ error:", e.message));
 
           let options = [];
           const responseText = message.content[0].type === "text" ? message.content[0].text : "";
@@ -4476,13 +4495,8 @@ Return ONLY JSON, no other text.`;
               { role: "user", content: crmPrompt }
             ],
           });
-          // Log Claude API usage (fire-and-forget, non-blocking)
-          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "log_claude_usage", automationCommanderSheetId,
-              source: "precompute", clientName: alert.clientName || "",
-              alertType: alert.type || alert.flagType || "",
-              inputTokens: message.usage?.input_tokens || 0,
-              outputTokens: message.usage?.output_tokens || 0 }) }).catch(() => {});
+          // Log Claude API usage directly to sheet
+          await logClaudeUsage_(sheets, automationCommanderSheetId, alert.clientName || "", alert.type || alert.flagType || "", message.usage?.input_tokens || 0, message.usage?.output_tokens || 0).catch(e => console.error("logClaudeUsage_ error:", e.message));
 
           let options = [];
           const responseText = message.content[0].type === "text" ? message.content[0].text : "";
@@ -4970,13 +4984,8 @@ Return ONLY the JSON array, no other text.`;
               max_tokens: 1500,
               messages: [{ role: "user", content: invAmtPrompt }],
             });
-            // Log Claude API usage (fire-and-forget, non-blocking)
-            fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "log_claude_usage", automationCommanderSheetId,
-                source: "precompute", clientName: alert.clientName || "",
-                alertType: alert.type || alert.flagType || "",
-                inputTokens: invAmtMessage.usage?.input_tokens || 0,
-                outputTokens: invAmtMessage.usage?.output_tokens || 0 }) }).catch(() => {});
+            // Log Claude API usage directly to sheet
+            await logClaudeUsage_(sheets, automationCommanderSheetId, alert.clientName || "", alert.type || alert.flagType || "", invAmtMessage.usage?.input_tokens || 0, invAmtMessage.usage?.output_tokens || 0).catch(e => console.error("logClaudeUsage_ error:", e.message));
 
             let invAmtOptions = [];
             const invAmtText = invAmtMessage.content[0]?.type === "text" ? invAmtMessage.content[0].text : "";
@@ -5900,13 +5909,8 @@ Return ONLY JSON, no other text.`;
             { role: "user", content: prompt }
           ],
         });
-        // Log Claude API usage (fire-and-forget, non-blocking)
-        fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "log_claude_usage", automationCommanderSheetId,
-            source: "precompute", clientName: alert.clientName || "",
-            alertType: alert.type || alert.flagType || "",
-            inputTokens: message.usage?.input_tokens || 0,
-            outputTokens: message.usage?.output_tokens || 0 }) }).catch(() => {});
+        // Log Claude API usage directly to sheet
+        await logClaudeUsage_(sheets, automationCommanderSheetId, alert.clientName || "", alert.type || alert.flagType || "", message.usage?.input_tokens || 0, message.usage?.output_tokens || 0).catch(e => console.error("logClaudeUsage_ error:", e.message));
 
         let options = [];
         const responseText = message.content[0].type === "text" ? message.content[0].text : "";

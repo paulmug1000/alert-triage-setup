@@ -6737,25 +6737,24 @@ Return ONLY JSON, no other text.`;
           [108, 108], // DD (Copied to Confirmed?)
         ];
 
-        const blankData = [];
+        const clearRanges = [];
         for (const rowIdx of rowsToBlank) {
           const sheetRow = rowIdx + 1;
           for (const [startCol, endCol] of colRanges) {
             const startColLetter = colIndexToLetter(startCol);
             const endColLetter = colIndexToLetter(endCol);
-            const numCols = endCol - startCol + 1;
-            blankData.push({
-              range: `${tabName}!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`,
-              values: [Array(numCols).fill("")],
-            });
+            clearRanges.push(`${tabName}!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`);
           }
         }
 
-        await sheets.spreadsheets.values.batchUpdate({
+        // Use batchClear (not batchUpdate with "") — batchClear truly empties cells,
+        // preserving formatting and not leaving empty-string values that would
+        // trigger conditional formatting rules checking <>0 or <>"".
+        await sheets.spreadsheets.values.batchClear({
           spreadsheetId: clientSheetId,
-          requestBody: { valueInputOption: "RAW", data: blankData },
+          requestBody: { ranges: clearRanges },
         });
-        console.log(`  ✅ Blanked ${rowsToBlank.length} rows (${blankData.length} ranges)`);
+        console.log(`  ✅ Cleared ${rowsToBlank.length} rows (${clearRanges.length} ranges)`);
 
         // Log to TriageLog
         await sheets.spreadsheets.values.append({

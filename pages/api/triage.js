@@ -5592,14 +5592,14 @@ INSTRUCTIONS FOR USING THESE MATCHES:
         // Conditions: exactly one slot match, amount exact (within 5p), date within
         // tolerance, not a job-total MANUAL-INV scenario (those need clearing logic).
         // Client name must match (clientFound). If any condition fails → Tier 2 (Claude).
-        const preAnalysis = alert._preAnalysis || {};
+        const tier1PreAnalysis = alert._preAnalysis || {};
         const tier1Eligible = (
-          preAnalysis.hasSlotMatches &&
-          preAnalysis.clientFound &&
+          tier1PreAnalysis.hasSlotMatches &&
+          tier1PreAnalysis.clientFound &&
           slotMatches.length === 1 &&
           slotMatches[0].dateMatch &&
           !slotMatches[0].isJobTotalMatch &&
-          !preAnalysis.isForeignCurrency
+          !tier1PreAnalysis.isForeignCurrency
         );
 
         if (tier1Eligible) {

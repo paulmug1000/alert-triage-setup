@@ -3191,9 +3191,32 @@ export default async function handler(req, res) {
             // Claude parse, discard them and re-call Claude for a fresh result
             const validCachedOptions = cachedOptions.filter(o => o.title);
             if (validCachedOptions.length > 0) {
+              // For crmPipeAppDiscr Pipeline alerts, re-fetch copiedToConf live
+              // since it can change in the sheet independently of the cached options
+              let liveCopiedToConf = null;
+              if ((alert.alertType === "crmPipeAppDiscr") && alert.clientId) {
+                try {
+                  // Find jobRow from cached option
+                  const cachedJobRow = validCachedOptions[0]?.jobRow;
+                  if (cachedJobRow) {
+                    const ddResp = await sheets.spreadsheets.values.get({
+                      spreadsheetId: alert.clientId,
+                      range: `Pipeline!DD${cachedJobRow}`,
+                    });
+                    liveCopiedToConf = String(ddResp.data.values?.[0]?.[0] || "").trim();
+                    console.log(`  📋 Live copiedToConf for row ${cachedJobRow}: "${liveCopiedToConf}"`);
+                  }
+                } catch(e) {
+                  console.log(`  copiedToConf live fetch failed: ${e.message}`);
+                }
+              }
+              // Inject live copiedToConf into cached options if fetched
+              const optionsToReturn = liveCopiedToConf !== null
+                ? validCachedOptions.map(o => ({ ...o, copiedToConf: liveCopiedToConf }))
+                : validCachedOptions;
               return res.status(200).json({
                 success: true,
-                options: validCachedOptions,
+                options: optionsToReturn,
                 alertId: alert.rowNumber,
                 fromCache: true,
                 previousIgnoreReason: await findPreviousIgnoreReason(memoryRows, alert),

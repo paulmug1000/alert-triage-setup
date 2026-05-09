@@ -3719,7 +3719,54 @@ BUDGET AND REVENUE:
 
           console.log(`  ✓ Found ${candidateJobs.length} jobs with DirectCostBudget > £0`);
 
-          const expenseConfirmedTabTable = candidateJobs.length > 0
+          // ── TIER 1: Single job with exact amount placeholder match — skip Claude ──
+          // If exactly one candidate job has a single unallocated placeholder slot whose
+          // amount exactly matches the expense, generate the option directly.
+          const exactMatches = candidateJobs.flatMap(job =>
+            job.slots.filter(s => !s.empty && !s.isAllocated && s.amtNum === expenseAmount)
+              .map(s => ({ job, slot: s }))
+          );
+          if (exactMatches.length === 1) {
+            const { job: emJob, slot: emSlot } = exactMatches[0];
+            const slotColMap = {
+              1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
+              2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
+              3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
+            };
+            const cols = slotColMap[emSlot.slotNum];
+            const row = emSlot.sheetRow;
+            console.log(`  ✅ Expense Tier 1 — exact placeholder match: ${emJob.parentJob} Row ${row} ExpSlot${emSlot.slotNum}`);
+            const tier1ExpOption = {
+              optionId: 1,
+              title: `Allocate to ${emJob.parentJob} (Row ${row}, ExpSlot${emSlot.slotNum}) — exact amount match`,
+              matchType: "job",
+              jobRow: row,
+              jobName: emJob.parentJob,
+              matchAnalysis: {
+                matchConfidence: "High",
+                placeholderMatch: `YES — Row ${row} ExpSlot${emSlot.slotNum} has placeholder matching amount £${expenseAmount}`,
+                budgetFit: "YES",
+                reasonForChoice: `Exact amount match (£${expenseAmount}) with unallocated placeholder in ${emJob.parentJob}.`,
+                discrepancies: "None",
+              },
+              recommendedActions: [
+                `Allocate expense to ${emJob.parentJob} (Row ${row}), ExpSlot${emSlot.slotNum}`,
+                `write ${expenseDescription} to ${cols.d}${row}, write ${expenseAmount} to ${cols.a}${row}, write ${vatYesNo} to ${cols.v}${row}, write ${expenseDate} to ${cols.dt}${row}, write 30 to ${cols.dp}${row}, write ${alert.summary?.status || ""} to ${cols.st}${row}`,
+              ],
+            };
+            const expSummary1 = `Expense ${expenseDescription} £${expenseAmount} — ${alert.clientName}`;
+            await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+            const expMemRows1 = await readAlertMemory(sheets, automationCommanderSheetId);
+            const expMemRow1 = findMemoryRow(expMemRows1, fingerprintHash);
+            if (expMemRow1) {
+              await updateAlertMemoryRow(sheets, automationCommanderSheetId, expMemRow1.rowIndex, { ...expMemRow1, cachedOptionsJSON: JSON.stringify([tier1ExpOption]) });
+            } else {
+              await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType: "expense", clientName: alert.clientName || "", alertSummary: expSummary1, cachedOptionsJSON: JSON.stringify([tier1ExpOption]), status: "cached" });
+            }
+            return res.status(200).json({ success: true, options: [tier1ExpOption], alertId: alert.rowNumber, previousIgnoreReason });
+          }
+
+          // ── TIER 2: Send to Claude (ambiguous or no exact match) ─────────────
             ? candidateJobs.map(job => {
                 const filled = job.slots.filter(s => !s.empty)
                   .map(s => {
@@ -3867,8 +3914,6 @@ Format as JSON array:
 
 Return ONLY JSON, no other text.`;
 
-          console.log(`\n📤 EXPENSE PROMPT TO CLAUDE: ${expenseDescription} £${expenseAmount}`);
-          console.log(`\n📊 CONFIRMED TAB DATA SENT TO CLAUDE (full):\n${expenseConfirmedTabTable}`);
           const message = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
             max_tokens: 3000,
@@ -4906,100 +4951,66 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
             const revenueRatio = parentRevenue > 0 ? (newTotalInvoiced / parentRevenue) * 100 : 0;
             console.log(`  Parent row: ${parentRowNum}, isMultiRowRetainer: ${isMultiRowRetainer}, realInvoices: ${realInvoiceCount}, newTotal: £${newTotalInvoiced.toFixed(2)}, revenue: £${parentRevenue.toFixed(2)}, ratio: ${revenueRatio.toFixed(1)}%`);
 
-            const invAmtPrompt = `You are analysing an invoice amount mismatch between the accounting system and the dashboard.
+            // ── Invoice amount mismatch: fully pre-computed — no Claude needed ──
+            // All data required for both options is already calculated above.
+            console.log(`  ✅ Generating invAmtMismatch options from pre-computed data (no Claude)`);
+            const confidenceFromRatio = (() => {
+              if (revenueRatio > 110) return "High"; // over-invoiced
+              if (revenueRatio >= 90) return "High";
+              if (revenueRatio >= 75) return "Medium";
+              return "Low";
+            })();
+            const revenueImpactStr = `New total invoiced = £${newTotalInvoiced.toFixed(2)}. Job revenue = £${parentRevenue.toFixed(2)}. ${
+              revenueRatio > 110 ? "Job is over-invoiced — revenue likely needs updating." :
+              revenueRatio >= 90 ? "Total invoiced is close to revenue — revenue adjustment likely correct." :
+              revenueRatio >= 75 ? "Total invoiced is below revenue — further invoices may be expected." :
+              "Total invoiced is well below revenue — revenue adjustment is uncertain."
+            }`;
 
-INVOICE FROM ACCOUNTING SYSTEM:
-• Invoice #: ${invoiceNo}
-• Client: ${invClient}
-• Job: ${invJob}
-• Gross amount (incl VAT): £${grossAmount.toFixed(2)}
-• Total excl VAT: £${totalExclVAT.toFixed(2)}
-• VAT included: £${vatIncluded.toFixed(2)}
-• Sent date: ${invSentDate}
-• Status: ${invStatus}
-• Dashboard shows total: £${dashboardTotal.toFixed(2)}
+            let invAmtOptions = [
+              {
+                optionId: 1,
+                title: `Update slot amount only — accounting system reflects actual invoice sent`,
+                matchType: "existing_job",
+                jobRow: matchedRowNum,
+                confidence: "High",
+                explanation: `Dashboard incorrectly shows £${currentSlotAmt} for invoice #${invoiceNo}, but accounting system shows the actual sent amount of £${correctAmount.toFixed(2)} (excl VAT). Job revenue may represent the original quote or scope.`,
+                revenueImpact: revenueImpactStr,
+                recommendedActions: [
+                  `Update invoice #${invoiceNo} amount from £${currentSlotAmt} to £${correctAmount.toFixed(2)} in the dashboard`,
+                  `write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount)`,
+                ],
+              },
+              isMultiRowRetainer
+                ? {
+                    optionId: 2,
+                    title: `Revenue adjustment not applicable for multi-row retainer`,
+                    matchType: "info",
+                    jobRow: matchedRowNum,
+                    confidence: "N/A",
+                    explanation: `For multi-row retainers, the revenue figure represents the monthly amount and should not be adjusted to match total invoiced.`,
+                    revenueImpact: revenueImpactStr,
+                    recommendedActions: [
+                      `Review revenue for this retainer job manually`,
+                      ``,
+                    ],
+                  }
+                : {
+                    optionId: 2,
+                    title: `Update slot amount and adjust revenue to £${newTotalInvoiced.toFixed(2)}`,
+                    matchType: "existing_job",
+                    jobRow: matchedRowNum,
+                    confidence: confidenceFromRatio,
+                    explanation: `Update the invoice slot amount to match the accounting system, and update job revenue to reflect the corrected total invoiced (${revenueRatio.toFixed(1)}% of current revenue).`,
+                    revenueImpact: revenueImpactStr,
+                    recommendedActions: [
+                      `Update invoice #${invoiceNo} amount and adjust job revenue to £${newTotalInvoiced.toFixed(2)}`,
+                      `write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount), write ${newTotalInvoiced.toFixed(2)} to AG${parentRowNum} (job revenue)`,
+                    ],
+                  },
+            ];
 
-MATCHED JOB IN CONFIRMED TAB (Invoice in slot ${matchedSlot}, matched row ${matchedRowNum}, parent row ${parentRowNum}):
-${jobSummary}
-${retainerContext}
-The VAT scenarios and rounding differences have already been ruled out — this is a genuine discrepancy of £${amtDiff.toFixed(2)}.
-
-PRE-CALCULATED REVENUE IMPACT:
-• Corrected slot amount: £${correctAmount.toFixed(2)} (replacing £${currentSlotAmt} in ${slotAmtCol}${matchedRowNum})
-• After correction, new total invoiced across ALL job rows (real slots only) = £${newTotalInvoiced.toFixed(2)}
-• Real invoices on this job after correction = ${realInvoiceCount}
-• Current job revenue (col AG, parent row ${parentRowNum}) = £${parentRevenue.toFixed(2)}
-• New total as % of current revenue = ${revenueRatio.toFixed(1)}%
-
-YOUR TASK — provide EXACTLY TWO options:
-
-OPTION 1: Update slot amount only
-Write the corrected amount to the slot. Revenue stays unchanged.
-Assess confidence: is the accounting system amount likely authoritative?
-
-OPTION 2: Update slot amount AND update job revenue to match new total invoiced${isMultiRowRetainer ? `
-⚠ This is a multi-row retainer. Option 2 MUST have matchType "info" with explanation that revenue adjustment is not applicable for multi-row retainers — the monthly revenue figure should not be changed.` : `
-Write corrected slot amount AND update revenue in AG${parentRowNum} to £${newTotalInvoiced.toFixed(2)}.
-Assess confidence based on:
-- Number of real invoices (${realInvoiceCount}): more = higher confidence revenue needs updating
-- % of revenue (${revenueRatio.toFixed(1)}%): >110% = very high (over-invoiced, must update); 90-110% = high; 75-90% = medium; <75% = low
-- If new total exactly equals current revenue: very high confidence`}
-
-Format as JSON array with EXACTLY 2 options:
-[
-  {
-    "optionId": 1,
-    "title": "Update slot amount only — [brief reason]",
-    "matchType": "existing_job",
-    "jobRow": ${matchedRowNum},
-    "confidence": "High/Medium/Low",
-    "explanation": "Brief explanation of the mismatch cause",
-    "revenueImpact": "New total invoiced = £${newTotalInvoiced.toFixed(2)}. Job revenue = £${parentRevenue.toFixed(2)}. [Assessment].",
-    "recommendedActions": [
-      "Update invoice #${invoiceNo} amount from £${currentSlotAmt} to £${correctAmount.toFixed(2)} in the dashboard",
-      "write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount)"
-    ]
-  },
-  {
-    "optionId": 2,
-    "title": "${isMultiRowRetainer ? "Revenue adjustment not applicable for multi-row retainer" : `Update slot amount and adjust revenue to £${newTotalInvoiced.toFixed(2)}`}",
-    "matchType": "${isMultiRowRetainer ? "info" : "existing_job"}",
-    "jobRow": ${matchedRowNum},
-    "confidence": "${isMultiRowRetainer ? "N/A" : "High/Medium/Low — set based on % ratio above"}",
-    "explanation": "${isMultiRowRetainer ? "For multi-row retainers, the revenue figure represents the monthly amount and should not be adjusted to match total invoiced." : "Explanation of why revenue may need updating"}",
-    "revenueImpact": "New total invoiced = £${newTotalInvoiced.toFixed(2)}. Job revenue = £${parentRevenue.toFixed(2)}. [Assessment].",
-    "recommendedActions": [
-      "${isMultiRowRetainer ? `Review revenue for this retainer job manually` : `Update invoice #${invoiceNo} amount and adjust job revenue to £${newTotalInvoiced.toFixed(2)}`}",
-      "${isMultiRowRetainer ? "" : `write ${correctAmount.toFixed(2)} to ${slotAmtCol}${matchedRowNum} (slot ${matchedSlot} amount), write ${newTotalInvoiced.toFixed(2)} to AG${parentRowNum} (job revenue)`}"
-    ]
-  }
-]
-
-IMPORTANT: For "existing_job" options, recommendedActions item 2 MUST follow the exact format "write VALUE to CELLREF (description)" or "write VALUE to CELLREF (desc), write VALUE to CELLREF (desc)" for multiple writes. The system uses this to execute writes automatically.
-
-Return ONLY the JSON array, no other text.`;
-
-            const invAmtMessage = await anthropic.messages.create({
-              model: "claude-sonnet-4-20250514",
-              max_tokens: 1500,
-              messages: [{ role: "user", content: invAmtPrompt }],
-            });
-            // Log Claude API usage directly to sheet
-            await logClaudeUsage_(sheets, automationCommanderSheetId, alert.clientName || "", alert.type || alert.flagType || "", invAmtMessage.usage?.input_tokens || 0, invAmtMessage.usage?.output_tokens || 0).catch(e => console.error("logClaudeUsage_ error:", e.message));
-
-            let invAmtOptions = [];
-            const invAmtText = invAmtMessage.content[0]?.type === "text" ? invAmtMessage.content[0].text : "";
-            const invAmtCleaned = invAmtText.replace(/```json/g, "").replace(/```/g, "").trim();
-            try {
-              invAmtOptions = JSON.parse(invAmtCleaned);
-              if (!Array.isArray(invAmtOptions)) invAmtOptions = [invAmtOptions];
-            } catch (e) {
-              console.error(`  ⚠️ Could not parse Claude response for inv amt mismatch`);
-              invAmtOptions = [{ optionId: 1, title: "MANUAL INVESTIGATION REQUIRED", matchType: "info",
-                matchAnalysis: { matchConfidence: "N/A", reasonForChoice: invAmtText, discrepancies: `Invoice #${invoiceNo} amount mismatch` },
-                recommendedActions: [`Review invoice #${invoiceNo} manually`] }];
-            }
-            // Build slotBreakdown from pre-calculated allJobRows data — injected onto both options
+                        // Build slotBreakdown from pre-calculated allJobRows data — injected onto both options
             // so the frontend can display the full invoice context without relying on Claude to enumerate it.
             const slotBreakdownLines = [];
             for (const { row, rowNum } of allJobRows) {
@@ -5400,63 +5411,10 @@ Return ONLY the JSON array, no other text.`;
 
           const hasSlotMatches = slotMatches.length > 0;
 
-          // ── Neither signal found → hardcoded create_new, no Claude ──────────
+          // ── Neither signal found → still send to Claude — it may find non-obvious matches
+          // (e.g. different client name spelling, amount = fraction of job revenue, etc.)
           if (!clientFound && !hasSlotMatches) {
-            console.log(`  No client match and no slot match — returning hardcoded create_new option`);
-            const vatYesNo = vatIncluded > 0 ? "Yes" : "No";
-            const hardcodedOption = {
-              optionId: 1,
-              title: `Create new job for ${invoiceClient}${invoiceJob ? " — " + invoiceJob : ""}`,
-              matchType: "create_new",
-              jobName: invoiceJob || invoiceClient,
-              newJobData: {
-                clientName:    invoiceClient,
-                jobName:       invoiceJob || "",
-                projectCode:   "",
-                revenue:       String(totalExclVAT > 0 ? totalExclVAT : invoiceAmount),
-                directCosts:   "0",
-                vatYesNo,
-                projectType:   "Project",
-                startDate:     sentDate || "",
-                endDate:       sentDate || "",
-                inv1Ref:       invoiceRef,
-                inv1Amount:    String(totalExclVAT > 0 ? totalExclVAT : invoiceAmount),
-                inv1SentDate:  sentDate || "",
-                inv1DaysToPay: String(daysToPayValue || "30"),
-                inv1Status:    invoiceStatus || "",
-              },
-              facts: {
-                jobType: "Project",
-                totalRevenue: totalExclVAT > 0 ? totalExclVAT : invoiceAmount,
-                startDate: sentDate,
-                endDate: sentDate,
-                existingInvoices: "None — new job",
-                invoiceMatchStatus: "NO MATCHING CLIENT FOUND",
-              },
-              matchAnalysis: {
-                matchConfidence: "N/A",
-                reasonForChoice: `No existing job or placeholder slot found for client "${invoiceClient}" in the Confirmed tab. A new job row will be created with the invoice details.`,
-                discrepancies: "New client/job — no existing data to compare",
-              },
-              recommendedActions: [
-                `Create new job for ${invoiceClient}${invoiceJob ? " — " + invoiceJob : ""}, revenue £${(totalExclVAT > 0 ? totalExclVAT : invoiceAmount).toFixed(2)} ${vatYesNo === "Yes" ? "+VAT" : "(no VAT)"}, and place invoice ${invoiceRef} in slot 1`,
-              ],
-            };
-            const invSummary = alert.summary?.summary || `Invoice ${invoiceRef} ${invoiceClient}`;
-            await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-            const memRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
-            const memRow2 = findMemoryRow(memRows2, fingerprintHash);
-            if (memRow2) {
-              await updateAlertMemoryRow(sheets, automationCommanderSheetId, memRow2.rowIndex, {
-                ...memRow2, cachedOptionsJSON: JSON.stringify([hardcodedOption]),
-              });
-            } else {
-              await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-                fingerprintHash, alertType: "invoice", clientName: alert.clientName || "",
-                alertSummary: invSummary, cachedOptionsJSON: JSON.stringify([hardcodedOption]), status: "cached",
-              });
-            }
-            return res.status(200).json({ success: true, options: [hardcodedOption], alertId: alert.rowNumber, previousIgnoreReason });
+            console.log(`  No client match and no slot match — sending to Claude for non-obvious match detection`);
           }
 
           // ── Build slot match context block for Claude (if Signal B found) ──
@@ -5628,8 +5586,73 @@ INSTRUCTIONS FOR USING THESE MATCHES:
             primaryCurrency,
           };
         }
-        
-        // Build table for Claude — propagate parent client/job name to child rows so Claude
+
+        // ── TIER 1: Single exact slot match — generate option without Claude ─
+        // Conditions: exactly one slot match, amount exact (within 5p), date within
+        // tolerance, not a job-total MANUAL-INV scenario (those need clearing logic).
+        // Client name must match (clientFound). If any condition fails → Tier 2 (Claude).
+        const preAnalysis = alert._preAnalysis || {};
+        const tier1Eligible = (
+          preAnalysis.hasSlotMatches &&
+          preAnalysis.clientFound &&
+          slotMatches.length === 1 &&
+          slotMatches[0].dateMatch &&
+          !slotMatches[0].isJobTotalMatch &&
+          !preAnalysis.isForeignCurrency
+        );
+
+        if (tier1Eligible) {
+          const m = slotMatches[0];
+          const slotColLetter = m.amtCol; // e.g. "AP"
+          const refColLetter  = m.refCol;
+          const sentColLetter = m.sentCol;
+          const daysColLetter = m.daysCol;
+          const statColLetter = m.statusCol;
+          const rowNum = m.rowNum;
+          const slotNum = m.slotNum;
+          const isManual = m.isManual;
+          const slotLabel = `${m.client} — ${m.jobName} (Row ${rowNum} Slot ${slotNum})`;
+          const slotDesc = isManual ? "replacing the MANUAL-INV placeholder" : "replacing the blank placeholder";
+          console.log(`  ✅ Tier 1 match — generating option without Claude: ${slotLabel}`);
+
+          const tier1Option = {
+            optionId: 1,
+            title: `Place in ${m.jobName} invoice position ${slotNum} (Row ${rowNum} Slot ${slotNum}) — exact amount match, ${isManual ? "replacing MANUAL-INV placeholder" : "slot date match"}`,
+            matchType: "existing_job",
+            jobRow: rowNum,
+            jobName: m.jobName,
+            jobRevenue: m.revenue,
+            matchAnalysis: {
+              matchConfidence: "High",
+              reasonForChoice: `Amount exact match (£${invoiceAmtForMatch.toFixed(2)}). Client name match (${m.client}). Invoice sent ${sentDate} vs slot date ${m.slotDate} — within tolerance.`,
+              discrepancies: "None",
+            },
+            recommendedActions: [
+              `Place invoice ${invoiceRef} (£${invoiceAmtForMatch.toFixed(2)}) in invoice slot ${slotNum} of the ${m.client} ${m.jobName} ${isManual ? "project, " + slotDesc : "job"}`,
+              [
+                `write ${invoiceAmtForMatch.toFixed(2)} to ${slotColLetter}${rowNum} (invoice ${slotNum} amount)`,
+                `write ${invoiceRef} to ${refColLetter}${rowNum} (invoice ${slotNum} reference)`,
+                `write ${sentDate || ""} to ${sentColLetter}${rowNum} (invoice ${slotNum} sent date)`,
+                `write ${daysToPayValue || 30} to ${daysColLetter}${rowNum} (invoice ${slotNum} days to pay)`,
+                `write ${invoiceStatus || "Sent"} to ${statColLetter}${rowNum} (invoice ${slotNum} status)`,
+              ].join(", "),
+            ],
+            slotBreakdown: { lines: [`Row ${rowNum} Slot ${slotNum}: ${invoiceRef} £${invoiceAmtForMatch.toFixed(2)} ← this invoice`], correctedTotal: `£${invoiceAmtForMatch.toFixed(2)}`, currentRevenue: `£${m.revenue || 0}` },
+          };
+
+          const tier1Summary = `Invoice ${invoiceRef} ${m.client} — ${m.jobName}`;
+          await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+          const memRowsTier1 = await readAlertMemory(sheets, automationCommanderSheetId);
+          const memRowTier1 = findMemoryRow(memRowsTier1, fingerprintHash);
+          if (memRowTier1) {
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, memRowTier1.rowIndex, { ...memRowTier1, cachedOptionsJSON: JSON.stringify([tier1Option]) });
+          } else {
+            await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType: "invoice", clientName: alert.clientName || "", alertSummary: tier1Summary, cachedOptionsJSON: JSON.stringify([tier1Option]), status: "cached" });
+          }
+          return res.status(200).json({ success: true, options: [tier1Option], alertId: alert.rowNumber, previousIgnoreReason });
+        }
+
+        // ── TIER 2: Send to Claude (ambiguous, no match, or foreign currency) ─
         // can correctly associate all invoice slots with their job, regardless of row type.
         let lastParentClient = '';
         let lastParentJob = '';

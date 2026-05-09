@@ -3767,6 +3767,7 @@ BUDGET AND REVENUE:
           }
 
           // ── TIER 2: Send to Claude (ambiguous or no exact match) ─────────────
+          const expenseConfirmedTabTable = candidateJobs.length > 0
             ? candidateJobs.map(job => {
                 const filled = job.slots.filter(s => !s.empty)
                   .map(s => {

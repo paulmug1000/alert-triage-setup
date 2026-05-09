@@ -5386,7 +5386,7 @@ export default function TriageSystem({ onBack }) {
                               <div style={{ marginTop: "6px", fontSize: "13px", color: "#333" }}>
                                 <strong>
                                   {option.matchType === "ignore" || option.matchType === "delete"
-                                    ? "Unmatched job — in dashboard but not in CRM:"
+                                    ? `Unmatched job — in ${alert.alertType === "crmPipeAppDiscr" || alert.flagType === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed"} tab but not in CRM:`
                                     : "Unmatched Job (CRM):"}
                                 </strong>
                                 <div style={{ marginLeft: "12px", fontSize: "12px", marginTop: "4px" }}>

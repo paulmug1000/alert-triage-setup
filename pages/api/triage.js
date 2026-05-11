@@ -1546,7 +1546,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   console.log(`  Existing cell value: ${existingValue}, note length: ${existingNote.length}`);
 
   const newValue = Math.round((existingValue + amount) * 100) / 100;
-  const newBlock = `{App ID: ${transactionId}}{Amt: ${amount}}{Status: ${status || ""}}{Rec date: ${recDate || ""}}{Pay date: ${payDate || ""}}{Description: ${description || ""}}`;
+  const newBlock = `{App ID: ${transactionId}}{Amt: ${amount}}{Status:${status ? " " + status : ""}}{Rec date:${recDate ? " " + recDate : ""}}{Pay date:${payDate ? " " + payDate : ""}}{Description:${description ? " " + description : ""}}`;
 
   let newNote;
   if (existingNote.includes(`{App ID: ${transactionId}}`)) {
@@ -1921,7 +1921,7 @@ export default async function handler(req, res) {
 
         // Build note string from blocks
         const noteStr = (blocks || []).map(b =>
-          `{App ID: ${b.appId}}{Amt: ${b.amount}}{Status: ${b.status || ""}}{Rec date: ${b.recDate || ""}}{Pay date: ${b.payDate || ""}}{Description: ${b.description || ""}}`
+          `{App ID: ${b.appId}}{Amt: ${b.amount}}{Status:${b.status ? " " + b.status : ""}}{Rec date:${b.recDate ? " " + b.recDate : ""}}{Pay date:${b.payDate ? " " + b.payDate : ""}}{Description:${b.description ? " " + b.description : ""}}`
         ).join("\n");
 
         // Calculate cell value = sum of non-UNRECON-GAP amounts

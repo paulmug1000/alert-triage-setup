@@ -6436,7 +6436,9 @@ Return ONLY JSON, no other text.`;
 
               // Determine the expected job name from the option
               const expectedJobName = (option.jobName || option.matchingDetails?.unmatchedJobSummary?.jobName || "").trim().toLowerCase();
-              const expectedClient  = (option.matchingDetails?.unmatchedJobSummary?.clientName || alert.clientName || "").trim().toLowerCase();
+              // For expense alerts, clientName is the agency not the end client — don't use it for verify
+              const isExpenseAlert = alertType === "expense" || alert.sheetName === "DirComp";
+              const expectedClient  = isExpenseAlert ? "" : (option.matchingDetails?.unmatchedJobSummary?.clientName || alert.clientName || "").trim().toLowerCase();
 
               if (expectedJobName) {
                 // Re-read the Confirmed/Pipeline tab fresh — cols A:AM covers client, job, revenue (AG), start date (AL)

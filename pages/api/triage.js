@@ -6435,9 +6435,10 @@ Return ONLY JSON, no other text.`;
               const expectedRow = parseInt(firstRowMatch[1], 10);
 
               // Determine the expected job name from the option
-              const expectedJobName = (option.jobName || option.matchingDetails?.unmatchedJobSummary?.jobName || "").trim().toLowerCase();
-              // For expense alerts, clientName is the agency not the end client — don't use it for verify
+              // For expense alerts, jobName may be malformed (Claude includes dates etc) — skip name verify
               const isExpenseAlert = alertType === "expense" || alert.sheetName === "DirComp";
+              const expectedJobName = isExpenseAlert ? "" : (option.jobName || option.matchingDetails?.unmatchedJobSummary?.jobName || "").trim().toLowerCase();
+              // For expense alerts, clientName is the agency not the end client — don't use it for verify
               const expectedClient  = isExpenseAlert ? "" : (option.matchingDetails?.unmatchedJobSummary?.clientName || alert.clientName || "").trim().toLowerCase();
 
               if (expectedJobName) {

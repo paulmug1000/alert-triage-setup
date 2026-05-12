@@ -3792,21 +3792,39 @@ BUDGET AND REVENUE:
           // ── TIER 2: Send to Claude (ambiguous or no exact match) ─────────────
           const expenseConfirmedTabTable = candidateJobs.length > 0
             ? candidateJobs.map(job => {
-                const filled = job.slots.filter(s => !s.empty)
+                // Only truly allocated slots (real App ID) count as "filled" — not available for writing
+                const filled = job.slots.filter(s => !s.empty && s.isAllocated)
                   .map(s => {
                     const dateStr = s.date ? ` | date: ${s.date}` : '';
-                    const amtMatch = !s.isAllocated && s.amtNum && s.amtNum === expenseAmount ? ' ⚠️ EXACT AMOUNT MATCH' : '';
-                    return `${s.label}: ${s.descr || '(blank description)'} £${s.amt}${dateStr} (${s.isAllocated ? 'allocated' : 'NO App ID - placeholder'}${amtMatch})`;
+                    return `${s.label}: ${s.descr || '(blank description)'} £${s.amt}${dateStr} (allocated)`;
                   })
                   .join(' | ') || 'none';
+
+                // Placeholder slots (NO App ID) are AVAILABLE for replacement — must appear in write targets
+                const placeholders = job.slots.filter(s => !s.empty && !s.isAllocated)
+                  .map(s => {
+                    const dateStr = s.date ? ` | date: ${s.date}` : '';
+                    const amtMatch = s.amtNum && s.amtNum === expenseAmount ? ' ⚠️ EXACT AMOUNT MATCH' : '';
+                    return `${s.label}: ${s.descr || '(blank)'} £${s.amt}${dateStr} [PLACEHOLDER — available for replacement${amtMatch}]`;
+                  })
+                  .join(' | ') || 'none';
+
+                // Truly empty slots
                 const empty = job.slots.filter(s => s.empty).map(s => s.label).join(', ') || 'none';
+
+                // Write targets: placeholders FIRST (use these before empty slots), then empty
+                const writeTargets = [
+                  ...job.slots.filter(s => !s.empty && !s.isAllocated).map(s => `${s.label} [PLACEHOLDER — use first]`),
+                  ...job.slots.filter(s => s.empty).map(s => `${s.label} [empty]`),
+                ].join(', ') || 'none';
+
                 if (job.isRetainer) {
                   const budgetLabel = job.periodMultiplier > 1
                     ? `£${job.budget} (${job.periodLabel}: £${job.budget / job.periodMultiplier}/month × ${job.periodMultiplier} months)`
                     : `£${job.budget} (monthly)`;
-                  return `ChildRow ${job.childSheetRow} | ${job.parentClient} | ${job.parentJob} (retainer ${job.periodLabel}) | Code: ${job.projectCode} | PeriodBudget: ${budgetLabel} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | WRITE TARGET: Row ${job.childSheetRow} slots only\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
+                  return `ChildRow ${job.childSheetRow} | ${job.parentClient} | ${job.parentJob} (retainer ${job.periodLabel}) | Code: ${job.projectCode} | PeriodBudget: ${budgetLabel} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | WRITE TARGET: Row ${job.childSheetRow} slots only\n  Allocated slots (NOT writable): ${filled}\n  Placeholder slots (NO App ID, WRITE HERE FIRST): ${placeholders}\n  Empty slots (use only if no placeholders): ${empty}\n  → WRITE TARGETS IN ORDER: ${writeTargets}`;
                 }
-                return `ParentRow ${job.parentRow} | ${job.parentClient} | ${job.parentJob} | Code: ${job.projectCode} | Budget: £${job.budget} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | Type: ${job.projType} | ${job.startDate}→${job.endDate}\n  Filled slots: ${filled}\n  Empty write-target slots: ${empty}`;
+                return `ParentRow ${job.parentRow} | ${job.parentClient} | ${job.parentJob} | Code: ${job.projectCode} | Budget: £${job.budget} | Allocated: £${job.totalAllocated.toFixed(2)} | Remaining: £${job.remaining.toFixed(2)} | Type: ${job.projType} | ${job.startDate}→${job.endDate}\n  Allocated slots (NOT writable): ${filled}\n  Placeholder slots (NO App ID, WRITE HERE FIRST): ${placeholders}\n  Empty slots (use only if no placeholders): ${empty}\n  → WRITE TARGETS IN ORDER: ${writeTargets}`;
               }).join('\n\n')
             : '(no jobs with DirectCostBudget > £0)'
           
@@ -3891,7 +3909,7 @@ Option 3 (second-best job OR alternative): Next best job match, or if only one q
 
 CRITICAL — recommendedActions MUST be specific and actionable:
 For Confirmed tab job matches, provide EXACTLY 2 items:
-  Item 1: Plain English — "Allocate expense to [Job Name] (Row [N]), [ExpSlotX]"
+  Item 1: Plain English — "Allocate expense to [Job Name] (Row [N]), [ExpSlotX], replacing placeholder[s] and clearing [SlotY]" — must mention ALL actions including any placeholder slots being cleared
   Item 2: Exact cell writes — "Write [Desc] to [COL][ROW], write [Amt] to [COL][ROW], write ${vatYesNo} to [COL][ROW], write [Date] to [COL][ROW], write [DaysToPay] to [COL][ROW], write [Status] to [COL][ROW], write [TransactionID] to [COL][ROW]"
   Note: The VAT field (BZ/CG/CN) must always be "${vatYesNo}" — this is pre-computed from the actual VAT amount.
   If clearing remaining placeholder slots after placement, include their writes in the same Item 2 string: "write \"\" to [COL][ROW]" for each of the 7 fields (Desc/Amt/VAT/Date/Days/Status/ID) of each placeholder slot being cleared.

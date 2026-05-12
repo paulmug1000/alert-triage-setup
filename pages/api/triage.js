@@ -3604,6 +3604,7 @@ BUDGET AND REVENUE:
           const expenseRef = alert.summary?.reference || "(unknown)";
           const expenseDescription = alert.summary?.description || "";
           const expenseDate = alert.summary?.date || "";
+          const expenseStatus = alert.summary?.status || "";
           const expenseAccountName = alert.summary?.accountName || "";
           
           // Compute VAT flag from actual data — don't let Claude guess
@@ -3910,7 +3911,7 @@ Option 3 (second-best job OR alternative): Next best job match, or if only one q
 CRITICAL — recommendedActions MUST be specific and actionable:
 For Confirmed tab job matches, provide EXACTLY 2 items:
   Item 1: Plain English — "Allocate expense to [Job Name] (Row [N]), [ExpSlotX], replacing placeholder[s] and clearing [SlotY]" — must mention ALL actions including any placeholder slots being cleared
-  Item 2: Exact cell writes — "Write [Desc] to [COL][ROW], write [Amt] to [COL][ROW], write ${vatYesNo} to [COL][ROW], write [Date] to [COL][ROW], write [DaysToPay] to [COL][ROW], write [Status] to [COL][ROW], write [TransactionID] to [COL][ROW]"
+  Item 2: Exact cell writes — "Write [Desc] to [COL][ROW], write [Amt] to [COL][ROW], write ${vatYesNo} to [COL][ROW], write [Date] to [COL][ROW], write [DaysToPay] to [COL][ROW], write ${expenseStatus} to [COL][ROW], write [TransactionID] to [COL][ROW]"
   Note: The VAT field (BZ/CG/CN) must always be "${vatYesNo}" — this is pre-computed from the actual VAT amount.
   If clearing remaining placeholder slots after placement, include their writes in the same Item 2 string: "write \"\" to [COL][ROW]" for each of the 7 fields (Desc/Amt/VAT/Date/Days/Status/ID) of each placeholder slot being cleared.
 
@@ -6435,11 +6436,8 @@ Return ONLY JSON, no other text.`;
               const expectedRow = parseInt(firstRowMatch[1], 10);
 
               // Determine the expected job name from the option
-              // For expense alerts, jobName may be malformed (Claude includes dates etc) — skip name verify
-              const isExpenseAlert = alertType === "expense" || alert.sheetName === "DirComp";
-              const expectedJobName = isExpenseAlert ? "" : (option.jobName || option.matchingDetails?.unmatchedJobSummary?.jobName || "").trim().toLowerCase();
-              // For expense alerts, clientName is the agency not the end client — don't use it for verify
-              const expectedClient  = isExpenseAlert ? "" : (option.matchingDetails?.unmatchedJobSummary?.clientName || alert.clientName || "").trim().toLowerCase();
+              const expectedJobName = (option.jobName || option.matchingDetails?.unmatchedJobSummary?.jobName || "").trim().toLowerCase();
+              const expectedClient  = (option.matchingDetails?.unmatchedJobSummary?.clientName || alert.clientName || "").trim().toLowerCase();
 
               if (expectedJobName) {
                 // Re-read the Confirmed/Pipeline tab fresh — cols A:AM covers client, job, revenue (AG), start date (AL)

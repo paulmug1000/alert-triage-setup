@@ -3878,7 +3878,10 @@ YOUR TASK — suggest 3 GENUINELY DIFFERENT options:
 Option 1 (best job match): Pick the job from the list above where:
   - Remaining >= £${expenseAmount.toFixed(2)} OR a placeholder matches the vendor
   - Prefer: exact placeholder match > largest remaining budget > most relevant job scope
-  - Write to the first empty slot for that job (use the exact row number shown)
+  - SLOT SELECTION — CRITICAL: Placeholder slots (marked "NO App ID - placeholder") are AVAILABLE for allocation — treat them identically to empty slots. ALWAYS use the FIRST available slot (placeholder or empty), never skip a placeholder slot to use a later empty one.
+  - Example: if Slot1=placeholder, Slot2=placeholder, Slot3=empty → ALWAYS place in Slot1, not Slot3.
+  - PLACEHOLDER CLEARING: After placing the real expense, check if the sum of all real (non-placeholder) expenses including this one >= DirectCostBudget. If yes, clear ALL remaining placeholder slots on this job (write "" to all 7 fields of each remaining placeholder slot). If no, also check: if this expense alone replaces ALL the placeholder amounts combined (i.e. expense amount >= sum of all placeholder amounts), clear remaining placeholders since the real expense covers what they planned for.
+  - "Clear a placeholder slot" means writing "" to all 7 fields: Desc, Amt, VAT, Date, DaysToPay, Status, TransactionID columns for that slot.
 
 Option 2 (Outgoings entry): Record in the Outgoings tab.
   - Vendor "${expenseDescription.split('(')[0].trim()}" — use existing row if listed above, else Row ${firstBlankOutgoingsRow || "next blank"}
@@ -3891,6 +3894,7 @@ For Confirmed tab job matches, provide EXACTLY 2 items:
   Item 1: Plain English — "Allocate expense to [Job Name] (Row [N]), [ExpSlotX]"
   Item 2: Exact cell writes — "Write [Desc] to [COL][ROW], write [Amt] to [COL][ROW], write ${vatYesNo} to [COL][ROW], write [Date] to [COL][ROW], write [DaysToPay] to [COL][ROW], write [Status] to [COL][ROW], write [TransactionID] to [COL][ROW]"
   Note: The VAT field (BZ/CG/CN) must always be "${vatYesNo}" — this is pre-computed from the actual VAT amount.
+  If clearing remaining placeholder slots after placement, include their writes in the same Item 2 string: "write \"\" to [COL][ROW]" for each of the 7 fields (Desc/Amt/VAT/Date/Days/Status/ID) of each placeholder slot being cleared.
 
 For Outgoings tab entries, provide EXACTLY 1 item:
   "Add £[amount] to [VendorName] row (Row [N]) in Outgoings tab for [Mon-YY]"

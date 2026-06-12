@@ -587,17 +587,35 @@ async function getCRMMatchingMode(sheets, masterSheetId) {
 }
 
 async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `${sheetName}!E2`,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[value]],
-    },
-  });
+  // If turning ON: check current state first — if already on, skip write and delay
+  if (value === true) {
+    try {
+      const currentResp = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `${sheetName}!E2`,
+      });
+      const currentVal = currentResp.data.values?.[0]?.[0];
+      const alreadyOn = (currentVal === true || String(currentVal).toUpperCase() === "TRUE");
+      if (alreadyOn) {
+        console.log(`  ✅ ${sheetName} switch already ON — skipping write and delay`);
+        return;
+      }
+    } catch(e) {
+      console.log(`  ⚠ Could not check ${sheetName} switch state: ${e.message} — proceeding with write`);
+    }
+    // Switch was off — turn it on and wait for data to populate
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${sheetName}!E2`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[true]] },
+    });
+    await ensureFreshData(sheets, spreadsheetId, sheetName);
+    return;
+  }
 
-  // Ensure data is fresh
-  await ensureFreshData(sheets, spreadsheetId, sheetName);
+  // value === false: switches are now left permanently ON — do nothing
+  console.log(`  ⏭ ${sheetName} switch left ON (permanent mode — not turning off)`);
 }
 
 async function setCRMMode(sheets, spreadsheetId, mode) {
@@ -3604,7 +3622,6 @@ BUDGET AND REVENUE:
           const expenseRef = alert.summary?.reference || "(unknown)";
           const expenseDescription = alert.summary?.description || "";
           const expenseDate = alert.summary?.date || "";
-          const expenseStatus = alert.summary?.status || "";
           const expenseAccountName = alert.summary?.accountName || "";
           
           // Compute VAT flag from actual data — don't let Claude guess
@@ -3911,7 +3928,7 @@ Option 3 (second-best job OR alternative): Next best job match, or if only one q
 CRITICAL — recommendedActions MUST be specific and actionable:
 For Confirmed tab job matches, provide EXACTLY 2 items:
   Item 1: Plain English — "Allocate expense to [Job Name] (Row [N]), [ExpSlotX], replacing placeholder[s] and clearing [SlotY]" — must mention ALL actions including any placeholder slots being cleared
-  Item 2: Exact cell writes — "Write [Desc] to [COL][ROW], write [Amt] to [COL][ROW], write ${vatYesNo} to [COL][ROW], write [Date] to [COL][ROW], write [DaysToPay] to [COL][ROW], write ${expenseStatus} to [COL][ROW], write [TransactionID] to [COL][ROW]"
+  Item 2: Exact cell writes — "Write [Desc] to [COL][ROW], write [Amt] to [COL][ROW], write ${vatYesNo} to [COL][ROW], write [Date] to [COL][ROW], write [DaysToPay] to [COL][ROW], write [Status] to [COL][ROW], write [TransactionID] to [COL][ROW]"
   Note: The VAT field (BZ/CG/CN) must always be "${vatYesNo}" — this is pre-computed from the actual VAT amount.
   If clearing remaining placeholder slots after placement, include their writes in the same Item 2 string: "write \"\" to [COL][ROW]" for each of the 7 fields (Desc/Amt/VAT/Date/Days/Status/ID) of each placeholder slot being cleared.
 

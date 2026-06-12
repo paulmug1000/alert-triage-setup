@@ -587,35 +587,17 @@ async function getCRMMatchingMode(sheets, masterSheetId) {
 }
 
 async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
-  // If turning ON: check current state first — if already on, skip write and delay
-  if (value === true) {
-    try {
-      const currentResp = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: `${sheetName}!E2`,
-      });
-      const currentVal = currentResp.data.values?.[0]?.[0];
-      const alreadyOn = (currentVal === true || String(currentVal).toUpperCase() === "TRUE");
-      if (alreadyOn) {
-        console.log(`  ✅ ${sheetName} switch already ON — skipping write and delay`);
-        return;
-      }
-    } catch(e) {
-      console.log(`  ⚠ Could not check ${sheetName} switch state: ${e.message} — proceeding with write`);
-    }
-    // Switch was off — turn it on and wait for data to populate
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `${sheetName}!E2`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[true]] },
-    });
-    await ensureFreshData(sheets, spreadsheetId, sheetName);
-    return;
-  }
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${sheetName}!E2`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[value]],
+    },
+  });
 
-  // value === false: switches are now left permanently ON — do nothing
-  console.log(`  ⏭ ${sheetName} switch left ON (permanent mode — not turning off)`);
+  // Ensure data is fresh
+  await ensureFreshData(sheets, spreadsheetId, sheetName);
 }
 
 async function setCRMMode(sheets, spreadsheetId, mode) {
@@ -5644,6 +5626,7 @@ INSTRUCTIONS FOR USING THESE MATCHES:
           alert._preAnalysis = {
             clientFound,
             hasSlotMatches,
+            slotMatches,
             slotMatchContext,
             isForeignCurrency,
             invoiceCurrency,
@@ -5652,21 +5635,20 @@ INSTRUCTIONS FOR USING THESE MATCHES:
         }
 
         // ── TIER 1: Single exact slot match — generate option without Claude ─
-        // Conditions: exactly one slot match, amount exact (within 5p), date within
-        // tolerance, not a job-total MANUAL-INV scenario (those need clearing logic).
-        // Client name must match (clientFound). If any condition fails → Tier 2 (Claude).
+        // Only applies to missing invoice alerts — slotMatches is only populated then
         const tier1PreAnalysis = alert._preAnalysis || {};
         const tier1Eligible = (
+          isMissingInvoice &&
           tier1PreAnalysis.hasSlotMatches &&
           tier1PreAnalysis.clientFound &&
-          slotMatches.length === 1 &&
-          slotMatches[0].dateMatch &&
-          !slotMatches[0].isJobTotalMatch &&
+          (tier1PreAnalysis.slotMatches || []).length === 1 &&
+          (tier1PreAnalysis.slotMatches || [])[0]?.dateMatch &&
+          !(tier1PreAnalysis.slotMatches || [])[0]?.isJobTotalMatch &&
           !tier1PreAnalysis.isForeignCurrency
         );
 
         if (tier1Eligible) {
-          const m = slotMatches[0];
+          const m = tier1PreAnalysis.slotMatches[0];
           const slotColLetter = m.amtCol; // e.g. "AP"
           const refColLetter  = m.refCol;
           const sentColLetter = m.sentCol;

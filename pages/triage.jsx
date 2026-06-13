@@ -265,6 +265,7 @@ export default function TriageSystem({ onBack }) {
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null); // { exp } — inbox item to place as new vendor
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
   const [assignedAppIds, setAssignedAppIds] = useState(new Set()); // app IDs assigned in outgoings — suppress from inbox + triage
+  const [outgoingsReplacePrompt, setOutgoingsReplacePrompt] = useState(null); // { exp, contractor, colLetter, realBlocks, manualTotal, blocksToKeep }
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
   const [settingsData, setSettingsData] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
@@ -3023,7 +3024,7 @@ export default function TriageSystem({ onBack }) {
           if (!data.success) { setError(data.error || "Failed to create vendor"); setSaving(false); return; }
           // Close modal immediately, reload in background
           setOutgoingsNewVendor(null);
-          loadOutgoings(outgoingsClient); // fire-and-forget — UI will update when done
+          await loadOutgoings(outgoingsClient); // await so new vendor appears immediately
         } catch(e) { setError(e.message); setSaving(false); }
       };
 
@@ -3096,6 +3097,43 @@ export default function TriageSystem({ onBack }) {
         {outgoingsEditCell && <EditModal />}
         {outgoingsEstimate && <EstimateModal />}
         {outgoingsNewVendor && <NewVendorModal />}
+        {outgoingsReplacePrompt && (() => {
+          const { exp, contractor, colLetter, realBlocks, totalManual, blocksWithoutManual } = outgoingsReplacePrompt;
+          const doPlace = async (keepManual) => {
+            setOutgoingsReplacePrompt(null);
+            const base = keepManual ? realBlocks : blocksWithoutManual;
+            const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
+            await updateCell(contractor, colLetter, [...base, newBlock]);
+            setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
+            setAssignedAppIds(prev => new Set([...prev, exp.appId]));
+            setOutgoingsPlacing(null);
+          };
+          return (
+            <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 400px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+                <h3 style={{ margin: "0 0 12px", fontSize: "15px", fontWeight: "700" }}>Manual entry exists</h3>
+                <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#555" }}>
+                  This cell already contains a manual entry of <strong>£{totalManual.toFixed(2)}</strong>.<br/>
+                  Would you like to replace it or keep both?
+                </p>
+                <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+                  <button onClick={() => setOutgoingsReplacePrompt(null)}
+                    style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>
+                    Cancel
+                  </button>
+                  <button onClick={() => doPlace(true)}
+                    style={{ padding: "8px 18px", background: "#f0f9ff", border: "1px solid #93c5fd", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#1d4ed8" }}>
+                    Add alongside
+                  </button>
+                  <button onClick={() => doPlace(false)}
+                    style={{ padding: "8px 18px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
+                    Replace
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {outgoingsPlacing && (
           <div style={{ background: "#1a56db", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px" }}>
@@ -3136,7 +3174,8 @@ export default function TriageSystem({ onBack }) {
                   {(() => {
                     // Group clients: those with unassigned inbox items first
                     const clientsWithInbox = allClients.filter(c =>
-                      (c.inboxCount || 0) > 0 || clientsWithFlags?.some(f => f.clientName === c.clientName && f.flags?.dirCompMismatch)
+                      clientsWithFlags?.some(f => f.clientName === c.clientName &&
+                        (f.flags?.expenseDashboardDiscr || f.flags?.expenseAppDiscr || f.flags?.dirCompMismatch))
                     );
                     const clientsNoInbox = allClients.filter(c => !clientsWithInbox.includes(c));
                     const renderClientBtn = (c) => (
@@ -3151,7 +3190,7 @@ export default function TriageSystem({ onBack }) {
                     );
                     return (
                       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                        {clientsWithFlags?.some(f => f.flags?.dirCompMismatch) && clientsWithInbox.length > 0 && (
+                        {clientsWithInbox.length > 0 && clientsNoInbox.length > 0 && (
                           <div style={{ fontSize: "11px", fontWeight: "700", color: "#f97316", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>Expenses to assign</div>
                         )}
                         {clientsWithInbox.map(renderClientBtn)}
@@ -3284,20 +3323,17 @@ export default function TriageSystem({ onBack }) {
                               }
                               // Check for existing manual entry blocks
                               const manualBlocks = realBlocks.filter(b => b.appId && b.appId.startsWith("MANUAL-ENTRY"));
-                              let blocksToKeep = realBlocks;
                               if (manualBlocks.length > 0) {
                                 const totalManual = manualBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
-                                const choice = window.confirm(
-                                  "This cell contains a manual entry of £" + totalManual.toFixed(2) + "." +
-                                  "\n\nWould you like to REPLACE it with this expense?" +
-                                  "\n\nClick OK to replace, Cancel to keep both."
-                                );
-                                if (choice) {
-                                  blocksToKeep = realBlocks.filter(b => !b.appId || !b.appId.startsWith("MANUAL-ENTRY"));
-                                }
+                                // Show custom UI dialog instead of window.confirm
+                                setOutgoingsReplacePrompt({
+                                  exp, contractor, colLetter: m.colLetter, realBlocks, totalManual,
+                                  blocksWithoutManual: realBlocks.filter(b => !b.appId || !b.appId.startsWith("MANUAL-ENTRY")),
+                                });
+                                return; // wait for user choice in dialog
                               }
                               const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
-                              await updateCell(contractor, m.colLetter, [...blocksToKeep, newBlock]);
+                              await updateCell(contractor, m.colLetter, [...realBlocks, newBlock]);
                               setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
                               setAssignedAppIds(prev => new Set([...prev, exp.appId]));
                               setOutgoingsPlacing(null);
@@ -3992,10 +4028,12 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
+          <div style={{ textAlign: "left", marginBottom: "8px" }}>
+            <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
+              ← Back to Client List
+            </button>
+          </div>
           <div style={styles.header}>
-            <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, marginBottom: "12px" }}>
-            ← Back to Client List
-          </button>
           <h1 style={styles.title}>Proactive Alerts</h1>
             <p style={styles.subtitle}>{proactiveSelectedClient} — {clientAlertsList.length} alert{clientAlertsList.length !== 1 ? "s" : ""}</p>
           </div>
@@ -4232,10 +4270,12 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
-        <div style={styles.header}>
-          <button className="triage-btn" onClick={() => { setAcceptError(""); setScreen("clientSelection"); }} style={{ ...styles.buttonSecondary, marginBottom: "12px" }}>
+        <div style={{ textAlign: "left", marginBottom: "8px" }}>
+          <button className="triage-btn" onClick={() => { setAcceptError(""); setScreen("clientSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
             ← Back to Clients
           </button>
+        </div>
+        <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
           <p style={styles.subtitle}>{selectedClient.clientName} - {clientAlerts.length} alert(s)</p>
         </div>
@@ -4464,6 +4504,7 @@ export default function TriageSystem({ onBack }) {
                         );
                       }
                       // Non-invoice types: render normally
+                      const isExpenseGroup = type === "expenseDashboardDiscr" || type === "expenseAppDiscr";
                       return groupAlerts.map((alert, idx) => {
                         const selKey = `${type}|||${idx}`;
                         const isChecked = bulkSelected.has(selKey);
@@ -4476,10 +4517,19 @@ export default function TriageSystem({ onBack }) {
                             }} /> {getAlertSummary(alert)}
                           </div>
                         ) : (
-                          <button className="triage-btn" key={idx} onClick={() => selectAlert(alert)}
-                            style={{ ...styles.optionButton, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px" }}>
-                            {getAlertSummary(alert)}
-                          </button>
+                          <div key={idx} style={{ display: "flex", gap: "8px", alignItems: "stretch" }}>
+                            <button className="triage-btn" onClick={() => selectAlert(alert)}
+                              style={{ ...styles.optionButton, flex: 1, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px" }}>
+                              {getAlertSummary(alert)}
+                            </button>
+                            {isExpenseGroup && selectedClient && (
+                              <button className="triage-btn"
+                                onClick={() => { setActiveNav("outgoings"); loadOutgoings(selectedClient); }}
+                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "8px 12px", color: "#059669", borderColor: "#6ee7b7", whiteSpace: "nowrap" }}>
+                                📤 Assign Outgoings
+                              </button>
+                            )}
+                          </div>
                         );
                       });
                     })()}
@@ -5120,10 +5170,12 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
-        <div style={styles.header}>
-          <button className="triage-btn" onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={{ ...styles.buttonSecondary, marginBottom: "12px" }}>
+        <div style={{ textAlign: "left", marginBottom: "8px" }}>
+          <button className="triage-btn" onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
             ← Back to Alerts
           </button>
+        </div>
+        <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
           <p style={styles.subtitle}>{selectedClient?.clientName} - Alert {progress} of {clientAlerts.length}</p>
         </div>
@@ -5860,10 +5912,12 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
-        <div style={styles.header}>
-          <button className="triage-btn" onClick={() => setShowNoAction(false)} style={{ ...styles.buttonSecondary, marginBottom: "12px" }}>
+        <div style={{ textAlign: "left", marginBottom: "8px" }}>
+          <button className="triage-btn" onClick={() => setShowNoAction(false)} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
             ← Back to Actionable Alerts
           </button>
+        </div>
+        <div style={styles.header}>
           <h1 style={styles.title}>Info-Only Alerts</h1>
           <p style={styles.subtitle}>These require no action - acknowledge to clear</p>
         </div>

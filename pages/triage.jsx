@@ -3868,23 +3868,35 @@ export default function TriageSystem({ onBack }) {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {clientsWithFlags.filter(client =>
-                Object.values(client.flags || {}).some(v => v)
-              ).map((client, idx) => {
+              {clientsWithFlags.filter(client => {
+                // Check if client has any visible alerts after applying assignedByClient suppression
+                const clientAssigned = assignedByClient[client.clientName]?.size || 0;
+                const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
+                  if (!client.flags?.[key]) return false;
+                  let count = client.alertCounts?.[key] || 0;
+                  if (key === "expenseDashboardDiscr" || key === "expenseAppDiscr") {
+                    count = Math.max(0, count - clientAssigned);
+                  }
+                  return count > 0;
+                });
+                const hasInfoFlags = Object.entries(client.flags || {})
+                  .some(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key));
+                return hasVisibleActionable || hasInfoFlags;
+              }).map((client, idx) => {
+                const clientAssigned = assignedByClient[client.clientName]?.size || 0;
                 const actionableLines = ACTIONABLE_FLAG_KEYS
                   .filter(key => client.flags?.[key])
                   .map(key => {
                     let count = client.alertCounts?.[key] || 0;
                     // For expense alert types, subtract assigned IDs for THIS client
                     if ((key === "expenseDashboardDiscr" || key === "expenseAppDiscr")) {
-                      const clientAssigned = assignedByClient[client.clientName]?.size || 0;
                       count = Math.max(0, count - clientAssigned);
                     }
+                    if (count === 0) return null; // suppress fully-resolved alert types
                     const label = getFlagName(key);
-                    return count
-                      ? `${label} (${count} alert${count !== 1 ? "s" : ""})`
-                      : label;
-                  });
+                    return `${label} (${count} alert${count !== 1 ? "s" : ""})`;
+                  })
+                  .filter(Boolean);
 
                 const infoLines = Object.entries(client.flags || {})
                   .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key))

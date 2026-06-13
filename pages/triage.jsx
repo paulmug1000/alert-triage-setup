@@ -264,6 +264,7 @@ export default function TriageSystem({ onBack }) {
   const setOutgoingsDragging = (val) => { outgoingsDraggingRef.current = val; setOutgoingsDraggingState(val); };
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null); // { exp } — inbox item to place as new vendor
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
+  const [assignedAppIds, setAssignedAppIds] = useState(new Set()); // app IDs assigned in outgoings — suppress from inbox + triage
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
   const [settingsData, setSettingsData] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
@@ -1394,13 +1395,19 @@ export default function TriageSystem({ onBack }) {
   // Hoist groupedAlerts so bulk helpers can reference it
   const groupedAlerts = React.useMemo(() => {
     const g = {};
-    (clientAlerts || []).forEach(alert => {
+    // Filter out expense alerts already assigned in outgoings
+    const filteredAlerts = (clientAlerts || []).filter(alert => {
+      const appId = alert.summary?.appId || alert.summary?.transactionId;
+      if (appId && assignedAppIds.has(appId)) return false;
+      return true;
+    });
+    filteredAlerts.forEach(alert => {
       const type = alert.flagType || alert.alertType || alert.type || "unknown";
       if (!g[type]) g[type] = [];
       g[type].push(alert);
     });
     return g;
-  }, [clientAlerts]);
+  }, [clientAlerts, assignedAppIds]);
 
   // Live alert count — derived from clientsWithFlags alertCounts so it decrements
   // as each alert is actioned, rather than staying at the original snapshot value.
@@ -1969,7 +1976,8 @@ export default function TriageSystem({ onBack }) {
         if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
       }
       if (inboxData.success) {
-        setOutgoingsInbox(inboxData.inbox || []);
+        const freshInbox = (inboxData.inbox || []).filter(exp => !assignedAppIds.has(exp.appId));
+        setOutgoingsInbox(freshInbox);
         if (inboxData.locked) console.warn("Outgoings inbox: GAS lock active —", inboxData.lockMessage);
       }
     } catch(e) { console.error("loadOutgoings error:", e); }
@@ -3013,9 +3021,9 @@ export default function TriageSystem({ onBack }) {
           });
           const data = await res.json();
           if (!data.success) { setError(data.error || "Failed to create vendor"); setSaving(false); return; }
-          // Refresh outgoings to pick up new row
-          await loadOutgoings(outgoingsClient);
+          // Close modal immediately, reload in background
           setOutgoingsNewVendor(null);
+          loadOutgoings(outgoingsClient); // fire-and-forget — UI will update when done
         } catch(e) { setError(e.message); setSaving(false); }
       };
 
@@ -3107,6 +3115,15 @@ export default function TriageSystem({ onBack }) {
             <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
               {outgoingsClient ? outgoingsClient.clientName : "Outgoings — Contractors"}
             </h2>
+            {outgoingsClient && (
+              <button className="triage-btn"
+                onClick={() => {
+                  if (outgoingsClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${outgoingsClient.clientSheetId}/edit`, "_blank");
+                }}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd", marginLeft: "auto" }}>
+                📊 Open Sheets
+              </button>
+            )}
           </div>
 
           {noClient && (
@@ -3116,15 +3133,36 @@ export default function TriageSystem({ onBack }) {
               ) : (
                 <>
                   <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view their Outgoings tab:</p>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                    {allClients.map(c => (
+                  {(() => {
+                    // Group clients: those with unassigned inbox items first
+                    const clientsWithInbox = allClients.filter(c =>
+                      (c.inboxCount || 0) > 0 || clientsWithFlags?.some(f => f.clientName === c.clientName && f.flags?.dirCompMismatch)
+                    );
+                    const clientsNoInbox = allClients.filter(c => !clientsWithInbox.includes(c));
+                    const renderClientBtn = (c) => (
                       <button key={c.clientName} onClick={() => loadOutgoings(c)}
-                        style={{ padding: "10px 16px", background: "#f8f9ff", border: "1px solid #dde", borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500" }}>
-                        {c.clientName}
+                        style={{ padding: "10px 16px", background: c.inboxCount > 0 ? "#fff7ed" : "#f8f9ff",
+                          border: `1px solid ${c.inboxCount > 0 ? "#fed7aa" : "#dde"}`,
+                          borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500",
+                          display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span>{c.clientName}</span>
+                        {c.inboxCount > 0 && <span style={{ fontSize: "11px", background: "#f97316", color: "#fff", borderRadius: "10px", padding: "1px 7px" }}>{c.inboxCount} to assign</span>}
                       </button>
-                    ))}
-                    {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet — go to Home and refresh first.</p>}
-                  </div>
+                    );
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        {clientsWithFlags?.some(f => f.flags?.dirCompMismatch) && clientsWithInbox.length > 0 && (
+                          <div style={{ fontSize: "11px", fontWeight: "700", color: "#f97316", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>Expenses to assign</div>
+                        )}
+                        {clientsWithInbox.map(renderClientBtn)}
+                        {clientsNoInbox.length > 0 && clientsWithInbox.length > 0 && (
+                          <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>No expenses to assign</div>
+                        )}
+                        {clientsNoInbox.map(renderClientBtn)}
+                        {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet — go to Home and refresh first.</p>}
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </div>
@@ -3148,26 +3186,13 @@ export default function TriageSystem({ onBack }) {
                       return (
                         <div key={i} style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
                         <div
-                          draggable
-                          onMouseDown={() => { setOutgoingsPlacing(exp); }}
-                          onDragStart={e => {
-                            e.dataTransfer.effectAllowed = "copy";
-                            e.dataTransfer.setData("text/plain", exp.appId);
-                            // Mark as dragging so onClick doesn't toggle it off
-                            e.currentTarget._wasDragged = true;
-                          }}
-                          onDragEnd={e => {
-                            if (e.dataTransfer.dropEffect === "none") setOutgoingsPlacing(null);
-                            e.currentTarget._wasDragged = false;
-                          }}
-                          onClick={e => {
-                            if (e.currentTarget._wasDragged) return;
+                          onClick={() => {
                             setOutgoingsPlacing(outgoingsPlacingRef.current?.appId === exp.appId ? null : exp);
                           }}
-                          style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "grab", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "background 0.1s, border-color 0.1s", display: "flex", flexDirection: "column", gap: "2px", userSelect: "none" }}>
+                          style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "pointer", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "background 0.1s, border-color 0.1s", display: "flex", flexDirection: "column", gap: "2px", userSelect: "none" }}>
                           <div style={{ fontWeight: "700" }}>{exp.description || exp.accountName}</div>
                           <div style={{ opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
-                          <div style={{ fontSize: "10px", opacity: 0.7 }}>{isPlacing ? "Drag to a cell or click a cell below" : "Drag or click to place"}</div>
+                          <div style={{ fontSize: "10px", opacity: 0.7 }}>{isPlacing ? "Click a cell below to place" : "Click to select"}</div>
                         </div>
                         <button onClick={e => { e.stopPropagation(); setOutgoingsNewVendor({ exp }); }}
                           title="Create new vendor row for this expense"
@@ -3202,18 +3227,7 @@ export default function TriageSystem({ onBack }) {
                 </button>
               </div>
 
-              <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}
-                onDragOver={e => {
-                  // Auto-scroll the page when dragging near the bottom
-                  const threshold = 120;
-                  const distFromBottom = window.innerHeight - e.clientY;
-                  const distFromTop = e.clientY;
-                  if (distFromBottom < threshold) {
-                    window.scrollBy({ top: 8, behavior: "instant" });
-                  } else if (distFromTop < threshold) {
-                    window.scrollBy({ top: -8, behavior: "instant" });
-                  }
-                }}>
+              <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
                 <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${190 + OUTGOINGS_WINDOW * 160}px` }}>
                   <colgroup>
                     <col style={{ width: "190px" }} />
@@ -3268,9 +3282,24 @@ export default function TriageSystem({ onBack }) {
                                 const ok = window.confirm("Vendor mismatch?\n\nExpense: \"" + (exp.description || exp.accountName) + "\"\nContractor: \"" + contractor.name + "\"\n\nPlace anyway?");
                                 if (!ok) return;
                               }
+                              // Check for existing manual entry blocks
+                              const manualBlocks = realBlocks.filter(b => b.appId && b.appId.startsWith("MANUAL-ENTRY"));
+                              let blocksToKeep = realBlocks;
+                              if (manualBlocks.length > 0) {
+                                const totalManual = manualBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
+                                const choice = window.confirm(
+                                  "This cell contains a manual entry of £" + totalManual.toFixed(2) + "." +
+                                  "\n\nWould you like to REPLACE it with this expense?" +
+                                  "\n\nClick OK to replace, Cancel to keep both."
+                                );
+                                if (choice) {
+                                  blocksToKeep = realBlocks.filter(b => !b.appId || !b.appId.startsWith("MANUAL-ENTRY"));
+                                }
+                              }
                               const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
-                              await updateCell(contractor, m.colLetter, [...realBlocks, newBlock]);
+                              await updateCell(contractor, m.colLetter, [...blocksToKeep, newBlock]);
                               setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
+                              setAssignedAppIds(prev => new Set([...prev, exp.appId]));
                               setOutgoingsPlacing(null);
                             } else {
                               setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label });
@@ -3279,71 +3308,11 @@ export default function TriageSystem({ onBack }) {
 
                           return (
                             <td key={m.colLetter} onClick={handleCellClick}
-                              onDragOver={e => {
-                                if (outgoingsDraggingRef.current || outgoingsPlacingRef.current) {
-                                  e.preventDefault();
-                                  e.dataTransfer.dropEffect = outgoingsDraggingRef.current ? "move" : "copy";
-                                }
-                              }}
-                              onDrop={async e => {
-                                e.preventDefault();
-
-                                // Case 1: Dragging from inbox
-                                if (outgoingsPlacingRef.current && !outgoingsDraggingRef.current) {
-                                  const exp = outgoingsPlacingRef.current;
-                                  const expDesc = (exp.description || exp.accountName || "").toLowerCase();
-                                  const contrWords = contractor.name.toLowerCase().replace(/[()]/g, " ").split(/\s+/).filter(w => w.length > 3);
-                                  const nameMatch = contrWords.some(w => expDesc.includes(w));
-                                  if (!nameMatch) {
-                                    const ok = window.confirm("Vendor mismatch?\n\nExpense: \"" + (exp.description || exp.accountName) + "\"\nContractor: \"" + contractor.name + "\"\n\nPlace anyway?");
-                                    if (!ok) { setOutgoingsPlacing(null); return; }
-                                  }
-                                  const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
-                                  const newBlocks = [...realBlocks, newBlock];
-                                  setOutgoingsData(prev => {
-                                    if (!prev) return prev;
-                                    return { ...prev, contractors: prev.contractors.map(c => c.sheetRow === contractor.sheetRow ? { ...c, cells: { ...c.cells, [m.colLetter]: { ...c.cells[m.colLetter], blocks: newBlocks } } } : c) };
-                                  });
-                                  setOutgoingsInbox(prev => prev.filter(ex => ex.appId !== exp.appId));
-                                  setOutgoingsPlacing(null);
-                                  fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ action: "update_outgoing_note", clientSheetId: outgoingsClient?.clientSheetId, sheetRow: contractor.sheetRow, colLetter: m.colLetter, blocks: newBlocks }) }).catch(console.error);
-                                  return;
-                                }
-
-                                // Case 2: Dragging from another cell
-                                if (!outgoingsDraggingRef.current) return;
-                                const { contractor: srcContractor, colLetter: srcCol, blockIdx, block } = outgoingsDraggingRef.current;
-                                setOutgoingsDragging(null);
-                                if (srcContractor.sheetRow === contractor.sheetRow && srcCol === m.colLetter) return;
-                                const srcBlocks = (srcContractor.cells[srcCol]?.blocks || []).filter((b, i) => i !== blockIdx);
-                                const tgtBlocks = [...realBlocks, { ...block }];
-                                setOutgoingsData(prev => {
-                                  if (!prev) return prev;
-                                  return {
-                                    ...prev,
-                                    contractors: prev.contractors.map(c => {
-                                      if (c.sheetRow === srcContractor.sheetRow && c.sheetRow === contractor.sheetRow) {
-                                        return { ...c, cells: { ...c.cells, [srcCol]: { ...c.cells[srcCol], blocks: srcBlocks }, [m.colLetter]: { ...c.cells[m.colLetter], blocks: tgtBlocks } } };
-                                      } else if (c.sheetRow === srcContractor.sheetRow) {
-                                        return { ...c, cells: { ...c.cells, [srcCol]: { ...c.cells[srcCol], blocks: srcBlocks } } };
-                                      } else if (c.sheetRow === contractor.sheetRow) {
-                                        return { ...c, cells: { ...c.cells, [m.colLetter]: { ...c.cells[m.colLetter], blocks: tgtBlocks } } };
-                                      }
-                                      return c;
-                                    }),
-                                  };
-                                });
-                                fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ action: "update_outgoing_note", clientSheetId: outgoingsClient?.clientSheetId, sheetRow: srcContractor.sheetRow, colLetter: srcCol, blocks: srcBlocks }) }).catch(console.error);
-                                fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ action: "update_outgoing_note", clientSheetId: outgoingsClient?.clientSheetId, sheetRow: contractor.sheetRow, colLetter: m.colLetter, blocks: tgtBlocks }) }).catch(console.error);
-                              }}
-                              style={{ padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: outgoingsDragging ? "copy" : "pointer", minHeight: "52px",
-                                background: outgoingsDragging ? "#eef3ff" : isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",
-                                outline: outgoingsDragging ? "2px dashed #6699ff" : isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px" }}
-                              onMouseEnter={e => { if (!outgoingsDragging) e.currentTarget.style.background = "#f0f4ff"; }}
-                              onMouseLeave={e => { if (!outgoingsDragging) e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8"; }}>
+                              style={{ padding: "6px 8px", borderBottom: "1px solid #eee", borderRight: "1px solid #e0e0e0", verticalAlign: "top", cursor: "pointer", minHeight: "52px",
+                                background: isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8",
+                                outline: isTarget ? "2px dashed #1a56db" : "none", outlineOffset: "-2px" }}
+                              onMouseEnter={e => { e.currentTarget.style.background = "#f0f4ff"; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = isTarget ? "#f0f4ff" : isCurr && !isEmpty ? "#f0f8f0" : isEmpty ? "transparent" : "#f8fff8"; }}>
                               {!isEmpty ? (
                                 <>
                                   <div style={{ fontWeight: "700", fontSize: "12px", color: "#1a56db", marginBottom: "3px" }}>
@@ -3353,13 +3322,7 @@ export default function TriageSystem({ onBack }) {
                                     const sc = getStatusColour(b.status);
                                     return (
                                       <div key={bi}
-                                        draggable
-                                        onDragStart={e => {
-                                          e.dataTransfer.effectAllowed = "move";
-                                          setOutgoingsDragging({ contractor, colLetter: m.colLetter, blockIdx: bi, block: b });
-                                        }}
-                                        onDragEnd={() => setOutgoingsDragging(null)}
-                                        style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "grab" }}>
+                                        style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                         £{parseFloat(b.amount).toLocaleString("en-GB", { minimumFractionDigits: 0 })}{b.status ? ` · ${b.status}` : ""}{
                                           // Show (split) if this App ID appears in any OTHER month column for this contractor
                                           !b.appId.startsWith("MANUAL-ENTRY") && !b.appId.startsWith("UNRECON-GAP") &&
@@ -4030,7 +3993,10 @@ export default function TriageSystem({ onBack }) {
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
-            <h1 style={styles.title}>Proactive Alerts</h1>
+            <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, marginBottom: "12px" }}>
+            ← Back to Client List
+          </button>
+          <h1 style={styles.title}>Proactive Alerts</h1>
             <p style={styles.subtitle}>{proactiveSelectedClient} — {clientAlertsList.length} alert{clientAlertsList.length !== 1 ? "s" : ""}</p>
           </div>
           <div style={styles.card}>
@@ -4211,6 +4177,18 @@ export default function TriageSystem({ onBack }) {
                             </button>
                           );
                         })()}
+                        {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
+                          <button
+                            className="triage-btn"
+                            onClick={() => {
+                              setActiveNav("outgoings");
+                              if (clientInfo) loadOutgoings(clientInfo);
+                            }}
+                            style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}
+                          >
+                            📤 Assign Outgoings
+                          </button>
+                        )}
                         <button
                           className="triage-btn"
                           onClick={() => openCreateTaskModal(alert, true)}
@@ -4236,11 +4214,7 @@ export default function TriageSystem({ onBack }) {
                 </div>
               )}
             </div>
-            <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid #eee" }}>
-              <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
-                ← Back to Client List
-              </button>
-            </div>
+
           </div>
         </div>
       </NavShell>
@@ -4259,6 +4233,9 @@ export default function TriageSystem({ onBack }) {
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
+          <button className="triage-btn" onClick={() => { setAcceptError(""); setScreen("clientSelection"); }} style={{ ...styles.buttonSecondary, marginBottom: "12px" }}>
+            ← Back to Clients
+          </button>
           <h1 style={styles.title}>Select Alert</h1>
           <p style={styles.subtitle}>{selectedClient.clientName} - {clientAlerts.length} alert(s)</p>
         </div>
@@ -4322,9 +4299,23 @@ export default function TriageSystem({ onBack }) {
                     )}
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {groupAlerts.map((alert, idx) => {
-                      const selKey    = `${type}|||${idx}`;
-                      const isChecked = bulkSelected.has(selKey);
+                    {(() => {
+                      // For invoice alerts, sub-group by draft status
+                      const isInvoiceType = type === "invoiceDashboardDiscr" || type === "invoiceAppDiscr";
+                      if (isInvoiceType) {
+                        const drafts = groupAlerts.filter(a => (a.summary?.status || "").toLowerCase() === "draft")
+                          .sort((a, b) => parseInt(a.summary?.invoiceNo || 0) - parseInt(b.summary?.invoiceNo || 0));
+                        const nonDrafts = groupAlerts.filter(a => (a.summary?.status || "").toLowerCase() !== "draft")
+                          .sort((a, b) => parseInt(a.summary?.invoiceNo || 0) - parseInt(b.summary?.invoiceNo || 0));
+                        const renderGroup = (alerts, label, globalOffset) => alerts.length === 0 ? null : (
+                          <div key={label}>
+                            {drafts.length > 0 && nonDrafts.length > 0 && (
+                              <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>{label}</div>
+                            )}
+                            {alerts.map((alert, localIdx) => {
+                              const idx = globalOffset + localIdx;
+                              const selKey = `${type}|||${idx}`;
+                              const isChecked = bulkSelected.has(selKey);
                       return bulkMode ? (
                         <div key={idx}
                           onClick={() => {
@@ -4463,6 +4454,35 @@ export default function TriageSystem({ onBack }) {
                       </button>
                       );
                     })}
+                          </div>
+                        );
+                        return (
+                          <div>
+                            {renderGroup(nonDrafts, "Sent / non-draft", 0)}
+                            {renderGroup(drafts, "Draft", nonDrafts.length)}
+                          </div>
+                        );
+                      }
+                      // Non-invoice types: render normally
+                      return groupAlerts.map((alert, idx) => {
+                        const selKey = `${type}|||${idx}`;
+                        const isChecked = bulkSelected.has(selKey);
+                        return bulkMode ? (
+                          <div key={idx} style={{ padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", fontSize: "13px" }}>
+                            <input type="checkbox" checked={isChecked} onChange={() => {
+                              const newSel = new Set(bulkSelected);
+                              if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
+                              setBulkSelected(newSel);
+                            }} /> {getAlertSummary(alert)}
+                          </div>
+                        ) : (
+                          <button className="triage-btn" key={idx} onClick={() => selectAlert(alert)}
+                            style={{ ...styles.optionButton, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px" }}>
+                            {getAlertSummary(alert)}
+                          </button>
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
                 );
@@ -4821,10 +4841,7 @@ export default function TriageSystem({ onBack }) {
           )}
 
           {/* Bottom button row — always visible */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "20px" }}>
-            <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
-              ← Back to Clients
-            </button>
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: "20px" }}>
             <button className="triage-btn"
               onClick={() => {
                 setFlagsToClear(computeFlagGroups(selectedClient, clientAlerts));
@@ -4951,9 +4968,6 @@ export default function TriageSystem({ onBack }) {
                   : anyActive
                   ? "✓ Clear Selected Flags"
                   : "Select flags to clear"}
-              </button>
-              <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={styles.buttonSecondary}>
-                ← Back to Clients
               </button>
             </div>
           </div>
@@ -5107,6 +5121,9 @@ export default function TriageSystem({ onBack }) {
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
+          <button className="triage-btn" onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={{ ...styles.buttonSecondary, marginBottom: "12px" }}>
+            ← Back to Alerts
+          </button>
           <h1 style={styles.title}>Alert Triage System</h1>
           <p style={styles.subtitle}>{selectedClient?.clientName} - Alert {progress} of {clientAlerts.length}</p>
         </div>
@@ -5217,12 +5234,7 @@ export default function TriageSystem({ onBack }) {
               {acceptError.includes("go back to the alert list") && (
                 <div style={{ marginTop: "10px" }}>
                   <button
-                    className="triage-btn"
-                    onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }}
-                    style={{ ...styles.buttonSecondary, fontSize: "13px" }}
-                  >
-                    ← Back to Alert List
-                  </button>
+
                 </div>
               )}
             </div>
@@ -5691,9 +5703,6 @@ export default function TriageSystem({ onBack }) {
           )}
 
           <div style={{ marginTop: "16px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
-            <button className="triage-btn" onClick={() => { setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={styles.buttonSecondary}>
-              ← Back to Alerts
-            </button>
             <button className="triage-btn"
               onClick={() => {
                 const updatedAlerts = clientAlerts.filter((_, idx) => idx !== currentClientAlertIndex);
@@ -5849,6 +5858,9 @@ export default function TriageSystem({ onBack }) {
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
+          <button className="triage-btn" onClick={() => setShowNoAction(false)} style={{ ...styles.buttonSecondary, marginBottom: "12px" }}>
+            ← Back to Actionable Alerts
+          </button>
           <h1 style={styles.title}>Info-Only Alerts</h1>
           <p style={styles.subtitle}>These require no action - acknowledge to clear</p>
         </div>
@@ -5882,11 +5894,7 @@ export default function TriageSystem({ onBack }) {
           )}
 
           <div style={styles.buttonGroup}>
-            {totalAlerts > 0 && (
-              <button className="triage-btn" onClick={() => setShowNoAction(false)} style={styles.buttonSecondary}>
-                ← Back to Actionable Alerts
-              </button>
-            )}
+
             {allAcknowledged && (
               <button className="triage-btn"
                 onClick={() => setTriageComplete(true)}

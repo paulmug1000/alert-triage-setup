@@ -2020,21 +2020,19 @@ export default function TriageSystem({ onBack }) {
       }
       if (inboxData.success) {
         const allInboxIds = new Set((inboxData.inbox || []).map(e => e.appId));
-        // Remove from suppression any ID that has reappeared in the inbox
-        // (means assignment was undone, or refreshOutgoingsAndUI hasn't run yet but the
-        // expense is back — either way, we should show it again)
-        // Also remove IDs that are no longer in the inbox AND not suppressed
-        // (i.e. keep suppressed only those that are NOT in the inbox — meaning
-        // refreshOutgoingsAndUI has already processed and removed them from DirComp)
+        // Prune assignedAppIds: keep only IDs that are STILL in the inbox
+        // (meaning refreshOutgoingsAndUI hasn't run yet — they're assigned but DirComp
+        // hasn't been updated). Remove IDs that are no longer in the inbox — they've been
+        // fully processed and don't need suppression any more.
         setAssignedAppIds(prev => {
-          const pruned = new Set([...prev].filter(id => !allInboxIds.has(id)));
+          const pruned = new Set([...prev].filter(id => allInboxIds.has(id)));
           try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...pruned])); } catch {}
           return pruned;
         });
         setAssignedByClient(prev => {
           const next = {};
           for (const [cn, ids] of Object.entries(prev)) {
-            const pruned = new Set([...ids].filter(id => !allInboxIds.has(id)));
+            const pruned = new Set([...ids].filter(id => allInboxIds.has(id)));
             if (pruned.size > 0) next[cn] = pruned;
           }
           try { localStorage.setItem("pulse_assignedByClient", JSON.stringify(
@@ -2042,7 +2040,12 @@ export default function TriageSystem({ onBack }) {
           )); } catch {}
           return next;
         });
-        const freshInbox = (inboxData.inbox || []).filter(exp => !assignedAppIds.has(exp.appId));
+        // Filter inbox: hide items that are in assignedAppIds (assigned but not yet processed)
+        // Use the current state directly since setAssignedAppIds above is async
+        const currentAssigned = new Set([
+          ...Array.from(assignedAppIds).filter(id => allInboxIds.has(id))
+        ]);
+        const freshInbox = (inboxData.inbox || []).filter(exp => !currentAssigned.has(exp.appId));
         setOutgoingsInbox(freshInbox);
         if (inboxData.locked) console.warn("Outgoings inbox: GAS lock active —", inboxData.lockMessage);
       }

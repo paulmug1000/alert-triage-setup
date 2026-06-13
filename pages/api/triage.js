@@ -1735,6 +1735,7 @@ export default async function handler(req, res) {
       try {
         const sheets = await getSheetsClient();
         const sheetIdClean = extractSheetIdFromUrl(sheetId) || sheetId;
+        console.log(`  🔍 get_outgoings_inbox: sheetId=${sheetIdClean.slice(0,20)}...`);
 
         // Check GAS expense lock first — if GAS is writing to DirComp, wait or abort
         const expLock = await checkGASLock(sheets, sheetIdClean, "expense");
@@ -1742,6 +1743,7 @@ export default async function handler(req, res) {
           console.log(`  ⚠ get_outgoings_inbox: GAS expense lock active — returning empty inbox to avoid stale data`);
           return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Expense automation is currently running — try again in a moment" });
         }
+        console.log(`  ✓ No GAS lock`);
 
         await setMasterSwitch(sheets, sheetIdClean, "DirComp", true);
         const dataResp = await sheets.spreadsheets.values.get({
@@ -1751,12 +1753,16 @@ export default async function handler(req, res) {
         await setMasterSwitch(sheets, sheetIdClean, "DirComp", false);
 
         const rows = dataResp.data.values || [];
+        console.log(`  📊 DirComp rows read: ${rows.length}`);
+
         const inbox = [];
+        let skippedNoFlag = 0, skippedNoAppId = 0;
         for (const row of rows) {
           if (!row || row.length === 0) continue;
           // col AO (index 40) = "Missing cost?" flag
-          const isMissing = String(row[40] || "").trim() === "1";
-          if (!isMissing) continue;
+          const rawFlag = String(row[40] || "").trim();
+          const isMissing = rawFlag === "1";
+          if (!isMissing) { skippedNoFlag++; continue; }
 
           // Accounting cols A-J (indices 0-9)
           const date        = String(row[0] || "").trim();
@@ -1768,11 +1774,13 @@ export default async function handler(req, res) {
           const appId       = String(row[6] || "").trim();
           const datePaid    = String(row[7] || "").trim();
 
-          if (!appId) continue; // need an App ID to place in Outgoings note
+          console.log(`  🔎 Flag=1 row: appId="${appId}" desc="${description.slice(0,30)}" amt=${amount} date=${date}`);
+
+          if (!appId) { skippedNoAppId++; console.log(`    ⚠ Skipped — no appId`); continue; }
           inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid });
         }
 
-        console.log(`  ✅ get_outgoings_inbox: ${inbox.length} unmatched expenses`);
+        console.log(`  ✅ get_outgoings_inbox: ${inbox.length} unmatched expenses (skipped: ${skippedNoFlag} no-flag, ${skippedNoAppId} no-appId)`);
         return res.status(200).json({ success: true, inbox });
       } catch (err) {
         try { await setMasterSwitch(sheets, extractSheetIdFromUrl(sheetId) || sheetId, "DirComp", false); } catch(e) {}

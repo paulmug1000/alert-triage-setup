@@ -587,17 +587,35 @@ async function getCRMMatchingMode(sheets, masterSheetId) {
 }
 
 async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `${sheetName}!E2`,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[value]],
-    },
-  });
+  // If turning ON: check current state first — if already on, skip write and delay
+  if (value === true) {
+    try {
+      const currentResp = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `${sheetName}!E2`,
+      });
+      const currentVal = currentResp.data.values?.[0]?.[0];
+      const alreadyOn = (currentVal === true || String(currentVal).toUpperCase() === "TRUE");
+      if (alreadyOn) {
+        console.log(`  ✅ ${sheetName} switch already ON — skipping write and delay`);
+        return;
+      }
+    } catch(e) {
+      console.log(`  ⚠ Could not check ${sheetName} switch state: ${e.message} — proceeding with write`);
+    }
+    // Switch was off — turn it on and wait for data to populate
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${sheetName}!E2`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[true]] },
+    });
+    await ensureFreshData(sheets, spreadsheetId, sheetName);
+    return;
+  }
 
-  // Ensure data is fresh
-  await ensureFreshData(sheets, spreadsheetId, sheetName);
+  // value === false: switches are now left permanently ON — do nothing
+  console.log(`  ⏭ ${sheetName} switch left ON (permanent mode — not turning off)`);
 }
 
 async function setCRMMode(sheets, spreadsheetId, mode) {

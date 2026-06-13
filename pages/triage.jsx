@@ -2020,16 +2020,21 @@ export default function TriageSystem({ onBack }) {
       }
       if (inboxData.success) {
         const allInboxIds = new Set((inboxData.inbox || []).map(e => e.appId));
-        // Prune assignedAppIds that are no longer in the inbox (refreshOutgoingsAndUI has processed them)
+        // Remove from suppression any ID that has reappeared in the inbox
+        // (means assignment was undone, or refreshOutgoingsAndUI hasn't run yet but the
+        // expense is back — either way, we should show it again)
+        // Also remove IDs that are no longer in the inbox AND not suppressed
+        // (i.e. keep suppressed only those that are NOT in the inbox — meaning
+        // refreshOutgoingsAndUI has already processed and removed them from DirComp)
         setAssignedAppIds(prev => {
-          const pruned = new Set([...prev].filter(id => allInboxIds.has(id)));
+          const pruned = new Set([...prev].filter(id => !allInboxIds.has(id)));
           try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...pruned])); } catch {}
           return pruned;
         });
         setAssignedByClient(prev => {
           const next = {};
           for (const [cn, ids] of Object.entries(prev)) {
-            const pruned = new Set([...ids].filter(id => allInboxIds.has(id)));
+            const pruned = new Set([...ids].filter(id => !allInboxIds.has(id)));
             if (pruned.size > 0) next[cn] = pruned;
           }
           try { localStorage.setItem("pulse_assignedByClient", JSON.stringify(

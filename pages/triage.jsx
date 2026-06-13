@@ -2783,6 +2783,7 @@ export default function TriageSystem({ onBack }) {
             sheetRow: contractor.sheetRow,
             colLetter,
             blocks: newBlocks,
+            gasScriptId: outgoingsClient?.scriptId || "",
           }),
         });
       } catch(e) { console.error("updateCell error:", e); }

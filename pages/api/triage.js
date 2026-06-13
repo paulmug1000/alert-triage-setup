@@ -765,6 +765,7 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
       }
 
       const clientName = String(row[0] || "").trim(); // Column A - ACTUAL CLIENT NAME
+      const scriptId    = String(row[10] || "").trim(); // Column K - GAS Script ID
       const clientSheetUrl = row[11]; // Column L
       const masterSheetUrl = row[12]; // Column M
 
@@ -863,6 +864,7 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
           masterSheetId: masterId,
           clientSheetUrl,
           masterSheetUrl,
+          scriptId,
           flags,
         });
       }
@@ -1688,6 +1690,7 @@ export default async function handler(req, res) {
         const clientsObj = {};
         for (const row of rows) {
           const clientName = String(row[0] || "").trim();
+          const scriptId   = String(row[10] || "").trim(); // col K = GAS script ID
           const clientSheetUrl = row[11];
           const masterSheetUrl = row[12];
           // Skip header row and any row where name looks like a header
@@ -1695,8 +1698,8 @@ export default async function handler(req, res) {
           if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
           const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
           const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
-          clientsArray.push({ clientName, clientSheetId, masterSheetId });
-          if (clientSheetId && masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId };
+          clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId });
+          if (clientSheetId && masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId };
         }
         clientsArray.sort((a, b) => a.clientName.localeCompare(b.clientName));
         return res.status(200).json({ success: true, clients: clientsArray, clientsMap: clientsObj });
@@ -1962,6 +1965,23 @@ export default async function handler(req, res) {
         });
 
         console.log(`  ✅ Outgoings note updated: ${cellRef}`);
+
+        // Trigger refreshOutgoingsAndUI in GAS so DirComp picks up the new assignment
+        const { gasScriptId } = req.body;
+        if (gasScriptId) {
+          try {
+            const gasResp = await fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, scriptId: gasScriptId }),
+            });
+            const gasData = await gasResp.json().catch(() => ({}));
+            console.log(`  📋 refreshOutgoings GAS call: ${gasData.success ? "OK" : gasData.error || "no response"}`);
+          } catch(gasErr) {
+            console.log(`  ⚠ refreshOutgoings GAS call failed (non-fatal): ${gasErr.message}`);
+          }
+        }
+
         return res.status(200).json({ success: true, cellRef, blockCount: (blocks || []).length, cellTotal });
       } catch (err) {
         console.error("❌ update_outgoing_note error:", err);
@@ -5626,7 +5646,6 @@ INSTRUCTIONS FOR USING THESE MATCHES:
           alert._preAnalysis = {
             clientFound,
             hasSlotMatches,
-            slotMatches,
             slotMatchContext,
             isForeignCurrency,
             invoiceCurrency,
@@ -5635,20 +5654,21 @@ INSTRUCTIONS FOR USING THESE MATCHES:
         }
 
         // ── TIER 1: Single exact slot match — generate option without Claude ─
-        // Only applies to missing invoice alerts — slotMatches is only populated then
+        // Conditions: exactly one slot match, amount exact (within 5p), date within
+        // tolerance, not a job-total MANUAL-INV scenario (those need clearing logic).
+        // Client name must match (clientFound). If any condition fails → Tier 2 (Claude).
         const tier1PreAnalysis = alert._preAnalysis || {};
         const tier1Eligible = (
-          isMissingInvoice &&
           tier1PreAnalysis.hasSlotMatches &&
           tier1PreAnalysis.clientFound &&
-          (tier1PreAnalysis.slotMatches || []).length === 1 &&
-          (tier1PreAnalysis.slotMatches || [])[0]?.dateMatch &&
-          !(tier1PreAnalysis.slotMatches || [])[0]?.isJobTotalMatch &&
+          slotMatches.length === 1 &&
+          slotMatches[0].dateMatch &&
+          !slotMatches[0].isJobTotalMatch &&
           !tier1PreAnalysis.isForeignCurrency
         );
 
         if (tier1Eligible) {
-          const m = tier1PreAnalysis.slotMatches[0];
+          const m = slotMatches[0];
           const slotColLetter = m.amtCol; // e.g. "AP"
           const refColLetter  = m.refCol;
           const sentColLetter = m.sentCol;

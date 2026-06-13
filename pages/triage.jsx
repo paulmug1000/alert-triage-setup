@@ -264,7 +264,21 @@ export default function TriageSystem({ onBack }) {
   const setOutgoingsDragging = (val) => { outgoingsDraggingRef.current = val; setOutgoingsDraggingState(val); };
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null); // { exp } — inbox item to place as new vendor
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
-  const [assignedAppIds, setAssignedAppIds] = useState(new Set()); // app IDs assigned in outgoings — suppress from inbox + triage
+  // assignedAppIds: persisted to localStorage so assignments survive page refresh
+  // until refreshOutgoingsAndUI runs and removes them from DirComp properly
+  const [assignedAppIds, setAssignedAppIds] = useState(() => {
+    try {
+      const stored = localStorage.getItem("pulse_assignedAppIds");
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch { return new Set(); }
+  });
+  const addAssignedAppId = (id) => {
+    setAssignedAppIds(prev => {
+      const next = new Set([...prev, id]);
+      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
   const [outgoingsReplacePrompt, setOutgoingsReplacePrompt] = useState(null); // { exp, contractor, colLetter, realBlocks, manualTotal, blocksToKeep }
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
   const [settingsData, setSettingsData] = useState(null);
@@ -1397,9 +1411,10 @@ export default function TriageSystem({ onBack }) {
   const groupedAlerts = React.useMemo(() => {
     const g = {};
     // Filter out expense alerts already assigned in outgoings
+    // DirComp expense alerts use summary.transactionId as the unique ID
     const filteredAlerts = (clientAlerts || []).filter(alert => {
-      const appId = alert.summary?.appId || alert.summary?.transactionId;
-      if (appId && assignedAppIds.has(appId)) return false;
+      const txId = alert.summary?.transactionId;
+      if (txId && assignedAppIds.has(txId)) return false;
       return true;
     });
     filteredAlerts.forEach(alert => {
@@ -1977,6 +1992,13 @@ export default function TriageSystem({ onBack }) {
         if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
       }
       if (inboxData.success) {
+        const allInboxIds = new Set((inboxData.inbox || []).map(e => e.appId));
+        // Prune assignedAppIds that are no longer in the inbox (refreshOutgoingsAndUI has processed them)
+        setAssignedAppIds(prev => {
+          const pruned = new Set([...prev].filter(id => allInboxIds.has(id)));
+          try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...pruned])); } catch {}
+          return pruned;
+        });
         const freshInbox = (inboxData.inbox || []).filter(exp => !assignedAppIds.has(exp.appId));
         setOutgoingsInbox(freshInbox);
         if (inboxData.locked) console.warn("Outgoings inbox: GAS lock active —", inboxData.lockMessage);
@@ -3107,7 +3129,7 @@ export default function TriageSystem({ onBack }) {
             const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
             await updateCell(contractor, colLetter, [...base, newBlock]);
             setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
-            setAssignedAppIds(prev => new Set([...prev, exp.appId]));
+            addAssignedAppId(exp.appId);
             setOutgoingsPlacing(null);
           };
           return (
@@ -3337,7 +3359,7 @@ export default function TriageSystem({ onBack }) {
                               const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
                               await updateCell(contractor, m.colLetter, [...realBlocks, newBlock]);
                               setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
-                              setAssignedAppIds(prev => new Set([...prev, exp.appId]));
+                              addAssignedAppId(exp.appId);
                               setOutgoingsPlacing(null);
                             } else {
                               setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label });

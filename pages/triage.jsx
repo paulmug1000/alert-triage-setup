@@ -3022,9 +3022,11 @@ export default function TriageSystem({ onBack }) {
           });
           const data = await res.json();
           if (!data.success) { setError(data.error || "Failed to create vendor"); setSaving(false); return; }
-          // Close modal immediately, reload in background
+          // Capture client ref before closing modal (closing clears outgoingsNewVendor state)
+          const clientToReload = outgoingsClient;
           setOutgoingsNewVendor(null);
-          await loadOutgoings(outgoingsClient); // await so new vendor appears immediately
+          // Reload grid so new vendor row appears — must use captured ref
+          await loadOutgoings(clientToReload);
         } catch(e) { setError(e.message); setSaving(false); }
       };
 
@@ -4028,16 +4030,16 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
-          <div style={{ textAlign: "left", marginBottom: "8px" }}>
-            <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
-              ← Back to Client List
-            </button>
-          </div>
           <div style={styles.header}>
           <h1 style={styles.title}>Proactive Alerts</h1>
             <p style={styles.subtitle}>{proactiveSelectedClient} — {clientAlertsList.length} alert{clientAlertsList.length !== 1 ? "s" : ""}</p>
           </div>
           <div style={styles.card}>
+            <div style={{ marginBottom: "16px" }}>
+              <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
+                ← Back to Client List
+              </button>
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               {clientAlertsList.map((alert, idx) => {
                 const m = alert.metadata || {};
@@ -4270,17 +4272,17 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
-        <div style={{ textAlign: "left", marginBottom: "8px" }}>
-          <button className="triage-btn" onClick={() => { setAcceptError(""); setScreen("clientSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
-            ← Back to Clients
-          </button>
-        </div>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
           <p style={styles.subtitle}>{selectedClient.clientName} - {clientAlerts.length} alert(s)</p>
         </div>
 
         <div style={styles.card}>
+          <div style={{ marginBottom: "16px" }}>
+            <button className="triage-btn" onClick={() => { setAcceptError(""); setScreen("clientSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
+              ← Back to Clients
+            </button>
+          </div>
           {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
 
           {/* Bulk mode toggle — only show when there are multiple alerts */}
@@ -4505,7 +4507,7 @@ export default function TriageSystem({ onBack }) {
                       }
                       // Non-invoice types: render normally
                       const isExpenseGroup = type === "expenseDashboardDiscr" || type === "expenseAppDiscr";
-                      return groupAlerts.map((alert, idx) => {
+                      const alertBtns = groupAlerts.map((alert, idx) => {
                         const selKey = `${type}|||${idx}`;
                         const isChecked = bulkSelected.has(selKey);
                         return bulkMode ? (
@@ -4517,21 +4519,23 @@ export default function TriageSystem({ onBack }) {
                             }} /> {getAlertSummary(alert)}
                           </div>
                         ) : (
-                          <div key={idx} style={{ display: "flex", gap: "8px", alignItems: "stretch" }}>
-                            <button className="triage-btn" onClick={() => selectAlert(alert)}
-                              style={{ ...styles.optionButton, flex: 1, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px" }}>
-                              {getAlertSummary(alert)}
-                            </button>
-                            {isExpenseGroup && selectedClient && (
-                              <button className="triage-btn"
-                                onClick={() => { setActiveNav("outgoings"); loadOutgoings(selectedClient); }}
-                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "8px 12px", color: "#059669", borderColor: "#6ee7b7", whiteSpace: "nowrap" }}>
-                                📤 Assign Outgoings
-                              </button>
-                            )}
-                          </div>
+                          <button className="triage-btn" key={idx} onClick={() => selectAlert(alert)}
+                            style={{ ...styles.optionButton, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px" }}>
+                            {getAlertSummary(alert)}
+                          </button>
                         );
                       });
+                      return isExpenseGroup && selectedClient
+                        ? [...alertBtns, (
+                            <div key="assign-btn" style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
+                              <button className="triage-btn"
+                                onClick={() => { setActiveNav("outgoings"); loadOutgoings(selectedClient); }}
+                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#059669", borderColor: "#6ee7b7" }}>
+                                📤 Assign Outgoings
+                              </button>
+                            </div>
+                          )]
+                        : alertBtns;
                     })()}
                   </div>
                 </div>
@@ -5170,17 +5174,17 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
-        <div style={{ textAlign: "left", marginBottom: "8px" }}>
-          <button className="triage-btn" onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
-            ← Back to Alerts
-          </button>
-        </div>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
           <p style={styles.subtitle}>{selectedClient?.clientName} - Alert {progress} of {clientAlerts.length}</p>
         </div>
 
         <div style={styles.card}>
+          <div style={{ marginBottom: "16px" }}>
+            <button className="triage-btn" onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
+              ← Back to Alerts
+            </button>
+          </div>
           <div style={styles.alertHeader}>
             <h2 style={styles.alertTitle}>
               {alert.clientName || alert.type || "Financial Alert"}
@@ -5912,17 +5916,17 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
-        <div style={{ textAlign: "left", marginBottom: "8px" }}>
-          <button className="triage-btn" onClick={() => setShowNoAction(false)} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
-            ← Back to Actionable Alerts
-          </button>
-        </div>
         <div style={styles.header}>
           <h1 style={styles.title}>Info-Only Alerts</h1>
           <p style={styles.subtitle}>These require no action - acknowledge to clear</p>
         </div>
 
         <div style={styles.noActionSection}>
+          <div style={{ marginBottom: "16px" }}>
+            <button className="triage-btn" onClick={() => setShowNoAction(false)} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
+              ← Back to Actionable Alerts
+            </button>
+          </div>
           <h2 style={{ margin: "0 0 16px 0", fontSize: "16px", fontWeight: "600" }}>
             {acknowledgedNoAction.size} of {noActionCount} Acknowledged
           </h2>

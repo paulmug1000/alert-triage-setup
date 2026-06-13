@@ -264,20 +264,40 @@ export default function TriageSystem({ onBack }) {
   const setOutgoingsDragging = (val) => { outgoingsDraggingRef.current = val; setOutgoingsDraggingState(val); };
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null); // { exp } — inbox item to place as new vendor
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
-  // assignedAppIds: persisted to localStorage so assignments survive page refresh
+  // assignedAppIds: Set of transactionIds assigned via outgoings — persisted to localStorage
   // until refreshOutgoingsAndUI runs and removes them from DirComp properly
+  // assignedAppIdsByClient: Map of {clientName → Set<transactionId>} for per-client count adjustment
   const [assignedAppIds, setAssignedAppIds] = useState(() => {
     try {
       const stored = localStorage.getItem("pulse_assignedAppIds");
       return stored ? new Set(JSON.parse(stored)) : new Set();
     } catch { return new Set(); }
   });
-  const addAssignedAppId = (id) => {
+  const [assignedByClient, setAssignedByClient] = useState(() => {
+    try {
+      const stored = localStorage.getItem("pulse_assignedByClient");
+      if (!stored) return {};
+      const parsed = JSON.parse(stored);
+      // Convert arrays back to Sets
+      return Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, new Set(v)]));
+    } catch { return {}; }
+  });
+  const addAssignedAppId = (id, clientName) => {
     setAssignedAppIds(prev => {
       const next = new Set([...prev, id]);
       try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
       return next;
     });
+    if (clientName) {
+      setAssignedByClient(prev => {
+        const clientSet = new Set([...(prev[clientName] || []), id]);
+        const next = { ...prev, [clientName]: clientSet };
+        try { localStorage.setItem("pulse_assignedByClient", JSON.stringify(
+          Object.fromEntries(Object.entries(next).map(([k, v]) => [k, [...v]]))
+        )); } catch {}
+        return next;
+      });
+    }
   };
   const [outgoingsReplacePrompt, setOutgoingsReplacePrompt] = useState(null); // { exp, contractor, colLetter, realBlocks, manualTotal, blocksToKeep }
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
@@ -1441,15 +1461,22 @@ export default function TriageSystem({ onBack }) {
       "expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps",
       "invoiceStaleUnsentChanges",
     ];
+    const EXPENSE_TYPES = new Set(["expenseDashboardDiscr", "expenseAppDiscr"]);
     return clientsWithFlags.reduce((total, c) => {
-      // Count actionable alerts from alertCounts
-      const actionable = COUNTED_ALERT_TYPES.reduce((sum, ft) => sum + (c.alertCounts?.[ft] || 0), 0);
+      // Count actionable alerts from alertCounts, subtracting assigned expenses per client
+      const actionable = COUNTED_ALERT_TYPES.reduce((sum, ft) => {
+        let count = c.alertCounts?.[ft] || 0;
+        if (EXPENSE_TYPES.has(ft)) {
+          count = Math.max(0, count - (assignedByClient[c.clientName]?.size || 0));
+        }
+        return sum + count;
+      }, 0);
       // Count info flags (grey bullets) — flags that are TRUE but not in the actionable display set
       const infoFlags = Object.entries(c.flags || {})
         .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS_SET.has(key)).length;
       return total + actionable + infoFlags;
     }, 0);
-  }, [clientsWithFlags]);
+  }, [clientsWithFlags, assignedByClient]);
 
   // ── Bulk action helpers ──────────────────────────────────────────────────
 
@@ -1998,6 +2025,17 @@ export default function TriageSystem({ onBack }) {
           const pruned = new Set([...prev].filter(id => allInboxIds.has(id)));
           try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...pruned])); } catch {}
           return pruned;
+        });
+        setAssignedByClient(prev => {
+          const next = {};
+          for (const [cn, ids] of Object.entries(prev)) {
+            const pruned = new Set([...ids].filter(id => allInboxIds.has(id)));
+            if (pruned.size > 0) next[cn] = pruned;
+          }
+          try { localStorage.setItem("pulse_assignedByClient", JSON.stringify(
+            Object.fromEntries(Object.entries(next).map(([k, v]) => [k, [...v]]))
+          )); } catch {}
+          return next;
         });
         const freshInbox = (inboxData.inbox || []).filter(exp => !assignedAppIds.has(exp.appId));
         setOutgoingsInbox(freshInbox);
@@ -3129,7 +3167,7 @@ export default function TriageSystem({ onBack }) {
             const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
             await updateCell(contractor, colLetter, [...base, newBlock]);
             setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
-            addAssignedAppId(exp.appId);
+            addAssignedAppId(exp.appId, outgoingsClient?.clientName);
             setOutgoingsPlacing(null);
           };
           return (
@@ -3359,7 +3397,7 @@ export default function TriageSystem({ onBack }) {
                               const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
                               await updateCell(contractor, m.colLetter, [...realBlocks, newBlock]);
                               setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
-                              addAssignedAppId(exp.appId);
+                              addAssignedAppId(exp.appId, outgoingsClient?.clientName);
                               setOutgoingsPlacing(null);
                             } else {
                               setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label });
@@ -3835,7 +3873,12 @@ export default function TriageSystem({ onBack }) {
                 const actionableLines = ACTIONABLE_FLAG_KEYS
                   .filter(key => client.flags?.[key])
                   .map(key => {
-                    const count = client.alertCounts?.[key];
+                    let count = client.alertCounts?.[key] || 0;
+                    // For expense alert types, subtract assigned IDs for THIS client
+                    if ((key === "expenseDashboardDiscr" || key === "expenseAppDiscr")) {
+                      const clientAssigned = assignedByClient[client.clientName]?.size || 0;
+                      count = Math.max(0, count - clientAssigned);
+                    }
                     const label = getFlagName(key);
                     return count
                       ? `${label} (${count} alert${count !== 1 ? "s" : ""})`

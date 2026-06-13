@@ -5233,8 +5233,11 @@ export default function TriageSystem({ onBack }) {
               {acceptError}
               {acceptError.includes("go back to the alert list") && (
                 <div style={{ marginTop: "10px" }}>
-                  <button
-
+                  <button className="triage-btn"
+                    onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }}
+                    style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
+                    ← Back to Alert List
+                  </button>
                 </div>
               )}
             </div>

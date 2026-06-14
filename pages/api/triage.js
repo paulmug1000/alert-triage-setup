@@ -1187,8 +1187,8 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
           sheetName: "InvComp",
           rowNumber: 6 + rowIdx,
           data: {
-            accounting: row.slice(0, 11),
-            confirmed: row.slice(12, 18),
+            accounting: (() => { const s = row.slice(0, 11); while (s.length < 11) s.push(""); return s; })(),
+            confirmed:  (() => { const s = row.slice(12, 18); while (s.length < 6) s.push(""); return s; })(),
             flags: row.slice(18, 25),
           },
           flagColumns: headers.slice(18, 25),
@@ -1242,8 +1242,8 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
           sheetName: "DirComp",
           rowNumber: 7 + rowIdx,
           data: {
-            accounting: row.slice(0, 10),
-            confirmed: row.slice(23, 34),
+            accounting: (() => { const s = row.slice(0, 10); while (s.length < 10) s.push(""); return s; })(),
+            confirmed:  (() => { const s = row.slice(23, 34); while (s.length < 11) s.push(""); return s; })(),
             flags: row.slice(40, 48),
           },
           flagColumns: headers.slice(40, 48),
@@ -1398,6 +1398,15 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
         const MISMATCH_FIELD_NAMES = ["Client name", "Job name", "Revenue", "Direct costs", "Start date", "End date", "% Likelihood"];
         const mismatchFields = mismatchFlags.map((v, i) => v === "1" ? MISMATCH_FIELD_NAMES[i] : null).filter(Boolean);
 
+        // Pad slices to expected length — Sheets API truncates trailing empty cells
+        // but GAS getValues() returns a fixed rectangle. Without padding, fingerprints
+        // computed here won't match fingerprints computed by GAS.
+        const padSlice = (arr, start, end) => {
+          const slice = arr.slice(start, end);
+          const len = end - start;
+          while (slice.length < len) slice.push("");
+          return slice;
+        };
         alerts.push({
           type: "crm",
           alertType,
@@ -1407,8 +1416,8 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
           sheetName: "CRMComp",
           rowNumber: 7 + rowIdx,
           data: {
-            crmData:   row.slice(crmDataCols[0], crmDataCols[1]),
-            sheetData: row.slice(sheetDataCols[0], sheetDataCols[1]),
+            crmData:   padSlice(row, crmDataCols[0], crmDataCols[1]),
+            sheetData: padSlice(row, sheetDataCols[0], sheetDataCols[1]),
             flags:     filteredFlags,
           },
         });
@@ -2481,17 +2490,12 @@ export default async function handler(req, res) {
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
       let ignoredCount = 0;
-      const allMemoryHashes = new Set(memoryRows.map(r => r.fingerprintHash).filter(Boolean));
       for (const alert of allAlerts) {
         alert.fingerprintHash = buildAlertFingerprint(alert);
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
         } else {
           if (alert.type === "crm") {
-            const inMemory = allMemoryHashes.has(alert.fingerprintHash);
-            const memRow = inMemory ? memoryRows.find(r => r.fingerprintHash === alert.fingerprintHash) : null;
-            console.log(`  \u{1F50D} CRM: hash=${alert.fingerprintHash} flagType=${alert.flagType} alertType=${alert.alertType} inMemory=${inMemory} status=${memRow?.status || "NOT IN MEMORY"}`);
-            if (!inMemory) {
               const parts = [alert.type||"", alert.flagType||alert.alertType||"",
                 "crmData[0]=" + (alert.data?.crmData?.[0]||""),
                 "sheetData[0]=" + (alert.data?.sheetData?.[0]||""),

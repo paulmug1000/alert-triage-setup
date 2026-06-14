@@ -2464,21 +2464,15 @@ export default async function handler(req, res) {
       await purgeOldAlertMemoryRows(sheets, automationCommanderSheetId, memoryRows);
 
       // Build set of ignored fingerprints for fast lookup.
-      // Include both "ignored" rows AND "superseded" rows that have an ignoreReason
-      // (superseded = was ignored, data appeared to change, but if the new cached entry
-      // has the same hash it means the change was spurious — keep treating as ignored).
-      const ignoredStatuses = new Set(
-        memoryRows.filter(r => r.status === "ignored").map(r => r.fingerprintHash)
-      );
-      // Also include superseded+ignored hashes where no newer "ignored" row exists
-      // (prevents spuriously superseded alerts from reappearing)
-      const supersededIgnoredHashes = new Set(
+      // Must match get_handled_fingerprints exactly — filter out ignored, task,
+      // superseded, and accepted statuses, same as the GAS precompute does.
+      const ignoredHashes = new Set(
         memoryRows
-          .filter(r => r.status === "superseded" && r.ignoreReason)
+          .filter(r => r.status === "ignored" || r.status === "task" ||
+                       r.status === "superseded" || r.status === "accepted")
           .map(r => r.fingerprintHash)
-          .filter(hash => !ignoredStatuses.has(hash)) // not already covered by an active ignore
+          .filter(Boolean)
       );
-      const ignoredHashes = new Set([...ignoredStatuses, ...supersededIgnoredHashes]);
 
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];

@@ -2493,15 +2493,6 @@ export default async function handler(req, res) {
           .filter(Boolean)
       );
 
-      // Build full lookup of ALL AlertMemory hashes for Rascal Ventures CRM rows
-      const rascalMemoryRows = memoryRows.filter(r =>
-        r.clientName === "Rascal Ventures" && r.alertType === "crm"
-      );
-      console.log(`  🔬 DIAG: ${rascalMemoryRows.length} AlertMemory CRM rows for Rascal Ventures`);
-      rascalMemoryRows.slice(0, 5).forEach(r =>
-        console.log(`  🔬 DIAG AM row: hash=${r.fingerprintHash} status=${r.status}`)
-      );
-
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
       let ignoredCount = 0;
@@ -2510,16 +2501,6 @@ export default async function handler(req, res) {
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
         } else {
-          // For every CRM alert that passes through — log hash + raw string + closest AM match
-          if (alert.type === "crm" && alert.clientName === "Rascal Ventures") {
-            const diagParts = [alert.type || "", alert.flagType || alert.alertType || ""];
-            if (alert.data?.crmData)   diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
-            if (alert.data?.sheetData) diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
-            if (alert.data?.flags)     diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
-            const diagRaw = diagParts.join("|");
-            const amMatch = rascalMemoryRows.find(r => r.fingerprintHash === alert.fingerprintHash);
-            console.log(`  🔬 PASS hash=${alert.fingerprintHash} amStatus=${amMatch ? amMatch.status : "NOT_IN_AM"} raw=${diagRaw.slice(0, 300)}`);
-          }
           filteredAlerts.push(alert);
         }
       }
@@ -3358,7 +3339,6 @@ BUDGET AND REVENUE:
             "Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
           const activeFlags = flags.map((v, i) => String(v||"").trim()==="1" ? flagNames[i] : null).filter(Boolean);
 
-          // DIAGNOSTIC: log full flags array and key fields
 
           // Extract key fields from alert data
           // confirmed slice = cols X:AH (indices 23-33 of raw row), so:

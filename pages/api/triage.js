@@ -2495,19 +2495,10 @@ export default async function handler(req, res) {
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
         } else {
-          if (alert.type === "crm") {
-              const parts = [alert.type||"", alert.flagType||alert.alertType||"",
-                "crmData[0]=" + (alert.data?.crmData?.[0]||""),
-                "sheetData[0]=" + (alert.data?.sheetData?.[0]||""),
-                "flags=" + JSON.stringify(alert.data?.flags||[])];
-              console.log(`  \u{1F50D} FP parts: ${parts.join(" | ")}`);
-            }
-          }
           filteredAlerts.push(alert);
         }
       }
-      console.log(`  \u2713 ${filteredAlerts.length} active alerts, ${ignoredCount} ignored alerts filtered out`);
-      console.log(`💾 Storing session in Redis...`);
+      console.log(`  ✓ ${filteredAlerts.length} active alerts, ${ignoredCount} ignored alerts filtered out`);
 
       // Store session data in Redis
       const sessionId = Math.random().toString(36).substring(2, 15);

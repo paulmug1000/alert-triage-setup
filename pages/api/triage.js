@@ -2481,20 +2481,28 @@ export default async function handler(req, res) {
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
       let ignoredCount = 0;
+      const allMemoryHashes = new Set(memoryRows.map(r => r.fingerprintHash).filter(Boolean));
       for (const alert of allAlerts) {
         alert.fingerprintHash = buildAlertFingerprint(alert);
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
         } else {
-          // Log CRM alerts that are NOT being filtered
-          if (alert.type === "crm" || alert.sheetName === "CRMComp") {
-            const memRow = memoryRows.find(r => r.fingerprintHash === alert.fingerprintHash);
+          if (alert.type === "crm") {
+            const inMemory = allMemoryHashes.has(alert.fingerprintHash);
+            const memRow = inMemory ? memoryRows.find(r => r.fingerprintHash === alert.fingerprintHash) : null;
+            console.log(`  \u{1F50D} CRM: hash=${alert.fingerprintHash} flagType=${alert.flagType} alertType=${alert.alertType} inMemory=${inMemory} status=${memRow?.status || "NOT IN MEMORY"}`);
+            if (!inMemory) {
+              const parts = [alert.type||"", alert.flagType||alert.alertType||"",
+                "crmData[0]=" + (alert.data?.crmData?.[0]||""),
+                "sheetData[0]=" + (alert.data?.sheetData?.[0]||""),
+                "flags=" + JSON.stringify(alert.data?.flags||[])];
+              console.log(`  \u{1F50D} FP parts: ${parts.join(" | ")}`);
+            }
           }
           filteredAlerts.push(alert);
         }
       }
-      console.log(`  ✓ ${filteredAlerts.length} active alerts, ${ignoredCount} ignored alerts filtered out`);
-
+      console.log(`  \u2713 ${filteredAlerts.length} active alerts, ${ignoredCount} ignored alerts filtered out`);
       console.log(`💾 Storing session in Redis...`);
 
       // Store session data in Redis

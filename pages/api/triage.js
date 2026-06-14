@@ -2494,40 +2494,36 @@ export default async function handler(req, res) {
           .filter(Boolean)
       );
 
-      // DIAGNOSTIC: log one AlertMemory CRM hash and one generated hash to compare
-      const diagCrmMemRow = memoryRows.find(r => r.alertType === "crm" && r.clientName === "Rascal Ventures");
-      if (diagCrmMemRow) {
-        console.log(`  🔬 DIAG AlertMemory CRM hash: ${diagCrmMemRow.fingerprintHash} status=${diagCrmMemRow.status}`);
-      }
+      // Build full lookup of ALL AlertMemory hashes for Rascal Ventures CRM rows
+      const rascalMemoryRows = memoryRows.filter(r =>
+        r.clientName === "Rascal Ventures" && r.alertType === "crm"
+      );
+      console.log(`  🔬 DIAG: ${rascalMemoryRows.length} AlertMemory CRM rows for Rascal Ventures`);
+      rascalMemoryRows.slice(0, 5).forEach(r =>
+        console.log(`  🔬 DIAG AM row: hash=${r.fingerprintHash} status=${r.status}`)
+      );
 
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
       let ignoredCount = 0;
-      let diagDone = false;
       for (const alert of allAlerts) {
         alert.fingerprintHash = buildAlertFingerprint(alert);
-        if (!diagDone && alert.type === "crm" && alert.clientName === "Rascal Ventures") {
-          diagDone = true;
-          // Build the raw string that gets hashed — same logic as buildAlertFingerprint
-          const diagParts = [alert.type || "", alert.flagType || alert.alertType || ""];
-          if (alert.data?.crmData)   diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
-          if (alert.data?.sheetData) diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
-          if (alert.data?.flags)     diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
-          const diagRaw = diagParts.join("|");
-          console.log(`  🔬 DIAG generated hash: ${alert.fingerprintHash} flagType=${alert.flagType}`);
-          console.log(`  🔬 DIAG raw[0..200]: ${diagRaw.slice(0, 200)}`);
-          console.log(`  🔬 DIAG raw[200..400]: ${diagRaw.slice(200, 400)}`);
-          console.log(`  🔬 DIAG inIgnoredSet: ${ignoredHashes.has(alert.fingerprintHash)}`);
-          // Also check if the AlertMemory hash matches any generated alert
-          if (diagCrmMemRow) {
-            const matchesAny = allAlerts.some(a => (buildAlertFingerprint(a) === diagCrmMemRow.fingerprintHash));
-            console.log(`  🔬 DIAG AlertMemory hash matches any alert: ${matchesAny}`);
-          }
-        }
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
         } else {
+          // For every CRM alert that passes through — log hash + raw string + closest AM match
+          if (alert.type === "crm" && alert.clientName === "Rascal Ventures") {
+            const diagParts = [alert.type || "", alert.flagType || alert.alertType || ""];
+            if (alert.data?.crmData)   diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
+            if (alert.data?.sheetData) diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
+            if (alert.data?.flags)     diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
+            const diagRaw = diagParts.join("|");
+            const amMatch = rascalMemoryRows.find(r => r.fingerprintHash === alert.fingerprintHash);
+            console.log(`  🔬 PASS hash=${alert.fingerprintHash} amStatus=${amMatch ? amMatch.status : "NOT_IN_AM"} raw=${diagRaw.slice(0, 300)}`);
+          }
           filteredAlerts.push(alert);
+        }
+      }
         }
       }
       console.log(`  ✓ ${filteredAlerts.length} active alerts, ${ignoredCount} ignored alerts filtered out`);

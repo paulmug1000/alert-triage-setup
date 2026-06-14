@@ -2414,6 +2414,7 @@ export default async function handler(req, res) {
               pipelineAlerts,
               client.masterSheetId
             );
+            console.log(`  🔍 DIAG: readCRMCompAlerts Pipeline returned ${crmAlerts.length} alerts for ${client.clientName}`);
             crmAlerts.forEach((alert) => {
               alert.clientId = client.clientSheetId;
               alert.masterSheetId = client.masterSheetId;
@@ -2430,6 +2431,7 @@ export default async function handler(req, res) {
               confirmedAlerts,
               client.masterSheetId
             );
+            console.log(`  🔍 DIAG: readCRMCompAlerts Confirmed returned ${crmAlerts.length} alerts for ${client.clientName}`);
             crmAlerts.forEach((alert) => {
               alert.clientId = client.clientSheetId;
               alert.masterSheetId = client.masterSheetId;
@@ -2473,6 +2475,10 @@ export default async function handler(req, res) {
           .map(r => r.fingerprintHash)
           .filter(Boolean)
       );
+      console.log(`  🔍 DIAG: ${memoryRows.length} AlertMemory rows, ${ignoredHashes.size} handled fingerprints`);
+      // Log status breakdown
+      const statusBreakdown = memoryRows.reduce((acc, r) => { acc[r.status] = (acc[r.status]||0)+1; return acc; }, {});
+      console.log(`  🔍 DIAG: Status breakdown: ${JSON.stringify(statusBreakdown)}`);
 
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
@@ -2481,8 +2487,12 @@ export default async function handler(req, res) {
         alert.fingerprintHash = buildAlertFingerprint(alert);
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
-          console.log(`  ⏭ Skipping ignored alert: ${alert.fingerprintHash} (${alert.clientName})`);
         } else {
+          // Log CRM alerts that are NOT being filtered
+          if (alert.type === "crm" || alert.sheetName === "CRMComp") {
+            const memRow = memoryRows.find(r => r.fingerprintHash === alert.fingerprintHash);
+            console.log(`  🔍 DIAG CRM PASS-THROUGH: hash=${alert.fingerprintHash} client=${alert.clientName} flagType=${alert.flagType} subType=${alert.subType} AlertMemory status=${memRow ? memRow.status : "NOT IN MEMORY"}`);
+          }
           filteredAlerts.push(alert);
         }
       }

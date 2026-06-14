@@ -2475,8 +2475,6 @@ export default async function handler(req, res) {
       await purgeOldAlertMemoryRows(sheets, automationCommanderSheetId, memoryRows);
 
       // Build set of ignored fingerprints for fast lookup.
-      // Must match get_handled_fingerprints exactly — filter out ignored, task,
-      // superseded, and accepted statuses, same as the GAS precompute does.
       const ignoredHashes = new Set(
         memoryRows
           .filter(r => r.status === "ignored" || r.status === "task" ||
@@ -2484,12 +2482,37 @@ export default async function handler(req, res) {
           .map(r => r.fingerprintHash)
           .filter(Boolean)
       );
-      // Log status breakdown
+
+      // DIAGNOSTIC: log one AlertMemory CRM hash and one generated hash to compare
+      const diagCrmMemRow = memoryRows.find(r => r.alertType === "crm" && r.clientName === "Rascal Ventures");
+      if (diagCrmMemRow) {
+        console.log(`  🔬 DIAG AlertMemory CRM hash: ${diagCrmMemRow.fingerprintHash} status=${diagCrmMemRow.status}`);
+      }
+
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
       let ignoredCount = 0;
+      let diagDone = false;
       for (const alert of allAlerts) {
         alert.fingerprintHash = buildAlertFingerprint(alert);
+        if (!diagDone && alert.type === "crm" && alert.clientName === "Rascal Ventures") {
+          diagDone = true;
+          // Build the raw string that gets hashed — same logic as buildAlertFingerprint
+          const diagParts = [alert.type || "", alert.flagType || alert.alertType || ""];
+          if (alert.data?.crmData)   diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
+          if (alert.data?.sheetData) diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
+          if (alert.data?.flags)     diagParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
+          const diagRaw = diagParts.join("|");
+          console.log(`  🔬 DIAG generated hash: ${alert.fingerprintHash} flagType=${alert.flagType}`);
+          console.log(`  🔬 DIAG raw[0..200]: ${diagRaw.slice(0, 200)}`);
+          console.log(`  🔬 DIAG raw[200..400]: ${diagRaw.slice(200, 400)}`);
+          console.log(`  🔬 DIAG inIgnoredSet: ${ignoredHashes.has(alert.fingerprintHash)}`);
+          // Also check if the AlertMemory hash matches any generated alert
+          if (diagCrmMemRow) {
+            const matchesAny = allAlerts.some(a => (buildAlertFingerprint(a) === diagCrmMemRow.fingerprintHash));
+            console.log(`  🔬 DIAG AlertMemory hash matches any alert: ${matchesAny}`);
+          }
+        }
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
         } else {

@@ -3396,7 +3396,7 @@ BUDGET AND REVENUE:
               // Search the Confirmed tab for the row containing this TransactionID
               const confirmedResp = await sheets.spreadsheets.values.get({
                 spreadsheetId: alert.clientId,
-                range: \`Confirmed!\${cols.txId}2:\${cols.txId}2000\`,
+                range: `Confirmed!${cols.txId}2:${cols.txId}2000`,
               });
               const txRows = confirmedResp.data.values || [];
               let confirmedRow = -1;
@@ -3438,7 +3438,7 @@ BUDGET AND REVENUE:
                 },
                 recommendedActions: [
                   `Update VAT setting for "${vendorDesc}" in Confirmed tab ${source} to "${newVATValue}"`,
-                  \`write \${newVATValue} to \${cols.vat}\${confirmedRow} (${source} VAT field)\`,
+                  `write ${newVATValue} to ${cols.vat}${confirmedRow} (${source} VAT field)`,
                 ],
               }];
               console.log(`  ✅ Slot VAT fix: write "${newVATValue}" to ${cols.vat}${confirmedRow}`);

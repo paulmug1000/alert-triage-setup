@@ -1168,6 +1168,7 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
     const dataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "InvComp!A6:Y1000",
+      valueRenderOption: "UNFORMATTED_VALUE",
     });
     const rows = dataResponse.data.values || [];
     console.log(`  InvComp: ${rows.length} rows read`);
@@ -1223,6 +1224,7 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
     const dataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: "DirComp!A6:AV1000",
+      valueRenderOption: "UNFORMATTED_VALUE",
     });
     const rows = dataResponse.data.values || [];
     console.log(`  DirComp: ${rows.length} rows read`);
@@ -1366,6 +1368,7 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
       const dataResponse = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range: dataRange,
+        valueRenderOption: "UNFORMATTED_VALUE",
       });
       const rows = dataResponse.data.values || [];
 
@@ -1758,6 +1761,7 @@ export default async function handler(req, res) {
         const dataResp = await sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
           range: "DirComp!A6:AV1000",
+          valueRenderOption: "UNFORMATTED_VALUE",
         });
         await setMasterSwitch(sheets, sheetIdClean, "DirComp", false);
 
@@ -2490,12 +2494,9 @@ export default async function handler(req, res) {
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
       let ignoredCount = 0;
-      let firstCrmLogged = false;
       for (const alert of allAlerts) {
         alert.fingerprintHash = buildAlertFingerprint(alert);
         // Log full fingerprint input for first CRM alert to compare with AlertMemory
-        if (!firstCrmLogged && alert.type === "crm") {
-          firstCrmLogged = true;
           const fpParts = [
             alert.type || "",
             alert.flagType || alert.alertType || "",
@@ -2503,13 +2504,9 @@ export default async function handler(req, res) {
           if (alert.data?.crmData)   fpParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
           if (alert.data?.sheetData) fpParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
           if (alert.data?.flags)     fpParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
-          console.log(`  🔍 FIRST CRM hash=${alert.fingerprintHash} flagType=${alert.flagType}`);
-          console.log(`  🔍 FIRST CRM fpRaw=${fpParts.join("|").slice(0, 500)}`);
           // Also show what AlertMemory has for Rascal Ventures CRM
-          const rascalCrmHashes = memoryRows
             .filter(r => r.clientName === alert.clientName && r.alertType === "crm")
             .map(r => r.fingerprintHash + ":" + r.status);
-          console.log(`  🔍 AlertMemory CRM hashes for ${alert.clientName}: ${JSON.stringify(rascalCrmHashes)}`);
         }
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
@@ -3484,6 +3481,7 @@ BUDGET AND REVENUE:
             const dirCompResp = await sheets.spreadsheets.values.get({
               spreadsheetId: alert.masterSheetId || alert.clientId,
               range: "DirComp!A6:AV2000",
+              valueRenderOption: "UNFORMATTED_VALUE",
             });
             const dirCompRows = dirCompResp.data.values || [];
 

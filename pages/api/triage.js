@@ -2490,8 +2490,27 @@ export default async function handler(req, res) {
       // Attach fingerprint to every alert and filter out ignored ones
       const filteredAlerts = [];
       let ignoredCount = 0;
+      let firstCrmLogged = false;
       for (const alert of allAlerts) {
         alert.fingerprintHash = buildAlertFingerprint(alert);
+        // Log full fingerprint input for first CRM alert to compare with AlertMemory
+        if (!firstCrmLogged && alert.type === "crm") {
+          firstCrmLogged = true;
+          const fpParts = [
+            alert.type || "",
+            alert.flagType || alert.alertType || "",
+          ];
+          if (alert.data?.crmData)   fpParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.crmData)));
+          if (alert.data?.sheetData) fpParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.sheetData)));
+          if (alert.data?.flags)     fpParts.push(JSON.stringify(normaliseArrayForFingerprint(alert.data.flags)));
+          console.log(`  🔍 FIRST CRM hash=${alert.fingerprintHash} flagType=${alert.flagType}`);
+          console.log(`  🔍 FIRST CRM fpRaw=${fpParts.join("|").slice(0, 500)}`);
+          // Also show what AlertMemory has for Rascal Ventures CRM
+          const rascalCrmHashes = memoryRows
+            .filter(r => r.clientName === alert.clientName && r.alertType === "crm")
+            .map(r => r.fingerprintHash + ":" + r.status);
+          console.log(`  🔍 AlertMemory CRM hashes for ${alert.clientName}: ${JSON.stringify(rascalCrmHashes)}`);
+        }
         if (ignoredHashes.has(alert.fingerprintHash)) {
           ignoredCount++;
         } else {

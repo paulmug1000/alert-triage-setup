@@ -2524,8 +2524,6 @@ export default async function handler(req, res) {
           filteredAlerts.push(alert);
         }
       }
-        }
-      }
       console.log(`  ✓ ${filteredAlerts.length} active alerts, ${ignoredCount} ignored alerts filtered out`);
 
       // Store session data in Redis

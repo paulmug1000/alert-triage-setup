@@ -113,6 +113,16 @@ function normaliseForFingerprint(val) {
     const year = m[3].length === 4 ? m[3].slice(-2) : m[3];
     return `${day}-${mon}-${year}`;
   }
+  // Strip currency symbols and normalise numeric strings so that "£0.00", "0.00", and 0
+  // all produce the same fingerprint token — GAS getValues() returns raw numbers while
+  // the Sheets REST API with UNFORMATTED_VALUE returns numbers as JS numbers (not strings),
+  // but a cell containing text "£0.00" would still come back as a string.
+  // We normalise here: strip currency prefix, parse as float if possible, return as string.
+  const stripped = val.replace(/^[£$€]/, "").trim();
+  if (stripped !== "" && !isNaN(Number(stripped))) {
+    // It's a numeric string like "0.00" or "1234.56" — normalise to plain number string
+    return String(Number(stripped));
+  }
   return val;
 }
 
@@ -1366,6 +1376,7 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
       const dataResponse = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range: dataRange,
+        valueRenderOption: "UNFORMATTED_VALUE",
       });
       const rows = dataResponse.data.values || [];
 

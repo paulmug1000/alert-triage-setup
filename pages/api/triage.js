@@ -3329,6 +3329,13 @@ BUDGET AND REVENUE:
             "Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
           const activeFlags = flags.map((v, i) => String(v||"").trim()==="1" ? flagNames[i] : null).filter(Boolean);
 
+          // DIAGNOSTIC: log full flags array and key fields
+          console.log(`  🔍 EXPENSE DIAG: flags array (${flags.length} items): [${flags.map((v,i)=>`${i}:${JSON.stringify(v)}`).join(", ")}]`);
+          console.log(`  🔍 EXPENSE DIAG: isMissingCost=${isMissingCost}, isVATMismatch=${isVATMismatch}, activeFlags=[${activeFlags.join(",")}]`);
+          console.log(`  🔍 EXPENSE DIAG: alert.data keys=${Object.keys(alert.data||{}).join(",")}`);
+          console.log(`  🔍 EXPENSE DIAG: confirmed array (${(alert.data?.confirmed||[]).length} items): ${JSON.stringify(alert.data?.confirmed||[])}`);
+          console.log(`  🔍 EXPENSE DIAG: accounting array (${(alert.data?.accounting||[]).length} items): ${JSON.stringify(alert.data?.accounting||[])}`);
+
           // Extract key fields from alert data
           // confirmed slice = cols X:AH (indices 23-33 of raw row), so:
           //   index 3 within confirmed = AA (vendor description)
@@ -3357,21 +3364,84 @@ BUDGET AND REVENUE:
 
             // Step 1: Is this a Confirmed tab or Outgoings tab expense?
             if (source.startsWith("Slot")) {
-              // Confirmed tab expense — manual investigation required
+              // Confirmed tab expense — find the row by TransactionID and update the VAT field
+              const slotNum = source === "Slot1" ? 1 : source === "Slot2" ? 2 : source === "Slot3" ? 3 : null;
+              const slotColMap = {
+                1: { vat: "BZ", txId: "CD" },
+                2: { vat: "CG", txId: "CK" },
+                3: { vat: "CN", txId: "CR" },
+              };
+              const transactionId = String(accounting[6] || "").trim();
+              const newVATValue = vatAmount > 0 ? "Yes" : "No";
+              console.log(`  📊 Slot VAT mismatch: source=${source}, transactionId=${transactionId}, newVAT=${newVATValue}`);
+
+              if (!slotNum || !transactionId) {
+                const options = [{
+                  optionId: 1,
+                  title: `MANUAL INVESTIGATION REQUIRED — Could not identify slot or transaction ID`,
+                  matchType: "info",
+                  matchAnalysis: {
+                    matchConfidence: "N/A",
+                    reasonForChoice: `Source: ${source}, TransactionID: "${transactionId || "(blank)"}"`,
+                    discrepancies: `VAT mismatch on ${source} for "${vendorDesc}"`,
+                  },
+                  recommendedActions: [
+                    `Check the VAT field for "${vendorDesc}" in ${source} of the Confirmed tab`,
+                  ],
+                }];
+                return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+              }
+
+              const cols = slotColMap[slotNum];
+              // Search the Confirmed tab for the row containing this TransactionID
+              const confirmedResp = await sheets.spreadsheets.values.get({
+                spreadsheetId: alert.clientId,
+                range: \`Confirmed!\${cols.txId}2:\${cols.txId}2000\`,
+              });
+              const txRows = confirmedResp.data.values || [];
+              let confirmedRow = -1;
+              for (let i = 0; i < txRows.length; i++) {
+                if (String(txRows[i]?.[0] || "").trim() === transactionId) {
+                  confirmedRow = i + 2; // 1-indexed, data starts row 2
+                  break;
+                }
+              }
+              console.log(`  Confirmed tab row search for txId=${transactionId}: row=${confirmedRow}`);
+
+              if (confirmedRow === -1) {
+                const options = [{
+                  optionId: 1,
+                  title: `MANUAL INVESTIGATION REQUIRED — Transaction not found in Confirmed tab`,
+                  matchType: "info",
+                  matchAnalysis: {
+                    matchConfidence: "N/A",
+                    reasonForChoice: `Could not find transaction ID "${transactionId}" in ${source} of the Confirmed tab. Manual investigation required.`,
+                    discrepancies: `VAT mismatch for "${vendorDesc}"`,
+                  },
+                  recommendedActions: [
+                    `Search the Confirmed tab for transaction "${transactionId}" and correct the VAT field in ${source}`,
+                  ],
+                }];
+                return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+              }
+
               const options = [{
                 optionId: 1,
-                title: `MANUAL INVESTIGATION REQUIRED — VAT mismatch on Confirmed tab expense`,
-                matchType: "info",
+                title: `Update VAT setting to "${newVATValue}" for "${vendorDesc}" in Confirmed tab ${source} (Row ${confirmedRow})`,
+                matchType: "existing_job",
+                jobRow: confirmedRow,
+                jobName: vendorDesc,
                 matchAnalysis: {
-                  matchConfidence: "N/A",
-                  reasonForChoice: `This VAT mismatch is on a Confirmed tab expense (source: ${source}). The VAT setting is stored per expense slot and cannot be changed automatically. Please investigate manually.`,
-                  discrepancies: `VAT mismatch on ${source} for "${vendorDesc}"`,
+                  matchConfidence: "High",
+                  reasonForChoice: `Accounting system shows VAT ${vatAmount > 0 ? `of £${vatAmount.toFixed(2)}` : "not applied"} for this expense. The Confirmed tab ${source} VAT field should be "${newVATValue}".`,
+                  discrepancies: `VAT mismatch — accounting system has VAT ${vatAmount > 0 ? "applied" : "not applied"}, Confirmed tab has the opposite`,
                 },
                 recommendedActions: [
-                  `Check the VAT field for "${vendorDesc}" in ${source} of the Confirmed tab`,
-                  `Correct the VAT value manually in the appropriate slot`,
+                  `Update VAT setting for "${vendorDesc}" in Confirmed tab ${source} to "${newVATValue}"`,
+                  \`write \${newVATValue} to \${cols.vat}\${confirmedRow} (${source} VAT field)\`,
                 ],
               }];
+              console.log(`  ✅ Slot VAT fix: write "${newVATValue}" to ${cols.vat}${confirmedRow}`);
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 

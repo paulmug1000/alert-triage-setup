@@ -113,13 +113,12 @@ function normaliseForFingerprint(val) {
     const year = m[3].length === 4 ? m[3].slice(-2) : m[3];
     return `${day}-${mon}-${year}`;
   }
-  // Strip currency symbols and normalise numeric strings so that "£0.00" and "0.00"
-  // both produce "0" — matching what GAS produces when it calls String() on the raw
-  // number 0 returned by getValues() for a currency-formatted cell.
-  // We use FORMATTED_VALUE (not UNFORMATTED_VALUE) for the Sheets API read so that
-  // dates come back as strings like "01-Feb-26" rather than serial numbers — and
-  // rely on this normalisation to handle the currency formatting difference.
-  const stripped = val.replace(/^[£$€]/, "").trim();
+  // Normalise formatted numeric strings to match what GAS produces via String(rawNumber).
+  // The Sheets REST API with FORMATTED_VALUE returns numbers with currency symbols and
+  // thousand-separator commas (e.g. "£0.00", "13,325.00") while GAS getValues() returns
+  // raw JS numbers which String() converts without either (e.g. "0", "13325").
+  // Strip currency prefix and commas, then parse and re-stringify to canonical form.
+  const stripped = val.replace(/^[£$€]/, "").replace(/,/g, "").trim();
   if (stripped !== "" && !isNaN(Number(stripped))) {
     return String(Number(stripped));
   }

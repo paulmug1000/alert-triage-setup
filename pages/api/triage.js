@@ -3330,11 +3330,6 @@ BUDGET AND REVENUE:
           const activeFlags = flags.map((v, i) => String(v||"").trim()==="1" ? flagNames[i] : null).filter(Boolean);
 
           // DIAGNOSTIC: log full flags array and key fields
-          console.log(`  🔍 EXPENSE DIAG: flags array (${flags.length} items): [${flags.map((v,i)=>`${i}:${JSON.stringify(v)}`).join(", ")}]`);
-          console.log(`  🔍 EXPENSE DIAG: isMissingCost=${isMissingCost}, isVATMismatch=${isVATMismatch}, activeFlags=[${activeFlags.join(",")}]`);
-          console.log(`  🔍 EXPENSE DIAG: alert.data keys=${Object.keys(alert.data||{}).join(",")}`);
-          console.log(`  🔍 EXPENSE DIAG: confirmed array (${(alert.data?.confirmed||[]).length} items): ${JSON.stringify(alert.data?.confirmed||[])}`);
-          console.log(`  🔍 EXPENSE DIAG: accounting array (${(alert.data?.accounting||[]).length} items): ${JSON.stringify(alert.data?.accounting||[])}`);
 
           // Extract key fields from alert data
           // confirmed slice = cols X:AH (indices 23-33 of raw row), so:
@@ -3517,19 +3512,22 @@ BUDGET AND REVENUE:
             console.log(`  VAT treatments across ${vendorOGRows.length} items: ${vatTreatments.join(", ")} — unanimous: ${unanimousVAT || "NO"}`);
 
             if (!allSameVAT) {
-              // Mixed VAT treatment — manual investigation
+              // Mixed VAT treatment — vendor has some items with VAT and some without.
+              // Changing col B would break the other items, so we offer per-item fix only.
+              // This specific expense has vatAmount, so we know what THIS item should be.
+              const thisVAT = vatAmount > 0 ? "Yes" : "No";
               const options = [{
                 optionId: 1,
-                title: `MANUAL INVESTIGATION REQUIRED — Mixed VAT treatment across items for "${vendorName}"`,
+                title: `VAT mismatch on this item only — vendor "${vendorName}" has mixed VAT treatment`,
                 matchType: "info",
                 matchAnalysis: {
-                  matchConfidence: "N/A",
-                  reasonForChoice: `${vendorOGRows.length} Outgoings items found for "${vendorName}", but they have mixed VAT treatments (some with VAT, some without). Changing the row-level VAT setting would not resolve all discrepancies. Manual investigation required.`,
-                  discrepancies: `VAT mismatch — ${vatTreatments.filter(v=>v==="yes").length} items with VAT, ${vatTreatments.filter(v=>v==="no").length} items without VAT`,
+                  matchConfidence: "Medium",
+                  reasonForChoice: `${vendorOGRows.length} Outgoings items exist for "${vendorName}" with mixed VAT treatments (${vatTreatments.filter(v=>v==="yes").length} with VAT, ${vatTreatments.filter(v=>v==="no").length} without). Changing the vendor-level VAT setting (Outgoings col B) would affect all items. The discrepancy on this specific item suggests the accounting system recorded VAT ${vatAmount > 0 ? `of £${vatAmount.toFixed(2)}` : "not applied"} but the Outgoings tab shows the opposite. Please review this item individually in the Outgoings tab for ${source}.`,
+                  discrepancies: `VAT mismatch on this item — accounting: VAT ${vatAmount > 0 ? "applied" : "not applied"}, Outgoings: opposite`,
                 },
                 recommendedActions: [
-                  `Review all expense items for "${vendorName}" in the Outgoings tab`,
-                  `Determine the correct VAT treatment for each item individually`,
+                  `Review the ${source} entry for "${expDescription}" in the Outgoings tab`,
+                  `The accounting system shows VAT ${vatAmount > 0 ? `of £${vatAmount.toFixed(2)} (gross: £${(expAmount + vatAmount).toFixed(2)})` : "not applied"}. Check whether the Outgoings note VAT field is set correctly for this item.`,
                 ],
               }];
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });

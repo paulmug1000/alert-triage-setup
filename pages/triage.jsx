@@ -5329,7 +5329,20 @@ export default function TriageSystem({ onBack }) {
           {alert.summary && alert.type !== "locked" && (
             <div style={{ ...styles.alertSummary, marginBottom: "20px" }}>
               <h3 style={{ fontSize: "13px", fontWeight: "700", marginBottom: "8px", color: "#1a1a1a", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                {alert.type === "expense" ? "Unmatched Expense"
+                {alert.type === "expense" ? (() => {
+                    const expFlags = alert.data?.flags || [];
+                    const isMissing = String(expFlags[0]||"").trim() === "1";
+                    const isVAT    = String(expFlags[4]||"").trim() === "1";
+                    const isDupe   = String(expFlags[1]||"").trim() === "1";
+                    const isAmt    = String(expFlags[3]||"").trim() === "1";
+                    if (isMissing) return "Unmatched Expense";
+                    if (isVAT && !isMissing) return "Expense VAT Mismatch";
+                    if (isDupe)  return "Duplicate Expense";
+                    if (isAmt)   return "Expense Amount Mismatch";
+                    const expFlagNames = [null,"Duplicate App ID","Description mismatch","Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
+                    const active = expFlags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
+                    return active.length > 0 ? active.join(", ") : "Expense Discrepancy";
+                  })()
                   : (() => {
                       const flags = alert.data?.flags || [];
                       if (String(flags[2]||"").trim() === "1" && String(flags[0]||"").trim() !== "1") return "Invoice Amount Mismatch";

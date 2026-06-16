@@ -4371,16 +4371,24 @@ export default function TriageSystem({ onBack }) {
           </div>
           {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
 
-          {/* Bulk mode toggle — only show when there are multiple alerts */}
-          {clientAlerts.length > 1 && (
-            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
+          {/* Open Sheets + Bulk actions row */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+            {(selectedClient.clientSheetId || selectedClient.masterSheetId) ? (
+              <button className="triage-btn" onClick={() => {
+                if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
+                if (selectedClient.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`, "_blank");
+              }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
+                📊 Open Sheets
+              </button>
+            ) : <div />}
+            {clientAlerts.length > 1 && (
               <button className="triage-btn" onClick={() => { setBulkMode(v => !v); setBulkSelected(new Set()); }}
                 style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px",
                   ...(bulkMode ? { background: "#ede9fe", borderColor: "#7c3aed", color: "#5b21b6" } : {}) }}>
                 {bulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
               </button>
-            </div>
-          )}
+            )}
+          </div>
           
           {/* Actionable alerts */}
           {Object.keys(groupedAlerts).length === 0 ? (

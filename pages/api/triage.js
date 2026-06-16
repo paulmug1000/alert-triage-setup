@@ -4084,7 +4084,7 @@ Format as JSON array:
 Return ONLY JSON, no other text.`;
 
           const message = await anthropic.messages.create({
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-4-6",
             max_tokens: 3000,
             messages: [{ role: "user", content: expensePrompt }],
           });
@@ -4703,7 +4703,7 @@ CRITICAL REQUIREMENTS:
 Return ONLY JSON, no other text.`;
 
           const message = await anthropic.messages.create({
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-4-6",
             max_tokens: 4000,
             messages: [
               { role: "user", content: crmPrompt }
@@ -6095,7 +6095,7 @@ Format as JSON array:
 Return ONLY JSON, no other text.`;
 
         const message = await anthropic.messages.create({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
           max_tokens: 4000,
           messages: [
             { role: "user", content: prompt }

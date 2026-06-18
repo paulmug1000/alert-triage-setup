@@ -4445,9 +4445,7 @@ export default function TriageSystem({ onBack }) {
                           .sort((a, b) => parseInt(a.summary?.invoiceNo || 0) - parseInt(b.summary?.invoiceNo || 0));
                         const renderGroup = (alerts, label, globalOffset) => alerts.length === 0 ? null : (
                           <div key={label}>
-                            {drafts.length > 0 && nonDrafts.length > 0 && (
-                              <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>{label}</div>
-                            )}
+                            <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>{label}</div>
                             {alerts.map((alert, localIdx) => {
                               const idx = globalOffset + localIdx;
                               const selKey = `${type}|||${idx}`;

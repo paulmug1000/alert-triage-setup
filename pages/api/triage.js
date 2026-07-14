@@ -2642,6 +2642,19 @@ export default async function handler(req, res) {
             alertSummary: (r.alertSummary || "").slice(0, 100),
           }));
 
+        // Check whether Node-generated hashes exist ANYWHERE in AlertMemory (not just this client)
+        // This reveals if GAS stored the same alert under a different clientName
+        const allMemoryHashes = new Set(memoryRows.map(r => r.fingerprintHash).filter(Boolean));
+        const notInAnyAM = allDebugAlerts
+          .filter(a => !allMemoryHashes.has(a.fingerprintHash))
+          .map(a => a.fingerprintHash);
+        const inOtherClient = allDebugAlerts
+          .filter(a => allMemoryHashes.has(a.fingerprintHash) && !clientMemory.find(r => r.fingerprintHash === a.fingerprintHash))
+          .map(a => {
+            const amRow = memoryRows.find(r => r.fingerprintHash === a.fingerprintHash);
+            return { hash: a.fingerprintHash, flagType: a.flagType, storedClientName: amRow?.clientName, status: amRow?.status };
+          });
+
         console.log(`  🔬 debug_compare_triage: ${allDebugAlerts.length} generated, ${clientMemory.length} in AM, ${unmatchedMemory.length} unmatched AM entries`);
 
         return res.status(200).json({
@@ -2658,9 +2671,13 @@ export default async function handler(req, res) {
             wouldPassThrough: report.filter(r => !r.wouldBeFiltered).length,
             notInAlertMemory: report.filter(r => r.amStatus === "NOT_IN_AM").length,
             unmatchedAlertMemoryEntries: unmatchedMemory.length,
+            notInAnyAlertMemory: notInAnyAM.length,
+            foundUnderDifferentClient: inOtherClient.length,
           },
           generatedAlerts: report,
           unmatchedAlertMemoryEntries: unmatchedMemory,
+          notInAnyAlertMemory: notInAnyAM,
+          foundUnderDifferentClient: inOtherClient,
         });
       } catch (err) {
         console.error("❌ debug_compare_triage error:", err);

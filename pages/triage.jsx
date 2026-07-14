@@ -3592,6 +3592,8 @@ export default function TriageSystem({ onBack }) {
                           { label: "Would filter", val: s.wouldBeFiltered, color: "#166534" },
                           { label: "Would pass through", val: s.wouldPassThrough, color: s.wouldPassThrough > 0 ? "#dc2626" : "#166534" },
                           { label: "AM entries with no match", val: s.unmatchedAlertMemoryEntries, color: s.unmatchedAlertMemoryEntries > 0 ? "#b45309" : "#166534" },
+                          { label: "Not in AM anywhere", val: s.notInAnyAlertMemory, color: s.notInAnyAlertMemory > 0 ? "#dc2626" : "#166534" },
+                          { label: "Stored under diff. client", val: s.foundUnderDifferentClient, color: s.foundUnderDifferentClient > 0 ? "#7c3aed" : "#166534" },
                         ].map(({ label, val, color, sub }) => (
                           <div key={label} style={{ background: "#f8f9ff", borderRadius: "8px", padding: "10px 12px", border: "1px solid #e8eaf0" }}>
                             <div style={{ fontSize: "10px", color: "#888", marginBottom: "2px" }}>{label}</div>
@@ -3627,6 +3629,20 @@ export default function TriageSystem({ onBack }) {
                             <div key={i} style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "8px 10px", marginBottom: "6px", fontSize: "11px" }}>
                               <div style={{ fontWeight: "600" }}>{r.alertType} · hash: {r.fingerprintHash} · status: {r.status}</div>
                               <div style={{ color: "#555" }}>{r.alertSummary}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Alerts found under a different client name */}
+                      {diagResult.foundUnderDifferentClient?.length > 0 && (
+                        <div style={{ marginBottom: "16px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#7c3aed", marginBottom: "6px" }}>
+                            ⚠ Alerts found in AM under a DIFFERENT client name:
+                          </div>
+                          {diagResult.foundUnderDifferentClient.map((r, i) => (
+                            <div key={i} style={{ background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: "6px", padding: "8px 10px", marginBottom: "6px", fontSize: "11px" }}>
+                              <div style={{ fontWeight: "600" }}>{r.flagType} · hash: {r.hash} · stored as: {r.storedClientName} · status: {r.status}</div>
                             </div>
                           ))}
                         </div>

@@ -2790,10 +2790,10 @@ export default function TriageSystem({ onBack }) {
           body: JSON.stringify({
             action: "update_outgoing_note",
             clientSheetId: outgoingsClient?.clientSheetId,
+            masterSheetId: outgoingsClient?.masterSheetId || "",
             sheetRow: contractor.sheetRow,
             colLetter,
             blocks: newBlocks,
-            gasScriptId: outgoingsClient?.scriptId || "",
           }),
         });
       } catch(e) { console.error("updateCell error:", e); }

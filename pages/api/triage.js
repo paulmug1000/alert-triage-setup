@@ -1994,14 +1994,18 @@ export default async function handler(req, res) {
 
         console.log(`  ✅ Outgoings note updated: ${cellRef}`);
 
-        // Trigger refreshOutgoingsAndUI in GAS so DirComp picks up the new assignment
-        const { gasScriptId } = req.body;
-        if (gasScriptId) {
+        // Trigger pullOutgoingsNotes in GAS so DirComp picks up the new assignment.
+        // Passes clientSheetId (source of notes) and masterSheetId (destination) to
+        // the triagePrecompute web app, which copies notes directly — no client script
+        // deployment or API executable required.
+        const { masterSheetId: masterSheetIdForRefresh } = req.body;
+        if (masterSheetIdForRefresh) {
           try {
+            const masterIdClean = extractSheetIdFromUrl(masterSheetIdForRefresh) || masterSheetIdForRefresh;
             const gasResp = await fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, scriptId: gasScriptId }),
+              body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: masterIdClean }),
             });
             const gasData = await gasResp.json().catch(() => ({}));
             console.log(`  📋 refreshOutgoings GAS call: ${gasData.success ? "OK" : gasData.error || "no response"}`);

@@ -1430,10 +1430,12 @@ export default function TriageSystem({ onBack }) {
   // Hoist groupedAlerts so bulk helpers can reference it
   const groupedAlerts = React.useMemo(() => {
     const g = {};
-    // Filter out expense alerts already assigned in outgoings
-    // DirComp expense alerts use summary.transactionId as the unique ID
+    // Filter out expense alerts already assigned in outgoings.
+    // DirComp expense alerts carry summary.transactionId (= the App ID from the
+    // accounting system). The outgoings inbox uses the field name appId for the
+    // same value, so check both to be safe.
     const filteredAlerts = (clientAlerts || []).filter(alert => {
-      const txId = alert.summary?.transactionId;
+      const txId = alert.summary?.transactionId || alert.summary?.appId;
       if (txId && assignedAppIds.has(txId)) return false;
       return true;
     });

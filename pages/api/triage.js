@@ -974,36 +974,19 @@ function buildInvCompSummary(alert) {
 
 function buildDirCompSummary(alert) {
   const accounting = alert.data.accounting || [];
-  
-  // DEBUG: Log raw values
-  console.log(`DEBUG buildDirCompSummary:`, {
-    raw_accounting: accounting,
-    index_0: accounting[0],
-    index_1: accounting[1],
-    index_2: accounting[2],
-    index_3: accounting[3],
-    index_4: accounting[4],
-    index_5: accounting[5],
-    index_6: accounting[6],
-    index_7: accounting[7],
-    index_8: accounting[8],
-  });
-  
-  // DirComp columns (A:J) - CORRECTED MAPPING:
-  // A: Date, B: Description, C: Amount, D: Reference, E: Account name, F: Status, G: Transaction ID, H: Date Paid, I: VAT
-  const date = accounting[0] || '';
-  const description = accounting[1] || '';
-  const amount = parseFloat(String(accounting[2] || '0').replace(/,/g, '')) || 0; // Column C - Amount
-  const reference = accounting[3] || '';
-  const accountName = accounting[4] || '';
-  const status = accounting[5] || ''; // Column F - Status
-  const transactionId = accounting[6] || ''; // Column G - Transaction ID
-  const datePaid = accounting[7] || ''; // Column H - Date Paid
-  const vatAmount = accounting[8] || ''; // Column I - VAT
-  
-  console.log(`DEBUG after parsing:`, {
-    date, description, amount, reference, accountName, status, transactionId, datePaid, vatAmount
-  });
+
+  // DirComp columns A:J (indices 0-9):
+  // A=Date, B=Description, C=Amount, D=Reference, E=Account name,
+  // F=Status, G=Transaction ID, H=Date Paid, I=VAT
+  const date          = accounting[0] || '';
+  const description   = accounting[1] || '';
+  const amount        = parseFloat(String(accounting[2] || '0').replace(/,/g, '')) || 0;
+  const reference     = accounting[3] || '';
+  const accountName   = accounting[4] || '';
+  const status        = accounting[5] || '';
+  const transactionId = accounting[6] || '';
+  const datePaid      = accounting[7] || '';
+  const vatAmount     = accounting[8] || '';
   
   // Format the amount
   const formattedAmount = amount > 0 
@@ -2535,6 +2518,7 @@ export default async function handler(req, res) {
         clientName: client.clientName,
         clientSheetId: client.clientSheetId,
         masterSheetId: client.masterSheetId,
+        scriptId: client.scriptId,
         flags: client.flags,
         alertCounts: alertCountsByClientAndFlag[client.clientName] || {},
       }));

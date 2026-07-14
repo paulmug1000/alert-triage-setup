@@ -2560,6 +2560,113 @@ export default async function handler(req, res) {
         noActionCount: noActionAlerts.length,
         clientsWithFlags: clientsWithFlagsSlim,
       });
+    } else if (action === "debug_compare_triage") {
+      // Diagnostic action: for a given client, reads all comp sheets using the same
+      // logic as start_triage, builds fingerprints, then compares against AlertMemory.
+      // Returns a structured report showing mismatches between what start_triage generates
+      // and what AlertMemory has stored (from the GAS precompute).
+      const { clientSheetId, masterSheetId, clientName: debugClientName } = req.body;
+      if (!clientSheetId || !masterSheetId || !debugClientName) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId, masterSheetId, or clientName" });
+      }
+      try {
+        const debugSheetIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+
+        // Read all three comp sheets
+        const [invAlerts, dirAlerts] = await Promise.all([
+          readInvCompAlerts(sheets, debugSheetIdClean).catch(e => { console.log(`  ⚠ InvComp read error: ${e.message}`); return []; }),
+          readDirCompAlerts(sheets, debugSheetIdClean).catch(e => { console.log(`  ⚠ DirComp read error: ${e.message}`); return []; }),
+        ]);
+
+        // CRM Pipeline
+        const crmPipeAlerts = await readCRMCompAlerts(sheets, debugSheetIdClean, "Pipeline",
+          ["crmPipeDashDiscr", "crmPipeAppDiscr"], debugSheetIdClean
+        ).catch(e => { console.log(`  ⚠ CRMComp Pipeline read error: ${e.message}`); return []; });
+
+        // CRM Confirmed
+        const crmConfAlerts = await readCRMCompAlerts(sheets, debugSheetIdClean, "Confirmed",
+          ["crmConfDashDiscr", "crmConfAppDiscr"], debugSheetIdClean
+        ).catch(e => { console.log(`  ⚠ CRMComp Confirmed read error: ${e.message}`); return []; });
+
+        // Tag all alerts with client info and flagType (mirrors start_triage)
+        invAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.masterSheetId; a.flagType = a.flagType || "invoiceDashboardDiscr"; });
+        dirAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.masterSheetId; a.flagType = a.flagType || "expenseDashboardDiscr"; });
+        crmPipeAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.masterSheetId; if (!a.flagType) a.flagType = a.alertType || "crmPipeAppDiscr"; });
+        crmConfAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.masterSheetId; if (!a.flagType) a.flagType = a.alertType || "crmConfAppDiscr"; });
+
+        const allDebugAlerts = [...invAlerts, ...dirAlerts, ...crmPipeAlerts, ...crmConfAlerts];
+
+        // Build fingerprints for all generated alerts
+        allDebugAlerts.forEach(a => { a.fingerprintHash = buildAlertFingerprint(a); });
+
+        // Read AlertMemory and filter to this client
+        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+        const clientMemory = memoryRows.filter(r => r.clientName === debugClientName);
+
+        const handledStatuses = new Set(["ignored", "task", "superseded", "accepted"]);
+        const handledHashes = new Set(clientMemory.filter(r => handledStatuses.has(r.status)).map(r => r.fingerprintHash).filter(Boolean));
+        const cachedHashes  = new Set(clientMemory.filter(r => r.status === "cached").map(r => r.fingerprintHash).filter(Boolean));
+
+        // For each generated alert: categorise it
+        const report = allDebugAlerts.map(a => {
+          const fp = a.fingerprintHash;
+          const memRow = clientMemory.find(r => r.fingerprintHash === fp);
+          // Build the raw fingerprint string for inspection
+          const parts = [a.type || "", a.flagType || a.alertType || ""];
+          if (a.data?.accounting) parts.push(JSON.stringify(normaliseArrayForFingerprint(a.data.accounting)));
+          if (a.data?.confirmed)  parts.push(JSON.stringify(normaliseArrayForFingerprint(a.data.confirmed)));
+          if (a.data?.crmData)    parts.push(JSON.stringify(normaliseArrayForFingerprint(a.data.crmData)));
+          if (a.data?.sheetData)  parts.push(JSON.stringify(normaliseArrayForFingerprint(a.data.sheetData)));
+          if (a.data?.flags)      parts.push(JSON.stringify(normaliseArrayForFingerprint(a.data.flags)));
+          const rawFp = parts.join("|");
+          return {
+            type: a.type,
+            flagType: a.flagType || a.alertType,
+            summary: a.summary?.summary || JSON.stringify(a.summary || {}).slice(0, 100),
+            fingerprintHash: fp,
+            amStatus: memRow ? memRow.status : "NOT_IN_AM",
+            wouldBeFiltered: handledHashes.has(fp),
+            rawFingerprint: rawFp.slice(0, 400),
+          };
+        });
+
+        // Also find AlertMemory hashes for this client that don't match any generated alert
+        const generatedHashes = new Set(allDebugAlerts.map(a => a.fingerprintHash));
+        const unmatchedMemory = clientMemory
+          .filter(r => r.fingerprintHash && !generatedHashes.has(r.fingerprintHash))
+          .map(r => ({
+            fingerprintHash: r.fingerprintHash,
+            status: r.status,
+            alertType: r.alertType,
+            alertSummary: (r.alertSummary || "").slice(0, 100),
+          }));
+
+        console.log(`  🔬 debug_compare_triage: ${allDebugAlerts.length} generated, ${clientMemory.length} in AM, ${unmatchedMemory.length} unmatched AM entries`);
+
+        return res.status(200).json({
+          success: true,
+          clientName: debugClientName,
+          summary: {
+            generated: allDebugAlerts.length,
+            inv: invAlerts.length,
+            dir: dirAlerts.length,
+            crmPipe: crmPipeAlerts.length,
+            crmConf: crmConfAlerts.length,
+            alertMemoryTotal: clientMemory.length,
+            wouldBeFiltered: report.filter(r => r.wouldBeFiltered).length,
+            wouldPassThrough: report.filter(r => !r.wouldBeFiltered).length,
+            notInAlertMemory: report.filter(r => r.amStatus === "NOT_IN_AM").length,
+            unmatchedAlertMemoryEntries: unmatchedMemory.length,
+          },
+          generatedAlerts: report,
+          unmatchedAlertMemoryEntries: unmatchedMemory,
+        });
+      } catch (err) {
+        console.error("❌ debug_compare_triage error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "get_alerts") {
       // Get alerts for a session from Redis
       const { sessionId } = req.query;

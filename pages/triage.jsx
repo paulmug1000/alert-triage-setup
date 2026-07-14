@@ -3555,13 +3555,13 @@ export default function TriageSystem({ onBack }) {
                   <select value={diagClientName} onChange={e => { setDiagClientName(e.target.value); setDiagResult(null); setDiagError(""); }}
                     style={{ flex: 1, padding: "8px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px" }}>
                     <option value="">Select a client...</option>
-                    {(allOutgoingsClients || []).map(c => (
+                    {(clientsWithFlags || []).map(c => (
                       <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
                     ))}
                   </select>
                   <button className="triage-btn" disabled={!diagClientName || diagLoading}
                     onClick={async () => {
-                      const client = (allOutgoingsClients || []).find(c => c.clientName === diagClientName);
+                      const client = (clientsWithFlags || []).find(c => c.clientName === diagClientName);
                       if (!client) return;
                       setDiagLoading(true); setDiagResult(null); setDiagError("");
                       try {

@@ -308,6 +308,10 @@ export default function TriageSystem({ onBack }) {
   const [settingsEditAnomaly, setSettingsEditAnomaly] = useState(15);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveMsg, setSettingsSaveMsg] = useState("");
+  const [diagClientName, setDiagClientName] = useState("");
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagResult, setDiagResult] = useState(null);
+  const [diagError, setDiagError] = useState("");
   const OUTGOINGS_WINDOW = 7; // months visible at once
   const [appLogData, setAppLogData] = useState([]);
   const [appLogLoading, setAppLogLoading] = useState(false);
@@ -3539,6 +3543,111 @@ export default function TriageSystem({ onBack }) {
                 <div style={{ marginTop: "12px", fontSize: "12px", color: "#888" }}>
                   Note: limits apply to automated precompute only. On-demand analysis (clicking an alert) is always unrestricted.
                 </div>
+              </div>
+
+              {/* Triage Diagnostic */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Triage Diagnostic</h3>
+                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
+                  Compare what the Refresh button generates against AlertMemory for a specific client. Reveals fingerprint mismatches between start_triage and the GAS precompute.
+                </p>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "14px" }}>
+                  <select value={diagClientName} onChange={e => { setDiagClientName(e.target.value); setDiagResult(null); setDiagError(""); }}
+                    style={{ flex: 1, padding: "8px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px" }}>
+                    <option value="">Select a client...</option>
+                    {(allOutgoingsClients || []).map(c => (
+                      <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
+                    ))}
+                  </select>
+                  <button className="triage-btn" disabled={!diagClientName || diagLoading}
+                    onClick={async () => {
+                      const client = (allOutgoingsClients || []).find(c => c.clientName === diagClientName);
+                      if (!client) return;
+                      setDiagLoading(true); setDiagResult(null); setDiagError("");
+                      try {
+                        const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ action: "debug_compare_triage", automationCommanderSheetId,
+                            clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId, clientName: client.clientName }) });
+                        const d = await res.json();
+                        if (d.success) setDiagResult(d);
+                        else setDiagError(d.error || "Unknown error");
+                      } catch(e) { setDiagError(e.message); }
+                      finally { setDiagLoading(false); }
+                    }}
+                    style={{ padding: "8px 16px", background: diagLoading ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", fontSize: "13px", fontWeight: "600", cursor: diagLoading ? "default" : "pointer", whiteSpace: "nowrap" }}>
+                    {diagLoading ? "Running..." : "Run diagnostic"}
+                  </button>
+                </div>
+
+                {diagError && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "12px" }}>Error: {diagError}</div>}
+
+                {diagResult && (() => {
+                  const s = diagResult.summary;
+                  return (
+                    <div>
+                      {/* Summary counts */}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px", marginBottom: "16px" }}>
+                        {[
+                          { label: "Generated", val: s.generated, sub: `inv:${s.inv} dir:${s.dir} crmP:${s.crmPipe} crmC:${s.crmConf}` },
+                          { label: "Would filter", val: s.wouldBeFiltered, color: "#166534" },
+                          { label: "Would pass through", val: s.wouldPassThrough, color: s.wouldPassThrough > 0 ? "#dc2626" : "#166534" },
+                          { label: "AM entries with no match", val: s.unmatchedAlertMemoryEntries, color: s.unmatchedAlertMemoryEntries > 0 ? "#b45309" : "#166534" },
+                        ].map(({ label, val, color, sub }) => (
+                          <div key={label} style={{ background: "#f8f9ff", borderRadius: "8px", padding: "10px 12px", border: "1px solid #e8eaf0" }}>
+                            <div style={{ fontSize: "10px", color: "#888", marginBottom: "2px" }}>{label}</div>
+                            <div style={{ fontSize: "22px", fontWeight: "700", color: color || "#1a56db" }}>{val}</div>
+                            {sub && <div style={{ fontSize: "10px", color: "#999", marginTop: "2px" }}>{sub}</div>}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Alerts passing through (problem alerts) */}
+                      {diagResult.generatedAlerts.filter(a => !a.wouldBeFiltered).length > 0 && (
+                        <div style={{ marginBottom: "16px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "6px" }}>
+                            ⚠ Alerts that would PASS THROUGH (not suppressed):
+                          </div>
+                          {diagResult.generatedAlerts.filter(a => !a.wouldBeFiltered).map((a, i) => (
+                            <div key={i} style={{ background: "#fff5f5", border: "1px solid #fecaca", borderRadius: "6px", padding: "8px 10px", marginBottom: "6px", fontSize: "11px" }}>
+                              <div style={{ fontWeight: "600", marginBottom: "2px" }}>{a.flagType} · hash: {a.fingerprintHash} · AM: {a.amStatus}</div>
+                              <div style={{ color: "#555", marginBottom: "4px" }}>{a.summary}</div>
+                              <div style={{ fontFamily: "monospace", color: "#888", wordBreak: "break-all", fontSize: "10px" }}>{a.rawFingerprint}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* AlertMemory entries with no matching generated alert */}
+                      {diagResult.unmatchedAlertMemoryEntries.length > 0 && (
+                        <div style={{ marginBottom: "16px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#b45309", marginBottom: "6px" }}>
+                            ⚠ AlertMemory entries with NO matching generated alert (old hashes):
+                          </div>
+                          {diagResult.unmatchedAlertMemoryEntries.map((r, i) => (
+                            <div key={i} style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "8px 10px", marginBottom: "6px", fontSize: "11px" }}>
+                              <div style={{ fontWeight: "600" }}>{r.alertType} · hash: {r.fingerprintHash} · status: {r.status}</div>
+                              <div style={{ color: "#555" }}>{r.alertSummary}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* All generated alerts (collapsed detail) */}
+                      <details style={{ fontSize: "11px" }}>
+                        <summary style={{ cursor: "pointer", color: "#1a56db", marginBottom: "8px", userSelect: "none" }}>
+                          Show all {diagResult.generatedAlerts.length} generated alerts
+                        </summary>
+                        {diagResult.generatedAlerts.map((a, i) => (
+                          <div key={i} style={{ background: a.wouldBeFiltered ? "#f0fdf4" : "#fff5f5", border: `1px solid ${a.wouldBeFiltered ? "#bbf7d0" : "#fecaca"}`, borderRadius: "6px", padding: "8px 10px", marginBottom: "6px" }}>
+                            <div style={{ fontWeight: "600", marginBottom: "2px" }}>{a.wouldBeFiltered ? "✓" : "✗"} {a.flagType} · {a.fingerprintHash} · {a.amStatus}</div>
+                            <div style={{ color: "#555", marginBottom: "4px" }}>{a.summary}</div>
+                            <div style={{ fontFamily: "monospace", color: "#888", wordBreak: "break-all", fontSize: "10px" }}>{a.rawFingerprint}</div>
+                          </div>
+                        ))}
+                      </details>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Recent call log */}

@@ -3567,7 +3567,8 @@ export default function TriageSystem({ onBack }) {
                       try {
                         const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ action: "debug_compare_triage", automationCommanderSheetId,
-                            clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId, clientName: client.clientName }) });
+                            clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId, clientName: client.clientName,
+                            clientFlags: client.flags || {} }) });
                         const d = await res.json();
                         if (d.success) setDiagResult(d);
                         else setDiagError(d.error || "Unknown error");

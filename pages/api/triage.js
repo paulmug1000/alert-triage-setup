@@ -2578,26 +2578,35 @@ export default async function handler(req, res) {
       try {
         const debugSheetIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
 
-        // Read all three comp sheets
-        const [invAlerts, dirAlerts] = await Promise.all([
-          readInvCompAlerts(sheets, debugSheetIdClean).catch(e => { console.log(`  ⚠ InvComp read error: ${e.message}`); return []; }),
-          readDirCompAlerts(sheets, debugSheetIdClean).catch(e => { console.log(`  ⚠ DirComp read error: ${e.message}`); return []; }),
-        ]);
+        // Read comp sheets only for flags that are actually set — mirrors start_triage exactly
+        // so the diagnostic doesn't generate alerts that start_triage would never produce.
+        const clientFlags = req.body.clientFlags || {};
 
-        // CRM Pipeline
-        const crmPipeAlerts = await readCRMCompAlerts(sheets, debugSheetIdClean, "Pipeline",
-          ["crmPipeDashDiscr", "crmPipeAppDiscr"], debugSheetIdClean
-        ).catch(e => { console.log(`  ⚠ CRMComp Pipeline read error: ${e.message}`); return []; });
+        const invAlerts = clientFlags.invoiceDashboardDiscr
+          ? await readInvCompAlerts(sheets, debugSheetIdClean).catch(e => { console.log(`  ⚠ InvComp read error: ${e.message}`); return []; })
+          : [];
+        const dirAlerts = clientFlags.expenseDashboardDiscr
+          ? await readDirCompAlerts(sheets, debugSheetIdClean).catch(e => { console.log(`  ⚠ DirComp read error: ${e.message}`); return []; })
+          : [];
 
-        // CRM Confirmed
-        const crmConfAlerts = await readCRMCompAlerts(sheets, debugSheetIdClean, "Confirmed",
-          ["crmConfDashDiscr", "crmConfAppDiscr"], debugSheetIdClean
-        ).catch(e => { console.log(`  ⚠ CRMComp Confirmed read error: ${e.message}`); return []; });
+        // CRM Pipeline — only if crmPipeDashDiscr or crmPipeAppDiscr is set
+        const pipeFlags = ["crmPipeDashDiscr","crmPipeAppDiscr"].filter(f => clientFlags[f]);
+        const crmPipeAlerts = pipeFlags.length > 0
+          ? await readCRMCompAlerts(sheets, debugSheetIdClean, "Pipeline", pipeFlags, debugSheetIdClean)
+              .catch(e => { console.log(`  ⚠ CRMComp Pipeline read error: ${e.message}`); return []; })
+          : [];
+
+        // CRM Confirmed — only if crmConfDashDiscr or crmConfAppDiscr is set
+        const confFlags = ["crmConfDashDiscr","crmConfAppDiscr"].filter(f => clientFlags[f]);
+        const crmConfAlerts = confFlags.length > 0
+          ? await readCRMCompAlerts(sheets, debugSheetIdClean, "Confirmed", confFlags, debugSheetIdClean)
+              .catch(e => { console.log(`  ⚠ CRMComp Confirmed read error: ${e.message}`); return []; })
+          : [];
 
         // Tag all alerts with client info and flagType (mirrors start_triage)
-        invAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.masterSheetId; a.flagType = a.flagType || "invoiceDashboardDiscr"; });
-        dirAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.masterSheetId; a.flagType = a.flagType || "expenseDashboardDiscr"; });
-        crmPipeAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.masterSheetId; if (!a.flagType) a.flagType = a.alertType || "crmPipeAppDiscr"; });
+        invAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.flagType = a.flagType || "invoiceDashboardDiscr"; });
+        dirAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.flagType = a.flagType || "expenseDashboardDiscr"; });
+        crmPipeAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; if (!a.flagType) a.flagType = a.alertType || "crmPipeAppDiscr"; });
         crmConfAlerts.forEach(a => { a.clientName = debugClientName; a.clientId = clientSheetId; a.masterSheetId; if (!a.flagType) a.flagType = a.alertType || "crmConfAppDiscr"; });
 
         const allDebugAlerts = [...invAlerts, ...dirAlerts, ...crmPipeAlerts, ...crmConfAlerts];

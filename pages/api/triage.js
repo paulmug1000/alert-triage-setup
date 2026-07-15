@@ -1181,7 +1181,7 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
           data: {
             accounting: (() => { const s = row.slice(0, 11); while (s.length < 11) s.push(""); return s; })(),
             confirmed:  (() => { const s = row.slice(12, 18); while (s.length < 6) s.push(""); return s; })(),
-            flags: row.slice(18, 25),
+            flags: (() => { const s = row.slice(18, 25); while (s.length < 7) s.push(""); return s; })(),
           },
           flagColumns: headers.slice(18, 25),
         };
@@ -1236,7 +1236,7 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
           data: {
             accounting: (() => { const s = row.slice(0, 10); while (s.length < 10) s.push(""); return s; })(),
             confirmed:  (() => { const s = row.slice(23, 34); while (s.length < 11) s.push(""); return s; })(),
-            flags: row.slice(40, 48),
+            flags: (() => { const s = row.slice(40, 48); while (s.length < 8) s.push(""); return s; })(),
           },
           flagColumns: headers.slice(40, 48),
         };

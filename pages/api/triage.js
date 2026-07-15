@@ -113,6 +113,12 @@ function normaliseForFingerprint(val) {
     const year = m[3].length === 4 ? m[3].slice(-2) : m[3];
     return `${day}-${mon}-${year}`;
   }
+  // Normalise percentage strings to match what GAS produces via String(rawNumber).
+  // FORMATTED_VALUE returns "100%", "0%", "75%" etc. while GAS getValues() returns
+  // the raw decimal (1, 0, 0.75) which String() converts to "1", "0", "0.75".
+  if (/^\d+(\.\d+)?%$/.test(val)) {
+    return String(Number(val.slice(0, -1)) / 100);
+  }
   // Normalise formatted numeric strings to match what GAS produces via String(rawNumber).
   // The Sheets REST API with FORMATTED_VALUE returns numbers with currency symbols and
   // thousand-separator commas (e.g. "£0.00", "13,325.00") while GAS getValues() returns

@@ -255,6 +255,7 @@ export default function TriageSystem({ onBack }) {
   const [outgoingsMonthOffset, setOutgoingsMonthOffset] = useState(0); // scroll offset
   const [outgoingsEditCell, setOutgoingsEditCell] = useState(null); // { contractor, colLetter, blocks }
   const [outgoingsInbox, setOutgoingsInbox] = useState([]); // unmatched expenses from DirComp
+  const [outgoingsSaving, setOutgoingsSaving] = useState(false); // true while updateCell write is in flight
   const [outgoingsPlacing, setOutgoingsPlacingState] = useState(null); // expense being placed { appId, amount, ... }
   const outgoingsPlacingRef = React.useRef(null);
   const setOutgoingsPlacing = (val) => { outgoingsPlacingRef.current = val; setOutgoingsPlacingState(val); };
@@ -2788,6 +2789,7 @@ export default function TriageSystem({ onBack }) {
           ),
         };
       });
+      setOutgoingsSaving(true);
       try {
         await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -2801,6 +2803,7 @@ export default function TriageSystem({ onBack }) {
           }),
         });
       } catch(e) { console.error("updateCell error:", e); }
+      finally { setOutgoingsSaving(false); }
     };
 
     const EditModal = () => {
@@ -3217,6 +3220,12 @@ export default function TriageSystem({ onBack }) {
             <span>Placing: <strong>{outgoingsPlacing.description || outgoingsPlacing.accountName}</strong> — £{(outgoingsPlacing.amount || 0).toLocaleString()} · Click a contractor cell to place it</span>
             <button onClick={() => setOutgoingsPlacing(null)}
               style={{ background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", borderRadius: "4px", padding: "4px 12px", cursor: "pointer", fontSize: "12px" }}>Cancel</button>
+          </div>
+        )}
+
+        {outgoingsSaving && (
+          <div style={{ position: "fixed", bottom: "24px", right: "24px", background: "#fff", color: "#0066cc", padding: "10px 18px", borderRadius: "8px", boxShadow: "0 4px 16px rgba(0,0,0,0.2)", display: "flex", alignItems: "center", fontSize: "13px", fontWeight: "600", zIndex: 500 }}>
+            <Spinner size={14} color="#0066cc" />Saving...
           </div>
         )}
 

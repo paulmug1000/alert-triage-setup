@@ -255,7 +255,6 @@ export default function TriageSystem({ onBack }) {
   const [outgoingsMonthOffset, setOutgoingsMonthOffset] = useState(0); // scroll offset
   const [outgoingsEditCell, setOutgoingsEditCell] = useState(null); // { contractor, colLetter, blocks }
   const [outgoingsInbox, setOutgoingsInbox] = useState([]); // unmatched expenses from DirComp
-  const [outgoingsSaving, setOutgoingsSaving] = useState(false); // true while updateCell write is in flight
   const [outgoingsPlacing, setOutgoingsPlacingState] = useState(null); // expense being placed { appId, amount, ... }
   const outgoingsPlacingRef = React.useRef(null);
   const setOutgoingsPlacing = (val) => { outgoingsPlacingRef.current = val; setOutgoingsPlacingState(val); };
@@ -274,6 +273,9 @@ export default function TriageSystem({ onBack }) {
       return stored ? new Set(JSON.parse(stored)) : new Set();
     } catch { return new Set(); }
   });
+  // Tracks whether a GAS outgoings pull is needed. Using a ref (not state) so it
+  // doesn't trigger re-renders. Reset to null after the pull fires.
+  const outgoingsPullPendingRef = React.useRef(null); // null | masterSheetId
   const [assignedByClient, setAssignedByClient] = useState(() => {
     try {
       const stored = localStorage.getItem("pulse_assignedByClient");
@@ -382,11 +384,27 @@ export default function TriageSystem({ onBack }) {
       setDebugLoading(false);
     }
   };
-  const handleNavHome = () => { setActiveNav("home"); setScreen("clientSelection"); };
-  const handleNavOverview = () => { setActiveNav("overview"); loadOverview(); };
-  const handleNavTasks = () => { setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
-  const handleNavAppLog = () => { setActiveNav("appLog"); loadAppLog(); };
+  // Fire the deferred GAS outgoings notes pull if one is pending.
+  // Called at the start of every nav handler except handleNavOutgoings.
+  // Fire-and-forget — user never waits for this.
+  const fireOutgoingsPullIfPending = () => {
+    const masterSheetId = outgoingsPullPendingRef.current;
+    if (!masterSheetId) return;
+    outgoingsPullPendingRef.current = null;
+    const clientSheetId = outgoingsClient?.clientSheetId || "";
+    if (!clientSheetId) return;
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "fire_outgoings_pull", clientSheetId, masterSheetId }),
+    }).catch(e => console.error("fireOutgoingsPull error:", e));
+  };
+
+  const handleNavHome = () => { fireOutgoingsPullIfPending(); setActiveNav("home"); setScreen("clientSelection"); };
+  const handleNavOverview = () => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); };
+  const handleNavTasks = () => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
+  const handleNavAppLog = () => { fireOutgoingsPullIfPending(); setActiveNav("appLog"); loadAppLog(); };
   const handleNavSettings = () => {
+    fireOutgoingsPullIfPending();
     setActiveNav("settings");
     setSettingsLoading(true);
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -2789,7 +2807,6 @@ export default function TriageSystem({ onBack }) {
           ),
         };
       });
-      setOutgoingsSaving(true);
       try {
         await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -2802,8 +2819,11 @@ export default function TriageSystem({ onBack }) {
             blocks: newBlocks,
           }),
         });
+        // Mark that an outgoings pull is needed — will fire when user navigates away
+        if (outgoingsClient?.masterSheetId) {
+          outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
+        }
       } catch(e) { console.error("updateCell error:", e); }
-      finally { setOutgoingsSaving(false); }
     };
 
     const EditModal = () => {
@@ -3220,12 +3240,6 @@ export default function TriageSystem({ onBack }) {
             <span>Placing: <strong>{outgoingsPlacing.description || outgoingsPlacing.accountName}</strong> — £{(outgoingsPlacing.amount || 0).toLocaleString()} · Click a contractor cell to place it</span>
             <button onClick={() => setOutgoingsPlacing(null)}
               style={{ background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", borderRadius: "4px", padding: "4px 12px", cursor: "pointer", fontSize: "12px" }}>Cancel</button>
-          </div>
-        )}
-
-        {outgoingsSaving && (
-          <div style={{ position: "fixed", bottom: "24px", right: "24px", background: "#fff", color: "#0066cc", padding: "10px 18px", borderRadius: "8px", boxShadow: "0 4px 16px rgba(0,0,0,0.2)", display: "flex", alignItems: "center", fontSize: "13px", fontWeight: "600", zIndex: 500 }}>
-            <Spinner size={14} color="#0066cc" />Saving...
           </div>
         )}
 

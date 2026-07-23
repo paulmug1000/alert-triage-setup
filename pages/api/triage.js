@@ -2000,25 +2000,9 @@ export default async function handler(req, res) {
 
         console.log(`  ✅ Outgoings note updated: ${cellRef}`);
 
-        // Trigger pullOutgoingsNotes in GAS so DirComp picks up the new assignment.
-        // Passes clientSheetId (source of notes) and masterSheetId (destination) to
-        // the triagePrecompute web app, which copies notes directly — no client script
-        // deployment or API executable required.
-        const { masterSheetId: masterSheetIdForRefresh } = req.body;
-        if (masterSheetIdForRefresh) {
-          try {
-            const masterIdClean = extractSheetIdFromUrl(masterSheetIdForRefresh) || masterSheetIdForRefresh;
-            const gasResp = await fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: sheetIdClean, masterSheetId: masterIdClean }),
-            });
-            const gasData = await gasResp.json().catch(() => ({}));
-            console.log(`  📋 refreshOutgoings GAS call: ${gasData.success ? "OK" : gasData.error || "no response"}`);
-          } catch(gasErr) {
-            console.log(`  ⚠ refreshOutgoings GAS call failed (non-fatal): ${gasErr.message}`);
-          }
-        }
+        // GAS outgoings notes pull is now deferred — fired by fire_outgoings_pull
+        // action when the user navigates away from the Outgoings tab, so multiple
+        // assignments in one session only trigger a single pull.
 
         return res.status(200).json({ success: true, cellRef, blockCount: (blocks || []).length, cellTotal });
       } catch (err) {
@@ -2566,6 +2550,30 @@ export default async function handler(req, res) {
         noActionCount: noActionAlerts.length,
         clientsWithFlags: clientsWithFlagsSlim,
       });
+    } else if (action === "fire_outgoings_pull") {
+      // Deferred GAS outgoings notes pull — fired when the user navigates away from
+      // the Outgoings tab after making one or more assignments. Fire-and-forget from
+      // the frontend; we still await here so Vercel doesn't kill the function early.
+      const { clientSheetId: pullClientSheetId, masterSheetId: pullMasterSheetId } = req.body;
+      if (!pullClientSheetId || !pullMasterSheetId) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId or masterSheetId" });
+      }
+      try {
+        const pullClientIdClean = extractSheetIdFromUrl(pullClientSheetId) || pullClientSheetId;
+        const pullMasterIdClean = extractSheetIdFromUrl(pullMasterSheetId) || pullMasterSheetId;
+        const gasResp = await fetch("https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "refreshOutgoings", clientSheetId: pullClientIdClean, masterSheetId: pullMasterIdClean }),
+        });
+        const gasData = await gasResp.json().catch(() => ({}));
+        console.log(`  📋 fire_outgoings_pull GAS call: ${gasData.success ? "OK" : gasData.error || "no response"}`);
+        return res.status(200).json({ success: true });
+      } catch(err) {
+        console.log(`  ⚠ fire_outgoings_pull GAS call failed (non-fatal): ${err.message}`);
+        return res.status(200).json({ success: false, error: err.message });
+      }
+
     } else if (action === "debug_compare_triage") {
       // Diagnostic action: for a given client, reads all comp sheets using the same
       // logic as start_triage, builds fingerprints, then compares against AlertMemory.

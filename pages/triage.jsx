@@ -4603,7 +4603,7 @@ export default function TriageSystem({ onBack }) {
                               const selKey = `${type}|||${alert.sheetName}-${alert.rowNumber}`;
                               const isChecked = bulkSelected.has(selKey);
                       return bulkMode ? (
-                        <div key={idx}
+                        <div key={selKey}
                           onClick={() => {
                             const newSel = new Set(bulkSelected);
                             if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
@@ -4655,7 +4655,7 @@ export default function TriageSystem({ onBack }) {
                         </div>
                       ) : (
                       <button className="triage-btn"
-                        key={idx}
+                        key={selKey}
                         onClick={() => selectAlert(alert)}
                         style={{
                           ...styles.optionButton,

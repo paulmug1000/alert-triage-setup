@@ -1510,8 +1510,10 @@ export default function TriageSystem({ onBack }) {
     for (const key of bulkSelected) {
       const sepIdx = key.lastIndexOf("|||");
       const type   = key.slice(0, sepIdx);
-      const idx    = parseInt(key.slice(sepIdx + 3), 10);
-      const alert  = (groupedAlerts[type] || [])[idx];
+      const alertId = key.slice(sepIdx + 3); // "SheetName-rowNumber"
+      const alert  = (groupedAlerts[type] || []).find(
+        a => `${a.sheetName}-${a.rowNumber}` === alertId
+      );
       if (alert) alerts.push(alert);
     }
     return alerts;
@@ -4552,7 +4554,7 @@ export default function TriageSystem({ onBack }) {
             <div>
               {Object.keys(groupedAlerts).map((type) => {
                 const groupAlerts = groupedAlerts[type];
-                const groupKeys   = groupAlerts.map((_, idx) => `${type}|||${idx}`);
+                const groupKeys   = groupAlerts.map((alert) => `${type}|||${alert.sheetName}-${alert.rowNumber}`);
                 const allSelected = groupKeys.every(k => bulkSelected.has(k));
                 const anySelected = groupKeys.some(k => bulkSelected.has(k));
                 return (
@@ -4598,8 +4600,7 @@ export default function TriageSystem({ onBack }) {
                           <div key={label}>
                             <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>{label}</div>
                             {alerts.map((alert, localIdx) => {
-                              const idx = globalOffset + localIdx;
-                              const selKey = `${type}|||${idx}`;
+                              const selKey = `${type}|||${alert.sheetName}-${alert.rowNumber}`;
                               const isChecked = bulkSelected.has(selKey);
                       return bulkMode ? (
                         <div key={idx}
@@ -4751,7 +4752,7 @@ export default function TriageSystem({ onBack }) {
                       // Non-invoice types: render normally
                       const isExpenseGroup = type === "expenseDashboardDiscr" || type === "expenseAppDiscr";
                       const alertBtns = groupAlerts.map((alert, idx) => {
-                        const selKey = `${type}|||${idx}`;
+                        const selKey = `${type}|||${alert.sheetName}-${alert.rowNumber}`;
                         const isChecked = bulkSelected.has(selKey);
                         return bulkMode ? (
                           <div key={idx} style={{ padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", fontSize: "13px" }}>

@@ -5824,23 +5824,131 @@ export default function TriageSystem({ onBack }) {
               {(() => {
                 const ft = alert?.flagType || alert?.alertType || alert?.type || "";
                 const isCRM = ft.startsWith("crm");
+                const isInvoice = ft === "invoiceDashboardDiscr" || alert?.type === "invoice";
+                const isExpense = ft === "expenseDashboardDiscr" || alert?.type === "expense";
+
+                if (isInvoice) {
+                  // accounting (A:K): 0=client,1=job,2=invoiceAmt,3=totalExclVAT,4=vatIncluded,
+                  //   5=invoiceNo,6=sentDate,7=dueDate,8=fullyPaidOn,9=status,10=currency
+                  // confirmed (M:R):  0=invoiceNo,1=client,2=amount(inclVAT),3=sentDate,4=payDate,5=status
+                  // flags (S:Y):      0=Missing invoice,1=Client mismatch,2=Inv amt mismatch,
+                  //   3=Sent date mismatch,4=(unused),5=Fully paid on mismatch,6=Status mismatch
+                  const acc = alert.data?.accounting || [];
+                  const conf = alert.data?.confirmed || [];
+                  const flags = alert.data?.flags || [];
+                  const invFlagNames = ["Missing invoice","Client mismatch","Amount mismatch",
+                    "Sent date mismatch",null,"Pay date mismatch","Status mismatch"];
+                  const activeFlags = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
+                  const isMissing = String(flags[0]||"").trim() === "1";
+
+                  const client = acc[0] || conf[1] || "";
+                  const job = acc[1] || "";
+                  const invoiceNo = acc[5] || conf[0] || "";
+                  const accAmount = acc[2] ? `£${acc[2]}` : "£0";
+                  const confAmount = conf[2] ? `£${conf[2]}` : "£0";
+
+                  const FIELD_DEFS = [
+                    { name: "Client mismatch",   line: `Client in accounting: ${client || "(blank)"}. Client in Confirmed tab: ${conf[1] || "(blank)"}.` },
+                    { name: "Amount mismatch",   line: `Amount in accounting: ${accAmount}. Amount in Confirmed tab: ${confAmount}.` },
+                    { name: "Sent date mismatch",line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Confirmed tab: ${conf[3] || "(blank)"}.` },
+                    { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Confirmed tab: ${conf[4] || "(blank)"}.` },
+                    { name: "Status mismatch",   line: `Status in accounting: ${acc[9] || "(blank)"}. Status in Confirmed tab: ${conf[5] || "(blank)"}.` },
+                  ];
+                  const mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
+
+                  const subHeader = isMissing
+                    ? "Missing invoice — in accounting system, not in Confirmed tab"
+                    : `Field mismatch: ${activeFlags.join(", ")}`;
+
+                  return (
+                    <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#eff6ff", borderLeft: "4px solid #2563eb", borderRadius: "4px" }}>
+                      <div style={{ fontSize: "17px", fontWeight: "700", color: "#1e40af", marginBottom: "8px" }}>
+                        ⚠ {subHeader}
+                      </div>
+                      <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: (!isMissing && mismatchLines.length) ? "10px" : "0" }}>
+                        {client}{job ? ` — ${job}` : ""}{invoiceNo ? ` (Invoice ${invoiceNo})` : ""}
+                      </div>
+                      {!isMissing && mismatchLines.length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333" }}>
+                          {mismatchLines.map(f => <div key={f.name}>{f.line}</div>)}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                if (isExpense) {
+                  // accounting (A:J): 0=date,1=description,2=amount,3=reference,4=accountName,
+                  //   5=status,6=transactionId,7=datePaid,8=vatAmount
+                  // confirmed (X:AH): 0=appId,1=client,2=job,3=description,4=grossAmount,
+                  //   5=totalExclVAT,6=vatIncluded,7=recDate,8=payDate,9=status,10=source
+                  // flags (AO:AV):     0=Missing cost,1=Duplicate app ID,2=Description mismatch,
+                  //   3=Amount mismatch,4=VAT mismatch,5=Rec date mismatch,6=Pay date mismatch,7=Status mismatch
+                  const acc = alert.data?.accounting || [];
+                  const conf = alert.data?.confirmed || [];
+                  const flags = alert.data?.flags || [];
+                  const expFlagNames = ["Missing cost","Duplicate app ID","Description mismatch",
+                    "Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
+                  const activeFlags = flags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
+                  const isMissing = String(flags[0]||"").trim() === "1";
+
+                  const client = conf[1] || "";
+                  const job = conf[2] || "";
+                  const description = acc[1] || alert.summary?.description || "";
+                  const accAmount = acc[2] ? `£${acc[2]}` : "£0";
+                  const confAmount = conf[4] ? `£${conf[4]}` : "£0";
+
+                  const FIELD_DEFS = [
+                    { name: "Description mismatch", line: `Description in accounting: ${acc[1] || "(blank)"}. Description in Confirmed tab: ${conf[3] || "(blank)"}.` },
+                    { name: "Amount mismatch",       line: `Amount in accounting: ${accAmount}. Amount in Confirmed tab: ${confAmount}.` },
+                    { name: "VAT mismatch",          line: `VAT in accounting: ${acc[8] ? `£${acc[8]}` : "£0"}. VAT in Confirmed tab: ${conf[6] || "(blank)"}.` },
+                    { name: "Rec date mismatch",     line: `Received date in accounting: ${acc[0] || "(blank)"}. Received date in Confirmed tab: ${conf[7] || "(blank)"}.` },
+                    { name: "Pay date mismatch",     line: `Pay date in accounting: ${acc[7] || "(blank)"}. Pay date in Confirmed tab: ${conf[8] || "(blank)"}.` },
+                    { name: "Status mismatch",       line: `Status in accounting: ${acc[5] || "(blank)"}. Status in Confirmed tab: ${conf[9] || "(blank)"}.` },
+                  ];
+                  const mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
+
+                  const subHeader = isMissing
+                    ? "Missing cost — in accounting system, not in Confirmed tab"
+                    : `Field mismatch: ${activeFlags.join(", ")}`;
+
+                  return (
+                    <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#f0fdf4", borderLeft: "4px solid #16a34a", borderRadius: "4px" }}>
+                      <div style={{ fontSize: "17px", fontWeight: "700", color: "#166534", marginBottom: "8px" }}>
+                        ⚠ {subHeader}
+                      </div>
+                      <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: (!isMissing && mismatchLines.length) ? "10px" : "0" }}>
+                        {client || job ? `${client}${job ? ` — ${job}` : ""} — ` : ""}{description}{accAmount ? ` (${accAmount})` : ""}
+                      </div>
+                      {!isMissing && mismatchLines.length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333" }}>
+                          {mismatchLines.map(f => <div key={f.name}>{f.line}</div>)}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
                 if (!isCRM) return null;
                 const isPipeline = ft.includes("Pipe");
                 const isMismatch = alert.subType === "field_mismatch";
                 const tabLabel = isPipeline ? "Pipeline" : "Confirmed";
+                const isDash = ft.includes("Dash");
                 const sd = alert.data?.sheetData || [];
                 const cd = alert.data?.crmData || [];
-                // sheetData: [code, client, job, revenue, dirCosts, start, end, likelihood, ...]
-                // crmData:   [client, job, code, revenue, dirCosts, start, end, likelihood]
-                const client = sd[1] || cd[0] || "";
-                const job = sd[2] || cd[1] || "";
-                const code = sd[0] || cd[2] || "";
+                // App discr sheetData (EF:ER):    [0]=client, [1]=job, [2]=code, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood
+                // Dash discr sheetData (AO:AW):    [0]=code, [1]=client, [2]=job, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood
+                // crmData (both):                  [0]=client, [1]=job, [2]=code, [3]=revenue, [4]=dirCosts, [5]=start, [6]=end, [7]=likelihood
+                const client = (isDash ? sd[1] : sd[0]) || cd[0] || "";
+                const job    = (isDash ? sd[2] : sd[1]) || cd[1] || "";
+                const code   = (isDash ? sd[0] : sd[2]) || cd[2] || "";
 
                 // Per-field CRM vs sheet values, in the same order/index as MISMATCH_FIELD_NAMES
                 // server-side: Client name, Job name, Revenue, Direct costs, Start date, End date, % Likelihood
+                const sdField = (dashIdx, appIdx) => isDash ? sd[dashIdx] : sd[appIdx];
                 const FIELD_DEFS = [
-                  { name: "Client name",  crm: cd[0], sheet: sd[1], fmt: v => v || "(blank)" },
-                  { name: "Job name",     crm: cd[1], sheet: sd[2], fmt: v => v || "(blank)" },
+                  { name: "Client name",  crm: cd[0], sheet: sdField(1, 0), fmt: v => v || "(blank)" },
+                  { name: "Job name",     crm: cd[1], sheet: sdField(2, 1), fmt: v => v || "(blank)" },
                   { name: "Revenue",      crm: cd[3], sheet: sd[3], fmt: v => v ? `£${v}` : "£0" },
                   { name: "Direct costs", crm: cd[4], sheet: sd[4], fmt: v => v ? `£${v}` : "£0" },
                   { name: "Start date",   crm: cd[5], sheet: sd[5], fmt: v => v || "(blank)" },
@@ -5871,6 +5979,99 @@ export default function TriageSystem({ onBack }) {
                         ))}
                       </div>
                     )}
+                  </div>
+                );
+              })()}
+              {/* Invoice discrepancy summary */}
+              {(() => {
+                const ft = alert?.flagType || alert?.alertType || alert?.type || "";
+                if (ft !== "invoiceDashboardDiscr" && alert?.type !== "invoice") return null;
+                const acc = alert.data?.accounting || [];
+                const flags = alert.data?.flags || [];
+                // InvComp accounting: A=client[0] B=job[1] C=invAmt[2] D=totalExclVAT[3] E=vatIncl[4]
+                // F=invoiceNo[5] G=sentDate[6] H=dueDate[7] I=datePaid[8] J=status[9] K=currency[10]
+                const client = acc[0] || alert.summary?.client || "";
+                const job = acc[1] || alert.summary?.job || "";
+                const invoiceNo = acc[5] || alert.summary?.invoiceNo || "";
+                const currency = acc[10] || alert.summary?.currency || "GBP";
+                const INV_FLAG_DEFS = [
+                  { name: "Missing invoice", idx: 0 },
+                  { name: "Client mismatch", idx: 1 },
+                  { name: "Inv amt mismatch", idx: 2 },
+                  { name: "Sent date mismatch", idx: 3 },
+                  { name: "Fully paid on mismatch", idx: 5 },
+                  { name: "Status mismatch", idx: 6 },
+                ];
+                const activeFlags = INV_FLAG_DEFS.filter(f => String(flags[f.idx] || "").trim() === "1");
+                const subHeader = activeFlags.length > 0
+                  ? activeFlags.map(f => f.name).join(", ")
+                  : "Invoice discrepancy";
+                const totalExclVAT = parseFloat(String(acc[3] || "0").replace(/,/g, "")) || 0;
+                const invAmt = parseFloat(String(acc[2] || "0").replace(/,/g, "")) || 0;
+                const amount = totalExclVAT > 0 ? totalExclVAT : invAmt;
+                const sentDate = acc[6] || "";
+                const datePaid = acc[8] || "";
+                const status = acc[9] || "";
+                return (
+                  <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#f5f3ff", borderLeft: "4px solid #7c3aed", borderRadius: "4px" }}>
+                    <div style={{ fontSize: "17px", fontWeight: "700", color: "#5b21b6", marginBottom: "8px" }}>
+                      ⚠ {subHeader}
+                    </div>
+                    <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: "10px" }}>
+                      {client}{job ? ` — ${job}` : ""}{invoiceNo ? ` (Invoice ${invoiceNo})` : ""}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333" }}>
+                      <div>Amount: <strong>{currency}{amount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></div>
+                      {sentDate && <div>Sent date: <strong>{sentDate}</strong></div>}
+                      {datePaid && <div>Fully paid on: <strong>{datePaid}</strong></div>}
+                      {status && <div>Status: <strong>{status}</strong></div>}
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* Expense discrepancy summary */}
+              {(() => {
+                const ft = alert?.flagType || alert?.alertType || alert?.type || "";
+                if (ft !== "expenseDashboardDiscr" && alert?.type !== "expense") return null;
+                const acc = alert.data?.accounting || [];
+                const flags = alert.data?.flags || [];
+                // DirComp accounting: A=date[0] B=description[1] C=amount[2] D=reference[3]
+                // E=accountName[4] F=status[5] G=transactionId[6] H=datePaid[7] I=vatAmount[8]
+                const date = acc[0] || alert.summary?.date || "";
+                const description = acc[1] || alert.summary?.description || "";
+                const amount = parseFloat(String(acc[2] || "0").replace(/[£$€,]/g, "")) || 0;
+                const reference = acc[3] || alert.summary?.reference || "";
+                const accountName = acc[4] || alert.summary?.accountName || "";
+                const status = acc[5] || alert.summary?.status || "";
+                const vatAmount = parseFloat(String(acc[8] || "0").replace(/[£$€,]/g, "")) || 0;
+                const EXP_FLAG_DEFS = [
+                  { name: "Missing cost", idx: 0 },
+                  { name: "Duplicate app ID", idx: 1 },
+                  { name: "Description mismatch", idx: 2 },
+                  { name: "Amount mismatch", idx: 3 },
+                  { name: "VAT mismatch", idx: 4 },
+                  { name: "Rec date mismatch", idx: 5 },
+                  { name: "Pay date mismatch", idx: 6 },
+                  { name: "Status mismatch", idx: 7 },
+                ];
+                const activeFlags = EXP_FLAG_DEFS.filter(f => String(flags[f.idx] || "").trim() === "1");
+                const subHeader = activeFlags.length > 0
+                  ? activeFlags.map(f => f.name).join(", ")
+                  : "Expense discrepancy";
+                return (
+                  <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#f5f3ff", borderLeft: "4px solid #7c3aed", borderRadius: "4px" }}>
+                    <div style={{ fontSize: "17px", fontWeight: "700", color: "#5b21b6", marginBottom: "8px" }}>
+                      ⚠ {subHeader}
+                    </div>
+                    <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: "10px" }}>
+                      {accountName || description}{reference ? ` (${reference})` : ""}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333" }}>
+                      <div>Amount: <strong>£{amount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>{vatAmount > 0 && <> (VAT: £{vatAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</>}</div>
+                      {date && <div>Date: <strong>{date}</strong></div>}
+                      {description && accountName && <div>Description: <strong>{description}</strong></div>}
+                      {status && <div>Status: <strong>{status}</strong></div>}
+                    </div>
                   </div>
                 );
               })()}

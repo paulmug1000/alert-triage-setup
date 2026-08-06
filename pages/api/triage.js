@@ -4083,7 +4083,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               aiExpOptions = JSON.parse(arr2);
               if (!Array.isArray(aiExpOptions)) aiExpOptions = [aiExpOptions];
             } catch(e) { aiExpOptions = [{ optionId: 1, title: "AI response could not be parsed", matchType: "info", recommendedActions: [] }]; }
-            const aiExpSummary = alert.summary?.summary || \`Expense \${expRef2} £\${expAmount2}\`;
+            const aiExpSummary = alert.summary?.summary || `Expense ${expRef2} £${expAmount2}`;
             if (memoryRow) { await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(aiExpOptions) }); }
             else { await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType: "expense", clientName: alert.clientName || "", alertSummary: aiExpSummary, cachedOptionsJSON: JSON.stringify(aiExpOptions), status: "cached" }); }
             return res.status(200).json({ success: true, options: aiExpOptions, alertId: alert.rowNumber });
@@ -4124,14 +4124,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             if (overlap) vendorMatches.push({ sheetRow: i + 1, vendorName: vName, chargesVAT: vVAT });
           }
           const nextBlankOGRow2 = lastVendorRow2 < 109 ? lastVendorRow2 + 2 : null;
-          console.log(\`  Outgoings vendor matches: \${vendorMatches.length}\`);
+          console.log(`  Outgoings vendor matches: ${vendorMatches.length}`);
 
           for (const vm of vendorMatches.slice(0, 3)) {
             // Find the best available expense slot for this vendor across candidateJobs
             // For outgoings match, we use outgoingsData block — no slot write needed
             sysOptions.push({
               optionId: sysOptions.length + 1,
-              title: \`Assign to OUTGOINGS vendor "\${vm.vendorName}" (Row \${vm.sheetRow})\`,
+              title: `Assign to OUTGOINGS vendor "${vm.vendorName}" (Row ${vm.sheetRow})`,
               matchType: "category",
               jobRow: vm.sheetRow,
               jobName: vm.vendorName,
@@ -4147,7 +4147,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 matchConfidence: "Medium",
                 placeholderMatch: "N/A — Outgoings vendor assignment",
                 budgetFit: "YES",
-                reasonForChoice: \`Vendor name "\${vm.vendorName}" matches expense description word(s). VAT: \${vm.chargesVAT}.\`,
+                reasonForChoice: `Vendor name "${vm.vendorName}" matches expense description word(s). VAT: ${vm.chargesVAT}.`,
                 discrepancies: "None",
               },
               outgoingsData: {
@@ -4161,7 +4161,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 payDate: "",
                 vatCharged: vatYesNo,
               },
-              recommendedActions: [\`Assign expense to Outgoings vendor "\${vm.vendorName}" (row \${vm.sheetRow})\`],
+              recommendedActions: [`Assign expense to Outgoings vendor "${vm.vendorName}" (row ${vm.sheetRow})`],
             });
           }
 
@@ -4182,16 +4182,16 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const realAllocated = job.slots.filter(s => !s.empty && s.isAllocated).reduce((sum, s) => sum + s.amtNum, 0);
             const newTotal = realAllocated + expenseAmount;
             const budgetNum = parseFloat(String(job.totalBudget||"0").replace(/[£$€,]/g,"")) || 0;
-            const budgetFit = budgetNum > 0 ? (newTotal <= budgetNum ? "YES" : \`OVER by £\${(newTotal-budgetNum).toFixed(2)}\`) : "UNKNOWN";
+            const budgetFit = budgetNum > 0 ? (newTotal <= budgetNum ? "YES" : `OVER by £${(newTotal-budgetNum).toFixed(2)}`) : "UNKNOWN";
             jobDescMatches.push({ job, availSlot, cols, row, realAllocated, newTotal, budgetFit });
           }
-          console.log(\`  Confirmed job description matches: \${jobDescMatches.length}\`);
+          console.log(`  Confirmed job description matches: ${jobDescMatches.length}`);
 
           for (const jm of jobDescMatches.slice(0, 3)) {
             const { job, availSlot, cols, row, realAllocated, newTotal, budgetFit } = jm;
             sysOptions.push({
               optionId: sysOptions.length + 1,
-              title: \`Allocate to "\${job.parentJob}" (Row \${row}, ExpSlot\${availSlot.slotNum}) — job name match\`,
+              title: `Allocate to "${job.parentJob}" (Row ${row}, ExpSlot${availSlot.slotNum}) — job name match`,
               matchType: "job",
               jobRow: row,
               jobName: job.parentJob,
@@ -4213,14 +4213,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               },
               matchAnalysis: {
                 matchConfidence: "Medium",
-                placeholderMatch: availSlot.empty ? \`YES — Row \${row} ExpSlot\${availSlot.slotNum} is empty\` : \`PARTIAL — unallocated slot available\`,
+                placeholderMatch: availSlot.empty ? `YES — Row ${row} ExpSlot${availSlot.slotNum} is empty` : `PARTIAL — unallocated slot available`,
                 budgetFit,
-                reasonForChoice: \`Job name "\${job.parentJob}" matches expense description word(s). Currently allocated: £\${realAllocated.toFixed(2)}, this expense adds £\${expenseAmount.toFixed(2)} → new total £\${newTotal.toFixed(2)} vs budget £\${job.totalBudget}.\`,
-                discrepancies: budgetFit.startsWith("OVER") ? \`Budget would be exceeded by £\${(newTotal-(parseFloat(String(job.totalBudget||"0").replace(/[£$€,]/g,""))||0)).toFixed(2)}\` : "None",
+                reasonForChoice: `Job name "${job.parentJob}" matches expense description word(s). Currently allocated: £${realAllocated.toFixed(2)}, this expense adds £${expenseAmount.toFixed(2)} → new total £${newTotal.toFixed(2)} vs budget £${job.totalBudget}.`,
+                discrepancies: budgetFit.startsWith("OVER") ? `Budget would be exceeded by £${(newTotal-(parseFloat(String(job.totalBudget||"0").replace(/[£$€,]/g,""))||0)).toFixed(2)}` : "None",
               },
               recommendedActions: [
-                \`Allocate expense to "\${job.parentJob}" (Row \${row}), ExpSlot\${availSlot.slotNum}\`,
-                \`write \${expenseDescription || expenseRef} to \${cols.d}\${row}, write \${expenseAmount} to \${cols.a}\${row}, write \${vatYesNo} to \${cols.v}\${row}, write \${expenseDate} to \${cols.dt}\${row}, write 30 to \${cols.dp}\${row}, write \${alert.summary?.status || ""} to \${cols.st}\${row}\`,
+                `Allocate expense to "${job.parentJob}" (Row ${row}), ExpSlot${availSlot.slotNum}`,
+                `write ${expenseDescription || expenseRef} to ${cols.d}${row}, write ${expenseAmount} to ${cols.a}${row}, write ${vatYesNo} to ${cols.v}${row}, write ${expenseDate} to ${cols.dt}${row}, write 30 to ${cols.dp}${row}, write ${alert.summary?.status || ""} to ${cols.st}${row}`,
               ],
             });
           }
@@ -4230,7 +4230,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           if (nextBlankOGRow2) {
             sysOptions.push({
               optionId: sysOptions.length + 1,
-              title: \`CREATE NEW Outgoings vendor "\${guessedVendorName}" at row \${nextBlankOGRow2}\`,
+              title: `CREATE NEW Outgoings vendor "${guessedVendorName}" at row ${nextBlankOGRow2}`,
               matchType: "category",
               jobRow: nextBlankOGRow2,
               jobName: guessedVendorName,
@@ -4246,7 +4246,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 matchConfidence: "Low",
                 placeholderMatch: "N/A — new vendor row",
                 budgetFit: "YES",
-                reasonForChoice: \`No existing Outgoings vendor matched this expense. A new vendor row will be created at row \${nextBlankOGRow2} using the expense account name/description as the vendor name. Review the vendor name before accepting.\`,
+                reasonForChoice: `No existing Outgoings vendor matched this expense. A new vendor row will be created at row ${nextBlankOGRow2} using the expense account name/description as the vendor name. Review the vendor name before accepting.`,
                 discrepancies: "New vendor — confirm name and VAT setting are correct",
               },
               outgoingsData: {
@@ -4261,8 +4261,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 vatCharged: vatYesNo,
               },
               recommendedActions: [
-                \`Create new Outgoings vendor "\${guessedVendorName}" at row \${nextBlankOGRow2} (cols A:D)\`,
-                \`Assign this expense to the new vendor row\`,
+                `Create new Outgoings vendor "${guessedVendorName}" at row ${nextBlankOGRow2} (cols A:D)`,
+                `Assign this expense to the new vendor row`,
               ],
               isNewVendor: true,
               newVendorRow: nextBlankOGRow2,
@@ -4280,20 +4280,20 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               placeholderMatch: "N/A",
               budgetFit: "N/A",
               reasonForChoice: "The system could not identify a high-confidence match for this expense. Review manually.",
-              discrepancies: \`Expense: £\${expenseAmount}, date: \${expenseDate}, description: \${expenseDescription || expenseRef}\`,
+              discrepancies: `Expense: £${expenseAmount}, date: ${expenseDate}, description: ${expenseDescription || expenseRef}`,
             },
             recommendedActions: [
-              \`Review expense manually: £\${expenseAmount} | \${expenseDate} | \${expenseDescription || expenseRef}\`,
+              `Review expense manually: £${expenseAmount} | ${expenseDate} | ${expenseDescription || expenseRef}`,
               "Assign to an appropriate Outgoings vendor or Confirmed job slot",
             ],
           });
 
           // Renumber optionIds
           const options = sysOptions.map((o, i) => ({ ...o, optionId: i + 1 }));
-          console.log(\`  ✅ System-generated \${options.length} expense options\`);
+          console.log(`  ✅ System-generated ${options.length} expense options`);
 
           // Cache in AlertMemory
-          const alertSummary = alert.summary?.summary || \`Expense \${alert.summary?.reference || ""} £\${alert.summary?.amount || ""}\`;
+          const alertSummary = alert.summary?.summary || `Expense ${alert.summary?.reference || ""} £${alert.summary?.amount || ""}`;
           if (memoryRow) {
             await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
               ...memoryRow,
@@ -4309,7 +4309,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               status: "cached",
             });
           }
-          console.log(\`  💾 Options cached in AlertMemory\`);
+          console.log(`  💾 Options cached in AlertMemory`);
           
           return res.status(200).json({
             success: true,
@@ -4712,7 +4712,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               aiCrmOptions = JSON.parse(arrCrm);
               if (!Array.isArray(aiCrmOptions)) aiCrmOptions = [aiCrmOptions];
             } catch(e) { aiCrmOptions = [{ optionId:1, title:"AI response could not be parsed", matchType:"info", recommendedActions:[] }]; }
-            const aiCrmSummary = \`CRM \${alert.alertType||""} \${crmSrcAI[0]||""} \${crmSrcAI[1]||""}\`.trim();
+            const aiCrmSummary = `CRM ${alert.alertType||""} ${crmSrcAI[0]||""} ${crmSrcAI[1]||""}`.trim();
             if (memoryRow) { await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(aiCrmOptions) }); }
             else { await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType: alert.alertType||"crm", clientName: alert.clientName||"", alertSummary: aiCrmSummary, cachedOptionsJSON: JSON.stringify(aiCrmOptions), status:"cached" }); }
             return res.status(200).json({ success: true, options: aiCrmOptions, alertId: alert.rowNumber });
@@ -5917,7 +5917,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             aiInvOptions = JSON.parse(arrInv);
             if (!Array.isArray(aiInvOptions)) aiInvOptions = [aiInvOptions];
           } catch(e) { aiInvOptions = [{ optionId:1, title:"AI response could not be parsed", matchType:"info", recommendedActions:[] }]; }
-          const aiInvSummary = \`Invoice \${invoiceRef} \${invClient} — \${invJob}\`;
+          const aiInvSummary = `Invoice ${invoiceRef} ${invClient} — ${invJob}`;
           if (memoryRow) { await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(aiInvOptions) }); }
           else { await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType:"invoice", clientName: alert.clientName||"", alertSummary: aiInvSummary, cachedOptionsJSON: JSON.stringify(aiInvOptions), status:"cached" }); }
           return res.status(200).json({ success: true, options: aiInvOptions, alertId: alert.rowNumber });
@@ -5952,7 +5952,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         // Group by job so each job appears at most once.
         const amtMatchedJobs = new Map();
         for (const m of (slotMatches || [])) {
-          const key = \`\${m.client}||\${m.jobName}\`;
+          const key = `${m.client}||${m.jobName}`;
           if (!amtMatchedJobs.has(key)) amtMatchedJobs.set(key, []);
           amtMatchedJobs.get(key).push(m);
         }
@@ -5964,7 +5964,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             if (!a.dateMatch && b.dateMatch) return 1;
             return a.slotNum - b.slotNum;
           })[0];
-          const slotKey = \`\${best.rowNum}-\${best.slotNum}\`;
+          const slotKey = `${best.rowNum}-${best.slotNum}`;
           seenSlotKeys.add(slotKey);
 
           // Calculate total invoiced (real slots only, excluding MANUAL-INV/blank)
@@ -5991,17 +5991,17 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const confidence = best.dateMatch ? "High" : "Medium";
           const slotDesc   = best.isManual ? "replacing MANUAL-INV placeholder" : "replacing blank placeholder";
           const dateNote   = best.dateMatch
-            ? \`Invoice sent \${sentDate}, slot date \${best.slotDate} — within tolerance\`
-            : \`Invoice sent \${sentDate}, slot date \${best.slotDate} — outside date tolerance\`;
+            ? `Invoice sent ${sentDate}, slot date ${best.slotDate} — within tolerance`
+            : `Invoice sent ${sentDate}, slot date ${best.slotDate} — outside date tolerance`;
 
-          const slotLines = [\`Row \${best.rowNum} Slot \${best.slotNum}: \${invoiceRef} £\${invoiceAmtForMatch.toFixed(2)} ← this invoice\`];
+          const slotLines = [`Row ${best.rowNum} Slot ${best.slotNum}: ${invoiceRef} £${invoiceAmtForMatch.toFixed(2)} ← this invoice`];
           const revLine = revNum > 0
-            ? \`Revenue: £\${revNum.toFixed(2)} | Previously invoiced (real only): £\${realTotal.toFixed(2)} | New total: £\${newTotal.toFixed(2)} | \${remaining !== null ? \`Remaining: £\${remaining.toFixed(2)}\` : ""}\`
-            : \`Revenue: unknown\`;
+            ? `Revenue: £${revNum.toFixed(2)} | Previously invoiced (real only): £${realTotal.toFixed(2)} | New total: £${newTotal.toFixed(2)} | ${remaining !== null ? `Remaining: £${remaining.toFixed(2)}` : ""}`
+            : `Revenue: unknown`;
 
           tier2Options.push({
             optionId: tier2Options.length + 1,
-            title: \`Place in \${best.jobName} slot \${best.slotNum} (Row \${best.rowNum}) — amount match, \${slotDesc}\`,
+            title: `Place in ${best.jobName} slot ${best.slotNum} (Row ${best.rowNum}) — amount match, ${slotDesc}`,
             matchType: "existing_job",
             jobRow: best.rowNum,
             jobName: best.jobName,
@@ -6027,22 +6027,22 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             },
             matchAnalysis: {
               matchConfidence: confidence,
-              amountMatch: \`YES — invoice £\${invoiceAmtForMatch.toFixed(2)} matches slot £\${best.slotAmt.toFixed(2)} (within tolerance)\`,
+              amountMatch: `YES — invoice £${invoiceAmtForMatch.toFixed(2)} matches slot £${best.slotAmt.toFixed(2)} (within tolerance)`,
               dateRangeMatch: best.dateMatch ? "YES" : "PARTIAL — outside date tolerance",
               projectCodeMatch: "N/A",
-              reasonForChoice: \`Amount match on \${best.jobName} Row \${best.rowNum} Slot \${best.slotNum}. \${dateNote}.\`,
-              discrepancies: best.dateMatch ? "None" : \`Date outside tolerance: \${dateNote}\`,
+              reasonForChoice: `Amount match on ${best.jobName} Row ${best.rowNum} Slot ${best.slotNum}. ${dateNote}.`,
+              discrepancies: best.dateMatch ? "None" : `Date outside tolerance: ${dateNote}`,
               whyItDidntAutoMatch: "Multiple slot matches or foreign currency — system presented all options",
             },
             recommendedActions: [
-              \`Place invoice \${invoiceRef} (£\${invoiceAmtForMatch.toFixed(2)}) in \${best.client} — \${best.jobName} slot \${best.slotNum}, \${slotDesc}\`,
-              [\`write \${invoiceAmtForMatch.toFixed(2)} to \${best.amtCol}\${best.rowNum}\`,
-               \`write \${invoiceRef} to \${best.refCol}\${best.rowNum}\`,
-               \`write \${sentDate||""} to \${best.sentCol}\${best.rowNum}\`,
-               \`write \${daysToPayValue||30} to \${best.daysCol}\${best.rowNum}\`,
-               \`write \${invoiceStatus||"Sent"} to \${best.statusCol}\${best.rowNum}\`].join(", "),
+              `Place invoice ${invoiceRef} (£${invoiceAmtForMatch.toFixed(2)}) in ${best.client} — ${best.jobName} slot ${best.slotNum}, ${slotDesc}`,
+              [`write ${invoiceAmtForMatch.toFixed(2)} to ${best.amtCol}${best.rowNum}`,
+               `write ${invoiceRef} to ${best.refCol}${best.rowNum}`,
+               `write ${sentDate||""} to ${best.sentCol}${best.rowNum}`,
+               `write ${daysToPayValue||30} to ${best.daysCol}${best.rowNum}`,
+               `write ${invoiceStatus||"Sent"} to ${best.statusCol}${best.rowNum}`].join(", "),
             ],
-            slotBreakdown: { lines: slotLines, correctedTotal: \`£\${newTotal.toFixed(2)}\`, currentRevenue: \`£\${revNum.toFixed(2)}\`, revLine },
+            slotBreakdown: { lines: slotLines, correctedTotal: `£${newTotal.toFixed(2)}`, currentRevenue: `£${revNum.toFixed(2)}`, revLine },
           });
         }
 
@@ -6070,7 +6070,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               const isNonReal = !ref || isManual;
               if (!isNonReal) continue;
               const slotAmt = parseFloat(String(rawAmt||"").replace(/[£$€,]/g,"")) || 0;
-              const slotKey = \`\${ri+1}-\${sd.slotNum}\`;
+              const slotKey = `${ri+1}-${sd.slotNum}`;
               if (seenSlotKeys.has(slotKey)) continue; // already in Signal A
               seenSlotKeys.add(slotKey);
               const slotDate = String(r[sd.sentIdx]||"").trim();
@@ -6096,14 +6096,14 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               const amtNote   = slotAmt > 0
                 ? (Math.abs(invoiceAmtForMatch - slotAmt) < 0.01
                   ? "exact amount match"
-                  : \`slot is £\${slotAmt.toFixed(2)}, invoice is £\${invoiceAmtForMatch.toFixed(2)} — diff £\${Math.abs(amtDiff||0).toFixed(2)}\`)
+                  : `slot is £${slotAmt.toFixed(2)}, invoice is £${invoiceAmtForMatch.toFixed(2)} — diff £${Math.abs(amtDiff||0).toFixed(2)}`)
                 : "slot amount unknown";
-              const overUnder = bRevNum > 0 ? (bNewTotal > bRevNum ? \` (over budget by £\${(bNewTotal-bRevNum).toFixed(2)})\` : \` (£\${(bRevNum-bNewTotal).toFixed(2)} remaining)\`) : "";
+              const overUnder = bRevNum > 0 ? (bNewTotal > bRevNum ? ` (over budget by £${(bNewTotal-bRevNum).toFixed(2)})` : ` (£${(bRevNum-bNewTotal).toFixed(2)} remaining)`) : "";
               const slotLabel = isManual ? "MANUAL-INV placeholder" : "blank placeholder";
 
               tier2Options.push({
                 optionId: tier2Options.length + 1,
-                title: \`Place in \${rj||rc} slot \${sd.slotNum} (Row \${ri+1}) — name match, \${slotLabel}, \${amtNote}\`,
+                title: `Place in ${rj||rc} slot ${sd.slotNum} (Row ${ri+1}) — name match, ${slotLabel}, ${amtNote}`,
                 matchType: "existing_job",
                 jobRow: ri + 1,
                 jobName: rj || rc,
@@ -6119,25 +6119,25 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 },
                 matchAnalysis: {
                   matchConfidence: "Low",
-                  amountMatch: slotAmt > 0 ? (Math.abs(invoiceAmtForMatch-slotAmt)<0.01 ? "YES" : \`PARTIAL — \${amtNote}\`) : "UNKNOWN",
+                  amountMatch: slotAmt > 0 ? (Math.abs(invoiceAmtForMatch-slotAmt)<0.01 ? "YES" : `PARTIAL — ${amtNote}`) : "UNKNOWN",
                   dateRangeMatch: slotDate ? "UNKNOWN" : "N/A",
                   projectCodeMatch: "N/A",
-                  reasonForChoice: \`Job/client name has word overlap with invoice. \${amtNote}. Current real invoiced: £\${bRealTotal.toFixed(2)}, new total would be £\${bNewTotal.toFixed(2)}\${overUnder}.\`,
-                  discrepancies: amtDiff && Math.abs(amtDiff) > 0.01 ? \`Amount mismatch: slot £\${slotAmt.toFixed(2)} vs invoice £\${invoiceAmtForMatch.toFixed(2)}\` : "None",
+                  reasonForChoice: `Job/client name has word overlap with invoice. ${amtNote}. Current real invoiced: £${bRealTotal.toFixed(2)}, new total would be £${bNewTotal.toFixed(2)}${overUnder}.`,
+                  discrepancies: amtDiff && Math.abs(amtDiff) > 0.01 ? `Amount mismatch: slot £${slotAmt.toFixed(2)} vs invoice £${invoiceAmtForMatch.toFixed(2)}` : "None",
                   whyItDidntAutoMatch: "Amount does not match within tolerance — presented as lower-confidence option",
                 },
                 recommendedActions: [
-                  \`Place invoice \${invoiceRef} (£\${invoiceAmtForMatch.toFixed(2)}) in \${rc} — \${rj} slot \${sd.slotNum} (Row \${ri+1}), \${slotLabel}\`,
-                  [\`write \${invoiceAmtForMatch.toFixed(2)} to \${sd.amtCol}\${ri+1}\`,
-                   \`write \${invoiceRef} to \${sd.refCol}\${ri+1}\`,
-                   \`write \${sentDate||""} to \${sd.sentCol}\${ri+1}\`,
-                   \`write \${daysToPayValue||30} to \${sd.daysCol}\${ri+1}\`,
-                   \`write \${invoiceStatus||"Sent"} to \${sd.statusCol}\${ri+1}\`].join(", "),
+                  `Place invoice ${invoiceRef} (£${invoiceAmtForMatch.toFixed(2)}) in ${rc} — ${rj} slot ${sd.slotNum} (Row ${ri+1}), ${slotLabel}`,
+                  [`write ${invoiceAmtForMatch.toFixed(2)} to ${sd.amtCol}${ri+1}`,
+                   `write ${invoiceRef} to ${sd.refCol}${ri+1}`,
+                   `write ${sentDate||""} to ${sd.sentCol}${ri+1}`,
+                   `write ${daysToPayValue||30} to ${sd.daysCol}${ri+1}`,
+                   `write ${invoiceStatus||"Sent"} to ${sd.statusCol}${ri+1}`].join(", "),
                 ],
                 slotBreakdown: {
-                  lines: [\`Row \${ri+1} Slot \${sd.slotNum}: \${invoiceRef} £\${invoiceAmtForMatch.toFixed(2)} ← this invoice (\${amtNote})\`],
-                  correctedTotal: \`£\${bNewTotal.toFixed(2)}\`,
-                  currentRevenue: \`£\${bRevNum.toFixed(2)}\`,
+                  lines: [`Row ${ri+1} Slot ${sd.slotNum}: ${invoiceRef} £${invoiceAmtForMatch.toFixed(2)} ← this invoice (${amtNote})`],
+                  correctedTotal: `£${bNewTotal.toFixed(2)}`,
+                  currentRevenue: `£${bRevNum.toFixed(2)}`,
                 },
               });
               if (tier2Options.length >= 5) break; // cap at 5 options total
@@ -6157,19 +6157,19 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             dateRangeMatch: "N/A",
             projectCodeMatch: "N/A",
             reasonForChoice: "The system could not identify a high-confidence slot match for this invoice. Review manually.",
-            discrepancies: \`Invoice #\${invoiceNo} £\${invoiceAmtForMatch.toFixed(2)} sent \${sentDate} for client "\${invClient}" job "\${invJob}"\`,
+            discrepancies: `Invoice #${invoiceNo} £${invoiceAmtForMatch.toFixed(2)} sent ${sentDate} for client "${invClient}" job "${invJob}"`,
           },
           recommendedActions: [
-            \`Review invoice #\${invoiceNo} (£\${invoiceAmtForMatch.toFixed(2)}, sent \${sentDate}) manually\`,
-            \`Find the matching job in the Confirmed tab and place into the appropriate invoice slot\`,
+            `Review invoice #${invoiceNo} (£${invoiceAmtForMatch.toFixed(2)}, sent ${sentDate}) manually`,
+            `Find the matching job in the Confirmed tab and place into the appropriate invoice slot`,
           ],
         });
 
         // Renumber and cache
         const options = tier2Options.map((o, i) => ({ ...o, optionId: i + 1 }));
-        console.log(\`  ✅ System-generated \${options.length} invoice options\`);
+        console.log(`  ✅ System-generated ${options.length} invoice options`);
 
-        const invSummary = \`Invoice \${invoiceRef} \${invClient} — \${invJob}\`;
+        const invSummary = `Invoice ${invoiceRef} ${invClient} — ${invJob}`;
         if (memoryRow) {
           await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(options) });
         } else {
@@ -6178,7 +6178,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             alertSummary: invSummary, cachedOptionsJSON: JSON.stringify(options), status: "cached",
           });
         }
-        console.log(\`  💾 Options cached in AlertMemory\`);
+        console.log(`  💾 Options cached in AlertMemory`);
         
         res.status(200).json({
           success: true,

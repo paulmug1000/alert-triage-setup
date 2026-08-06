@@ -4210,7 +4210,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             // Find the best available expense slot for this vendor across candidateJobs
             // For outgoings match, we use outgoingsData block — no slot write needed
             vendorSysOptions.push({
-              optionId: sysOptions.length + 1,
+              optionId: vendorSysOptions.length + 1,
               title: `Assign to OUTGOINGS vendor "${vm.vendorName}" (Row ${vm.sheetRow})`,
               matchType: "category",
               jobRow: vm.sheetRow,
@@ -4310,7 +4310,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const guessedVendorName = (expenseAccountName || expenseDescription || expenseRef || "Unknown vendor").trim();
           if (nextBlankOGRow2) {
             vendorSysOptions.push({
-              optionId: sysOptions.length + 1,
+              optionId: vendorSysOptions.length + 1,
               title: `CREATE NEW Outgoings vendor "${guessedVendorName}" at row ${nextBlankOGRow2}`,
               matchType: "category",
               jobRow: nextBlankOGRow2,
@@ -4353,7 +4353,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
           // ── Option type D: Manual investigation fallback ─────────────────────
           vendorSysOptions.push({
-            optionId: sysOptions.length + 1,
+            optionId: vendorSysOptions.length + 1,
             title: "MANUAL INVESTIGATION REQUIRED — no confident automatic match found",
             matchType: "info",
             matchAnalysis: {

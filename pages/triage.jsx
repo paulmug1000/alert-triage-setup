@@ -3342,9 +3342,6 @@ export default function TriageSystem({ onBack }) {
               </div>
               {outgoingsInbox.length > 0 && (
                 <>
-                  <div style={{ fontSize: "11px", color: "#a04000", marginBottom: "10px" }}>
-                    These are expenses from your accounting system not yet assigned to a month in the Outgoings tab. Refresh to pick up new ones.
-                  </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                     {outgoingsInbox.map((exp, i) => {
                       const isPlacing = outgoingsPlacing?.appId === exp.appId;

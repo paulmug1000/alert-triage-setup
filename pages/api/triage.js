@@ -2159,15 +2159,17 @@ export default async function handler(req, res) {
         if (createNewRow) {
           if (!jobLastRow) return res.status(400).json({ success: false, error: "Missing jobLastRow for createNewRow" });
 
-          // Get the Confirmed sheet's grid metadata (sheetId, current row count)
+          // Get the Confirmed sheet's grid metadata (sheetId, current row count, existing
+          // row groups — needed to extend/match the group depth for the new row).
           const metaResp = await sheets.spreadsheets.get({
             spreadsheetId: sheetIdClean,
-            fields: "sheets.properties",
+            fields: "sheets(properties,rowGroups)",
           });
           const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
           if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
           const gridSheetId = confirmedSheet.properties.sheetId;
           const currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+          const existingRowGroups = confirmedSheet.rowGroups || [];
 
           // Find the true last row with any real data — same zone check as GAS:
           // A:E (0-4), AG:AM (32-38), AP:BH (41-59), BX:CR (75-95)
@@ -2186,6 +2188,10 @@ export default async function handler(req, res) {
             const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
             if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
           }
+
+          // Read VAT (col AI, index 34) from the job's last existing row — the value to
+          // copy onto the new child row, matching 7_Cost_Sync.gs's behaviour.
+          const jobVAT = allRows[jobLastRow - 1]?.[34] ?? "";
 
           // Ensure at least one blank row exists below trueLastRow — insert 5 if not
           if (currentMaxRows - (trueLastRow + 1) < 1) {
@@ -2222,6 +2228,51 @@ export default async function handler(req, res) {
           targetRowNum = jobLastRow + 1; // the new child row's 1-indexed sheet row after the move
           targetSlotNum = 1; // always write into slot 1 of the brand new (empty) row
 
+          // Group the new row with the job's existing rows — replicates GAS's
+          // shiftRowGroupDepth(1). If a row group already covers the job's last row,
+          // extend that group's range by one row to include the new row. Otherwise,
+          // create a fresh one-row group at depth 1 so the new row is at least
+          // collapsible alongside its parent.
+          try {
+            const destRowIndex1based0 = jobLastRow; // 0-indexed position of the row directly above the new row
+            const coveringGroup = existingRowGroups.find(g =>
+              g.range?.startIndex <= destRowIndex1based0 - 1 && g.range?.endIndex >= destRowIndex1based0
+            );
+            if (coveringGroup) {
+              await sheets.spreadsheets.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: {
+                  requests: [{
+                    updateDimensionGroup: {
+                      dimensionGroup: {
+                        range: {
+                          sheetId: gridSheetId, dimension: "ROWS",
+                          startIndex: coveringGroup.range.startIndex,
+                          endIndex: coveringGroup.range.endIndex + 1,
+                        },
+                        depth: coveringGroup.depth,
+                        collapsed: coveringGroup.collapsed || false,
+                      },
+                    },
+                  }],
+                },
+              });
+            } else {
+              await sheets.spreadsheets.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: {
+                  requests: [{
+                    addDimensionGroup: {
+                      range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: destRowIndex1based0, endIndex: destRowIndex1based0 + 1 },
+                    },
+                  }],
+                },
+              });
+            }
+          } catch (groupErr) {
+            console.log(`  ⚠ Row grouping for new child row failed (non-fatal): ${groupErr.message}`);
+          }
+
           // Populate client name and job name on the new child row so it correctly
           // continues the job group (child rows repeat client/job name, not blank).
           await sheets.spreadsheets.values.batchUpdate({
@@ -2231,6 +2282,7 @@ export default async function handler(req, res) {
               data: [
                 { range: `Confirmed!A${targetRowNum}`, values: [[jobClient || ""]] },
                 { range: `Confirmed!B${targetRowNum}`, values: [[jobName || ""]] },
+                { range: `Confirmed!AI${targetRowNum}`, values: [[jobVAT]] },
               ],
             },
           });

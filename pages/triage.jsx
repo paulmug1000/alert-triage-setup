@@ -267,6 +267,7 @@ export default function TriageSystem({ onBack }) {
   const [directCostsJobs, setDirectCostsJobs] = useState(null); // [{ client, jobName, projectCode, rows }]
   const [directCostsLoading, setDirectCostsLoading] = useState(false);
   const [directCostsShowAll, setDirectCostsShowAll] = useState(false);
+  const [directCostsSavingCell, setDirectCostsSavingCell] = useState(null); // "rowNum-slotNum" or "newrow-<jobKey>" currently saving
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
   // assignedAppIds: Set of transactionIds assigned via outgoings — persisted to localStorage
   // until refreshOutgoingsAndUI runs and removes them from DirComp properly
@@ -3587,15 +3588,20 @@ export default function TriageSystem({ onBack }) {
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
                             {jr.expenseSlots.map(s => {
-                              const isEmpty = !s.description && !s.amount;
+                              const isManualEntry = String(s.transactionId || "").toUpperCase().includes("MANUAL-ENTRY");
+                              const isGenuinelyBlank = !s.description && !s.amount;
+                              const isEmpty = isGenuinelyBlank || isManualEntry;
                               const isPlacing = !!outgoingsPlacing;
+                              const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
+                              const isSaving = directCostsSavingCell === cellSavingKey;
                               return (
                                 <td key={s.slotNum}
                                   onClick={async () => {
-                                    if (!isPlacing || !isEmpty) return;
+                                    if (!isPlacing || !isEmpty || isSaving) return;
                                     const exp = outgoingsPlacingRef.current;
                                     if (!exp) return;
                                     setOutgoingsPlacing(null);
+                                    setDirectCostsSavingCell(cellSavingKey);
                                     setAssignedAppIds(prevSet => {
                                       const next = new Set(prevSet); next.add(exp.appId);
                                       try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
@@ -3615,33 +3621,64 @@ export default function TriageSystem({ onBack }) {
                                       if (outgoingsClient?.masterSheetId) {
                                         outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
                                       }
-                                      loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+                                      // Update the placed slot in place — no full-table reload/flash
+                                      setDirectCostsJobs(prev => prev && prev.map(j => ({
+                                        ...j,
+                                        rows: j.rows.map(r => r.rowNum !== jr.rowNum ? r : {
+                                          ...r,
+                                          expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== s.slotNum ? sl : {
+                                            ...sl,
+                                            description: exp.description || exp.accountName || "",
+                                            amount: exp.amount || 0,
+                                            date: exp.date || "",
+                                            status: exp.status || "",
+                                            transactionId: exp.appId || "",
+                                          }),
+                                        }),
+                                      })));
                                     } catch(e) { console.error("assign_expense_to_job error:", e); }
+                                    finally { setDirectCostsSavingCell(null); }
                                   }}
                                   style={{ padding: "7px 10px", borderBottom: "1px solid #eee",
-                                    cursor: (isPlacing && isEmpty) ? "pointer" : "default",
-                                    background: (isPlacing && isEmpty) ? "#e8f0fe" : "transparent",
-                                    border: (isPlacing && isEmpty) ? "1.5px solid #1a56db" : "none" }}>
-                                  {isEmpty
-                                    ? ((isPlacing) ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>—</span>)
-                                    : <div>
-                                        <div style={{ fontWeight: "600" }}>{s.description}</div>
-                                        <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.date}{s.status ? ` · ${s.status}` : ""}</div>
+                                    cursor: (isPlacing && isEmpty && !isSaving) ? "pointer" : "default",
+                                    background: isSaving ? "#f5f5f5" : (isPlacing && isEmpty) ? "#e8f0fe" : "transparent",
+                                    border: (isPlacing && isEmpty && !isSaving) ? "1.5px solid #1a56db" : "none" }}>
+                                  {isSaving ? (
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#666" }}>
+                                      <Spinner size={12} color="#1a56db" /> Saving...
+                                    </div>
+                                  ) : isGenuinelyBlank ? (
+                                    isPlacing ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>—</span>
+                                  ) : (
+                                    <div>
+                                      <div style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit" }}>
+                                        {isManualEntry && "(placeholder) "}{s.description}
                                       </div>
-                                  }
+                                      <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.date}{s.status ? ` · ${s.status}` : ""}</div>
+                                      {isManualEntry && isPlacing && (
+                                        <div style={{ color: "#1a56db", fontWeight: "700", marginTop: "2px" }}>Click to overwrite</div>
+                                      )}
+                                    </div>
+                                  )}
                                 </td>
                               );
                             })}
                             {/* Thin +row cell — only on the job's last row, only when no slot is
                                 free anywhere in the job, and only while an expense is selected */}
                             <td style={{ padding: "0", borderBottom: "1px solid #eee", textAlign: "center" }}>
-                              {isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
+                              {directCostsSavingCell === `newrow-${job.client}|||${job.jobName}` ? (
+                                <div style={{ height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                  <Spinner size={12} color="#1a56db" />
+                                </div>
+                              ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
                                 <div
                                   title="No spare expense slot — click to add a new row for this job"
                                   onClick={async () => {
                                     const exp = outgoingsPlacingRef.current;
                                     if (!exp) return;
                                     setOutgoingsPlacing(null);
+                                    const savingKey = `newrow-${job.client}|||${job.jobName}`;
+                                    setDirectCostsSavingCell(savingKey);
                                     setAssignedAppIds(prevSet => {
                                       const next = new Set(prevSet); next.add(exp.appId);
                                       try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
@@ -3663,8 +3700,9 @@ export default function TriageSystem({ onBack }) {
                                       if (outgoingsClient?.masterSheetId) {
                                         outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
                                       }
-                                      loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+                                      await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
                                     } catch(e) { console.error("assign_expense_to_job (new row) error:", e); }
+                                    finally { setDirectCostsSavingCell(null); }
                                   }}
                                   style={{ cursor: "pointer", background: "#e8f0fe", border: "1.5px solid #1a56db",
                                     height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center",

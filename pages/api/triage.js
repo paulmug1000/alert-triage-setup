@@ -3489,9 +3489,39 @@ export default async function handler(req, res) {
                 }
               }
               // Inject live copiedToConf into cached options if fetched
-              const optionsToReturn = liveCopiedToConf !== null
+              let optionsToReturn = liveCopiedToConf !== null
                 ? validCachedOptions.map(o => ({ ...o, copiedToConf: liveCopiedToConf }))
                 : validCachedOptions;
+
+              // Regenerate jobRowsData fresh for cached options — this data may be
+              // missing entirely (cached before this feature existed) or stale (sheet
+              // has changed since the options were cached). Determine the correct tab:
+              // CRM alerts use Pipeline/Confirmed per their mode; invoice/expense options
+              // always reference the Confirmed tab.
+              try {
+                const jrdTabName = (alert.type === "crm" || alert.sheetName === "CRMComp")
+                  ? (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr" || alert.alertType === "crmPipeDashDiscr" ? "Pipeline" : "Confirmed")
+                  : "Confirmed";
+                const jrdSheetId = alert.masterSheetId || alert.clientId;
+                const jrdCache = new Map();
+                optionsToReturn = await Promise.all(optionsToReturn.map(async (opt) => {
+                  if (!opt.jobRow || (opt.matchType !== "existing_job" && opt.matchType !== "job")) return opt;
+                  if (!jrdCache.has(opt.jobRow)) {
+                    // Parse slot number/type from recommendedActions text if present, to re-highlight the right slot
+                    const actionsText = Array.isArray(opt.recommendedActions) ? opt.recommendedActions.join(" ") : "";
+                    let highlightSlot = null;
+                    const expSlotMatch = actionsText.match(/ExpSlot(\d)/i);
+                    const invSlotMatch = actionsText.match(/\bslot (\d)\b/i) || actionsText.match(/invoice slot (\d)/i);
+                    if (expSlotMatch) highlightSlot = { type: "expense", rowNum: opt.jobRow, slotNum: parseInt(expSlotMatch[1]) };
+                    else if (invSlotMatch) highlightSlot = { type: "invoice", rowNum: opt.jobRow, slotNum: parseInt(invSlotMatch[1]) };
+                    jrdCache.set(opt.jobRow, await fetchJobRowsForDisplay(sheets, jrdSheetId, jrdTabName, opt.jobRow, highlightSlot));
+                  }
+                  return { ...opt, jobRowsData: jrdCache.get(opt.jobRow) };
+                }));
+              } catch (jrdErr) {
+                console.log(`  ⚠ jobRowsData regeneration on cache hit failed (non-fatal): ${jrdErr.message}`);
+              }
+
               return res.status(200).json({
                 success: true,
                 options: optionsToReturn,

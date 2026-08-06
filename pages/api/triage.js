@@ -1858,11 +1858,12 @@ export default async function handler(req, res) {
           const status      = String(row[5] || "").trim();
           const appId       = String(row[6] || "").trim();
           const datePaid    = String(row[7] || "").trim();
+          const vatAmount   = parseFloat(String(row[8] || "0").replace(/[£$€,]/g, "")) || 0;
 
           console.log(`  🔎 Flag=1 row: appId="${appId}" desc="${description.slice(0,30)}" amt=${amount} date=${date}`);
 
           if (!appId) { skippedNoAppId++; console.log(`    ⚠ Skipped — no appId`); continue; }
-          inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid });
+          inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid, vatAmount });
         }
 
         console.log(`  ✅ get_outgoings_inbox: ${inbox.length} unmatched expenses (skipped: ${skippedNoFlag} no-flag, ${skippedNoAppId} no-appId)`);

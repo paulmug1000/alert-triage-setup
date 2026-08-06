@@ -3544,7 +3544,7 @@ export default function TriageSystem({ onBack }) {
               {!directCostsLoading && directCostsJobs && (
                 <>
                   <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
-                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1100px", tableLayout: "fixed" }}>
+                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1140px", tableLayout: "fixed" }}>
                       <colgroup>
                         <col style={{ width: "50px" }} />
                         <col style={{ width: "130px" }} />
@@ -3558,17 +3558,24 @@ export default function TriageSystem({ onBack }) {
                         <col style={{ width: "150px" }} />
                         <col style={{ width: "150px" }} />
                         <col style={{ width: "150px" }} />
+                        <col style={{ width: "40px" }} />
                       </colgroup>
                       <thead>
                         <tr style={{ background: "#f5f6fa" }}>
                           {["Row","Client","Job name","Code","Revenue","Direct costs","Type","Start","End",
-                            "ExpSlot1","ExpSlot2","ExpSlot3"].map(h => (
+                            "ExpSlot1","ExpSlot2","ExpSlot3",""].map(h => (
                             <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {directCostsJobs.flatMap((job, jobIdx) => job.rows.map((jr, rIdx) => (
+                        {directCostsJobs.flatMap((job, jobIdx) => {
+                          const jobHasEmptySlot = job.rows.some(jr => jr.expenseSlots.some(s => !s.description && !s.amount));
+                          const jobLastRow = job.rows[job.rows.length - 1].rowNum;
+                          const isPlacing = !!outgoingsPlacing;
+                          return job.rows.map((jr, rIdx) => {
+                          const isLastRowOfJob = rIdx === job.rows.length - 1;
+                          return (
                           <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.client : ""}</td>
@@ -3625,8 +3632,51 @@ export default function TriageSystem({ onBack }) {
                                 </td>
                               );
                             })}
+                            {/* Thin +row cell — only on the job's last row, only when no slot is
+                                free anywhere in the job, and only while an expense is selected */}
+                            <td style={{ padding: "0", borderBottom: "1px solid #eee", textAlign: "center" }}>
+                              {isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
+                                <div
+                                  title="No spare expense slot — click to add a new row for this job"
+                                  onClick={async () => {
+                                    const exp = outgoingsPlacingRef.current;
+                                    if (!exp) return;
+                                    setOutgoingsPlacing(null);
+                                    setAssignedAppIds(prevSet => {
+                                      const next = new Set(prevSet); next.add(exp.appId);
+                                      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
+                                      return next;
+                                    });
+                                    setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
+                                    try {
+                                      await fetch("/api/triage", {
+                                        method: "POST", headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({
+                                          action: "assign_expense_to_job",
+                                          clientSheetId: outgoingsClient?.clientSheetId,
+                                          masterSheetId: outgoingsClient?.masterSheetId || "",
+                                          createNewRow: true,
+                                          jobLastRow, jobClient: job.client, jobName: job.jobName,
+                                          expense: exp,
+                                        }),
+                                      });
+                                      if (outgoingsClient?.masterSheetId) {
+                                        outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
+                                      }
+                                      loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+                                    } catch(e) { console.error("assign_expense_to_job (new row) error:", e); }
+                                  }}
+                                  style={{ cursor: "pointer", background: "#e8f0fe", border: "1.5px solid #1a56db",
+                                    height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center",
+                                    color: "#1a56db", fontWeight: "700", fontSize: "16px" }}>
+                                  +
+                                </div>
+                              )}
+                            </td>
                           </tr>
-                        )))}
+                          );
+                          });
+                        })}
                       </tbody>
                     </table>
                   </div>

@@ -2127,9 +2127,18 @@ export default async function handler(req, res) {
 
     } else if (action === "assign_expense_to_job") {
       // Writes an inbox expense directly into a specific expense slot on the Confirmed tab.
-      const { clientSheetId, masterSheetId, rowNum, slotNum, expense } = req.body;
-      if (!clientSheetId || !rowNum || !slotNum || !expense) {
-        return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, slotNum, or expense" });
+      // If rowNum/slotNum are provided, writes directly into that existing slot.
+      // If createNewRow is true instead, inserts a new child row for the job (replicating
+      // the move-based row insertion from 7_Cost_Sync.gs: finds/creates a blank row at the
+      // sheet's tail and MOVES it to sit directly after the job's last row, rather than
+      // inserting fresh cells — this avoids disturbing formulas/formatting elsewhere that
+      // reference fixed row ranges) and writes the expense into slot 1 of that new row.
+      const { clientSheetId, masterSheetId, rowNum, slotNum, expense, createNewRow, jobLastRow, jobClient, jobName } = req.body;
+      if (!clientSheetId || !expense) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId or expense" });
+      }
+      if (!createNewRow && (!rowNum || !slotNum)) {
+        return res.status(400).json({ success: false, error: "Missing rowNum or slotNum" });
       }
       try {
         const sheets = await getSheetsClient();
@@ -2139,30 +2148,116 @@ export default async function handler(req, res) {
           1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
           2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
           3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
-        }[slotNum];
-        if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
+        };
 
         const vatAmountRaw = parseFloat(String(expense.vatAmount || "0").replace(/[£$€,]/g, "")) || 0;
         const vatYesNo = vatAmountRaw > 0 ? "Yes" : "No";
+
+        let targetRowNum = rowNum;
+        let targetSlotNum = slotNum;
+
+        if (createNewRow) {
+          if (!jobLastRow) return res.status(400).json({ success: false, error: "Missing jobLastRow for createNewRow" });
+
+          // Get the Confirmed sheet's grid metadata (sheetId, current row count)
+          const metaResp = await sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            fields: "sheets.properties",
+          });
+          const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+          if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+          const gridSheetId = confirmedSheet.properties.sheetId;
+          const currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+
+          // Find the true last row with any real data — same zone check as GAS:
+          // A:E (0-4), AG:AM (32-38), AP:BH (41-59), BX:CR (75-95)
+          const fullResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: "Confirmed!A1:CR" + currentMaxRows,
+            valueRenderOption: "UNFORMATTED_VALUE",
+          });
+          const allRows = fullResp.data.values || [];
+          let trueLastRow = 0;
+          for (let r = allRows.length - 1; r >= 0; r--) {
+            const row = allRows[r] || [];
+            const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+            const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
+            const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+            const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
+            if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+          }
+
+          // Ensure at least one blank row exists below trueLastRow — insert 5 if not
+          if (currentMaxRows - (trueLastRow + 1) < 1) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: {
+                requests: [{
+                  insertDimension: {
+                    range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + 5 },
+                    inheritFromBefore: true,
+                  },
+                }],
+              },
+            });
+          }
+
+          // Move the first blank row (at trueLastRow + 1, 0-indexed) to sit directly
+          // after the job's last existing row (jobLastRow, 1-indexed sheet row).
+          const sourceRowIndex0 = trueLastRow; // 0-indexed: row (trueLastRow+1) is the first blank row
+          const destRowIndex0 = jobLastRow;    // moveDimension destinationIndex is 0-indexed position to insert before
+
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: {
+              requests: [{
+                moveDimension: {
+                  source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: sourceRowIndex0, endIndex: sourceRowIndex0 + 1 },
+                  destinationIndex: destRowIndex0,
+                },
+              }],
+            },
+          });
+
+          targetRowNum = jobLastRow + 1; // the new child row's 1-indexed sheet row after the move
+          targetSlotNum = 1; // always write into slot 1 of the brand new (empty) row
+
+          // Populate client name and job name on the new child row so it correctly
+          // continues the job group (child rows repeat client/job name, not blank).
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: {
+              valueInputOption: "RAW",
+              data: [
+                { range: `Confirmed!A${targetRowNum}`, values: [[jobClient || ""]] },
+                { range: `Confirmed!B${targetRowNum}`, values: [[jobName || ""]] },
+              ],
+            },
+          });
+          console.log(`  ✅ assign_expense_to_job: created new child row ${targetRowNum} for "${jobClient} — ${jobName}"`);
+        }
+
+        const slotColsForSlot = slotCols[targetSlotNum];
+        if (!slotColsForSlot) return res.status(400).json({ success: false, error: "Invalid slotNum" });
 
         await sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: sheetIdClean,
           requestBody: {
             valueInputOption: "RAW",
             data: [
-              { range: `Confirmed!${slotCols.d}${rowNum}`,  values: [[expense.description || expense.accountName || ""]] },
-              { range: `Confirmed!${slotCols.a}${rowNum}`,  values: [[expense.amount || 0]] },
-              { range: `Confirmed!${slotCols.v}${rowNum}`,  values: [[vatYesNo]] },
-              { range: `Confirmed!${slotCols.dt}${rowNum}`, values: [[expense.date || ""]] },
-              { range: `Confirmed!${slotCols.dp}${rowNum}`, values: [[30]] },
-              { range: `Confirmed!${slotCols.st}${rowNum}`, values: [[expense.status || ""]] },
-              { range: `Confirmed!${slotCols.id}${rowNum}`, values: [[expense.appId || ""]] },
+              { range: `Confirmed!${slotColsForSlot.d}${targetRowNum}`,  values: [[expense.description || expense.accountName || ""]] },
+              { range: `Confirmed!${slotColsForSlot.a}${targetRowNum}`,  values: [[expense.amount || 0]] },
+              { range: `Confirmed!${slotColsForSlot.v}${targetRowNum}`,  values: [[vatYesNo]] },
+              { range: `Confirmed!${slotColsForSlot.dt}${targetRowNum}`, values: [[expense.date || ""]] },
+              { range: `Confirmed!${slotColsForSlot.dp}${targetRowNum}`, values: [[30]] },
+              { range: `Confirmed!${slotColsForSlot.st}${targetRowNum}`, values: [[expense.status || ""]] },
+              { range: `Confirmed!${slotColsForSlot.id}${targetRowNum}`, values: [[expense.appId || ""]] },
             ],
           },
         });
 
-        console.log(`  ✅ assign_expense_to_job: expense ${expense.appId} → Confirmed row ${rowNum} slot ${slotNum}`);
-        return res.status(200).json({ success: true });
+        console.log(`  ✅ assign_expense_to_job: expense ${expense.appId} → Confirmed row ${targetRowNum} slot ${targetSlotNum}`);
+        return res.status(200).json({ success: true, newRowNum: createNewRow ? targetRowNum : undefined });
       } catch (err) {
         console.error("❌ assign_expense_to_job error:", err);
         return res.status(500).json({ success: false, error: err.message });

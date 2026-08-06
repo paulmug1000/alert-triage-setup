@@ -5447,6 +5447,10 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
         //   - Signal A NOT found, Signal B found → Claude receives slot match candidates only
         //   - Neither found                 → hardcoded create_new (no Claude call)
 
+        // slotMatches declared here so Tier 1 and Tier 2 can access it regardless of isMissingInvoice
+        let slotMatches = [];
+        let clientFound = false;
+
         if (isMissingInvoice) {
 
           // ── Noise-word stripping & normalisation ──────────────────────────
@@ -5492,7 +5496,7 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
           };
 
           const alertClientStr = alert.summary?.client || invoiceClient;
-          const clientFound = alertClientStr && activeData.some(row =>
+          clientFound = alertClientStr && activeData.some(row =>
             fuzzyClientMatch(alertClientStr, String(row[0] || ""))
           );
           console.log(`  Fuzzy client match for "${alertClientStr}": ${clientFound}`);
@@ -5557,7 +5561,7 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
             { amtIdx: 55, refIdx: 56, sentIdx: 57, slotNum: 3, amtCol: "BD", refCol: "BE", sentCol: "BF", daysCol: "BG", statusCol: "BH" },
           ];
 
-          const slotMatches = []; // { rowNum, client, jobName, projectCode, revenue, slotNum, slotAmt, slotDate, amtMatch, dateMatch, amtCol, refCol, sentCol, daysCol, statusCol, isManual }
+          // slotMatches declared outside this block so Tier 1/Tier 2 can access it
           for (let ri = 1; ri < activeData.length; ri++) {
             const row = activeData[ri] || [];
             const rowClient  = String(row[0] || "").trim();

@@ -2022,6 +2022,138 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "get_direct_costs_jobs") {
+      // Reads the Confirmed tab and returns all jobs (parent + child rows grouped) in
+      // spreadsheet-style format, for the Vendors → Direct Costs tab.
+      // By default: only jobs with DirectCostBudget > £0 and a start date within the
+      // last 6 months. showAll=true returns every job regardless of budget/date.
+      const { clientSheetId, showAll } = req.body;
+      if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+
+        const parseSheetDate = (d) => {
+          if (!d) return null;
+          const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+          if (!m) return null;
+          const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+          const mIdx = months[m[2].toLowerCase()];
+          if (mIdx === undefined) return null;
+          const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+          return new Date(yr, mIdx, parseInt(m[1]));
+        };
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+        const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+        const buildRowData = (rowNum, row, isParent) => ({
+          rowNum, isParent,
+          client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+          revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
+          projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+          likelihood: null, copiedToConf: null,
+          invoiceSlots: [1,2,3].map(n => {
+            const base = n === 1 ? 41 : n === 2 ? 48 : 55;
+            return { slotNum: n, amount: colVal(row,base), ref: colVal(row,base+1), sentDate: colVal(row,base+2),
+              daysToPay: colVal(row,base+3), status: colVal(row,base+4), highlighted: false };
+          }),
+          expenseSlots: [1,2,3].map(n => {
+            const base = n === 1 ? 75 : n === 2 ? 82 : 89;
+            return { slotNum: n, description: colVal(row,base), amount: colVal(row,base+1), vat: colVal(row,base+2),
+              date: colVal(row,base+3), daysToPay: colVal(row,base+4), status: colVal(row,base+5),
+              transactionId: colVal(row,base+6), highlighted: false };
+          }),
+        });
+
+        const jobs = [];
+        let ri = 1;
+        while (ri < rows.length) {
+          const row = rows[ri] || [];
+          const client = String(row[0] || "").trim();
+          const jobName = String(row[1] || "").trim();
+          const budgetNum = parseFloat(String(row[33]||"").replace(/[£$€,\s]/g,"")) || 0;
+          if (!client && !jobName) { ri++; continue; }
+
+          const parentRowNum = ri + 1;
+          const jobRows = [buildRowData(parentRowNum, row, true)];
+          let cj = ri + 1;
+          while (cj < rows.length) {
+            const next = rows[cj] || [];
+            const nc = String(next[0]||"").trim();
+            const nj = String(next[1]||"").trim();
+            if (nc || nj) break; // new parent row starting
+            const hasSlotData = [41,48,55,75,82,89].some(idx => String(next[idx]||"").trim());
+            if (!hasSlotData) break;
+            jobRows.push(buildRowData(cj + 1, next, false));
+            cj++;
+          }
+          ri = cj;
+
+          const startDate = parseSheetDate(row[37]);
+          const passesFilter = showAll || (budgetNum > 0 && startDate && startDate >= sixMonthsAgo);
+          if (passesFilter) {
+            jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows });
+          }
+        }
+
+        console.log(`  ✅ get_direct_costs_jobs: ${jobs.length} jobs (showAll=${!!showAll})`);
+        return res.status(200).json({ success: true, jobs });
+      } catch (err) {
+        console.error("❌ get_direct_costs_jobs error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "assign_expense_to_job") {
+      // Writes an inbox expense directly into a specific expense slot on the Confirmed tab.
+      const { clientSheetId, masterSheetId, rowNum, slotNum, expense } = req.body;
+      if (!clientSheetId || !rowNum || !slotNum || !expense) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, slotNum, or expense" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const slotCols = {
+          1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
+          2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
+          3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
+        }[slotNum];
+        if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
+
+        const vatAmountRaw = parseFloat(String(expense.vatAmount || "0").replace(/[£$€,]/g, "")) || 0;
+        const vatYesNo = vatAmountRaw > 0 ? "Yes" : "No";
+
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: {
+            valueInputOption: "RAW",
+            data: [
+              { range: `Confirmed!${slotCols.d}${rowNum}`,  values: [[expense.description || expense.accountName || ""]] },
+              { range: `Confirmed!${slotCols.a}${rowNum}`,  values: [[expense.amount || 0]] },
+              { range: `Confirmed!${slotCols.v}${rowNum}`,  values: [[vatYesNo]] },
+              { range: `Confirmed!${slotCols.dt}${rowNum}`, values: [[expense.date || ""]] },
+              { range: `Confirmed!${slotCols.dp}${rowNum}`, values: [[30]] },
+              { range: `Confirmed!${slotCols.st}${rowNum}`, values: [[expense.status || ""]] },
+              { range: `Confirmed!${slotCols.id}${rowNum}`, values: [[expense.appId || ""]] },
+            ],
+          },
+        });
+
+        console.log(`  ✅ assign_expense_to_job: expense ${expense.appId} → Confirmed row ${rowNum} slot ${slotNum}`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ assign_expense_to_job error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "update_outgoing_note") {
       // Writes a new note to a specific Outgoings cell.
       // blocks: array of { appId, amount, status, recDate, payDate, description }

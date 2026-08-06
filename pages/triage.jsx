@@ -130,7 +130,7 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoing
 
   const secondaryNavs = [
     { key: "appLog", label: "App Log", handler: onAppLog },
-    { key: "outgoings", label: "Outgoings", handler: onOutgoings },
+    { key: "outgoings", label: "Vendors", handler: onOutgoings },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
 
@@ -263,6 +263,10 @@ export default function TriageSystem({ onBack }) {
   const outgoingsDraggingRef = React.useRef(null);
   const setOutgoingsDragging = (val) => { outgoingsDraggingRef.current = val; setOutgoingsDraggingState(val); };
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null); // { exp } — inbox item to place as new vendor
+  const [vendorsSubTab, setVendorsSubTab] = useState("contractors"); // "contractors" | "directCosts"
+  const [directCostsJobs, setDirectCostsJobs] = useState(null); // [{ client, jobName, projectCode, rows }]
+  const [directCostsLoading, setDirectCostsLoading] = useState(false);
+  const [directCostsShowAll, setDirectCostsShowAll] = useState(false);
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
   // assignedAppIds: Set of transactionIds assigned via outgoings — persisted to localStorage
   // until refreshOutgoingsAndUI runs and removes them from DirComp properly
@@ -2077,7 +2081,26 @@ export default function TriageSystem({ onBack }) {
         if (inboxData.locked) console.warn("Outgoings inbox: GAS lock active —", inboxData.lockMessage);
       }
     } catch(e) { console.error("loadOutgoings error:", e); }
-    finally { setOutgoingsLoading(false); }
+    finally {
+      setOutgoingsLoading(false);
+      setVendorsSubTab("contractors");
+      setDirectCostsJobs(null);
+      setDirectCostsShowAll(false);
+    }
+  };
+
+  const loadDirectCostsJobs = async (client, showAll) => {
+    if (!client?.clientSheetId) return;
+    try {
+      setDirectCostsLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_direct_costs_jobs", clientSheetId: client.clientSheetId, showAll: !!showAll }),
+      });
+      const data = await res.json();
+      if (data.success) setDirectCostsJobs(data.jobs);
+    } catch(e) { console.error("loadDirectCostsJobs error:", e); }
+    finally { setDirectCostsLoading(false); }
   };
 
   const loadAppLog = async () => {
@@ -3253,7 +3276,7 @@ export default function TriageSystem({ onBack }) {
                 title="Back to client list">&#8592;</button>
             )}
             <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
-              {outgoingsClient ? outgoingsClient.clientName : "Outgoings — Contractors"}
+              {outgoingsClient ? outgoingsClient.clientName : "Vendors"}
             </h2>
             {outgoingsClient && (
               <button className="triage-btn"
@@ -3272,7 +3295,7 @@ export default function TriageSystem({ onBack }) {
                 <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading...</div>
               ) : (
                 <>
-                  <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view their Outgoings tab:</p>
+                  <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to assign vendor expenses:</p>
                   {(() => {
                     // Group clients: those with unassigned inbox items first
                     const clientsWithInbox = allClients.filter(c =>
@@ -3350,6 +3373,30 @@ export default function TriageSystem({ onBack }) {
           )}
 
           {!noClient && outgoingsData && (
+            <>
+              <div style={{ display: "flex", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0" }}>
+                <button onClick={() => setVendorsSubTab("contractors")}
+                  style={{ padding: "8px 16px", background: "none", border: "none",
+                    borderBottom: vendorsSubTab === "contractors" ? "2px solid #0066cc" : "2px solid transparent",
+                    color: vendorsSubTab === "contractors" ? "#0066cc" : "#666",
+                    fontWeight: vendorsSubTab === "contractors" ? "700" : "500", fontSize: "14px", cursor: "pointer" }}>
+                  Contractors
+                </button>
+                <button onClick={() => {
+                    setVendorsSubTab("directCosts");
+                    if (!directCostsJobs) loadDirectCostsJobs(outgoingsClient, false);
+                  }}
+                  style={{ padding: "8px 16px", background: "none", border: "none",
+                    borderBottom: vendorsSubTab === "directCosts" ? "2px solid #0066cc" : "2px solid transparent",
+                    color: vendorsSubTab === "directCosts" ? "#0066cc" : "#666",
+                    fontWeight: vendorsSubTab === "directCosts" ? "700" : "500", fontSize: "14px", cursor: "pointer" }}>
+                  Direct costs
+                </button>
+              </div>
+            </>
+          )}
+
+          {!noClient && outgoingsData && vendorsSubTab === "contractors" && (
             <>
               <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
                 <button onClick={() => setOutgoingsMonthOffset(Math.max(0, outgoingsMonthOffset - 1))}
@@ -3484,6 +3531,99 @@ export default function TriageSystem({ onBack }) {
                   </tbody>
                 </table>
               </div>
+            </>
+          )}
+
+          {!noClient && outgoingsData && vendorsSubTab === "directCosts" && (
+            <>
+              {directCostsLoading && (
+                <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
+              )}
+              {!directCostsLoading && directCostsJobs && (
+                <>
+                  <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1000px" }}>
+                      <thead>
+                        <tr style={{ background: "#f5f6fa" }}>
+                          {["Row","Client","Job name","Code","Revenue","Direct costs","Type","Start","End",
+                            "ExpSlot1","ExpSlot2","ExpSlot3"].map(h => (
+                            <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {directCostsJobs.flatMap((job, jobIdx) => job.rows.map((jr, rIdx) => (
+                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.client : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.jobName : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.revenue}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.directCosts}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.projectRetainer}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.startDate}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.endDate}</td>
+                            {jr.expenseSlots.map(s => {
+                              const isEmpty = !s.description && !s.amount;
+                              const isPlacing = !!outgoingsPlacing;
+                              return (
+                                <td key={s.slotNum}
+                                  onClick={async () => {
+                                    if (!isPlacing || !isEmpty) return;
+                                    const exp = outgoingsPlacingRef.current;
+                                    if (!exp) return;
+                                    setOutgoingsPlacing(null);
+                                    setAssignedAppIds(prevSet => {
+                                      const next = new Set(prevSet); next.add(exp.appId);
+                                      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
+                                      return next;
+                                    });
+                                    setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
+                                    try {
+                                      await fetch("/api/triage", {
+                                        method: "POST", headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({
+                                          action: "assign_expense_to_job",
+                                          clientSheetId: outgoingsClient?.clientSheetId,
+                                          masterSheetId: outgoingsClient?.masterSheetId || "",
+                                          rowNum: jr.rowNum, slotNum: s.slotNum, expense: exp,
+                                        }),
+                                      });
+                                      if (outgoingsClient?.masterSheetId) {
+                                        outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
+                                      }
+                                      loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+                                    } catch(e) { console.error("assign_expense_to_job error:", e); }
+                                  }}
+                                  style={{ padding: "7px 10px", borderBottom: "1px solid #eee",
+                                    cursor: (isPlacing && isEmpty) ? "pointer" : "default",
+                                    background: (isPlacing && isEmpty) ? "#fff8e1" : "transparent",
+                                    minWidth: "120px" }}>
+                                  {isEmpty
+                                    ? ((isPlacing) ? <span style={{ color: "#e65100", fontWeight: "600" }}>Click to place</span> : <span style={{ color: "#ccc" }}>—</span>)
+                                    : <div>
+                                        <div style={{ fontWeight: "600" }}>{s.description}</div>
+                                        <div style={{ color: "#888" }}>£{s.amount} · {s.date}</div>
+                                      </div>
+                                  }
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        )))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {!directCostsShowAll && (
+                    <div style={{ textAlign: "center", marginTop: "14px" }}>
+                      <button onClick={() => { setDirectCostsShowAll(true); loadDirectCostsJobs(outgoingsClient, true); }}
+                        style={{ padding: "8px 20px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>
+                        Show all jobs
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
             </>
           )}
         </div>

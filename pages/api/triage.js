@@ -4098,7 +4098,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
           const expDescWords = normExpWords(expenseDescription || expenseRef);
 
-          const sysOptions = [];
+          // Build job matches first (prioritised), then vendor matches, new vendor, fallback
+          const jobSysOptions = [];
+          const vendorSysOptions = [];
 
           // ── Option type A: Match to existing Outgoings vendor ────────────────
           // Fuzzy word overlap between expense description and vendor name
@@ -4129,7 +4131,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           for (const vm of vendorMatches.slice(0, 3)) {
             // Find the best available expense slot for this vendor across candidateJobs
             // For outgoings match, we use outgoingsData block — no slot write needed
-            sysOptions.push({
+            vendorSysOptions.push({
               optionId: sysOptions.length + 1,
               title: `Assign to OUTGOINGS vendor "${vm.vendorName}" (Row ${vm.sheetRow})`,
               matchType: "category",
@@ -4189,9 +4191,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
           for (const jm of jobDescMatches.slice(0, 3)) {
             const { job, availSlot, cols, row, realAllocated, newTotal, budgetFit } = jm;
-            sysOptions.push({
-              optionId: sysOptions.length + 1,
-              title: `Allocate to "${job.parentJob}" (Row ${row}, ExpSlot${availSlot.slotNum}) — job name match`,
+            const jobClientLabel = job.parentClient ? `${job.parentClient} — ${job.parentJob}` : job.parentJob;
+            jobSysOptions.push({
+              optionId: jobSysOptions.length + 1,
+              title: `Allocate to "${jobClientLabel}" (Row ${row}, ExpSlot${availSlot.slotNum}) — job name match`,
               matchType: "job",
               jobRow: row,
               jobName: job.parentJob,
@@ -4228,7 +4231,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           // ── Option type C: Create new Outgoings vendor ───────────────────────
           const guessedVendorName = (expenseAccountName || expenseDescription || expenseRef || "Unknown vendor").trim();
           if (nextBlankOGRow2) {
-            sysOptions.push({
+            vendorSysOptions.push({
               optionId: sysOptions.length + 1,
               title: `CREATE NEW Outgoings vendor "${guessedVendorName}" at row ${nextBlankOGRow2}`,
               matchType: "category",
@@ -4271,7 +4274,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
 
           // ── Option type D: Manual investigation fallback ─────────────────────
-          sysOptions.push({
+          vendorSysOptions.push({
             optionId: sysOptions.length + 1,
             title: "MANUAL INVESTIGATION REQUIRED — no confident automatic match found",
             matchType: "info",
@@ -4288,6 +4291,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             ],
           });
 
+          // Assemble: job matches first (prioritised), then outgoings vendor matches, then new vendor, then fallback
+          const sysOptions = [...jobSysOptions, ...vendorSysOptions];
           // Renumber optionIds
           const options = sysOptions.map((o, i) => ({ ...o, optionId: i + 1 }));
           console.log(`  ✅ System-generated ${options.length} expense options`);

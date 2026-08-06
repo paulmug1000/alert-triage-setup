@@ -5898,8 +5898,7 @@ INSTRUCTIONS FOR USING THESE MATCHES:
             const inv2 = `${row[49]||"(empty)"} £${row[48]||"?"} sent:${row[50]||"?"}`;
             const inv3 = `${row[56]||"(empty)"} £${row[55]||"?"} sent:${row[57]||"?"}`;
             return `Row ${ridx+1} | ${row[0]||""} | ${row[1]||""} | Rev:${row[32]||""} | Inv1:${inv1} | Inv2:${inv2} | Inv3:${inv3}`;
-          }).join("
-");
+          }).join("\n");
           const aiInvPrompt = `You are a financial reconciliation assistant. Place this invoice into the correct slot in the Confirmed tab.
 Invoice: #${invoiceNo}, Amount excl VAT: £${totalExclVAT}, Gross: £${grossAmount}, Sent: ${invSentDate}, Status: ${invStatus}
 Client: ${invClient}, Job description: ${invJob}

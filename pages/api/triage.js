@@ -5500,6 +5500,10 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = Â
         const invoiceJob = alert.summary?.job || '';
         const sentDate = alert.summary?.sentDate || '';
         const invoiceStatus = alert.summary?.status || '';
+        // invoiceAmtForMatch declared here (uses totalExclVAT from Confirmed pre-check
+        // if available, else falls back to invoiceAmount) so Tier 1/Tier 2 can access it
+        // regardless of whether isMissingInvoice's block executes.
+        let invoiceAmtForMatch = invoiceAmount;
         const datePaid = alert.summary?.datePaid || '';
 
         // Days to pay: if Paid, calculate from sentDate â†’ datePaid; otherwise use DataChgAlert!B52
@@ -5622,7 +5626,7 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = Â
           console.log(`  Currency: invoice=${invoiceCurrency}, primary=${primaryCurrency}, foreign=${isForeignCurrency}`);
 
           // Amount tolerance: 5p domestic, 10% of invoice amount for foreign
-          const invoiceAmtForMatch = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
+          invoiceAmtForMatch = totalExclVAT > 0 ? totalExclVAT : invoiceAmount;
           const amtToleranceFn = (slotAmt) => {
             if (isForeignCurrency) {
               return Math.abs(slotAmt - invoiceAmtForMatch) <= invoiceAmtForMatch * 0.10;

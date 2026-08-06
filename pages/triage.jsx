@@ -3358,11 +3358,13 @@ export default function TriageSystem({ onBack }) {
                           <div style={{ opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
                           <div style={{ fontSize: "10px", opacity: 0.7 }}>{isPlacing ? "Click a cell below to place" : "Click to select"}</div>
                         </div>
-                        <button onClick={e => { e.stopPropagation(); setOutgoingsNewVendor({ exp }); }}
-                          title="Create new vendor row for this expense"
-                          style={{ fontSize: "10px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555", whiteSpace: "nowrap" }}>
-                          + New vendor
-                        </button>
+                        {vendorsSubTab === "contractors" && (
+                          <button onClick={e => { e.stopPropagation(); setOutgoingsNewVendor({ exp }); }}
+                            title="Create new vendor row for this expense"
+                            style={{ fontSize: "10px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555", whiteSpace: "nowrap" }}>
+                            + New vendor
+                          </button>
+                        )}
                         </div>
                       );
                     })}
@@ -3542,7 +3544,21 @@ export default function TriageSystem({ onBack }) {
               {!directCostsLoading && directCostsJobs && (
                 <>
                   <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
-                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1000px" }}>
+                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1100px", tableLayout: "fixed" }}>
+                      <colgroup>
+                        <col style={{ width: "50px" }} />
+                        <col style={{ width: "130px" }} />
+                        <col style={{ width: "160px" }} />
+                        <col style={{ width: "80px" }} />
+                        <col style={{ width: "90px" }} />
+                        <col style={{ width: "90px" }} />
+                        <col style={{ width: "70px" }} />
+                        <col style={{ width: "90px" }} />
+                        <col style={{ width: "90px" }} />
+                        <col style={{ width: "150px" }} />
+                        <col style={{ width: "150px" }} />
+                        <col style={{ width: "150px" }} />
+                      </colgroup>
                       <thead>
                         <tr style={{ background: "#f5f6fa" }}>
                           {["Row","Client","Job name","Code","Revenue","Direct costs","Type","Start","End",
@@ -3561,8 +3577,8 @@ export default function TriageSystem({ onBack }) {
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.revenue}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.directCosts}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.projectRetainer}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.startDate}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.endDate}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
                             {jr.expenseSlots.map(s => {
                               const isEmpty = !s.description && !s.amount;
                               const isPlacing = !!outgoingsPlacing;
@@ -3597,13 +3613,13 @@ export default function TriageSystem({ onBack }) {
                                   }}
                                   style={{ padding: "7px 10px", borderBottom: "1px solid #eee",
                                     cursor: (isPlacing && isEmpty) ? "pointer" : "default",
-                                    background: (isPlacing && isEmpty) ? "#fff8e1" : "transparent",
-                                    minWidth: "120px" }}>
+                                    background: (isPlacing && isEmpty) ? "#e8f0fe" : "transparent",
+                                    border: (isPlacing && isEmpty) ? "1.5px solid #1a56db" : "none" }}>
                                   {isEmpty
-                                    ? ((isPlacing) ? <span style={{ color: "#e65100", fontWeight: "600" }}>Click to place</span> : <span style={{ color: "#ccc" }}>—</span>)
+                                    ? ((isPlacing) ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>—</span>)
                                     : <div>
                                         <div style={{ fontWeight: "600" }}>{s.description}</div>
-                                        <div style={{ color: "#888" }}>£{s.amount} · {s.date}</div>
+                                        <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.date}{s.status ? ` · ${s.status}` : ""}</div>
                                       </div>
                                   }
                                 </td>

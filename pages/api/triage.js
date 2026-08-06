@@ -674,21 +674,20 @@ async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowN
     if (!parentClient && !parentJob) return null;
 
     const allRows = [{ rowNum: parentRowNum, row: parentRow, isParent: true }];
-    // Walk forward collecting child rows: same client+job, no revenue in AG (idx 32)
+    // Walk forward collecting child rows: same client+job name repeated (not blank),
+    // with no revenue/budget/start date of their own — matches the pattern used
+    // throughout the rest of the codebase (see candidateJobs in generate_options).
     for (let i = parentRowNum; i < rows.length; i++) {
       const r = rows[i] || [];
       const rc = String(r[0] || "").trim();
       const rj = String(r[1] || "").trim();
-      if (!rc && !rj) {
-        // Blank client/job but could still be a child row continuing the same job
-        const hasRevenue = String(r[32] || "").trim();
-        if (hasRevenue) break; // new parent row starting, stop
-        // Check if this row has any invoice/expense slot data — if so it's a child row
-        const hasSlotData = [41,48,55,75,82,89].some(idx => String(r[idx]||"").trim());
-        if (!hasSlotData) break;
+      const rRevenue = String(r[32] || "").trim();
+      const rBudget = parseFloat(String(r[33] || "").replace(/[£$€,\s]/g, "")) || 0;
+      const rStart = String(r[37] || "").trim();
+      if (rc === parentClient && rj === parentJob && !rRevenue && !rBudget && !rStart) {
         allRows.push({ rowNum: i + 1, row: r, isParent: false });
       } else {
-        break; // different job started
+        break;
       }
     }
 
@@ -2089,11 +2088,16 @@ export default async function handler(req, res) {
             const next = rows[cj] || [];
             const nc = String(next[0]||"").trim();
             const nj = String(next[1]||"").trim();
-            if (nc || nj) break; // new parent row starting
-            const hasSlotData = [41,48,55,75,82,89].some(idx => String(next[idx]||"").trim());
-            if (!hasSlotData) break;
-            jobRows.push(buildRowData(cj + 1, next, false));
-            cj++;
+            const nRevenue = String(next[32]||"").trim();
+            const nBudget = parseFloat(String(next[33]||"").replace(/[£$€,\s]/g,"")) || 0;
+            const nStart = String(next[37]||"").trim();
+            // Child row: same client+job name repeated, no revenue/budget/start date of its own
+            if (nc === client && nj === jobName && !nRevenue && !nBudget && !nStart) {
+              jobRows.push(buildRowData(cj + 1, next, false));
+              cj++;
+            } else {
+              break;
+            }
           }
           ri = cj;
 
@@ -2103,6 +2107,16 @@ export default async function handler(req, res) {
             jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows });
           }
         }
+
+        // Sort newest first by start date (jobs with no parseable date sort last)
+        jobs.sort((a, b) => {
+          const da = parseSheetDate(a.rows[0]?.startDate);
+          const db = parseSheetDate(b.rows[0]?.startDate);
+          if (!da && !db) return 0;
+          if (!da) return 1;
+          if (!db) return -1;
+          return db - da;
+        });
 
         console.log(`  ✅ get_direct_costs_jobs: ${jobs.length} jobs (showAll=${!!showAll})`);
         return res.status(200).json({ success: true, jobs });

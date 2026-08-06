@@ -6062,6 +6062,40 @@ export default function TriageSystem({ onBack }) {
                 📊 Open Sheets
               </button>
             )}
+            {/* Use AI button — shown for alert types that previously used Claude */}
+            {claudeAnalysis && (() => {
+              const alert = clientAlerts[currentClientAlertIndex];
+              const ft = alert?.flagType || alert?.alertType || alert?.type || "";
+              const aiTypes = new Set(["invoiceDashboardDiscr","expenseDashboardDiscr",
+                "crmPipeDashDiscr","crmConfDashDiscr","crmPipeAppDiscr","crmConfAppDiscr"]);
+              if (!aiTypes.has(ft)) return null;
+              return (
+                <button className="triage-btn" disabled={isAnalyzing}
+                  onClick={async () => {
+                    setIsAnalyzing(true);
+                    setClaudeAnalysis("");
+                    try {
+                      const res = await fetch("/api/triage", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "analyze_alert_ai", alert, automationCommanderSheetId }),
+                      });
+                      const d = await res.json();
+                      if (d.success) {
+                        const pir = d.previousIgnoreReason;
+                        setPreviousIgnoreReason(pir && typeof pir === "object" ? pir : pir ? { ignoreReason: pir, changeReason: null } : null);
+                        setClaudeAnalysis(JSON.stringify(d.options || [], null, 2));
+                      } else {
+                        setClaudeAnalysis("Error: " + (d.error || "Unknown error"));
+                      }
+                    } catch(e) { setClaudeAnalysis("Error: " + e.message); }
+                    finally { setIsAnalyzing(false); }
+                  }}
+                  style={{ ...styles.buttonSecondary, color: "#059669", borderColor: "#6ee7b7",
+                    opacity: isAnalyzing ? 0.6 : 1 }}>
+                  🤖 Use AI
+                </button>
+              );
+            })()}
           </div>
 
           {/* Existing task banner */}

@@ -5706,8 +5706,12 @@ export default function TriageSystem({ onBack }) {
                             ⚠ Revenue impact: {option.revenueImpact}
                           </div>
                         )}
-                        {/* CRM matching details */}
-                        {option.matchingDetails && typeof option.matchingDetails === 'object' && (
+                        {/* CRM matching details — only for CRM alerts */}
+                        {option.matchingDetails && typeof option.matchingDetails === 'object' && (() => {
+                          const ft = alert?.flagType || alert?.alertType || alert?.type || "";
+                          const isCRM = ft.startsWith("crm");
+                          if (!isCRM) return null;
+                          return (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#f5f3ff", borderLeft: "3px solid #7c3aed" }}>
                             <strong style={{ color: "#5b21b6" }}>CRM Job Matching Details:</strong>
                             {option.matchingDetails.unmatchedJobSummary && (
@@ -5747,7 +5751,8 @@ export default function TriageSystem({ onBack }) {
                               </div>
                             )}
                           </div>
-                        )}
+                        );
+                        })()}
                         {/* VAT mismatch — show job context and exact cell that will be updated */}
                         {option.discrepancyType === "inv_vat_mismatch" && option.matchType === "existing_job" && option.jobDetails && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>

@@ -6184,7 +6184,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           options,
           alertId: alert.rowNumber,
         });
-      } catch (err) {      } catch (err) {
+      } catch (err) {
         console.error("❌ Error generating options:", err);
         res.status(500).json({ success: false, error: err.message });
       }

@@ -3506,17 +3506,24 @@ export default async function handler(req, res) {
                 const jrdCache = new Map();
                 optionsToReturn = await Promise.all(optionsToReturn.map(async (opt) => {
                   if (!opt.jobRow || (opt.matchType !== "existing_job" && opt.matchType !== "job")) return opt;
-                  if (!jrdCache.has(opt.jobRow)) {
-                    // Parse slot number/type from recommendedActions text if present, to re-highlight the right slot
+                  // Prefer explicit target fields (set at generation time) over parsing
+                  // recommendedActions text — explicit fields can't be mismatched.
+                  let highlightSlot = null;
+                  if (opt.targetSlotType && opt.targetSlotNum && opt.targetRowNum) {
+                    highlightSlot = { type: opt.targetSlotType, rowNum: opt.targetRowNum, slotNum: opt.targetSlotNum };
+                  } else {
+                    // Fallback for options cached before explicit fields existed
                     const actionsText = Array.isArray(opt.recommendedActions) ? opt.recommendedActions.join(" ") : "";
-                    let highlightSlot = null;
                     const expSlotMatch = actionsText.match(/ExpSlot(\d)/i);
                     const invSlotMatch = actionsText.match(/\bslot (\d)\b/i) || actionsText.match(/invoice slot (\d)/i);
                     if (expSlotMatch) highlightSlot = { type: "expense", rowNum: opt.jobRow, slotNum: parseInt(expSlotMatch[1]) };
                     else if (invSlotMatch) highlightSlot = { type: "invoice", rowNum: opt.jobRow, slotNum: parseInt(invSlotMatch[1]) };
-                    jrdCache.set(opt.jobRow, await fetchJobRowsForDisplay(sheets, jrdSheetId, jrdTabName, opt.jobRow, highlightSlot));
                   }
-                  return { ...opt, jobRowsData: jrdCache.get(opt.jobRow) };
+                  const cacheKey = `${opt.jobRow}-${highlightSlot?.slotNum ?? "none"}`;
+                  if (!jrdCache.has(cacheKey)) {
+                    jrdCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, jrdSheetId, jrdTabName, opt.jobRow, highlightSlot));
+                  }
+                  return { ...opt, jobRowsData: jrdCache.get(cacheKey) };
                 }));
               } catch (jrdErr) {
                 console.log(`  ⚠ jobRowsData regeneration on cache hit failed (non-fatal): ${jrdErr.message}`);
@@ -4277,14 +4284,22 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
           // ── Option type B: Match to Confirmed job (by description word overlap) ─
           const jobDescMatches = [];
+          // Format is typically "Vendor name (outline of expense, may include end client name)".
+          // Extract the bracketed portion to check for a client-name match — vendor name alone
+          // (before the bracket) is not a reliable client signal.
+          const expBracketMatch = (expenseDescription || "").match(/\(([^)]*)\)/);
+          const expBracketWords = expBracketMatch ? normExpWords(expBracketMatch[1]) : [];
+
           for (const job of candidateJobs) {
             const jobWords = normExpWords(job.parentJob);
             const clientWords = normExpWords(job.parentClient);
-            const overlap = expDescWords.some(w => jobWords.includes(w) || clientWords.includes(w));
-            if (!overlap) continue;
-            // Find best empty slot for this job
-            const emptySlot = job.slots.find(s => s.empty);
-            const availSlot = emptySlot || job.slots.find(s => !s.isAllocated);
+            const jobOverlap = expDescWords.some(w => jobWords.includes(w));
+            // Client match: bracketed text overlaps with the job's client name
+            const clientOverlap = expBracketWords.length > 0 &&
+              (expBracketWords.some(w => clientWords.includes(w)) || clientWords.some(w => expBracketWords.includes(w)));
+            if (!jobOverlap && !clientOverlap) continue;
+            // Find only the FIRST available slot for this job (in slot-number order)
+            const availSlot = job.slots.find(s => s.empty) || job.slots.find(s => !s.isAllocated);
             if (!availSlot) continue;
             const cols = slotColMapExp[availSlot.slotNum];
             const row  = availSlot.sheetRow;
@@ -4293,7 +4308,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const newTotal = realAllocated + expenseAmount;
             const budgetNum = parseFloat(String(job.totalBudget||"0").replace(/[£$€,]/g,"")) || 0;
             const budgetFit = budgetNum > 0 ? (newTotal <= budgetNum ? "YES" : `OVER by £${(newTotal-budgetNum).toFixed(2)}`) : "UNKNOWN";
-            jobDescMatches.push({ job, availSlot, cols, row, realAllocated, newTotal, budgetFit });
+            jobDescMatches.push({ job, availSlot, cols, row, realAllocated, newTotal, budgetFit, clientOverlap });
           }
           console.log(`  Confirmed job description matches: ${jobDescMatches.length}`);
 
@@ -4302,10 +4317,13 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const jobClientLabel = job.parentClient ? `${job.parentClient} — ${job.parentJob}` : job.parentJob;
             jobSysOptions.push({
               optionId: jobSysOptions.length + 1,
-              title: `Allocate to "${jobClientLabel}" (Row ${row}, ExpSlot${availSlot.slotNum}) — job name match`,
+              title: `Allocate to ${jobClientLabel} slot ${availSlot.slotNum} (Row ${row}) — job name match`,
               matchType: "job",
               jobRow: row,
               jobName: job.parentJob,
+              targetRowNum: row,
+              targetSlotType: "expense",
+              targetSlotNum: availSlot.slotNum,
               matchingDetails: {
                 unmatchedJobSummary: {
                   clientName: alert.clientName,
@@ -4411,8 +4429,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           for (const opt of options) {
             if (opt.matchType !== "job" || !opt.jobRow) continue;
             if (!expJobRowCache.has(opt.jobRow)) {
-              const slotMatch = opt.recommendedActions?.join(" ").match(/ExpSlot(\d)/i);
-              const highlightSlot = slotMatch ? { type: "expense", rowNum: opt.jobRow, slotNum: parseInt(slotMatch[1]) } : null;
+              const highlightSlot = (opt.targetSlotType && opt.targetSlotNum)
+                ? { type: opt.targetSlotType, rowNum: opt.targetRowNum || opt.jobRow, slotNum: opt.targetSlotNum }
+                : null;
               expJobRowCache.set(opt.jobRow, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
             }
             opt.jobRowsData = expJobRowCache.get(opt.jobRow);
@@ -4519,9 +4538,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 if (fc.writable && jobRow) {
                   options.push({
                     optionId: options.length + 1,
-                    title: `UPDATE ${tabName} ${fc.name} to match CRM: "${fc.crm}"`,
+                    title: `UPDATE ${client} — ${jobName} — ${fc.name} to match CRM: "${fc.crm}"`,
                     matchType: "existing_job", jobRow, jobName,
-                    matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode } },
+                    matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
                     matchAnalysis: {
                       matchConfidence: "High",
                       reasonForChoice: `${fc.name} mismatch. ${tabName}: "${fc.sheet}" vs CRM: "${fc.crm}"`,
@@ -4535,7 +4554,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 } else {
                   options.push({
                     optionId: options.length + 1,
-                    title: `REVIEW ${fc.name} mismatch — manual update required`,
+                    title: `REVIEW ${client} — ${jobName} — ${fc.name} mismatch — manual update required`,
                     matchType: "info", jobName,
                     matchAnalysis: {
                       matchConfidence: "N/A",
@@ -4547,9 +4566,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               }
               options.push({
                 optionId: options.length + 1,
-                title: `IGNORE — CRM data is wrong or discrepancy can be disregarded`,
+                title: `IGNORE — ${client} — ${jobName} — CRM data is wrong or discrepancy can be disregarded`,
                 matchType: "ignore", jobRow: jobRow || alert.rowNumber, jobName,
-                matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode } },
+                matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
                 recommendedActions: [ `Mark this field mismatch as ignored — no changes will be made` ],
               });
 
@@ -4580,7 +4599,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               options = [
                 {
                   optionId: 1,
-                  title: `IGNORE — Job "${jobName || projectCode || "unknown"}" is legitimate and CRM discrepancy can be disregarded`,
+                  title: `IGNORE — "${jobDesc}" is legitimate and CRM discrepancy can be disregarded`,
                   matchType: "ignore",
                   jobRow: jobRow || alert.rowNumber, jobName,
                   matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
@@ -4591,7 +4610,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 },
                 {
                   optionId: 2,
-                  title: `DELETE — Remove job "${jobName || projectCode || "unknown"}" from ${tabName} tab as it should not exist`,
+                  title: `DELETE — Remove "${jobDesc}" from ${tabName} tab as it should not exist`,
                   matchType: "delete",
                   jobRow: jobRow || alert.rowNumber, jobName,
                   matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
@@ -4725,7 +4744,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               if (fc.writable && jobRow) {
                 options.push({
                   optionId: options.length + 1,
-                  title: `UPDATE ${tabName} ${fc.name} to match CRM: "${fc.crm}"`,
+                  title: `UPDATE ${client} — ${jobName} — ${fc.name} to match CRM: "${fc.crm}"`,
                   matchType: "existing_job",
                   jobRow,
                   jobName: shtJob || crmJob,
@@ -4745,7 +4764,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               } else if (!fc.writable) {
                 options.push({
                   optionId: options.length + 1,
-                  title: `REVIEW ${fc.name} mismatch — manual update required`,
+                  title: `REVIEW ${client} — ${jobName} — ${fc.name} mismatch — manual update required`,
                   matchType: "info",
                   jobName: shtJob || crmJob,
                   matchAnalysis: {
@@ -4762,7 +4781,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               } else if (fc.writable && !jobRow) {
                 options.push({
                   optionId: options.length + 1,
-                  title: `REVIEW ${fc.name} mismatch — job row not found in ${tabName}`,
+                  title: `REVIEW ${client} — ${jobName} — ${fc.name} mismatch — job row not found in ${tabName}`,
                   matchType: "info",
                   jobName: shtJob || crmJob,
                   matchAnalysis: {
@@ -4781,7 +4800,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             // Always add an ignore option at the end
             options.push({
               optionId: options.length + 1,
-              title: `IGNORE — CRM data is wrong or discrepancy can be disregarded`,
+              title: `IGNORE — ${client} — ${jobName} — CRM data is wrong or discrepancy can be disregarded`,
               matchType: "ignore",
               jobRow: jobRow || alert.rowNumber,
               jobName: shtJob || crmJob,
@@ -4877,7 +4896,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const dashOptions = [
             {
               optionId: 1,
-              title: `IGNORE — discrepancy for "${dashJob || dashCode || "unknown"}" can be disregarded`,
+              title: `IGNORE — discrepancy for "${dashJobDesc || "unknown"}" can be disregarded`,
               matchType: "ignore",
               jobRow: alert.rowNumber,
               jobName: dashJob,
@@ -4904,7 +4923,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             },
             {
               optionId: 2,
-              title: `CREATE NEW job "${dashJob || dashCode || "unknown"}" in ${dashTabName} tab from CRM data`,
+              title: `CREATE NEW job "${dashJobDesc || "unknown"}" in ${dashTabName} tab from CRM data`,
               matchType: "create_new",
               jobRow: null,
               jobName: dashJob,
@@ -5999,11 +6018,14 @@ INSTRUCTIONS FOR USING THESE MATCHES:
 
           const tier1Option = {
             optionId: 1,
-            title: `Place in ${m.jobName} invoice position ${slotNum} (Row ${rowNum} Slot ${slotNum}) — exact amount match, ${isManual ? "replacing MANUAL-INV placeholder" : "slot date match"}`,
+            title: `Place in ${m.client} — ${m.jobName} slot ${slotNum} (Row ${rowNum}) — exact amount match, ${isManual ? "replacing MANUAL-INV placeholder" : "slot date match"}`,
             matchType: "existing_job",
             jobRow: rowNum,
             jobName: m.jobName,
             jobRevenue: m.revenue,
+            targetRowNum: rowNum,
+            targetSlotType: "invoice",
+            targetSlotNum: slotNum,
             matchAnalysis: {
               matchConfidence: "High",
               reasonForChoice: `Amount exact match (£${invoiceAmtForMatch.toFixed(2)}). Client name match (${m.client}). Invoice sent ${sentDate} vs slot date ${m.slotDate} — within tolerance.`,
@@ -6151,11 +6173,14 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
           tier2Options.push({
             optionId: tier2Options.length + 1,
-            title: `Place in ${best.jobName} slot ${best.slotNum} (Row ${best.rowNum}) — amount match, ${slotDesc}`,
+            title: `Place in ${best.client} — ${best.jobName} slot ${best.slotNum} (Row ${best.rowNum}) — amount match, ${slotDesc}`,
             matchType: "existing_job",
             jobRow: best.rowNum,
             jobName: best.jobName,
             jobRevenue: best.revenue,
+            targetRowNum: best.rowNum,
+            targetSlotType: "invoice",
+            targetSlotNum: best.slotNum,
             matchingDetails: {
               unmatchedJobSummary: {
                 clientName: invClient,
@@ -6196,10 +6221,14 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           });
         }
 
-        // ── Signal B: Job-name fuzzy matched slots (any non-real slot) ────────
-        // Separate pass: find jobs where client OR job name has word overlap with the invoice,
-        // regardless of slot amount. Surface these as lower-confidence options.
-        if (invJobWords.length > 0 || invClientWords.length > 0) {
+        // ── Signal B: Job-name fuzzy matched slots (first non-real slot only) ──
+        // Requires a client name match (exact or close overlap) — job name alone is not
+        // sufficient, since job names can coincidentally share words across clients.
+        // Only the FIRST available placeholder/MANUAL-INV slot per job is offered — if a
+        // job already has later slots filled behind an earlier gap, presenting every
+        // remaining slot as a separate option is misleading (the gap should be filled
+        // in order).
+        if (invClientWords.length > 0) {
           const jobNameMatches = new Map(); // key → { client, jobName, rows, bestSlot }
           for (let ri = 1; ri < activeData.length; ri++) {
             const r = activeData[ri] || [];
@@ -6210,18 +6239,25 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             const rcWords = normInvWords(rc);
             const rjWords = normInvWords(rj);
             const clientOverlap = invClientWords.some(w => rcWords.includes(w)) || rcWords.some(w => invClientWords.includes(w));
-            const jobOverlap    = invJobWords.some(w => rjWords.includes(w))    || rjWords.some(w => invJobWords.includes(w));
-            if (!clientOverlap && !jobOverlap) continue;
+            if (!clientOverlap) continue; // client match required — job name alone is not enough
 
-            for (const sd of INV_SLOT_DEFS2) {
-              const ref = String(r[sd.refIdx]||"").trim();
-              const rawAmt = r[sd.amtIdx];
-              const isManual = ref.toUpperCase().startsWith("MANUAL-INV");
-              const isNonReal = !ref || isManual;
-              if (!isNonReal) continue;
+            // Find only the FIRST non-real slot on this row (in slot-number order)
+            let sd = null, ref = "", rawAmt = "", isManual = false;
+            for (const cand of INV_SLOT_DEFS2) {
+              const candRef = String(r[cand.refIdx]||"").trim();
+              const candIsManual = candRef.toUpperCase().startsWith("MANUAL-INV");
+              const candIsNonReal = !candRef || candIsManual;
+              if (!candIsNonReal) continue;
+              const candKey = `${ri+1}-${cand.slotNum}`;
+              if (seenSlotKeys.has(candKey)) continue; // already in Signal A
+              sd = cand; ref = candRef; rawAmt = r[cand.amtIdx]; isManual = candIsManual;
+              break; // first match only
+            }
+            if (!sd) continue;
+
+            {
               const slotAmt = parseFloat(String(rawAmt||"").replace(/[£$€,]/g,"")) || 0;
               const slotKey = `${ri+1}-${sd.slotNum}`;
-              if (seenSlotKeys.has(slotKey)) continue; // already in Signal A
               seenSlotKeys.add(slotKey);
               const slotDate = String(r[sd.sentIdx]||"").trim();
 
@@ -6253,11 +6289,14 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
               tier2Options.push({
                 optionId: tier2Options.length + 1,
-                title: `Place in ${rj||rc} slot ${sd.slotNum} (Row ${ri+1}) — name match, ${slotLabel}, ${amtNote}`,
+                title: `Place in ${rc} — ${rj||rc} slot ${sd.slotNum} (Row ${ri+1}) — name match, ${slotLabel}, ${amtNote}`,
                 matchType: "existing_job",
                 jobRow: ri + 1,
                 jobName: rj || rc,
                 jobRevenue: bRev,
+                targetRowNum: ri + 1,
+                targetSlotType: "invoice",
+                targetSlotNum: sd.slotNum,
                 matchingDetails: {
                   unmatchedJobSummary: {
                     clientName: invClient, jobName: invJob, projectCode: "",
@@ -6319,15 +6358,16 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         let options = tier2Options.map((o, i) => ({ ...o, optionId: i + 1 }));
         console.log(`  ✅ System-generated ${options.length} invoice options`);
 
-        // Attach jobRowsData for spreadsheet-style display — fetch once per unique jobRow
+        // Attach jobRowsData for spreadsheet-style display — cache by row+slot since
+        // different options can target the same row with different slots highlighted
         const invJobRowCache = new Map();
         for (const opt of options) {
           if (!opt.jobRow) continue;
-          const cacheKey = opt.jobRow;
+          const highlightSlot = (opt.targetSlotType && opt.targetSlotNum)
+            ? { type: opt.targetSlotType, rowNum: opt.targetRowNum || opt.jobRow, slotNum: opt.targetSlotNum }
+            : null;
+          const cacheKey = `${opt.jobRow}-${highlightSlot?.slotNum ?? "none"}`;
           if (!invJobRowCache.has(cacheKey)) {
-            const highlightSlot = opt.matchType === "existing_job"
-              ? { type: "invoice", rowNum: opt.jobRow, slotNum: opt.recommendedActions?.join(" ").match(/slot (\d)/i)?.[1] ? parseInt(opt.recommendedActions.join(" ").match(/slot (\d)/i)[1]) : null }
-              : null;
             invJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
           }
           opt.jobRowsData = invJobRowCache.get(cacheKey);

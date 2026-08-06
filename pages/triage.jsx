@@ -5568,6 +5568,48 @@ export default function TriageSystem({ onBack }) {
                   )}
                 </div>
               )}
+              {/* Discrepancy summary — what this alert actually is, and the job's current details */}
+              {(() => {
+                const ft = alert?.flagType || alert?.alertType || alert?.type || "";
+                const isCRM = ft.startsWith("crm");
+                if (!isCRM) return null;
+                const isPipeline = ft.includes("Pipe");
+                const isMismatch = alert.subType === "field_mismatch";
+                const sd = alert.data?.sheetData || [];
+                const cd = alert.data?.crmData || [];
+                // sheetData: [code, client, job, revenue, dirCosts, start, end, likelihood, ...]
+                // crmData:   [client, job, code, revenue, dirCosts, start, end, likelihood]
+                const client = sd[1] || cd[0] || "";
+                const job = sd[2] || cd[1] || "";
+                const code = sd[0] || cd[2] || "";
+                const revenue = sd[3] || cd[3] || "";
+                const dirCosts = sd[4] || cd[4] || "";
+                const start = sd[5] || cd[5] || "";
+                const end = sd[6] || cd[6] || "";
+                const likelihood = sd[7] || cd[7] || "";
+                const copiedToConf = alert.copiedToConf;
+                const discrepancyLabel = isMismatch
+                  ? `Field mismatch: ${(alert.mismatchFields || []).join(", ")}`
+                  : (isPipeline ? "Missing job — in sheet, not in CRM" : "Missing job — in sheet, not in CRM");
+                return (
+                  <div style={{ marginBottom: "16px", padding: "12px 14px", backgroundColor: "#f5f3ff", borderLeft: "4px solid #7c3aed", borderRadius: "4px" }}>
+                    <div style={{ fontSize: "13px", fontWeight: "700", color: "#5b21b6", marginBottom: "8px" }}>
+                      ⚠ {discrepancyLabel}
+                    </div>
+                    <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{client}{job ? ` — ${job}` : ""}</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", marginTop: "6px", fontSize: "12px", color: "#444" }}>
+                      {code && <span><strong>Code:</strong> {code}</span>}
+                      {revenue && <span><strong>Revenue:</strong> £{revenue}</span>}
+                      {dirCosts && <span><strong>Direct costs:</strong> £{dirCosts}</span>}
+                      {start && <span><strong>Dates:</strong> {start}{end ? ` → ${end}` : ""}</span>}
+                      {isPipeline && likelihood && <span><strong>% Likelihood:</strong> {(parseFloat(likelihood) * 100).toFixed(0)}%</span>}
+                      {isPipeline && copiedToConf !== undefined && copiedToConf !== null && (
+                        <span><strong>Copied to Confirmed?</strong> {copiedToConf || "(blank)"}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
               <h3 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
                 Potential Actions
               </h3>
@@ -5675,47 +5717,6 @@ export default function TriageSystem({ onBack }) {
                             )}
                           </div>
                         )}
-                        {option.jobName && option.matchType !== "info" && (
-                          <div style={{ ...styles.optionDetail, padding: "10px 12px", background: "#f8faff", borderLeft: "3px solid #3b82f6", borderRadius: "0 4px 4px 0", fontSize: "12px", marginBottom: "4px" }}>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "baseline" }}>
-                              <span><strong>Job:</strong> {option.jobName}</span>
-                              {(option.jobDetails?.clientName || option.endClientName) && (
-                                <span><strong>End client:</strong> {option.jobDetails?.clientName || option.endClientName}</span>
-                              )}
-                              {(option.jobDetails?.revenue || option.jobRevenue) && (
-                                <span><strong>Revenue:</strong> £{option.jobDetails?.revenue || option.jobRevenue}</span>
-                              )}
-                              {option.jobDetails?.vatSetting && (
-                                <span><strong>VAT:</strong> {option.jobDetails.vatSetting}</span>
-                              )}
-                              {option.jobDetails?.jobType && (
-                                <span style={{ fontWeight: "600", color: option.jobDetails.jobType === "Retainer" ? "#7c3aed" : "#0369a1" }}>
-                                  {option.jobDetails.jobType}
-                                </span>
-                              )}
-                              {option.copiedToConf !== undefined && option.copiedToConf !== null && (
-                                <span style={{ padding: "1px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "700",
-                                  background: option.copiedToConf?.toLowerCase() === "yes" ? "#dcfce7" : "#fef9c3",
-                                  color: option.copiedToConf?.toLowerCase() === "yes" ? "#166534" : "#713f12",
-                                  border: `1px solid ${option.copiedToConf?.toLowerCase() === "yes" ? "#86efac" : "#fde047"}` }}>
-                                  Copied to confirmed? {option.copiedToConf || "(blank)"}
-                                </span>
-                              )}
-                            </div>
-                            {option.rowContext && (
-                              <div style={{ marginTop: "4px", color: "#666" }}>
-                                {option.rowContext.isChildRow
-                                  ? <span>Invoice in <strong>child row</strong> {option.rowContext.matchedRow} · Parent row {option.rowContext.parentRow} · Slot {option.rowContext.matchedSlot}</span>
-                                  : <span>Invoice in <strong>parent row</strong> {option.rowContext.matchedRow} · Slot {option.rowContext.matchedSlot}</span>
-                                }
-                              </div>
-                            )}
-                            {!option.rowContext && option.jobRow && (
-                              <div style={{ marginTop: "4px", color: "#666" }}>Row {option.jobRow}</div>
-                            )}
-                          </div>
-                        )}
-
                         {/* Info matchType: explanation + job details, Mark as resolved button */}
                         {option.matchType === "info" && (
                           <>
@@ -5801,53 +5802,6 @@ export default function TriageSystem({ onBack }) {
                             ⚠ Revenue impact: {option.revenueImpact}
                           </div>
                         )}
-                        {/* CRM matching details — only for CRM alerts */}
-                        {option.matchingDetails && typeof option.matchingDetails === 'object' && (() => {
-                          const ft = alert?.flagType || alert?.alertType || alert?.type || "";
-                          const isCRM = ft.startsWith("crm");
-                          if (!isCRM) return null;
-                          return (
-                          <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "8px", backgroundColor: "#f5f3ff", borderLeft: "3px solid #7c3aed" }}>
-                            <strong style={{ color: "#5b21b6" }}>CRM Job Matching Details:</strong>
-                            {option.matchingDetails.unmatchedJobSummary && (
-                              <div style={{ marginTop: "6px", fontSize: "13px", color: "#333" }}>
-                                <strong>
-                                  {option.matchType === "ignore" || option.matchType === "delete"
-                                    ? `Unmatched job — in ${alert.alertType === "crmPipeAppDiscr" || alert.flagType === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed"} tab but not in CRM:`
-                                    : "Unmatched Job (CRM):"}
-                                </strong>
-                                <div style={{ marginLeft: "12px", fontSize: "12px", marginTop: "4px" }}>
-                                  {option.matchingDetails.unmatchedJobSummary.clientName && <div>Client: {option.matchingDetails.unmatchedJobSummary.clientName}</div>}
-                                  {option.matchingDetails.unmatchedJobSummary.jobName && <div>Job: {option.matchingDetails.unmatchedJobSummary.jobName}</div>}
-                                  {option.matchingDetails.unmatchedJobSummary.projectCode && <div>Code: {option.matchingDetails.unmatchedJobSummary.projectCode}</div>}
-                                  {option.matchingDetails.unmatchedJobSummary.revenue && <div>Revenue: {option.matchingDetails.unmatchedJobSummary.revenue}</div>}
-                                  {option.matchingDetails.unmatchedJobSummary.likelihood && <div>Likelihood: {(parseFloat(option.matchingDetails.unmatchedJobSummary.likelihood) * 100).toFixed(0)}%</div>}
-                                  {option.matchingDetails.unmatchedJobSummary.startDate && <div>Dates: {option.matchingDetails.unmatchedJobSummary.startDate} → {option.matchingDetails.unmatchedJobSummary.endDate || "?"}</div>}
-                                </div>
-                              </div>
-                            )}
-                            {option.matchingDetails.matchedJobDetails && (
-                              <div style={{ marginTop: "8px", fontSize: "13px", color: "#333" }}>
-                                <strong>Matched Job ({option.matchType === 'create_new' ? 'Would Create New' : 'In Sheet'}):</strong>
-                                {option.matchType === 'create_new' ? (
-                                  <div style={{ marginLeft: "12px", fontSize: "12px", marginTop: "4px", color: "#7c3aed" }}>
-                                    Create new job matching the CRM details above
-                                  </div>
-                                ) : (
-                                  <div style={{ marginLeft: "12px", fontSize: "12px", marginTop: "4px" }}>
-                                    {option.matchingDetails.matchedJobDetails.projectCode && <div>Code: {option.matchingDetails.matchedJobDetails.projectCode}</div>}
-                                    {option.matchingDetails.matchedJobDetails.clientName && <div>Client: {option.matchingDetails.matchedJobDetails.clientName}</div>}
-                                    {option.matchingDetails.matchedJobDetails.jobName && <div>Job: {option.matchingDetails.matchedJobDetails.jobName}</div>}
-                                    {option.matchingDetails.matchedJobDetails.revenue && <div>Revenue: {option.matchingDetails.matchedJobDetails.revenue}</div>}
-                                    {option.matchingDetails.matchedJobDetails.likelihood && <div>Likelihood: {(parseFloat(option.matchingDetails.matchedJobDetails.likelihood) * 100).toFixed(0)}%</div>}
-                                    {option.matchingDetails.matchedJobDetails.startDate && <div>Dates: {option.matchingDetails.matchedJobDetails.startDate} → {option.matchingDetails.matchedJobDetails.endDate}</div>}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                        })()}
                         {/* VAT mismatch — show job context and exact cell that will be updated */}
                         {option.discrepancyType === "inv_vat_mismatch" && option.matchType === "existing_job" && option.jobDetails && (
                           <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>

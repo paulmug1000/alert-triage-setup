@@ -5580,6 +5580,101 @@ export default function TriageSystem({ onBack }) {
                         <div style={styles.optionTitle}>
                           Option {idx + 1}: {option.title}
                         </div>
+                        {/* Spreadsheet-style job row(s) display */}
+                        {Array.isArray(option.jobRowsData) && option.jobRowsData.length > 0 && (
+                          <div style={{ marginBottom: "10px", overflowX: "auto", border: "1px solid #e0e0e0", borderRadius: "6px" }}>
+                            <table style={{ borderCollapse: "collapse", fontSize: "11px", width: "100%", minWidth: "700px" }}>
+                              <thead>
+                                <tr style={{ background: "#f3f4f6" }}>
+                                  {["Row","Client","Job name","Code","Revenue","Direct costs","Type","VAT","Start","End",
+                                    ...(option.jobRowsData[0].likelihood !== null ? ["% Likely"] : []),
+                                    ...(option.jobRowsData[0].copiedToConf !== null ? ["Copied?"] : [])
+                                  ].map(h => (
+                                    <th key={h} style={{ padding: "5px 8px", textAlign: "left", borderBottom: "1px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {option.jobRowsData.map(jr => (
+                                  <tr key={jr.rowNum} style={{ borderBottom: "1px solid #eee" }}>
+                                    <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>
+                                    <td style={{ padding: "5px 8px" }}>{jr.client}</td>
+                                    <td style={{ padding: "5px 8px" }}>{jr.jobName}</td>
+                                    <td style={{ padding: "5px 8px" }}>{jr.projectCode}</td>
+                                    <td style={{ padding: "5px 8px" }}>{jr.revenue}</td>
+                                    <td style={{ padding: "5px 8px" }}>{jr.directCosts}</td>
+                                    <td style={{ padding: "5px 8px" }}>{jr.projectRetainer}</td>
+                                    <td style={{ padding: "5px 8px" }}>{jr.vat}</td>
+                                    <td style={{ padding: "5px 8px" }}>{jr.startDate}</td>
+                                    <td style={{ padding: "5px 8px" }}>{jr.endDate}</td>
+                                    {jr.likelihood !== null && <td style={{ padding: "5px 8px" }}>{jr.likelihood}</td>}
+                                    {jr.copiedToConf !== null && <td style={{ padding: "5px 8px" }}>{jr.copiedToConf}</td>}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {/* Invoice slots — only render if any slot has data or is the target */}
+                            {option.jobRowsData.some(jr => jr.invoiceSlots?.some(s => s.amount || s.ref || s.highlighted)) && (
+                              <table style={{ borderCollapse: "collapse", fontSize: "11px", width: "100%", minWidth: "700px", borderTop: "2px solid #ddd" }}>
+                                <thead>
+                                  <tr style={{ background: "#f3f4f6" }}>
+                                    {["Row","Slot","Amount","Reference","Sent","Days","Status"].map(h => (
+                                      <th key={h} style={{ padding: "5px 8px", textAlign: "left", borderBottom: "1px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {option.jobRowsData.flatMap(jr => jr.invoiceSlots.map(s => (
+                                    <tr key={`${jr.rowNum}-inv${s.slotNum}`} style={{
+                                      borderBottom: "1px solid #eee",
+                                      background: s.highlighted ? "#fff3cd" : "transparent",
+                                      fontWeight: s.highlighted ? "700" : "400",
+                                    }}>
+                                      <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.slotNum}{s.highlighted ? " ← this option" : ""}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.amount}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.ref}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.sentDate}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.daysToPay}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.status}</td>
+                                    </tr>
+                                  )))}
+                                </tbody>
+                              </table>
+                            )}
+                            {/* Expense slots — only render if any slot has data or is the target */}
+                            {option.jobRowsData.some(jr => jr.expenseSlots?.some(s => s.amount || s.description || s.highlighted)) && (
+                              <table style={{ borderCollapse: "collapse", fontSize: "11px", width: "100%", minWidth: "700px", borderTop: "2px solid #ddd" }}>
+                                <thead>
+                                  <tr style={{ background: "#f3f4f6" }}>
+                                    {["Row","Slot","Description","Amount","VAT","Date","Days","Status","Txn ID"].map(h => (
+                                      <th key={h} style={{ padding: "5px 8px", textAlign: "left", borderBottom: "1px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {option.jobRowsData.flatMap(jr => jr.expenseSlots.map(s => (
+                                    <tr key={`${jr.rowNum}-exp${s.slotNum}`} style={{
+                                      borderBottom: "1px solid #eee",
+                                      background: s.highlighted ? "#fff3cd" : "transparent",
+                                      fontWeight: s.highlighted ? "700" : "400",
+                                    }}>
+                                      <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.slotNum}{s.highlighted ? " ← this option" : ""}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.description}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.amount}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.vat}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.date}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.daysToPay}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.status}</td>
+                                      <td style={{ padding: "5px 8px" }}>{s.transactionId}</td>
+                                    </tr>
+                                  )))}
+                                </tbody>
+                              </table>
+                            )}
+                          </div>
+                        )}
                         {option.jobName && option.matchType !== "info" && (
                           <div style={{ ...styles.optionDetail, padding: "10px 12px", background: "#f8faff", borderLeft: "3px solid #3b82f6", borderRadius: "0 4px 4px 0", fontSize: "12px", marginBottom: "4px" }}>
                             <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "baseline" }}>

@@ -654,6 +654,84 @@ function extractSheetIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
+// Fetch the parent row + any child rows for a job, formatted for spreadsheet-style
+// display in the UI. Returns raw sheet values (no currency formatting) so the
+// frontend can render them exactly as they appear in the sheet.
+// tabName: "Pipeline" or "Confirmed". highlightSlot: { type: "invoice"|"expense", slotNum } | null
+async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowNum, highlightSlot) {
+  if (!spreadsheetId || !parentRowNum) return null;
+  try {
+    // A:CR covers client through expense slot 3 (col CR = 96)
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${tabName}!A1:CR${parentRowNum + 30}`,
+      valueRenderOption: "FORMATTED_VALUE",
+    });
+    const rows = resp.data.values || [];
+    const parentRow = rows[parentRowNum - 1] || [];
+    const parentClient = String(parentRow[0] || "").trim();
+    const parentJob    = String(parentRow[1] || "").trim();
+    if (!parentClient && !parentJob) return null;
+
+    const allRows = [{ rowNum: parentRowNum, row: parentRow, isParent: true }];
+    // Walk forward collecting child rows: same client+job, no revenue in AG (idx 32)
+    for (let i = parentRowNum; i < rows.length; i++) {
+      const r = rows[i] || [];
+      const rc = String(r[0] || "").trim();
+      const rj = String(r[1] || "").trim();
+      if (!rc && !rj) {
+        // Blank client/job but could still be a child row continuing the same job
+        const hasRevenue = String(r[32] || "").trim();
+        if (hasRevenue) break; // new parent row starting, stop
+        // Check if this row has any invoice/expense slot data — if so it's a child row
+        const hasSlotData = [41,48,55,75,82,89].some(idx => String(r[idx]||"").trim());
+        if (!hasSlotData) break;
+        allRows.push({ rowNum: i + 1, row: r, isParent: false });
+      } else {
+        break; // different job started
+      }
+    }
+
+    const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+    const buildRowData = ({ rowNum, row, isParent }) => ({
+      rowNum,
+      isParent,
+      client:        colVal(row, 0),
+      jobName:       colVal(row, 1),
+      projectCode:   colVal(row, 2),
+      revenue:       colVal(row, 32), // AG
+      directCosts:   colVal(row, 33), // AH
+      vat:           colVal(row, 34), // AI
+      projectRetainer: colVal(row, 35), // AJ
+      startDate:     colVal(row, 37), // AL
+      endDate:       colVal(row, 38), // AM
+      likelihood:    tabName === "Pipeline" ? colVal(row, 39) : null, // AN
+      copiedToConf:  tabName === "Pipeline" ? colVal(row, 107) : null, // DD
+      invoiceSlots: [
+        { slotNum: 1, amount: colVal(row,41), ref: colVal(row,42), sentDate: colVal(row,43), daysToPay: colVal(row,44), status: colVal(row,45),
+          highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 1 && highlightSlot.rowNum === rowNum },
+        { slotNum: 2, amount: colVal(row,48), ref: colVal(row,49), sentDate: colVal(row,50), daysToPay: colVal(row,51), status: colVal(row,52),
+          highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 2 && highlightSlot.rowNum === rowNum },
+        { slotNum: 3, amount: colVal(row,55), ref: colVal(row,56), sentDate: colVal(row,57), daysToPay: colVal(row,58), status: colVal(row,59),
+          highlighted: highlightSlot?.type === "invoice" && highlightSlot.slotNum === 3 && highlightSlot.rowNum === rowNum },
+      ],
+      expenseSlots: [
+        { slotNum: 1, description: colVal(row,75), amount: colVal(row,76), vat: colVal(row,77), date: colVal(row,78), daysToPay: colVal(row,79), status: colVal(row,80), transactionId: colVal(row,81),
+          highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 1 && highlightSlot.rowNum === rowNum },
+        { slotNum: 2, description: colVal(row,82), amount: colVal(row,83), vat: colVal(row,84), date: colVal(row,85), daysToPay: colVal(row,86), status: colVal(row,87), transactionId: colVal(row,88),
+          highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 2 && highlightSlot.rowNum === rowNum },
+        { slotNum: 3, description: colVal(row,89), amount: colVal(row,90), vat: colVal(row,91), date: colVal(row,92), daysToPay: colVal(row,93), status: colVal(row,94), transactionId: colVal(row,95),
+          highlighted: highlightSlot?.type === "expense" && highlightSlot.slotNum === 3 && highlightSlot.rowNum === rowNum },
+      ],
+    });
+
+    return allRows.map(buildRowData);
+  } catch (e) {
+    console.log(`  ⚠ fetchJobRowsForDisplay error: ${e.message}`);
+    return null;
+  }
+}
+
 // Convert 1-indexed column number to A1 letter notation (e.g. 1→A, 27→AA)
 function colIndexToLetter(colNum) {
   let letter = "";
@@ -4297,6 +4375,19 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const options = sysOptions.map((o, i) => ({ ...o, optionId: i + 1 }));
           console.log(`  ✅ System-generated ${options.length} expense options`);
 
+          // Attach jobRowsData for spreadsheet-style display — only for job matches
+          // (Outgoings vendor/category matches don't have a Confirmed job row to show)
+          const expJobRowCache = new Map();
+          for (const opt of options) {
+            if (opt.matchType !== "job" || !opt.jobRow) continue;
+            if (!expJobRowCache.has(opt.jobRow)) {
+              const slotMatch = opt.recommendedActions?.join(" ").match(/ExpSlot(\d)/i);
+              const highlightSlot = slotMatch ? { type: "expense", rowNum: opt.jobRow, slotNum: parseInt(slotMatch[1]) } : null;
+              expJobRowCache.set(opt.jobRow, await fetchJobRowsForDisplay(sheets, alert.masterSheetId || alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
+            }
+            opt.jobRowsData = expJobRowCache.get(opt.jobRow);
+          }
+
           // Cache in AlertMemory
           const alertSummary = alert.summary?.summary || `Expense ${alert.summary?.reference || ""} £${alert.summary?.amount || ""}`;
           if (memoryRow) {
@@ -4501,6 +4592,12 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               options = options.map(o => ({ ...o, copiedToConf }));
             }
 
+            // Attach jobRowsData for spreadsheet-style display
+            if (jobRow) {
+              const notFoundJobRows = await fetchJobRowsForDisplay(sheets, alert.masterSheetId || alert.clientId, tabName, jobRow, null);
+              options = options.map(o => ({ ...o, jobRowsData: notFoundJobRows }));
+            }
+
             // Cache these options
             const crmSummary = `CRM ${alertType} ${jobDesc}`.trim();
             if (memoryRow) {
@@ -4682,6 +4779,12 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             // Inject Pipeline-specific fields onto options
             if (tabName === "Pipeline" && copiedToConf !== undefined) {
               options = options.map(o => ({ ...o, copiedToConf }));
+            }
+
+            // Attach jobRowsData for spreadsheet-style display
+            if (jobRow) {
+              const mismatchJobRows = await fetchJobRowsForDisplay(sheets, alert.masterSheetId || alert.clientId, tabName, jobRow, null);
+              options = options.map(o => ({ ...o, jobRowsData: mismatchJobRows }));
             }
 
             const crmSummaryMismatch = `CRM mismatch ${jobLabel} [${mismatchFields.join(", ")}]`.trim();
@@ -5885,6 +5988,11 @@ INSTRUCTIONS FOR USING THESE MATCHES:
             slotBreakdown: { lines: [`Row ${rowNum} Slot ${slotNum}: ${invoiceRef} £${invoiceAmtForMatch.toFixed(2)} ← this invoice`], correctedTotal: `£${invoiceAmtForMatch.toFixed(2)}`, currentRevenue: `£${m.revenue || 0}` },
           };
 
+          tier1Option.jobRowsData = await fetchJobRowsForDisplay(
+            sheets, alert.masterSheetId || alert.clientId, "Confirmed", rowNum,
+            { type: "invoice", rowNum, slotNum }
+          );
+
           const tier1Summary = `Invoice ${invoiceRef} ${m.client} — ${m.jobName}`;
           await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
           const memRowsTier1 = await readAlertMemory(sheets, automationCommanderSheetId);
@@ -6174,8 +6282,22 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         });
 
         // Renumber and cache
-        const options = tier2Options.map((o, i) => ({ ...o, optionId: i + 1 }));
+        let options = tier2Options.map((o, i) => ({ ...o, optionId: i + 1 }));
         console.log(`  ✅ System-generated ${options.length} invoice options`);
+
+        // Attach jobRowsData for spreadsheet-style display — fetch once per unique jobRow
+        const invJobRowCache = new Map();
+        for (const opt of options) {
+          if (!opt.jobRow) continue;
+          const cacheKey = opt.jobRow;
+          if (!invJobRowCache.has(cacheKey)) {
+            const highlightSlot = opt.matchType === "existing_job"
+              ? { type: "invoice", rowNum: opt.jobRow, slotNum: opt.recommendedActions?.join(" ").match(/slot (\d)/i)?.[1] ? parseInt(opt.recommendedActions.join(" ").match(/slot (\d)/i)[1]) : null }
+              : null;
+            invJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.masterSheetId || alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
+          }
+          opt.jobRowsData = invJobRowCache.get(cacheKey);
+        }
 
         const invSummary = `Invoice ${invoiceRef} ${invClient} — ${invJob}`;
         if (memoryRow) {

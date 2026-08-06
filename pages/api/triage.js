@@ -662,9 +662,11 @@ async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowN
   if (!spreadsheetId || !parentRowNum) return null;
   try {
     // A:CR covers client through expense slot 3 (col CR = 96)
+    const rangeStr = `${tabName}!A1:CR${parentRowNum + 30}`;
+    console.log(`  🔬 DIAG fetchJobRowsForDisplay: spreadsheetId=${spreadsheetId} range=${JSON.stringify(rangeStr)} tabName=${JSON.stringify(tabName)} parentRowNum=${JSON.stringify(parentRowNum)} (type ${typeof parentRowNum})`);
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${tabName}!A1:CR${parentRowNum + 30}`,
+      range: rangeStr,
       valueRenderOption: "FORMATTED_VALUE",
     });
     const rows = resp.data.values || [];
@@ -728,6 +730,7 @@ async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowN
     return allRows.map(buildRowData);
   } catch (e) {
     console.log(`  ⚠ fetchJobRowsForDisplay error: ${e.message}`);
+    console.log(`  🔬 DIAG full error: ${JSON.stringify({ code: e.code, errors: e.errors, status: e.status, responseData: e.response?.data }).slice(0, 1000)}`);
     return null;
   }
 }

@@ -5708,11 +5708,22 @@ export default function TriageSystem({ onBack }) {
             <span style={styles.alertCounter}>{progress}/{clientAlerts.length}</span>
           </div>
 
-          {alert.flagType && (
-            <div style={{ ...styles.alertMetadata, fontSize: "15px", fontWeight: "600", padding: "14px", marginBottom: "16px" }}>
-              {alert.flagType}
-            </div>
-          )}
+          {alert.flagType && (() => {
+            const ALERT_TYPE_FULL_NAMES = {
+              invoiceDashboardDiscr: "Invoice Dashboard Discrepancy",
+              expenseDashboardDiscr: "Expense Dashboard Discrepancy",
+              crmPipeDashDiscr: "CRM Pipeline Dashboard Discrepancy",
+              crmPipeAppDiscr: "CRM Pipeline App Discrepancy",
+              crmConfDashDiscr: "CRM Confirmed Dashboard Discrepancy",
+              crmConfAppDiscr: "CRM Confirmed App Discrepancy",
+            };
+            const fullName = ALERT_TYPE_FULL_NAMES[alert.flagType] || alert.flagType;
+            return (
+              <div style={{ ...styles.alertMetadata, fontSize: "15px", fontWeight: "600", padding: "14px", marginBottom: "16px" }}>
+                {fullName}
+              </div>
+            );
+          })()}
 
           {alert.type === "locked" && alert.summary?.lockedMessage && (
             <div style={{ ...styles.alertSummary, marginBottom: "20px", backgroundColor: "#fff3e0", borderLeft: "4px solid #f59e0b" }}>
@@ -5809,13 +5820,14 @@ export default function TriageSystem({ onBack }) {
                   )}
                 </div>
               )}
-              {/* Discrepancy summary — what this alert actually is, and the job's current details */}
+              {/* Discrepancy summary — what this alert actually is, and the specific field(s) at issue */}
               {(() => {
                 const ft = alert?.flagType || alert?.alertType || alert?.type || "";
                 const isCRM = ft.startsWith("crm");
                 if (!isCRM) return null;
                 const isPipeline = ft.includes("Pipe");
                 const isMismatch = alert.subType === "field_mismatch";
+                const tabLabel = isPipeline ? "Pipeline" : "Confirmed";
                 const sd = alert.data?.sheetData || [];
                 const cd = alert.data?.crmData || [];
                 // sheetData: [code, client, job, revenue, dirCosts, start, end, likelihood, ...]
@@ -5823,31 +5835,42 @@ export default function TriageSystem({ onBack }) {
                 const client = sd[1] || cd[0] || "";
                 const job = sd[2] || cd[1] || "";
                 const code = sd[0] || cd[2] || "";
-                const revenue = sd[3] || cd[3] || "";
-                const dirCosts = sd[4] || cd[4] || "";
-                const start = sd[5] || cd[5] || "";
-                const end = sd[6] || cd[6] || "";
-                const likelihood = sd[7] || cd[7] || "";
-                const copiedToConf = alert.copiedToConf;
-                const discrepancyLabel = isMismatch
-                  ? `Field mismatch: ${(alert.mismatchFields || []).join(", ")}`
-                  : (isPipeline ? "Missing job — in sheet, not in CRM" : "Missing job — in sheet, not in CRM");
+
+                // Per-field CRM vs sheet values, in the same order/index as MISMATCH_FIELD_NAMES
+                // server-side: Client name, Job name, Revenue, Direct costs, Start date, End date, % Likelihood
+                const FIELD_DEFS = [
+                  { name: "Client name",  crm: cd[0], sheet: sd[1], fmt: v => v || "(blank)" },
+                  { name: "Job name",     crm: cd[1], sheet: sd[2], fmt: v => v || "(blank)" },
+                  { name: "Revenue",      crm: cd[3], sheet: sd[3], fmt: v => v ? `£${v}` : "£0" },
+                  { name: "Direct costs", crm: cd[4], sheet: sd[4], fmt: v => v ? `£${v}` : "£0" },
+                  { name: "Start date",   crm: cd[5], sheet: sd[5], fmt: v => v || "(blank)" },
+                  { name: "End date",     crm: cd[6], sheet: sd[6], fmt: v => v || "(blank)" },
+                  { name: "% Likelihood", crm: cd[7], sheet: sd[7], fmt: v => v ? `${(parseFloat(v) * 100).toFixed(0)}%` : "0%" },
+                ];
+                const mismatchedFieldNames = alert.mismatchFields || [];
+                const mismatchedFields = FIELD_DEFS.filter(f => mismatchedFieldNames.includes(f.name));
+
+                const subHeader = isMismatch
+                  ? `Field mismatch: ${mismatchedFieldNames.join(", ")}`
+                  : `Missing job — in ${tabLabel} tab, not in CRM`;
+
                 return (
-                  <div style={{ marginBottom: "16px", padding: "12px 14px", backgroundColor: "#f5f3ff", borderLeft: "4px solid #7c3aed", borderRadius: "4px" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "700", color: "#5b21b6", marginBottom: "8px" }}>
-                      ⚠ {discrepancyLabel}
+                  <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#f5f3ff", borderLeft: "4px solid #7c3aed", borderRadius: "4px" }}>
+                    <div style={{ fontSize: "17px", fontWeight: "700", color: "#5b21b6", marginBottom: "8px" }}>
+                      ⚠ {subHeader}
                     </div>
-                    <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{client}{job ? ` — ${job}` : ""}</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", marginTop: "6px", fontSize: "12px", color: "#444" }}>
-                      {code && <span><strong>Code:</strong> {code}</span>}
-                      {revenue && <span><strong>Revenue:</strong> £{revenue}</span>}
-                      {dirCosts && <span><strong>Direct costs:</strong> £{dirCosts}</span>}
-                      {start && <span><strong>Dates:</strong> {start}{end ? ` → ${end}` : ""}</span>}
-                      {isPipeline && likelihood && <span><strong>% Likelihood:</strong> {(parseFloat(likelihood) * 100).toFixed(0)}%</span>}
-                      {isPipeline && copiedToConf !== undefined && copiedToConf !== null && (
-                        <span><strong>Copied to Confirmed?</strong> {copiedToConf || "(blank)"}</span>
-                      )}
+                    <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: isMismatch ? "10px" : "0" }}>
+                      {client}{job ? ` — ${job}` : ""}{code ? ` (${code})` : ""}
                     </div>
+                    {isMismatch && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333" }}>
+                        {mismatchedFields.map(f => (
+                          <div key={f.name}>
+                            {f.name} in CRM: <strong>{f.fmt(f.crm)}</strong>. {f.name} in {tabLabel.toLowerCase()} tab: <strong>{f.fmt(f.sheet)}</strong>.
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })()}

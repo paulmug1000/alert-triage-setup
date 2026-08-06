@@ -5737,29 +5737,25 @@ export default function TriageSystem({ onBack }) {
           )}
 
           {alert.summary && alert.type !== "locked" && (
-            <div style={{ ...styles.alertSummary, marginBottom: "20px" }}>
-              <h3 style={{ fontSize: "13px", fontWeight: "700", marginBottom: "8px", color: "#1a1a1a", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                {alert.type === "expense" ? (() => {
+            <div style={{ ...styles.alertSummary, marginBottom: "20px",
+              backgroundColor: alert.type === "expense" ? "#f0fdf4" : "#eff6ff",
+              borderLeft: `4px solid ${alert.type === "expense" ? "#16a34a" : "#2563eb"}` }}>
+              <h3 style={{ fontSize: "17px", fontWeight: "700", marginBottom: "8px", color: alert.type === "expense" ? "#166534" : "#1e40af" }}>
+                ⚠ {alert.type === "expense" ? (() => {
                     const expFlags = alert.data?.flags || [];
                     const isMissing = String(expFlags[0]||"").trim() === "1";
-                    const isVAT    = String(expFlags[4]||"").trim() === "1";
-                    const isDupe   = String(expFlags[1]||"").trim() === "1";
-                    const isAmt    = String(expFlags[3]||"").trim() === "1";
-                    if (isMissing) return "Unmatched Expense";
-                    if (isVAT && !isMissing) return "Expense VAT Mismatch";
-                    if (isDupe)  return "Duplicate Expense";
-                    if (isAmt)   return "Expense Amount Mismatch";
+                    if (isMissing) return "Missing cost — in accounting system, not in Confirmed tab";
                     const expFlagNames = [null,"Duplicate App ID","Description mismatch","Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
                     const active = expFlags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
-                    return active.length > 0 ? active.join(", ") : "Expense Discrepancy";
+                    return active.length > 0 ? `Field mismatch: ${active.join(", ")}` : "Expense Discrepancy";
                   })()
                   : (() => {
                       const flags = alert.data?.flags || [];
-                      if (String(flags[2]||"").trim() === "1" && String(flags[0]||"").trim() !== "1") return "Invoice Amount Mismatch";
-                      if (String(flags[0]||"").trim() === "1") return "Unmatched Invoice";
-                      const invFlagNames2 = [null,"Client mismatch",null,"Sent date mismatch",null,"Fully paid on mismatch","Status mismatch"];
+                      const isMissing = String(flags[0]||"").trim() === "1";
+                      if (isMissing) return "Missing invoice — in accounting system, not in Confirmed tab";
+                      const invFlagNames2 = [null,"Client mismatch","Amount mismatch","Sent date mismatch",null,"Pay date mismatch","Status mismatch"];
                       const active = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames2[i] ? invFlagNames2[i] : null).filter(Boolean);
-                      return active.length > 0 ? active.join(", ") : "Invoice Discrepancy";
+                      return active.length > 0 ? `Field mismatch: ${active.join(", ")}` : "Invoice Discrepancy";
                     })()
                 }
               </h3>
@@ -5790,6 +5786,45 @@ export default function TriageSystem({ onBack }) {
                   </>
                 )}
               </div>
+              {/* Field-by-field comparison lines for mismatched fields only */}
+              {(() => {
+                const flags = alert.data?.flags || [];
+                const isMissing = String(flags[0]||"").trim() === "1";
+                if (isMissing) return null;
+                const acc = alert.data?.accounting || [];
+                const conf = alert.data?.confirmed || [];
+                let mismatchLines = [];
+                if (alert.type === "expense") {
+                  const expFlagNames = ["Missing cost","Duplicate app ID","Description mismatch","Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
+                  const activeFlags = flags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
+                  const FIELD_DEFS = [
+                    { name: "Description mismatch", line: `Description in accounting: ${acc[1] || "(blank)"}. Description in Confirmed tab: ${conf[3] || "(blank)"}.` },
+                    { name: "Amount mismatch",       line: `Amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Amount in Confirmed tab: ${conf[4] ? `£${conf[4]}` : "£0"}.` },
+                    { name: "VAT mismatch",          line: `VAT in accounting: ${acc[8] ? `£${acc[8]}` : "£0"}. VAT in Confirmed tab: ${conf[6] || "(blank)"}.` },
+                    { name: "Rec date mismatch",     line: `Received date in accounting: ${acc[0] || "(blank)"}. Received date in Confirmed tab: ${conf[7] || "(blank)"}.` },
+                    { name: "Pay date mismatch",     line: `Pay date in accounting: ${acc[7] || "(blank)"}. Pay date in Confirmed tab: ${conf[8] || "(blank)"}.` },
+                    { name: "Status mismatch",       line: `Status in accounting: ${acc[5] || "(blank)"}. Status in Confirmed tab: ${conf[9] || "(blank)"}.` },
+                  ];
+                  mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
+                } else {
+                  const invFlagNames = ["Missing invoice","Client mismatch","Amount mismatch","Sent date mismatch",null,"Pay date mismatch","Status mismatch"];
+                  const activeFlags = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
+                  const FIELD_DEFS = [
+                    { name: "Client mismatch",    line: `Client in accounting: ${acc[0] || "(blank)"}. Client in Confirmed tab: ${conf[1] || "(blank)"}.` },
+                    { name: "Amount mismatch",    line: `Amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Amount in Confirmed tab: ${conf[2] ? `£${conf[2]}` : "£0"}.` },
+                    { name: "Sent date mismatch", line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Confirmed tab: ${conf[3] || "(blank)"}.` },
+                    { name: "Pay date mismatch",  line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Confirmed tab: ${conf[4] || "(blank)"}.` },
+                    { name: "Status mismatch",    line: `Status in accounting: ${acc[9] || "(blank)"}. Status in Confirmed tab: ${conf[5] || "(blank)"}.` },
+                  ];
+                  mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
+                }
+                if (mismatchLines.length === 0) return null;
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(0,0,0,0.08)" }}>
+                    {mismatchLines.map(f => <div key={f.name}>{f.line}</div>)}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -5824,111 +5859,6 @@ export default function TriageSystem({ onBack }) {
               {(() => {
                 const ft = alert?.flagType || alert?.alertType || alert?.type || "";
                 const isCRM = ft.startsWith("crm");
-                const isInvoice = ft === "invoiceDashboardDiscr" || alert?.type === "invoice";
-                const isExpense = ft === "expenseDashboardDiscr" || alert?.type === "expense";
-
-                if (isInvoice) {
-                  // accounting (A:K): 0=client,1=job,2=invoiceAmt,3=totalExclVAT,4=vatIncluded,
-                  //   5=invoiceNo,6=sentDate,7=dueDate,8=fullyPaidOn,9=status,10=currency
-                  // confirmed (M:R):  0=invoiceNo,1=client,2=amount(inclVAT),3=sentDate,4=payDate,5=status
-                  // flags (S:Y):      0=Missing invoice,1=Client mismatch,2=Inv amt mismatch,
-                  //   3=Sent date mismatch,4=(unused),5=Fully paid on mismatch,6=Status mismatch
-                  const acc = alert.data?.accounting || [];
-                  const conf = alert.data?.confirmed || [];
-                  const flags = alert.data?.flags || [];
-                  const invFlagNames = ["Missing invoice","Client mismatch","Amount mismatch",
-                    "Sent date mismatch",null,"Pay date mismatch","Status mismatch"];
-                  const activeFlags = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
-                  const isMissing = String(flags[0]||"").trim() === "1";
-
-                  const client = acc[0] || conf[1] || "";
-                  const job = acc[1] || "";
-                  const invoiceNo = acc[5] || conf[0] || "";
-                  const accAmount = acc[2] ? `£${acc[2]}` : "£0";
-                  const confAmount = conf[2] ? `£${conf[2]}` : "£0";
-
-                  const FIELD_DEFS = [
-                    { name: "Client mismatch",   line: `Client in accounting: ${client || "(blank)"}. Client in Confirmed tab: ${conf[1] || "(blank)"}.` },
-                    { name: "Amount mismatch",   line: `Amount in accounting: ${accAmount}. Amount in Confirmed tab: ${confAmount}.` },
-                    { name: "Sent date mismatch",line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Confirmed tab: ${conf[3] || "(blank)"}.` },
-                    { name: "Pay date mismatch", line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Confirmed tab: ${conf[4] || "(blank)"}.` },
-                    { name: "Status mismatch",   line: `Status in accounting: ${acc[9] || "(blank)"}. Status in Confirmed tab: ${conf[5] || "(blank)"}.` },
-                  ];
-                  const mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
-
-                  const subHeader = isMissing
-                    ? "Missing invoice — in accounting system, not in Confirmed tab"
-                    : `Field mismatch: ${activeFlags.join(", ")}`;
-
-                  return (
-                    <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#eff6ff", borderLeft: "4px solid #2563eb", borderRadius: "4px" }}>
-                      <div style={{ fontSize: "17px", fontWeight: "700", color: "#1e40af", marginBottom: "8px" }}>
-                        ⚠ {subHeader}
-                      </div>
-                      <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: (!isMissing && mismatchLines.length) ? "10px" : "0" }}>
-                        {client}{job ? ` — ${job}` : ""}{invoiceNo ? ` (Invoice ${invoiceNo})` : ""}
-                      </div>
-                      {!isMissing && mismatchLines.length > 0 && (
-                        <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333" }}>
-                          {mismatchLines.map(f => <div key={f.name}>{f.line}</div>)}
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (isExpense) {
-                  // accounting (A:J): 0=date,1=description,2=amount,3=reference,4=accountName,
-                  //   5=status,6=transactionId,7=datePaid,8=vatAmount
-                  // confirmed (X:AH): 0=appId,1=client,2=job,3=description,4=grossAmount,
-                  //   5=totalExclVAT,6=vatIncluded,7=recDate,8=payDate,9=status,10=source
-                  // flags (AO:AV):     0=Missing cost,1=Duplicate app ID,2=Description mismatch,
-                  //   3=Amount mismatch,4=VAT mismatch,5=Rec date mismatch,6=Pay date mismatch,7=Status mismatch
-                  const acc = alert.data?.accounting || [];
-                  const conf = alert.data?.confirmed || [];
-                  const flags = alert.data?.flags || [];
-                  const expFlagNames = ["Missing cost","Duplicate app ID","Description mismatch",
-                    "Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
-                  const activeFlags = flags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
-                  const isMissing = String(flags[0]||"").trim() === "1";
-
-                  const client = conf[1] || "";
-                  const job = conf[2] || "";
-                  const description = acc[1] || alert.summary?.description || "";
-                  const accAmount = acc[2] ? `£${acc[2]}` : "£0";
-                  const confAmount = conf[4] ? `£${conf[4]}` : "£0";
-
-                  const FIELD_DEFS = [
-                    { name: "Description mismatch", line: `Description in accounting: ${acc[1] || "(blank)"}. Description in Confirmed tab: ${conf[3] || "(blank)"}.` },
-                    { name: "Amount mismatch",       line: `Amount in accounting: ${accAmount}. Amount in Confirmed tab: ${confAmount}.` },
-                    { name: "VAT mismatch",          line: `VAT in accounting: ${acc[8] ? `£${acc[8]}` : "£0"}. VAT in Confirmed tab: ${conf[6] || "(blank)"}.` },
-                    { name: "Rec date mismatch",     line: `Received date in accounting: ${acc[0] || "(blank)"}. Received date in Confirmed tab: ${conf[7] || "(blank)"}.` },
-                    { name: "Pay date mismatch",     line: `Pay date in accounting: ${acc[7] || "(blank)"}. Pay date in Confirmed tab: ${conf[8] || "(blank)"}.` },
-                    { name: "Status mismatch",       line: `Status in accounting: ${acc[5] || "(blank)"}. Status in Confirmed tab: ${conf[9] || "(blank)"}.` },
-                  ];
-                  const mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
-
-                  const subHeader = isMissing
-                    ? "Missing cost — in accounting system, not in Confirmed tab"
-                    : `Field mismatch: ${activeFlags.join(", ")}`;
-
-                  return (
-                    <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#f0fdf4", borderLeft: "4px solid #16a34a", borderRadius: "4px" }}>
-                      <div style={{ fontSize: "17px", fontWeight: "700", color: "#166534", marginBottom: "8px" }}>
-                        ⚠ {subHeader}
-                      </div>
-                      <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: (!isMissing && mismatchLines.length) ? "10px" : "0" }}>
-                        {client || job ? `${client}${job ? ` — ${job}` : ""} — ` : ""}{description}{accAmount ? ` (${accAmount})` : ""}
-                      </div>
-                      {!isMissing && mismatchLines.length > 0 && (
-                        <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333" }}>
-                          {mismatchLines.map(f => <div key={f.name}>{f.line}</div>)}
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
                 if (!isCRM) return null;
                 const isPipeline = ft.includes("Pipe");
                 const isMismatch = alert.subType === "field_mismatch";

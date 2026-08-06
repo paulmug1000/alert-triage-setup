@@ -5038,7 +5038,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               if (fc.writable && jobRow) {
                 options.push({
                   optionId: options.length + 1,
-                  title: `UPDATE ${client} — ${jobName} — ${fc.name} to match CRM: "${fc.crm}"`,
+                  title: `UPDATE ${shtClient || crmClient} — ${shtJob || crmJob} — ${fc.name} to match CRM: "${fc.crm}"`,
                   matchType: "existing_job",
                   jobRow,
                   jobName: shtJob || crmJob,
@@ -5058,7 +5058,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               } else if (!fc.writable) {
                 options.push({
                   optionId: options.length + 1,
-                  title: `REVIEW ${client} — ${jobName} — ${fc.name} mismatch — manual update required`,
+                  title: `REVIEW ${shtClient || crmClient} — ${shtJob || crmJob} — ${fc.name} mismatch — manual update required`,
                   matchType: "info",
                   jobName: shtJob || crmJob,
                   matchAnalysis: {
@@ -5075,7 +5075,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               } else if (fc.writable && !jobRow) {
                 options.push({
                   optionId: options.length + 1,
-                  title: `REVIEW ${client} — ${jobName} — ${fc.name} mismatch — job row not found in ${tabName}`,
+                  title: `REVIEW ${shtClient || crmClient} — ${shtJob || crmJob} — ${fc.name} mismatch — job row not found in ${tabName}`,
                   matchType: "info",
                   jobName: shtJob || crmJob,
                   matchAnalysis: {
@@ -5094,7 +5094,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             // Always add an ignore option at the end
             options.push({
               optionId: options.length + 1,
-              title: `IGNORE — ${client} — ${jobName} — CRM data is wrong or discrepancy can be disregarded`,
+              title: `IGNORE — ${shtClient || crmClient} — ${shtJob || crmJob} — CRM data is wrong or discrepancy can be disregarded`,
               matchType: "ignore",
               jobRow: jobRow || alert.rowNumber,
               jobName: shtJob || crmJob,

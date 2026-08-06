@@ -662,11 +662,9 @@ async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowN
   if (!spreadsheetId || !parentRowNum) return null;
   try {
     // A:CR covers client through expense slot 3 (col CR = 96)
-    const rangeStr = `${tabName}!A1:CR${parentRowNum + 30}`;
-    console.log(`  🔬 DIAG fetchJobRowsForDisplay: spreadsheetId=${spreadsheetId} range=${JSON.stringify(rangeStr)} tabName=${JSON.stringify(tabName)} parentRowNum=${JSON.stringify(parentRowNum)} (type ${typeof parentRowNum})`);
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: rangeStr,
+      range: `${tabName}!A1:CR${parentRowNum + 30}`,
       valueRenderOption: "FORMATTED_VALUE",
     });
     const rows = resp.data.values || [];
@@ -730,7 +728,6 @@ async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowN
     return allRows.map(buildRowData);
   } catch (e) {
     console.log(`  ⚠ fetchJobRowsForDisplay error: ${e.message}`);
-    console.log(`  🔬 DIAG full error: ${JSON.stringify({ code: e.code, errors: e.errors, status: e.status, responseData: e.response?.data }).slice(0, 1000)}`);
     return null;
   }
 }
@@ -3505,7 +3502,7 @@ export default async function handler(req, res) {
                 const jrdTabName = (alert.type === "crm" || alert.sheetName === "CRMComp")
                   ? (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr" || alert.alertType === "crmPipeDashDiscr" ? "Pipeline" : "Confirmed")
                   : "Confirmed";
-                const jrdSheetId = alert.masterSheetId || alert.clientId;
+                const jrdSheetId = alert.clientId;
                 const jrdCache = new Map();
                 optionsToReturn = await Promise.all(optionsToReturn.map(async (opt) => {
                   if (!opt.jobRow || (opt.matchType !== "existing_job" && opt.matchType !== "job")) return opt;
@@ -4416,7 +4413,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             if (!expJobRowCache.has(opt.jobRow)) {
               const slotMatch = opt.recommendedActions?.join(" ").match(/ExpSlot(\d)/i);
               const highlightSlot = slotMatch ? { type: "expense", rowNum: opt.jobRow, slotNum: parseInt(slotMatch[1]) } : null;
-              expJobRowCache.set(opt.jobRow, await fetchJobRowsForDisplay(sheets, alert.masterSheetId || alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
+              expJobRowCache.set(opt.jobRow, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
             }
             opt.jobRowsData = expJobRowCache.get(opt.jobRow);
           }
@@ -4627,7 +4624,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
             // Attach jobRowsData for spreadsheet-style display
             if (jobRow) {
-              const notFoundJobRows = await fetchJobRowsForDisplay(sheets, alert.masterSheetId || alert.clientId, tabName, jobRow, null);
+              const notFoundJobRows = await fetchJobRowsForDisplay(sheets, alert.clientId, tabName, jobRow, null);
               options = options.map(o => ({ ...o, jobRowsData: notFoundJobRows }));
             }
 
@@ -4816,7 +4813,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
             // Attach jobRowsData for spreadsheet-style display
             if (jobRow) {
-              const mismatchJobRows = await fetchJobRowsForDisplay(sheets, alert.masterSheetId || alert.clientId, tabName, jobRow, null);
+              const mismatchJobRows = await fetchJobRowsForDisplay(sheets, alert.clientId, tabName, jobRow, null);
               options = options.map(o => ({ ...o, jobRowsData: mismatchJobRows }));
             }
 
@@ -6026,7 +6023,7 @@ INSTRUCTIONS FOR USING THESE MATCHES:
           };
 
           tier1Option.jobRowsData = await fetchJobRowsForDisplay(
-            sheets, alert.masterSheetId || alert.clientId, "Confirmed", rowNum,
+            sheets, alert.clientId, "Confirmed", rowNum,
             { type: "invoice", rowNum, slotNum }
           );
 
@@ -6331,7 +6328,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             const highlightSlot = opt.matchType === "existing_job"
               ? { type: "invoice", rowNum: opt.jobRow, slotNum: opt.recommendedActions?.join(" ").match(/slot (\d)/i)?.[1] ? parseInt(opt.recommendedActions.join(" ").match(/slot (\d)/i)[1]) : null }
               : null;
-            invJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.masterSheetId || alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
+            invJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
           }
           opt.jobRowsData = invJobRowCache.get(cacheKey);
         }

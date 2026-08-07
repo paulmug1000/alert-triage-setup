@@ -5284,6 +5284,7 @@ export default function TriageSystem({ onBack }) {
                     direct_costs_mismatch:      "Direct costs / expenses mismatch",
                     pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
                     retainer_shrink_blocked:    "Retainer row blocked from trimming",
+                    uninvoiced_revenue:         "Uninvoiced revenue",
                   };
                   const typeCounts = {};
                   alerts.forEach(a => {
@@ -6485,6 +6486,7 @@ export default function TriageSystem({ onBack }) {
                   direct_costs_mismatch:      "Direct costs / expenses mismatch",
                   pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
                   retainer_shrink_blocked:    "Retainer row blocked from trimming",
+                    uninvoiced_revenue:         "Uninvoiced revenue",
                 };
                 const grouped = {};
                 proactiveAlerts.forEach(a => {

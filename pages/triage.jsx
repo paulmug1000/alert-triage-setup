@@ -254,6 +254,7 @@ export default function TriageSystem({ onBack }) {
   const [outgoingsClient, setOutgoingsClient] = useState(null); // which client's outgoings are loaded
   const [outgoingsMonthOffset, setOutgoingsMonthOffset] = useState(0); // scroll offset
   const [outgoingsEditCell, setOutgoingsEditCell] = useState(null); // { contractor, colLetter, blocks }
+  const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null); // { rowNum, slotNum, slot }
   const [outgoingsInbox, setOutgoingsInbox] = useState([]); // unmatched expenses from DirComp
   const [outgoingsPlacing, setOutgoingsPlacingState] = useState(null); // expense being placed { appId, amount, ... }
   const outgoingsPlacingRef = React.useRef(null);
@@ -3050,6 +3051,162 @@ export default function TriageSystem({ onBack }) {
       );
     };
 
+    const DirectCostsEditModal = () => {
+      if (!directCostsEditSlot) return null;
+      const { rowNum, slotNum, slot } = directCostsEditSlot;
+      const stripCurrency = v => String(v ?? "").replace(/^[£$€]/, "").trim();
+      const [description, setDescription] = React.useState(slot.description || "");
+      const [amount, setAmount] = React.useState(stripCurrency(slot.amount));
+      const [vat, setVat] = React.useState(/^[£$€]?\d/.test(String(slot.vat||"")) ? "" : (slot.vat || "No"));
+      const [date, setDate] = React.useState(slot.date || "");
+      const [daysToPay, setDaysToPay] = React.useState(slot.daysToPay || 30);
+      const [status, setStatus] = React.useState(slot.status || "");
+      const [transactionId, setTransactionId] = React.useState(slot.transactionId || "");
+      const [saving, setSaving] = React.useState(false);
+      const [confirmingDelete, setConfirmingDelete] = React.useState(false);
+
+      const close = () => setDirectCostsEditSlot(null);
+
+      const save = async () => {
+        setSaving(true);
+        try {
+          await fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "update_expense_slot",
+              clientSheetId: outgoingsClient?.clientSheetId,
+              rowNum, slotNum,
+              expense: { description, amount: parseFloat(amount) || 0, vat, date, daysToPay: parseInt(daysToPay) || 30, status, transactionId },
+            }),
+          });
+          if (outgoingsClient?.masterSheetId) {
+            outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
+          }
+          setDirectCostsJobs(prev => prev && prev.map(j => ({
+            ...j,
+            rows: j.rows.map(r => r.rowNum !== rowNum ? r : {
+              ...r,
+              expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== slotNum ? sl : {
+                ...sl, description, amount: parseFloat(amount) || 0, vat, date, daysToPay: parseInt(daysToPay) || 30, status, transactionId,
+              }),
+            }),
+          })));
+          close();
+        } catch(e) { console.error("update_expense_slot save error:", e); }
+        finally { setSaving(false); }
+      };
+
+      const doDelete = async () => {
+        setSaving(true);
+        try {
+          await fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "update_expense_slot",
+              clientSheetId: outgoingsClient?.clientSheetId,
+              rowNum, slotNum, deleteSlot: true,
+            }),
+          });
+          if (outgoingsClient?.masterSheetId) {
+            outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
+          }
+          setDirectCostsJobs(prev => prev && prev.map(j => ({
+            ...j,
+            rows: j.rows.map(r => r.rowNum !== rowNum ? r : {
+              ...r,
+              expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== slotNum ? sl : {
+                ...sl, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "",
+              }),
+            }),
+          })));
+          close();
+        } catch(e) { console.error("update_expense_slot delete error:", e); }
+        finally { setSaving(false); }
+      };
+
+      const inputStyle = { width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" };
+      const labelStyle = { display: "block", fontSize: "11px", fontWeight: "600", color: "#666", marginBottom: "3px" };
+
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) close(); }}>
+          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit expense — Row {rowNum}, Slot {slotNum}</h3>
+              <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
+            </div>
+
+            <div style={{ display: "grid", gap: "12px" }}>
+              <div>
+                <label style={labelStyle}>Description</label>
+                <input style={inputStyle} value={description} onChange={e => setDescription(e.target.value)} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                <div>
+                  <label style={labelStyle}>Amount (£)</label>
+                  <input style={inputStyle} type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} />
+                </div>
+                <div>
+                  <label style={labelStyle}>VAT charged?</label>
+                  <select style={inputStyle} value={vat} onChange={e => setVat(e.target.value)}>
+                    <option value="No">No</option>
+                    <option value="Yes">Yes</option>
+                  </select>
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                <div>
+                  <label style={labelStyle}>Date</label>
+                  <input style={inputStyle} value={date} onChange={e => setDate(e.target.value)} placeholder="DD-Mon-YY" />
+                </div>
+                <div>
+                  <label style={labelStyle}>Days to pay</label>
+                  <input style={inputStyle} type="number" value={daysToPay} onChange={e => setDaysToPay(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label style={labelStyle}>Status</label>
+                <input style={inputStyle} value={status} onChange={e => setStatus(e.target.value)} />
+              </div>
+              <div>
+                <label style={labelStyle}>Transaction ID</label>
+                <input style={inputStyle} value={transactionId} onChange={e => setTransactionId(e.target.value)} />
+              </div>
+            </div>
+
+            {confirmingDelete ? (
+              <div style={{ marginTop: "18px", padding: "12px", background: "#fff5f5", border: "1px solid #fecaca", borderRadius: "8px" }}>
+                <div style={{ fontSize: "13px", color: "#991b1b", marginBottom: "10px" }}>Delete this expense? This clears all 7 fields for this slot and can't be undone from here.</div>
+                <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                  <button onClick={() => setConfirmingDelete(false)} disabled={saving}
+                    style={{ padding: "7px 14px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+                  <button onClick={doDelete} disabled={saving}
+                    style={{ padding: "7px 14px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.7 : 1 }}>
+                    {saving ? "Deleting..." : "Yes, delete"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: "20px" }}>
+                <button onClick={() => setConfirmingDelete(true)} disabled={saving}
+                  style={{ padding: "8px 16px", background: "#fff", color: "#dc2626", border: "1px solid #fecaca", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
+                  Delete expense
+                </button>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button onClick={close} disabled={saving}
+                    style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+                  <button onClick={save} disabled={saving}
+                    style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
+                    {saving ? "Saving..." : "Save changes"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
     const EstimateModal = () => {
       if (!outgoingsEstimate) return null;
       const { contractor } = outgoingsEstimate;
@@ -3221,6 +3378,7 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {outgoingsEditCell && <EditModal />}
+        {directCostsEditSlot && <DirectCostsEditModal />}
         {outgoingsEstimate && <EstimateModal />}
         {outgoingsNewVendor && <NewVendorModal />}
         {outgoingsReplacePrompt && (() => {
@@ -3594,50 +3752,55 @@ export default function TriageSystem({ onBack }) {
                               return (
                                 <td key={s.slotNum}
                                   onClick={async () => {
-                                    if (!isPlacing || !isEmpty || isSaving) return;
-                                    const exp = outgoingsPlacingRef.current;
-                                    if (!exp) return;
-                                    setOutgoingsPlacing(null);
-                                    setDirectCostsSavingCell(cellSavingKey);
-                                    setAssignedAppIds(prevSet => {
-                                      const next = new Set(prevSet); next.add(exp.appId);
-                                      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
-                                      return next;
-                                    });
-                                    setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
-                                    try {
-                                      await fetch("/api/triage", {
-                                        method: "POST", headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({
-                                          action: "assign_expense_to_job",
-                                          clientSheetId: outgoingsClient?.clientSheetId,
-                                          masterSheetId: outgoingsClient?.masterSheetId || "",
-                                          rowNum: jr.rowNum, slotNum: s.slotNum, expense: exp,
-                                        }),
+                                    if (isSaving) return;
+                                    if (isPlacing && isEmpty) {
+                                      const exp = outgoingsPlacingRef.current;
+                                      if (!exp) return;
+                                      setOutgoingsPlacing(null);
+                                      setDirectCostsSavingCell(cellSavingKey);
+                                      setAssignedAppIds(prevSet => {
+                                        const next = new Set(prevSet); next.add(exp.appId);
+                                        try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
+                                        return next;
                                       });
-                                      if (outgoingsClient?.masterSheetId) {
-                                        outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
-                                      }
-                                      // Update the placed slot in place — no full-table reload/flash
-                                      setDirectCostsJobs(prev => prev && prev.map(j => ({
-                                        ...j,
-                                        rows: j.rows.map(r => r.rowNum !== jr.rowNum ? r : {
-                                          ...r,
-                                          expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== s.slotNum ? sl : {
-                                            ...sl,
-                                            description: exp.description || exp.accountName || "",
-                                            amount: exp.amount || 0,
-                                            date: exp.date || "",
-                                            status: exp.status || "",
-                                            transactionId: exp.appId || "",
+                                      setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
+                                      try {
+                                        await fetch("/api/triage", {
+                                          method: "POST", headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({
+                                            action: "assign_expense_to_job",
+                                            clientSheetId: outgoingsClient?.clientSheetId,
+                                            masterSheetId: outgoingsClient?.masterSheetId || "",
+                                            rowNum: jr.rowNum, slotNum: s.slotNum, expense: exp,
                                           }),
-                                        }),
-                                      })));
-                                    } catch(e) { console.error("assign_expense_to_job error:", e); }
-                                    finally { setDirectCostsSavingCell(null); }
+                                        });
+                                        if (outgoingsClient?.masterSheetId) {
+                                          outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
+                                        }
+                                        // Update the placed slot in place — no full-table reload/flash
+                                        setDirectCostsJobs(prev => prev && prev.map(j => ({
+                                          ...j,
+                                          rows: j.rows.map(r => r.rowNum !== jr.rowNum ? r : {
+                                            ...r,
+                                            expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== s.slotNum ? sl : {
+                                              ...sl,
+                                              description: exp.description || exp.accountName || "",
+                                              amount: exp.amount || 0,
+                                              date: exp.date || "",
+                                              status: exp.status || "",
+                                              transactionId: exp.appId || "",
+                                            }),
+                                          }),
+                                        })));
+                                      } catch(e) { console.error("assign_expense_to_job error:", e); }
+                                      finally { setDirectCostsSavingCell(null); }
+                                    } else if (!isPlacing && !isGenuinelyBlank) {
+                                      // Click a filled (or manual-entry) slot when not placing → open edit modal
+                                      setDirectCostsEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s });
+                                    }
                                   }}
                                   style={{ padding: "7px 10px", borderBottom: "1px solid #eee",
-                                    cursor: (isPlacing && isEmpty && !isSaving) ? "pointer" : "default",
+                                    cursor: (isSaving) ? "default" : (isPlacing && isEmpty) ? "pointer" : (!isPlacing && !isGenuinelyBlank) ? "pointer" : "default",
                                     background: isSaving ? "#f5f5f5" : (isPlacing && isEmpty) ? "#e8f0fe" : "transparent",
                                     border: (isPlacing && isEmpty && !isSaving) ? "1.5px solid #1a56db" : "none" }}>
                                   {isSaving ? (
@@ -3654,6 +3817,9 @@ export default function TriageSystem({ onBack }) {
                                       <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.date}{s.status ? ` · ${s.status}` : ""}</div>
                                       {isManualEntry && isPlacing && (
                                         <div style={{ color: "#1a56db", fontWeight: "700", marginTop: "2px" }}>Click to overwrite</div>
+                                      )}
+                                      {!isPlacing && (
+                                        <div style={{ color: "#1a56db", fontSize: "10px", marginTop: "2px" }}>Click to edit</div>
                                       )}
                                     </div>
                                   )}

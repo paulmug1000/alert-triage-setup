@@ -2316,6 +2316,62 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "update_expense_slot") {
+      // Edits or clears an existing expense slot on the Confirmed tab (Vendors → Direct Costs).
+      // Pass `expense` with the 7 fields to write, or `deleteSlot: true` to clear all 7 cells.
+      const { clientSheetId, rowNum, slotNum, expense, deleteSlot } = req.body;
+      if (!clientSheetId || !rowNum || !slotNum) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
+      }
+      if (!deleteSlot && !expense) {
+        return res.status(400).json({ success: false, error: "Missing expense (or set deleteSlot: true)" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const slotCols = {
+          1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
+          2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
+          3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
+        }[slotNum];
+        if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
+
+        const values = deleteSlot
+          ? ["", "", "", "", "", "", ""]
+          : [
+              expense.description || "",
+              expense.amount || 0,
+              expense.vat || "No",
+              expense.date || "",
+              expense.daysToPay || 30,
+              expense.status || "",
+              expense.transactionId || "",
+            ];
+
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: {
+            valueInputOption: "RAW",
+            data: [
+              { range: `Confirmed!${slotCols.d}${rowNum}`,  values: [[values[0]]] },
+              { range: `Confirmed!${slotCols.a}${rowNum}`,  values: [[values[1]]] },
+              { range: `Confirmed!${slotCols.v}${rowNum}`,  values: [[values[2]]] },
+              { range: `Confirmed!${slotCols.dt}${rowNum}`, values: [[values[3]]] },
+              { range: `Confirmed!${slotCols.dp}${rowNum}`, values: [[values[4]]] },
+              { range: `Confirmed!${slotCols.st}${rowNum}`, values: [[values[5]]] },
+              { range: `Confirmed!${slotCols.id}${rowNum}`, values: [[values[6]]] },
+            ],
+          },
+        });
+
+        console.log(`  ✅ update_expense_slot: ${deleteSlot ? "deleted" : "updated"} row ${rowNum} slot ${slotNum}`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ update_expense_slot error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "update_outgoing_note") {
       // Writes a new note to a specific Outgoings cell.
       // blocks: array of { appId, amount, status, recDate, payDate, description }

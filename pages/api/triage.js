@@ -97,6 +97,7 @@ const ALERT_MEMORY_TAB = "AlertMemory";
 const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:K`;
 const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
 const PROACTIVE_ALERTS_TAB = "ProactiveAlerts";
+const PROACTIVE_CHECK_LOG_TAB = "ProactiveCheckLog";
 
 /**
 /**
@@ -1224,6 +1225,91 @@ async function readProactiveAlerts(sheets, automationCommanderSheetId) {
     }));
   } catch (err) {
     console.log(`⚠️ Could not read ${PROACTIVE_ALERTS_TAB}: ${err.message}`);
+    return [];
+  }
+}
+
+async function ensureProactiveCheckLogTab(sheets, automationCommanderSheetId) {
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PROACTIVE_CHECK_LOG_TAB}!A1`,
+    });
+  } catch (err) {
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: { requests: [{ addSheet: { properties: { title: PROACTIVE_CHECK_LOG_TAB } } }] },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${PROACTIVE_CHECK_LOG_TAB}!A1:E1`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[
+          "runAt", "clientsChecked", "newAlerts", "updatedAlerts", "dismissedAlerts",
+        ]] },
+      });
+      console.log(`✅ Created ${PROACTIVE_CHECK_LOG_TAB} tab`);
+    } catch (createErr) {
+      console.log(`⚠️ Could not create ${PROACTIVE_CHECK_LOG_TAB} tab: ${createErr.message}`);
+    }
+  }
+}
+
+// Appends one run-summary row and trims the log to the most recent 30 entries,
+// so this tab stays small (nightly runs = ~1 row/day, capped at ~1 month).
+async function logProactiveCheckRun(sheets, automationCommanderSheetId, { clientsChecked, newAlerts, updatedAlerts, dismissedAlerts }) {
+  try {
+    await ensureProactiveCheckLogTab(sheets, automationCommanderSheetId);
+    const nowISO = new Date().toISOString();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PROACTIVE_CHECK_LOG_TAB}!A:E`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[nowISO, clientsChecked || 0, newAlerts || 0, updatedAlerts || 0, dismissedAlerts || 0]] },
+    });
+    // Trim to most recent 30 rows (plus header)
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PROACTIVE_CHECK_LOG_TAB}!A:A`,
+    });
+    const rowCount = (resp.data.values || []).length;
+    if (rowCount > 31) {
+      const deleteCount = rowCount - 31;
+      const meta = await sheets.spreadsheets.get({ spreadsheetId: automationCommanderSheetId, fields: "sheets.properties" });
+      const sheetMeta = meta.data.sheets.find(s => s.properties.title === PROACTIVE_CHECK_LOG_TAB);
+      if (sheetMeta) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: automationCommanderSheetId,
+          requestBody: { requests: [{
+            deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },
+          }] },
+        });
+      }
+    }
+  } catch (err) {
+    console.log(`⚠️ Could not log proactive check run: ${err.message}`);
+  }
+}
+
+async function readProactiveCheckLog(sheets, automationCommanderSheetId, limit = 10) {
+  try {
+    await ensureProactiveCheckLogTab(sheets, automationCommanderSheetId);
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PROACTIVE_CHECK_LOG_TAB}!A:E`,
+    });
+    const rows = resp.data.values || [];
+    if (rows.length < 2) return [];
+    return rows.slice(1).map(row => ({
+      runAt: row[0] || "",
+      clientsChecked: parseInt(row[1]) || 0,
+      newAlerts: parseInt(row[2]) || 0,
+      updatedAlerts: parseInt(row[3]) || 0,
+      dismissedAlerts: parseInt(row[4]) || 0,
+    })).reverse().slice(0, limit); // most recent first
+  } catch (err) {
+    console.log(`⚠️ Could not read ${PROACTIVE_CHECK_LOG_TAB}: ${err.message}`);
     return [];
   }
 }
@@ -10209,6 +10295,10 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           });
         }
         console.log(`  ✅ Proactive alerts: ${stored} stored, ${updated} updated, ${dismissed} dismissed`);
+        await logProactiveCheckRun(sheets, acId, {
+          clientsChecked: req.body.clientsChecked || undefined,
+          newAlerts: stored, updatedAlerts: updated, dismissedAlerts: dismissed,
+        });
         return res.status(200).json({ success: true, stored, updated, dismissed });
       } catch (err) {
         console.error(`❌ Error in store_proactive_alerts:`, err);
@@ -10234,6 +10324,20 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(200).json({ success: true, alerts, countsByClient });
       } catch (err) {
         console.error(`❌ Error in get_proactive_alerts:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_proactive_check_log") {
+      // Returns the most recent overnight proactive-check run summaries, for the
+      // Settings screen — reassurance that the checks are actually running.
+      const acId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+      if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const runs = await readProactiveCheckLog(sheets, acId, 10);
+        return res.status(200).json({ success: true, runs });
+      } catch (err) {
+        console.error(`❌ Error in get_proactive_check_log:`, err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

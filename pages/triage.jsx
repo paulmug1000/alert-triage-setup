@@ -332,6 +332,9 @@ export default function TriageSystem({ onBack }) {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveMsg, setSettingsSaveMsg] = useState("");
   const [diagClientName, setDiagClientName] = useState("");
+  const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
+  const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
+  const [proactiveCheckLogLoaded, setProactiveCheckLogLoaded] = useState(false);
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagResult, setDiagResult] = useState(null);
   const [diagError, setDiagError] = useState("");
@@ -427,6 +430,7 @@ export default function TriageSystem({ onBack }) {
     fireOutgoingsPullIfPending();
     setActiveNav("settings");
     setSettingsLoading(true);
+    if (!proactiveCheckLogLoaded) loadProactiveCheckLog();
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "get_claude_settings", automationCommanderSheetId }) })
       .then(r => r.json()).then(d => {
@@ -2090,6 +2094,19 @@ export default function TriageSystem({ onBack }) {
     } finally {
       setOverviewLoading(false);
     }
+  };
+
+  const loadProactiveCheckLog = async () => {
+    try {
+      setProactiveCheckLogLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_proactive_check_log", automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) setProactiveCheckLog(data.runs || []);
+    } catch(e) { console.error("loadProactiveCheckLog error:", e); }
+    finally { setProactiveCheckLogLoading(false); setProactiveCheckLogLoaded(true); }
   };
 
   const loadOutgoings = async (client) => {
@@ -4573,6 +4590,59 @@ export default function TriageSystem({ onBack }) {
                 </div>
                 <div style={{ marginTop: "12px", fontSize: "12px", color: "#888" }}>
                   Note: limits apply to automated precompute only. On-demand analysis (clicking an alert) is always unrestricted.
+                </div>
+              </div>
+
+              {/* Proactive Checks */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Proactive Checks</h3>
+                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
+                  These checks run automatically every night at 3am, across every client, and surface as alerts on the Home screen when something needs attention.
+                </p>
+
+                {[
+                  { name: "Retainer invoice monitoring", detail: "Flags retainer jobs where an invoice was scheduled to be sent but no invoice reference has been recorded." },
+                  { name: "CRM data wipe detection", detail: "Watches for AutoLog entries warning that the CRM wiped a job's data blank." },
+                  { name: "Revenue / total invoiced mismatch", detail: "Compares each job's revenue against the total invoiced amount, flagging zero-revenue jobs with invoices and material mismatches." },
+                  { name: "Direct costs / total expenses mismatch", detail: "Compares each job's direct cost budget against total recorded expenses, across both Pipeline and Confirmed." },
+                  { name: "Pipeline / Confirmed overlap", detail: "Finds jobs present in both tabs where the Pipeline entry hasn't been properly closed out (likelihood not 0%, not marked copied to Confirmed)." },
+                  { name: "Retainer shrink blocked", detail: "Flags retainer child rows that couldn't be automatically trimmed after a contract shrank, because the row already has actuals recorded." },
+                ].map((c, i) => (
+                  <div key={c.name} style={{ display: "flex", gap: "10px", padding: "8px 0", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
+                    <span style={{ color: "#16a34a", fontSize: "14px", lineHeight: "20px" }}>✓</span>
+                    <div>
+                      <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{c.name}</div>
+                      <div style={{ fontSize: "12px", color: "#777", marginTop: "2px" }}>{c.detail}</div>
+                    </div>
+                  </div>
+                ))}
+
+                <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e8e8e8" }}>
+                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "8px" }}>Recent run history</div>
+                  {proactiveCheckLogLoading && <div style={{ fontSize: "12px", color: "#999" }}>Loading...</div>}
+                  {!proactiveCheckLogLoading && proactiveCheckLog && proactiveCheckLog.length === 0 && (
+                    <div style={{ fontSize: "12px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
+                      No runs logged yet — the checks may not have run since this feature was added, or the nightly trigger may need checking.
+                    </div>
+                  )}
+                  {!proactiveCheckLogLoading && proactiveCheckLog && proactiveCheckLog.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: "12px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
+                        ✓ Last ran {new Date(proactiveCheckLog[0].runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
+                        {proactiveCheckLog[0].clientsChecked > 0 ? ` — ${proactiveCheckLog[0].clientsChecked} clients checked` : ""}
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                        {proactiveCheckLog.map((run, i) => (
+                          <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#888", padding: "3px 0" }}>
+                            <span>{new Date(run.runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</span>
+                            <span>{run.newAlerts > 0 || run.updatedAlerts > 0 || run.dismissedAlerts > 0
+                              ? `${run.newAlerts} new · ${run.updatedAlerts} updated · ${run.dismissedAlerts} cleared`
+                              : "No issues found"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 

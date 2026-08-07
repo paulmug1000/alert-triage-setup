@@ -5403,6 +5403,7 @@ export default function TriageSystem({ onBack }) {
                     {/* Uninvoiced revenue detail */}
                     {alert.alertType === "uninvoiced_revenue" && (
                       <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
                         {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
                         {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
                         {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}

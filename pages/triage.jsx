@@ -4607,6 +4607,7 @@ export default function TriageSystem({ onBack }) {
                   { name: "Direct costs / total expenses mismatch", detail: "Compares each job's direct cost budget against total recorded expenses, across both Pipeline and Confirmed." },
                   { name: "Pipeline / Confirmed overlap", detail: "Finds jobs present in both tabs where the Pipeline entry hasn't been properly closed out (likelihood not 0%, not marked copied to Confirmed)." },
                   { name: "Retainer shrink blocked", detail: "Flags retainer child rows that couldn't be automatically trimmed after a contract shrank, because the row already has actuals recorded." },
+                  { name: "Uninvoiced revenue on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have uninvoiced revenue, excluding placeholder invoices." },
                 ].map((c, i) => (
                   <div key={c.name} style={{ display: "flex", gap: "10px", padding: "8px 0", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
                     <span style={{ color: "#16a34a", fontSize: "14px", lineHeight: "20px" }}>✓</span>
@@ -5364,7 +5365,7 @@ export default function TriageSystem({ onBack }) {
                       {alert.heading}
                     </div>
                     <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" ? null : alert.detail}
+                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_revenue" ? null : alert.detail}
                     </div>
 
                     {/* Retainer invoice detail */}
@@ -5394,6 +5395,21 @@ export default function TriageSystem({ onBack }) {
                                 ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</>
                                 : <>Not yet attached to any job in the Confirmed tab</>}
                             </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Uninvoiced revenue detail */}
+                    {alert.alertType === "uninvoiced_revenue" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
+                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                        {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
+                        {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
+                        {m.uninvoicedAmount && (
+                          <div style={{ marginTop: "6px", fontWeight: "700", color: "#991b1b" }}>
+                            £{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders excluded)
                           </div>
                         )}
                       </div>

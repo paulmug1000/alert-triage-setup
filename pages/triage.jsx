@@ -4111,7 +4111,7 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {invoicesEditSlot && <InvoicesEditModal />}
-        <div style={styles.container}>
+        <div style={{ padding: "20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
               {invoicesClient ? invoicesClient.clientName : "Invoices"}
@@ -4125,10 +4125,31 @@ export default function TriageSystem({ onBack }) {
           </div>
 
           {noInvClient && (
-            <div>
+            <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
               <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to place unmatched invoices:</p>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {(allOutgoingsClients || []).map(c => (
+              {(() => {
+                const allClients = allOutgoingsClients || [];
+                // Group clients: those with unactioned invoice discrepancies first
+                const clientsWithInbox = allClients.filter(c =>
+                  clientsWithFlags?.some(f => f.clientName === c.clientName &&
+                    (f.flags?.invoiceDashboardDiscr || f.flags?.invoiceAppDiscr))
+                );
+                const clientsNoInbox = allClients.filter(c => !clientsWithInbox.includes(c));
+                const renderClientBtn = (c) => (
+                  <button key={c.clientName} className="triage-btn"
+                    onClick={() => {
+                      setInvoicesClient(c);
+                      loadInvoicesInbox(c);
+                      loadInvoicesJobs(c, false);
+                      setInvoicesShowAll(false);
+                    }}
+                    style={{ padding: "10px 16px", background: "#fff8e1",
+                      border: "1px solid #ffe082",
+                      borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500", width: "100%" }}>
+                    {c.clientName}
+                  </button>
+                );
+                const renderClientBtnPlain = (c) => (
                   <button key={c.clientName} className="triage-btn"
                     onClick={() => {
                       setInvoicesClient(c);
@@ -4139,8 +4160,21 @@ export default function TriageSystem({ onBack }) {
                     style={{ ...styles.buttonSecondary, textAlign: "left", padding: "12px 16px", fontSize: "14px" }}>
                     {c.clientName}
                   </button>
-                ))}
-              </div>
+                );
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {clientsWithInbox.length > 0 && clientsNoInbox.length > 0 && (
+                      <div style={{ fontSize: "11px", fontWeight: "700", color: "#e65100", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>Invoices to assign</div>
+                    )}
+                    {clientsWithInbox.map(renderClientBtn)}
+                    {clientsNoInbox.length > 0 && clientsWithInbox.length > 0 && (
+                      <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>No invoices to assign</div>
+                    )}
+                    {clientsNoInbox.map(renderClientBtnPlain)}
+                    {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet — go to Home and refresh first.</p>}
+                  </div>
+                );
+              })()}
             </div>
           )}
 

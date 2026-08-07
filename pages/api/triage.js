@@ -10213,13 +10213,29 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
         // Build two lookup maps:
         // 1. By exact alertKey (primary)
-        // 2. By clientName+alertType+confirmedRow (fallback — handles key format changes between GAS runs)
+        // 2. By a stable signature (fallback — handles key format changes, and critically,
+        //    survives row shifts). Prefers stableJobKey (client+job+code, or client+job+dates
+        //    when no code exists) when the alert type provides it; falls back to the older
+        //    row-based signature for alert types that don't yet provide stableJobKey.
+        const buildSig = (row) => {
+          const meta = row.metadata || {};
+          if (meta.stableJobKey) return `${row.clientName}|||${row.alertType}|||stable:${meta.stableJobKey}`;
+          const confirmedRow = meta.confirmedRow || "";
+          return `${row.clientName}|||${row.alertType}|||${confirmedRow}`;
+        };
+        const buildSigForIncoming = (alert) => {
+          const meta = alert.metadata || {};
+          const stableJobKey = alert.stableJobKey || meta.stableJobKey || "";
+          if (stableJobKey) return `${alert.clientName}|||${alert.alertType}|||stable:${stableJobKey}`;
+          const cr = alert.confirmedRow || meta.confirmedRow || "";
+          return `${alert.clientName}|||${alert.alertType}|||${cr}`;
+        };
+
         const existingByKey = {};
         const existingBySignature = {};
         for (const row of existing) {
           existingByKey[row.alertKey] = row;
-          const confirmedRow = (row.metadata && row.metadata.confirmedRow) ? row.metadata.confirmedRow : "";
-          const sig = `${row.clientName}|||${row.alertType}|||${confirmedRow}`;
+          const sig = buildSig(row);
           // Keep the most recent row per signature (last writer wins)
           if (!existingBySignature[sig] || row.rowIndex > existingBySignature[sig].rowIndex) {
             existingBySignature[sig] = row;
@@ -10235,15 +10251,11 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         // was sent, retainer was fully invoiced, etc.) — without this, stale alerts persist forever.
         const incomingAlertTypes = new Set(incomingAlerts.map(a => a.alertType));
         const incomingKeys = new Set(incomingAlerts.map(a => a.alertKey));
-        const incomingSignatures = new Set(incomingAlerts.map(a => {
-          const cr = a.confirmedRow || (a.metadata && a.metadata.confirmedRow) || "";
-          return `${a.clientName}|||${a.alertType}|||${cr}`;
-        }));
+        const incomingSignatures = new Set(incomingAlerts.map(buildSigForIncoming));
         for (const row of existing) {
           if (row.status !== "active") continue;
           if (!incomingAlertTypes.has(row.alertType)) continue; // different type — don't touch
-          const cr = (row.metadata && row.metadata.confirmedRow) ? row.metadata.confirmedRow : "";
-          const sig = `${row.clientName}|||${row.alertType}|||${cr}`;
+          const sig = buildSig(row);
           if (!incomingKeys.has(row.alertKey) && !incomingSignatures.has(sig)) {
             // This alert was active but not in the incoming run — auto-dismiss
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["auto_dismissed"]] });
@@ -10255,8 +10267,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
         for (const alert of incomingAlerts) {
           // Build the signature for this incoming alert
-          const incomingConfirmedRow = alert.confirmedRow || (alert.metadata && alert.metadata.confirmedRow) || "";
-          const sig = `${alert.clientName}|||${alert.alertType}|||${incomingConfirmedRow}`;
+          const sig = buildSigForIncoming(alert);
 
           // Look up by exact key first, then by signature
           const ex = existingByKey[alert.alertKey] || existingBySignature[sig];
@@ -10274,7 +10285,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
               "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
               "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow",
-              "uninvoicedAmount","projectCode","draftCount","draftTotal"];
+              "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey"];
             for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
 
             await sheets.spreadsheets.values.append({

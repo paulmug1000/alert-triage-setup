@@ -10272,7 +10272,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             const metadata = {};
             const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
               "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
-              "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType"];
+              "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
+              "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow"];
             for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
 
             await sheets.spreadsheets.values.append({

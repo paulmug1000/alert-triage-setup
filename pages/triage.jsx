@@ -5378,6 +5378,24 @@ export default function TriageSystem({ onBack }) {
                         {m.frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(m.frequencyDays)} (every ~{m.frequencyDays} days)</div>}
                         {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
                         {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
+                        {m.possibleMatchInvoiceNo && (
+                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
+                            <div style={{
+                              display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
+                              background: m.possibleMatchConfidence === "high" ? "#fee2e2" : "#fef9c3",
+                              color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12",
+                              border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}`,
+                            }}>
+                              Possible retainer change — {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
+                            </div>
+                            <div><strong>Invoice found:</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}</div>
+                            <div>
+                              {m.possibleMatchConfirmedRow
+                                ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</>
+                                : <>Not yet attached to any job in the Confirmed tab</>}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 

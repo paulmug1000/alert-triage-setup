@@ -87,7 +87,7 @@ const GLOBAL_STYLES = `
 `;
 
 // Persistent top bar — rendered around every screen
-function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, onSettings, homeAlertCount, taskCount, children }) {
+function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, onInvoices, onSettings, homeAlertCount, taskCount, children }) {
   const [showMore, setShowMore] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(false);
 
@@ -131,6 +131,7 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoing
   const secondaryNavs = [
     { key: "appLog", label: "App Log", handler: onAppLog },
     { key: "outgoings", label: "Vendors", handler: onOutgoings },
+    { key: "invoices", label: "Invoices", handler: onInvoices },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
 
@@ -270,6 +271,18 @@ export default function TriageSystem({ onBack }) {
   const [directCostsShowAll, setDirectCostsShowAll] = useState(false);
   const [directCostsSavingCell, setDirectCostsSavingCell] = useState(null); // "rowNum-slotNum" or "newrow-<jobKey>" currently saving
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
+  // ── Invoices screen state (mirrors Vendors → Direct Costs) ─────────────────
+  const [invoicesClient, setInvoicesClient] = useState(null);
+  const [invoicesInbox, setInvoicesInbox] = useState([]);
+  const [invoicesInboxLoading, setInvoicesInboxLoading] = useState(false);
+  const [invoicesPlacing, setInvoicesPlacingState] = useState(null); // invoice being placed
+  const invoicesPlacingRef = React.useRef(null);
+  const setInvoicesPlacing = (val) => { invoicesPlacingRef.current = val; setInvoicesPlacingState(val); };
+  const [invoicesJobs, setInvoicesJobs] = useState(null);
+  const [invoicesJobsLoading, setInvoicesJobsLoading] = useState(false);
+  const [invoicesShowAll, setInvoicesShowAll] = useState(false);
+  const [invoicesSavingCell, setInvoicesSavingCell] = useState(null);
+  const [invoicesEditSlot, setInvoicesEditSlot] = useState(null); // { rowNum, slotNum, slot }
   // assignedAppIds: Set of transactionIds assigned via outgoings — persisted to localStorage
   // until refreshOutgoingsAndUI runs and removes them from DirComp properly
   // assignedAppIdsByClient: Map of {clientName → Set<transactionId>} for per-client count adjustment
@@ -447,6 +460,57 @@ export default function TriageSystem({ onBack }) {
         }
       }).catch(e => console.error("get_all_clients error:", e));
     }
+  };
+
+  const handleNavInvoices = () => {
+    setActiveNav("invoices");
+    setInvoicesClient(null);
+    setInvoicesInbox([]);
+    setInvoicesPlacing(null);
+    setInvoicesJobs(null);
+    setInvoicesShowAll(false);
+    if (!allClientsLoaded) {
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
+      }).then(r => r.json()).then(data => {
+        if (data.success && Array.isArray(data.clients)) {
+          setAllOutgoingsClients(data.clients);
+          setAllClientsLoaded(true);
+        }
+      }).catch(e => console.error("get_all_clients error:", e));
+    }
+  };
+
+  const loadInvoicesInbox = async (client) => {
+    if (!client?.clientSheetId) return;
+    try {
+      setInvoicesInboxLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_invoices_inbox", clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const pruned = (data.inbox || []).filter(inv => !assignedAppIds.has(inv.invoiceNo));
+        setInvoicesInbox(pruned);
+      }
+    } catch(e) { console.error("loadInvoicesInbox error:", e); }
+    finally { setInvoicesInboxLoading(false); }
+  };
+
+  const loadInvoicesJobs = async (client, showAll) => {
+    if (!client?.clientSheetId) return;
+    try {
+      setInvoicesJobsLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_invoice_jobs", clientSheetId: client.clientSheetId, showAll: !!showAll }),
+      });
+      const data = await res.json();
+      if (data.success) setInvoicesJobs(data.jobs);
+    } catch(e) { console.error("loadInvoicesJobs error:", e); }
+    finally { setInvoicesJobsLoading(false); }
   };
 
   // ── Task handlers ─────────────────────────────────────────────────────────
@@ -2699,7 +2763,7 @@ export default function TriageSystem({ onBack }) {
   // Screen: Ignored Alerts
   if (screen === "ignoredAlerts" && activeNav === "home") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Ignored Alerts</h1>
@@ -3376,7 +3440,7 @@ export default function TriageSystem({ onBack }) {
     const noClient = !outgoingsClient || !outgoingsData;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {outgoingsEditCell && <EditModal />}
         {directCostsEditSlot && <DirectCostsEditModal />}
         {outgoingsEstimate && <EstimateModal />}
@@ -3899,6 +3963,363 @@ export default function TriageSystem({ onBack }) {
   }
 
 
+  // ── INVOICES SCREEN ─────────────────────────────────────────────────────────
+  const InvoicesEditModal = () => {
+    if (!invoicesEditSlot) return null;
+    const { rowNum, slotNum, slot } = invoicesEditSlot;
+    const stripCurrency = v => String(v ?? "").replace(/^[£$€]/, "").trim();
+    const [invoiceNo, setInvoiceNo] = React.useState(slot.ref || "");
+    const [amount, setAmount] = React.useState(stripCurrency(slot.amount));
+    const [sentDate, setSentDate] = React.useState(slot.sentDate || "");
+    const [daysToPay, setDaysToPay] = React.useState(slot.daysToPay || 30);
+    const [status, setStatus] = React.useState(slot.status || "");
+    const [saving, setSaving] = React.useState(false);
+    const [confirmingDelete, setConfirmingDelete] = React.useState(false);
+
+    const close = () => setInvoicesEditSlot(null);
+
+    const save = async () => {
+      setSaving(true);
+      try {
+        await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_invoice_slot",
+            clientSheetId: invoicesClient?.clientSheetId,
+            rowNum, slotNum,
+            invoice: { invoiceNo, amount: parseFloat(amount) || 0, sentDate, daysToPay: parseInt(daysToPay) || 30, status },
+          }),
+        });
+        if (invoicesClient?.masterSheetId) {
+          outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
+        }
+        setInvoicesJobs(prev => prev && prev.map(j => ({
+          ...j,
+          rows: j.rows.map(r => r.rowNum !== rowNum ? r : {
+            ...r,
+            invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== slotNum ? sl : {
+              ...sl, ref: invoiceNo, amount: parseFloat(amount) || 0, sentDate, daysToPay: parseInt(daysToPay) || 30, status,
+            }),
+          }),
+        })));
+        close();
+      } catch(e) { console.error("update_invoice_slot save error:", e); }
+      finally { setSaving(false); }
+    };
+
+    const doDelete = async () => {
+      setSaving(true);
+      try {
+        await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update_invoice_slot",
+            clientSheetId: invoicesClient?.clientSheetId,
+            rowNum, slotNum, deleteSlot: true,
+          }),
+        });
+        if (invoicesClient?.masterSheetId) {
+          outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
+        }
+        setInvoicesJobs(prev => prev && prev.map(j => ({
+          ...j,
+          rows: j.rows.map(r => r.rowNum !== rowNum ? r : {
+            ...r,
+            invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== slotNum ? sl : {
+              ...sl, ref: "", amount: "", sentDate: "", daysToPay: "", status: "",
+            }),
+          }),
+        })));
+        close();
+      } catch(e) { console.error("update_invoice_slot delete error:", e); }
+      finally { setSaving(false); }
+    };
+
+    const inputStyle = { width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" };
+    const labelStyle = { display: "block", fontSize: "11px", fontWeight: "600", color: "#666", marginBottom: "3px" };
+
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+        onClick={e => { if (e.target === e.currentTarget) close(); }}>
+        <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+            <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit invoice — Row {rowNum}, Slot {slotNum}</h3>
+            <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
+          </div>
+
+          <div style={{ display: "grid", gap: "12px" }}>
+            <div>
+              <label style={labelStyle}>Invoice number</label>
+              <input style={inputStyle} value={invoiceNo} onChange={e => setInvoiceNo(e.target.value)} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+              <div>
+                <label style={labelStyle}>Amount (£)</label>
+                <input style={inputStyle} type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} />
+              </div>
+              <div>
+                <label style={labelStyle}>Days to pay</label>
+                <input style={inputStyle} type="number" value={daysToPay} onChange={e => setDaysToPay(e.target.value)} />
+              </div>
+            </div>
+            <div>
+              <label style={labelStyle}>Sent date</label>
+              <input style={inputStyle} value={sentDate} onChange={e => setSentDate(e.target.value)} placeholder="DD-Mon-YY" />
+            </div>
+            <div>
+              <label style={labelStyle}>Status</label>
+              <input style={inputStyle} value={status} onChange={e => setStatus(e.target.value)} />
+            </div>
+          </div>
+
+          {confirmingDelete ? (
+            <div style={{ marginTop: "18px", padding: "12px", background: "#fff5f5", border: "1px solid #fecaca", borderRadius: "8px" }}>
+              <div style={{ fontSize: "13px", color: "#991b1b", marginBottom: "10px" }}>Delete this invoice entry? This clears all 5 fields for this slot and can't be undone from here.</div>
+              <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                <button onClick={() => setConfirmingDelete(false)} disabled={saving}
+                  style={{ padding: "7px 14px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+                <button onClick={doDelete} disabled={saving}
+                  style={{ padding: "7px 14px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.7 : 1 }}>
+                  {saving ? "Deleting..." : "Yes, delete"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: "20px" }}>
+              <button onClick={() => setConfirmingDelete(true)} disabled={saving}
+                style={{ padding: "8px 16px", background: "#fff", color: "#dc2626", border: "1px solid #fecaca", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
+                Delete invoice
+              </button>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button onClick={close} disabled={saving}
+                  style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+                <button onClick={save} disabled={saving}
+                  style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
+                  {saving ? "Saving..." : "Save changes"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  if (activeNav === "invoices") {
+    const noInvClient = !invoicesClient;
+
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        {invoicesEditSlot && <InvoicesEditModal />}
+        <div style={styles.container}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+            <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
+              {invoicesClient ? invoicesClient.clientName : "Invoices"}
+            </h2>
+            {invoicesClient && (
+              <button className="triage-btn" onClick={() => { setInvoicesClient(null); setInvoicesInbox([]); setInvoicesJobs(null); }}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
+                ← Back to Clients
+              </button>
+            )}
+          </div>
+
+          {noInvClient && (
+            <div>
+              <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to place unmatched invoices:</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {(allOutgoingsClients || []).map(c => (
+                  <button key={c.clientName} className="triage-btn"
+                    onClick={() => {
+                      setInvoicesClient(c);
+                      loadInvoicesInbox(c);
+                      loadInvoicesJobs(c, false);
+                      setInvoicesShowAll(false);
+                    }}
+                    style={{ ...styles.buttonSecondary, textAlign: "left", padding: "12px 16px", fontSize: "14px" }}>
+                    {c.clientName}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!noInvClient && (
+            <>
+              {/* Invoice inbox */}
+              <div style={{ background: "#fff", border: `1px solid ${invoicesInbox.length > 0 ? "#ffc107" : "#e0e0e0"}`, borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
+                <div style={{ fontSize: "13px", fontWeight: "700", color: invoicesInbox.length > 0 ? "#e65100" : "#888", marginBottom: invoicesInbox.length > 0 ? "6px" : "0" }}>
+                  {invoicesInboxLoading ? "Loading..." : invoicesInbox.length > 0
+                    ? `Unmatched invoices (${invoicesInbox.length}) — click to select, then click a slot to place`
+                    : "No unmatched invoices"}
+                </div>
+                {invoicesInbox.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    {invoicesInbox.map(inv => {
+                      const isPlacing = invoicesPlacing?.invoiceNo === inv.invoiceNo;
+                      return (
+                        <div key={inv.invoiceNo}
+                          onClick={() => setInvoicesPlacing(isPlacing ? null : inv)}
+                          style={{ cursor: "pointer", padding: "8px 12px", borderRadius: "8px",
+                            background: isPlacing ? "#1a56db" : "#fff8e1",
+                            color: isPlacing ? "#fff" : "#333",
+                            border: `1px solid ${isPlacing ? "#1a56db" : "#ffe082"}`,
+                            fontSize: "12px", minWidth: "160px" }}>
+                          <div style={{ fontWeight: "700" }}>#{inv.invoiceNo} — £{inv.amount.toFixed(2)}</div>
+                          <div style={{ opacity: 0.85 }}>{inv.client}{inv.job ? ` — ${inv.job}` : ""}</div>
+                          <div style={{ opacity: 0.7 }}>{inv.sentDate}{inv.status ? ` · ${inv.status}` : ""}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Jobs list — spreadsheet-style with invoice slots */}
+              {invoicesJobsLoading && (
+                <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
+              )}
+              {!invoicesJobsLoading && invoicesJobs && (
+                <>
+                  <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1100px", tableLayout: "fixed" }}>
+                      <colgroup>
+                        <col style={{ width: "50px" }} />
+                        <col style={{ width: "130px" }} />
+                        <col style={{ width: "160px" }} />
+                        <col style={{ width: "80px" }} />
+                        <col style={{ width: "90px" }} />
+                        <col style={{ width: "90px" }} />
+                        <col style={{ width: "70px" }} />
+                        <col style={{ width: "90px" }} />
+                        <col style={{ width: "90px" }} />
+                        <col style={{ width: "150px" }} />
+                        <col style={{ width: "150px" }} />
+                        <col style={{ width: "150px" }} />
+                      </colgroup>
+                      <thead>
+                        <tr style={{ background: "#f5f6fa" }}>
+                          {["Row","Client","Job name","Code","Revenue","Direct costs","Type","Start","End",
+                            "InvSlot1","InvSlot2","InvSlot3"].map(h => (
+                            <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {invoicesJobs.flatMap((job, jobIdx) => job.rows.map((jr, rIdx) => (
+                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.client : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.jobName : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.revenue}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.directCosts}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.projectRetainer}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
+                            {jr.invoiceSlots.map(s => {
+                              const isManualEntry = String(s.ref || "").toUpperCase().includes("MANUAL-INV");
+                              const isGenuinelyBlank = !s.ref && !s.amount;
+                              const isEmpty = isGenuinelyBlank || isManualEntry;
+                              const isPlacing = !!invoicesPlacing;
+                              const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
+                              const isSaving = invoicesSavingCell === cellSavingKey;
+                              return (
+                                <td key={s.slotNum}
+                                  onClick={async () => {
+                                    if (isSaving) return;
+                                    if (isPlacing && isEmpty) {
+                                      const inv = invoicesPlacingRef.current;
+                                      if (!inv) return;
+                                      setInvoicesPlacing(null);
+                                      setInvoicesSavingCell(cellSavingKey);
+                                      setAssignedAppIds(prevSet => {
+                                        const next = new Set(prevSet); next.add(inv.invoiceNo);
+                                        try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
+                                        return next;
+                                      });
+                                      setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
+                                      try {
+                                        await fetch("/api/triage", {
+                                          method: "POST", headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({
+                                            action: "assign_invoice_to_job",
+                                            clientSheetId: invoicesClient?.clientSheetId,
+                                            rowNum: jr.rowNum, slotNum: s.slotNum, invoice: inv,
+                                          }),
+                                        });
+                                        if (invoicesClient?.masterSheetId) {
+                                          outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
+                                        }
+                                        setInvoicesJobs(prev => prev && prev.map(j => ({
+                                          ...j,
+                                          rows: j.rows.map(r => r.rowNum !== jr.rowNum ? r : {
+                                            ...r,
+                                            invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== s.slotNum ? sl : {
+                                              ...sl,
+                                              amount: inv.amount || 0,
+                                              ref: inv.invoiceNo || "",
+                                              sentDate: inv.sentDate || "",
+                                              status: inv.status || "Sent",
+                                            }),
+                                          }),
+                                        })));
+                                      } catch(e) { console.error("assign_invoice_to_job error:", e); }
+                                      finally { setInvoicesSavingCell(null); }
+                                    } else if (!isPlacing && !isGenuinelyBlank) {
+                                      setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s });
+                                    }
+                                  }}
+                                  style={{ padding: "7px 10px", borderBottom: "1px solid #eee",
+                                    cursor: (isSaving) ? "default" : (isPlacing && isEmpty) ? "pointer" : (!isPlacing && !isGenuinelyBlank) ? "pointer" : "default",
+                                    background: isSaving ? "#f5f5f5" : (isPlacing && isEmpty) ? "#e8f0fe" : "transparent",
+                                    border: (isPlacing && isEmpty && !isSaving) ? "1.5px solid #1a56db" : "none" }}>
+                                  {isSaving ? (
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#666" }}>
+                                      <Spinner size={12} color="#1a56db" /> Saving...
+                                    </div>
+                                  ) : isGenuinelyBlank ? (
+                                    isPlacing ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>—</span>
+                                  ) : (
+                                    <div>
+                                      <div style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit" }}>
+                                        {isManualEntry && "(placeholder) "}{s.ref}
+                                      </div>
+                                      <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.sentDate}{s.status ? ` · ${s.status}` : ""}</div>
+                                      {isManualEntry && isPlacing && (
+                                        <div style={{ color: "#1a56db", fontWeight: "700", marginTop: "2px" }}>Click to overwrite</div>
+                                      )}
+                                      {!isPlacing && (
+                                        <div style={{ color: "#1a56db", fontSize: "10px", marginTop: "2px" }}>Click to edit</div>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        )))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {!invoicesShowAll && (
+                    <div style={{ textAlign: "center", marginTop: "14px" }}>
+                      <button onClick={() => { setInvoicesShowAll(true); loadInvoicesJobs(invoicesClient, true); }}
+                        style={{ padding: "8px 20px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>
+                        Show all jobs
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </NavShell>
+    );
+  }
+
+
   // ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
   if (activeNav === "settings") {
 
@@ -3921,7 +4342,7 @@ export default function TriageSystem({ onBack }) {
     const rows = settingsData?.recentRows || [];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ padding: "20px", maxWidth: "800px" }}>
           <h2 style={{ margin: "0 0 20px", fontSize: "20px", fontWeight: "700" }}>Settings</h2>
 
@@ -4146,7 +4567,7 @@ export default function TriageSystem({ onBack }) {
       : null;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ padding: "20px 20px 0" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <div>
@@ -4244,7 +4665,7 @@ export default function TriageSystem({ onBack }) {
   // Overview screen — must come before all screen-based checks so nav always works
   if (activeNav === "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "24px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "#1a1a1a", margin: 0 }}>Overview</h2>
@@ -4382,7 +4803,7 @@ export default function TriageSystem({ onBack }) {
     const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
     if (activeClients.length === 0 && proactiveAlerts.length === 0 && proactiveLoadedAt > 0) {
       return (
-        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
           <div style={styles.container}>
             <div style={styles.header}>
               <h1 style={styles.title}>All Done</h1>
@@ -4401,7 +4822,7 @@ export default function TriageSystem({ onBack }) {
     // If still loading proactive alerts, wait before deciding
     if (activeClients.length === 0 && proactiveLoadedAt === 0) {
       return (
-        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
           <div style={styles.container}>
             <div style={{ textAlign: "center", padding: "60px 20px", color: "#888" }}>
               <Spinner size={28} color="#0066cc" />
@@ -4413,7 +4834,7 @@ export default function TriageSystem({ onBack }) {
     }
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Client</h1>
@@ -4674,7 +5095,7 @@ export default function TriageSystem({ onBack }) {
     };
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
           <h1 style={styles.title}>Proactive Alerts</h1>
@@ -4916,7 +5337,7 @@ export default function TriageSystem({ onBack }) {
     const canProceed = allActionableDone && noActionDone;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
@@ -5593,7 +6014,7 @@ export default function TriageSystem({ onBack }) {
     ];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Clear Flags</h1>
@@ -5684,7 +6105,7 @@ export default function TriageSystem({ onBack }) {
   // Screen 1: Loading state (shown while startTriage runs on mount)
   if (!sessionId && !triageComplete && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Automation Alerts</h1>
@@ -5716,7 +6137,7 @@ export default function TriageSystem({ onBack }) {
   // Screen 2: Triage complete with no alerts
   if (triageComplete && totalAlerts === 0 && noActionCount === 0 && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>✓ All Clear</h1>
@@ -5823,7 +6244,7 @@ export default function TriageSystem({ onBack }) {
     const progress = currentClientAlertIndex + 1;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
@@ -6727,7 +7148,7 @@ export default function TriageSystem({ onBack }) {
     const allAcknowledged = acknowledgedNoAction.size === noActionCount;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Info-Only Alerts</h1>
@@ -6807,7 +7228,7 @@ export default function TriageSystem({ onBack }) {
       { key: "resolved", label: "Completed", count: 0 },
     ];
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Tasks</h1>
@@ -6912,7 +7333,7 @@ export default function TriageSystem({ onBack }) {
     const todayStr = today.toISOString().split("T")[0];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           {/* Back button */}
           <button className="triage-btn" onClick={() => setSelectedTask(null)} style={{ ...styles.buttonSecondary, marginBottom: "16px" }}>
@@ -7128,7 +7549,7 @@ export default function TriageSystem({ onBack }) {
 
   // ── Home screen (initial / loading) ──────────────────────────────────────
   return withModal(
-    <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+    <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>

@@ -1874,6 +1874,66 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "get_invoices_inbox") {
+      // Reads InvComp for unmatched invoices (Missing invoice flag = col S index 18).
+      // InvComp lives on the master sheet, not the client sheet.
+      const { masterSheetId, clientSheetId } = req.body;
+      const sheetId = masterSheetId || clientSheetId;
+      if (!sheetId) return res.status(400).json({ success: false, error: "Missing masterSheetId or clientSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(sheetId) || sheetId;
+
+        const invLock = await checkGASLock(sheets, sheetIdClean, "invoice");
+        if (invLock.locked) {
+          return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Invoice automation is currently running — try again in a moment" });
+        }
+
+        await setMasterSwitch(sheets, sheetIdClean, "InvComp", true);
+        const dataResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "InvComp!A6:Y1000",
+        });
+        await setMasterSwitch(sheets, sheetIdClean, "InvComp", false);
+
+        const rows = dataResp.data.values || [];
+        const inbox = [];
+        let skippedNoFlag = 0, skippedNoInvNo = 0;
+        for (const row of rows) {
+          if (!row || row.length === 0) continue;
+          // col S (index 18) = "Missing invoice?" flag
+          const isMissing = String(row[18] || "").trim() === "1";
+          if (!isMissing) { skippedNoFlag++; continue; }
+
+          // Accounting cols A-K (indices 0-10)
+          const client       = String(row[0] || "").trim();
+          const job          = String(row[1] || "").trim();
+          const invoiceAmt   = parseFloat(String(row[2] || "0").replace(/,/g, "")) || 0;
+          const totalExclVAT = parseFloat(String(row[3] || "0").replace(/,/g, "")) || 0;
+          const vatIncluded  = parseFloat(String(row[4] || "0").replace(/,/g, "")) || 0;
+          const invoiceNo    = String(row[5] || "").trim();
+          const sentDate     = String(row[6] || "").trim();
+          const dueDate      = String(row[7] || "").trim();
+          const fullyPaidOn  = String(row[8] || "").trim();
+          const status       = String(row[9] || "").trim();
+          const currency     = String(row[10] || "").trim() || "GBP";
+
+          if (!invoiceNo) { skippedNoInvNo++; continue; }
+          inbox.push({
+            invoiceNo, client, job, currency, sentDate, dueDate, fullyPaidOn, status,
+            amount: totalExclVAT > 0 ? totalExclVAT : invoiceAmt,
+            grossAmount: invoiceAmt, vatAmount: vatIncluded,
+          });
+        }
+
+        console.log(`  ✅ get_invoices_inbox: ${inbox.length} unmatched invoices (skipped: ${skippedNoFlag} no-flag, ${skippedNoInvNo} no-invoiceNo)`);
+        return res.status(200).json({ success: true, inbox });
+      } catch (err) {
+        try { await setMasterSwitch(sheets, extractSheetIdFromUrl(sheetId) || sheetId, "InvComp", false); } catch(e) {}
+        console.error("❌ get_invoices_inbox error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "create_outgoings_vendor") {
       // Inserts a new vendor row at the end of the Contractors section (row 110) in the Outgoings tab.
       // Cols: A=vendorName, B=vatFlag, C=invTiming, D=payTiming
@@ -2126,6 +2186,118 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "get_invoice_jobs") {
+      // Reads the Confirmed tab and returns all jobs (parent + child rows grouped) in
+      // spreadsheet-style format, for the Invoices screen.
+      // By default: only jobs with an uninvoiced amount > £0 — i.e. revenue minus the
+      // sum of REAL invoice slot amounts (excluding blank/MANUAL-INV placeholders)
+      // across all rows in the job. showAll=true returns every job regardless.
+      const { clientSheetId, showAll } = req.body;
+      if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+
+        const parseSheetDate = (d) => {
+          if (!d) return null;
+          const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+          if (!m) return null;
+          const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+          const mIdx = months[m[2].toLowerCase()];
+          if (mIdx === undefined) return null;
+          const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+          return new Date(yr, mIdx, parseInt(m[1]));
+        };
+
+        const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+        const buildRowData = (rowNum, row, isParent) => ({
+          rowNum, isParent,
+          client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+          revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
+          projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+          likelihood: null, copiedToConf: null,
+          invoiceSlots: [1,2,3].map(n => {
+            const base = n === 1 ? 41 : n === 2 ? 48 : 55;
+            return { slotNum: n, amount: colVal(row,base), ref: colVal(row,base+1), sentDate: colVal(row,base+2),
+              daysToPay: colVal(row,base+3), status: colVal(row,base+4), highlighted: false };
+          }),
+          expenseSlots: [1,2,3].map(n => {
+            const base = n === 1 ? 75 : n === 2 ? 82 : 89;
+            return { slotNum: n, description: colVal(row,base), amount: colVal(row,base+1), vat: colVal(row,base+2),
+              date: colVal(row,base+3), daysToPay: colVal(row,base+4), status: colVal(row,base+5),
+              transactionId: colVal(row,base+6), highlighted: false };
+          }),
+        });
+
+        const jobs = [];
+        let ri = 1;
+        while (ri < rows.length) {
+          const row = rows[ri] || [];
+          const client = String(row[0] || "").trim();
+          const jobName = String(row[1] || "").trim();
+          const revenueNum = parseFloat(String(row[32]||"").replace(/[£$€,\s]/g,"")) || 0;
+          if (!client && !jobName) { ri++; continue; }
+
+          const parentRowNum = ri + 1;
+          const jobRows = [buildRowData(parentRowNum, row, true)];
+          let cj = ri + 1;
+          while (cj < rows.length) {
+            const next = rows[cj] || [];
+            const nc = String(next[0]||"").trim();
+            const nj = String(next[1]||"").trim();
+            const nRevenue = String(next[32]||"").trim();
+            const nBudget = parseFloat(String(next[33]||"").replace(/[£$€,\s]/g,"")) || 0;
+            const nStart = String(next[37]||"").trim();
+            // Child row: same client+job name repeated, no revenue/budget/start date of its own
+            if (nc === client && nj === jobName && !nRevenue && !nBudget && !nStart) {
+              jobRows.push(buildRowData(cj + 1, next, false));
+              cj++;
+            } else {
+              break;
+            }
+          }
+          ri = cj;
+
+          // Sum REAL invoice slot amounts (non-blank ref, not MANUAL-INV) across all rows
+          let realInvoicedTotal = 0;
+          for (const jr of jobRows) {
+            for (const slot of jr.invoiceSlots) {
+              const ref = String(slot.ref || "").trim();
+              const isReal = ref && !ref.toUpperCase().startsWith("MANUAL-INV");
+              if (isReal) realInvoicedTotal += parseFloat(String(slot.amount||"").replace(/[£$€,\s]/g,"")) || 0;
+            }
+          }
+          const uninvoicedAmount = revenueNum - realInvoicedTotal;
+          const passesFilter = showAll || uninvoicedAmount > 0;
+          if (passesFilter) {
+            jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows, uninvoicedAmount });
+          }
+        }
+
+        // Sort newest first by start date (jobs with no parseable date sort last)
+        jobs.sort((a, b) => {
+          const da = parseSheetDate(a.rows[0]?.startDate);
+          const db = parseSheetDate(b.rows[0]?.startDate);
+          if (!da && !db) return 0;
+          if (!da) return 1;
+          if (!db) return -1;
+          return db - da;
+        });
+
+        console.log(`  ✅ get_invoice_jobs: ${jobs.length} jobs (showAll=${!!showAll})`);
+        return res.status(200).json({ success: true, jobs });
+      } catch (err) {
+        console.error("❌ get_invoice_jobs error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "assign_expense_to_job") {
       // Writes an inbox expense directly into a specific expense slot on the Confirmed tab.
       // If rowNum/slotNum are provided, writes directly into that existing slot.
@@ -2369,6 +2541,112 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error("❌ update_expense_slot error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "assign_invoice_to_job") {
+      // Writes an inbox invoice directly into a specific invoice slot on the Confirmed tab.
+      const { clientSheetId, rowNum, slotNum, invoice } = req.body;
+      if (!clientSheetId || !rowNum || !slotNum || !invoice) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, slotNum, or invoice" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const slotCols = {
+          1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
+          2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
+          3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+        }[slotNum];
+        if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
+
+        // Days to pay: derive from sent → due date if both present, else default 30
+        let daysToPay = 30;
+        if (invoice.sentDate && invoice.dueDate) {
+          const parseD = (d) => {
+            const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+            if (!m) return null;
+            const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+            const mIdx = months[m[2].toLowerCase()];
+            if (mIdx === undefined) return null;
+            const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+            return new Date(yr, mIdx, parseInt(m[1]));
+          };
+          const sent = parseD(invoice.sentDate), due = parseD(invoice.dueDate);
+          if (sent && due) daysToPay = Math.round((due - sent) / 86400000);
+        }
+
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: {
+            valueInputOption: "RAW",
+            data: [
+              { range: `Confirmed!${slotCols.a}${rowNum}`,    values: [[invoice.amount || 0]] },
+              { range: `Confirmed!${slotCols.ref}${rowNum}`,  values: [[invoice.invoiceNo || ""]] },
+              { range: `Confirmed!${slotCols.sent}${rowNum}`, values: [[invoice.sentDate || ""]] },
+              { range: `Confirmed!${slotCols.days}${rowNum}`, values: [[daysToPay]] },
+              { range: `Confirmed!${slotCols.st}${rowNum}`,   values: [[invoice.status || "Sent"]] },
+            ],
+          },
+        });
+
+        console.log(`  ✅ assign_invoice_to_job: invoice ${invoice.invoiceNo} → Confirmed row ${rowNum} slot ${slotNum}`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ assign_invoice_to_job error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "update_invoice_slot") {
+      // Edits or clears an existing invoice slot on the Confirmed tab (Invoices screen).
+      // Pass `invoice` with the 5 fields to write, or `deleteSlot: true` to clear all 5 cells.
+      const { clientSheetId, rowNum, slotNum, invoice, deleteSlot } = req.body;
+      if (!clientSheetId || !rowNum || !slotNum) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
+      }
+      if (!deleteSlot && !invoice) {
+        return res.status(400).json({ success: false, error: "Missing invoice (or set deleteSlot: true)" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const slotCols = {
+          1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
+          2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
+          3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+        }[slotNum];
+        if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
+
+        const values = deleteSlot
+          ? ["", "", "", "", ""]
+          : [
+              invoice.amount || 0,
+              invoice.invoiceNo || "",
+              invoice.sentDate || "",
+              invoice.daysToPay || 30,
+              invoice.status || "",
+            ];
+
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: {
+            valueInputOption: "RAW",
+            data: [
+              { range: `Confirmed!${slotCols.a}${rowNum}`,    values: [[values[0]]] },
+              { range: `Confirmed!${slotCols.ref}${rowNum}`,  values: [[values[1]]] },
+              { range: `Confirmed!${slotCols.sent}${rowNum}`, values: [[values[2]]] },
+              { range: `Confirmed!${slotCols.days}${rowNum}`, values: [[values[3]]] },
+              { range: `Confirmed!${slotCols.st}${rowNum}`,   values: [[values[4]]] },
+            ],
+          },
+        });
+
+        console.log(`  ✅ update_invoice_slot: ${deleteSlot ? "deleted" : "updated"} row ${rowNum} slot ${slotNum}`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ update_invoice_slot error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

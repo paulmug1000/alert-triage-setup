@@ -283,6 +283,7 @@ export default function TriageSystem({ onBack }) {
   const [invoicesShowAll, setInvoicesShowAll] = useState(false);
   const [invoicesSavingCell, setInvoicesSavingCell] = useState(null);
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null); // { rowNum, slotNum, slot }
+  const [invoicesNewJob, setInvoicesNewJob] = useState(null); // { inv } — inbox invoice to place as new job
   // assignedAppIds: Set of transactionIds assigned via outgoings — persisted to localStorage
   // until refreshOutgoingsAndUI runs and removes them from DirComp properly
   // assignedAppIdsByClient: Map of {clientName → Set<transactionId>} for per-client count adjustment
@@ -4105,12 +4106,145 @@ export default function TriageSystem({ onBack }) {
     );
   };
 
+  const InvoicesNewJobModal = () => {
+    if (!invoicesNewJob) return null;
+    const { inv } = invoicesNewJob;
+    const [jobName, setJobName] = React.useState(inv.job || "");
+    const [projectCode, setProjectCode] = React.useState("");
+    const [revenue, setRevenue] = React.useState(String(inv.amount || ""));
+    const [directCosts, setDirectCosts] = React.useState("0");
+    const [vatYesNo, setVatYesNo] = React.useState(inv.vatAmount > 0 ? "Yes" : "No");
+    const [projectType, setProjectType] = React.useState("Project");
+    const [startDate, setStartDate] = React.useState(inv.sentDate || "");
+    const [endDate, setEndDate] = React.useState(inv.dueDate || "");
+    const [saving, setSaving] = React.useState(false);
+    const [error, setError] = React.useState("");
+
+    const close = () => setInvoicesNewJob(null);
+
+    const save = async () => {
+      if (!jobName.trim()) { setError("Please enter a job name"); return; }
+      setSaving(true);
+      try {
+        const res = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "create_job_from_invoice",
+            clientSheetId: invoicesClient?.clientSheetId,
+            jobName: jobName.trim(), projectCode: projectCode.trim(),
+            revenue: parseFloat(revenue) || 0, directCosts: parseFloat(directCosts) || 0,
+            vatYesNo, projectType, startDate, endDate,
+            invoice: inv,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) { setError(data.error || "Failed to create job"); setSaving(false); return; }
+        if (invoicesClient?.masterSheetId) {
+          outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
+        }
+        setAssignedAppIds(prevSet => {
+          const next = new Set(prevSet); next.add(inv.invoiceNo);
+          try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
+          return next;
+        });
+        setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
+        const clientToReload = invoicesClient;
+        close();
+        await loadInvoicesJobs(clientToReload, invoicesShowAll);
+      } catch(e) { setError(e.message); setSaving(false); }
+    };
+
+    const inputStyle = { width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" };
+    const labelStyle = { display: "block", fontSize: "11px", fontWeight: "600", color: "#666", marginBottom: "3px" };
+
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
+        onClick={e => { if (e.target === e.currentTarget) close(); }}>
+        <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+            <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Create new job</h3>
+            <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
+          </div>
+          <div style={{ fontSize: "12px", color: "#888", background: "#f8f8f8", borderRadius: "6px", padding: "10px", marginBottom: "16px" }}>
+            <strong>Invoice to place:</strong> #{inv.invoiceNo} — £{inv.amount.toFixed(2)}<br/>
+            {inv.client}{inv.job ? ` — ${inv.job}` : ""} · {inv.sentDate}
+          </div>
+
+          <div style={{ display: "grid", gap: "12px" }}>
+            <div>
+              <label style={labelStyle}>Client (col A)</label>
+              <input style={{ ...inputStyle, background: "#f5f5f5", color: "#888" }} value={inv.client || ""} disabled />
+            </div>
+            <div>
+              <label style={labelStyle}>Job name (col B) *</label>
+              <input style={inputStyle} value={jobName} onChange={e => setJobName(e.target.value)} autoFocus />
+            </div>
+            <div>
+              <label style={labelStyle}>Project code (col C)</label>
+              <input style={inputStyle} value={projectCode} onChange={e => setProjectCode(e.target.value)} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+              <div>
+                <label style={labelStyle}>Revenue (£, AG)</label>
+                <input style={inputStyle} type="number" step="0.01" value={revenue} onChange={e => setRevenue(e.target.value)} />
+              </div>
+              <div>
+                <label style={labelStyle}>Direct costs (£, AH)</label>
+                <input style={inputStyle} type="number" step="0.01" value={directCosts} onChange={e => setDirectCosts(e.target.value)} />
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+              <div>
+                <label style={labelStyle}>VAT? (AI)</label>
+                <select style={inputStyle} value={vatYesNo} onChange={e => setVatYesNo(e.target.value)}>
+                  <option value="No">No</option>
+                  <option value="Yes">Yes</option>
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle}>Type (AJ)</label>
+                <select style={inputStyle} value={projectType} onChange={e => setProjectType(e.target.value)}>
+                  <option value="Project">Project</option>
+                  <option value="Retainer">Retainer</option>
+                </select>
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+              <div>
+                <label style={labelStyle}>Start date (AL)</label>
+                <input style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} placeholder="DD-Mon-YY" />
+              </div>
+              <div>
+                <label style={labelStyle}>End date (AM)</label>
+                <input style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} placeholder="DD-Mon-YY" />
+              </div>
+            </div>
+          </div>
+
+          {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginTop: "12px" }}>{error}</div>}
+          <p style={{ fontSize: "11px", color: "#999", margin: "12px 0 0" }}>
+            A new row will be added at the end of the Confirmed tab, and this invoice will be written into slot 1.
+          </p>
+          <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
+            <button onClick={close} disabled={saving}
+              style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+            <button onClick={save} disabled={saving || !jobName.trim()}
+              style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
+              {saving ? "Creating..." : "Create job"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   if (activeNav === "invoices") {
     const noInvClient = !invoicesClient;
 
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {invoicesEditSlot && <InvoicesEditModal />}
+        {invoicesNewJob && <InvoicesNewJobModal />}
         <div style={{ padding: "20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
@@ -4193,15 +4327,25 @@ export default function TriageSystem({ onBack }) {
                       const isPlacing = invoicesPlacing?.invoiceNo === inv.invoiceNo;
                       return (
                         <div key={inv.invoiceNo}
-                          onClick={() => setInvoicesPlacing(isPlacing ? null : inv)}
-                          style={{ cursor: "pointer", padding: "8px 12px", borderRadius: "8px",
+                          style={{ padding: "8px 12px", borderRadius: "8px",
                             background: isPlacing ? "#1a56db" : "#fff8e1",
                             color: isPlacing ? "#fff" : "#333",
                             border: `1px solid ${isPlacing ? "#1a56db" : "#ffe082"}`,
                             fontSize: "12px", minWidth: "160px" }}>
-                          <div style={{ fontWeight: "700" }}>#{inv.invoiceNo} — £{inv.amount.toFixed(2)}</div>
-                          <div style={{ opacity: 0.85 }}>{inv.client}{inv.job ? ` — ${inv.job}` : ""}</div>
-                          <div style={{ opacity: 0.7 }}>{inv.sentDate}{inv.status ? ` · ${inv.status}` : ""}</div>
+                          <div onClick={() => setInvoicesPlacing(isPlacing ? null : inv)} style={{ cursor: "pointer" }}>
+                            <div style={{ fontWeight: "700" }}>#{inv.invoiceNo} — £{inv.amount.toFixed(2)}</div>
+                            <div style={{ opacity: 0.85 }}>{inv.client}{inv.job ? ` — ${inv.job}` : ""}</div>
+                            <div style={{ opacity: 0.7 }}>{inv.sentDate}{inv.status ? ` · ${inv.status}` : ""}</div>
+                          </div>
+                          <button onClick={e => { e.stopPropagation(); setInvoicesNewJob({ inv }); }}
+                            title="Create new job for this invoice"
+                            style={{ marginTop: "6px", fontSize: "10px", padding: "2px 8px",
+                              background: isPlacing ? "rgba(255,255,255,0.2)" : "#f0f0f0",
+                              border: `1px solid ${isPlacing ? "rgba(255,255,255,0.4)" : "#ccc"}`,
+                              borderRadius: "4px", cursor: "pointer",
+                              color: isPlacing ? "#fff" : "#555", whiteSpace: "nowrap" }}>
+                            + New job
+                          </button>
                         </div>
                       );
                     })}

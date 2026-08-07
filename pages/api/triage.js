@@ -2650,6 +2650,80 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "create_job_from_invoice") {
+      // Creates a new job row at the end of the Confirmed tab, populated from an
+      // unmatched invoice, with the invoice itself written into slot 1.
+      const { clientSheetId, jobName, projectCode, revenue, directCosts, vatYesNo,
+        projectType, startDate, endDate, invoice } = req.body;
+      if (!clientSheetId || !invoice) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId or invoice" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        // Find the last row with any data in key columns (A, B, AG, AL) — same
+        // approach used by the create_new job handler in accept_option.
+        const confirmedResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:AM5000",
+          valueRenderOption: "UNFORMATTED_VALUE",
+        });
+        const confirmedRows = confirmedResp.data.values || [];
+        let lastDataRow = 1;
+        for (let i = confirmedRows.length - 1; i >= 1; i--) {
+          const r = confirmedRows[i] || [];
+          if (r[0] || r[1] || r[32] || r[37]) { lastDataRow = i + 1; break; }
+        }
+        const newRow = lastDataRow + 1;
+
+        // Days to pay: derive from sent → due date if both present, else default 30
+        let daysToPay = 30;
+        if (invoice.sentDate && invoice.dueDate) {
+          const parseD = (d) => {
+            const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+            if (!m) return null;
+            const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+            const mIdx = months[m[2].toLowerCase()];
+            if (mIdx === undefined) return null;
+            const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+            return new Date(yr, mIdx, parseInt(m[1]));
+          };
+          const sent = parseD(invoice.sentDate), due = parseD(invoice.dueDate);
+          if (sent && due) daysToPay = Math.round((due - sent) / 86400000);
+        }
+
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: {
+            valueInputOption: "RAW",
+            data: [
+              { range: `Confirmed!A${newRow}`,  values: [[invoice.client || ""]] },
+              { range: `Confirmed!B${newRow}`,  values: [[jobName || invoice.job || ""]] },
+              { range: `Confirmed!C${newRow}`,  values: [[projectCode || ""]] },
+              { range: `Confirmed!AG${newRow}`, values: [[revenue || invoice.amount || 0]] },
+              { range: `Confirmed!AH${newRow}`, values: [[directCosts || 0]] },
+              { range: `Confirmed!AI${newRow}`, values: [[vatYesNo || (invoice.vatAmount > 0 ? "Yes" : "No")]] },
+              { range: `Confirmed!AJ${newRow}`, values: [[projectType || "Project"]] },
+              { range: `Confirmed!AL${newRow}`, values: [[startDate || invoice.sentDate || ""]] },
+              { range: `Confirmed!AM${newRow}`, values: [[endDate || invoice.dueDate || ""]] },
+              // Write the invoice into slot 1
+              { range: `Confirmed!AP${newRow}`, values: [[invoice.amount || 0]] },
+              { range: `Confirmed!AQ${newRow}`, values: [[invoice.invoiceNo || ""]] },
+              { range: `Confirmed!AR${newRow}`, values: [[invoice.sentDate || ""]] },
+              { range: `Confirmed!AS${newRow}`, values: [[daysToPay]] },
+              { range: `Confirmed!AT${newRow}`, values: [[invoice.status || "Sent"]] },
+            ],
+          },
+        });
+
+        console.log(`  ✅ create_job_from_invoice: new job at row ${newRow}, invoice ${invoice.invoiceNo} in slot 1`);
+        return res.status(200).json({ success: true, newRowNum: newRow });
+      } catch (err) {
+        console.error("❌ create_job_from_invoice error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "update_outgoing_note") {
       // Writes a new note to a specific Outgoings cell.
       // blocks: array of { appId, amount, status, recDate, payDate, description }

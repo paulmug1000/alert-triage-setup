@@ -4658,9 +4658,35 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const newTotal = realAllocated + expenseAmount;
             const budgetNum = parseFloat(String(job.totalBudget||"0").replace(/[£$€,]/g,"")) || 0;
             const budgetFit = budgetNum > 0 ? (newTotal <= budgetNum ? "YES" : `OVER by £${(newTotal-budgetNum).toFixed(2)}`) : "UNKNOWN";
-            jobDescMatches.push({ job, availSlot, cols, row, realAllocated, newTotal, budgetFit, clientOverlap });
+            const budgetFits = budgetNum === 0 || newTotal <= budgetNum; // no known budget = don't penalise
+            // Exact client match: bracketed text exactly equals the job's client name
+            const bracketText = expBracketMatch ? expBracketMatch[1].trim().toLowerCase() : "";
+            const isExactClient = !!bracketText && bracketText === String(job.parentClient||"").trim().toLowerCase();
+            jobDescMatches.push({ job, availSlot, cols, row, realAllocated, newTotal, budgetFit, budgetFits, isExactClient, clientOverlap });
           }
           console.log(`  Confirmed job description matches: ${jobDescMatches.length}`);
+
+          // Rank: budget fit → exact client match → most recent job first
+          const parseRankDateExp = (d) => {
+            if (!d) return null;
+            const MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+            const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+            if (!m) return null;
+            const mIdx = MONTHS_MAP[m[2].toLowerCase()];
+            if (mIdx === undefined) return null;
+            const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+            return new Date(yr, mIdx, parseInt(m[1])).getTime();
+          };
+          jobDescMatches.sort((a, b) => {
+            if (a.budgetFits !== b.budgetFits) return a.budgetFits ? -1 : 1;
+            if (a.isExactClient !== b.isExactClient) return a.isExactClient ? -1 : 1;
+            const da = parseRankDateExp(a.job.startDate);
+            const db = parseRankDateExp(b.job.startDate);
+            if (da === null && db === null) return 0;
+            if (da === null) return 1;
+            if (db === null) return -1;
+            return db - da;
+          });
 
           for (const jm of jobDescMatches.slice(0, 3)) {
             const { job, availSlot, cols, row, realAllocated, newTotal, budgetFit } = jm;
@@ -6097,6 +6123,7 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
               slotMatches.push({
                 rowNum: ri + 1, // 1-indexed sheet row (activeData[0] = header, ri=1 → sheet row 2)
                 client: rowClient, jobName: rowJob, projectCode: rowCode, revenue: rowRevenue,
+                startDate: String(row[37] || "").trim(), // AL — for recency ranking
                 slotNum: sd.slotNum, slotAmt, slotDate, amtMatch, dateMatch: dateOk,
                 amtCol: sd.amtCol, refCol: sd.refCol, sentCol: sd.sentCol,
                 daysCol: sd.daysCol, statusCol: sd.statusCol, isManual,
@@ -6112,13 +6139,14 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
           // (e.g. £435 + £435 = £870) but the real invoice covers the full amount.
           if (!slotMatches.some(m => !m.isManual || true)) { // always run this check
             // Group MANUAL-INV slots by job (client+jobName)
-            const jobManualSlots = new Map(); // key → { slots: [], client, jobName, projectCode, revenue }
+            const jobManualSlots = new Map(); // key → { slots: [], client, jobName, projectCode, revenue, startDate }
             for (let ri = 1; ri < activeData.length; ri++) {
               const row = activeData[ri] || [];
               const rowClient  = String(row[0] || "").trim();
               const rowJob     = String(row[1] || "").trim();
               const rowCode    = String(row[2] || "").trim();
               const rowRevenue = String(row[32] || "").trim();
+              const rowStart   = String(row[37] || "").trim();
               if (!rowClient && !rowJob) continue;
               const key = `${rowClient}||${rowJob}`;
               for (const sd of INV_SLOT_DEFS) {
@@ -6129,7 +6157,7 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
                 if (slotAmt === 0) continue;
                 const slotDate = String(row[sd.sentIdx] || "").trim();
                 if (!jobManualSlots.has(key)) {
-                  jobManualSlots.set(key, { slots: [], client: rowClient, jobName: rowJob, projectCode: rowCode, revenue: rowRevenue });
+                  jobManualSlots.set(key, { slots: [], client: rowClient, jobName: rowJob, projectCode: rowCode, revenue: rowRevenue, startDate: rowStart });
                 }
                 jobManualSlots.get(key).slots.push({ rowNum: ri + 1, slotNum: sd.slotNum, slotAmt, slotDate, ref, ...sd });
               }
@@ -6147,6 +6175,7 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
                   slotMatches.push({
                     rowNum: firstSlot.rowNum,
                     client: job.client, jobName: job.jobName, projectCode: job.projectCode, revenue: job.revenue,
+                    startDate: job.startDate, // AL — for recency ranking
                     slotNum: firstSlot.slotNum, slotAmt: totalManual, slotDate: firstSlot.slotDate,
                     amtMatch: true, dateMatch: dateOk,
                     amtCol: firstSlot.amtCol, refCol: firstSlot.refCol, sentCol: firstSlot.sentCol,
@@ -6510,6 +6539,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const newTotal = realTotal + invoiceAmtForMatch;
           const revNum   = parseFloat(String(best.revenue||"0").replace(/[£$€,]/g,"")) || 0;
           const remaining = revNum > 0 ? revNum - newTotal : null;
+          const budgetFits = revNum === 0 || newTotal <= revNum; // no known revenue = don't penalise
+          const isExactClient = String(best.client||"").trim().toLowerCase() === String(invClient||"").trim().toLowerCase();
           const confidence = best.dateMatch ? "High" : "Medium";
           const slotDesc   = best.isManual ? "replacing MANUAL-INV placeholder" : "replacing blank placeholder";
           const dateNote   = best.dateMatch
@@ -6568,6 +6599,9 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                `write ${invoiceStatus||"Sent"} to ${best.statusCol}${best.rowNum}`].join(", "),
             ],
             slotBreakdown: { lines: slotLines, correctedTotal: `£${newTotal.toFixed(2)}`, currentRevenue: `£${revNum.toFixed(2)}`, revLine },
+            _rankStartDate: best.startDate || "",
+            _rankBudgetFits: budgetFits,
+            _rankExactClient: isExactClient,
           });
         }
 
@@ -6628,6 +6662,9 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               }
               const bNewTotal = bRealTotal + invoiceAmtForMatch;
               const bRevNum   = parseFloat(String(bRev||"0").replace(/[£$€,]/g,"")) || 0;
+              const bBudgetFits = bRevNum === 0 || bNewTotal <= bRevNum;
+              const bIsExactClient = String(rc||"").trim().toLowerCase() === String(invClient||"").trim().toLowerCase();
+              const bStartDate = String(r[37]||"").trim(); // AL
               const amtDiff   = slotAmt > 0 ? (invoiceAmtForMatch - slotAmt) : null;
               const amtNote   = slotAmt > 0
                 ? (Math.abs(invoiceAmtForMatch - slotAmt) < 0.01
@@ -6678,12 +6715,40 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                   correctedTotal: `£${bNewTotal.toFixed(2)}`,
                   currentRevenue: `£${bRevNum.toFixed(2)}`,
                 },
+                _rankStartDate: bStartDate,
+                _rankBudgetFits: bBudgetFits,
+                _rankExactClient: bIsExactClient,
               });
               if (tier2Options.length >= 5) break; // cap at 5 options total
             }
             if (tier2Options.length >= 5) break;
           }
         }
+
+        // ── Rank options: budget fit → exact client match → most recent job first ──
+        const parseRankDate = (d) => {
+          if (!d) return null;
+          const MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+          const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+          if (!m) return null;
+          const mIdx = MONTHS_MAP[m[2].toLowerCase()];
+          if (mIdx === undefined) return null;
+          const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+          return new Date(yr, mIdx, parseInt(m[1])).getTime();
+        };
+        tier2Options.sort((a, b) => {
+          // 1. Budget fit — options that don't exceed job revenue come first
+          if (a._rankBudgetFits !== b._rankBudgetFits) return a._rankBudgetFits ? -1 : 1;
+          // 2. Exact client name match comes first
+          if (a._rankExactClient !== b._rankExactClient) return a._rankExactClient ? -1 : 1;
+          // 3. More recent job (later start date) comes first
+          const da = parseRankDate(a._rankStartDate);
+          const db = parseRankDate(b._rankStartDate);
+          if (da === null && db === null) return 0;
+          if (da === null) return 1;
+          if (db === null) return -1;
+          return db - da;
+        });
 
         // ── Fallback: Manual investigation ────────────────────────────────────
         tier2Options.push({
@@ -6705,7 +6770,10 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         });
 
         // Renumber and cache
-        let options = tier2Options.map((o, i) => ({ ...o, optionId: i + 1 }));
+        let options = tier2Options.map((o, i) => {
+          const { _rankStartDate, _rankBudgetFits, _rankExactClient, ...clean } = o;
+          return { ...clean, optionId: i + 1 };
+        });
         console.log(`  ✅ System-generated ${options.length} invoice options`);
 
         // Attach jobRowsData for spreadsheet-style display — cache by row+slot since

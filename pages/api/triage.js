@@ -3578,23 +3578,43 @@ export default async function handler(req, res) {
           });
           const freshConfirmedSheet = (freshGroupsResp.data.sheets || []).find(s => s.properties?.title === "Confirmed");
           const currentRowGroups = freshConfirmedSheet?.rowGroups || [];
-          console.log(`  🔬 DIAG currentRowGroups (post-move, pre-regroup): ${JSON.stringify(currentRowGroups)}`);
-          console.log(`  🔬 DIAG parentRowNum=${parentRowNum} newParentRowNum=${newParentRowNum} oldGroupEnd=${oldGroupEnd} newGroupStart=${newGroupStart} newGroupEnd=${newGroupEnd}`);
 
-          // Find any existing group covering the original job and shrink it to end at oldGroupEnd
-          const anchorIdx0 = parentRowNum - 1;
-          const existingGroup = currentRowGroups.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
-          console.log(`  🔬 DIAG existingGroup found: ${JSON.stringify(existingGroup)}`);
+          // IMPORTANT: retainer parent rows are NOT themselves part of a row group —
+          // only the child rows underneath are grouped/collapsible. So the group we
+          // need to shrink or remove isn't found by anchoring on parentRowNum; it's
+          // whichever group(s) overlap the ORIGINAL child-row range that's now being
+          // split into "old job's remaining children" + "new job's parent + children".
+          // Find every group whose range overlaps [oldFirstChildRowNum, newGroupEnd]
+          // (0-indexed, inclusive-exclusive) and handle each: if it falls entirely
+          // within the old job's portion, leave it; if it falls entirely within the
+          // new portion, leave it (the new addDimensionGroup below will cover that
+          // span); if it SPANS the split point (covers rows from both the old job's
+          // tail and the new job's rows — exactly what happened here), delete it and
+          // re-add only the old-job portion, since the new-job portion is covered by
+          // the fresh group we add afterwards.
+          const oldFirstChildRowNum = childRows.length > 0 ? childRows[0].rowNum : parentRowNum;
+          const scanStartIdx0 = oldFirstChildRowNum - 1;
+          const scanEndIdx0 = newGroupEnd; // exclusive
+          const overlappingGroups = currentRowGroups.filter(g =>
+            g.range && g.range.startIndex < scanEndIdx0 && g.range.endIndex > scanStartIdx0
+          );
+
           const groupRequests = [];
-          if (existingGroup) {
+          for (const g of overlappingGroups) {
+            const spansSplitPoint = g.range.startIndex < (newGroupStart - 1) && g.range.endIndex > (newGroupStart - 1);
+            if (!spansSplitPoint) continue; // doesn't cross the split boundary — leave it alone
             groupRequests.push({ deleteDimensionGroup: { range: {
               sheetId: gridSheetId, dimension: "ROWS",
-              startIndex: existingGroup.range.startIndex, endIndex: existingGroup.range.endIndex,
+              startIndex: g.range.startIndex, endIndex: g.range.endIndex,
             } } });
-            if (oldGroupEnd > existingGroup.range.startIndex) {
+            // Re-add only the portion of this group that belongs to the OLD job
+            // (up to the split point). The NEW job's portion is covered by the
+            // fresh group added below, so it isn't re-added here.
+            const keepEnd = Math.min(g.range.endIndex, newGroupStart - 1);
+            if (keepEnd > g.range.startIndex) {
               groupRequests.push({ addDimensionGroup: { range: {
                 sheetId: gridSheetId, dimension: "ROWS",
-                startIndex: existingGroup.range.startIndex, endIndex: oldGroupEnd,
+                startIndex: g.range.startIndex, endIndex: keepEnd,
               } } });
             }
           }
@@ -3602,12 +3622,11 @@ export default async function handler(req, res) {
           groupRequests.push({
             addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: newGroupStart - 1, endIndex: newGroupEnd } },
           });
-          console.log(`  🔬 DIAG groupRequests: ${JSON.stringify(groupRequests)}`);
-          await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests: groupRequests } });
-          console.log(`  🔬 DIAG group batchUpdate succeeded without throwing`);
+          if (groupRequests.length > 0) {
+            await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests: groupRequests } });
+          }
         } catch (groupErr) {
           console.log(`  ⚠ Row grouping for retainer split failed (non-fatal): ${groupErr.message}`);
-          console.log(`  🔬 DIAG full groupErr: ${JSON.stringify(groupErr.errors || groupErr.response?.data || groupErr, null, 2)}`);
         }
 
         console.log(`  ✅ change_retainer_monthly_amount: split "${jobName}" at ${changeMonthLabel} — new job "${newJobName}" at row ${newParentRowNum}`);

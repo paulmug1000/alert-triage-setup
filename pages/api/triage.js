@@ -4056,6 +4056,7 @@ export default async function handler(req, res) {
       const { clientSheetId, masterSheetId, client, jobName, parentRowNum, resolutionType,
         lastInvoiceDate, possibleMatchSentDate, possibleMatchAmount, possibleMatchInvoiceNo, possibleMatchConfirmedRow } = req.body;
       if (!clientSheetId || !jobName || !parentRowNum || !resolutionType) {
+        console.log(`  🔬 MISSING-FIELDS DIAG req.body=${JSON.stringify(req.body)}`);
         return res.status(400).json({ success: false, error: "Missing required fields" });
       }
       try {

@@ -734,6 +734,72 @@ function retDetectIntervalMonths(childDates) {
   return calc > 0 ? calc : 1;
 }
 
+// ── Detects whether this retainer's invoices are sent BEFORE the month/period
+// they cover (e.g. sent 28-May for a June period) or DURING it (e.g. sent
+// 3-Jun for June) — inferred from the job's own actual invoice history rather
+// than assumed, since different clients/jobs follow different conventions and
+// getting this wrong causes the trim/grow/split logic to pick the wrong row.
+//
+// Returns "before" or "during".
+//
+// allInvoiceDates: every known invoice sent-date for this job, in chronological
+//   order (parent row's invoice first, if it has one, then each child row's).
+// jobStartDate: the job's Start date (Confirmed col AL).
+// intervalMonths: the already-detected spacing between invoices (1 = monthly,
+//   3 = quarterly, etc.) — used to test each date against the right cadence.
+//
+// Logic:
+//  - Zero dates: nothing to learn from — default to "during".
+//  - One date: per the job's own single data point — if that invoice was sent
+//    before the job's start date, assume "before" for all future invoices;
+//    otherwise assume "during". No averaging needed with only one sample.
+//  - Two or more dates: test both hypotheses against every date and pick
+//    whichever fits better (smaller total deviation from a consistent
+//    days-before/days-after pattern). Falls back to "during" on a tie or if
+//    neither hypothesis fits at all consistently.
+function retDetectInvoiceTimingOffset_(allInvoiceDates, jobStartDate, intervalMonths) {
+  const dates = (allInvoiceDates || []).filter(Boolean);
+  if (dates.length === 0) return "during";
+
+  if (dates.length === 1) {
+    if (jobStartDate && dates[0].getTime() < jobStartDate.getTime()) return "before";
+    return "during";
+  }
+
+  if (!jobStartDate) return "during"; // can't anchor periods without a start date
+
+  const interval = intervalMonths || 1;
+  const addMonths = (y, m, n) => {
+    const total = (y * 12 + m) + n; // m is 0-indexed here
+    return { y: Math.floor(total / 12), m: ((total % 12) + 12) % 12 };
+  };
+
+  // For each invoice at sequence position i, its OWN period should start at
+  // jobStart + i*interval months. Compare the actual sent date to that period
+  // start: sent BEFORE it -> "before" pattern; sent ON/AFTER it -> "during".
+  // This anchors to the contract's own period boundaries (derived from its
+  // start date and detected interval), not to guessing from the sent date
+  // itself — which is what made the previous version misclassify on-time
+  // invoices sent late in the month as "before".
+  let beforeVotes = 0, duringVotes = 0;
+  dates.forEach((sent, i) => {
+    const { y, m } = addMonths(jobStartDate.getFullYear(), jobStartDate.getMonth(), i * interval);
+    const periodStart = new Date(y, m, 1);
+    if (sent.getTime() < periodStart.getTime()) beforeVotes++;
+    else duringVotes++;
+  });
+
+  // Require a clean, consistent majority (all-or-nearly-all agreeing) — if the
+  // history is genuinely mixed/noisy, that's not a reliable pattern to trust,
+  // so fall back to the "during" default per spec.
+  const total = beforeVotes + duringVotes;
+  if (beforeVotes === total) return "before";
+  if (duringVotes === total) return "during";
+  // Mixed signal — pick whichever is the clear majority (>= 2/3), else default.
+  if (beforeVotes / total >= 2 / 3) return "before";
+  return "during";
+}
+
 // Groups a set of already-read Confirmed rows (1-indexed row -> row array) into
 // { client, jobName, projectCode, revenue, vat, projectRetainer, startDate, endDate,
 //   parentRowNum, childRows: [{ rowNum, row }] } for every retainer job found.
@@ -3104,6 +3170,15 @@ export default async function handler(req, res) {
         }
         const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean); // AR = invoice 1 sent date
 
+        // Detect whether this job's invoices are sent BEFORE the period they cover
+        // (e.g. 28-May for June) or DURING it (e.g. 3-Jun for June) — inferred from
+        // the job's own invoice history. This affects which calendar month a given
+        // invoice row is actually "for", which the trim/grow/split logic below all
+        // depend on getting right.
+        const intervalMonthsForOffset = retDetectIntervalMonths(childDates);
+        const invoiceTimingOffset = retDetectInvoiceTimingOffset_(childDates, startDate, intervalMonthsForOffset);
+        const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : 0; // months to ADD to a sent-date to get its true covered-period month
+
         const isGrowing = !oldEndDate || newEnd > oldEndDate;
 
         if (!isGrowing) {
@@ -3115,7 +3190,7 @@ export default async function handler(req, res) {
           for (let c = childRows.length - 1; c >= 0; c--) {
             const cr = childRows[c];
             const invDate = retParseSheetDate(cr.row[43]);
-            const rowMonthVal = invDate ? (invDate.getFullYear() * 12 + invDate.getMonth()) : null;
+            const rowMonthVal = invDate ? (invDate.getFullYear() * 12 + invDate.getMonth() + timingMonthAdjust) : null;
             if (rowMonthVal !== null && rowMonthVal > newEndVal) {
               toTrim.push(cr);
             } else {
@@ -3258,7 +3333,7 @@ export default async function handler(req, res) {
           // ── GROW PATH ──────────────────────────────────────────────────
           const today = new Date(); today.setHours(0,0,0,0);
           const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
-          const pastCount = childDates.filter(d => (d.getFullYear()*12 + d.getMonth()) <= currentMonthVal).length;
+          const pastCount = childDates.filter(d => (d.getFullYear()*12 + d.getMonth() + timingMonthAdjust) <= currentMonthVal).length;
           const targetCount = pastCount + 18;
 
           if (childRows.length >= targetCount) {
@@ -3468,13 +3543,22 @@ export default async function handler(req, res) {
         const datedRows = allRows.map(r => ({ ...r, invDate: retParseSheetDate(r.row[43]) })).filter(r => r.invDate);
         const intervalMonths = retDetectIntervalMonths(datedRows.map(r => r.invDate));
 
+        // Detect whether this job's invoices are sent BEFORE the period they cover
+        // (e.g. 28-Nov for December) or DURING it (e.g. 3-Dec for December) —
+        // inferred from the job's own invoice history. Without this, selecting
+        // "December" as the change month when December's invoice was actually sent
+        // in November would incorrectly match the FOLLOWING month's row instead.
+        const jobStartDateForOffset = retParseSheetDate(parentRow[37]);
+        const invoiceTimingOffset = retDetectInvoiceTimingOffset_(datedRows.map(r => r.invDate), jobStartDateForOffset, intervalMonths);
+        const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : 0; // months to ADD to a sent-date to get its true covered-period month
+
         // Find the row whose invoice COVERS the change month — i.e. the row with the
         // latest invoice date that is <= the change month (accounts for quarterly
         // invoices, where a single row's invoice date might be 1-2 months before the
         // target month but still "covers" it via the detected interval).
         let matchedRow = null;
         for (let i = datedRows.length - 1; i >= 0; i--) {
-          const rowMonthVal = datedRows[i].invDate.getFullYear() * 12 + datedRows[i].invDate.getMonth();
+          const rowMonthVal = datedRows[i].invDate.getFullYear() * 12 + datedRows[i].invDate.getMonth() + timingMonthAdjust;
           if (rowMonthVal <= changeMonthVal) { matchedRow = datedRows[i]; break; }
         }
         if (!matchedRow) {

@@ -3050,7 +3050,7 @@ export default async function handler(req, res) {
       //    move-blank-row-into-position mechanism used by the nightly retainer audit,
       //    stepping by the job's detected invoice interval (supports quarterly etc.)
       //    and capped by the new end date and remaining contract value.
-      const { clientSheetId, client, jobName, parentRowNum, newEndDate } = req.body;
+      const { clientSheetId, masterSheetId, client, jobName, parentRowNum, newEndDate } = req.body;
       if (!clientSheetId || !jobName || !parentRowNum || !newEndDate) {
         return res.status(400).json({ success: false, error: "Missing required fields" });
       }
@@ -3259,6 +3259,11 @@ export default async function handler(req, res) {
           const durationMonths = Math.max(1, Math.round(diffDays / 30.4375));
           const totalContractValue = durationMonths * revenue;
 
+          // Read the client's configured default "days to pay" from DataChgAlert!B52
+          // on the master sheet (same source the nightly retainer audit uses), rather
+          // than assuming 30 — falls back to 30 only if that cell is genuinely blank.
+          const { defaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
+
           let lastDate = childDates.length > 0 ? childDates[childDates.length - 1] : new Date(startDate || newEnd);
           if (childDates.length === 0) lastDate.setMonth(lastDate.getMonth() - 1);
 
@@ -3336,7 +3341,7 @@ export default async function handler(req, res) {
               { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
               { range: `Confirmed!AP${rn}`, values: [[revenue]] },
               { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[m])]] },
-              { range: `Confirmed!AS${rn}`, values: [[30]] },
+              { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
             );
           }
           await sheets.spreadsheets.values.batchUpdate({

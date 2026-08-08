@@ -4596,6 +4596,7 @@ export default function TriageSystem({ onBack }) {
             body: JSON.stringify({
               action: "change_retainer_end_date",
               clientSheetId: retainersClient?.clientSheetId,
+              masterSheetId: retainersClient?.masterSheetId,
               client: job.client, jobName: jobName, parentRowNum: job.parentRowNum,
               newEndDate: endDate,
             }),

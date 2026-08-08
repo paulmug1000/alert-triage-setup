@@ -3578,10 +3578,13 @@ export default async function handler(req, res) {
           });
           const freshConfirmedSheet = (freshGroupsResp.data.sheets || []).find(s => s.properties?.title === "Confirmed");
           const currentRowGroups = freshConfirmedSheet?.rowGroups || [];
+          console.log(`  🔬 DIAG currentRowGroups (post-move, pre-regroup): ${JSON.stringify(currentRowGroups)}`);
+          console.log(`  🔬 DIAG parentRowNum=${parentRowNum} newParentRowNum=${newParentRowNum} oldGroupEnd=${oldGroupEnd} newGroupStart=${newGroupStart} newGroupEnd=${newGroupEnd}`);
 
           // Find any existing group covering the original job and shrink it to end at oldGroupEnd
           const anchorIdx0 = parentRowNum - 1;
           const existingGroup = currentRowGroups.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
+          console.log(`  🔬 DIAG existingGroup found: ${JSON.stringify(existingGroup)}`);
           const groupRequests = [];
           if (existingGroup) {
             groupRequests.push({ deleteDimensionGroup: { range: {
@@ -3599,9 +3602,12 @@ export default async function handler(req, res) {
           groupRequests.push({
             addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: newGroupStart - 1, endIndex: newGroupEnd } },
           });
+          console.log(`  🔬 DIAG groupRequests: ${JSON.stringify(groupRequests)}`);
           await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests: groupRequests } });
+          console.log(`  🔬 DIAG group batchUpdate succeeded without throwing`);
         } catch (groupErr) {
           console.log(`  ⚠ Row grouping for retainer split failed (non-fatal): ${groupErr.message}`);
+          console.log(`  🔬 DIAG full groupErr: ${JSON.stringify(groupErr.errors || groupErr.response?.data || groupErr, null, 2)}`);
         }
 
         console.log(`  ✅ change_retainer_monthly_amount: split "${jobName}" at ${changeMonthLabel} — new job "${newJobName}" at row ${newParentRowNum}`);

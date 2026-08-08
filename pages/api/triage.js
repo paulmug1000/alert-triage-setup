@@ -4147,13 +4147,16 @@ export default async function handler(req, res) {
           if (possibleMatchConfirmedRow) {
             const srcRowNum = parseInt(possibleMatchConfirmedRow, 10);
             const srcRow = rows[srcRowNum - 1];
+            console.log(`  🔬 SOURCEROW DIAG possibleMatchConfirmedRow=${possibleMatchConfirmedRow} srcRowNum=${srcRowNum} srcRow found=${!!srcRow}`);
             if (srcRow) {
               const slotDefs = [
                 { amt: 41, ref: 42, sent: 43, days: 44, status: 45 },
                 { amt: 48, ref: 49, sent: 50, days: 51, status: 52 },
                 { amt: 55, ref: 56, sent: 57, days: 58, status: 59 },
               ];
+              console.log(`  🔬 SOURCEROW DIAG possibleMatchInvoiceNo=${JSON.stringify(possibleMatchInvoiceNo)} slot refs on row: [${slotDefs.map(s => JSON.stringify(String(srcRow[s.ref] || ""))).join(", ")}]`);
               const matchedSlot = slotDefs.find(s => String(srcRow[s.ref] || "").trim() === String(possibleMatchInvoiceNo || "").trim());
+              console.log(`  🔬 SOURCEROW DIAG matchedSlot=${JSON.stringify(matchedSlot)}`);
               if (matchedSlot) {
                 sourceRowInfo = {
                   confirmedRow: srcRowNum,
@@ -11694,6 +11697,36 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(200).json({ success: true, stored, updated, dismissed });
       } catch (err) {
         console.error(`❌ Error in store_proactive_alerts:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "resolve_proactive_alert") {
+      // Marks a single ProactiveAlerts row as resolved, so it stops appearing in
+      // get_proactive_alerts. Used after an alert-driven action (e.g. "End
+      // retainer" / "Change retainer amount") has actually fixed the underlying
+      // condition — the alert itself is a persisted row, not a live check, so
+      // resolving the sheet doesn't automatically remove it; this call does.
+      const { automationCommanderSheetId: acId2, rowIndex, resolution } = req.body;
+      if (!acId2 || !rowIndex) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const nowISO = new Date().toISOString();
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: acId2,
+          requestBody: {
+            valueInputOption: "RAW",
+            data: [
+              { range: `${PROACTIVE_ALERTS_TAB}!F${rowIndex}`, values: [["resolved"]] },
+              { range: `${PROACTIVE_ALERTS_TAB}!I${rowIndex}`, values: [[nowISO]] },
+            ],
+          },
+        });
+        console.log(`  ✅ resolve_proactive_alert: row ${rowIndex} marked resolved (${resolution || "no reason given"})`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ resolve_proactive_alert error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

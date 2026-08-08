@@ -443,7 +443,7 @@ function CreateRetainerModal({ clientName: agencyClientName, clientSheetId, mast
 // different amount — the retainer's rate has likely changed). Fetches a computed
 // preview first (no changes made), shows it for confirmation, then applies it via
 // the existing change_retainer_end_date / change_retainer_monthly_amount actions.
-function RetainerAlertResolutionModal({ resolutionType, alertMeta, clientSheetId, masterSheetId, onClose, onResolved }) {
+function RetainerAlertResolutionModal({ resolutionType, alertMeta, alertRowIndex, automationCommanderSheetId, clientSheetId, masterSheetId, onClose, onResolved }) {
   const [loading, setLoading] = React.useState(true);
   const [preview, setPreview] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
@@ -514,6 +514,24 @@ function RetainerAlertResolutionModal({ resolutionType, alertMeta, clientSheetId
       }
       data = await res.json();
       if (!data.success) { setError(data.error || (data.blocked ? data.error : "Failed to apply the change.")); setApplying(false); return; }
+      // Mark the alert itself as resolved so it stops showing up — it's a
+      // persisted row, not a live check, so fixing the sheet doesn't remove it
+      // on its own. Best-effort: if this fails, don't block the user from
+      // seeing that the retainer change itself succeeded.
+      if (alertRowIndex && automationCommanderSheetId) {
+        try {
+          await fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "resolve_proactive_alert",
+              automationCommanderSheetId, rowIndex: alertRowIndex,
+              resolution: resolutionType === "end" ? "Retainer ended" : "Retainer amount changed",
+            }),
+          });
+        } catch (resolveErr) {
+          console.error("Failed to mark alert resolved:", resolveErr);
+        }
+      }
       await onResolved();
       onClose();
     } catch (e) { setError(e.message); setApplying(false); }
@@ -3363,6 +3381,8 @@ export default function TriageSystem({ onBack }) {
           <RetainerAlertResolutionModal
             resolutionType={retainerAlertResolution.resolutionType}
             alertMeta={retainerAlertResolution.alertMeta}
+            alertRowIndex={retainerAlertResolution.alertRowIndex}
+            automationCommanderSheetId={automationCommanderSheetId}
             clientSheetId={retainerAlertResolution.clientSheetId}
             masterSheetId={retainerAlertResolution.masterSheetId}
             onClose={() => setRetainerAlertResolution(null)}
@@ -6157,7 +6177,7 @@ export default function TriageSystem({ onBack }) {
                             {m.possibleMatchInvoiceNo ? (
                               <button className="triage-btn" onClick={() => {
                                 const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
                               }}
                                 style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                                 Change retainer amount
@@ -6165,7 +6185,7 @@ export default function TriageSystem({ onBack }) {
                             ) : (
                               <button className="triage-btn" onClick={() => {
                                 const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
                               }}
                                 style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                                 End retainer

@@ -2687,20 +2687,16 @@ export default async function handler(req, res) {
               await sheets.spreadsheets.batchUpdate({
                 spreadsheetId: sheetIdClean,
                 requestBody: {
-                  requests: [{
-                    updateDimensionGroup: {
-                      dimensionGroup: {
-                        range: {
-                          sheetId: gridSheetId, dimension: "ROWS",
-                          startIndex: coveringGroup.range.startIndex,
-                          endIndex: coveringGroup.range.endIndex + 1,
-                        },
-                        depth: coveringGroup.depth,
-                        collapsed: coveringGroup.collapsed || false,
-                      },
-                      fields: "*",
-                    },
-                  }],
+                  requests: [
+                    { deleteDimensionGroup: { range: {
+                        sheetId: gridSheetId, dimension: "ROWS",
+                        startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex,
+                      } } },
+                    { addDimensionGroup: { range: {
+                        sheetId: gridSheetId, dimension: "ROWS",
+                        startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex + 1,
+                      } } },
+                  ],
                 },
               });
             } else {
@@ -3176,23 +3172,18 @@ export default async function handler(req, res) {
           }
 
           const requests = [];
-          console.log(`  🔬 DIAG rowGroups from API: ${JSON.stringify(rowGroups)}`);
-          console.log(`  🔬 DIAG toTrim rows (1-indexed): ${toTrim.map(cr => cr.rowNum).join(", ")}`);
+          // NOTE: updateDimensionGroup cannot resize a group's row span — the API
+          // requires a group that ALREADY spans exactly the target range and only
+          // lets you change its collapsed state. To actually shrink a group, delete
+          // the existing one and add a new one at the smaller range instead.
           for (const [group, trimCount] of groupTrimCounts.entries()) {
-            console.log(`  🔬 DIAG group before shrink: startIndex=${group.range.startIndex} endIndex=${group.range.endIndex} depth=${group.depth} trimCount=${trimCount}`);
             const groupSize = group.range.endIndex - group.range.startIndex;
-            if (trimCount >= groupSize) {
-              requests.push({ deleteDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: group.range.startIndex, endIndex: group.range.endIndex } } });
-            } else {
+            requests.push({ deleteDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: group.range.startIndex, endIndex: group.range.endIndex } } });
+            if (trimCount < groupSize) {
               const newEnd = group.range.endIndex - trimCount;
-              console.log(`  🔬 DIAG shrinking to: startIndex=${group.range.startIndex} endIndex=${newEnd}`);
               requests.push({
-                updateDimensionGroup: {
-                  dimensionGroup: {
-                    range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: group.range.startIndex, endIndex: newEnd },
-                    depth: group.depth, collapsed: group.collapsed || false,
-                  },
-                  fields: "*",
+                addDimensionGroup: {
+                  range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: group.range.startIndex, endIndex: newEnd },
                 },
               });
             }
@@ -3363,15 +3354,16 @@ export default async function handler(req, res) {
             if (coveringGroup) {
               await sheets.spreadsheets.batchUpdate({
                 spreadsheetId: sheetIdClean,
-                requestBody: { requests: [{
-                  updateDimensionGroup: {
-                    dimensionGroup: {
-                      range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: coveringGroup.range.startIndex, endIndex: newRangeEnd },
-                      depth: coveringGroup.depth, collapsed: coveringGroup.collapsed || false,
-                    },
-                    fields: "*",
-                  },
-                }] },
+                requestBody: { requests: [
+                  { deleteDimensionGroup: { range: {
+                      sheetId: gridSheetId, dimension: "ROWS",
+                      startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex,
+                    } } },
+                  { addDimensionGroup: { range: {
+                      sheetId: gridSheetId, dimension: "ROWS",
+                      startIndex: coveringGroup.range.startIndex, endIndex: newRangeEnd,
+                    } } },
+                ] },
               });
             } else {
               await sheets.spreadsheets.batchUpdate({
@@ -3568,15 +3560,16 @@ export default async function handler(req, res) {
           const existingGroup = rowGroups.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
           const groupRequests = [];
           if (existingGroup) {
-            groupRequests.push({
-              updateDimensionGroup: {
-                dimensionGroup: {
-                  range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: existingGroup.range.startIndex, endIndex: oldGroupEnd },
-                  depth: existingGroup.depth, collapsed: existingGroup.collapsed || false,
-                },
-                fields: "*",
-              },
-            });
+            groupRequests.push({ deleteDimensionGroup: { range: {
+              sheetId: gridSheetId, dimension: "ROWS",
+              startIndex: existingGroup.range.startIndex, endIndex: existingGroup.range.endIndex,
+            } } });
+            if (oldGroupEnd > existingGroup.range.startIndex) {
+              groupRequests.push({ addDimensionGroup: { range: {
+                sheetId: gridSheetId, dimension: "ROWS",
+                startIndex: existingGroup.range.startIndex, endIndex: oldGroupEnd,
+              } } });
+            }
           }
           // Create a fresh group for the new job's rows
           groupRequests.push({

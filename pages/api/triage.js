@@ -3578,8 +3578,12 @@ export default async function handler(req, res) {
           const oldGroupEnd = oldJobLastChildBeforeSplit.length > 0
             ? oldJobLastChildBeforeSplit[oldJobLastChildBeforeSplit.length - 1].rowNum
             : parentRowNum;
-          const newGroupStart = newParentRowNum;
-          const newGroupEnd = relabelRows.length > 0 ? relabelRows[relabelRows.length - 1] : newParentRowNum;
+          // The group covers CHILD rows only, starting from the new job's first
+          // child — never the parent row itself (matches how every existing
+          // retainer group on this sheet is structured: parent row stays outside
+          // any group, only its children are grouped/collapsible underneath it).
+          const newGroupStart = relabelRows.length > 0 ? relabelRows[0] : null;
+          const newGroupEnd = relabelRows.length > 0 ? relabelRows[relabelRows.length - 1] : null;
 
           // Re-fetch rowGroups AFTER the row move above — the group boundaries we
           // read at the very start of this action are now stale, since inserting
@@ -3598,15 +3602,19 @@ export default async function handler(req, res) {
           // only the child rows underneath are grouped/collapsible. So the group we
           // need to shrink or remove isn't found by anchoring on parentRowNum; it's
           // whichever group(s) overlap the ORIGINAL child-row range that's now being
-          // split into "old job's remaining children" + "new job's parent + children".
-          // Find every group whose range overlaps [oldFirstChildRowNum, newGroupEnd]
-          // (0-indexed, inclusive-exclusive) and handle each: if it falls entirely
-          // within the old job's portion, leave it; if it falls entirely within the
-          // new portion, leave it (the new addDimensionGroup below will cover that
-          // span); if it SPANS the split point (covers rows from both the old job's
-          // tail and the new job's rows — exactly what happened here), delete it and
-          // re-add only the old-job portion, since the new-job portion is covered by
-          // the fresh group we add afterwards.
+          // split into "old job's remaining children" + "new job's children" (the
+          // new job's PARENT row sits outside any group, same as every other
+          // retainer parent). Find every group whose range overlaps
+          // [oldFirstChildRowNum, newGroupEnd] (0-indexed, inclusive-exclusive) and
+          // handle each: if it falls entirely within the old job's portion, leave
+          // it; if it falls entirely within the new portion, leave it (the new
+          // addDimensionGroup below will cover that span); if it SPANS the split
+          // point (covers rows from both the old job's tail and the new job's
+          // children), delete it and re-add only the old-job portion, since the
+          // new-job portion is covered by the fresh group we add afterwards.
+          if (newGroupStart === null) {
+            console.log(`  ⚠ Retainer split produced no child rows for the new job — skipping regrouping (nothing to group).`);
+          } else {
           const oldFirstChildRowNum = childRows.length > 0 ? childRows[0].rowNum : parentRowNum;
           const scanStartIdx0 = oldFirstChildRowNum - 1;
           const scanEndIdx0 = newGroupEnd; // exclusive
@@ -3636,7 +3644,7 @@ export default async function handler(req, res) {
               } } });
             }
           }
-          // Create a fresh group for the new job's rows
+          // Create a fresh group for the new job's CHILD rows only (not its parent)
           groupRequests.push({
             addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: newGroupStart - 1, endIndex: newGroupEnd } },
           });
@@ -3647,6 +3655,7 @@ export default async function handler(req, res) {
           } else {
             console.log(`  🔬 REGROUP no requests were built — nothing sent`);
           }
+          } // end of newGroupStart !== null guard
         } catch (groupErr) {
           console.log(`  ⚠ Row grouping for retainer split failed (non-fatal): ${groupErr.message}`);
           console.log(`  🔬 REGROUP full error: ${JSON.stringify(groupErr.response?.data || groupErr.errors || { message: groupErr.message, stack: groupErr.stack }, null, 2)}`);

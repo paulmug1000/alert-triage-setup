@@ -2698,6 +2698,7 @@ export default async function handler(req, res) {
                         depth: coveringGroup.depth,
                         collapsed: coveringGroup.collapsed || false,
                       },
+                      fields: "*",
                     },
                   }],
                 },
@@ -3171,6 +3172,7 @@ export default async function handler(req, res) {
                       range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex - 1 },
                       depth: coveringGroup.depth, collapsed: coveringGroup.collapsed || false,
                     },
+                    fields: "*",
                   },
                 });
               }
@@ -3348,6 +3350,7 @@ export default async function handler(req, res) {
                       range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: coveringGroup.range.startIndex, endIndex: newRangeEnd },
                       depth: coveringGroup.depth, collapsed: coveringGroup.collapsed || false,
                     },
+                    fields: "*",
                   },
                 }] },
               });
@@ -3552,6 +3555,7 @@ export default async function handler(req, res) {
                   range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: existingGroup.range.startIndex, endIndex: oldGroupEnd },
                   depth: existingGroup.depth, collapsed: existingGroup.collapsed || false,
                 },
+                fields: "*",
               },
             });
           }

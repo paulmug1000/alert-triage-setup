@@ -3176,12 +3176,16 @@ export default async function handler(req, res) {
           }
 
           const requests = [];
+          console.log(`  🔬 DIAG rowGroups from API: ${JSON.stringify(rowGroups)}`);
+          console.log(`  🔬 DIAG toTrim rows (1-indexed): ${toTrim.map(cr => cr.rowNum).join(", ")}`);
           for (const [group, trimCount] of groupTrimCounts.entries()) {
+            console.log(`  🔬 DIAG group before shrink: startIndex=${group.range.startIndex} endIndex=${group.range.endIndex} depth=${group.depth} trimCount=${trimCount}`);
             const groupSize = group.range.endIndex - group.range.startIndex;
             if (trimCount >= groupSize) {
               requests.push({ deleteDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: group.range.startIndex, endIndex: group.range.endIndex } } });
             } else {
               const newEnd = group.range.endIndex - trimCount;
+              console.log(`  🔬 DIAG shrinking to: startIndex=${group.range.startIndex} endIndex=${newEnd}`);
               requests.push({
                 updateDimensionGroup: {
                   dimensionGroup: {

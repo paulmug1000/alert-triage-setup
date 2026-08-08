@@ -2608,7 +2608,7 @@ export default async function handler(req, res) {
           // row groups — needed to extend/match the group depth for the new row).
           const metaResp = await sheets.spreadsheets.get({
             spreadsheetId: sheetIdClean,
-            fields: "sheets(properties,rowGroups)",
+            fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
           });
           const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
           if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
@@ -3143,7 +3143,7 @@ export default async function handler(req, res) {
 
           // Get sheet metadata for grouping/moving
           const metaResp = await sheets.spreadsheets.get({
-            spreadsheetId: sheetIdClean, fields: "sheets(properties,rowGroups)",
+            spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
           });
           const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
           const gridSheetId = confirmedSheet.properties.sheetId;
@@ -3265,7 +3265,10 @@ export default async function handler(req, res) {
           // Read the client's configured default "days to pay" from DataChgAlert!B52
           // on the master sheet (same source the nightly retainer audit uses), rather
           // than assuming 30 — falls back to 30 only if that cell is genuinely blank.
-          const { defaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
+          // getToleranceValues reads via FORMATTED_VALUE, so coerce to a real number —
+          // otherwise Sheets stores it as text (left-justified) instead of a number.
+          const { defaultDaysToPay: rawDefaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
+          const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay).replace(/[^\d.-]/g, ""), 10) || 30;
 
           let lastDate = childDates.length > 0 ? childDates[childDates.length - 1] : new Date(startDate || newEnd);
           if (childDates.length === 0) lastDate.setMonth(lastDate.getMonth() - 1);
@@ -3294,7 +3297,7 @@ export default async function handler(req, res) {
           }
 
           const metaResp = await sheets.spreadsheets.get({
-            spreadsheetId: sheetIdClean, fields: "sheets(properties)",
+            spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties)",
           });
           const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
           const gridSheetId = confirmedSheet.properties.sheetId;
@@ -3355,7 +3358,7 @@ export default async function handler(req, res) {
 
           // Group the new rows with the job (extend existing group if present, else create one)
           try {
-            const metaResp2 = await sheets.spreadsheets.get({ spreadsheetId: sheetIdClean, fields: "sheets(properties,rowGroups)" });
+            const metaResp2 = await sheets.spreadsheets.get({ spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)" });
             const cs2 = metaResp2.data.sheets.find(s => s.properties.title === "Confirmed");
             const groups2 = cs2.rowGroups || [];
             const anchorIdx0 = insertAfterRowNum - 1;
@@ -3463,7 +3466,7 @@ export default async function handler(req, res) {
 
         // Get sheet metadata for grouping/moving
         const metaResp = await sheets.spreadsheets.get({
-          spreadsheetId: sheetIdClean, fields: "sheets(properties,rowGroups)",
+          spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
         });
         const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
         const gridSheetId = confirmedSheet.properties.sheetId;
@@ -3565,9 +3568,20 @@ export default async function handler(req, res) {
           const newGroupStart = newParentRowNum;
           const newGroupEnd = relabelRows.length > 0 ? relabelRows[relabelRows.length - 1] : newParentRowNum;
 
+          // Re-fetch rowGroups AFTER the row move above — the group boundaries we
+          // read at the very start of this action are now stale, since inserting
+          // the new parent row shifted every row below it down by one. Using that
+          // stale snapshot here was the cause of a duplicate/incorrect sub-group
+          // appearing after a monthly-amount split.
+          const freshGroupsResp = await sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean, fields: "sheets(properties.title,rowGroups)",
+          });
+          const freshConfirmedSheet = (freshGroupsResp.data.sheets || []).find(s => s.properties?.title === "Confirmed");
+          const currentRowGroups = freshConfirmedSheet?.rowGroups || [];
+
           // Find any existing group covering the original job and shrink it to end at oldGroupEnd
           const anchorIdx0 = parentRowNum - 1;
-          const existingGroup = rowGroups.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
+          const existingGroup = currentRowGroups.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
           const groupRequests = [];
           if (existingGroup) {
             groupRequests.push({ deleteDimensionGroup: { range: {

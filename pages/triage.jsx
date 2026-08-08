@@ -54,8 +54,41 @@ function Spinner({ size = 14, color = "currentColor" }) {
 // the (still-stale, pre-close) job prop, so it visibly "reset" to the old data for a
 // moment before the modal finally closed.
 function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRenamedInPlace, onNeedsReload }) {
+  // Converts a sheet-formatted date string like "15-Mar-26" (or a few other common
+  // shapes) to ISO "YYYY-MM-DD" for use with a native <input type="date">.
+  const RET_MONTHS = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+  const sheetDateToISO = (val) => {
+    if (!val) return "";
+    const s = String(val).trim();
+    const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+    if (m) {
+      const mi = RET_MONTHS[m[2].toLowerCase()];
+      if (mi === undefined) return "";
+      const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+      const dd = String(parseInt(m[1], 10)).padStart(2, "0");
+      const mm = String(mi + 1).padStart(2, "0");
+      return `${yr}-${mm}-${dd}`;
+    }
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return "";
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  };
+  // Converts ISO "YYYY-MM-DD" back to the sheet's "DD-Mon-YY" display format —
+  // matches retFmtDate on the backend, so what's written is unambiguous and
+  // consistent with every other date the app writes to this sheet.
+  const isoToSheetDate = (iso) => {
+    if (!iso) return "";
+    const [y, m, d] = iso.split("-").map(Number);
+    if (!y || !m || !d) return "";
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    return `${d}-${months[m-1]}-${String(y).slice(-2)}`;
+  };
+
+  const jobStartISO = sheetDateToISO(job.rows[0]?.startDate);
+  const jobEndISO = sheetDateToISO(job.rows[0]?.endDate);
+
   const [jobName, setJobName] = React.useState(job.jobName || "");
-  const [endDate, setEndDate] = React.useState(job.rows[0]?.endDate || "");
+  const [endDate, setEndDate] = React.useState(jobEndISO); // stored as ISO for the date input
   const [changingAmount, setChangingAmount] = React.useState(false);
   const [newAmount, setNewAmount] = React.useState("");
   const [changeMonth, setChangeMonth] = React.useState(""); // "YYYY-MM"
@@ -66,9 +99,18 @@ function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRena
   const close = () => { if (!saving) onClose(); };
 
   const saveNameAndDate = async () => {
-    setSaving(true); setError("");
+    setError("");
     const nameChanged = jobName !== job.jobName;
-    const dateChanged = endDate !== job.rows[0]?.endDate;
+    const dateChanged = endDate !== jobEndISO;
+
+    // Validate before touching the sheet at all.
+    if (!jobName.trim()) { setError("Job name can't be blank."); return; }
+    if (dateChanged) {
+      if (!endDate) { setError("Please enter a valid end date."); return; }
+      if (jobStartISO && endDate < jobStartISO) { setError("End date can't be before the job's start date."); return; }
+    }
+
+    setSaving(true);
     try {
       if (nameChanged) {
         setSavingMessage("Renaming job...");
@@ -93,7 +135,7 @@ function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRena
             action: "change_retainer_end_date",
             clientSheetId, masterSheetId,
             client: job.client, jobName: jobName, parentRowNum: job.parentRowNum,
-            newEndDate: endDate,
+            newEndDate: isoToSheetDate(endDate),
           }),
         });
         const data = await res.json();
@@ -113,8 +155,19 @@ function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRena
   };
 
   const saveAmountChange = async () => {
-    if (!changeMonth || !newAmount) { setError("Please select a month and enter the new amount"); return; }
-    setSaving(true); setError("");
+    setError("");
+    if (!changeMonth) { setError("Please select the month the change takes effect."); return; }
+    const parsedAmount = parseFloat(newAmount);
+    if (!newAmount || isNaN(parsedAmount) || parsedAmount <= 0) { setError("Please enter a new monthly amount greater than zero."); return; }
+    if (jobStartISO && changeMonth < jobStartISO.slice(0, 7)) {
+      setError("The change month can't be before the job's start date.");
+      return;
+    }
+    if (jobEndISO && changeMonth > jobEndISO.slice(0, 7)) {
+      setError("The change month is after the job's current end date — please pick an earlier month, or extend the end date first.");
+      return;
+    }
+    setSaving(true);
     try {
       setSavingMessage("Splitting the retainer at the new amount — this can take a little while...");
       const [yr, mo] = changeMonth.split("-").map(Number);
@@ -123,7 +176,7 @@ function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRena
         body: JSON.stringify({
           action: "change_retainer_monthly_amount",
           clientSheetId, client: job.client, jobName: job.jobName, parentRowNum: job.parentRowNum,
-          changeMonth: mo - 1, changeYear: yr, newMonthlyAmount: parseFloat(newAmount) || 0,
+          changeMonth: mo - 1, changeYear: yr, newMonthlyAmount: parsedAmount,
         }),
       });
       const data = await res.json();
@@ -163,7 +216,7 @@ function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRena
               </div>
               <div>
                 <label style={labelStyle}>End date</label>
-                <input style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} placeholder="DD-Mon-YY" />
+                <input type="date" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} min={jobStartISO || undefined} />
               </div>
             </div>
 

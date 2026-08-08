@@ -46,6 +46,180 @@ function Spinner({ size = 14, color = "currentColor" }) {
   );
 }
 
+// Retainer edit modal — defined at module scope (not inline in the screen's render
+// body) so it stays mounted across parent re-renders. When this was defined inline,
+// every setRetainersJobs() call during save (e.g. from loadRetainersJobs) caused the
+// parent to re-render, which redefined this component as a new function reference —
+// React then remounted it from scratch, re-running its useState() calls seeded from
+// the (still-stale, pre-close) job prop, so it visibly "reset" to the old data for a
+// moment before the modal finally closed.
+function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRenamedInPlace, onNeedsReload }) {
+  const [jobName, setJobName] = React.useState(job.jobName || "");
+  const [endDate, setEndDate] = React.useState(job.rows[0]?.endDate || "");
+  const [changingAmount, setChangingAmount] = React.useState(false);
+  const [newAmount, setNewAmount] = React.useState("");
+  const [changeMonth, setChangeMonth] = React.useState(""); // "YYYY-MM"
+  const [saving, setSaving] = React.useState(false);
+  const [savingMessage, setSavingMessage] = React.useState("");
+  const [error, setError] = React.useState("");
+
+  const close = () => { if (!saving) onClose(); };
+
+  const saveNameAndDate = async () => {
+    setSaving(true); setError("");
+    const nameChanged = jobName !== job.jobName;
+    const dateChanged = endDate !== job.rows[0]?.endDate;
+    try {
+      if (nameChanged) {
+        setSavingMessage("Renaming job...");
+        const res = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "rename_retainer_job",
+            clientSheetId, oldClient: job.client, oldJobName: job.jobName, newJobName: jobName,
+            parentRowNum: job.parentRowNum,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) { setError(data.error || "Failed to rename job"); setSaving(false); setSavingMessage(""); return; }
+      }
+      if (dateChanged) {
+        // End-date changes can trim/grow rows, so the row structure may no longer
+        // match what's on screen — a fresh load is required to show it accurately.
+        setSavingMessage("Updating end date — this can take a little while if rows need to be added or removed...");
+        const res = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "change_retainer_end_date",
+            clientSheetId, masterSheetId,
+            client: job.client, jobName: jobName, parentRowNum: job.parentRowNum,
+            newEndDate: endDate,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) { setError(data.error || (data.blocked ? data.error : "Failed to change end date")); setSaving(false); setSavingMessage(""); return; }
+        setSavingMessage("Refreshing job list...");
+        await onNeedsReload();
+        onClose();
+        return;
+      }
+      if (nameChanged) {
+        // Rename only — no row structure change, so patch the local list in place
+        // instead of reloading the whole table.
+        onRenamedInPlace(jobName);
+      }
+      onClose();
+    } catch(e) { setError(e.message); setSaving(false); setSavingMessage(""); }
+  };
+
+  const saveAmountChange = async () => {
+    if (!changeMonth || !newAmount) { setError("Please select a month and enter the new amount"); return; }
+    setSaving(true); setError("");
+    try {
+      setSavingMessage("Splitting the retainer at the new amount — this can take a little while...");
+      const [yr, mo] = changeMonth.split("-").map(Number);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "change_retainer_monthly_amount",
+          clientSheetId, client: job.client, jobName: job.jobName, parentRowNum: job.parentRowNum,
+          changeMonth: mo - 1, changeYear: yr, newMonthlyAmount: parseFloat(newAmount) || 0,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) { setError(data.error || "Failed to change monthly amount"); setSaving(false); setSavingMessage(""); return; }
+      // This creates a brand new job row and relabels existing ones — a fresh
+      // load is required to show the split accurately.
+      setSavingMessage("Refreshing job list...");
+      await onNeedsReload();
+      onClose();
+    } catch(e) { setError(e.message); setSaving(false); setSavingMessage(""); }
+  };
+
+  const inputStyle = { width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" };
+  const labelStyle = { display: "block", fontSize: "11px", fontWeight: "600", color: "#666", marginBottom: "3px" };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={e => { if (e.target === e.currentTarget) close(); }}>
+      <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 520px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit retainer — {job.client}</h3>
+          {!saving && <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>}
+        </div>
+
+        {saving ? (
+          <div style={{ padding: "30px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: "14px", textAlign: "center" }}>
+            <Spinner size={32} color="#7c3aed" />
+            <div style={{ fontSize: "14px", color: "#5b21b6", fontWeight: "600" }}>{savingMessage || "Saving..."}</div>
+            <div style={{ fontSize: "12px", color: "#999" }}>Please don't close this window until it's done.</div>
+          </div>
+        ) : !changingAmount ? (
+          <>
+            <div style={{ display: "grid", gap: "12px" }}>
+              <div>
+                <label style={labelStyle}>Job name</label>
+                <input style={inputStyle} value={jobName} onChange={e => setJobName(e.target.value)} />
+              </div>
+              <div>
+                <label style={labelStyle}>End date</label>
+                <input style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} placeholder="DD-Mon-YY" />
+              </div>
+            </div>
+
+            <div style={{ marginTop: "16px", padding: "12px", background: "#f5f3ff", borderRadius: "8px", border: "1px solid #ddd6fe" }}>
+              <div style={{ fontSize: "13px", fontWeight: "600", color: "#5b21b6", marginBottom: "6px" }}>Monthly amount</div>
+              <div style={{ fontSize: "13px", color: "#333", marginBottom: "8px" }}>Current: {/^[£$€]/.test(String(job.revenue)) ? job.revenue : `£${job.revenue}`}/month</div>
+              <button onClick={() => setChangingAmount(true)}
+                style={{ padding: "7px 14px", background: "#fff", border: "1px solid #7c3aed", color: "#7c3aed", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
+                Change monthly amount…
+              </button>
+            </div>
+
+            {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginTop: "12px" }}>{error}</div>}
+
+            <div style={{ display: "flex", gap: "8px", marginTop: "20px", justifyContent: "flex-end" }}>
+              <button onClick={close} disabled={saving}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+              <button onClick={saveNameAndDate} disabled={saving}
+                style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
+                {saving ? "Saving..." : "Save changes"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: "13px", color: "#666", marginBottom: "14px" }}>
+              This will end the current retainer at the end of the month before your chosen month, and start a new retainer job from that month at the new amount.
+            </div>
+            <div style={{ display: "grid", gap: "12px" }}>
+              <div>
+                <label style={labelStyle}>Month the change takes effect</label>
+                <input type="month" style={inputStyle} value={changeMonth} onChange={e => setChangeMonth(e.target.value)} />
+              </div>
+              <div>
+                <label style={labelStyle}>New monthly amount (£)</label>
+                <input type="number" step="0.01" style={inputStyle} value={newAmount} onChange={e => setNewAmount(e.target.value)} />
+              </div>
+            </div>
+
+            {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginTop: "12px" }}>{error}</div>}
+
+            <div style={{ display: "flex", gap: "8px", marginTop: "20px", justifyContent: "space-between" }}>
+              <button onClick={() => { setChangingAmount(false); setError(""); }} disabled={saving}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>← Back</button>
+              <button onClick={saveAmountChange} disabled={saving}
+                style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
+                {saving ? "Applying..." : "Apply change"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Renders a project code inline. Codes longer than `maxLen` chars are truncated with "..."
 // and can be tapped/clicked to expand. Keeps the job header line from breaking on mobile.
 const TRUNCATED_CODE_MAX = 16;
@@ -291,7 +465,6 @@ export default function TriageSystem({ onBack }) {
   const [retainersJobsLoading, setRetainersJobsLoading] = useState(false);
   const [retainersEditJob, setRetainersEditJob] = useState(null); // the job object being edited
   const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(() => new Set()); // parentRowNum values currently expanded
-  const [retainersSaveError, setRetainersSaveError] = useState("");
   // assignedAppIds: Set of transactionIds assigned via outgoings — persisted to localStorage
   // until refreshOutgoingsAndUI runs and removes them from DirComp properly
   // assignedAppIdsByClient: Map of {clientName → Set<transactionId>} for per-client count adjustment
@@ -4556,176 +4729,28 @@ export default function TriageSystem({ onBack }) {
 
 
   // ── RETAINERS SCREEN ─────────────────────────────────────────────────────────
-  const RetainersEditModal = () => {
-    if (!retainersEditJob) return null;
-    const job = retainersEditJob;
-    const [jobName, setJobName] = React.useState(job.jobName || "");
-    const [endDate, setEndDate] = React.useState(job.rows[0]?.endDate || "");
-    const [changingAmount, setChangingAmount] = React.useState(false);
-    const [newAmount, setNewAmount] = React.useState("");
-    const [changeMonth, setChangeMonth] = React.useState(""); // "YYYY-MM"
-    const [saving, setSaving] = React.useState(false);
-    const [error, setError] = React.useState("");
-
-    const close = () => { setRetainersEditJob(null); setRetainersSaveError(""); };
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-
-    const saveNameAndDate = async () => {
-      setSaving(true); setError("");
-      const nameChanged = jobName !== job.jobName;
-      const dateChanged = endDate !== job.rows[0]?.endDate;
-      try {
-        if (nameChanged) {
-          const res = await fetch("/api/triage", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "rename_retainer_job",
-              clientSheetId: retainersClient?.clientSheetId,
-              oldClient: job.client, oldJobName: job.jobName, newJobName: jobName,
-              parentRowNum: job.parentRowNum,
-            }),
-          });
-          const data = await res.json();
-          if (!data.success) { setError(data.error || "Failed to rename job"); setSaving(false); return; }
-        }
-        if (dateChanged) {
-          // End-date changes can trim/grow rows, so the row structure may no longer
-          // match what's on screen — a fresh load is required to show it accurately.
-          const res = await fetch("/api/triage", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "change_retainer_end_date",
-              clientSheetId: retainersClient?.clientSheetId,
-              masterSheetId: retainersClient?.masterSheetId,
-              client: job.client, jobName: jobName, parentRowNum: job.parentRowNum,
-              newEndDate: endDate,
-            }),
-          });
-          const data = await res.json();
-          if (!data.success) { setError(data.error || (data.blocked ? data.error : "Failed to change end date")); setSaving(false); return; }
-          await loadRetainersJobs(retainersClient);
-          close();
-          return;
-        }
-        if (nameChanged) {
-          // Rename only — no row structure change, so patch the local list in place
-          // instead of reloading the whole table.
-          setRetainersJobs(prev => prev && prev.map(j => j.parentRowNum !== job.parentRowNum ? j : {
-            ...j, jobName,
-            rows: j.rows.map(r => ({ ...r, jobName })),
-          }));
-        }
-        close();
-      } catch(e) { setError(e.message); setSaving(false); }
-    };
-
-    const saveAmountChange = async () => {
-      if (!changeMonth || !newAmount) { setError("Please select a month and enter the new amount"); return; }
-      setSaving(true); setError("");
-      try {
-        const [yr, mo] = changeMonth.split("-").map(Number);
-        const res = await fetch("/api/triage", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "change_retainer_monthly_amount",
-            clientSheetId: retainersClient?.clientSheetId,
-            client: job.client, jobName: job.jobName, parentRowNum: job.parentRowNum,
-            changeMonth: mo - 1, changeYear: yr, newMonthlyAmount: parseFloat(newAmount) || 0,
-          }),
-        });
-        const data = await res.json();
-        if (!data.success) { setError(data.error || "Failed to change monthly amount"); setSaving(false); return; }
-        // This creates a brand new job row and relabels existing ones — a fresh
-        // load is required to show the split accurately.
-        await loadRetainersJobs(retainersClient);
-        close();
-      } catch(e) { setError(e.message); setSaving(false); }
-    };
-
-    const inputStyle = { width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" };
-    const labelStyle = { display: "block", fontSize: "11px", fontWeight: "600", color: "#666", marginBottom: "3px" };
-
-    return (
-      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-        onClick={e => { if (e.target === e.currentTarget) close(); }}>
-        <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 520px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-            <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit retainer — {job.client}</h3>
-            <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
-          </div>
-
-          {!changingAmount ? (
-            <>
-              <div style={{ display: "grid", gap: "12px" }}>
-                <div>
-                  <label style={labelStyle}>Job name</label>
-                  <input style={inputStyle} value={jobName} onChange={e => setJobName(e.target.value)} />
-                </div>
-                <div>
-                  <label style={labelStyle}>End date</label>
-                  <input style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} placeholder="DD-Mon-YY" />
-                </div>
-              </div>
-
-              <div style={{ marginTop: "16px", padding: "12px", background: "#f5f3ff", borderRadius: "8px", border: "1px solid #ddd6fe" }}>
-                <div style={{ fontSize: "13px", fontWeight: "600", color: "#5b21b6", marginBottom: "6px" }}>Monthly amount</div>
-                <div style={{ fontSize: "13px", color: "#333", marginBottom: "8px" }}>Current: {/^[£$€]/.test(String(job.revenue)) ? job.revenue : `£${job.revenue}`}/month</div>
-                <button onClick={() => setChangingAmount(true)}
-                  style={{ padding: "7px 14px", background: "#fff", border: "1px solid #7c3aed", color: "#7c3aed", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
-                  Change monthly amount…
-                </button>
-              </div>
-
-              {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginTop: "12px" }}>{error}</div>}
-
-              <div style={{ display: "flex", gap: "8px", marginTop: "20px", justifyContent: "flex-end" }}>
-                <button onClick={close} disabled={saving}
-                  style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
-                <button onClick={saveNameAndDate} disabled={saving}
-                  style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
-                  {saving ? "Saving..." : "Save changes"}
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div style={{ fontSize: "13px", color: "#666", marginBottom: "14px" }}>
-                This will end the current retainer at the end of the month before your chosen month, and start a new retainer job from that month at the new amount.
-              </div>
-              <div style={{ display: "grid", gap: "12px" }}>
-                <div>
-                  <label style={labelStyle}>Month the change takes effect</label>
-                  <input type="month" style={inputStyle} value={changeMonth} onChange={e => setChangeMonth(e.target.value)} />
-                </div>
-                <div>
-                  <label style={labelStyle}>New monthly amount (£)</label>
-                  <input type="number" step="0.01" style={inputStyle} value={newAmount} onChange={e => setNewAmount(e.target.value)} />
-                </div>
-              </div>
-
-              {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginTop: "12px" }}>{error}</div>}
-
-              <div style={{ display: "flex", gap: "8px", marginTop: "20px", justifyContent: "space-between" }}>
-                <button onClick={() => { setChangingAmount(false); setError(""); }} disabled={saving}
-                  style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>← Back</button>
-                <button onClick={saveAmountChange} disabled={saving}
-                  style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
-                  {saving ? "Applying..." : "Apply change"}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    );
-  };
 
   if (activeNav === "retainers") {
     const noRetClient = !retainersClient;
 
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
-        {retainersEditJob && <RetainersEditModal />}
+        {retainersEditJob && (
+          <RetainersEditModal
+            key={retainersEditJob.parentRowNum}
+            job={retainersEditJob}
+            clientSheetId={retainersClient?.clientSheetId}
+            masterSheetId={retainersClient?.masterSheetId}
+            onClose={() => setRetainersEditJob(null)}
+            onRenamedInPlace={(newJobName) => {
+              setRetainersJobs(prev => prev && prev.map(j => j.parentRowNum !== retainersEditJob.parentRowNum ? j : {
+                ...j, jobName: newJobName,
+                rows: j.rows.map(r => ({ ...r, jobName: newJobName })),
+              }));
+            }}
+            onNeedsReload={() => loadRetainersJobs(retainersClient)}
+          />
+        )}
         <div style={{ padding: "20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>

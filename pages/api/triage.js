@@ -3557,15 +3557,33 @@ export default async function handler(req, res) {
         // invoices, where a single row's invoice date might be 1-2 months before the
         // target month but still "covers" it via the detected interval).
         let matchedRow = null;
+        let matchedRowPeriodStartVal = null;
         for (let i = datedRows.length - 1; i >= 0; i--) {
           const rowMonthVal = datedRows[i].invDate.getFullYear() * 12 + datedRows[i].invDate.getMonth() + timingMonthAdjust;
-          if (rowMonthVal <= changeMonthVal) { matchedRow = datedRows[i]; break; }
+          if (rowMonthVal <= changeMonthVal) { matchedRow = datedRows[i]; matchedRowPeriodStartVal = rowMonthVal; break; }
         }
         if (!matchedRow) {
           return res.status(400).json({ success: false, error: "Could not find a row covering that month — check the selected month against the job's invoice schedule." });
         }
         if (matchedRow.isParent) {
           return res.status(400).json({ success: false, error: "The change month falls within the job's very first invoice period, which is on the parent row — please choose a later month, or edit the job directly." });
+        }
+        // Block mid-period splits: for a multi-month invoice (e.g. quarterly), the
+        // matched row's invoice covers [matchedRowPeriodStartVal, matchedRowPeriodStartVal
+        // + intervalMonths - 1]. A split is only valid at the FIRST month of that
+        // period — splitting partway through would leave the matched invoice's
+        // amount/dates spanning across the old and new jobs incoherently, which
+        // needs manual handling rather than an automatic (and silently wrong) split.
+        if (intervalMonths > 1 && changeMonthVal !== matchedRowPeriodStartVal) {
+          const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          const periodStartLabel = `${months[matchedRowPeriodStartVal % 12]} ${Math.floor(matchedRowPeriodStartVal / 12)}`;
+          const periodEndVal = matchedRowPeriodStartVal + intervalMonths - 1;
+          const periodEndLabel = `${months[periodEndVal % 12]} ${Math.floor(periodEndVal / 12)}`;
+          return res.status(200).json({
+            success: false,
+            blocked: true,
+            error: `This change falls in the middle of an invoicing period (${periodStartLabel} to ${periodEndLabel}, invoiced together as one ${intervalMonths}-month invoice) — this will need to be handled manually. Please choose ${periodStartLabel} instead, or edit the job directly.`,
+          });
         }
 
         // Get sheet metadata for grouping/moving
@@ -3653,16 +3671,21 @@ export default async function handler(req, res) {
         }
 
         // Relabel all rows from matchedRow onward (now shifted down by 1) to the new
-        // job name, and update their invoice slot amount to the new monthly amount.
+        // job name, and update their invoice slot amount to the new amount. Each
+        // relabelled row's invoice covers `intervalMonths` months (e.g. 3 for a
+        // quarterly retainer), so the amount written must be the NEW MONTHLY RATE
+        // multiplied by that interval — writing the bare monthly figure into a
+        // quarterly invoice slot would understate it by a factor of 3.
         // matchedRow.rowNum was matchedRow's row BEFORE the insert; after the move it's +1.
         const relabelStartRow = matchedRow.rowNum + 1;
         const relabelRows = childRows.filter(cr => cr.rowNum >= matchedRow.rowNum).map(cr => cr.rowNum + 1);
+        const newPerInvoiceAmount = newMonthlyAmount * (intervalMonths || 1);
         const relabelData = [];
         for (const rn of relabelRows) {
           relabelData.push({ range: `Confirmed!B${rn}`, values: [[newJobName]] });
           // Update whichever invoice slot has data on this row to the new amount —
           // find it by checking which slot has a non-blank amount (child rows only ever use slot 1 for retainers)
-          relabelData.push({ range: `Confirmed!AP${rn}`, values: [[newMonthlyAmount]] });
+          relabelData.push({ range: `Confirmed!AP${rn}`, values: [[newPerInvoiceAmount]] });
         }
         if (relabelData.length > 0) {
           await sheets.spreadsheets.values.batchUpdate({

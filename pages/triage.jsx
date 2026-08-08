@@ -429,6 +429,140 @@ function CreateRetainerModal({ clientName, clientSheetId, masterSheetId, onClose
   );
 }
 
+// Confirmation modal for resolving a retainer_invoice proactive alert directly —
+// either "End retainer" (no replacement invoice found — the retainer has likely
+// ended) or "Change retainer amount" (an alternative invoice was found at a
+// different amount — the retainer's rate has likely changed). Fetches a computed
+// preview first (no changes made), shows it for confirmation, then applies it via
+// the existing change_retainer_end_date / change_retainer_monthly_amount actions.
+function RetainerAlertResolutionModal({ resolutionType, alertMeta, clientSheetId, masterSheetId, onClose, onResolved }) {
+  const [loading, setLoading] = React.useState(true);
+  const [preview, setPreview] = React.useState(null);
+  const [applying, setApplying] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "compute_retainer_alert_resolution",
+            clientSheetId, masterSheetId,
+            client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
+            resolutionType,
+            lastInvoiceDate: alertMeta.lastInvoiceDate,
+            possibleMatchSentDate: alertMeta.possibleMatchSentDate,
+            possibleMatchAmount: alertMeta.possibleMatchAmount,
+          }),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (!data.success) { setError(data.error || "Could not compute the resolution."); setLoading(false); return; }
+        setPreview(data);
+        setLoading(false);
+      } catch (e) {
+        if (!cancelled) { setError(e.message); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const close = () => { if (!applying) onClose(); };
+
+  const handleConfirm = async () => {
+    if (!preview) return;
+    setApplying(true); setError("");
+    try {
+      let res, data;
+      if (resolutionType === "end") {
+        res = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "change_retainer_end_date",
+            clientSheetId, masterSheetId,
+            client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
+            newEndDate: preview.computedEndDate,
+          }),
+        });
+      } else {
+        res = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "change_retainer_monthly_amount",
+            clientSheetId,
+            client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
+            changeMonth: preview.changeMonth, changeYear: preview.changeYear, newMonthlyAmount: preview.newMonthlyAmount,
+          }),
+        });
+      }
+      data = await res.json();
+      if (!data.success) { setError(data.error || (data.blocked ? data.error : "Failed to apply the change.")); setApplying(false); return; }
+      await onResolved();
+      onClose();
+    } catch (e) { setError(e.message); setApplying(false); }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={e => { if (e.target === e.currentTarget) close(); }}>
+      <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>
+            {resolutionType === "end" ? "End retainer" : "Change retainer amount"} — {alertMeta.endClientName}
+          </h3>
+          {!applying && <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>}
+        </div>
+
+        {(loading || applying) ? (
+          <div style={{ padding: "30px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: "14px", textAlign: "center" }}>
+            <Spinner size={32} color="#7c3aed" />
+            <div style={{ fontSize: "14px", color: "#5b21b6", fontWeight: "600" }}>
+              {applying ? "Applying the change — this can take a little while..." : "Working out what this change would do..."}
+            </div>
+            {applying && <div style={{ fontSize: "12px", color: "#999" }}>Please don't close this window until it's done.</div>}
+          </div>
+        ) : error && !preview ? (
+          <div style={{ fontSize: "13px", color: "#d32f2f", background: "#fff5f5", padding: "12px", borderRadius: "6px" }}>{error}</div>
+        ) : preview && (
+          <>
+            <div style={{ fontSize: "13px", color: "#333", marginBottom: "16px" }}>
+              <div><strong>Job:</strong> {alertMeta.jobName}</div>
+              {resolutionType === "end" ? (
+                <>
+                  <div style={{ marginTop: "8px" }}>Last invoice was sent on <strong>{preview.lastInvoiceSentDate}</strong>, covering <strong>{preview.coveredPeriodLabel}</strong>.</div>
+                  <div style={{ marginTop: "8px", padding: "10px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px" }}>
+                    The retainer's end date will be set to <strong>{preview.computedEndDateLabel}</strong>. Any future invoice rows beyond this date will be removed (only if they contain no real invoice or expense data — otherwise this will be blocked).
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ marginTop: "8px" }}>An alternative invoice was found for <strong>£{preview.newPerInvoiceAmount.toFixed(2)}</strong>{preview.intervalMonths > 1 ? ` (covering ${preview.intervalMonths} months)` : ""}.</div>
+                  <div style={{ marginTop: "8px", padding: "10px", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: "6px" }}>
+                    From <strong>{preview.changeMonthLabel}</strong>, the retainer will be split into a new job at <strong>£{preview.newMonthlyAmount.toFixed(2)}/month</strong>{preview.intervalMonths > 1 ? ` (£${preview.newPerInvoiceAmount.toFixed(2)} per ${preview.intervalMonths}-month invoice)` : ""}. The existing job will end the month before.
+                  </div>
+                </>
+              )}
+            </div>
+
+            {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginBottom: "12px" }}>{error}</div>}
+
+            <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+              <button onClick={close} disabled={applying}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+              <button onClick={handleConfirm} disabled={applying}
+                style={{ padding: "8px 22px", background: resolutionType === "end" ? "#dc2626" : "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
+                Confirm {resolutionType === "end" ? "end retainer" : "change amount"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Renders a project code inline. Codes longer than `maxLen` chars are truncated with "..."
 // and can be tapped/clicked to expand. Keeps the job header line from breaking on mobile.
 const TRUNCATED_CODE_MAX = 16;
@@ -675,6 +809,7 @@ export default function TriageSystem({ onBack }) {
   const [retainersEditJob, setRetainersEditJob] = useState(null); // the job object being edited
   const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(() => new Set()); // parentRowNum values currently expanded
   const [showCreateRetainerModal, setShowCreateRetainerModal] = useState(false);
+  const [retainerAlertResolution, setRetainerAlertResolution] = useState(null); // { alert, resolutionType, computed... } while confirming
   // assignedAppIds: Set of transactionIds assigned via outgoings — persisted to localStorage
   // until refreshOutgoingsAndUI runs and removes them from DirComp properly
   // assignedAppIdsByClient: Map of {clientName → Set<transactionId>} for per-client count adjustment
@@ -3132,7 +3267,8 @@ export default function TriageSystem({ onBack }) {
   };
 
   // Wrap any screen JSX with the task creation modal overlay (rendered above everything)
-  const withModal = (jsx) => showTaskModal ? (
+  const withModal = (jsx) => {
+    const withTaskModal = showTaskModal ? (
     <>
       {jsx}
       <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) { setShowTaskModal(false); setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("09:00"); } }}>
@@ -3200,6 +3336,22 @@ export default function TriageSystem({ onBack }) {
       </div>
     </>
   ) : jsx;
+    return (
+      <>
+        {withTaskModal}
+        {retainerAlertResolution && (
+          <RetainerAlertResolutionModal
+            resolutionType={retainerAlertResolution.resolutionType}
+            alertMeta={retainerAlertResolution.alertMeta}
+            clientSheetId={retainerAlertResolution.clientSheetId}
+            masterSheetId={retainerAlertResolution.masterSheetId}
+            onClose={() => setRetainerAlertResolution(null)}
+            onResolved={() => loadProactiveAlerts()}
+          />
+        )}
+      </>
+    );
+  };
 
   // Screen: Ignored Alerts
   if (screen === "ignoredAlerts" && activeNav === "home") {
@@ -5978,6 +6130,27 @@ export default function TriageSystem({ onBack }) {
                                 ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</>
                                 : <>Not yet attached to any job in the Confirmed tab</>}
                             </div>
+                          </div>
+                        )}
+                        {m.confirmedRow && m.jobName && (
+                          <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                            {m.possibleMatchInvoiceNo ? (
+                              <button className="triage-btn" onClick={() => {
+                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName);
+                                setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                              }}
+                                style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                                Change retainer amount
+                              </button>
+                            ) : (
+                              <button className="triage-btn" onClick={() => {
+                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName);
+                                setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                              }}
+                                style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                                End retainer
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>

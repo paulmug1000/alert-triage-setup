@@ -3682,6 +3682,11 @@ export default async function handler(req, res) {
           const colLetter = agToAmCols[i];
           let val = copiedAGtoAM[i] !== undefined ? copiedAGtoAM[i] : "";
           if (colLetter === "AG") val = newMonthlyAmount;
+          // AH (direct costs) was read via FORMATTED_VALUE, so it arrives as a
+          // display string like "£0.00" — write it back as a real number, or
+          // Sheets stores the copy as literal text (visible as a leading '£0.00
+          // apostrophe) instead of a usable numeric value.
+          if (colLetter === "AH") val = retParseMoney(val);
           if (colLetter === "AL") val = retFmtDate(newJobStartDate);
           // AM (end date) stays as the OLD job's original end date, per spec
           if (colLetter === "AM") val = oldEndDate ? retFmtDate(oldEndDate) : (copiedAGtoAM[i] || "");
@@ -3986,6 +3991,113 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, parentRowNum: newParentRowNum, childRowCount: childSendDates.length });
       } catch (err) {
         console.error("❌ create_retainer_job error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "compute_retainer_alert_resolution") {
+      // Given a retainer_invoice proactive alert's own data, computes what an
+      // "End retainer" or "Change retainer amount" resolution WOULD do, without
+      // making any changes — used to populate the confirmation screen on the
+      // alert card before the user confirms. resolutionType: "end" | "changeAmount".
+      const { clientSheetId, masterSheetId, client, jobName, parentRowNum, resolutionType,
+        lastInvoiceDate, possibleMatchSentDate, possibleMatchAmount } = req.body;
+      if (!clientSheetId || !jobName || !parentRowNum || !resolutionType) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+        const parentRow = rows[parentRowNum - 1] || [];
+        if (String(parentRow[0]||"").trim() !== client || String(parentRow[1]||"").trim() !== jobName) {
+          return res.status(400).json({ success: false, error: "Row mismatch — this job may have moved since the alert was raised. Please check the Retainers screen directly." });
+        }
+
+        const jobStartDate = retParseSheetDate(parentRow[37]);
+
+        // Collect child rows + their invoice dates, same as the other retainer actions
+        const childRows = [];
+        let cj = parentRowNum;
+        while (cj < rows.length) {
+          const next = rows[cj] || [];
+          if (String(next[0]||"").trim() === client && String(next[1]||"").trim() === jobName &&
+              !String(next[32]||"").trim() && !String(next[37]||"").trim()) {
+            childRows.push({ rowNum: cj + 1, row: next });
+            cj++;
+          } else break;
+        }
+        const parentInvDate = retParseSheetDate(parentRow[43]);
+        const allInvoiceDates = (parentInvDate ? [parentInvDate] : []).concat(
+          childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean)
+        );
+        const intervalMonths = retDetectIntervalMonths(allInvoiceDates);
+        const invoiceTimingOffset = retDetectInvoiceTimingOffset_(allInvoiceDates, jobStartDate, intervalMonths);
+        const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : 0;
+
+        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+        if (resolutionType === "end") {
+          // Determine which period the LAST SENT invoice actually covers (using the
+          // detected timing pattern), then set the end date to the LAST calendar
+          // day of that period.
+          const lastSent = retParseSheetDate(lastInvoiceDate);
+          if (!lastSent) {
+            return res.status(400).json({ success: false, error: "Could not determine the last invoice's sent date from this alert." });
+          }
+          const coveredPeriodStartVal = lastSent.getFullYear() * 12 + lastSent.getMonth() + timingMonthAdjust;
+          const coveredPeriodEndVal = coveredPeriodStartVal + intervalMonths - 1;
+          const endYear = Math.floor(coveredPeriodEndVal / 12);
+          const endMonth0 = coveredPeriodEndVal % 12;
+          const lastDayOfMonth = new Date(endYear, endMonth0 + 1, 0).getDate();
+          const computedEndDate = new Date(endYear, endMonth0, lastDayOfMonth);
+
+          return res.status(200).json({
+            success: true,
+            resolutionType: "end",
+            computedEndDate: retFmtDate(computedEndDate),
+            computedEndDateLabel: `${lastDayOfMonth}-${months[endMonth0]}-${endYear}`,
+            coveredPeriodLabel: intervalMonths > 1
+              ? `${months[coveredPeriodStartVal % 12]} ${Math.floor(coveredPeriodStartVal/12)} to ${months[coveredPeriodEndVal % 12]} ${endYear}`
+              : `${months[coveredPeriodStartVal % 12]} ${Math.floor(coveredPeriodStartVal/12)}`,
+            lastInvoiceSentDate: retFmtDate(lastSent),
+          });
+
+        } else if (resolutionType === "changeAmount") {
+          // Determine which period the ALTERNATIVE invoice (found by the alert)
+          // covers, then express its amount as a MONTHLY rate (dividing by the
+          // job's detected interval, since change_retainer_monthly_amount always
+          // takes a monthly figure and multiplies it back up internally).
+          const altSent = retParseSheetDate(possibleMatchSentDate);
+          const altAmount = parseFloat(possibleMatchAmount);
+          if (!altSent || isNaN(altAmount)) {
+            return res.status(400).json({ success: false, error: "Could not determine the alternative invoice's date or amount from this alert." });
+          }
+          const coveredPeriodStartVal = altSent.getFullYear() * 12 + altSent.getMonth() + timingMonthAdjust;
+          const endYear = Math.floor(coveredPeriodStartVal / 12);
+          const endMonth0 = coveredPeriodStartVal % 12;
+          const newMonthlyAmount = altAmount / (intervalMonths || 1);
+
+          return res.status(200).json({
+            success: true,
+            resolutionType: "changeAmount",
+            changeMonth: endMonth0,
+            changeYear: endYear,
+            changeMonthLabel: `${months[endMonth0]} ${endYear}`,
+            newMonthlyAmount: Math.round(newMonthlyAmount * 100) / 100,
+            newPerInvoiceAmount: altAmount,
+            intervalMonths,
+          });
+        }
+
+        return res.status(400).json({ success: false, error: "Unknown resolutionType" });
+      } catch (err) {
+        console.error("❌ compute_retainer_alert_resolution error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

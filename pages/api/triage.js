@@ -3192,46 +3192,49 @@ export default async function handler(req, res) {
             await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests } });
           }
 
-          // 2. Clear content on each row-to-trim, then move it to the bottom (below trueLastRow)
-          let trimmedCount = 0;
-          for (const cr of toTrim) {
-            const rn = cr.rowNum;
-            await sheets.spreadsheets.values.batchClear({
-              spreadsheetId: sheetIdClean,
-              requestBody: { ranges: [
-                `Confirmed!A${rn}:AM${rn}`,
-                `Confirmed!AP${rn}:BH${rn}`,
-                `Confirmed!BX${rn}:CR${rn}`,
-              ]},
-            });
-
-            // Re-fetch true last row each time since prior moves shift things
-            const freshResp = await sheets.spreadsheets.values.get({
-              spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
-            });
-            const freshRows = freshResp.data.values || [];
-            const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshRows);
-
-            // Move the now-blank row to sit right after trueLastRow (i.e. to the bottom)
-            const srcIdx0 = rn - 1;
-            if (srcIdx0 !== trueLastRow) { // no-op if it's already at the bottom
-              await sheets.spreadsheets.batchUpdate({
-                spreadsheetId: sheetIdClean,
-                requestBody: { requests: [{
-                  moveDimension: {
-                    source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: srcIdx0, endIndex: srcIdx0 + 1 },
-                    destinationIndex: srcIdx0 < trueLastRow ? trueLastRow : trueLastRow + 1,
-                  },
-                }] },
-              });
-            }
-            trimmedCount++;
+          // 2. Clear content on all rows-to-trim in one batch, then move the whole
+          // contiguous block to the bottom in one operation. The old version did
+          // this one row at a time AND re-read the entire sheet before every single
+          // move to recompute trueLastRow — that combination was the main cause of
+          // very slow saves. toTrim rows are always contiguous (consecutive trailing
+          // child rows), so a single block clear + single block move is equivalent.
+          const trimRowNums = toTrim.map(cr => cr.rowNum).sort((a, b) => a - b); // ascending order
+          const clearRanges = [];
+          for (const rn of trimRowNums) {
+            clearRanges.push(`Confirmed!A${rn}:AM${rn}`, `Confirmed!AP${rn}:BH${rn}`, `Confirmed!BX${rn}:CR${rn}`);
           }
+          await sheets.spreadsheets.values.batchClear({
+            spreadsheetId: sheetIdClean, requestBody: { ranges: clearRanges },
+          });
+
+          // Re-fetch true last row ONCE, after clearing, then move the whole
+          // now-blank contiguous block to sit right after it in a single call.
+          const freshResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
+          });
+          const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+
+          const blockStartIdx0 = trimRowNums[0] - 1;
+          const blockEndIdx0 = trimRowNums[trimRowNums.length - 1]; // exclusive end
+          if (blockStartIdx0 <= trueLastRow) {
+            // Rows are somewhere within/before the "true data" region — move the
+            // block to sit immediately after trueLastRow (i.e. to the very bottom).
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: { requests: [{
+                moveDimension: {
+                  source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: blockStartIdx0, endIndex: blockEndIdx0 },
+                  destinationIndex: trueLastRow + 1,
+                },
+              }] },
+            });
+          }
+          const trimmedCount = trimRowNums.length;
 
           // Update the end date on the parent row
           await sheets.spreadsheets.values.update({
             spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
-            valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+            valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
           });
 
           console.log(`  ✅ change_retainer_end_date: trimmed ${trimmedCount} row(s) for ${client} — ${jobName}`);
@@ -3315,20 +3318,22 @@ export default async function handler(req, res) {
             currentMaxRows += toAdd;
           }
 
-          // Move each new blank row into position, one at a time, right after insertAfterRowNum
-          for (let m = 0; m < newRowDates.length; m++) {
-            const srcIdx0 = trueLastRow; // first blank row (0-indexed)
-            const destIdx0 = insertAfterRowNum + m; // 0-indexed position right after the last child so far
+          // Move all the new blank rows into position in ONE operation. The blank
+          // rows at the tail (trueLastRow onward) are contiguous with each other, so
+          // rather than moving them one at a time (which was extremely slow — each
+          // moveDimension call is a full round-trip), move the whole N-row block in
+          // a single request straight to its destination.
+          if (newRowDates.length > 0) {
             await sheets.spreadsheets.batchUpdate({
               spreadsheetId: sheetIdClean,
               requestBody: { requests: [{
                 moveDimension: {
-                  source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: srcIdx0, endIndex: srcIdx0 + 1 },
-                  destinationIndex: destIdx0,
+                  source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + newRowDates.length },
+                  destinationIndex: insertAfterRowNum,
                 },
               }] },
             });
-            trueLastRow += 1;
+            trueLastRow += newRowDates.length;
           }
 
           // Write client/job/vat/invoice data into the new rows

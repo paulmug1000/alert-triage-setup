@@ -11655,7 +11655,18 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const ex = existingByKey[alert.alertKey] || existingBySignature[sig];
 
           if (ex) {
-            if (ex.status === "acknowledged" || ex.status === "auto_dismissed") { dismissed++; continue; }
+            if (ex.status === "acknowledged") { dismissed++; continue; }
+            if (ex.status === "auto_dismissed" || ex.status === "resolved") {
+              // The condition was previously marked gone/fixed but has been detected
+              // again — reactivate rather than leaving it permanently suppressed.
+              // (Only "acknowledged" — an explicit user dismissal — stays suppressed.)
+              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!F${ex.rowIndex}`, values: [["active"]] });
+              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!A${ex.rowIndex}`, values: [[alert.alertKey]] });
+              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!H${ex.rowIndex}`, values: [[nowISO]] });
+              updated++;
+              console.log(`  Reactivated ${ex.status} ${alert.alertType} alert for ${alert.clientName}: ${alert.alertKey} — condition detected again`);
+              continue;
+            }
             // Active match found — update lastSeen and alertKey (in case key format changed)
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!A${ex.rowIndex}`, values: [[alert.alertKey]] });
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!H${ex.rowIndex}`, values: [[nowISO]] });

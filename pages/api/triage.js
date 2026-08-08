@@ -3577,17 +3577,36 @@ export default async function handler(req, res) {
         if (matchedRow.isParent) {
           return res.status(400).json({ success: false, error: "The change month falls within the job's very first invoice period, which is on the parent row — please choose a later month, or edit the job directly." });
         }
-        // Block mid-period splits: for a multi-month invoice (e.g. quarterly), the
-        // matched row's invoice covers [matchedRowPeriodStartVal, matchedRowPeriodStartVal
-        // + intervalMonths - 1]. A split is only valid at the FIRST month of that
-        // period — splitting partway through would leave the matched invoice's
-        // amount/dates spanning across the old and new jobs incoherently, which
-        // needs manual handling rather than an automatic (and silently wrong) split.
+        // The matched row's invoice covers [matchedRowPeriodStartVal,
+        // matchedRowPeriodStartVal + intervalMonths - 1]. Two distinct problem cases
+        // can arise here, and need different messages:
+        //  1. TRUE MID-PERIOD: the requested month falls WITHIN that period but isn't
+        //     its first month (e.g. period is May-Jul, requested month is June) —
+        //     splitting here would leave one invoice's amount/dates spanning across
+        //     both the old and new jobs incoherently.
+        //  2. GAP / ROW NOT YET CREATED: the requested month falls AFTER that period
+        //     entirely (e.g. matched row is the last one on file, covering May-Jul,
+        //     but the user asked for November) — there's simply no invoice row for
+        //     the requested month yet, so matching the last available row would be
+        //     wrong, not just imprecise. This can happen if the rolling 18-month
+        //     window hasn't generated that row yet, or the end date needs extending
+        //     first.
+        const matchedRowPeriodEndVal = matchedRowPeriodStartVal + intervalMonths - 1;
+        if (changeMonthVal > matchedRowPeriodEndVal) {
+          const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          const lastPeriodStartLabel = `${months[matchedRowPeriodStartVal % 12]} ${Math.floor(matchedRowPeriodStartVal / 12)}`;
+          const lastPeriodEndLabel = `${months[matchedRowPeriodEndVal % 12]} ${Math.floor(matchedRowPeriodEndVal / 12)}`;
+          const requestedLabel = `${months[changeMonthVal % 12]} ${Math.floor(changeMonthVal / 12)}`;
+          return res.status(200).json({
+            success: false,
+            blocked: true,
+            error: `The requested month (${requestedLabel}) doesn't have an invoice row yet — the last invoice on file covers ${lastPeriodStartLabel} to ${lastPeriodEndLabel}. This can happen if future invoice rows haven't been generated yet; please try extending the job's end date first (which will create the missing rows), then retry the amount change.`,
+          });
+        }
         if (intervalMonths > 1 && changeMonthVal !== matchedRowPeriodStartVal) {
           const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           const periodStartLabel = `${months[matchedRowPeriodStartVal % 12]} ${Math.floor(matchedRowPeriodStartVal / 12)}`;
-          const periodEndVal = matchedRowPeriodStartVal + intervalMonths - 1;
-          const periodEndLabel = `${months[periodEndVal % 12]} ${Math.floor(periodEndVal / 12)}`;
+          const periodEndLabel = `${months[matchedRowPeriodEndVal % 12]} ${Math.floor(matchedRowPeriodEndVal / 12)}`;
           return res.status(200).json({
             success: false,
             blocked: true,

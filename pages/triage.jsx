@@ -289,7 +289,8 @@ function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRena
 
 // Create Retainer modal — captures all fields needed to create a new retainer
 // job (parent row + a rolling window of child rows) via create_retainer_job.
-function CreateRetainerModal({ clientName, clientSheetId, masterSheetId, onClose, onCreated }) {
+function CreateRetainerModal({ clientName: agencyClientName, clientSheetId, masterSheetId, onClose, onCreated }) {
+  const [endClientName, setEndClientName] = React.useState("");
   const [jobName, setJobName] = React.useState("");
   const [monthlyRevenue, setMonthlyRevenue] = React.useState("");
   const [monthlyDirectCosts, setMonthlyDirectCosts] = React.useState("");
@@ -304,11 +305,14 @@ function CreateRetainerModal({ clientName, clientSheetId, masterSheetId, onClose
 
   const close = () => { if (!saving) onClose(); };
 
-  const inputStyle = { width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" };
+  // font-size must be >= 16px or iOS Safari auto-zooms in on focus — this
+  // modal's inputs were at 13px, which triggered that zoom on every tap.
+  const inputStyle = { width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "16px", boxSizing: "border-box" };
   const labelStyle = { display: "block", fontSize: "11px", fontWeight: "600", color: "#666", marginBottom: "3px" };
 
   const handleCreate = async () => {
     setError("");
+    if (!endClientName.trim()) { setError("Please enter the end client's name."); return; }
     if (!jobName.trim()) { setError("Please enter a job name."); return; }
     const revenue = parseFloat(monthlyRevenue);
     if (!monthlyRevenue || isNaN(revenue) || revenue <= 0) { setError("Please enter a monthly revenue amount greater than zero."); return; }
@@ -334,7 +338,7 @@ function CreateRetainerModal({ clientName, clientSheetId, masterSheetId, onClose
         body: JSON.stringify({
           action: "create_retainer_job",
           clientSheetId, masterSheetId,
-          client: clientName, jobName: jobName.trim(),
+          client: endClientName.trim(), jobName: jobName.trim(),
           monthlyRevenue: revenue, monthlyDirectCosts: directCosts, vat,
           startDate: isoToSheetDate(startDate), endDate: isoToSheetDate(endDate),
           invoiceFrequency, invoiceSendDay: sendDay,
@@ -353,7 +357,7 @@ function CreateRetainerModal({ clientName, clientSheetId, masterSheetId, onClose
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 520px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Create retainer — {clientName}</h3>
+          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Create retainer — {agencyClientName}</h3>
           {!saving && <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>}
         </div>
 
@@ -366,6 +370,10 @@ function CreateRetainerModal({ clientName, clientSheetId, masterSheetId, onClose
         ) : (
           <>
             <div style={{ display: "grid", gap: "12px" }}>
+              <div>
+                <label style={labelStyle}>End client name</label>
+                <input style={inputStyle} value={endClientName} onChange={e => setEndClientName(e.target.value)} placeholder="e.g. Gong cha Ltd" />
+              </div>
               <div>
                 <label style={labelStyle}>Job name</label>
                 <input style={inputStyle} value={jobName} onChange={e => setJobName(e.target.value)} placeholder="e.g. Campaign retainer" />

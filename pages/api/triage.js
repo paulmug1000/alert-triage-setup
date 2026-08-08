@@ -3898,11 +3898,10 @@ export default async function handler(req, res) {
           return res.status(400).json({ success: false, error: "No invoice periods fall within the given start and end dates." });
         }
 
-        // First period = parent row's own invoice (slot 1 on the parent, matching
-        // how every other retainer job on this sheet is structured). Remaining
-        // periods = child rows, one each.
-        const parentSendDate = new Date(periodStarts[0].getFullYear(), periodStarts[0].getMonth(), sendDay);
-        const childSendDates = periodStarts.slice(1, targetPeriodCount).map(p => new Date(p.getFullYear(), p.getMonth(), sendDay));
+        // Retainer invoices only ever go on CHILD rows — the parent row carries
+        // the job's own details (client, name, revenue, dates) but never an
+        // invoice itself. So every period becomes a child row.
+        const childSendDates = periodStarts.slice(0, targetPeriodCount).map(p => new Date(p.getFullYear(), p.getMonth(), sendDay));
 
         // Find the true last row with real data, and ensure enough headroom below
         // it to move the parent + child blank rows into position.
@@ -3937,7 +3936,8 @@ export default async function handler(req, res) {
         const newParentRowNum = trueLastRow + 1;
 
         // Write parent row: client, job name, revenue, direct costs, VAT, type,
-        // start/end dates, and its own invoice (slot 1).
+        // and start/end dates. NO invoice data here — retainer invoices only ever
+        // go on child rows, never the parent.
         const writeData = [
           { range: `Confirmed!A${newParentRowNum}`, values: [[client]] },
           { range: `Confirmed!B${newParentRowNum}`, values: [[jobName]] },
@@ -3945,13 +3945,10 @@ export default async function handler(req, res) {
           { range: `Confirmed!AH${newParentRowNum}`, values: [[directCosts]] },
           { range: `Confirmed!AI${newParentRowNum}`, values: [[vat || "No"]] },
           { range: `Confirmed!AJ${newParentRowNum}`, values: [["Retainer"]] },
-          { range: `Confirmed!AP${newParentRowNum}`, values: [[perInvoiceAmount]] },
-          { range: `Confirmed!AS${newParentRowNum}`, values: [[defaultDaysToPay]] },
         ];
         const dateWriteData = [
           { range: `Confirmed!AL${newParentRowNum}`, values: [[retFmtDate(start)]] },
           { range: `Confirmed!AM${newParentRowNum}`, values: [[retFmtDate(end)]] },
-          { range: `Confirmed!AR${newParentRowNum}`, values: [[retFmtDate(parentSendDate)]] },
         ];
 
         for (let i = 0; i < childSendDates.length; i++) {

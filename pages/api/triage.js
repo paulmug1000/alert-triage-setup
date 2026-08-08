@@ -3578,6 +3578,8 @@ export default async function handler(req, res) {
           });
           const freshConfirmedSheet = (freshGroupsResp.data.sheets || []).find(s => s.properties?.title === "Confirmed");
           const currentRowGroups = freshConfirmedSheet?.rowGroups || [];
+          console.log(`  🔬 REGROUP currentRowGroups: ${JSON.stringify(currentRowGroups)}`);
+          console.log(`  🔬 REGROUP parentRowNum=${parentRowNum} newParentRowNum=${newParentRowNum} childRows=${JSON.stringify(childRows.map(c=>c.rowNum))} relabelRows=${JSON.stringify(relabelRows)} newGroupStart=${newGroupStart} newGroupEnd=${newGroupEnd}`);
 
           // IMPORTANT: retainer parent rows are NOT themselves part of a row group —
           // only the child rows underneath are grouped/collapsible. So the group we
@@ -3595,13 +3597,16 @@ export default async function handler(req, res) {
           const oldFirstChildRowNum = childRows.length > 0 ? childRows[0].rowNum : parentRowNum;
           const scanStartIdx0 = oldFirstChildRowNum - 1;
           const scanEndIdx0 = newGroupEnd; // exclusive
+          console.log(`  🔬 REGROUP oldFirstChildRowNum=${oldFirstChildRowNum} scanStartIdx0=${scanStartIdx0} scanEndIdx0=${scanEndIdx0}`);
           const overlappingGroups = currentRowGroups.filter(g =>
             g.range && g.range.startIndex < scanEndIdx0 && g.range.endIndex > scanStartIdx0
           );
+          console.log(`  🔬 REGROUP overlappingGroups: ${JSON.stringify(overlappingGroups)}`);
 
           const groupRequests = [];
           for (const g of overlappingGroups) {
             const spansSplitPoint = g.range.startIndex < (newGroupStart - 1) && g.range.endIndex > (newGroupStart - 1);
+            console.log(`  🔬 REGROUP checking group ${JSON.stringify(g.range)}: splitPoint0idx=${newGroupStart - 1} spansSplitPoint=${spansSplitPoint}`);
             if (!spansSplitPoint) continue; // doesn't cross the split boundary — leave it alone
             groupRequests.push({ deleteDimensionGroup: { range: {
               sheetId: gridSheetId, dimension: "ROWS",
@@ -3622,11 +3627,16 @@ export default async function handler(req, res) {
           groupRequests.push({
             addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: newGroupStart - 1, endIndex: newGroupEnd } },
           });
+          console.log(`  🔬 REGROUP final groupRequests (${groupRequests.length}): ${JSON.stringify(groupRequests)}`);
           if (groupRequests.length > 0) {
-            await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests: groupRequests } });
+            const groupBatchResp = await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests: groupRequests } });
+            console.log(`  🔬 REGROUP batchUpdate response: ${JSON.stringify(groupBatchResp.data)}`);
+          } else {
+            console.log(`  🔬 REGROUP no requests were built — nothing sent`);
           }
         } catch (groupErr) {
           console.log(`  ⚠ Row grouping for retainer split failed (non-fatal): ${groupErr.message}`);
+          console.log(`  🔬 REGROUP full error: ${JSON.stringify(groupErr.response?.data || groupErr.errors || { message: groupErr.message, stack: groupErr.stack }, null, 2)}`);
         }
 
         console.log(`  ✅ change_retainer_monthly_amount: split "${jobName}" at ${changeMonthLabel} — new job "${newJobName}" at row ${newParentRowNum}`);

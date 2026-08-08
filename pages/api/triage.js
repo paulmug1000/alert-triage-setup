@@ -3157,24 +3157,39 @@ export default async function handler(req, res) {
           // toTrim is in reverse chronological order (last row first) — process that way
           // so each move doesn't disturb the row numbers of rows we haven't processed yet.
           const requests = [];
+          // Track each group's range as we progressively shrink it within this same
+          // batch — using the stale pre-batch snapshot for every row would send
+          // several requests all targeting the group's *original* range, which the
+          // API rejects once an earlier request in the same batch has already
+          // changed it. Mutate a local copy of the group's endIndex as we go.
+          const groupRangeOverrides = new Map(); // group object -> current { startIndex, endIndex }
+          const getCurrentRange = (group) => groupRangeOverrides.get(group) || { startIndex: group.range.startIndex, endIndex: group.range.endIndex };
+
           // 1. Ungroup each row-to-trim FIRST (before any moves)
           for (const cr of toTrim) {
             const rowIdx0 = cr.rowNum - 1;
-            const coveringGroup = rowGroups.find(g => g.range?.startIndex <= rowIdx0 && g.range?.endIndex > rowIdx0);
+            const coveringGroup = rowGroups.find(g => {
+              const cur = getCurrentRange(g);
+              return cur.startIndex <= rowIdx0 && cur.endIndex > rowIdx0;
+            });
             if (coveringGroup) {
-              if (coveringGroup.range.endIndex - coveringGroup.range.startIndex <= 1) {
-                requests.push({ deleteDimensionGroup: { range: coveringGroup.range } });
-              } else if (rowIdx0 === coveringGroup.range.endIndex - 1) {
+              const cur = getCurrentRange(coveringGroup);
+              if (cur.endIndex - cur.startIndex <= 1) {
+                requests.push({ deleteDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: cur.startIndex, endIndex: cur.endIndex } } });
+                groupRangeOverrides.set(coveringGroup, { startIndex: cur.startIndex, endIndex: cur.startIndex }); // now empty
+              } else if (rowIdx0 === cur.endIndex - 1) {
                 // Shrink the group to exclude this row (it's at the end of the group)
+                const newEnd = cur.endIndex - 1;
                 requests.push({
                   updateDimensionGroup: {
                     dimensionGroup: {
-                      range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex - 1 },
+                      range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: cur.startIndex, endIndex: newEnd },
                       depth: coveringGroup.depth, collapsed: coveringGroup.collapsed || false,
                     },
                     fields: "*",
                   },
                 });
+                groupRangeOverrides.set(coveringGroup, { startIndex: cur.startIndex, endIndex: newEnd });
               }
             }
           }

@@ -674,7 +674,14 @@ function retParseSheetDate(val) {
   if (m) {
     const mi = RET_MONTHS_MAP[m[2].toLowerCase()];
     if (mi === undefined) return null;
-    const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+    // Pivot-aware century guess for a 2-digit year: 00-69 -> 20XX, 70-99 -> 19XX.
+    let yr;
+    if (m[3].length === 2) {
+      const twoDigit = parseInt(m[3], 10);
+      yr = (twoDigit <= 69 ? 2000 : 1900) + twoDigit;
+    } else {
+      yr = parseInt(m[3], 10);
+    }
     return new Date(yr, mi, parseInt(m[1]));
   }
   const d = new Date(s);
@@ -683,7 +690,14 @@ function retParseSheetDate(val) {
 
 function retFmtDate(d) {
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  return d.getDate() + "-" + months[d.getMonth()] + "-" + String(d.getFullYear()).slice(-2);
+  // IMPORTANT: always write the FULL 4-digit year. Writing a 2-digit year (e.g.
+  // "31-Jul-50") via USER_ENTERED forces Sheets to guess the century using its own
+  // pivot rule, which reads "50" as 1950 rather than 2050 for a future date — this
+  // silently corrupted end dates that were decades in the future. The affected
+  // cells already carry a 2-digit-year NUMBER FORMAT, so writing a full 4-digit
+  // year here doesn't change how it's displayed — Sheets still shows "31-Jul-50",
+  // it just stores the correct underlying date (2050, not 1950).
+  return d.getDate() + "-" + months[d.getMonth()] + "-" + d.getFullYear();
 }
 
 function retParseMoney(val) {
@@ -3618,18 +3632,25 @@ export default async function handler(req, res) {
           const oldFirstChildRowNum = childRows.length > 0 ? childRows[0].rowNum : parentRowNum;
           const scanStartIdx0 = oldFirstChildRowNum - 1;
           const scanEndIdx0 = newGroupEnd; // exclusive
-          console.log(`  🔬 REGROUP oldFirstChildRowNum=${oldFirstChildRowNum} scanStartIdx0=${scanStartIdx0} scanEndIdx0=${scanEndIdx0}`);
           const overlappingGroups = currentRowGroups.filter(g =>
             g.range && g.range.startIndex < scanEndIdx0 && g.range.endIndex > scanStartIdx0
           );
-          console.log(`  🔬 REGROUP overlappingGroups: ${JSON.stringify(overlappingGroups)}`);
 
-          const groupRequests = [];
+          // IMPORTANT: Google Sheets silently MERGES adjacent same-depth groups
+          // when they're added in the same batchUpdate call — confirmed by testing:
+          // adding group A (239:243) then group B (243:258) in one batch produced a
+          // single merged 239:258 group, undoing the split entirely, even though
+          // each add request looked correct individually. The two groups here are
+          // necessarily adjacent (they meet exactly at the new job's parent row,
+          // which sits outside both groups), so they MUST be sent as separate,
+          // sequential batchUpdate calls — never combined into one — or Sheets
+          // reconciles them back into a single group.
+          const deleteRequests = [];
+          const addRequestsSequential = [];
           for (const g of overlappingGroups) {
             const spansSplitPoint = g.range.startIndex < (newGroupStart - 1) && g.range.endIndex > (newGroupStart - 1);
-            console.log(`  🔬 REGROUP checking group ${JSON.stringify(g.range)}: splitPoint0idx=${newGroupStart - 1} spansSplitPoint=${spansSplitPoint}`);
             if (!spansSplitPoint) continue; // doesn't cross the split boundary — leave it alone
-            groupRequests.push({ deleteDimensionGroup: { range: {
+            deleteRequests.push({ deleteDimensionGroup: { range: {
               sheetId: gridSheetId, dimension: "ROWS",
               startIndex: g.range.startIndex, endIndex: g.range.endIndex,
             } } });
@@ -3638,22 +3659,23 @@ export default async function handler(req, res) {
             // fresh group added below, so it isn't re-added here.
             const keepEnd = Math.min(g.range.endIndex, newGroupStart - 1);
             if (keepEnd > g.range.startIndex) {
-              groupRequests.push({ addDimensionGroup: { range: {
-                sheetId: gridSheetId, dimension: "ROWS",
-                startIndex: g.range.startIndex, endIndex: keepEnd,
-              } } });
+              addRequestsSequential.push({ startIndex: g.range.startIndex, endIndex: keepEnd });
             }
           }
-          // Create a fresh group for the new job's CHILD rows only (not its parent)
-          groupRequests.push({
-            addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: newGroupStart - 1, endIndex: newGroupEnd } },
-          });
-          console.log(`  🔬 REGROUP final groupRequests (${groupRequests.length}): ${JSON.stringify(groupRequests)}`);
-          if (groupRequests.length > 0) {
-            const groupBatchResp = await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests: groupRequests } });
-            console.log(`  🔬 REGROUP batchUpdate response: ${JSON.stringify(groupBatchResp.data)}`);
-          } else {
-            console.log(`  🔬 REGROUP no requests were built — nothing sent`);
+          // The new job's group, covering its CHILD rows only (not its parent).
+          addRequestsSequential.push({ startIndex: newGroupStart - 1, endIndex: newGroupEnd });
+
+          if (deleteRequests.length > 0) {
+            await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests: deleteRequests } });
+          }
+          // Send each addDimensionGroup in its OWN batchUpdate call, sequentially,
+          // so Sheets commits each group before the next is added — this is what
+          // actually prevents the auto-merge.
+          for (const r of addRequestsSequential) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: { requests: [{ addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: r.startIndex, endIndex: r.endIndex } } }] },
+            });
           }
           } // end of newGroupStart !== null guard
         } catch (groupErr) {

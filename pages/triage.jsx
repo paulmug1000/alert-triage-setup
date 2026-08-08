@@ -64,7 +64,16 @@ function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRena
     if (m) {
       const mi = RET_MONTHS[m[2].toLowerCase()];
       if (mi === undefined) return "";
-      const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+      // Pivot-aware century guess for a 2-digit year, matching common spreadsheet
+      // convention: 00-69 -> 20XX, 70-99 -> 19XX. Retainer dates are essentially
+      // never in the 1900s, but this is more robust than always assuming 20XX.
+      let yr;
+      if (m[3].length === 2) {
+        const twoDigit = parseInt(m[3], 10);
+        yr = (twoDigit <= 69 ? 2000 : 1900) + twoDigit;
+      } else {
+        yr = parseInt(m[3], 10);
+      }
       const dd = String(parseInt(m[1], 10)).padStart(2, "0");
       const mm = String(mi + 1).padStart(2, "0");
       return `${yr}-${mm}-${dd}`;
@@ -81,7 +90,12 @@ function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRena
     const [y, m, d] = iso.split("-").map(Number);
     if (!y || !m || !d) return "";
     const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    return `${d}-${months[m-1]}-${String(y).slice(-2)}`;
+    // Always send the FULL 4-digit year — the backend writes this via USER_ENTERED,
+    // and a 2-digit year forces Sheets to guess the century (it reads "50" as 1950
+    // for a date that should be 2050). The cell already carries a 2-digit-year
+    // display format, so a 4-digit year here doesn't change what's shown, only
+    // what's actually stored.
+    return `${d}-${months[m-1]}-${y}`;
   };
 
   const jobStartISO = sheetDateToISO(job.rows[0]?.startDate);

@@ -3154,43 +3154,43 @@ export default async function handler(req, res) {
           const rowGroups = confirmedSheet.rowGroups || [];
           const currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
 
-          // toTrim is in reverse chronological order (last row first) — process that way
-          // so each move doesn't disturb the row numbers of rows we haven't processed yet.
-          const requests = [];
-          // Track each group's range as we progressively shrink it within this same
-          // batch — using the stale pre-batch snapshot for every row would send
-          // several requests all targeting the group's *original* range, which the
-          // API rejects once an earlier request in the same batch has already
-          // changed it. Mutate a local copy of the group's endIndex as we go.
-          const groupRangeOverrides = new Map(); // group object -> current { startIndex, endIndex }
-          const getCurrentRange = (group) => groupRangeOverrides.get(group) || { startIndex: group.range.startIndex, endIndex: group.range.endIndex };
-
-          // 1. Ungroup each row-to-trim FIRST (before any moves)
+          // toTrim is in reverse chronological order (last row first).
+          // For grouping purposes, figure out — per distinct group — how many of its
+          // TRAILING rows are being trimmed in total, then issue exactly ONE shrink
+          // (or delete) request per affected group. Issuing multiple incremental
+          // shrink requests against the same group in one batch is unreliable: the
+          // Sheets API validates each request in a batch against the pre-batch state,
+          // not against the result of earlier requests in the same batch, so a second
+          // shrink targeting "the group after the first shrink" gets rejected.
+          const groupTrimCounts = new Map(); // group object -> count of trailing rows being removed
           for (const cr of toTrim) {
             const rowIdx0 = cr.rowNum - 1;
-            const coveringGroup = rowGroups.find(g => {
-              const cur = getCurrentRange(g);
-              return cur.startIndex <= rowIdx0 && cur.endIndex > rowIdx0;
-            });
-            if (coveringGroup) {
-              const cur = getCurrentRange(coveringGroup);
-              if (cur.endIndex - cur.startIndex <= 1) {
-                requests.push({ deleteDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: cur.startIndex, endIndex: cur.endIndex } } });
-                groupRangeOverrides.set(coveringGroup, { startIndex: cur.startIndex, endIndex: cur.startIndex }); // now empty
-              } else if (rowIdx0 === cur.endIndex - 1) {
-                // Shrink the group to exclude this row (it's at the end of the group)
-                const newEnd = cur.endIndex - 1;
-                requests.push({
-                  updateDimensionGroup: {
-                    dimensionGroup: {
-                      range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: cur.startIndex, endIndex: newEnd },
-                      depth: coveringGroup.depth, collapsed: coveringGroup.collapsed || false,
-                    },
-                    fields: "*",
+            const coveringGroup = rowGroups.find(g => g.range?.startIndex <= rowIdx0 && g.range?.endIndex > rowIdx0);
+            if (!coveringGroup) continue;
+            // Only count it if this row is within the trailing N rows currently
+            // accounted for — i.e. rowIdx0 is (endIndex - 1 - alreadyCounted)
+            const alreadyCounted = groupTrimCounts.get(coveringGroup) || 0;
+            if (rowIdx0 === coveringGroup.range.endIndex - 1 - alreadyCounted) {
+              groupTrimCounts.set(coveringGroup, alreadyCounted + 1);
+            }
+          }
+
+          const requests = [];
+          for (const [group, trimCount] of groupTrimCounts.entries()) {
+            const groupSize = group.range.endIndex - group.range.startIndex;
+            if (trimCount >= groupSize) {
+              requests.push({ deleteDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: group.range.startIndex, endIndex: group.range.endIndex } } });
+            } else {
+              const newEnd = group.range.endIndex - trimCount;
+              requests.push({
+                updateDimensionGroup: {
+                  dimensionGroup: {
+                    range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: group.range.startIndex, endIndex: newEnd },
+                    depth: group.depth, collapsed: group.collapsed || false,
                   },
-                });
-                groupRangeOverrides.set(coveringGroup, { startIndex: cur.startIndex, endIndex: newEnd });
-              }
+                  fields: "*",
+                },
+              });
             }
           }
           if (requests.length > 0) {

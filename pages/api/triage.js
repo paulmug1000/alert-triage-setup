@@ -3136,7 +3136,7 @@ export default async function handler(req, res) {
             // No rows to clear, just update the end date
             await sheets.spreadsheets.values.update({
               spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
-              valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+              valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
             });
             return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
           }
@@ -3251,7 +3251,7 @@ export default async function handler(req, res) {
             // Already enough rows for the rolling window — just update the end date
             await sheets.spreadsheets.values.update({
               spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
-              valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+              valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
             });
             return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
           }
@@ -3291,7 +3291,7 @@ export default async function handler(req, res) {
           if (newRowDates.length === 0) {
             await sheets.spreadsheets.values.update({
               spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
-              valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+              valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
             });
             return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
           }
@@ -3341,6 +3341,7 @@ export default async function handler(req, res) {
 
           // Write client/job/vat/invoice data into the new rows
           const writeData = [];
+          const dateWriteData = [];
           for (let m = 0; m < newRowDates.length; m++) {
             const rn = insertAfterRowNum + 1 + m;
             writeData.push(
@@ -3348,13 +3349,18 @@ export default async function handler(req, res) {
               { range: `Confirmed!B${rn}`, values: [[jobName]] },
               { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
               { range: `Confirmed!AP${rn}`, values: [[revenue]] },
-              { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[m])]] },
               { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
             );
+            dateWriteData.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[m])]] });
           }
           await sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: writeData },
           });
+          if (dateWriteData.length > 0) {
+            await sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateWriteData },
+            });
+          }
 
           // Group the new rows with the job (extend existing group if present, else create one)
           try {
@@ -3393,7 +3399,7 @@ export default async function handler(req, res) {
           // Finally, update the parent row's end date
           await sheets.spreadsheets.values.update({
             spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
-            valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+            valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
           });
 
           console.log(`  ✅ change_retainer_end_date: grew ${newRowDates.length} row(s) for ${client} — ${jobName}`);
@@ -3515,7 +3521,8 @@ export default async function handler(req, res) {
         const copiedAE = parentRow.slice(0, 5); // A:E (client, job, code, and whatever else lives in D/E)
         const copiedAGtoAM = parentRow.slice(32, 39); // AG:AM (revenue, dirCosts, vat, type, blank, start, end)
 
-        const writeData = [
+        const writeData = [];
+        const dateWriteData = [
           // Old job: end date shortened
           { range: `Confirmed!AM${parentRowNum}`, values: [[retFmtDate(oldJobNewEndDate)]] },
         ];
@@ -3525,7 +3532,7 @@ export default async function handler(req, res) {
           const val = (colLetter === "B") ? newJobName : (copiedAE[i] !== undefined ? copiedAE[i] : "");
           writeData.push({ range: `Confirmed!${colLetter}${newParentRowNum}`, values: [[val]] });
         }
-        // AG:AM copied verbatim except revenue (AG) and start date (AL)
+        // AG:AM copied verbatim except revenue (AG) and start date (AL) — AL and AM are dates
         const agToAmCols = ["AG","AH","AI","AJ","AK","AL","AM"];
         for (let i = 0; i < agToAmCols.length; i++) {
           const colLetter = agToAmCols[i];
@@ -3534,12 +3541,18 @@ export default async function handler(req, res) {
           if (colLetter === "AL") val = retFmtDate(newJobStartDate);
           // AM (end date) stays as the OLD job's original end date, per spec
           if (colLetter === "AM") val = oldEndDate ? retFmtDate(oldEndDate) : (copiedAGtoAM[i] || "");
-          writeData.push({ range: `Confirmed!${colLetter}${newParentRowNum}`, values: [[val]] });
+          const target = (colLetter === "AL" || colLetter === "AM") ? dateWriteData : writeData;
+          target.push({ range: `Confirmed!${colLetter}${newParentRowNum}`, values: [[val]] });
         }
 
         await sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: writeData },
         });
+        if (dateWriteData.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateWriteData },
+          });
+        }
 
         // Relabel all rows from matchedRow onward (now shifted down by 1) to the new
         // job name, and update their invoice slot amount to the new monthly amount.

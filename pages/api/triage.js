@@ -3767,9 +3767,17 @@ export default async function handler(req, res) {
         // If the alternative invoice was itself attached to ANOTHER job elsewhere
         // in Confirmed (an orphan that never matched its real retainer), fully
         // clear that row now — its data has been relocated onto the retainer above.
+        // IMPORTANT: sourceConfirmedRow was computed by the PREVIEW step, before
+        // the moveDimension above inserted the new parent row. Any row at or after
+        // the insertion point (newParentDestIdx0, 0-indexed) shifted down by one as
+        // a result of that move — so the row number must be adjusted here, or the
+        // clear silently hits the wrong row (whatever now sits at the stale
+        // position) while the real source row goes untouched.
         if (sourceConfirmedRow) {
-          const srcRow = parseInt(sourceConfirmedRow, 10);
+          let srcRow = parseInt(sourceConfirmedRow, 10);
           if (srcRow && srcRow > 0) {
+            const srcRowIdx0Original = srcRow - 1; // 0-indexed, pre-move
+            if (srcRowIdx0Original >= newParentDestIdx0) srcRow += 1; // shifted down by the insert
             await sheets.spreadsheets.values.batchClear({
               spreadsheetId: sheetIdClean,
               requestBody: { ranges: [
@@ -3779,7 +3787,7 @@ export default async function handler(req, res) {
                 `Confirmed!BX${srcRow}:CR${srcRow}`,
               ]},
             });
-            console.log(`  🧹 change_retainer_monthly_amount: cleared source row ${srcRow} (data relocated to new retainer)`);
+            console.log(`  🧹 change_retainer_monthly_amount: cleared source row ${srcRow} (originally row ${sourceConfirmedRow} before the retainer split shifted it — data relocated to new retainer)`);
           }
         }
 

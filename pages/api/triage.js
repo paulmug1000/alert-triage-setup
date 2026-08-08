@@ -655,6 +655,137 @@ function extractSheetIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// RETAINER MANAGEMENT HELPERS
+// These replicate the proven logic from 5_AGENT_RECEIVER.gs's
+// processRetainerAudit / runRetainerSheetAudit_ so the Retainers screen's
+// manual edits stay consistent with what the nightly retainer audit expects
+// and produces (rolling 18-month future window, quarterly-aware intervals,
+// move-based row insertion/trimming with row grouping).
+// ══════════════════════════════════════════════════════════════════════════
+
+const RET_MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+
+function retParseSheetDate(val) {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  const s = String(val).trim();
+  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if (m) {
+    const mi = RET_MONTHS_MAP[m[2].toLowerCase()];
+    if (mi === undefined) return null;
+    const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+    return new Date(yr, mi, parseInt(m[1]));
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function retFmtDate(d) {
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return d.getDate() + "-" + months[d.getMonth()] + "-" + String(d.getFullYear()).slice(-2);
+}
+
+function retParseMoney(val) {
+  if (typeof val === "number") return val;
+  if (!val) return 0;
+  const clean = String(val).replace(/[^0-9.-]/g, "");
+  return parseFloat(clean) || 0;
+}
+
+// Finds the true last row with any real data on Confirmed, using the same
+// four-zone check used throughout the codebase.
+async function retFindTrueLastRow(sheets, spreadsheetId, allRows) {
+  let trueLastRow = 0;
+  for (let r = allRows.length - 1; r >= 0; r--) {
+    const row = allRows[r] || [];
+    const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+    const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
+    const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+    const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
+    if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+  }
+  return trueLastRow;
+}
+
+// Detects the invoice interval in months for a retainer job by comparing the
+// last two child rows' invoice-1 send dates (mirrors detectPeriodMultiplier_ /
+// the intervalMonths logic in runRetainerSheetAudit_). Defaults to 1 (monthly).
+function retDetectIntervalMonths(childDates) {
+  if (childDates.length < 2) return 1;
+  const d1 = childDates[childDates.length - 2];
+  const d2 = childDates[childDates.length - 1];
+  const diffDays = Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / 86400000);
+  const calc = Math.round(diffDays / 30);
+  return calc > 0 ? calc : 1;
+}
+
+// Groups a set of already-read Confirmed rows (1-indexed row -> row array) into
+// { client, jobName, projectCode, revenue, vat, projectRetainer, startDate, endDate,
+//   parentRowNum, childRows: [{ rowNum, row }] } for every retainer job found.
+function retFindRetainerJobs(rows, options) {
+  options = options || {};
+  const onlyActiveOrRecentlyEnded = !!options.onlyActiveOrRecentlyEnded;
+  const twoMonthsAgo = new Date();
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+  const jobs = [];
+  let ri = 1;
+  while (ri < rows.length) {
+    const row = rows[ri] || [];
+    const client = String(row[0] || "").trim();
+    const jobName = String(row[1] || "").trim();
+    const revenue = String(row[32] || "").trim();
+    const type = String(row[35] || "").trim();
+    if (!client && !jobName) { ri++; continue; }
+    const isRetainer = type.toLowerCase().includes("retainer");
+    if (!isRetainer || !revenue) { ri++; continue; }
+
+    const parentRowNum = ri + 1;
+    const endDate = retParseSheetDate(row[38]);
+    if (onlyActiveOrRecentlyEnded && endDate && endDate < twoMonthsAgo) {
+      // Skip this job but still need to walk past its child rows
+      let cj2 = ri + 1;
+      while (cj2 < rows.length) {
+        const nx = rows[cj2] || [];
+        if (String(nx[0]||"").trim() === client && String(nx[1]||"").trim() === jobName &&
+            !String(nx[32]||"").trim() && !String(nx[37]||"").trim()) { cj2++; } else break;
+      }
+      ri = cj2;
+      continue;
+    }
+
+    const childRows = [];
+    let cj = ri + 1;
+    while (cj < rows.length) {
+      const next = rows[cj] || [];
+      const nc = String(next[0] || "").trim();
+      const nj = String(next[1] || "").trim();
+      const nRevenue = String(next[32] || "").trim();
+      const nStart = String(next[37] || "").trim();
+      if (nc === client && nj === jobName && !nRevenue && !nStart) {
+        childRows.push({ rowNum: cj + 1, row: next });
+        cj++;
+      } else break;
+    }
+    jobs.push({
+      client, jobName, projectCode: String(row[2] || "").trim(),
+      revenue, vat: String(row[34] || "").trim(), projectRetainer: type,
+      startDate: retParseSheetDate(row[37]), endDate,
+      parentRow: row, parentRowNum, childRows,
+    });
+    ri = cj;
+  }
+  return jobs;
+}
+
+// Slot column layout for invoice slots 1-3 (0-indexed).
+const RET_INV_SLOTS = [
+  { amt: 41, ref: 42, sent: 43, days: 44, status: 45 },
+  { amt: 48, ref: 49, sent: 50, days: 51, status: 52 },
+  { amt: 55, ref: 56, sent: 57, days: 58, status: 59 },
+];
+
 // Fetch the parent row + any child rows for a job, formatted for spreadsheet-style
 // display in the UI. Returns raw sheet values (no currency formatting) so the
 // frontend can render them exactly as they appear in the sheet.
@@ -2384,6 +2515,61 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "get_retainer_jobs") {
+      // Reads Confirmed and returns all retainer jobs (active, or ended within the
+      // last 2 months) in spreadsheet-style format for the Retainers screen.
+      const { clientSheetId } = req.body;
+      if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+        const retainerJobs = retFindRetainerJobs(rows, { onlyActiveOrRecentlyEnded: true });
+
+        const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+        const buildRowData = (rowNum, row, isParent) => ({
+          rowNum, isParent,
+          client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+          revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
+          projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+          invoiceSlots: [1,2,3].map(n => {
+            const base = n === 1 ? 41 : n === 2 ? 48 : 55;
+            return { slotNum: n, amount: colVal(row,base), ref: colVal(row,base+1), sentDate: colVal(row,base+2),
+              daysToPay: colVal(row,base+3), status: colVal(row,base+4) };
+          }),
+        });
+
+        const jobs = retainerJobs.map(job => ({
+          client: job.client, jobName: job.jobName, projectCode: job.projectCode,
+          revenue: job.revenue, vat: job.vat, projectRetainer: job.projectRetainer,
+          parentRowNum: job.parentRowNum,
+          rows: [buildRowData(job.parentRowNum, job.parentRow, true)]
+            .concat(job.childRows.map(cr => buildRowData(cr.rowNum, cr.row, false))),
+        }));
+
+        // Sort newest start-date first
+        jobs.sort((a, b) => {
+          const da = retParseSheetDate(a.rows[0]?.startDate);
+          const db = retParseSheetDate(b.rows[0]?.startDate);
+          if (!da && !db) return 0;
+          if (!da) return 1;
+          if (!db) return -1;
+          return db - da;
+        });
+
+        console.log(`  ✅ get_retainer_jobs: ${jobs.length} retainer jobs`);
+        return res.status(200).json({ success: true, jobs });
+      } catch (err) {
+        console.error("❌ get_retainer_jobs error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "assign_expense_to_job") {
       // Writes an inbox expense directly into a specific expense slot on the Confirmed tab.
       // If rowNum/slotNum are provided, writes directly into that existing slot.
@@ -2807,6 +2993,581 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, newRowNum: newRow });
       } catch (err) {
         console.error("❌ create_job_from_invoice error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "rename_retainer_job") {
+      // Renames a retainer job on its parent row and all child rows.
+      const { clientSheetId, oldClient, oldJobName, newJobName, parentRowNum } = req.body;
+      if (!clientSheetId || !oldJobName || !newJobName || !parentRowNum) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+        const parentRow = rows[parentRowNum - 1] || [];
+        if (String(parentRow[0]||"").trim() !== oldClient || String(parentRow[1]||"").trim() !== oldJobName) {
+          return res.status(400).json({ success: false, error: "Row mismatch — job may have moved. Please refresh and try again." });
+        }
+
+        // Collect parent + child rows matching old name
+        const targetRows = [parentRowNum];
+        let cj = parentRowNum; // 0-indexed next row = parentRowNum (since parentRowNum is 1-indexed)
+        while (cj < rows.length) {
+          const next = rows[cj] || [];
+          if (String(next[0]||"").trim() === oldClient && String(next[1]||"").trim() === oldJobName &&
+              !String(next[32]||"").trim() && !String(next[37]||"").trim()) {
+            targetRows.push(cj + 1);
+            cj++;
+          } else break;
+        }
+
+        const data = targetRows.map(rn => ({ range: `Confirmed!B${rn}`, values: [[newJobName]] }));
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { valueInputOption: "RAW", data },
+        });
+
+        console.log(`  ✅ rename_retainer_job: "${oldJobName}" → "${newJobName}" on ${targetRows.length} row(s)`);
+        return res.status(200).json({ success: true, rowsUpdated: targetRows.length });
+      } catch (err) {
+        console.error("❌ rename_retainer_job error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "change_retainer_end_date") {
+      // Changes a retainer job's end date, then either:
+      //  - TRIMS excess child rows (end date brought forward) — ungroups first, then
+      //    clears content and moves each fully-cleared row to the bottom of the sheet.
+      //    Aborts entirely (no changes) if any row-to-be-cleared has a real invoice or
+      //    expense already recorded.
+      //  - GROWS new child rows (end date pushed later) — recomputes the rolling
+      //    "pastCount + 18 future months" target and creates rows via the same
+      //    move-blank-row-into-position mechanism used by the nightly retainer audit,
+      //    stepping by the job's detected invoice interval (supports quarterly etc.)
+      //    and capped by the new end date and remaining contract value.
+      const { clientSheetId, client, jobName, parentRowNum, newEndDate } = req.body;
+      if (!clientSheetId || !jobName || !parentRowNum || !newEndDate) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+        const parentRow = rows[parentRowNum - 1] || [];
+        if (String(parentRow[0]||"").trim() !== client || String(parentRow[1]||"").trim() !== jobName) {
+          return res.status(400).json({ success: false, error: "Row mismatch — job may have moved. Please refresh and try again." });
+        }
+
+        const oldEndDate = retParseSheetDate(parentRow[38]);
+        const newEnd = retParseSheetDate(newEndDate);
+        if (!newEnd) return res.status(400).json({ success: false, error: "Invalid new end date" });
+
+        const revenue = retParseMoney(parentRow[32]);
+        const vat = parentRow[34];
+        const startDate = retParseSheetDate(parentRow[37]);
+
+        // Collect current child rows + their invoice-1 dates
+        const childRows = [];
+        let cj = parentRowNum;
+        while (cj < rows.length) {
+          const next = rows[cj] || [];
+          if (String(next[0]||"").trim() === client && String(next[1]||"").trim() === jobName &&
+              !String(next[32]||"").trim() && !String(next[37]||"").trim()) {
+            childRows.push({ rowNum: cj + 1, row: next });
+            cj++;
+          } else break;
+        }
+        const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean); // AR = invoice 1 sent date
+
+        const isGrowing = !oldEndDate || newEnd > oldEndDate;
+
+        if (!isGrowing) {
+          // ── TRIM PATH ──────────────────────────────────────────────────
+          const newEndVal = newEnd.getFullYear() * 12 + newEnd.getMonth();
+
+          // Find rows to trim: child rows whose invoice date falls beyond the new end month
+          const toTrim = [];
+          for (let c = childRows.length - 1; c >= 0; c--) {
+            const cr = childRows[c];
+            const invDate = retParseSheetDate(cr.row[43]);
+            const rowMonthVal = invDate ? (invDate.getFullYear() * 12 + invDate.getMonth()) : null;
+            if (rowMonthVal !== null && rowMonthVal > newEndVal) {
+              toTrim.push(cr);
+            } else {
+              break; // rows are in chronological order — stop at the first row within range
+            }
+          }
+
+          // Check every row-to-trim for real invoice/expense data — abort if any found
+          const hasRealData = (row) => {
+            for (const s of RET_INV_SLOTS) {
+              const ref = String(row[s.ref] || "").trim().toUpperCase();
+              if (ref && !ref.startsWith("MANUAL-INV")) return true;
+            }
+            const expSlots = [{ id: 81 }, { id: 88 }, { id: 95 }]; // CD, CK, CR — transaction ID cols
+            for (const s of expSlots) {
+              const id = String(row[s.id] || "").trim().toUpperCase();
+              if (id && !id.startsWith("MANUAL-ENTRY") && !id.startsWith("UNRECON-GAP")) return true;
+            }
+            return false;
+          };
+          const blockedRow = toTrim.find(cr => hasRealData(cr.row));
+          if (blockedRow) {
+            return res.status(200).json({
+              success: false,
+              blocked: true,
+              error: `Cannot shorten this retainer — row ${blockedRow.rowNum} already has a real invoice or expense recorded. ` +
+                `Please resolve or move that data manually before shortening the end date.`,
+            });
+          }
+
+          if (toTrim.length === 0) {
+            // No rows to clear, just update the end date
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
+              valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+            });
+            return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
+          }
+
+          // Get sheet metadata for grouping/moving
+          const metaResp = await sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean, fields: "sheets(properties,rowGroups)",
+          });
+          const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+          const gridSheetId = confirmedSheet.properties.sheetId;
+          const rowGroups = confirmedSheet.rowGroups || [];
+          const currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+
+          // toTrim is in reverse chronological order (last row first) — process that way
+          // so each move doesn't disturb the row numbers of rows we haven't processed yet.
+          const requests = [];
+          // 1. Ungroup each row-to-trim FIRST (before any moves)
+          for (const cr of toTrim) {
+            const rowIdx0 = cr.rowNum - 1;
+            const coveringGroup = rowGroups.find(g => g.range?.startIndex <= rowIdx0 && g.range?.endIndex > rowIdx0);
+            if (coveringGroup) {
+              if (coveringGroup.range.endIndex - coveringGroup.range.startIndex <= 1) {
+                requests.push({ deleteDimensionGroup: { range: coveringGroup.range } });
+              } else if (rowIdx0 === coveringGroup.range.endIndex - 1) {
+                // Shrink the group to exclude this row (it's at the end of the group)
+                requests.push({
+                  updateDimensionGroup: {
+                    dimensionGroup: {
+                      range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex - 1 },
+                      depth: coveringGroup.depth, collapsed: coveringGroup.collapsed || false,
+                    },
+                  },
+                });
+              }
+            }
+          }
+          if (requests.length > 0) {
+            await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests } });
+          }
+
+          // 2. Clear content on each row-to-trim, then move it to the bottom (below trueLastRow)
+          let trimmedCount = 0;
+          for (const cr of toTrim) {
+            const rn = cr.rowNum;
+            await sheets.spreadsheets.values.batchClear({
+              spreadsheetId: sheetIdClean,
+              requestBody: { ranges: [
+                `Confirmed!A${rn}:AM${rn}`,
+                `Confirmed!AP${rn}:BH${rn}`,
+                `Confirmed!BX${rn}:CR${rn}`,
+              ]},
+            });
+
+            // Re-fetch true last row each time since prior moves shift things
+            const freshResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
+            });
+            const freshRows = freshResp.data.values || [];
+            const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshRows);
+
+            // Move the now-blank row to sit right after trueLastRow (i.e. to the bottom)
+            const srcIdx0 = rn - 1;
+            if (srcIdx0 !== trueLastRow) { // no-op if it's already at the bottom
+              await sheets.spreadsheets.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: { requests: [{
+                  moveDimension: {
+                    source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: srcIdx0, endIndex: srcIdx0 + 1 },
+                    destinationIndex: srcIdx0 < trueLastRow ? trueLastRow : trueLastRow + 1,
+                  },
+                }] },
+              });
+            }
+            trimmedCount++;
+          }
+
+          // Update the end date on the parent row
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
+            valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+          });
+
+          console.log(`  ✅ change_retainer_end_date: trimmed ${trimmedCount} row(s) for ${client} — ${jobName}`);
+          return res.status(200).json({ success: true, trimmed: trimmedCount, grown: 0 });
+
+        } else {
+          // ── GROW PATH ──────────────────────────────────────────────────
+          const today = new Date(); today.setHours(0,0,0,0);
+          const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
+          const pastCount = childDates.filter(d => (d.getFullYear()*12 + d.getMonth()) <= currentMonthVal).length;
+          const targetCount = pastCount + 18;
+
+          if (childRows.length >= targetCount) {
+            // Already enough rows for the rolling window — just update the end date
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
+              valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+            });
+            return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
+          }
+
+          const intervalMonths = retDetectIntervalMonths(childDates);
+          const totalInvoiced = childRows.reduce((sum, cr) => sum + retParseMoney(cr.row[41]), 0) + retParseMoney(parentRow[41]);
+          const diffDays = Math.round(Math.abs(newEnd.getTime() - (startDate || newEnd).getTime()) / 86400000);
+          const durationMonths = Math.max(1, Math.round(diffDays / 30.4375));
+          const totalContractValue = durationMonths * revenue;
+
+          let lastDate = childDates.length > 0 ? childDates[childDates.length - 1] : new Date(startDate || newEnd);
+          if (childDates.length === 0) lastDate.setMonth(lastDate.getMonth() - 1);
+
+          const rowsNeeded = targetCount - childRows.length;
+          const newRowDates = [];
+          let simulatedTotal = totalInvoiced;
+          let nextTestDate = new Date(lastDate);
+          for (let k = 0; k < rowsNeeded; k++) {
+            nextTestDate = new Date(nextTestDate);
+            nextTestDate.setMonth(nextTestDate.getMonth() + intervalMonths);
+            const testVal = nextTestDate.getFullYear() * 12 + nextTestDate.getMonth();
+            const endVal = newEnd.getFullYear() * 12 + newEnd.getMonth();
+            if (testVal > endVal) break;
+            if ((simulatedTotal + revenue) > (totalContractValue + 1.00)) break;
+            simulatedTotal += revenue;
+            newRowDates.push(new Date(nextTestDate));
+          }
+
+          if (newRowDates.length === 0) {
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
+              valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+            });
+            return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
+          }
+
+          const metaResp = await sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean, fields: "sheets(properties)",
+          });
+          const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+          const gridSheetId = confirmedSheet.properties.sheetId;
+          let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+
+          const freshResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
+          });
+          let trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+
+          const insertAfterRowNum = childRows.length > 0 ? childRows[childRows.length-1].rowNum : parentRowNum;
+
+          if ((currentMaxRows - (trueLastRow + 1)) < newRowDates.length) {
+            const toAdd = newRowDates.length - (currentMaxRows - (trueLastRow + 1)) + 5;
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: { requests: [{
+                insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd }, inheritFromBefore: true },
+              }] },
+            });
+            currentMaxRows += toAdd;
+          }
+
+          // Move each new blank row into position, one at a time, right after insertAfterRowNum
+          for (let m = 0; m < newRowDates.length; m++) {
+            const srcIdx0 = trueLastRow; // first blank row (0-indexed)
+            const destIdx0 = insertAfterRowNum + m; // 0-indexed position right after the last child so far
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: { requests: [{
+                moveDimension: {
+                  source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: srcIdx0, endIndex: srcIdx0 + 1 },
+                  destinationIndex: destIdx0,
+                },
+              }] },
+            });
+            trueLastRow += 1;
+          }
+
+          // Write client/job/vat/invoice data into the new rows
+          const writeData = [];
+          for (let m = 0; m < newRowDates.length; m++) {
+            const rn = insertAfterRowNum + 1 + m;
+            writeData.push(
+              { range: `Confirmed!A${rn}`, values: [[client]] },
+              { range: `Confirmed!B${rn}`, values: [[jobName]] },
+              { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
+              { range: `Confirmed!AP${rn}`, values: [[revenue]] },
+              { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[m])]] },
+              { range: `Confirmed!AS${rn}`, values: [[30]] },
+            );
+          }
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: writeData },
+          });
+
+          // Group the new rows with the job (extend existing group if present, else create one)
+          try {
+            const metaResp2 = await sheets.spreadsheets.get({ spreadsheetId: sheetIdClean, fields: "sheets(properties,rowGroups)" });
+            const cs2 = metaResp2.data.sheets.find(s => s.properties.title === "Confirmed");
+            const groups2 = cs2.rowGroups || [];
+            const anchorIdx0 = insertAfterRowNum - 1;
+            const coveringGroup = groups2.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
+            const newRangeEnd = insertAfterRowNum + newRowDates.length;
+            if (coveringGroup) {
+              await sheets.spreadsheets.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: { requests: [{
+                  updateDimensionGroup: {
+                    dimensionGroup: {
+                      range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: coveringGroup.range.startIndex, endIndex: newRangeEnd },
+                      depth: coveringGroup.depth, collapsed: coveringGroup.collapsed || false,
+                    },
+                  },
+                }] },
+              });
+            } else {
+              await sheets.spreadsheets.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: { requests: [{
+                  addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: insertAfterRowNum, endIndex: newRangeEnd } },
+                }] },
+              });
+            }
+          } catch (groupErr) {
+            console.log(`  ⚠ Row grouping for grown retainer rows failed (non-fatal): ${groupErr.message}`);
+          }
+
+          // Finally, update the parent row's end date
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
+            valueInputOption: "RAW", requestBody: { values: [[newEndDate]] },
+          });
+
+          console.log(`  ✅ change_retainer_end_date: grew ${newRowDates.length} row(s) for ${client} — ${jobName}`);
+          return res.status(200).json({ success: true, trimmed: 0, grown: newRowDates.length });
+        }
+      } catch (err) {
+        console.error("❌ change_retainer_end_date error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "change_retainer_monthly_amount") {
+      // Splits a retainer job into two at a given month: the existing job ends the
+      // month before, and a new job (same name + " (Mon Year-)" suffix) begins with
+      // the new monthly amount from that month onward. Existing rows from the
+      // matched month onward are relabelled to the new job and given the new
+      // invoice amount (revenue itself is a parent-row-only field, never on children).
+      const { clientSheetId, client, jobName, parentRowNum, changeMonth, changeYear, newMonthlyAmount } = req.body;
+      if (!clientSheetId || !jobName || !parentRowNum || changeMonth === undefined || !changeYear || !newMonthlyAmount) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+        const parentRow = rows[parentRowNum - 1] || [];
+        if (String(parentRow[0]||"").trim() !== client || String(parentRow[1]||"").trim() !== jobName) {
+          return res.status(400).json({ success: false, error: "Row mismatch — job may have moved. Please refresh and try again." });
+        }
+
+        const oldRevenue = retParseMoney(parentRow[32]);
+        const oldEndDate = retParseSheetDate(parentRow[38]);
+        const changeMonthVal = changeYear * 12 + changeMonth; // changeMonth: 0-indexed
+
+        // Collect child rows with their invoice dates
+        const childRows = [];
+        let cj = parentRowNum;
+        while (cj < rows.length) {
+          const next = rows[cj] || [];
+          if (String(next[0]||"").trim() === client && String(next[1]||"").trim() === jobName &&
+              !String(next[32]||"").trim() && !String(next[37]||"").trim()) {
+            childRows.push({ rowNum: cj + 1, row: next });
+            cj++;
+          } else break;
+        }
+        const allRows = [{ rowNum: parentRowNum, row: parentRow, isParent: true }].concat(childRows);
+        const datedRows = allRows.map(r => ({ ...r, invDate: retParseSheetDate(r.row[43]) })).filter(r => r.invDate);
+        const intervalMonths = retDetectIntervalMonths(datedRows.map(r => r.invDate));
+
+        // Find the row whose invoice COVERS the change month — i.e. the row with the
+        // latest invoice date that is <= the change month (accounts for quarterly
+        // invoices, where a single row's invoice date might be 1-2 months before the
+        // target month but still "covers" it via the detected interval).
+        let matchedRow = null;
+        for (let i = datedRows.length - 1; i >= 0; i--) {
+          const rowMonthVal = datedRows[i].invDate.getFullYear() * 12 + datedRows[i].invDate.getMonth();
+          if (rowMonthVal <= changeMonthVal) { matchedRow = datedRows[i]; break; }
+        }
+        if (!matchedRow) {
+          return res.status(400).json({ success: false, error: "Could not find a row covering that month — check the selected month against the job's invoice schedule." });
+        }
+        if (matchedRow.isParent) {
+          return res.status(400).json({ success: false, error: "The change month falls within the job's very first invoice period, which is on the parent row — please choose a later month, or edit the job directly." });
+        }
+
+        // Get sheet metadata for grouping/moving
+        const metaResp = await sheets.spreadsheets.get({
+          spreadsheetId: sheetIdClean, fields: "sheets(properties,rowGroups)",
+        });
+        const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+        const gridSheetId = confirmedSheet.properties.sheetId;
+        const rowGroups = confirmedSheet.rowGroups || [];
+        let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+
+        const freshValsResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
+        });
+        let trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshValsResp.data.values || []);
+
+        // Ensure headroom, then move a blank row to sit directly above matchedRow.rowNum
+        if ((currentMaxRows - (trueLastRow + 1)) < 1) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: { requests: [{
+              insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + 5 }, inheritFromBefore: true },
+            }] },
+          });
+          currentMaxRows += 5;
+        }
+        const newParentDestIdx0 = matchedRow.rowNum - 1; // 0-indexed position just above matchedRow (inserting here pushes matchedRow down by 1)
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: [{
+            moveDimension: {
+              source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + 1 },
+              destinationIndex: newParentDestIdx0,
+            },
+          }] },
+        });
+        const newParentRowNum = matchedRow.rowNum; // the moved row now occupies what was matchedRow's position; matchedRow shifted to +1
+
+        // Determine the new job name — detect and replace an existing "(Mon Year-)" suffix
+        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        const changeMonthLabel = `${months[changeMonth]} ${changeYear}`;
+        const suffixPattern = /\s*\(\w{3} \d{4}-\)\s*$/;
+        const baseJobName = jobName.replace(suffixPattern, "").trim();
+        const newJobName = `${baseJobName} (${changeMonthLabel}-)`;
+
+        // Old job's new end date = last day of the month BEFORE the change month
+        const oldJobNewEndDate = new Date(changeYear, changeMonth, 0); // day 0 of changeMonth = last day of prior month
+        const newJobStartDate = new Date(changeYear, changeMonth, 1);
+
+        // Copy A:E and AG:AM from old parent onto the new parent row, then override
+        const copiedAE = parentRow.slice(0, 5); // A:E (client, job, code, and whatever else lives in D/E)
+        const copiedAGtoAM = parentRow.slice(32, 39); // AG:AM (revenue, dirCosts, vat, type, blank, start, end)
+
+        const writeData = [
+          // Old job: end date shortened
+          { range: `Confirmed!AM${parentRowNum}`, values: [[retFmtDate(oldJobNewEndDate)]] },
+        ];
+        // New parent row: A:E copied verbatim except job name overridden
+        for (let i = 0; i < copiedAE.length; i++) {
+          const colLetter = ["A","B","C","D","E"][i];
+          const val = (colLetter === "B") ? newJobName : (copiedAE[i] !== undefined ? copiedAE[i] : "");
+          writeData.push({ range: `Confirmed!${colLetter}${newParentRowNum}`, values: [[val]] });
+        }
+        // AG:AM copied verbatim except revenue (AG) and start date (AL)
+        const agToAmCols = ["AG","AH","AI","AJ","AK","AL","AM"];
+        for (let i = 0; i < agToAmCols.length; i++) {
+          const colLetter = agToAmCols[i];
+          let val = copiedAGtoAM[i] !== undefined ? copiedAGtoAM[i] : "";
+          if (colLetter === "AG") val = newMonthlyAmount;
+          if (colLetter === "AL") val = retFmtDate(newJobStartDate);
+          // AM (end date) stays as the OLD job's original end date, per spec
+          if (colLetter === "AM") val = oldEndDate ? retFmtDate(oldEndDate) : (copiedAGtoAM[i] || "");
+          writeData.push({ range: `Confirmed!${colLetter}${newParentRowNum}`, values: [[val]] });
+        }
+
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: writeData },
+        });
+
+        // Relabel all rows from matchedRow onward (now shifted down by 1) to the new
+        // job name, and update their invoice slot amount to the new monthly amount.
+        // matchedRow.rowNum was matchedRow's row BEFORE the insert; after the move it's +1.
+        const relabelStartRow = matchedRow.rowNum + 1;
+        const relabelRows = childRows.filter(cr => cr.rowNum >= matchedRow.rowNum).map(cr => cr.rowNum + 1);
+        const relabelData = [];
+        for (const rn of relabelRows) {
+          relabelData.push({ range: `Confirmed!B${rn}`, values: [[newJobName]] });
+          // Update whichever invoice slot has data on this row to the new amount —
+          // find it by checking which slot has a non-blank amount (child rows only ever use slot 1 for retainers)
+          relabelData.push({ range: `Confirmed!AP${rn}`, values: [[newMonthlyAmount]] });
+        }
+        if (relabelData.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: relabelData },
+          });
+        }
+
+        // Regroup: split into two separate groups — old job's rows, and new job's rows.
+        try {
+          const oldJobLastChildBeforeSplit = childRows.filter(cr => cr.rowNum < matchedRow.rowNum);
+          const oldGroupEnd = oldJobLastChildBeforeSplit.length > 0
+            ? oldJobLastChildBeforeSplit[oldJobLastChildBeforeSplit.length - 1].rowNum
+            : parentRowNum;
+          const newGroupStart = newParentRowNum;
+          const newGroupEnd = relabelRows.length > 0 ? relabelRows[relabelRows.length - 1] : newParentRowNum;
+
+          // Find any existing group covering the original job and shrink it to end at oldGroupEnd
+          const anchorIdx0 = parentRowNum - 1;
+          const existingGroup = rowGroups.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
+          const groupRequests = [];
+          if (existingGroup) {
+            groupRequests.push({
+              updateDimensionGroup: {
+                dimensionGroup: {
+                  range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: existingGroup.range.startIndex, endIndex: oldGroupEnd },
+                  depth: existingGroup.depth, collapsed: existingGroup.collapsed || false,
+                },
+              },
+            });
+          }
+          // Create a fresh group for the new job's rows
+          groupRequests.push({
+            addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: newGroupStart - 1, endIndex: newGroupEnd } },
+          });
+          await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests: groupRequests } });
+        } catch (groupErr) {
+          console.log(`  ⚠ Row grouping for retainer split failed (non-fatal): ${groupErr.message}`);
+        }
+
+        console.log(`  ✅ change_retainer_monthly_amount: split "${jobName}" at ${changeMonthLabel} — new job "${newJobName}" at row ${newParentRowNum}`);
+        return res.status(200).json({ success: true, newParentRowNum, newJobName, relabelledRows: relabelRows.length });
+      } catch (err) {
+        console.error("❌ change_retainer_monthly_amount error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

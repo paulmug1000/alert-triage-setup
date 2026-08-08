@@ -6156,7 +6156,7 @@ export default function TriageSystem({ onBack }) {
                           <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd", display: "flex", gap: "8px", flexWrap: "wrap" }}>
                             {m.possibleMatchInvoiceNo ? (
                               <button className="triage-btn" onClick={() => {
-                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName);
+                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
                                 setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
                               }}
                                 style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
@@ -6164,7 +6164,7 @@ export default function TriageSystem({ onBack }) {
                               </button>
                             ) : (
                               <button className="triage-btn" onClick={() => {
-                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName);
+                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
                                 setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
                               }}
                                 style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>

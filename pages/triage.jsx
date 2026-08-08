@@ -463,6 +463,8 @@ function RetainerAlertResolutionModal({ resolutionType, alertMeta, clientSheetId
             lastInvoiceDate: alertMeta.lastInvoiceDate,
             possibleMatchSentDate: alertMeta.possibleMatchSentDate,
             possibleMatchAmount: alertMeta.possibleMatchAmount,
+            possibleMatchInvoiceNo: alertMeta.possibleMatchInvoiceNo,
+            possibleMatchConfirmedRow: alertMeta.possibleMatchConfirmedRow,
           }),
         });
         const data = await res.json();
@@ -502,6 +504,11 @@ function RetainerAlertResolutionModal({ resolutionType, alertMeta, clientSheetId
             clientSheetId,
             client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
             changeMonth: preview.changeMonth, changeYear: preview.changeYear, newMonthlyAmount: preview.newMonthlyAmount,
+            sourceInvoiceRef: preview.sourceInvoiceRef,
+            sourceInvoiceSentDate: preview.sourceInvoiceSentDate,
+            sourceInvoiceDaysToPay: preview.sourceRowInfo?.daysToPay,
+            sourceInvoiceStatus: preview.sourceRowInfo?.status,
+            sourceConfirmedRow: preview.sourceRowInfo?.confirmedRow,
           }),
         });
       }
@@ -548,8 +555,13 @@ function RetainerAlertResolutionModal({ resolutionType, alertMeta, clientSheetId
                 <>
                   <div style={{ marginTop: "8px" }}>An alternative invoice was found for <strong>£{preview.newPerInvoiceAmount.toFixed(2)}</strong>{preview.intervalMonths > 1 ? ` (covering ${preview.intervalMonths} months)` : ""}.</div>
                   <div style={{ marginTop: "8px", padding: "10px", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: "6px" }}>
-                    From <strong>{preview.changeMonthLabel}</strong>, the retainer will be split into a new job at <strong>£{preview.newMonthlyAmount.toFixed(2)}/month</strong>{preview.intervalMonths > 1 ? ` (£${preview.newPerInvoiceAmount.toFixed(2)} per ${preview.intervalMonths}-month invoice)` : ""}. The existing job will end the month before.
+                    From <strong>{preview.changeMonthLabel}</strong>, the retainer will be split into a new job at <strong>£{preview.newMonthlyAmount.toFixed(2)}/month</strong>{preview.intervalMonths > 1 ? ` (£${preview.newPerInvoiceAmount.toFixed(2)} per ${preview.intervalMonths}-month invoice)` : ""}. The existing job will end the month before. The alternative invoice{preview.sourceInvoiceRef ? ` (#${preview.sourceInvoiceRef})` : ""} will become the new job's first invoice.
                   </div>
+                  {preview.sourceRowInfo && (
+                    <div style={{ marginTop: "8px", padding: "10px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px" }}>
+                      This invoice is currently attached to a different job on row <strong>{preview.sourceRowInfo.confirmedRow}</strong> ({preview.sourceRowInfo.client} — {preview.sourceRowInfo.jobName}). <strong>That row's data will be permanently cleared</strong> (client, job, revenue, dates, and all invoice/expense slots) since it's being relocated onto this retainer.
+                    </div>
+                  )}
                 </>
               )}
             </div>

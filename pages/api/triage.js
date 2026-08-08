@@ -3505,7 +3505,25 @@ export default async function handler(req, res) {
       // the new monthly amount from that month onward. Existing rows from the
       // matched month onward are relabelled to the new job and given the new
       // invoice amount (revenue itself is a parent-row-only field, never on children).
-      const { clientSheetId, client, jobName, parentRowNum, changeMonth, changeYear, newMonthlyAmount } = req.body;
+      //
+      // Optional fields (used when this split is triggered by a retainer alert's
+      // "Change retainer amount" action, where the new rate was inferred from a
+      // REAL invoice found elsewhere):
+      //   sourceInvoiceRef / sourceInvoiceSentDate / sourceInvoiceDaysToPay /
+      //   sourceInvoiceStatus — if provided, these overwrite the new job's first
+      //   invoice slot (on matchedRow) instead of leaving whatever was already
+      //   there, so the real invoice reference/dates/status carry over correctly.
+      //   sourceConfirmedRow — if the alternative invoice was itself sitting on
+      //   ANOTHER row in Confirmed (e.g. an orphan project job that never matched
+      //   its real retainer), that row is fully cleared afterward — columns A:E,
+      //   AG:AM, all three invoice slots, all three expense slots — since its
+      //   data has now been relocated onto the retainer. No safety check on prior
+      //   contents: the caller (the alert resolution flow) is responsible for
+      //   confirming this is the correct row before calling.
+      const {
+        clientSheetId, client, jobName, parentRowNum, changeMonth, changeYear, newMonthlyAmount,
+        sourceInvoiceRef, sourceInvoiceSentDate, sourceInvoiceDaysToPay, sourceInvoiceStatus, sourceConfirmedRow,
+      } = req.body;
       if (!clientSheetId || !jobName || !parentRowNum || changeMonth === undefined || !changeYear || !newMonthlyAmount) {
         return res.status(400).json({ success: false, error: "Missing required fields" });
       }
@@ -3714,16 +3732,55 @@ export default async function handler(req, res) {
         const relabelRows = childRows.filter(cr => cr.rowNum >= matchedRow.rowNum).map(cr => cr.rowNum + 1);
         const newPerInvoiceAmount = newMonthlyAmount * (intervalMonths || 1);
         const relabelData = [];
+        const relabelDateData = [];
         for (const rn of relabelRows) {
           relabelData.push({ range: `Confirmed!B${rn}`, values: [[newJobName]] });
           // Update whichever invoice slot has data on this row to the new amount —
           // find it by checking which slot has a non-blank amount (child rows only ever use slot 1 for retainers)
           relabelData.push({ range: `Confirmed!AP${rn}`, values: [[newPerInvoiceAmount]] });
         }
+        // If this split was triggered from a retainer alert with a REAL alternative
+        // invoice, carry its reference/dates/status onto the new job's first child
+        // row (matchedRow, now shifted to relabelStartRow) so the genuine invoice
+        // record — not a placeholder — represents that first period.
+        if (sourceInvoiceRef || sourceInvoiceSentDate) {
+          relabelData.push({ range: `Confirmed!AQ${relabelStartRow}`, values: [[sourceInvoiceRef || ""]] });
+          const parsedDaysToPay = parseInt(String(sourceInvoiceDaysToPay || "").replace(/[^\d.-]/g, ""), 10);
+          relabelData.push({ range: `Confirmed!AS${relabelStartRow}`, values: [[!isNaN(parsedDaysToPay) && parsedDaysToPay > 0 ? parsedDaysToPay : 30]] });
+          relabelData.push({ range: `Confirmed!AT${relabelStartRow}`, values: [[sourceInvoiceStatus || ""]] });
+          if (sourceInvoiceSentDate) {
+            const parsedSourceSent = retParseSheetDate(sourceInvoiceSentDate);
+            if (parsedSourceSent) relabelDateData.push({ range: `Confirmed!AR${relabelStartRow}`, values: [[retFmtDate(parsedSourceSent)]] });
+          }
+        }
         if (relabelData.length > 0) {
           await sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: relabelData },
           });
+        }
+        if (relabelDateData.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: relabelDateData },
+          });
+        }
+
+        // If the alternative invoice was itself attached to ANOTHER job elsewhere
+        // in Confirmed (an orphan that never matched its real retainer), fully
+        // clear that row now — its data has been relocated onto the retainer above.
+        if (sourceConfirmedRow) {
+          const srcRow = parseInt(sourceConfirmedRow, 10);
+          if (srcRow && srcRow > 0) {
+            await sheets.spreadsheets.values.batchClear({
+              spreadsheetId: sheetIdClean,
+              requestBody: { ranges: [
+                `Confirmed!A${srcRow}:E${srcRow}`,
+                `Confirmed!AG${srcRow}:AM${srcRow}`,
+                `Confirmed!AP${srcRow}:BH${srcRow}`,
+                `Confirmed!BX${srcRow}:CR${srcRow}`,
+              ]},
+            });
+            console.log(`  🧹 change_retainer_monthly_amount: cleared source row ${srcRow} (data relocated to new retainer)`);
+          }
         }
 
         // Regroup: split into two separate groups — old job's rows, and new job's rows.
@@ -3997,7 +4054,7 @@ export default async function handler(req, res) {
       // making any changes — used to populate the confirmation screen on the
       // alert card before the user confirms. resolutionType: "end" | "changeAmount".
       const { clientSheetId, masterSheetId, client, jobName, parentRowNum, resolutionType,
-        lastInvoiceDate, possibleMatchSentDate, possibleMatchAmount } = req.body;
+        lastInvoiceDate, possibleMatchSentDate, possibleMatchAmount, possibleMatchInvoiceNo, possibleMatchConfirmedRow } = req.body;
       if (!clientSheetId || !jobName || !parentRowNum || !resolutionType) {
         return res.status(400).json({ success: false, error: "Missing required fields" });
       }
@@ -4080,6 +4137,36 @@ export default async function handler(req, res) {
           const endMonth0 = coveredPeriodStartVal % 12;
           const newMonthlyAmount = altAmount / (intervalMonths || 1);
 
+          // If the alternative invoice is already attached to another job on
+          // Confirmed, look up that row's exact invoice slot so we can carry over
+          // its precise reference/days-to-pay/status (not just amount and date,
+          // which is all the alert itself captured) — and confirm which slot and
+          // job it actually belongs to, for the confirmation screen to show.
+          let sourceRowInfo = null;
+          if (possibleMatchConfirmedRow) {
+            const srcRowNum = parseInt(possibleMatchConfirmedRow, 10);
+            const srcRow = rows[srcRowNum - 1];
+            if (srcRow) {
+              const slotDefs = [
+                { amt: 41, ref: 42, sent: 43, days: 44, status: 45 },
+                { amt: 48, ref: 49, sent: 50, days: 51, status: 52 },
+                { amt: 55, ref: 56, sent: 57, days: 58, status: 59 },
+              ];
+              const matchedSlot = slotDefs.find(s => String(srcRow[s.ref] || "").trim() === String(possibleMatchInvoiceNo || "").trim());
+              if (matchedSlot) {
+                sourceRowInfo = {
+                  confirmedRow: srcRowNum,
+                  client: String(srcRow[0] || "").trim(),
+                  jobName: String(srcRow[1] || "").trim(),
+                  ref: String(srcRow[matchedSlot.ref] || "").trim(),
+                  sentDate: String(srcRow[matchedSlot.sent] || "").trim(),
+                  daysToPay: String(srcRow[matchedSlot.days] || "").trim(),
+                  status: String(srcRow[matchedSlot.status] || "").trim(),
+                };
+              }
+            }
+          }
+
           return res.status(200).json({
             success: true,
             resolutionType: "changeAmount",
@@ -4089,6 +4176,9 @@ export default async function handler(req, res) {
             newMonthlyAmount: Math.round(newMonthlyAmount * 100) / 100,
             newPerInvoiceAmount: altAmount,
             intervalMonths,
+            sourceInvoiceRef: possibleMatchInvoiceNo || "",
+            sourceInvoiceSentDate: possibleMatchSentDate || "",
+            sourceRowInfo, // null if the alternative invoice isn't attached to another Confirmed row
           });
         }
 

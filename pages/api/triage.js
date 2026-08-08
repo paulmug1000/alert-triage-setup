@@ -3829,6 +3829,166 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "create_retainer_job") {
+      // Creates a brand-new retainer job: a parent row plus a rolling window of
+      // child rows (same "pastCount + 18 future months" window the nightly
+      // retainer audit maintains), placed at the first genuinely-blank row at the
+      // bottom of the sheet's real data (found by scanning UP from the sheet's
+      // tail, same mechanism the grow/trim logic already uses — no rows are moved
+      // "up" into a gap; a blank row is simply relocated FROM the tail).
+      const {
+        clientSheetId, masterSheetId, client, jobName, monthlyRevenue, monthlyDirectCosts,
+        vat, startDate, endDate, invoiceFrequency, invoiceSendDay,
+      } = req.body;
+      if (!clientSheetId || !client || !jobName || !monthlyRevenue || !startDate || !endDate || !invoiceFrequency || !invoiceSendDay) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const intervalMonths = invoiceFrequency === "quarterly" ? 3 : 1;
+        const start = retParseSheetDate(startDate);
+        const end = retParseSheetDate(endDate);
+        if (!start || !end) return res.status(400).json({ success: false, error: "Invalid start or end date" });
+        if (end < start) return res.status(400).json({ success: false, error: "End date can't be before start date" });
+
+        const sendDay = parseInt(invoiceSendDay, 10);
+        if (!sendDay || sendDay < 1 || sendDay > 31) {
+          return res.status(400).json({ success: false, error: "Invoice send day must be between 1 and 31" });
+        }
+
+        const revenue = parseFloat(monthlyRevenue) || 0;
+        const directCosts = parseFloat(monthlyDirectCosts) || 0;
+        const perInvoiceAmount = revenue * intervalMonths;
+
+        // Read the client's configured default "days to pay" from the master sheet
+        // (same source the nightly retainer audit and grow-path use).
+        const { defaultDaysToPay: rawDefaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
+        const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay).replace(/[^\d.-]/g, ""), 10) || 30;
+
+        // Work out how many child rows to create — the same rolling 18-month
+        // FUTURE window the nightly audit maintains: pastCount (periods already
+        // elapsed relative to today) + 18, capped by the end date and total
+        // contract value. For a brand-new job, pastCount will typically be 0
+        // unless the start date is already in the past.
+        const today = new Date(); today.setHours(0,0,0,0);
+        const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
+
+        // Build the full list of period start dates (one per invoice) from the
+        // job's start date, stepping by intervalMonths, capped by the end date.
+        const periodStarts = [];
+        let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+        const endMonthVal = end.getFullYear() * 12 + end.getMonth();
+        while (true) {
+          const cursorMonthVal = cursor.getFullYear() * 12 + cursor.getMonth();
+          if (cursorMonthVal > endMonthVal) break;
+          periodStarts.push(new Date(cursor));
+          cursor = new Date(cursor.getFullYear(), cursor.getMonth() + intervalMonths, 1);
+        }
+        const pastCount = periodStarts.filter(d => (d.getFullYear()*12 + d.getMonth()) <= currentMonthVal).length;
+        const targetPeriodCount = Math.min(periodStarts.length, pastCount + 18);
+
+        if (targetPeriodCount === 0) {
+          return res.status(400).json({ success: false, error: "No invoice periods fall within the given start and end dates." });
+        }
+
+        // First period = parent row's own invoice (slot 1 on the parent, matching
+        // how every other retainer job on this sheet is structured). Remaining
+        // periods = child rows, one each.
+        const parentSendDate = new Date(periodStarts[0].getFullYear(), periodStarts[0].getMonth(), sendDay);
+        const childSendDates = periodStarts.slice(1, targetPeriodCount).map(p => new Date(p.getFullYear(), p.getMonth(), sendDay));
+
+        // Find the true last row with real data, and ensure enough headroom below
+        // it to move the parent + child blank rows into position.
+        const metaResp = await sheets.spreadsheets.get({
+          spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties)",
+        });
+        const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+        const gridSheetId = confirmedSheet.properties.sheetId;
+        let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+
+        const freshResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
+        });
+        let trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+
+        const rowsNeeded = 1 + childSendDates.length; // parent + children
+        if ((currentMaxRows - (trueLastRow + 1)) < rowsNeeded) {
+          const toAdd = rowsNeeded - (currentMaxRows - (trueLastRow + 1)) + 5;
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: { requests: [{
+              insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd }, inheritFromBefore: true },
+            }] },
+          });
+          currentMaxRows += toAdd;
+        }
+
+        // Since we're placing the new job directly at the tail (right after the
+        // true last row), the target rows are already exactly where they need to
+        // be — no moveDimension is needed at all, unlike the grow/trim paths which
+        // relocate rows from elsewhere. We just write directly into place.
+        const newParentRowNum = trueLastRow + 1;
+
+        // Write parent row: client, job name, revenue, direct costs, VAT, type,
+        // start/end dates, and its own invoice (slot 1).
+        const writeData = [
+          { range: `Confirmed!A${newParentRowNum}`, values: [[client]] },
+          { range: `Confirmed!B${newParentRowNum}`, values: [[jobName]] },
+          { range: `Confirmed!AG${newParentRowNum}`, values: [[revenue]] },
+          { range: `Confirmed!AH${newParentRowNum}`, values: [[directCosts]] },
+          { range: `Confirmed!AI${newParentRowNum}`, values: [[vat || "No"]] },
+          { range: `Confirmed!AJ${newParentRowNum}`, values: [["Retainer"]] },
+          { range: `Confirmed!AP${newParentRowNum}`, values: [[perInvoiceAmount]] },
+          { range: `Confirmed!AS${newParentRowNum}`, values: [[defaultDaysToPay]] },
+        ];
+        const dateWriteData = [
+          { range: `Confirmed!AL${newParentRowNum}`, values: [[retFmtDate(start)]] },
+          { range: `Confirmed!AM${newParentRowNum}`, values: [[retFmtDate(end)]] },
+          { range: `Confirmed!AR${newParentRowNum}`, values: [[retFmtDate(parentSendDate)]] },
+        ];
+
+        for (let i = 0; i < childSendDates.length; i++) {
+          const rn = newParentRowNum + 1 + i;
+          writeData.push(
+            { range: `Confirmed!A${rn}`, values: [[client]] },
+            { range: `Confirmed!B${rn}`, values: [[jobName]] },
+            { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] },
+            { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
+          );
+          dateWriteData.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(childSendDates[i])]] });
+        }
+
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: writeData },
+        });
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateWriteData },
+        });
+
+        // Group the child rows only (parent row stays outside any group, matching
+        // every other retainer job on this sheet).
+        if (childSendDates.length > 0) {
+          try {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: { requests: [{
+                addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: newParentRowNum, endIndex: newParentRowNum + childSendDates.length } },
+              }] },
+            });
+          } catch (groupErr) {
+            console.log(`  ⚠ Row grouping for new retainer failed (non-fatal): ${groupErr.message}`);
+          }
+        }
+
+        console.log(`  ✅ create_retainer_job: created "${jobName}" for ${client} at row ${newParentRowNum} with ${childSendDates.length} child row(s)`);
+        return res.status(200).json({ success: true, parentRowNum: newParentRowNum, childRowCount: childSendDates.length });
+      } catch (err) {
+        console.error("❌ create_retainer_job error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "update_outgoing_note") {
       // Writes a new note to a specific Outgoings cell.
       // blocks: array of { appId, amount, status, recDate, payDate, description }

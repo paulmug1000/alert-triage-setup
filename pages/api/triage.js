@@ -3648,16 +3648,20 @@ export default async function handler(req, res) {
           const deleteRequests = [];
           const addRequestsSequential = [];
           for (const g of overlappingGroups) {
-            const spansSplitPoint = g.range.startIndex < (newGroupStart - 1) && g.range.endIndex > (newGroupStart - 1);
+            const spansSplitPoint = g.range.startIndex < (newParentRowNum - 1) && g.range.endIndex > (newParentRowNum - 1);
             if (!spansSplitPoint) continue; // doesn't cross the split boundary — leave it alone
             deleteRequests.push({ deleteDimensionGroup: { range: {
               sheetId: gridSheetId, dimension: "ROWS",
               startIndex: g.range.startIndex, endIndex: g.range.endIndex,
             } } });
-            // Re-add only the portion of this group that belongs to the OLD job
-            // (up to the split point). The NEW job's portion is covered by the
-            // fresh group added below, so it isn't re-added here.
-            const keepEnd = Math.min(g.range.endIndex, newGroupStart - 1);
+            // Re-add only the portion of this group that belongs to the OLD job —
+            // up to (but excluding) the new job's PARENT row, which must never be
+            // inside any group. Using newGroupStart-1 here was wrong: newGroupStart
+            // is the new job's first CHILD row, one row too far — it included the
+            // parent row (newParentRowNum) in the old job's group. The correct
+            // boundary is newParentRowNum-1 (0-indexed, exclusive), which stops
+            // right before the parent row.
+            const keepEnd = Math.min(g.range.endIndex, newParentRowNum - 1);
             if (keepEnd > g.range.startIndex) {
               addRequestsSequential.push({ startIndex: g.range.startIndex, endIndex: keepEnd });
             }

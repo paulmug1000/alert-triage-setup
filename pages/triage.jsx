@@ -290,7 +290,7 @@ export default function TriageSystem({ onBack }) {
   const [retainersJobs, setRetainersJobs] = useState(null);
   const [retainersJobsLoading, setRetainersJobsLoading] = useState(false);
   const [retainersEditJob, setRetainersEditJob] = useState(null); // the job object being edited
-  const [retainersSaving, setRetainersSaving] = useState(false);
+  const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(() => new Set()); // parentRowNum values currently expanded
   const [retainersSaveError, setRetainersSaveError] = useState("");
   // assignedAppIds: Set of transactionIds assigned via outgoings — persisted to localStorage
   // until refreshOutgoingsAndUI runs and removes them from DirComp properly
@@ -4572,8 +4572,10 @@ export default function TriageSystem({ onBack }) {
 
     const saveNameAndDate = async () => {
       setSaving(true); setError("");
+      const nameChanged = jobName !== job.jobName;
+      const dateChanged = endDate !== job.rows[0]?.endDate;
       try {
-        if (jobName !== job.jobName) {
+        if (nameChanged) {
           const res = await fetch("/api/triage", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -4586,7 +4588,9 @@ export default function TriageSystem({ onBack }) {
           const data = await res.json();
           if (!data.success) { setError(data.error || "Failed to rename job"); setSaving(false); return; }
         }
-        if (endDate !== job.rows[0]?.endDate) {
+        if (dateChanged) {
+          // End-date changes can trim/grow rows, so the row structure may no longer
+          // match what's on screen — a fresh load is required to show it accurately.
           const res = await fetch("/api/triage", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -4598,9 +4602,19 @@ export default function TriageSystem({ onBack }) {
           });
           const data = await res.json();
           if (!data.success) { setError(data.error || (data.blocked ? data.error : "Failed to change end date")); setSaving(false); return; }
+          await loadRetainersJobs(retainersClient);
+          close();
+          return;
+        }
+        if (nameChanged) {
+          // Rename only — no row structure change, so patch the local list in place
+          // instead of reloading the whole table.
+          setRetainersJobs(prev => prev && prev.map(j => j.parentRowNum !== job.parentRowNum ? j : {
+            ...j, jobName,
+            rows: j.rows.map(r => ({ ...r, jobName })),
+          }));
         }
         close();
-        await loadRetainersJobs(retainersClient);
       } catch(e) { setError(e.message); setSaving(false); }
     };
 
@@ -4620,8 +4634,10 @@ export default function TriageSystem({ onBack }) {
         });
         const data = await res.json();
         if (!data.success) { setError(data.error || "Failed to change monthly amount"); setSaving(false); return; }
-        close();
+        // This creates a brand new job row and relabels existing ones — a fresh
+        // load is required to show the split accurately.
         await loadRetainersJobs(retainersClient);
+        close();
       } catch(e) { setError(e.message); setSaving(false); }
     };
 
@@ -4652,7 +4668,7 @@ export default function TriageSystem({ onBack }) {
 
               <div style={{ marginTop: "16px", padding: "12px", background: "#f5f3ff", borderRadius: "8px", border: "1px solid #ddd6fe" }}>
                 <div style={{ fontSize: "13px", fontWeight: "600", color: "#5b21b6", marginBottom: "6px" }}>Monthly amount</div>
-                <div style={{ fontSize: "13px", color: "#333", marginBottom: "8px" }}>Current: £{job.revenue}/month</div>
+                <div style={{ fontSize: "13px", color: "#333", marginBottom: "8px" }}>Current: {/^[£$€]/.test(String(job.revenue)) ? job.revenue : `£${job.revenue}`}/month</div>
                 <button onClick={() => setChangingAmount(true)}
                   style={{ padding: "7px 14px", background: "#fff", border: "1px solid #7c3aed", color: "#7c3aed", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
                   Change monthly amount…
@@ -4709,12 +4725,6 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {retainersEditJob && <RetainersEditModal />}
-        {retainersSaving && (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(255,255,255,0.85)", zIndex: 2000, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "12px" }}>
-            <Spinner size={32} color="#7c3aed" />
-            <div style={{ fontSize: "14px", color: "#5b21b6", fontWeight: "600" }}>Saving changes to the Confirmed tab...</div>
-          </div>
-        )}
         <div style={{ padding: "20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
@@ -4754,9 +4764,11 @@ export default function TriageSystem({ onBack }) {
               )}
               {!retainersJobsLoading && retainersJobs && retainersJobs.length > 0 && (
                 <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
-                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1000px", tableLayout: "fixed" }}>
+                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1100px", tableLayout: "fixed" }}>
                     <colgroup>
+                      <col style={{ width: "24px" }} />
                       <col style={{ width: "50px" }} />
+                      <col style={{ width: "130px" }} />
                       <col style={{ width: "160px" }} />
                       <col style={{ width: "90px" }} />
                       <col style={{ width: "90px" }} />
@@ -4767,37 +4779,59 @@ export default function TriageSystem({ onBack }) {
                     </colgroup>
                     <thead>
                       <tr style={{ background: "#f5f6fa" }}>
-                        {["Row","Job name","Monthly £","Start","End","InvSlot1","InvSlot2","InvSlot3"].map(h => (
+                        {["","Row","Client","Job name","Monthly £","Start","End","InvSlot1","InvSlot2","InvSlot3"].map(h => (
                           <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {retainersJobs.flatMap((job, jobIdx) => job.rows.map((jr, rIdx) => (
-                        <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd", cursor: rIdx === 0 ? "pointer" : "default" }}
-                          onClick={() => { if (rIdx === 0) setRetainersEditJob(job); }}>
-                          <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
-                          <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", fontWeight: rIdx === 0 ? "600" : "normal" }}>
-                            {rIdx === 0 ? <>{jr.jobName} <span style={{ color: "#7c3aed", fontSize: "10px" }}>✎ edit</span></> : ""}
-                          </td>
-                          <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.revenue : ""}</td>
-                          <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
-                          <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
-                          {jr.invoiceSlots.map(s => {
-                            const isEmpty = !s.ref && !s.amount;
-                            return (
-                              <td key={s.slotNum} style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
-                                {isEmpty ? <span style={{ color: "#ccc" }}>—</span> : (
-                                  <div>
-                                    <div style={{ fontWeight: "600" }}>{s.ref}</div>
-                                    <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.sentDate}{s.status ? ` · ${s.status}` : ""}</div>
-                                  </div>
-                                )}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      )))}
+                      {retainersJobs.flatMap((job, jobIdx) => {
+                        const isExpanded = expandedRetainerJobs.has(job.parentRowNum);
+                        const visibleRows = isExpanded ? job.rows : job.rows.slice(0, 1);
+                        return visibleRows.map((jr, rIdx) => (
+                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
+                            <td style={{ padding: "7px 4px", borderBottom: "1px solid #eee", textAlign: "center" }}>
+                              {rIdx === 0 && job.rows.length > 1 && (
+                                <span
+                                  onClick={() => setExpandedRetainerJobs(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(job.parentRowNum)) next.delete(job.parentRowNum); else next.add(job.parentRowNum);
+                                    return next;
+                                  })}
+                                  style={{ cursor: "pointer", color: "#7c3aed", fontSize: "11px", userSelect: "none" }}
+                                  title={isExpanded ? "Collapse" : `Show ${job.rows.length - 1} more row(s)`}>
+                                  {isExpanded ? "▼" : "▶"}
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? job.client : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", fontWeight: rIdx === 0 ? "600" : "normal" }}>
+                              {rIdx === 0 ? (
+                                <span onClick={() => setRetainersEditJob(job)} style={{ cursor: "pointer" }}>
+                                  {jr.jobName} <span style={{ color: "#7c3aed", fontSize: "10px" }}>✎ edit</span>
+                                </span>
+                              ) : ""}
+                            </td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? job.revenue : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
+                            {jr.invoiceSlots.map(s => {
+                              const isEmpty = !s.ref && !s.amount;
+                              return (
+                                <td key={s.slotNum} style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                                  {isEmpty ? <span style={{ color: "#ccc" }}>—</span> : (
+                                    <div>
+                                      <div style={{ fontWeight: "600" }}>{s.ref}</div>
+                                      <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.sentDate}{s.status ? ` · ${s.status}` : ""}</div>
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ));
+                      })}
                     </tbody>
                   </table>
                 </div>

@@ -3552,6 +3552,13 @@ export default async function handler(req, res) {
         const invoiceTimingOffset = retDetectInvoiceTimingOffset_(datedRows.map(r => r.invDate), jobStartDateForOffset, intervalMonths);
         const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : 0; // months to ADD to a sent-date to get its true covered-period month
 
+        console.log(`  🔬 MATCH parentRow[37] (start, raw)=${JSON.stringify(parentRow[37])} parentRow[38] (end, raw)=${JSON.stringify(parentRow[38])} parentRow[43] (parent inv date, raw)=${JSON.stringify(parentRow[43])}`);
+        console.log(`  🔬 MATCH jobStartDateForOffset=${jobStartDateForOffset ? jobStartDateForOffset.toISOString() : null}`);
+        console.log(`  🔬 MATCH allRows count=${allRows.length} datedRows count=${datedRows.length}`);
+        console.log(`  🔬 MATCH datedRows: ${JSON.stringify(datedRows.map(r => ({ rowNum: r.rowNum, isParent: r.isParent, invDate: r.invDate.toISOString(), rawAR: r.row[43] })))}`);
+        console.log(`  🔬 MATCH intervalMonths=${intervalMonths} invoiceTimingOffset=${invoiceTimingOffset} timingMonthAdjust=${timingMonthAdjust}`);
+        console.log(`  🔬 MATCH req.body changeMonth=${changeMonth} changeYear=${changeYear} changeMonthVal=${changeMonthVal}`);
+
         // Find the row whose invoice COVERS the change month — i.e. the row with the
         // latest invoice date that is <= the change month (accounts for quarterly
         // invoices, where a single row's invoice date might be 1-2 months before the
@@ -3560,8 +3567,10 @@ export default async function handler(req, res) {
         let matchedRowPeriodStartVal = null;
         for (let i = datedRows.length - 1; i >= 0; i--) {
           const rowMonthVal = datedRows[i].invDate.getFullYear() * 12 + datedRows[i].invDate.getMonth() + timingMonthAdjust;
+          console.log(`  🔬 MATCH checking datedRows[${i}] rowNum=${datedRows[i].rowNum} invDate=${datedRows[i].invDate.toISOString()} rowMonthVal=${rowMonthVal} <= changeMonthVal(${changeMonthVal})? ${rowMonthVal <= changeMonthVal}`);
           if (rowMonthVal <= changeMonthVal) { matchedRow = datedRows[i]; matchedRowPeriodStartVal = rowMonthVal; break; }
         }
+        console.log(`  🔬 MATCH final matchedRow rowNum=${matchedRow ? matchedRow.rowNum : null} matchedRowPeriodStartVal=${matchedRowPeriodStartVal}`);
         if (!matchedRow) {
           return res.status(400).json({ success: false, error: "Could not find a row covering that month — check the selected month against the job's invoice schedule." });
         }

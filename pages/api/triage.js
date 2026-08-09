@@ -3766,28 +3766,53 @@ export default async function handler(req, res) {
 
         // If the alternative invoice was itself attached to ANOTHER job elsewhere
         // in Confirmed (an orphan that never matched its real retainer), fully
-        // clear that row now — its data has been relocated onto the retainer above.
-        // IMPORTANT: sourceConfirmedRow was computed by the PREVIEW step, before
-        // the moveDimension above inserted the new parent row. Any row at or after
-        // the insertion point (newParentDestIdx0, 0-indexed) shifted down by one as
-        // a result of that move — so the row number must be adjusted here, or the
-        // clear silently hits the wrong row (whatever now sits at the stale
-        // position) while the real source row goes untouched.
+        // clear that job's row(s) now — its data has been relocated onto the
+        // retainer above. The orphan job may itself be a parent+children job (not
+        // just a single row) — find any child rows using the same client+jobName
+        // matching pattern used everywhere else in this codebase, BEFORE the move
+        // above renumbers anything, then clear every one of them.
+        // IMPORTANT: sourceConfirmedRow (and any child rows found below it) were
+        // identified from `rows`, read BEFORE the moveDimension above inserted the
+        // new parent row. Any row at or after the insertion point
+        // (newParentDestIdx0, 0-indexed) shifted down by one as a result of that
+        // move — so every row number must be adjusted here, or the clear silently
+        // hits the wrong row while the real source data goes untouched.
         if (sourceConfirmedRow) {
-          let srcRow = parseInt(sourceConfirmedRow, 10);
-          if (srcRow && srcRow > 0) {
-            const srcRowIdx0Original = srcRow - 1; // 0-indexed, pre-move
-            if (srcRowIdx0Original >= newParentDestIdx0) srcRow += 1; // shifted down by the insert
+          const srcRowNumOriginal = parseInt(sourceConfirmedRow, 10);
+          if (srcRowNumOriginal && srcRowNumOriginal > 0) {
+            const srcParentRowOriginal = rows[srcRowNumOriginal - 1] || [];
+            const srcClient = String(srcParentRowOriginal[0] || "").trim();
+            const srcJobName = String(srcParentRowOriginal[1] || "").trim();
+            const srcRowsToClearOriginal = [srcRowNumOriginal];
+            let srcChildIdx = srcRowNumOriginal; // 0-indexed next row = srcRowNumOriginal (1-indexed)
+            while (srcChildIdx < rows.length) {
+              const next = rows[srcChildIdx] || [];
+              if (String(next[0]||"").trim() === srcClient && String(next[1]||"").trim() === srcJobName &&
+                  !String(next[32]||"").trim() && !String(next[37]||"").trim()) {
+                srcRowsToClearOriginal.push(srcChildIdx + 1);
+                srcChildIdx++;
+              } else break;
+            }
+
+            const clearRanges = [];
+            const clearedRowNums = [];
+            for (const originalRowNum of srcRowsToClearOriginal) {
+              let adjustedRow = originalRowNum;
+              const idx0Original = originalRowNum - 1;
+              if (idx0Original >= newParentDestIdx0) adjustedRow += 1; // shifted down by the insert
+              clearedRowNums.push(adjustedRow);
+              clearRanges.push(
+                `Confirmed!A${adjustedRow}:E${adjustedRow}`,
+                `Confirmed!AG${adjustedRow}:AM${adjustedRow}`,
+                `Confirmed!AP${adjustedRow}:BH${adjustedRow}`,
+                `Confirmed!BX${adjustedRow}:CR${adjustedRow}`,
+              );
+            }
             await sheets.spreadsheets.values.batchClear({
               spreadsheetId: sheetIdClean,
-              requestBody: { ranges: [
-                `Confirmed!A${srcRow}:E${srcRow}`,
-                `Confirmed!AG${srcRow}:AM${srcRow}`,
-                `Confirmed!AP${srcRow}:BH${srcRow}`,
-                `Confirmed!BX${srcRow}:CR${srcRow}`,
-              ]},
+              requestBody: { ranges: clearRanges },
             });
-            console.log(`  🧹 change_retainer_monthly_amount: cleared source row ${srcRow} (originally row ${sourceConfirmedRow} before the retainer split shifted it — data relocated to new retainer)`);
+            console.log(`  🧹 change_retainer_monthly_amount: cleared source job "${srcJobName}" (${srcClient}) — ${clearedRowNums.length} row(s): [${clearedRowNums.join(", ")}] (originally [${srcRowsToClearOriginal.join(", ")}] before the retainer split shifted them — data relocated to new retainer)`);
           }
         }
 
@@ -4166,6 +4191,19 @@ export default async function handler(req, res) {
               const matchedSlot = slotDefs.find(s => String(srcRow[s.ref] || "").trim() === String(possibleMatchInvoiceNo || "").trim());
               console.log(`  🔬 SOURCEROW DIAG matchedSlot=${JSON.stringify(matchedSlot)}`);
               if (matchedSlot) {
+                // Count any child rows this source job has (same client+jobName,
+                // no revenue/dates of its own) so the confirmation screen can
+                // accurately tell the user how many rows will actually be cleared.
+                let srcChildCount = 0;
+                let srcChildIdx = srcRowNum;
+                while (srcChildIdx < rows.length) {
+                  const next = rows[srcChildIdx] || [];
+                  if (String(next[0]||"").trim() === String(srcRow[0]||"").trim() && String(next[1]||"").trim() === String(srcRow[1]||"").trim() &&
+                      !String(next[32]||"").trim() && !String(next[37]||"").trim()) {
+                    srcChildCount++;
+                    srcChildIdx++;
+                  } else break;
+                }
                 sourceRowInfo = {
                   confirmedRow: srcRowNum,
                   client: String(srcRow[0] || "").trim(),
@@ -4174,6 +4212,7 @@ export default async function handler(req, res) {
                   sentDate: String(srcRow[matchedSlot.sent] || "").trim(),
                   daysToPay: String(srcRow[matchedSlot.days] || "").trim(),
                   status: String(srcRow[matchedSlot.status] || "").trim(),
+                  totalRowsToClear: 1 + srcChildCount,
                 };
               }
             }

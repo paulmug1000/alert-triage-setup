@@ -577,7 +577,7 @@ function RetainerAlertResolutionModal({ resolutionType, alertMeta, alertRowIndex
                   </div>
                   {preview.sourceRowInfo && (
                     <div style={{ marginTop: "8px", padding: "10px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px" }}>
-                      This invoice is currently attached to a different job on row <strong>{preview.sourceRowInfo.confirmedRow}</strong> ({preview.sourceRowInfo.client} — {preview.sourceRowInfo.jobName}). <strong>That row's data will be permanently cleared</strong> (client, job, revenue, dates, and all invoice/expense slots) since it's being relocated onto this retainer.
+                      This invoice is currently attached to a different job on row <strong>{preview.sourceRowInfo.confirmedRow}</strong> ({preview.sourceRowInfo.client} — {preview.sourceRowInfo.jobName}). <strong>That job's data will be permanently cleared</strong> — {preview.sourceRowInfo.totalRowsToClear > 1 ? `all ${preview.sourceRowInfo.totalRowsToClear} of its rows (the parent row plus ${preview.sourceRowInfo.totalRowsToClear - 1} child row${preview.sourceRowInfo.totalRowsToClear - 1 === 1 ? "" : "s"})` : "its one row"} — (client, job, revenue, dates, and all invoice/expense slots) since it's being relocated onto this retainer.
                     </div>
                   )}
                 </>

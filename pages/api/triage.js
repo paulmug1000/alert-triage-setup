@@ -4239,6 +4239,248 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "compute_retainer_split_invoice_preview") {
+      // Given a retainer_invoice alert with a possibleMatch present (at any amount,
+      // higher or lower than expected), computes what "Split invoice" WOULD do,
+      // without making any changes:
+      //  1. Locates the retainer's own child row for the missing period (the exact
+      //     row the alert flagged), to apply the STANDARD monthly amount there.
+      //  2. Computes the difference between the alternative invoice's actual amount
+      //     and the standard monthly amount (positive or negative).
+      //  3. Checks whether the alternative invoice is already attached to another
+      //     Confirmed row (possibleMatchConfirmedRow) — if so, that job would be
+      //     converted in place; if not, a new standalone job would be created.
+      const { clientSheetId, client, jobName, parentRowNum,
+        lastInvoiceDate, possibleMatchSentDate, possibleMatchAmount, possibleMatchInvoiceNo,
+        possibleMatchVatAmount, possibleMatchConfirmedRow } = req.body;
+      if (!clientSheetId || !jobName || !parentRowNum || !lastInvoiceDate || !possibleMatchSentDate || possibleMatchAmount === undefined) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+        const parentRow = rows[parentRowNum - 1] || [];
+        if (String(parentRow[0]||"").trim() !== client || String(parentRow[1]||"").trim() !== jobName) {
+          return res.status(400).json({ success: false, error: "Row mismatch — this job may have moved since the alert was raised. Please check the Retainers screen directly." });
+        }
+
+        const standardMonthlyAmount = retParseMoney(parentRow[32]); // AG
+        const altAmount = parseFloat(possibleMatchAmount) || 0;
+        const altSentDate = retParseSheetDate(possibleMatchSentDate);
+        const lastSent = retParseSheetDate(lastInvoiceDate);
+        if (!altSentDate || !lastSent) {
+          return res.status(400).json({ success: false, error: "Could not parse the invoice dates from this alert." });
+        }
+
+        // Collect child rows to find the missing period's own row — the first
+        // child row with an invoice date AFTER lastInvoiceDate (i.e. the row the
+        // alert is actually flagging as missing).
+        const childRows = [];
+        let cj = parentRowNum;
+        while (cj < rows.length) {
+          const next = rows[cj] || [];
+          if (String(next[0]||"").trim() === client && String(next[1]||"").trim() === jobName &&
+              !String(next[32]||"").trim() && !String(next[37]||"").trim()) {
+            childRows.push({ rowNum: cj + 1, row: next });
+            cj++;
+          } else break;
+        }
+        const missingRow = childRows
+          .map(cr => ({ ...cr, invDate: retParseSheetDate(cr.row[43]) }))
+          .filter(cr => cr.invDate && cr.invDate.getTime() > lastSent.getTime())
+          .sort((a, b) => a.invDate.getTime() - b.invDate.getTime())[0];
+
+        if (!missingRow) {
+          return res.status(400).json({ success: false, error: "Could not find the missing invoice's row on this retainer job — it may already have been resolved, or the schedule has changed since the alert was raised." });
+        }
+
+        const difference = altAmount - standardMonthlyAmount;
+        const vatAmount = parseFloat(possibleMatchVatAmount) || 0;
+
+        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        const extraJobName = `${months[altSentDate.getMonth()]} ${String(altSentDate.getFullYear()).slice(-2)} retainer extra revenue`;
+
+        // Check whether the alternative invoice is already attached elsewhere
+        let existingJobInfo = null;
+        if (possibleMatchConfirmedRow) {
+          const srcRowNum = parseInt(possibleMatchConfirmedRow, 10);
+          const srcRow = rows[srcRowNum - 1];
+          if (srcRow) {
+            existingJobInfo = {
+              confirmedRow: srcRowNum,
+              client: String(srcRow[0] || "").trim(),
+              jobName: String(srcRow[1] || "").trim(),
+              currentRevenue: String(srcRow[32] || "").trim(),
+            };
+          }
+        }
+
+        return res.status(200).json({
+          success: true,
+          missingRowNum: missingRow.rowNum,
+          missingRowPeriodLabel: `${months[missingRow.invDate.getMonth()]} ${missingRow.invDate.getFullYear()}`,
+          standardMonthlyAmount,
+          altAmount,
+          altSentDate: possibleMatchSentDate,
+          altInvoiceNo: possibleMatchInvoiceNo || "",
+          vatAmount,
+          difference: Math.round(difference * 100) / 100,
+          extraJobName,
+          extraJobMonth: altSentDate.getMonth(),
+          extraJobYear: altSentDate.getFullYear(),
+          existingJobInfo, // null if no orphan job exists — a new one will be created
+        });
+      } catch (err) {
+        console.error("❌ compute_retainer_split_invoice_preview error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "apply_retainer_split_invoice") {
+      // Applies the "Split invoice" resolution:
+      //  1. Writes the STANDARD monthly amount into the retainer's own missing-period
+      //     child row (slot 1), with the alternative invoice's reference/sent date.
+      //  2. Either updates an existing orphan job in place (revenue, invoice slot 1
+      //     amount, job name, type, and Date conf/Lead src/Prod line copied from the
+      //     retainer's parent row) or creates a brand-new standalone single-row job,
+      //     to hold the DIFFERENCE between the actual and standard amounts (which may
+      //     be negative).
+      const {
+        clientSheetId, masterSheetId, client, jobName, parentRowNum, missingRowNum,
+        standardMonthlyAmount, altAmount, altSentDate, altInvoiceNo, vatAmount, difference,
+        extraJobName, extraJobMonth, extraJobYear, existingConfirmedRow,
+      } = req.body;
+      if (!clientSheetId || !jobName || !parentRowNum || !missingRowNum || difference === undefined) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR5000",
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+        const parentRow = rows[parentRowNum - 1] || [];
+        if (String(parentRow[0]||"").trim() !== client || String(parentRow[1]||"").trim() !== jobName) {
+          return res.status(400).json({ success: false, error: "Row mismatch — this job may have moved since the preview was computed. Please refresh and try again." });
+        }
+        const missingRow = rows[missingRowNum - 1] || [];
+        if (String(missingRow[0]||"").trim() !== client || String(missingRow[1]||"").trim() !== jobName) {
+          return res.status(400).json({ success: false, error: "The retainer's row layout has changed since the preview was computed. Please refresh and try again." });
+        }
+
+        const { defaultDaysToPay: rawDefaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
+        const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay).replace(/[^\d.-]/g, ""), 10) || 30;
+
+        // ── STEP 1: write the standard amount into the retainer's own missing-period row ──
+        const writeData = [
+          { range: `Confirmed!AP${missingRowNum}`, values: [[standardMonthlyAmount]] },
+          { range: `Confirmed!AQ${missingRowNum}`, values: [[altInvoiceNo || ""]] },
+          { range: `Confirmed!AS${missingRowNum}`, values: [[defaultDaysToPay]] },
+        ];
+        const dateWriteData = [];
+        const parsedAltSentDate = retParseSheetDate(altSentDate);
+        if (parsedAltSentDate) dateWriteData.push({ range: `Confirmed!AR${missingRowNum}`, values: [[retFmtDate(parsedAltSentDate)]] });
+
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: writeData },
+        });
+        if (dateWriteData.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateWriteData },
+          });
+        }
+
+        // ── STEP 2: apply the difference to an existing or new "extra revenue" job ──
+        const monthStart = new Date(extraJobYear, extraJobMonth, 1);
+        const monthEnd = new Date(extraJobYear, extraJobMonth + 1, 0);
+        const vatYesNo = (parseFloat(vatAmount) || 0) > 0 ? "Yes" : "No";
+
+        if (existingConfirmedRow) {
+          // Convert the existing orphan job in place — only revenue, invoice amount,
+          // job name, type, and the three copied fields change; everything else
+          // (client, dates, VAT, invoice ref/sent date) stays as-is since this job
+          // already has its own real invoice attached.
+          const extraWriteData = [
+            { range: `Confirmed!B${existingConfirmedRow}`, values: [[extraJobName]] },
+            { range: `Confirmed!D${existingConfirmedRow}`, values: [[parentRow[3] || ""]] },   // Date conf
+            { range: `Confirmed!E${existingConfirmedRow}`, values: [[parentRow[4] || ""]] },   // Lead src
+            { range: `Confirmed!AG${existingConfirmedRow}`, values: [[difference]] },
+            { range: `Confirmed!AJ${existingConfirmedRow}`, values: [["Retainer"]] },
+            { range: `Confirmed!AK${existingConfirmedRow}`, values: [[parentRow[36] || ""]] },  // Prod. line
+            { range: `Confirmed!AP${existingConfirmedRow}`, values: [[difference]] },
+          ];
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: extraWriteData },
+          });
+          console.log(`  ✅ apply_retainer_split_invoice: applied standard amount to row ${missingRowNum}, converted existing job at row ${existingConfirmedRow} to "${extraJobName}" (£${difference})`);
+          return res.status(200).json({ success: true, mode: "converted", extraJobRow: existingConfirmedRow });
+        } else {
+          // Create a brand-new standalone single-row job — no children, no group.
+          const metaResp = await sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties)",
+          });
+          const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+          const gridSheetId = confirmedSheet.properties.sheetId;
+          let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+
+          const freshResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
+          });
+          const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+          const newRowNum = trueLastRow + 1;
+
+          if ((currentMaxRows - (trueLastRow + 1)) < 1) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: { requests: [{
+                insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + 5 }, inheritFromBefore: true },
+              }] },
+            });
+          }
+
+          const newWriteData = [
+            { range: `Confirmed!A${newRowNum}`, values: [[client]] },
+            { range: `Confirmed!B${newRowNum}`, values: [[extraJobName]] },
+            { range: `Confirmed!D${newRowNum}`, values: [[parentRow[3] || ""]] },   // Date conf
+            { range: `Confirmed!E${newRowNum}`, values: [[parentRow[4] || ""]] },   // Lead src
+            { range: `Confirmed!AG${newRowNum}`, values: [[difference]] },
+            { range: `Confirmed!AI${newRowNum}`, values: [[vatYesNo]] },
+            { range: `Confirmed!AJ${newRowNum}`, values: [["Retainer"]] },
+            { range: `Confirmed!AK${newRowNum}`, values: [[parentRow[36] || ""]] },  // Prod. line
+            { range: `Confirmed!AP${newRowNum}`, values: [[difference]] },
+            { range: `Confirmed!AQ${newRowNum}`, values: [[altInvoiceNo || ""]] },
+            { range: `Confirmed!AS${newRowNum}`, values: [[defaultDaysToPay]] },
+          ];
+          const newDateWriteData = [
+            { range: `Confirmed!AL${newRowNum}`, values: [[retFmtDate(monthStart)]] },
+            { range: `Confirmed!AM${newRowNum}`, values: [[retFmtDate(monthEnd)]] },
+          ];
+          if (parsedAltSentDate) newDateWriteData.push({ range: `Confirmed!AR${newRowNum}`, values: [[retFmtDate(parsedAltSentDate)]] });
+
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: newWriteData },
+          });
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: newDateWriteData },
+          });
+          console.log(`  ✅ apply_retainer_split_invoice: applied standard amount to row ${missingRowNum}, created new job "${extraJobName}" at row ${newRowNum} (£${difference})`);
+          return res.status(200).json({ success: true, mode: "created", extraJobRow: newRowNum });
+        }
+      } catch (err) {
+        console.error("❌ apply_retainer_split_invoice error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "update_outgoing_note") {
       // Writes a new note to a specific Outgoings cell.
       // blocks: array of { appId, amount, status, recDate, payDate, description }
@@ -11724,7 +11966,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
               "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
               "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
-              "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow",
+              "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount",
               "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey"];
             for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
 

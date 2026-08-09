@@ -627,6 +627,7 @@ function RetainerSplitInvoiceModal({ alertMeta, alertRowIndex, automationCommand
             possibleMatchAmount: alertMeta.possibleMatchAmount,
             possibleMatchInvoiceNo: alertMeta.possibleMatchInvoiceNo,
             possibleMatchVatAmount: alertMeta.possibleMatchVatAmount,
+            possibleMatchStatus: alertMeta.possibleMatchStatus,
             possibleMatchConfirmedRow: alertMeta.possibleMatchConfirmedRow,
           }),
         });
@@ -656,7 +657,7 @@ function RetainerSplitInvoiceModal({ alertMeta, alertRowIndex, automationCommand
           client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
           missingRowNum: preview.missingRowNum,
           standardMonthlyAmount: preview.standardMonthlyAmount,
-          altAmount: preview.altAmount, altSentDate: preview.altSentDate, altInvoiceNo: preview.altInvoiceNo,
+          altAmount: preview.altAmount, altSentDate: preview.altSentDate, altInvoiceNo: preview.altInvoiceNo, altStatus: preview.altStatus,
           vatAmount: preview.vatAmount, difference: preview.difference,
           extraJobName: preview.extraJobName, extraJobMonth: preview.extraJobMonth, extraJobYear: preview.extraJobYear,
           existingConfirmedRow: preview.existingJobInfo?.confirmedRow,

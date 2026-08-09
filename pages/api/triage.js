@@ -4252,7 +4252,7 @@ export default async function handler(req, res) {
       //     converted in place; if not, a new standalone job would be created.
       const { clientSheetId, client, jobName, parentRowNum,
         lastInvoiceDate, possibleMatchSentDate, possibleMatchAmount, possibleMatchInvoiceNo,
-        possibleMatchVatAmount, possibleMatchConfirmedRow } = req.body;
+        possibleMatchVatAmount, possibleMatchStatus, possibleMatchConfirmedRow } = req.body;
       if (!clientSheetId || !jobName || !parentRowNum || !lastInvoiceDate || !possibleMatchSentDate || possibleMatchAmount === undefined) {
         return res.status(400).json({ success: false, error: "Missing required fields" });
       }
@@ -4330,6 +4330,7 @@ export default async function handler(req, res) {
           altAmount,
           altSentDate: possibleMatchSentDate,
           altInvoiceNo: possibleMatchInvoiceNo || "",
+          altStatus: possibleMatchStatus || "",
           vatAmount,
           difference: Math.round(difference * 100) / 100,
           extraJobName,
@@ -4353,7 +4354,7 @@ export default async function handler(req, res) {
       //     be negative).
       const {
         clientSheetId, masterSheetId, client, jobName, parentRowNum, missingRowNum,
-        standardMonthlyAmount, altAmount, altSentDate, altInvoiceNo, vatAmount, difference,
+        standardMonthlyAmount, altAmount, altSentDate, altInvoiceNo, altStatus, vatAmount, difference,
         extraJobName, extraJobMonth, extraJobYear, existingConfirmedRow,
       } = req.body;
       if (!clientSheetId || !jobName || !parentRowNum || !missingRowNum || difference === undefined) {
@@ -4386,6 +4387,7 @@ export default async function handler(req, res) {
           { range: `Confirmed!AP${missingRowNum}`, values: [[standardMonthlyAmount]] },
           { range: `Confirmed!AQ${missingRowNum}`, values: [[altInvoiceNo || ""]] },
           { range: `Confirmed!AS${missingRowNum}`, values: [[defaultDaysToPay]] },
+          { range: `Confirmed!AT${missingRowNum}`, values: [[altStatus || ""]] },
         ];
         const dateWriteData = [];
         const parsedAltSentDate = retParseSheetDate(altSentDate);
@@ -4460,6 +4462,7 @@ export default async function handler(req, res) {
             { range: `Confirmed!AP${newRowNum}`, values: [[difference]] },
             { range: `Confirmed!AQ${newRowNum}`, values: [[altInvoiceNo || ""]] },
             { range: `Confirmed!AS${newRowNum}`, values: [[defaultDaysToPay]] },
+            { range: `Confirmed!AT${newRowNum}`, values: [[altStatus || ""]] },
           ];
           const newDateWriteData = [
             { range: `Confirmed!AL${newRowNum}`, values: [[retFmtDate(monthStart)]] },
@@ -11966,7 +11969,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
               "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
               "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
-              "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount",
+              "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus",
               "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey"];
             for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
 

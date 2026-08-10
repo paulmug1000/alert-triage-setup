@@ -2814,6 +2814,10 @@ export default async function handler(req, res) {
         const slotColsForSlot = slotCols[targetSlotNum];
         if (!slotColsForSlot) return res.status(400).json({ success: false, error: "Invalid slotNum" });
 
+        // The "received date" (dt) must go via USER_ENTERED — writing it in the same
+        // RAW batch as the text/numeric fields below stores it as literal text
+        // (visible as a leading apostrophe in the sheet) rather than a real date,
+        // the same issue fixed for retainer dates elsewhere in this file.
         await sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: sheetIdClean,
           requestBody: {
@@ -2822,7 +2826,6 @@ export default async function handler(req, res) {
               { range: `Confirmed!${slotColsForSlot.d}${targetRowNum}`,  values: [[expense.description || expense.accountName || ""]] },
               { range: `Confirmed!${slotColsForSlot.a}${targetRowNum}`,  values: [[expense.amount || 0]] },
               { range: `Confirmed!${slotColsForSlot.v}${targetRowNum}`,  values: [[vatYesNo]] },
-              { range: `Confirmed!${slotColsForSlot.dt}${targetRowNum}`, values: [[expense.date || ""]] },
               { range: `Confirmed!${slotColsForSlot.dp}${targetRowNum}`, values: [[30]] },
               { range: `Confirmed!${slotColsForSlot.st}${targetRowNum}`, values: [[expense.status || ""]] },
               { range: `Confirmed!${slotColsForSlot.id}${targetRowNum}`, values: [[expense.appId || ""]] },
@@ -2831,6 +2834,25 @@ export default async function handler(req, res) {
         });
 
         console.log(`  ✅ assign_expense_to_job: expense ${expense.appId} → Confirmed row ${targetRowNum} slot ${targetSlotNum}`);
+
+        // Write the received date separately via USER_ENTERED, parsed and
+        // re-formatted with a full 4-digit year (same approach used for retainer
+        // dates) so Sheets stores it as a real date rather than literal text, and
+        // isn't left to guess the century from a 2-digit year.
+        if (expense.date) {
+          const parsedExpenseDate = retParseSheetDate(expense.date);
+          if (parsedExpenseDate) {
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `Confirmed!${slotColsForSlot.dt}${targetRowNum}`,
+              valueInputOption: "USER_ENTERED",
+              requestBody: { values: [[retFmtDate(parsedExpenseDate)]] },
+            });
+          } else {
+            console.log(`  ⚠ assign_expense_to_job: could not parse expense date "${expense.date}" — left blank`);
+          }
+        }
+
         return res.status(200).json({ success: true, newRowNum: createNewRow ? targetRowNum : undefined });
       } catch (err) {
         console.error("❌ assign_expense_to_job error:", err);
@@ -2878,13 +2900,36 @@ export default async function handler(req, res) {
               { range: `Confirmed!${slotCols.d}${rowNum}`,  values: [[values[0]]] },
               { range: `Confirmed!${slotCols.a}${rowNum}`,  values: [[values[1]]] },
               { range: `Confirmed!${slotCols.v}${rowNum}`,  values: [[values[2]]] },
-              { range: `Confirmed!${slotCols.dt}${rowNum}`, values: [[values[3]]] },
               { range: `Confirmed!${slotCols.dp}${rowNum}`, values: [[values[4]]] },
               { range: `Confirmed!${slotCols.st}${rowNum}`, values: [[values[5]]] },
               { range: `Confirmed!${slotCols.id}${rowNum}`, values: [[values[6]]] },
             ],
           },
         });
+
+        // Received date via USER_ENTERED (or cleared via RAW empty string if
+        // deleteSlot), same reasoning as assign_expense_to_job — writing it in the
+        // RAW batch above stores it as literal text instead of a real date.
+        if (deleteSlot) {
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: sheetIdClean,
+            range: `Confirmed!${slotCols.dt}${rowNum}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [[""]] },
+          });
+        } else if (expense.date) {
+          const parsedExpenseDate = retParseSheetDate(expense.date);
+          if (parsedExpenseDate) {
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `Confirmed!${slotCols.dt}${rowNum}`,
+              valueInputOption: "USER_ENTERED",
+              requestBody: { values: [[retFmtDate(parsedExpenseDate)]] },
+            });
+          } else {
+            console.log(`  ⚠ update_expense_slot: could not parse expense date "${expense.date}" — left unchanged`);
+          }
+        }
 
         console.log(`  ✅ update_expense_slot: ${deleteSlot ? "deleted" : "updated"} row ${rowNum} slot ${slotNum}`);
         return res.status(200).json({ success: true });
@@ -2933,12 +2978,27 @@ export default async function handler(req, res) {
             data: [
               { range: `Confirmed!${slotCols.a}${rowNum}`,    values: [[invoice.amount || 0]] },
               { range: `Confirmed!${slotCols.ref}${rowNum}`,  values: [[invoice.invoiceNo || ""]] },
-              { range: `Confirmed!${slotCols.sent}${rowNum}`, values: [[invoice.sentDate || ""]] },
               { range: `Confirmed!${slotCols.days}${rowNum}`, values: [[daysToPay]] },
               { range: `Confirmed!${slotCols.st}${rowNum}`,   values: [[invoice.status || "Sent"]] },
             ],
           },
         });
+
+        // Sent date via USER_ENTERED — same reasoning as the expense date fixes:
+        // writing it in the RAW batch above stores it as literal text.
+        if (invoice.sentDate) {
+          const parsedSentDate = retParseSheetDate(invoice.sentDate);
+          if (parsedSentDate) {
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `Confirmed!${slotCols.sent}${rowNum}`,
+              valueInputOption: "USER_ENTERED",
+              requestBody: { values: [[retFmtDate(parsedSentDate)]] },
+            });
+          } else {
+            console.log(`  ⚠ assign_invoice_to_job: could not parse sent date "${invoice.sentDate}" — left blank`);
+          }
+        }
 
         console.log(`  ✅ assign_invoice_to_job: invoice ${invoice.invoiceNo} → Confirmed row ${rowNum} slot ${slotNum}`);
         return res.status(200).json({ success: true });
@@ -2985,12 +3045,34 @@ export default async function handler(req, res) {
             data: [
               { range: `Confirmed!${slotCols.a}${rowNum}`,    values: [[values[0]]] },
               { range: `Confirmed!${slotCols.ref}${rowNum}`,  values: [[values[1]]] },
-              { range: `Confirmed!${slotCols.sent}${rowNum}`, values: [[values[2]]] },
               { range: `Confirmed!${slotCols.days}${rowNum}`, values: [[values[3]]] },
               { range: `Confirmed!${slotCols.st}${rowNum}`,   values: [[values[4]]] },
             ],
           },
         });
+
+        // Sent date via USER_ENTERED (or cleared via RAW empty string if
+        // deleteSlot) — same reasoning as the other invoice/expense slot fixes.
+        if (deleteSlot) {
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: sheetIdClean,
+            range: `Confirmed!${slotCols.sent}${rowNum}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [[""]] },
+          });
+        } else if (invoice.sentDate) {
+          const parsedSentDate = retParseSheetDate(invoice.sentDate);
+          if (parsedSentDate) {
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: sheetIdClean,
+              range: `Confirmed!${slotCols.sent}${rowNum}`,
+              valueInputOption: "USER_ENTERED",
+              requestBody: { values: [[retFmtDate(parsedSentDate)]] },
+            });
+          } else {
+            console.log(`  ⚠ update_invoice_slot: could not parse sent date "${invoice.sentDate}" — left unchanged`);
+          }
+        }
 
         console.log(`  ✅ update_invoice_slot: ${deleteSlot ? "deleted" : "updated"} row ${rowNum} slot ${slotNum}`);
         return res.status(200).json({ success: true });
@@ -3054,17 +3136,38 @@ export default async function handler(req, res) {
               { range: `Confirmed!AH${newRow}`, values: [[directCosts || 0]] },
               { range: `Confirmed!AI${newRow}`, values: [[vatYesNo || (invoice.vatAmount > 0 ? "Yes" : "No")]] },
               { range: `Confirmed!AJ${newRow}`, values: [[projectType || "Project"]] },
-              { range: `Confirmed!AL${newRow}`, values: [[startDate || invoice.sentDate || ""]] },
-              { range: `Confirmed!AM${newRow}`, values: [[endDate || invoice.dueDate || ""]] },
               // Write the invoice into slot 1
               { range: `Confirmed!AP${newRow}`, values: [[invoice.amount || 0]] },
               { range: `Confirmed!AQ${newRow}`, values: [[invoice.invoiceNo || ""]] },
-              { range: `Confirmed!AR${newRow}`, values: [[invoice.sentDate || ""]] },
               { range: `Confirmed!AS${newRow}`, values: [[daysToPay]] },
               { range: `Confirmed!AT${newRow}`, values: [[invoice.status || "Sent"]] },
             ],
           },
         });
+
+        // Start date, end date, and invoice sent date all go via USER_ENTERED —
+        // writing them in the RAW batch above stores them as literal text (visible
+        // as a leading apostrophe) instead of real dates.
+        const dateFieldsToWrite = [
+          { col: "AL", raw: startDate || invoice.sentDate },
+          { col: "AM", raw: endDate || invoice.dueDate },
+          { col: "AR", raw: invoice.sentDate },
+        ];
+        const dateWriteData = [];
+        for (const f of dateFieldsToWrite) {
+          if (!f.raw) continue;
+          const parsed = retParseSheetDate(f.raw);
+          if (parsed) {
+            dateWriteData.push({ range: `Confirmed!${f.col}${newRow}`, values: [[retFmtDate(parsed)]] });
+          } else {
+            console.log(`  ⚠ create_job_from_invoice: could not parse date "${f.raw}" for column ${f.col} — left blank`);
+          }
+        }
+        if (dateWriteData.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateWriteData },
+          });
+        }
 
         console.log(`  ✅ create_job_from_invoice: new job at row ${newRow}, invoice ${invoice.invoiceNo} in slot 1`);
         return res.status(200).json({ success: true, newRowNum: newRow });

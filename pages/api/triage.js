@@ -11920,6 +11920,21 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         let stored = 0, updated = 0, dismissed = 0;
         const writes = [];
 
+        // Shared field whitelist for building the metadata JSON — used identically
+        // whether appending a brand-new row or refreshing an existing one, so no
+        // metadata field (row numbers, amounts, dates, etc.) is ever left stale on
+        // a row that's matched an existing alert rather than freshly appended.
+        const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
+          "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
+          "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
+          "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus",
+          "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey"];
+        const buildMetadata = (alert) => {
+          const metadata = {};
+          for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
+          return metadata;
+        };
+
         // Auto-dismiss active alerts of the same alertType(s) that are NOT in the incoming list.
         // This handles cases where a previously-valid alert is no longer triggered (e.g. invoice
         // was sent, retainer was fully invoiced, etc.) — without this, stale alerts persist forever.
@@ -11952,26 +11967,32 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               // The condition was previously marked gone/fixed but has been detected
               // again — reactivate rather than leaving it permanently suppressed.
               // (Only "acknowledged" — an explicit user dismissal — stays suppressed.)
-              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!F${ex.rowIndex}`, values: [["active"]] });
               writes.push({ range: `${PROACTIVE_ALERTS_TAB}!A${ex.rowIndex}`, values: [[alert.alertKey]] });
+              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!D${ex.rowIndex}`, values: [[alert.heading || ""]] });
+              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!E${ex.rowIndex}`, values: [[alert.detail || ""]] });
+              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!F${ex.rowIndex}`, values: [["active"]] });
               writes.push({ range: `${PROACTIVE_ALERTS_TAB}!H${ex.rowIndex}`, values: [[nowISO]] });
+              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!J${ex.rowIndex}`, values: [[JSON.stringify(buildMetadata(alert))]] });
               updated++;
               console.log(`  Reactivated ${ex.status} ${alert.alertType} alert for ${alert.clientName}: ${alert.alertKey} — condition detected again`);
               continue;
             }
-            // Active match found — update lastSeen and alertKey (in case key format changed)
+            // Active match found — refresh EVERYTHING from the incoming alert (not
+            // just lastSeen/alertKey). The alert's condition can still be true while
+            // its details drift — e.g. a job's row number shifts, an amount changes,
+            // a date updates — and previously only the timestamp was refreshed here,
+            // leaving every other field (including the row number shown on the alert
+            // card) permanently frozen at whatever it was the first time this alert
+            // fired, even though the check re-derives it fresh on every run.
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!A${ex.rowIndex}`, values: [[alert.alertKey]] });
+            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!D${ex.rowIndex}`, values: [[alert.heading || ""]] });
+            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!E${ex.rowIndex}`, values: [[alert.detail || ""]] });
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!H${ex.rowIndex}`, values: [[nowISO]] });
+            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!J${ex.rowIndex}`, values: [[JSON.stringify(buildMetadata(alert))]] });
             updated++;
           } else {
             // No match — append new row
-            const metadata = {};
-            const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
-              "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
-              "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
-              "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus",
-              "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey"];
-            for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
+            const metadata = buildMetadata(alert);
 
             await sheets.spreadsheets.values.append({
               spreadsheetId: acId,

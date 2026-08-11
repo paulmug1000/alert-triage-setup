@@ -260,19 +260,26 @@ function findMemoryRow(memoryRows, fingerprintHash) {
 }
 
 /**
- * Extract end-client + job name from a CRM discrepancy alert's raw comparison data.
- * Column layout (confirmed against the live CRMComp tab, 11 Aug 2026):
+ * Extract identity + comparable field values from a CRM discrepancy alert's raw
+ * comparison data. Column layout (confirmed against the live CRMComp tab, 11 Aug 2026):
  *   Dash discrepancy (crmPipeDashDiscr / crmConfDashDiscr):
- *     crmData starts at X   → Client = index 0, Job = index 1
- *     sheetData starts at AO → Client = index 1, Job = index 2
+ *     crmData starts at X:    Client=0, Job=1, ProjectCode=2, Revenue=3, DirectCosts=4,
+ *                              StartDate=5, EndDate=6, Likelihood=7
+ *     sheetData starts at AO: ProjectCode=0, Client=1, Job=2, Revenue=3, DirectCosts=4,
+ *                              StartDate=5, EndDate=6, Likelihood=7
  *   App discrepancy (crmPipeAppDiscr / crmConfAppDiscr):
- *     sheetData starts at EF → Client = index 0, Job = index 1
- *     crmData starts at EU   → Client = index 1, Job = index 2
- * Falls back to the other side when the primary side is blank — this is the
- * "not_found" case, where the job genuinely doesn't exist on one side.
- * Returns { clientName, jobName } (end client, not the agency client) or null.
+ *     sheetData starts at EF: Client=0, Job=1, ProjectCode=2, Revenue=3, DirectCosts=4,
+ *                              StartDate=5, EndDate=6, Likelihood=7
+ *     crmData starts at EU:   ProjectCode=0, Client=1, Job=2, Revenue=3, DirectCosts=4,
+ *                              StartDate=5, EndDate=6, Likelihood=7
+ * Revenue/DirectCosts/StartDate/EndDate/Likelihood sit at the same relative indices
+ * (3-7) on both sides, in both variants — only Client/Job/ProjectCode order differs.
+ * Falls back to the other side's Client/Job when the primary side is blank — this is
+ * the "not_found" case, where the job genuinely doesn't exist on one side.
+ * Returns { clientName, jobName, fields } or null (end client, not the agency client).
+ * fields is keyed by field name, each holding raw { crm, dashboard } values.
  */
-function extractCrmJobIdentity(alert) {
+function extractCrmComparisonSnapshot(alert) {
   if (!alert || alert.type !== "crm" || !alert.data) return null;
   const { crmData, sheetData } = alert.data;
   if (!crmData || !sheetData) return null;
@@ -296,7 +303,22 @@ function extractCrmJobIdentity(alert) {
   const jobName    = primaryJob || fallbackJob;
   const clientName = primaryClient || fallbackClient;
   if (!jobName) return null;
-  return { clientName, jobName };
+
+  // Revenue/DirectCosts/StartDate/EndDate/Likelihood sit at the same relative
+  // indices (3-7) on both sides, for both Dash and App variants.
+  const FIELD_INDEX = [
+    { key: "revenue",     idx: 3 },
+    { key: "directCosts", idx: 4 },
+    { key: "startDate",   idx: 5 },
+    { key: "endDate",     idx: 6 },
+    { key: "likelihood",  idx: 7 },
+  ];
+  const fields = {};
+  for (const f of FIELD_INDEX) {
+    fields[f.key] = { crm: clean(crmData[f.idx]), dashboard: clean(sheetData[f.idx]) };
+  }
+
+  return { clientName, jobName, fields };
 }
 
 /**
@@ -321,7 +343,7 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
 
     // CRM alerts have no invoice number/reference — build the job-identity match key instead.
     const alertFlagType = (alert.flagType || alert.alertType || "").trim();
-    const crmIdentity    = alertType === "crm" ? extractCrmJobIdentity(alert) : null;
+    const crmIdentity    = alertType === "crm" ? extractCrmComparisonSnapshot(alert) : null;
 
     for (const row of supersededRows) {
       if ((row.clientName || "").toLowerCase().trim() !== alertClient) continue;
@@ -418,11 +440,24 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
             changes.push(`job changed from "${snapJob}" to "${currentJob}"`);
           }
 
-          // For CRM alerts — summary/description change
-          const snapSummary    = (snap.alertSummary || "").trim();
-          const currentSummary = (alert.summary?.summary || "").trim();
-          if (snapSummary && currentSummary && snapSummary !== currentSummary && alertType.includes("crm")) {
-            changes.push(`discrepancy details changed`);
+          // CRM alerts: compare each comparable field's value now vs at ignore time,
+          // on whichever side(s) actually moved.
+          if (alertType === "crm" && snap.crmFields && crmIdentity && crmIdentity.fields) {
+            const FIELD_LABELS = {
+              revenue: "Revenue", directCosts: "Direct costs", startDate: "Start date",
+              endDate: "End date", likelihood: "% Likelihood",
+            };
+            for (const key of Object.keys(FIELD_LABELS)) {
+              const before = snap.crmFields[key];
+              const after  = crmIdentity.fields[key];
+              if (!before || !after) continue;
+              if (before.crm && after.crm && before.crm !== after.crm) {
+                changes.push(`${FIELD_LABELS[key]} (CRM) changed from "${before.crm}" to "${after.crm}"`);
+              }
+              if (before.dashboard && after.dashboard && before.dashboard !== after.dashboard) {
+                changes.push(`${FIELD_LABELS[key]} (dashboard) changed from "${before.dashboard}" to "${after.dashboard}"`);
+              }
+            }
           }
 
           if (changes.length > 0) {
@@ -11477,7 +11512,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
           const alertSummary = alert.summary?.summary
             || `${alert.type || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
-          const crmIdentitySnap = alert.type === "crm" ? extractCrmJobIdentity(alert) : null;
+          const crmIdentitySnap = alert.type === "crm" ? extractCrmComparisonSnapshot(alert) : null;
           const dataSnapshot = JSON.stringify({
             alertType:  alert.type || alert.flagType || "",
             invoiceNo:  alert.summary?.invoiceNo || "",
@@ -11492,6 +11527,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             masterSheetId: alert.masterSheetId || "",
             crmJobName:    crmIdentitySnap?.jobName    || "",
             crmEndClient:  crmIdentitySnap?.clientName || "",
+            crmFields:     crmIdentitySnap?.fields     || null,
           });
           if (memoryRow) {
             rowsToUpdate.push({ rowIndex: memoryRow.rowIndex, row: { ...memoryRow, status: "ignored", ignoreReason: ignoreReason || "", dataSnapshot } });
@@ -11598,7 +11634,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           || `${alert.type || "alert"} ${alert.summary?.invoiceNo || alert.summary?.reference || ""} £${alert.summary?.amount || ""}`.trim();
 
         // Build data snapshot for re-check comparison
-        const crmIdentitySnap = alert.type === "crm" ? extractCrmJobIdentity(alert) : null;
+        const crmIdentitySnap = alert.type === "crm" ? extractCrmComparisonSnapshot(alert) : null;
         const dataSnapshot = JSON.stringify({
           alertType: alert.type || alert.flagType || "",
           invoiceNo:     alert.summary?.invoiceNo     || "",
@@ -11609,6 +11645,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           masterSheetId: alert.masterSheetId          || "",
           crmJobName:    crmIdentitySnap?.jobName      || "",
           crmEndClient:  crmIdentitySnap?.clientName   || "",
+          crmFields:     crmIdentitySnap?.fields       || null,
         });
 
         if (memoryRow) {

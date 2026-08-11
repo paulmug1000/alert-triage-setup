@@ -260,9 +260,50 @@ function findMemoryRow(memoryRows, fingerprintHash) {
 }
 
 /**
+ * Extract end-client + job name from a CRM discrepancy alert's raw comparison data.
+ * Column layout (confirmed against the live CRMComp tab, 11 Aug 2026):
+ *   Dash discrepancy (crmPipeDashDiscr / crmConfDashDiscr):
+ *     crmData starts at X   → Client = index 0, Job = index 1
+ *     sheetData starts at AO → Client = index 1, Job = index 2
+ *   App discrepancy (crmPipeAppDiscr / crmConfAppDiscr):
+ *     sheetData starts at EF → Client = index 0, Job = index 1
+ *     crmData starts at EU   → Client = index 1, Job = index 2
+ * Falls back to the other side when the primary side is blank — this is the
+ * "not_found" case, where the job genuinely doesn't exist on one side.
+ * Returns { clientName, jobName } (end client, not the agency client) or null.
+ */
+function extractCrmJobIdentity(alert) {
+  if (!alert || alert.type !== "crm" || !alert.data) return null;
+  const { crmData, sheetData } = alert.data;
+  if (!crmData || !sheetData) return null;
+
+  const variant = alert.alertType || alert.flagType || "";
+  const isDash = variant === "crmPipeDashDiscr" || variant === "crmConfDashDiscr";
+  const isApp  = variant === "crmPipeAppDiscr"  || variant === "crmConfAppDiscr";
+  if (!isDash && !isApp) return null;
+
+  const clean = v => (v === null || v === undefined ? "" : String(v)).trim();
+
+  let primaryClient, primaryJob, fallbackClient, fallbackJob;
+  if (isDash) {
+    primaryClient  = clean(crmData[0]);   primaryJob  = clean(crmData[1]);
+    fallbackClient = clean(sheetData[1]); fallbackJob = clean(sheetData[2]);
+  } else {
+    primaryClient  = clean(sheetData[0]); primaryJob  = clean(sheetData[1]);
+    fallbackClient = clean(crmData[1]);   fallbackJob = clean(crmData[2]);
+  }
+
+  const jobName    = primaryJob || fallbackJob;
+  const clientName = primaryClient || fallbackClient;
+  if (!jobName) return null;
+  return { clientName, jobName };
+}
+
+/**
  * Find any previous ignore reason for an alert that has since been superseded.
- * Matches superseded rows by client name + alert type + key identifier
- * (invoice number, reference, or job name from the dataSnapshot).
+ * Matches superseded rows by client name + alert type + key identifier —
+ * invoice number/reference for invoice/expense alerts, or discrepancy variant
+ * (flagType) + end-client/job name for CRM alerts, which have neither.
  * Returns { ignoreReason, changeReason } or null if not found.
  * changeReason explains WHY the alert resurfaced (what changed vs what was ignored).
  */
@@ -277,6 +318,10 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
     const alertType   = (alert.type || alert.flagType || "").toLowerCase();
     const alertInvNo  = (alert.summary?.invoiceNo || "").trim();
     const alertRef    = (alert.summary?.reference || "").trim();
+
+    // CRM alerts have no invoice number/reference — build the job-identity match key instead.
+    const alertFlagType = (alert.flagType || alert.alertType || "").trim();
+    const crmIdentity    = alertType === "crm" ? extractCrmJobIdentity(alert) : null;
 
     for (const row of supersededRows) {
       if ((row.clientName || "").toLowerCase().trim() !== alertClient) continue;
@@ -293,6 +338,20 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
           const snapRef   = (snap.reference || "").trim();
           if (alertInvNo && snapInvNo && snapInvNo === alertInvNo) matched = true;
           if (alertRef   && snapRef   && snapRef   === alertRef)   matched = true;
+
+          // CRM alerts: match on the specific discrepancy variant (flagType) plus job
+          // identity (end client + job name extracted from the raw comparison data).
+          if (!matched && alertType === "crm" && crmIdentity && crmIdentity.jobName) {
+            const snapFlagType  = (snap.flagType || "").trim();
+            const snapJobName   = (snap.crmJobName || "").toLowerCase().trim();
+            const snapEndClient = (snap.crmEndClient || "").toLowerCase().trim();
+            const jobMatches    = snapJobName && snapJobName === crmIdentity.jobName.toLowerCase().trim();
+            const clientMatches = !crmIdentity.clientName || !snapEndClient
+              || snapEndClient === crmIdentity.clientName.toLowerCase().trim();
+            if (alertFlagType && snapFlagType && alertFlagType === snapFlagType && jobMatches && clientMatches) {
+              matched = true;
+            }
+          }
         } catch (e) { /* ignore parse errors */ }
       }
 
@@ -11418,6 +11477,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
           const alertSummary = alert.summary?.summary
             || `${alert.type || "alert"} ${alert.summary?.invoiceNo || ""} £${alert.summary?.amount || ""}`.trim();
+          const crmIdentitySnap = alert.type === "crm" ? extractCrmJobIdentity(alert) : null;
           const dataSnapshot = JSON.stringify({
             alertType:  alert.type || alert.flagType || "",
             invoiceNo:  alert.summary?.invoiceNo || "",
@@ -11430,6 +11490,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             job:        String(alert.summary?.job || ""),
             flagType:   alert.flagType || "",
             masterSheetId: alert.masterSheetId || "",
+            crmJobName:    crmIdentitySnap?.jobName    || "",
+            crmEndClient:  crmIdentitySnap?.clientName || "",
           });
           if (memoryRow) {
             rowsToUpdate.push({ rowIndex: memoryRow.rowIndex, row: { ...memoryRow, status: "ignored", ignoreReason: ignoreReason || "", dataSnapshot } });
@@ -11536,6 +11598,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           || `${alert.type || "alert"} ${alert.summary?.invoiceNo || alert.summary?.reference || ""} £${alert.summary?.amount || ""}`.trim();
 
         // Build data snapshot for re-check comparison
+        const crmIdentitySnap = alert.type === "crm" ? extractCrmJobIdentity(alert) : null;
         const dataSnapshot = JSON.stringify({
           alertType: alert.type || alert.flagType || "",
           invoiceNo:     alert.summary?.invoiceNo     || "",
@@ -11544,6 +11607,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           status:        alert.summary?.status        || "",
           flagType:      alert.flagType               || "",
           masterSheetId: alert.masterSheetId          || "",
+          crmJobName:    crmIdentitySnap?.jobName      || "",
+          crmEndClient:  crmIdentitySnap?.clientName   || "",
         });
 
         if (memoryRow) {

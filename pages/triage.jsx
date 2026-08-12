@@ -6305,23 +6305,41 @@ export default function TriageSystem({ onBack }) {
                         {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
                         {m.possibleMatchInvoiceNo && (
                           <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
-                            <div style={{
-                              display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
-                              background: m.possibleMatchConfidence === "high" ? "#fee2e2" : "#fef9c3",
-                              color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12",
-                              border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}`,
-                            }}>
-                              Possible retainer change — {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
+                            {m.possibleMatchCase === "changed" && (
+                              <div style={{
+                                display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
+                                background: m.possibleMatchConfidence === "high" ? "#fee2e2" : "#fef9c3",
+                                color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12",
+                                border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}`,
+                              }}>
+                                Possible retainer change — {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
+                              </div>
+                            )}
+                            {m.possibleMatchCase === "draft" && (
+                              <div style={{
+                                display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
+                                background: "#e0f2fe", color: "#075985", border: "1px solid #7dd3fc",
+                              }}>
+                                Draft invoice found nearby
+                              </div>
+                            )}
+                            <div>
+                              <strong>Invoice found:</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}
+                              {m.possibleMatchCase === "draft"
+                                ? <>, dated {m.possibleMatchSentDate} (status: {m.possibleMatchStatus || "Draft"})</>
+                                : <>, sent {m.possibleMatchSentDate}</>}
                             </div>
-                            <div><strong>Invoice found:</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}</div>
                             <div>
                               {m.possibleMatchConfirmedRow
                                 ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</>
                                 : <>Not yet attached to any job in the Confirmed tab</>}
                             </div>
+                            {m.possibleMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
+                            {m.possibleMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
+                            {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
                           </div>
                         )}
-                        {m.confirmedRow && m.jobName && (
+                        {m.confirmedRow && m.jobName && (!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
                           <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd", display: "flex", gap: "8px", flexWrap: "wrap" }}>
                             {m.possibleMatchInvoiceNo ? (
                               <>

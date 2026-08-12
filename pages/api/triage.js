@@ -12118,7 +12118,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
           "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
           "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
-          "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus",
+          "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
           "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey"];
         const buildMetadata = (alert) => {
           const metadata = {};

@@ -6324,10 +6324,7 @@ export default function TriageSystem({ onBack }) {
                               </div>
                             )}
                             <div>
-                              <strong>Invoice found:</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}
-                              {m.possibleMatchCase === "draft"
-                                ? <>, dated {m.possibleMatchSentDate} (status: {m.possibleMatchStatus || "Draft"})</>
-                                : <>, sent {m.possibleMatchSentDate}</>}
+                              <strong>{m.possibleMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}
                             </div>
                             <div>
                               {m.possibleMatchConfirmedRow

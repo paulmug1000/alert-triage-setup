@@ -5329,10 +5329,11 @@ export default async function handler(req, res) {
           return res.status(400).json({ success: false, error: `No Web App URL configured for "${targetClientName}" (column N) — deploy and add it first` });
         }
 
+        const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const gasResp = await fetch(webAppUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ secret: agentSecret, types }),
+          body: JSON.stringify({ secret: agentSecret, types, clientName: targetClientName, runId }),
         });
         // Apps Script Web Apps always return HTTP 200 regardless of outcome —
         // success/failure lives in the JSON body's "success" field, not gasResp.ok.
@@ -5343,10 +5344,53 @@ export default async function handler(req, res) {
         if (!gasData.success) {
           return res.status(200).json({ success: false, error: gasData.error || "Client Web App reported failure" });
         }
-        return res.status(200).json({ success: true, triggered: gasData.triggered || types });
+        return res.status(200).json({ success: true, triggered: gasData.triggered || types, runId });
       } catch (err) {
         console.error(`❌ trigger_agent_run error for "${targetClientName}":`, err);
         return res.status(500).json({ success: false, error: `Failed to reach client Web App: ${err.message}` });
+      }
+
+    } else if (action === "agent_progress") {
+      // Receives progress updates posted by 5_Agent_Receiver.gs (postAgentProgress_)
+      // as a triggered run actually executes, and accumulates them in Redis for
+      // the frontend to poll. Called by GAS, not the triage frontend — auth is
+      // the shared secret, same as trigger_agent_run's outbound call uses.
+      const { secret: progressSecret, clientName: progressClientName, runId: progressRunId, stage, message, done } = req.body;
+      if (progressSecret !== process.env.AGENT_TRIGGER_SECRET) {
+        return res.status(200).json({ success: false, error: "Invalid secret" });
+      }
+      if (!progressClientName || !progressRunId) {
+        return res.status(400).json({ success: false, error: "Missing clientName or runId" });
+      }
+      try {
+        const progressKey = `agent_run:${progressClientName}:${progressRunId}`;
+        const existingRaw = await redisClient.get(progressKey);
+        const existing = existingRaw ? JSON.parse(existingRaw) : { entries: [], done: false };
+        existing.entries.push({ stage: stage || "", message: message || "", at: new Date().toISOString() });
+        if (done) existing.done = true;
+        // 30 min TTL — generous enough to cover a long automation run plus a
+        // bit of buffer for the user to view the final result afterward.
+        await redisClient.set(progressKey, JSON.stringify(existing), { EX: 1800 });
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error(`❌ agent_progress error for "${progressClientName}"/"${progressRunId}":`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_agent_run_progress") {
+      // Polled by the frontend while a Run Client Automation panel is open.
+      const { clientName: pollClientName, runId: pollRunId } = req.body;
+      if (!pollClientName || !pollRunId) {
+        return res.status(400).json({ success: false, error: "Missing clientName or runId" });
+      }
+      try {
+        const progressKey = `agent_run:${pollClientName}:${pollRunId}`;
+        const raw = await redisClient.get(progressKey);
+        const data = raw ? JSON.parse(raw) : { entries: [], done: false };
+        return res.status(200).json({ success: true, entries: data.entries, done: data.done });
+      } catch (err) {
+        console.error(`❌ get_agent_run_progress error for "${pollClientName}"/"${pollRunId}":`, err);
+        return res.status(500).json({ success: false, error: err.message });
       }
 
     } else if (action === "debug_compare_triage") {

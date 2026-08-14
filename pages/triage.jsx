@@ -1037,6 +1037,9 @@ export default function TriageSystem({ onBack }) {
   const [agentRunTypes, setAgentRunTypes] = useState({ invoice: true, crm: false, expense: false });
   const [agentRunStatus, setAgentRunStatus] = useState("idle"); // idle | running | success | error
   const [agentRunMsg, setAgentRunMsg] = useState("");
+  const [agentRunId, setAgentRunId] = useState(null);
+  const [agentProgressEntries, setAgentProgressEntries] = useState([]);
+  const [agentRunStartedAt, setAgentRunStartedAt] = useState(0);
   const [diagClientName, setDiagClientName] = useState("");
   const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
   const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
@@ -2797,6 +2800,34 @@ export default function TriageSystem({ onBack }) {
     }, 15 * 60 * 1000);
     return () => clearInterval(interval);
   }, [activeNav, appLogLoadedAt]);
+
+  // Poll for progress while a triggered client automation run is in flight.
+  // Apps Script trigger timing isn't precise (see the message shown when a run
+  // is triggered), so this can be polling for several minutes before the
+  // first entry even shows up — that's expected, not a stall.
+  useEffect(() => {
+    if (!agentRunId || agentRunStatus !== "running") return;
+    const interval = setInterval(async () => {
+      if (Date.now() - agentRunStartedAt > 15 * 60 * 1000) {
+        setAgentRunStatus("error");
+        setAgentRunMsg("No completion reported after 15 minutes — check that client's Apps Script Executions panel directly.");
+        return;
+      }
+      try {
+        const r = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_agent_run_progress", clientName: agentRunClient, runId: agentRunId }) });
+        const d = await r.json();
+        if (d.success) {
+          setAgentProgressEntries(d.entries || []);
+          if (d.done) {
+            setAgentRunStatus("success");
+            setAgentRunMsg("✓ Run complete.");
+          }
+        }
+      } catch (e) { /* transient poll failure — just try again next interval */ }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [agentRunId, agentRunStatus, agentRunClient, agentRunStartedAt]);
 
   const acknowledgeProactiveAlert = async (alertKey, rowIndex) => {
     try {
@@ -5569,15 +5600,17 @@ export default function TriageSystem({ onBack }) {
                   <button
                     disabled={!agentRunClient || agentRunStatus === "running" || !Object.values(agentRunTypes).some(Boolean)}
                     onClick={async () => {
-                      setAgentRunStatus("running"); setAgentRunMsg("");
+                      setAgentRunStatus("running"); setAgentRunMsg(""); setAgentProgressEntries([]); setAgentRunId(null);
+                      setAgentRunStartedAt(Date.now());
                       const types = Object.entries(agentRunTypes).filter(([,v]) => v).map(([k]) => k);
                       try {
                         const r = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ action: "trigger_agent_run", automationCommanderSheetId, clientName: agentRunClient, types }) });
                         const d = await r.json();
                         if (d.success) {
-                          setAgentRunStatus("success");
-                          setAgentRunMsg(`✓ Triggered: ${(d.triggered || types).join(", ")} — should start within about 15 seconds.`);
+                          setAgentRunMsg("Triggered — Apps Script doesn't guarantee exact timing, so this may take a few minutes to actually start. Progress will appear below once it does.");
+                          setAgentRunId(d.runId || null);
+                          // Status stays "running" — the polling effect takes it from here.
                         } else {
                           setAgentRunStatus("error");
                           setAgentRunMsg(d.error || "Failed to trigger run");
@@ -5590,12 +5623,24 @@ export default function TriageSystem({ onBack }) {
                     style={{ padding: "8px 20px", background: (!agentRunClient || agentRunStatus === "running" || !Object.values(agentRunTypes).some(Boolean)) ? "#ccc" : "#0066cc",
                       color: "#fff", border: "none", borderRadius: "6px",
                       cursor: (!agentRunClient || agentRunStatus === "running") ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
-                    {agentRunStatus === "running" ? "Triggering..." : "Run"}
+                    {agentRunStatus === "running" ? "Running..." : "Run"}
                   </button>
                   {agentRunMsg && (
-                    <span style={{ fontSize: "13px", color: agentRunStatus === "success" ? "#166534" : "#dc2626" }}>{agentRunMsg}</span>
+                    <span style={{ fontSize: "13px", color: agentRunStatus === "success" ? "#166534" : agentRunStatus === "error" ? "#dc2626" : "#666" }}>{agentRunMsg}</span>
                   )}
                 </div>
+
+                {agentProgressEntries.length > 0 && (
+                  <div style={{ marginTop: "12px", background: "#f8f9ff", border: "1px solid #e8eaf0", borderRadius: "6px", padding: "10px 12px", maxHeight: "180px", overflowY: "auto" }}>
+                    {agentProgressEntries.map((entry, i) => (
+                      <div key={i} style={{ fontSize: "12px", color: "#333", padding: "3px 0", borderBottom: i < agentProgressEntries.length - 1 ? "1px solid #eceef5" : "none" }}>
+                        <span style={{ color: "#888", fontFamily: "monospace" }}>{entry.at ? new Date(entry.at).toLocaleTimeString() : ""}</span>
+                        {" — "}
+                        <strong style={{ textTransform: "capitalize" }}>{entry.stage}:</strong> {entry.message}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Proactive Checks */}

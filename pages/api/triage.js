@@ -2167,7 +2167,8 @@ export default async function handler(req, res) {
 
     if (action === "get_all_clients") {
       // Returns all clients from AutoUpdates as an array.
-      // Used by the frontend for the Outgoings client selector and when clientsWithFlags is empty.
+      // Used by the frontend for the Outgoings client selector, the Settings
+      // "Run Client Automation" panel, and when clientsWithFlags is empty.
       const { automationCommanderSheetId } = req.body;
       if (!automationCommanderSheetId) {
         return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
@@ -2176,7 +2177,7 @@ export default async function handler(req, res) {
         const sheets = await getSheetsClient();
         const resp = await sheets.spreadsheets.values.get({
           spreadsheetId: automationCommanderSheetId,
-          range: "AutoUpdates!A2:M500",
+          range: "AutoUpdates!A2:N500",
         });
         const rows = resp.data.values || [];
         // Build both array (for outgoings selector) and object (for proactive alerts compat)
@@ -2187,13 +2188,14 @@ export default async function handler(req, res) {
           const scriptId   = String(row[10] || "").trim(); // col K = GAS script ID
           const clientSheetUrl = row[11];
           const masterSheetUrl = row[12];
+          const hasWebAppUrl = !!String(row[13] || "").trim(); // col N = Agent Web App URL
           // Skip header row and any row where name looks like a header
           if (!clientName || !clientSheetUrl) continue;
           if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
           const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
           const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
-          clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId });
-          if (clientSheetId && masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId };
+          clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl });
+          if (clientSheetId && masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl };
         }
         clientsArray.sort((a, b) => a.clientName.localeCompare(b.clientName));
         return res.status(200).json({ success: true, clients: clientsArray, clientsMap: clientsObj });
@@ -5295,6 +5297,56 @@ export default async function handler(req, res) {
       } catch(err) {
         console.log(`  ⚠ fire_outgoings_pull GAS call failed (non-fatal): ${err.message}`);
         return res.status(200).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "trigger_agent_run") {
+      // Calls a client's own Web App deployment (5_Agent_Receiver.gs doPost) to run
+      // its invoice/CRM/expense automation on demand, instead of the 30-min poll or
+      // a manual run inside that client's own Apps Script editor.
+      const { automationCommanderSheetId: acSheetId, clientName: targetClientName, types } = req.body;
+      if (!acSheetId || !targetClientName || !Array.isArray(types) || types.length === 0) {
+        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId, clientName, or types" });
+      }
+      const agentSecret = process.env.AGENT_TRIGGER_SECRET;
+      if (!agentSecret) {
+        return res.status(500).json({ success: false, error: "AGENT_TRIGGER_SECRET not configured on the server" });
+      }
+      try {
+        // Fresh lookup rather than trusting a cached client list — this is a
+        // low-frequency, user-initiated action, so the extra read is cheap
+        // and guarantees the URL used is whatever's currently in column N.
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: acSheetId,
+          range: "AutoUpdates!A2:N1000",
+        });
+        const rows = resp.data.values || [];
+        const row = rows.find(r => String(r[0] || "").trim() === targetClientName);
+        if (!row) {
+          return res.status(404).json({ success: false, error: `Client "${targetClientName}" not found in AutoUpdates` });
+        }
+        const webAppUrl = String(row[13] || "").trim(); // col N
+        if (!webAppUrl) {
+          return res.status(400).json({ success: false, error: `No Web App URL configured for "${targetClientName}" (column N) — deploy and add it first` });
+        }
+
+        const gasResp = await fetch(webAppUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ secret: agentSecret, types }),
+        });
+        // Apps Script Web Apps always return HTTP 200 regardless of outcome —
+        // success/failure lives in the JSON body's "success" field, not gasResp.ok.
+        const gasData = await gasResp.json().catch(() => null);
+        if (!gasData) {
+          return res.status(502).json({ success: false, error: "No valid response from the client's Web App — check the deployment URL and that it's still active" });
+        }
+        if (!gasData.success) {
+          return res.status(200).json({ success: false, error: gasData.error || "Client Web App reported failure" });
+        }
+        return res.status(200).json({ success: true, triggered: gasData.triggered || types });
+      } catch (err) {
+        console.error(`❌ trigger_agent_run error for "${targetClientName}":`, err);
+        return res.status(500).json({ success: false, error: `Failed to reach client Web App: ${err.message}` });
       }
 
     } else if (action === "debug_compare_triage") {

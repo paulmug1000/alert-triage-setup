@@ -1033,6 +1033,10 @@ export default function TriageSystem({ onBack }) {
   const [settingsEditAnomaly, setSettingsEditAnomaly] = useState(15);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveMsg, setSettingsSaveMsg] = useState("");
+  const [agentRunClient, setAgentRunClient] = useState("");
+  const [agentRunTypes, setAgentRunTypes] = useState({ invoice: true, crm: false, expense: false });
+  const [agentRunStatus, setAgentRunStatus] = useState("idle"); // idle | running | success | error
+  const [agentRunMsg, setAgentRunMsg] = useState("");
   const [diagClientName, setDiagClientName] = useState("");
   const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
   const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
@@ -1133,6 +1137,17 @@ export default function TriageSystem({ onBack }) {
     setActiveNav("settings");
     setSettingsLoading(true);
     if (!proactiveCheckLogLoaded) loadProactiveCheckLog();
+    if (!allClientsLoaded) {
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
+      }).then(r => r.json()).then(data => {
+        if (data.success && Array.isArray(data.clients)) {
+          setAllOutgoingsClients(data.clients);
+          setAllClientsLoaded(true);
+        }
+      }).catch(e => console.error("get_all_clients error:", e));
+    }
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "get_claude_settings", automationCommanderSheetId }) })
       .then(r => r.json()).then(d => {
@@ -5513,6 +5528,73 @@ export default function TriageSystem({ onBack }) {
                 </div>
                 <div style={{ marginTop: "12px", fontSize: "12px", color: "#888" }}>
                   Note: limits apply to automated precompute only. On-demand analysis (clicking an alert) is always unrestricted.
+                </div>
+              </div>
+
+              {/* Run Client Automation */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Run Client Automation</h3>
+                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
+                  Runs a client's invoice/CRM/expense automation sequence on demand, via that client's Web App deployment — instead of checking a box in Automation Commander and waiting for the 30-minute poll.
+                </p>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "14px" }}>
+                  <div>
+                    <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Client</label>
+                    <select value={agentRunClient} onChange={e => { setAgentRunClient(e.target.value); setAgentRunStatus("idle"); setAgentRunMsg(""); }}
+                      style={{ width: "100%", padding: "8px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }}>
+                      <option value="">Select a client...</option>
+                      {(allOutgoingsClients || []).map(c => (
+                        <option key={c.clientName} value={c.clientName}>
+                          {c.clientName}{!c.hasWebAppUrl ? " (no Web App URL configured)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Sequences to run</label>
+                    <div style={{ display: "flex", gap: "14px", paddingTop: "8px" }}>
+                      {[["invoice","Invoice"],["crm","CRM"],["expense","Expense"]].map(([key,label]) => (
+                        <label key={key} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "#333", cursor: "pointer" }}>
+                          <input type="checkbox" checked={!!agentRunTypes[key]}
+                            onChange={e => setAgentRunTypes(prev => ({ ...prev, [key]: e.target.checked }))} />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <button
+                    disabled={!agentRunClient || agentRunStatus === "running" || !Object.values(agentRunTypes).some(Boolean)}
+                    onClick={async () => {
+                      setAgentRunStatus("running"); setAgentRunMsg("");
+                      const types = Object.entries(agentRunTypes).filter(([,v]) => v).map(([k]) => k);
+                      try {
+                        const r = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ action: "trigger_agent_run", automationCommanderSheetId, clientName: agentRunClient, types }) });
+                        const d = await r.json();
+                        if (d.success) {
+                          setAgentRunStatus("success");
+                          setAgentRunMsg(`✓ Triggered: ${(d.triggered || types).join(", ")} — should start within about 15 seconds.`);
+                        } else {
+                          setAgentRunStatus("error");
+                          setAgentRunMsg(d.error || "Failed to trigger run");
+                        }
+                      } catch (e) {
+                        setAgentRunStatus("error");
+                        setAgentRunMsg(e.message);
+                      }
+                    }}
+                    style={{ padding: "8px 20px", background: (!agentRunClient || agentRunStatus === "running" || !Object.values(agentRunTypes).some(Boolean)) ? "#ccc" : "#0066cc",
+                      color: "#fff", border: "none", borderRadius: "6px",
+                      cursor: (!agentRunClient || agentRunStatus === "running") ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                    {agentRunStatus === "running" ? "Triggering..." : "Run"}
+                  </button>
+                  {agentRunMsg && (
+                    <span style={{ fontSize: "13px", color: agentRunStatus === "success" ? "#166534" : "#dc2626" }}>{agentRunMsg}</span>
+                  )}
                 </div>
               </div>
 

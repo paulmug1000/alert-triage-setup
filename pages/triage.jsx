@@ -2859,6 +2859,47 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
+  const markPipelineCopied = async (alert) => {
+    const md = alert.metadata || {};
+    if (!md.pipelineRow || !clientInfo?.clientSheetId) {
+      console.error("Cannot mark pipeline copied: missing pipelineRow or clientSheetId");
+      return;
+    }
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "mark_pipeline_copied", clientSheetId: clientInfo.clientSheetId, pipelineRow: md.pipelineRow }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        console.error(`❌ mark_pipeline_copied failed: ${data.error}`);
+        return;
+      }
+      console.log(`✅ Marked Pipeline row ${md.pipelineRow} as copied to confirmed`);
+      // This is a real fix, not just a dismissal — mark the alert "resolved"
+      // (same distinction the retainer alerts use), not "acknowledged".
+      if (alert.rowIndex && automationCommanderSheetId) {
+        try {
+          await fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "resolve_proactive_alert", automationCommanderSheetId, rowIndex: alert.rowIndex, resolution: "Marked \"Copied to confirmed?\" = Yes in Pipeline" }),
+          });
+        } catch (resolveErr) { console.error("Failed to mark alert resolved:", resolveErr); }
+      }
+      setProactiveAlerts(prev => {
+        const remaining = prev.filter(a => a.rowIndex !== alert.rowIndex);
+        const counts = {};
+        remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+        setProactiveCountsByClient(counts);
+        const remainingForClient = remaining.filter(a => a.clientName === proactiveSelectedClient);
+        if (remainingForClient.length === 0) setScreen("clientSelection");
+        return remaining;
+      });
+    } catch (err) {
+      console.error("Failed to mark pipeline copied:", err);
+    }
+  };
+
   const loadOverview = async () => {
     try {
       setOverviewLoading(true);
@@ -6335,6 +6376,7 @@ export default function TriageSystem({ onBack }) {
                     pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
                     retainer_shrink_blocked:    "Retainer row blocked from trimming",
                     uninvoiced_revenue:         "Uninvoiced revenue",
+                    deleted_invoice:            "Deleted invoice",
                   };
                   const typeCounts = {};
                   alerts.forEach(a => {
@@ -6627,6 +6669,15 @@ export default function TriageSystem({ onBack }) {
                           <div style={{ marginTop: "6px", color: "#166534", fontStyle: "italic" }}>
                             Expected fix: set Pipeline likelihood to 0% or mark "Copied to confirmed?" as Yes.
                           </div>
+                          {md.pipelineRow && (
+                            <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #86efac" }}>
+                              <button className="triage-btn"
+                                onClick={() => markPipelineCopied(alert)}
+                                style={{ padding: "6px 14px", background: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                                ✓ Mark "Copied to confirmed?" = Yes
+                              </button>
+                            </div>
+                          )}
                         </div>
                       );
                     })()}
@@ -7582,6 +7633,7 @@ export default function TriageSystem({ onBack }) {
                   pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
                   retainer_shrink_blocked:    "Retainer row blocked from trimming",
                     uninvoiced_revenue:         "Uninvoiced revenue",
+                    deleted_invoice:            "Deleted invoice",
                 };
                 const grouped = {};
                 proactiveAlerts.forEach(a => {

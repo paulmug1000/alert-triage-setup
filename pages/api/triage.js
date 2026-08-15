@@ -12341,6 +12341,30 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "mark_pipeline_copied") {
+      // Fix action for the pipeline_confirmed_overlap alert — writes "Yes" to
+      // Pipeline column DD ("Copied to confirmed?") for the given row, which is
+      // one of the two conditions (the other being 0% likelihood) that closes
+      // the Pipeline row out and stops the overlap being flagged.
+      const { clientSheetId: pipeClientSheetId, pipelineRow } = req.body;
+      if (!pipeClientSheetId || !pipelineRow) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId or pipelineRow" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: pipeClientSheetId,
+          range: `Pipeline!DD${pipelineRow}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [["Yes"]] },
+        });
+        console.log(`  ✅ mark_pipeline_copied: wrote Yes to Pipeline!DD${pipelineRow}`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ mark_pipeline_copied error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "get_proactive_alerts") {
       // Returns all active proactive alerts, optionally filtered by clientName.
       const acId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;

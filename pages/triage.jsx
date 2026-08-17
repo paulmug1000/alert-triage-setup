@@ -1083,6 +1083,9 @@ export default function TriageSystem({ onBack }) {
   const [bulkTaskSnoozeDate, setBulkTaskSnoozeDate] = useState("");
   const [bulkTaskSnoozeTime, setBulkTaskSnoozeTime] = useState("09:00");
   const [bulkSubmitting, setBulkSubmitting]     = useState(false);
+  const [proactiveBulkMode, setProactiveBulkMode]         = useState(false);
+  const [proactiveBulkSelected, setProactiveBulkSelected] = useState(new Set()); // Set of alert.rowIndex
+  const [proactiveBulkSubmitting, setProactiveBulkSubmitting] = useState(false);
   const [taskSnoozeDate, setTaskSnoozeDate] = useState(""); // ISO date string for snooze
   const [taskSnoozeTime, setTaskSnoozeTime] = useState("09:00");
   const [taskSnoozeSubmitting, setTaskSnoozeSubmitting] = useState(false);
@@ -2897,6 +2900,40 @@ export default function TriageSystem({ onBack }) {
       });
     } catch (err) {
       console.error("Failed to mark pipeline copied:", err);
+    }
+  };
+
+  const bulkAcknowledgeProactive = async () => {
+    const alerts = proactiveAlerts.filter(a => proactiveBulkSelected.has(a.rowIndex));
+    if (!alerts.length) return;
+    const alertKeys = alerts.map(a => a.alertKey);
+    try {
+      setProactiveBulkSubmitting(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "bulk_acknowledge_proactive_alerts", alertKeys, automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        console.error(`❌ bulk_acknowledge_proactive_alerts failed: ${data.error}`);
+        return;
+      }
+      const selectedRowIndexes = new Set(alerts.map(a => a.rowIndex));
+      setProactiveAlerts(prev => {
+        const remaining = prev.filter(a => !selectedRowIndexes.has(a.rowIndex));
+        const counts = {};
+        remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+        setProactiveCountsByClient(counts);
+        const remainingForClient = remaining.filter(a => a.clientName === proactiveSelectedClient);
+        if (remainingForClient.length === 0) setScreen("clientSelection");
+        return remaining;
+      });
+      setProactiveBulkSelected(new Set());
+      setProactiveBulkMode(false);
+    } catch (err) {
+      console.error("Failed to bulk acknowledge:", err);
+    } finally {
+      setProactiveBulkSubmitting(false);
     }
   };
 
@@ -6480,16 +6517,48 @@ export default function TriageSystem({ onBack }) {
             <p style={styles.subtitle}>{proactiveSelectedClient} — {clientAlertsList.length} alert{clientAlertsList.length !== 1 ? "s" : ""}</p>
           </div>
           <div style={styles.card}>
-            <div style={{ marginBottom: "16px" }}>
+            <div style={{ marginBottom: "16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
                 ← Back to Client List
               </button>
+              {clientAlertsList.length > 1 && (
+                <button className="triage-btn" onClick={() => { setProactiveBulkMode(m => !m); setProactiveBulkSelected(new Set()); }}
+                  style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
+                  {proactiveBulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
+                </button>
+              )}
             </div>
+            {proactiveBulkMode && clientAlertsList.length > 0 && (() => {
+              const allKeys = clientAlertsList.map(a => a.rowIndex);
+              const allSelected = allKeys.every(k => proactiveBulkSelected.has(k));
+              return (
+                <div style={{ marginBottom: "10px" }}>
+                  <button className="triage-btn" onClick={() => {
+                    setProactiveBulkSelected(allSelected ? new Set() : new Set(allKeys));
+                  }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "3px 8px" }}>
+                    {allSelected ? "Deselect all" : "Select all"}
+                  </button>
+                </div>
+              );
+            })()}
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               {clientAlertsList.map((alert, idx) => {
                 const m = alert.metadata || {};
+                const isBulkSelected = proactiveBulkSelected.has(alert.rowIndex);
                 return (
-                  <div key={idx} style={{ border: "1px solid #ddd", borderRadius: "6px", padding: "14px", backgroundColor: "#fafafa" }}>
+                  <div key={idx} style={{ border: `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#ddd"}`, borderRadius: "6px", padding: "14px", backgroundColor: proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#fafafa" }}>
+                    {proactiveBulkMode && (
+                      <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
+                        <input type="checkbox" checked={isBulkSelected} onChange={() => {
+                          setProactiveBulkSelected(prev => {
+                            const next = new Set(prev);
+                            if (isBulkSelected) next.delete(alert.rowIndex); else next.add(alert.rowIndex);
+                            return next;
+                          });
+                        }} style={{ accentColor: "#7c3aed", cursor: "pointer" }} />
+                        Select for bulk action
+                      </label>
+                    )}
                     <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px" }}>
                       {alert.heading}
                     </div>
@@ -6792,6 +6861,22 @@ export default function TriageSystem({ onBack }) {
                 </div>
               )}
             </div>
+
+            {proactiveBulkMode && proactiveBulkSelected.size > 0 && (
+              <div style={{ position: "sticky", bottom: 0, background: "#fff", borderTop: "2px solid #7c3aed",
+                padding: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
+                boxShadow: "0 -2px 8px rgba(0,0,0,0.08)", zIndex: 10, marginTop: "12px" }}>
+                <span style={{ fontSize: "13px", color: "#5b21b6", fontWeight: "600", flex: 1 }}>
+                  {proactiveBulkSelected.size} alert{proactiveBulkSelected.size !== 1 ? "s" : ""} selected
+                </span>
+                <button className="triage-btn" onClick={bulkAcknowledgeProactive} disabled={proactiveBulkSubmitting}
+                  style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
+                    padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
+                    opacity: proactiveBulkSubmitting ? 0.5 : 1 }}>
+                  {proactiveBulkSubmitting ? <><Spinner />Acknowledging...</> : `✓ Acknowledge ${proactiveBulkSelected.size} alert${proactiveBulkSelected.size !== 1 ? "s" : ""}`}
+                </button>
+              </div>
+            )}
 
           </div>
         </div>

@@ -12428,6 +12428,36 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "bulk_acknowledge_proactive_alerts") {
+      // Same as acknowledge_proactive_alert, but for several alerts (identified
+      // by their alertKey) in one batch write instead of one request each.
+      const { alertKeys, automationCommanderSheetId: bulkAckAcId } = req.body;
+      if (!Array.isArray(alertKeys) || alertKeys.length === 0 || !bulkAckAcId) {
+        return res.status(400).json({ success: false, error: "Missing alertKeys or automationCommanderSheetId" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const all = await readProactiveAlerts(sheets, bulkAckAcId);
+        const keySet = new Set(alertKeys);
+        const matchingRows = all.filter(r => keySet.has(r.alertKey));
+        if (matchingRows.length === 0) return res.status(404).json({ success: false, error: "No matching alerts found" });
+        const nowISO = new Date().toISOString();
+        const writeData = [];
+        for (const row of matchingRows) {
+          writeData.push({ range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["acknowledged"]] });
+          writeData.push({ range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] });
+        }
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: bulkAckAcId,
+          requestBody: { data: writeData, valueInputOption: "RAW" },
+        });
+        console.log(`  ✅ Bulk acknowledged ${matchingRows.length} row(s) across ${alertKeys.length} alertKey(s)`);
+        return res.status(200).json({ success: true, count: matchingRows.length });
+      } catch (err) {
+        console.error(`❌ Error in bulk_acknowledge_proactive_alerts:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "create_task") {
       // Create a task from an alert (automation or proactive).
       // Stores in AlertMemory with status="task", copies proactive alerts into AlertMemory.

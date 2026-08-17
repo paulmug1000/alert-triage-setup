@@ -6450,6 +6450,8 @@ export default function TriageSystem({ onBack }) {
                     retainer_shrink_blocked:    "Retainer row blocked from trimming",
                     uninvoiced_revenue:         "Uninvoiced revenue",
                     deleted_invoice:            "Deleted invoice",
+                    job_structure_error:        "Job structure error",
+                    deleted_expense:            "Deleted expense",
                   };
                   const typeCounts = {};
                   alerts.forEach(a => {
@@ -7755,6 +7757,8 @@ export default function TriageSystem({ onBack }) {
                   retainer_shrink_blocked:    "Retainer row blocked from trimming",
                     uninvoiced_revenue:         "Uninvoiced revenue",
                     deleted_invoice:            "Deleted invoice",
+                    job_structure_error:        "Job structure error",
+                    deleted_expense:            "Deleted expense",
                 };
                 const grouped = {};
                 proactiveAlerts.forEach(a => {

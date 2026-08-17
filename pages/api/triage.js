@@ -12237,6 +12237,14 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             const sigDbg = buildSig(row);
             console.log(`  [DEBUG store_proactive_alerts / dismiss-sweep] found existing row for ${DEBUG_ALERT_KEY} | status=${row.status} | inIncomingKeys=${incomingKeys.has(row.alertKey)} | sig=${sigDbg} | inIncomingSignatures=${incomingSignatures.has(sigDbg)} | typeInIncoming=${incomingAlertTypes.has(row.alertType)}`);
           }
+          // Substring/case-insensitive match too, in case the exact comparisons
+          // above never fire due to some hidden whitespace/casing difference —
+          // surfaces the raw stored value (JSON-stringified to reveal it) rather
+          // than relying on eyeballing it.
+          const keyLower = String(row.alertKey || "").toLowerCase();
+          if (keyLower.includes("brightsmith") || keyLower.includes("rmo outsourcing")) {
+            console.log(`  [DEBUG store_proactive_alerts / raw-scan] rowIndex=${row.rowIndex} | alertKey=${JSON.stringify(row.alertKey)} | alertType=${JSON.stringify(row.alertType)} | status=${row.status} | clientName=${JSON.stringify(row.clientName)} | exactMatch=${row.alertKey === DEBUG_ALERT_KEY}`);
+          }
           if (row.status !== "active") continue;
           if (!incomingAlertTypes.has(row.alertType)) continue; // different type — don't touch
           const sig = buildSig(row);

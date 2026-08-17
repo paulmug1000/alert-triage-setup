@@ -4316,6 +4316,8 @@ export default function TriageSystem({ onBack }) {
         {outgoingsNewVendor && <NewVendorModal />}
         {outgoingsReplacePrompt && (() => {
           const { exp, contractor, colLetter, realBlocks, totalManual, blocksWithoutManual } = outgoingsReplacePrompt;
+          const expenseAmount = parseFloat(exp.amount) || 0;
+          const canUseUp = expenseAmount <= totalManual + 0.001;
           const doPlace = async (keepManual) => {
             setOutgoingsReplacePrompt(null);
             const base = keepManual ? realBlocks : blocksWithoutManual;
@@ -4325,15 +4327,43 @@ export default function TriageSystem({ onBack }) {
             addAssignedAppId(exp.appId, outgoingsClient?.clientName);
             setOutgoingsPlacing(null);
           };
+          const doUseUp = async () => {
+            setOutgoingsReplacePrompt(null);
+            const manualBlocksList = realBlocks.filter(b => b.appId && b.appId.startsWith("MANUAL-ENTRY"));
+            // Prefer an exact amount match — consumes that specific entry entirely,
+            // leaving any other manual entries in the cell untouched. Only falls
+            // back to reducing entries in order (cascading to the next if one
+            // isn't enough to fully absorb the expense) when nothing matches exactly.
+            const exactIdx = manualBlocksList.findIndex(mb => Math.abs((parseFloat(mb.amount) || 0) - expenseAmount) < 0.01);
+            let reducedManualBlocks;
+            if (exactIdx !== -1) {
+              reducedManualBlocks = manualBlocksList.filter((_, i) => i !== exactIdx);
+            } else {
+              let remaining = expenseAmount;
+              reducedManualBlocks = [];
+              for (const mb of manualBlocksList) {
+                const mbAmount = parseFloat(mb.amount) || 0;
+                const used = Math.min(remaining, mbAmount);
+                const newAmount = mbAmount - used;
+                remaining -= used;
+                if (newAmount > 0.004) reducedManualBlocks.push({ ...mb, amount: newAmount });
+              }
+            }
+            const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
+            await updateCell(contractor, colLetter, [...blocksWithoutManual, ...reducedManualBlocks, newBlock]);
+            setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
+            addAssignedAppId(exp.appId, outgoingsClient?.clientName);
+            setOutgoingsPlacing(null);
+          };
           return (
             <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 400px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+              <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 460px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
                 <h3 style={{ margin: "0 0 12px", fontSize: "15px", fontWeight: "700" }}>Manual entry exists</h3>
                 <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#555" }}>
                   This cell already contains a manual entry of <strong>£{totalManual.toFixed(2)}</strong>.<br/>
-                  Would you like to replace it or keep both?
+                  Would you like to replace it, keep both, or use up part of the estimate?
                 </p>
-                <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+                <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", flexWrap: "wrap" }}>
                   <button onClick={() => setOutgoingsReplacePrompt(null)}
                     style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>
                     Cancel
@@ -4342,6 +4372,12 @@ export default function TriageSystem({ onBack }) {
                     style={{ padding: "8px 18px", background: "#f0f9ff", border: "1px solid #93c5fd", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#1d4ed8" }}>
                     Add alongside
                   </button>
+                  {canUseUp && (
+                    <button onClick={doUseUp}
+                      style={{ padding: "8px 18px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#166534" }}>
+                      Use up
+                    </button>
+                  )}
                   <button onClick={() => doPlace(false)}
                     style={{ padding: "8px 18px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
                     Replace

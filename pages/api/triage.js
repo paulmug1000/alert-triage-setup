@@ -12229,7 +12229,14 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         const incomingKeys = new Set(incomingAlerts.map(a => a.alertKey));
         const incomingSignatures = new Set(incomingAlerts.map(buildSigForIncoming));
         const autoDismissedKeys = [];
+        // TEMP DEBUG — remove once the stale Brightsmith / RMO Outsourcing
+        // retainer_invoice alert is resolved.
+        const DEBUG_ALERT_KEY = "retainer_invoice|Brightsmith Group Ltd|RMO Outsourcing";
         for (const row of existing) {
+          if (row.alertKey === DEBUG_ALERT_KEY) {
+            const sigDbg = buildSig(row);
+            console.log(`  [DEBUG store_proactive_alerts / dismiss-sweep] found existing row for ${DEBUG_ALERT_KEY} | status=${row.status} | inIncomingKeys=${incomingKeys.has(row.alertKey)} | sig=${sigDbg} | inIncomingSignatures=${incomingSignatures.has(sigDbg)} | typeInIncoming=${incomingAlertTypes.has(row.alertType)}`);
+          }
           if (row.status !== "active") continue;
           if (!incomingAlertTypes.has(row.alertType)) continue; // different type — don't touch
           const sig = buildSig(row);
@@ -12243,12 +12250,20 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           }
         }
 
+        if (!incomingKeys.has(DEBUG_ALERT_KEY)) {
+          console.log(`  [DEBUG store_proactive_alerts] ${DEBUG_ALERT_KEY} was NOT present in this run's incoming alerts at all (GAS didn't generate it this time)`);
+        }
+
         for (const alert of incomingAlerts) {
           // Build the signature for this incoming alert
           const sig = buildSigForIncoming(alert);
 
           // Look up by exact key first, then by signature
           const ex = existingByKey[alert.alertKey] || existingBySignature[sig];
+
+          if (alert.alertKey === DEBUG_ALERT_KEY) {
+            console.log(`  [DEBUG store_proactive_alerts / main-loop] incoming alert for ${DEBUG_ALERT_KEY} | detail="${alert.detail}" | matchedExisting=${!!ex} | exStatus=${ex ? ex.status : "(none)"} | matchedByKey=${!!existingByKey[alert.alertKey]} | matchedBySigOnly=${!existingByKey[alert.alertKey] && !!existingBySignature[sig]}`);
+          }
 
           if (ex) {
             if (ex.status === "acknowledged") { dismissed++; continue; }

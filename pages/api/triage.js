@@ -12228,6 +12228,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         const incomingAlertTypes = new Set(incomingAlerts.map(a => a.alertType));
         const incomingKeys = new Set(incomingAlerts.map(a => a.alertKey));
         const incomingSignatures = new Set(incomingAlerts.map(buildSigForIncoming));
+        const autoDismissedKeys = [];
         for (const row of existing) {
           if (row.status !== "active") continue;
           if (!incomingAlertTypes.has(row.alertType)) continue; // different type — don't touch
@@ -12237,6 +12238,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["auto_dismissed"]] });
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] });
             dismissed++;
+            autoDismissedKeys.push(row.alertKey);
             console.log(`  Auto-dismissed stale ${row.alertType} alert for ${row.clientName}: ${row.alertKey}`);
           }
         }
@@ -12300,6 +12302,42 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             requestBody: { data: writes, valueInputOption: "RAW" },
           });
         }
+
+        // Auto-resolve any task whose linked proactive alert just got auto-dismissed —
+        // the alert's condition is gone, so a task about it is stale too. Only
+        // touches tasks still in status "task" (won't reopen or override anything
+        // a person has already resolved manually).
+        let tasksAutoResolved = 0;
+        if (autoDismissedKeys.length > 0) {
+          try {
+            await ensureAlertMemoryTab(sheets, acId);
+            const memoryRows = await readAlertMemory(sheets, acId);
+            const dismissedKeySet = new Set(autoDismissedKeys);
+            const taskWrites = [];
+            for (const row of memoryRows) {
+              if (row.status !== "task") continue;
+              let taskMeta = {};
+              try { taskMeta = JSON.parse(row.dataSnapshot || "{}"); } catch (e) { continue; }
+              if (!taskMeta.proactiveAlertKey || !dismissedKeySet.has(taskMeta.proactiveAlertKey)) continue;
+              taskMeta.resolvedAt = nowISO;
+              taskMeta.autoResolvedReason = "Underlying proactive alert condition no longer detected";
+              taskWrites.push({ range: `AlertMemory!F${row.rowIndex}`, values: [["task_resolved"]] });
+              taskWrites.push({ range: `AlertMemory!K${row.rowIndex}`, values: [[JSON.stringify(taskMeta)]] });
+              tasksAutoResolved++;
+            }
+            if (taskWrites.length > 0) {
+              await sheets.spreadsheets.values.batchUpdate({
+                spreadsheetId: acId,
+                requestBody: { data: taskWrites, valueInputOption: "RAW" },
+              });
+              await redisClient.del("triage_tasks_cache").catch(() => {});
+              console.log(`  ✅ Auto-resolved ${tasksAutoResolved} task(s) whose linked alert cleared`);
+            }
+          } catch (taskErr) {
+            console.log(`  ⚠️ Task auto-resolve step failed (non-fatal): ${taskErr.message}`);
+          }
+        }
+
         console.log(`  ✅ Proactive alerts: ${stored} stored, ${updated} updated, ${dismissed} dismissed`);
         await logProactiveCheckRun(sheets, acId, {
           clientsChecked: req.body.clientsChecked || undefined,

@@ -13172,7 +13172,6 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         if (!raw) throw new Error("Upload not found or expired — please try uploading again");
         fileData = JSON.parse(raw);
         if (!fileData || !fileData.data || !fileData.type) throw new Error("Uploaded file payload was malformed");
-        console.log(`  [DEBUG payroll] uploadId=${uploadId} — reassembled from Redis OK (type=${fileData.type}, ${fileData.data.length} chars)`);
       } catch (fetchErr) {
         return res.status(400).json({ success: false, error: "Could not read uploaded file: " + fetchErr.message });
       }
@@ -13278,13 +13277,11 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
       }
       try {
         const sheets = await getSheetsClient();
-        console.log(`  [DEBUG payroll] uploadId=${uploadId} — got Sheets client, reading employee list`);
 
         const empResp = await sheets.spreadsheets.values.get({
           spreadsheetId: payrollClientSheetId, range: "Salaries!A4:A53",
         });
         const validEmployeeNames = (empResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
-        console.log(`  [DEBUG payroll] read ${validEmployeeNames.length} employee names, building prompt`);
         const namesString = JSON.stringify(validEmployeeNames);
         const currentDateContext = new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 
@@ -13325,11 +13322,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           ];
         }
 
-        const payloadChars = fileData.type === "text" ? content.length : fileData.data.length;
-        console.log(`  [DEBUG payroll] uploadId=${uploadId} — calling Claude now (type=${fileData.type}, payload≈${payloadChars} chars)`);
-        const claudeStart = Date.now();
         const aiMsg = await anthropic.messages.create({ model: "claude-sonnet-4-6", max_tokens: 6000, messages: [{ role: "user", content }] });
-        console.log(`  [DEBUG payroll] uploadId=${uploadId} — Claude call returned after ${Date.now() - claudeStart}ms`);
         await logClaudeUsage_(sheets, automationCommanderSheetId, payrollClientName || "", "payroll_extract", aiMsg.usage?.input_tokens || 0, aiMsg.usage?.output_tokens || 0, "payroll_tool").catch(() => {});
 
         const rawText = aiMsg.content[0].type === "text" ? aiMsg.content[0].text : "";
@@ -13346,7 +13339,6 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         if (!extractedData || !Array.isArray(extractedData.employees)) {
           return res.status(500).json({ success: false, error: "AI extracted data but 'employees' list was missing or invalid" });
         }
-        console.log(`  [DEBUG payroll] uploadId=${uploadId} — parsed OK, ${extractedData.employees.length} employees, period="${extractedData.period}"`);
 
         const targetMonthStr = confirmedMonth || extractedData.period;
         if (!targetMonthStr || String(targetMonthStr).toLowerCase() === "unknown" || String(targetMonthStr).toLowerCase() === "null") {

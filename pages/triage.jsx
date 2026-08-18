@@ -1037,7 +1037,7 @@ export default function TriageSystem({ onBack }) {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveMsg, setSettingsSaveMsg] = useState("");
   const [agentRunClient, setAgentRunClient] = useState("");
-  const [agentRunTypes, setAgentRunTypes] = useState({ invoice: true, crm: false, expense: false });
+  const [agentRunTypes, setAgentRunTypes] = useState({ invoice: false, crm: false, expense: false });
   const [agentRunStatus, setAgentRunStatus] = useState("idle"); // idle | running | success | error
   const [agentRunMsg, setAgentRunMsg] = useState("");
   const [agentRunId, setAgentRunId] = useState(null);
@@ -5631,54 +5631,6 @@ export default function TriageSystem({ onBack }) {
 
           {!settingsLoading && (
             <>
-              {/* Usage summary */}
-              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-                <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Claude API Usage</h3>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>
-                  {[
-                    { label: "This hour", calls: u?.thisHour?.calls ?? "–", cost: u?.thisHour?.cost ?? "–" },
-                    { label: "Today", calls: u?.today?.calls ?? "–", cost: u?.today?.cost ?? "–" },
-                    { label: "This week", calls: u?.week?.calls ?? "–", cost: u?.week?.cost ?? "–" },
-                  ].map(({ label, calls, cost }) => (
-                    <div key={label} style={{ background: "#f8f9ff", borderRadius: "8px", padding: "12px 14px", border: "1px solid #e8eaf0" }}>
-                      <div style={{ fontSize: "11px", color: "#888", marginBottom: "4px" }}>{label}</div>
-                      <div style={{ fontSize: "20px", fontWeight: "700", color: "#1a56db" }}>{calls}</div>
-                      <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>calls · ${cost}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Limits config */}
-              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-                <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Usage Limits (precompute only)</h3>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "16px", marginBottom: "14px" }}>
-                  {[
-                    { label: "Hourly limit", val: settingsEditHourly, set: setSettingsEditHourly, hint: "Max Claude calls per hour during precompute" },
-                    { label: "Daily limit", val: settingsEditDaily, set: setSettingsEditDaily, hint: "Max Claude calls per day during precompute" },
-                    { label: "Anomaly threshold", val: settingsEditAnomaly, set: setSettingsEditAnomaly, hint: "If a client has ≥ this many invoice/expense alerts, skip ALL precompute Claude calls for that client" },
-                  ].map(({ label, val, set, hint }) => (
-                    <div key={label}>
-                      <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>{label}</label>
-                      <input type="number" value={val} min={1} max={500}
-                        onChange={e => set(parseInt(e.target.value) || 1)}
-                        style={{ width: "100%", padding: "8px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "15px", boxSizing: "border-box" }} />
-                      <div style={{ fontSize: "10px", color: "#999", marginTop: "4px" }}>{hint}</div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                  <button onClick={saveSettings} disabled={settingsSaving}
-                    style={{ padding: "8px 20px", background: settingsSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: settingsSaving ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
-                    {settingsSaving ? "Saving..." : "Save changes"}
-                  </button>
-                  {settingsSaveMsg && <span style={{ fontSize: "13px", color: settingsSaveMsg.startsWith("✓") ? "#166534" : "#dc2626" }}>{settingsSaveMsg}</span>}
-                </div>
-                <div style={{ marginTop: "12px", fontSize: "12px", color: "#888" }}>
-                  Note: limits apply to automated precompute only. On-demand analysis (clicking an alert) is always unrestricted.
-                </div>
-              </div>
-
               {/* Run Client Automation */}
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
                 <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Run Client Automation</h3>
@@ -5818,6 +5770,90 @@ export default function TriageSystem({ onBack }) {
                 </div>
               </div>
 
+              {/* Usage summary */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Claude API Usage</h3>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>
+                  {[
+                    { label: "This hour", calls: u?.thisHour?.calls ?? "–", cost: u?.thisHour?.cost ?? "–" },
+                    { label: "Today", calls: u?.today?.calls ?? "–", cost: u?.today?.cost ?? "–" },
+                    { label: "This week", calls: u?.week?.calls ?? "–", cost: u?.week?.cost ?? "–" },
+                  ].map(({ label, calls, cost }) => (
+                    <div key={label} style={{ background: "#f8f9ff", borderRadius: "8px", padding: "12px 14px", border: "1px solid #e8eaf0" }}>
+                      <div style={{ fontSize: "11px", color: "#888", marginBottom: "4px" }}>{label}</div>
+                      <div style={{ fontSize: "20px", fontWeight: "700", color: "#1a56db" }}>{calls}</div>
+                      <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>calls · ${cost}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Limits config */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Usage Limits (precompute only)</h3>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "16px", marginBottom: "14px" }}>
+                  {[
+                    { label: "Hourly limit", val: settingsEditHourly, set: setSettingsEditHourly, hint: "Max Claude calls per hour during precompute" },
+                    { label: "Daily limit", val: settingsEditDaily, set: setSettingsEditDaily, hint: "Max Claude calls per day during precompute" },
+                    { label: "Anomaly threshold", val: settingsEditAnomaly, set: setSettingsEditAnomaly, hint: "If a client has ≥ this many invoice/expense alerts, skip ALL precompute Claude calls for that client" },
+                  ].map(({ label, val, set, hint }) => (
+                    <div key={label}>
+                      <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>{label}</label>
+                      <input type="number" value={val} min={1} max={500}
+                        onChange={e => set(parseInt(e.target.value) || 1)}
+                        style={{ width: "100%", padding: "8px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "15px", boxSizing: "border-box" }} />
+                      <div style={{ fontSize: "10px", color: "#999", marginTop: "4px" }}>{hint}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <button onClick={saveSettings} disabled={settingsSaving}
+                    style={{ padding: "8px 20px", background: settingsSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: settingsSaving ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                    {settingsSaving ? "Saving..." : "Save changes"}
+                  </button>
+                  {settingsSaveMsg && <span style={{ fontSize: "13px", color: settingsSaveMsg.startsWith("✓") ? "#166534" : "#dc2626" }}>{settingsSaveMsg}</span>}
+                </div>
+                <div style={{ marginTop: "12px", fontSize: "12px", color: "#888" }}>
+                  Note: limits apply to automated precompute only. On-demand analysis (clicking an alert) is always unrestricted.
+                </div>
+              </div>
+
+              {/* Recent call log */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <details>
+                  <summary style={{ fontSize: "15px", fontWeight: "700", cursor: "pointer", userSelect: "none" }}>Recent Claude API calls (last 50)</summary>
+                  <div style={{ marginTop: "14px" }}>
+                    {rows.length === 0 ? (
+                      <div style={{ color: "#999", fontSize: "13px" }}>No calls recorded yet</div>
+                    ) : (
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px" }}>
+                          <thead>
+                            <tr style={{ borderBottom: "2px solid #e0e0e0" }}>
+                              {["Time", "Source", "Client", "Alert type", "Tokens", "Cost (USD)"].map(h => (
+                                <th key={h} style={{ padding: "6px 10px", textAlign: "left", fontWeight: "600", color: "#555", whiteSpace: "nowrap" }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((r, i) => (
+                              <tr key={i} style={{ borderBottom: "1px solid #f0f0f0", background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
+                                <td style={{ padding: "5px 10px", whiteSpace: "nowrap", color: "#666" }}>{r.ts ? new Date(r.ts).toLocaleString("en-GB") : "–"}</td>
+                                <td style={{ padding: "5px 10px" }}>{r.action || "–"}</td>
+                                <td style={{ padding: "5px 10px" }}>{r.client || "–"}</td>
+                                <td style={{ padding: "5px 10px" }}>{r.alertType || "–"}</td>
+                                <td style={{ padding: "5px 10px", textAlign: "right" }}>{r.tokens ? parseInt(r.tokens).toLocaleString() : "–"}</td>
+                                <td style={{ padding: "5px 10px", textAlign: "right" }}>${r.cost ? parseFloat(r.cost).toFixed(4) : "0.0000"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              </div>
+
               {/* Triage Diagnostic */}
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
                 <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Triage Diagnostic</h3>
@@ -5938,38 +5974,6 @@ export default function TriageSystem({ onBack }) {
                     </div>
                   );
                 })()}
-              </div>
-
-              {/* Recent call log */}
-              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px" }}>
-                <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Recent Claude API calls (last 50)</h3>
-                {rows.length === 0 ? (
-                  <div style={{ color: "#999", fontSize: "13px" }}>No calls recorded yet</div>
-                ) : (
-                  <div style={{ overflowX: "auto" }}>
-                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px" }}>
-                      <thead>
-                        <tr style={{ borderBottom: "2px solid #e0e0e0" }}>
-                          {["Time", "Source", "Client", "Alert type", "Tokens", "Cost (USD)"].map(h => (
-                            <th key={h} style={{ padding: "6px 10px", textAlign: "left", fontWeight: "600", color: "#555", whiteSpace: "nowrap" }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows.map((r, i) => (
-                          <tr key={i} style={{ borderBottom: "1px solid #f0f0f0", background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
-                            <td style={{ padding: "5px 10px", whiteSpace: "nowrap", color: "#666" }}>{r.ts ? new Date(r.ts).toLocaleString("en-GB") : "–"}</td>
-                            <td style={{ padding: "5px 10px" }}>{r.action || "–"}</td>
-                            <td style={{ padding: "5px 10px" }}>{r.client || "–"}</td>
-                            <td style={{ padding: "5px 10px" }}>{r.alertType || "–"}</td>
-                            <td style={{ padding: "5px 10px", textAlign: "right" }}>{r.tokens ? parseInt(r.tokens).toLocaleString() : "–"}</td>
-                            <td style={{ padding: "5px 10px", textAlign: "right" }}>${r.cost ? parseFloat(r.cost).toFixed(4) : "0.0000"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
               </div>
             </>
           )}

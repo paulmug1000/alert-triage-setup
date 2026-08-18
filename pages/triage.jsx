@@ -821,10 +821,10 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoing
   });
 
   const secondaryNavs = [
-    { key: "appLog", label: "App Log", handler: onAppLog },
-    { key: "outgoings", label: "Vendors", handler: onOutgoings },
     { key: "invoices", label: "Invoices", handler: onInvoices },
     { key: "retainers", label: "Retainers", handler: onRetainers },
+    { key: "overview", label: "Overview", handler: onOverview },
+    { key: "appLog", label: "App Log", handler: onAppLog },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
 
@@ -835,9 +835,12 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoing
       </div>
       <div style={{ background: "#fff", borderBottom: "1px solid #e0e0e0", padding: "0 8px", display: "flex", alignItems: "stretch", position: "relative" }}>
         <button className="triage-btn pulse-nav-item" onClick={onHome} style={navBtnStyle("home")}>Home<Badge count={homeAlertCount} /></button>
-        <button className="triage-btn pulse-nav-item" onClick={onOverview} style={navBtnStyle("overview")}>Overview</button>
+        <button className="triage-btn pulse-nav-item" onClick={onOutgoings} style={navBtnStyle("outgoings")}>Vendors</button>
+        {!isMobile && secondaryNavs.slice(0, 2).map(({ key, label, handler }) => (
+          <button key={key} className="triage-btn pulse-nav-item" onClick={handler} style={navBtnStyle(key)}>{label}</button>
+        ))}
         <button className="triage-btn pulse-nav-item" onClick={onTasks} style={navBtnStyle("tasks")}>Tasks<Badge count={taskCount} /></button>
-        {!isMobile && secondaryNavs.map(({ key, label, handler }) => (
+        {!isMobile && secondaryNavs.slice(2).map(({ key, label, handler }) => (
           <button key={key} className="triage-btn pulse-nav-item" onClick={handler} style={navBtnStyle(key)}>{label}</button>
         ))}
         {isMobile && (
@@ -1071,7 +1074,7 @@ export default function TriageSystem({ onBack }) {
   const [taskModalAlert, setTaskModalAlert] = useState(null); // alert being turned into task
   const [taskModalIsProactive, setTaskModalIsProactive] = useState(false);
   const [taskModalSnoozeDate, setTaskModalSnoozeDate] = useState(""); // optional: create as snoozed
-  const [taskModalSnoozeTime, setTaskModalSnoozeTime] = useState("09:00");
+  const [taskModalSnoozeTime, setTaskModalSnoozeTime] = useState("07:00");
 
   // Bulk action state
   const [bulkMode, setBulkMode]                 = useState(false);       // bulk selection active
@@ -1081,13 +1084,13 @@ export default function TriageSystem({ onBack }) {
   const [bulkIgnoreReason, setBulkIgnoreReason] = useState("");
   const [bulkTaskNote, setBulkTaskNote]         = useState("");
   const [bulkTaskSnoozeDate, setBulkTaskSnoozeDate] = useState("");
-  const [bulkTaskSnoozeTime, setBulkTaskSnoozeTime] = useState("09:00");
+  const [bulkTaskSnoozeTime, setBulkTaskSnoozeTime] = useState("07:00");
   const [bulkSubmitting, setBulkSubmitting]     = useState(false);
   const [proactiveBulkMode, setProactiveBulkMode]         = useState(false);
   const [proactiveBulkSelected, setProactiveBulkSelected] = useState(new Set()); // Set of alert.rowIndex
   const [proactiveBulkSubmitting, setProactiveBulkSubmitting] = useState(false);
   const [taskSnoozeDate, setTaskSnoozeDate] = useState(""); // ISO date string for snooze
-  const [taskSnoozeTime, setTaskSnoozeTime] = useState("09:00");
+  const [taskSnoozeTime, setTaskSnoozeTime] = useState("07:00");
   const [taskSnoozeSubmitting, setTaskSnoozeSubmitting] = useState(false);
   const [taskActionError, setTaskActionError] = useState("");
   const [existingTaskBanner, setExistingTaskBanner] = useState(null); // {task, dataChanged}
@@ -1357,7 +1360,7 @@ export default function TriageSystem({ onBack }) {
       setShowTaskModal(false);
       setTaskModalNote("");
       setTaskModalSnoozeDate("");
-      setTaskModalSnoozeTime("09:00");
+      setTaskModalSnoozeTime("07:00");
       // Only increment active task badge if the task is NOT being immediately snoozed
       if (!taskModalSnoozeDate) {
         setNavTaskCount(prev => prev + 1);
@@ -1418,7 +1421,7 @@ export default function TriageSystem({ onBack }) {
     setTaskActionError("");
     setTaskNoteInput("");
     setTaskSnoozeDate("");
-    setTaskSnoozeTime("09:00");
+    setTaskSnoozeTime("07:00");
 
     // Parse cached options
     if (task.cachedOptionsJSON) {
@@ -2456,7 +2459,7 @@ export default function TriageSystem({ onBack }) {
       setShowBulkTaskModal(false);
       setBulkTaskNote("");
       setBulkTaskSnoozeDate("");
-      setBulkTaskSnoozeTime("09:00");
+      setBulkTaskSnoozeTime("07:00");
 
       if (updatedAlerts.length === 0 && allNoActionResolved()) {
         handlePostClear([], resolvedNoActionFlags);
@@ -3571,7 +3574,7 @@ export default function TriageSystem({ onBack }) {
     const withTaskModal = showTaskModal ? (
     <>
       {jsx}
-      <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) { setShowTaskModal(false); setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("09:00"); } }}>
+      <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) { setShowTaskModal(false); setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("07:00"); } }}>
         <div style={styles.modalCard}>
           <h3 style={styles.modalTitle}>Create Task</h3>
           <p style={styles.modalSubtitle}>
@@ -3610,7 +3613,7 @@ export default function TriageSystem({ onBack }) {
                     onChange={e => setTaskModalSnoozeTime(e.target.value)}
                     style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", width: "100px" }}
                   />
-                  <button className="triage-btn" onClick={() => { setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("09:00"); }}
+                  <button className="triage-btn" onClick={() => { setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("07:00"); }}
                     style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>
                     ✕ Clear
                   </button>
@@ -3626,7 +3629,7 @@ export default function TriageSystem({ onBack }) {
 
           {taskActionError && <div style={{ ...styles.errorBanner, marginTop: "8px" }}>{taskActionError}</div>}
           <div style={styles.modalButtons}>
-            <button className="triage-btn" onClick={() => { setShowTaskModal(false); setTaskModalNote(""); setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("09:00"); setTaskActionError(""); }} style={styles.buttonSecondary}>Cancel</button>
+            <button className="triage-btn" onClick={() => { setShowTaskModal(false); setTaskModalNote(""); setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("07:00"); setTaskActionError(""); }} style={styles.buttonSecondary}>Cancel</button>
             <button className="triage-btn" onClick={submitCreateTask} disabled={taskModalSubmitting}
               style={{ background: taskModalSnoozeDate ? "#d97706" : "#7c3aed", color: "white", border: "none", borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px", cursor: "pointer", opacity: taskModalSubmitting ? 0.5 : 1 }}>
               {taskModalSubmitting ? <><Spinner />Creating...</> : taskModalSnoozeDate ? "📋 Create & Snooze" : "📋 Create Task"}
@@ -5772,6 +5775,9 @@ export default function TriageSystem({ onBack }) {
                   { name: "Pipeline / Confirmed overlap", detail: "Finds jobs present in both tabs where the Pipeline entry hasn't been properly closed out (likelihood not 0%, not marked copied to Confirmed)." },
                   { name: "Retainer shrink blocked", detail: "Flags retainer child rows that couldn't be automatically trimmed after a contract shrank, because the row already has actuals recorded." },
                   { name: "Uninvoiced revenue on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have uninvoiced revenue, excluding placeholder invoices and Draft invoices that haven't been sent." },
+                  { name: "Deleted invoice detection", detail: "Flags invoices with a real reference on the Confirmed tab that no longer appear in the accounting system — a likely sign the invoice was deleted or voided." },
+                  { name: "Job structure errors", detail: "Flags jobs whose invoice/expense slots don't match the expected layout — e.g. a multi-row retainer with an invoice on the parent row, or slots filled out of sequence." },
+                  { name: "Deleted expense detection", detail: "Flags expenses with a real reference that no longer appear in the accounting system — the expense equivalent of deleted invoice detection." },
                 ].map((c, i) => (
                   <div key={c.name} style={{ display: "flex", gap: "10px", padding: "8px 0", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
                     <span style={{ color: "#16a34a", fontSize: "14px", lineHeight: "20px" }}>✓</span>
@@ -7235,7 +7241,7 @@ export default function TriageSystem({ onBack }) {
                         <input type="time" value={bulkTaskSnoozeTime}
                           onChange={e => setBulkTaskSnoozeTime(e.target.value)}
                           style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", width: "100px" }} />
-                        <button className="triage-btn" onClick={() => { setBulkTaskSnoozeDate(""); setBulkTaskSnoozeTime("09:00"); }}
+                        <button className="triage-btn" onClick={() => { setBulkTaskSnoozeDate(""); setBulkTaskSnoozeTime("07:00"); }}
                           style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>✕ Clear</button>
                       </>
                     )}

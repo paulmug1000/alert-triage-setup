@@ -1232,6 +1232,86 @@ function buildVerticalCsvText_(csvText) {
   return cleanData;
 }
 
+/**
+ * Normalizes a name for fuzzy matching: lowercase, strips common corporate
+ * suffixes (Ltd/Limited/LLP/etc.) and punctuation, collapses whitespace.
+ */
+function normalizeForMatch_(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/\b(ltd|limited|llp|plc|inc|group)\b/g, "")
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Tries to match a piece of text (a filename or an employer name extracted
+ * from a document) against the client list. Requires the shorter of the two
+ * normalized strings to be at least 4 characters, to avoid matching on tiny
+ * or generic words. Returns matched=null (not confident) if zero or more
+ * than one client match — an ambiguous multi-match is exactly as unhelpful
+ * as no match at all here.
+ */
+function findClientByNameMatch_(candidateText, allClients) {
+  const norm = normalizeForMatch_(candidateText);
+  if (!norm || norm.length < 3) return { matched: null, candidates: [] };
+  const matches = [];
+  for (const client of allClients) {
+    const clientNorm = normalizeForMatch_(client.clientName);
+    if (!clientNorm || clientNorm.length < 4) continue;
+    if (norm.includes(clientNorm) || clientNorm.includes(norm)) {
+      matches.push(client.clientName);
+    }
+  }
+  const unique = [...new Set(matches)];
+  if (unique.length === 1) return { matched: unique[0], candidates: unique };
+  return { matched: null, candidates: unique };
+}
+
+/**
+ * Tier-2 fallback for client auto-detection: cross-references extracted
+ * employee names against every client's own Salaries tab employee list,
+ * scoring overlap. Only used when filename/employer-name matching (tier 1)
+ * fails to find a confident match — this is the more expensive path (reads
+ * every client's employee list), and the fuzzy signal, not the direct one.
+ *
+ * Confidence thresholds here are a first-pass starting point, not a final
+ * tuned value — see conversation 18 Aug 2026. Expect these to need
+ * adjusting once run against real documents.
+ */
+async function scoreClientsByEmployeeOverlap_(sheets, allClients, extractedEmployeeNames) {
+  const normalizedExtracted = extractedEmployeeNames.map(n => normalizeForMatch_(n)).filter(Boolean);
+  if (normalizedExtracted.length === 0) return { matched: null, scores: [] };
+
+  const scores = [];
+  for (const client of allClients) {
+    try {
+      const resp = await sheets.spreadsheets.values.get({
+        spreadsheetId: client.clientSheetId, range: "Salaries!A4:A53",
+      });
+      const sheetNames = (resp.data.values || []).map(r => normalizeForMatch_(r[0])).filter(Boolean);
+      if (sheetNames.length === 0) continue;
+      let overlap = 0;
+      for (const en of normalizedExtracted) {
+        if (sheetNames.some(sn => sn === en)) overlap++;
+      }
+      if (overlap > 0) scores.push({ clientName: client.clientName, overlap });
+    } catch (e) { /* client sheet may have no Salaries tab at all — skip it */ }
+  }
+  scores.sort((a, b) => b.overlap - a.overlap);
+  if (scores.length === 0) return { matched: null, scores: [] };
+
+  const top = scores[0];
+  const second = scores[1];
+  const minAbsolute = Math.min(2, normalizedExtracted.length);
+  const clearsMinimum = top.overlap >= minAbsolute && top.overlap >= normalizedExtracted.length * 0.4;
+  const beatsRunnerUp = !second || top.overlap > second.overlap * 1.5 || (top.overlap - (second?.overlap || 0)) >= 2;
+  const confident = clearsMinimum && beatsRunnerUp;
+
+  return { matched: confident ? top.clientName : null, scores: scores.slice(0, 5) };
+}
+
 /** Ensure ClaudeUsage tab exists in Automation Commander with correct headers and config */
 async function ensureClaudeUsageTab_(sheets, spreadsheetId) {
   try {
@@ -13038,6 +13118,92 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         });
       } catch (err) {
         console.error(`❌ Error in check_existing_task:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "identify_payroll_client") {
+      // Stage 2 of the payroll import tool — automatic client detection.
+      // Tries, in order: filename match, employer-name-on-document match
+      // (both cheap, direct evidence), then employee-name overlap scoring
+      // across every client as a fallback (more expensive, fuzzier signal).
+      const { fileData, fileName, automationCommanderSheetId: idAcId } = req.body;
+      if (!fileData || !fileData.data || !fileData.type || !idAcId) {
+        return res.status(400).json({ success: false, error: "Missing fileData or automationCommanderSheetId" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+
+        const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: idAcId, range: "AutoUpdates!A2:N500" });
+        const clientRows = clientResp.data.values || [];
+        const allClients = [];
+        for (const row of clientRows) {
+          const cName = String(row[0] || "").trim();
+          const cSheetUrl = row[11];
+          if (!cName || !cSheetUrl) continue;
+          const cSheetId = extractSheetIdFromUrl(cSheetUrl) || String(cSheetUrl).trim();
+          allClients.push({ clientName: cName, clientSheetId: cSheetId });
+        }
+
+        // Tier 1a: filename — cheapest, no AI call needed
+        if (fileName) {
+          const fnMatch = findClientByNameMatch_(fileName, allClients);
+          if (fnMatch.matched) {
+            return res.status(200).json({ success: true, status: "MATCHED", clientName: fnMatch.matched, method: "filename" });
+          }
+        }
+
+        // Lightweight identify-only pass: employer name + raw employee names,
+        // no fuzzy-matching against any specific list yet (we don't know
+        // which client's list to use until we know the client).
+        const identifyPrompt = `Look at this document. Extract:
+1. Any employer/company name that appears on it (the business the payroll is FOR), if visible. If not visible, use "".
+2. Every employee/person name visible on the document, exactly as written — do not try to match them to anything, just list them as they appear.
+Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["..."] }`;
+
+        let idContent;
+        if (fileData.type === "text") {
+          idContent = identifyPrompt + "\n\nDOCUMENT DATA:\n" + buildVerticalCsvText_(fileData.data);
+        } else {
+          idContent = [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: fileData.data } },
+            { type: "text", text: identifyPrompt },
+          ];
+        }
+        const idMsg = await anthropic.messages.create({ model: "claude-sonnet-4-6", max_tokens: 1500, messages: [{ role: "user", content: idContent }] });
+        await logClaudeUsage_(sheets, idAcId, "", "payroll_identify", idMsg.usage?.input_tokens || 0, idMsg.usage?.output_tokens || 0, "payroll_tool").catch(() => {});
+
+        const idRaw = idMsg.content[0].type === "text" ? idMsg.content[0].text : "";
+        const idClean = idRaw.replace(/```json/g, "").replace(/```/g, "").trim();
+        const idJsonStart = idClean.indexOf("{");
+        const idJsonEnd = idClean.lastIndexOf("}");
+        let idData;
+        try {
+          idData = JSON.parse(idClean.slice(idJsonStart, idJsonEnd + 1));
+        } catch (e) {
+          idData = { employerName: "", employeeNames: [] };
+        }
+
+        // Tier 1b: employer name as it appears on the document
+        if (idData.employerName) {
+          const empMatch = findClientByNameMatch_(idData.employerName, allClients);
+          if (empMatch.matched) {
+            return res.status(200).json({ success: true, status: "MATCHED", clientName: empMatch.matched, method: "document_name" });
+          }
+        }
+
+        // Tier 2: employee-name overlap across every client's Salaries tab
+        const employeeNames = Array.isArray(idData.employeeNames) ? idData.employeeNames : [];
+        if (employeeNames.length > 0) {
+          const overlapResult = await scoreClientsByEmployeeOverlap_(sheets, allClients, employeeNames);
+          if (overlapResult.matched) {
+            return res.status(200).json({ success: true, status: "MATCHED", clientName: overlapResult.matched, method: "employee_overlap", scores: overlapResult.scores });
+          }
+          return res.status(200).json({ success: true, status: "AMBIGUOUS", employerName: idData.employerName, employeeNames, candidateScores: overlapResult.scores });
+        }
+
+        return res.status(200).json({ success: true, status: "AMBIGUOUS", employerName: idData.employerName || "", employeeNames: [], candidateScores: [] });
+      } catch (err) {
+        console.error("❌ identify_payroll_client error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

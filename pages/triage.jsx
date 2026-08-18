@@ -1052,6 +1052,9 @@ export default function TriageSystem({ onBack }) {
   const [toolsMsg, setToolsMsg] = useState("");
   const [toolsResult, setToolsResult] = useState(null);
   const [toolsPendingConfirm, setToolsPendingConfirm] = useState(null); // { extractedData, fallback }
+  const [toolsDetectStatus, setToolsDetectStatus] = useState("idle"); // idle | detecting | matched | ambiguous
+  const [toolsDetectMethod, setToolsDetectMethod] = useState("");
+  const [toolsAmbiguousInfo, setToolsAmbiguousInfo] = useState(null); // { employerName, employeeNames, candidateScores, error }
   const [diagClientName, setDiagClientName] = useState("");
   const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
   const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
@@ -2987,14 +2990,50 @@ export default function TriageSystem({ onBack }) {
     document.head.appendChild(xlsxScript);
   });
 
+  const detectClientForFile = async (fileData, fileName) => {
+    setToolsDetectStatus("detecting");
+    try {
+      const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "identify_payroll_client", fileData, fileName, automationCommanderSheetId }) });
+      const d = await res.json();
+      if (!d.success) {
+        setToolsDetectStatus("ambiguous");
+        setToolsAmbiguousInfo({ error: d.error || "Detection failed", employeeNames: [], candidateScores: [] });
+        return;
+      }
+      if (d.status === "MATCHED") {
+        setToolsClient(d.clientName);
+        setToolsDetectStatus("matched");
+        setToolsDetectMethod(d.method);
+      } else {
+        setToolsDetectStatus("ambiguous");
+        setToolsAmbiguousInfo({ employerName: d.employerName, employeeNames: d.employeeNames || [], candidateScores: d.candidateScores || [] });
+      }
+    } catch (err) {
+      setToolsDetectStatus("ambiguous");
+      setToolsAmbiguousInfo({ error: err.message, employeeNames: [], candidateScores: [] });
+    }
+  };
+
   const handleToolsFileSelect = async (file) => {
     if (!file) return;
     setToolsFileName(file.name);
     setToolsFileData(null);
     setToolsResult(null);
     setToolsPendingConfirm(null);
+    setToolsClient("");
+    setToolsDetectStatus("idle");
+    setToolsAmbiguousInfo(null);
     setToolsStatus("converting");
     setToolsMsg("Preparing file...");
+
+    const finishConversion = (fileData, readyMsg) => {
+      setToolsFileData(fileData);
+      setToolsStatus("ready");
+      setToolsMsg(readyMsg);
+      detectClientForFile(fileData, file.name);
+    };
+
     try {
       if (!toolsScriptsLoaded) await loadToolsScripts();
 
@@ -3006,9 +3045,7 @@ export default function TriageSystem({ onBack }) {
           excelText += `--- SHEET: ${sheetName} ---\n`;
           excelText += window.XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]) + "\n\n";
         });
-        setToolsFileData({ data: excelText, type: "text" });
-        setToolsStatus("ready");
-        setToolsMsg("Excel file parsed and ready.");
+        finishConversion({ data: excelText, type: "text" }, "Excel file parsed and ready.");
         return;
       }
 
@@ -3042,9 +3079,7 @@ export default function TriageSystem({ onBack }) {
           currentY += viewport.height;
         }
         const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
-        setToolsFileData({ data: b64, type: "image" });
-        setToolsStatus("ready");
-        setToolsMsg(`Ready! Merged ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}.`);
+        finishConversion({ data: b64, type: "image" }, `Ready! Merged ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}.`);
         return;
       }
 
@@ -3052,9 +3087,7 @@ export default function TriageSystem({ onBack }) {
       const reader = new FileReader();
       reader.onload = (e) => {
         const b64 = e.target.result.split(",")[1];
-        setToolsFileData({ data: b64, type: "image" });
-        setToolsStatus("ready");
-        setToolsMsg("Image ready.");
+        finishConversion({ data: b64, type: "image" }, "Image ready.");
       };
       reader.onerror = () => { setToolsStatus("error"); setToolsMsg("Failed to read image file."); };
       reader.readAsDataURL(file);
@@ -5768,30 +5801,55 @@ export default function TriageSystem({ onBack }) {
         <div style={{ padding: "20px", maxWidth: "800px" }}>
           <h2 style={{ margin: "0 0 6px", fontSize: "20px", fontWeight: "700" }}>Tools</h2>
           <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
-            Payroll import — pick a client, upload their payroll document (PDF, image, or Excel), and review the result before it's confirmed. Time report import isn't built yet; this only handles payroll for now.
+            Payroll import — upload a client's payroll document (PDF, image, or Excel) and the system will work out which client it belongs to automatically. Time report import isn't built yet; this only handles payroll for now.
           </p>
 
           <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
             <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Import Payroll</h3>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "14px" }}>
-              <div>
-                <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Client</label>
-                <select value={toolsClient} onChange={e => { setToolsClient(e.target.value); setToolsResult(null); setToolsPendingConfirm(null); setToolsStatus(toolsFileData ? "ready" : "idle"); setToolsMsg(""); }}
-                  style={{ width: "100%", padding: "8px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }}>
-                  <option value="">Select a client...</option>
-                  {(allOutgoingsClients || []).map(c => (
-                    <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
-                  ))}
-                </select>
+            <div style={{ marginBottom: "14px" }}>
+              <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Payroll document</label>
+              <input type="file" accept=".pdf,image/*,.xlsx,.xls,.csv"
+                onChange={e => handleToolsFileSelect(e.target.files[0])}
+                style={{ width: "100%", fontSize: "13px" }} />
+              {toolsFileName && <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>{toolsFileName}</div>}
+            </div>
+
+            {toolsDetectStatus === "detecting" && (
+              <div style={{ fontSize: "13px", color: "#666", marginBottom: "14px" }}><Spinner /> Working out which client this belongs to...</div>
+            )}
+
+            {toolsDetectStatus === "matched" && (
+              <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "14px" }}>
+                ✓ Detected client: <strong>{toolsClient}</strong>
+                {" "}<span style={{ color: "#888" }}>
+                  ({toolsDetectMethod === "filename" ? "matched by filename" : toolsDetectMethod === "document_name" ? "matched by name on document" : "matched by employee names"})
+                </span>
               </div>
-              <div>
-                <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Payroll document</label>
-                <input type="file" accept=".pdf,image/*,.xlsx,.xls,.csv"
-                  onChange={e => handleToolsFileSelect(e.target.files[0])}
-                  style={{ width: "100%", fontSize: "13px" }} />
-                {toolsFileName && <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>{toolsFileName}</div>}
+            )}
+
+            {toolsDetectStatus === "ambiguous" && (
+              <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
+                ⚠️ Couldn't work out the client automatically{toolsAmbiguousInfo?.error ? ` (${toolsAmbiguousInfo.error})` : ""} — please select it below.
+                {toolsAmbiguousInfo?.candidateScores?.length > 0 && (
+                  <div style={{ marginTop: "6px", fontSize: "12px", color: "#92400e" }}>
+                    Closest guesses: {toolsAmbiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
+                  </div>
+                )}
               </div>
+            )}
+
+            <div style={{ marginBottom: "14px" }}>
+              <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>
+                Client {toolsDetectStatus === "matched" ? "(detected — change if wrong)" : ""}
+              </label>
+              <select value={toolsClient} onChange={e => { setToolsClient(e.target.value); setToolsResult(null); setToolsPendingConfirm(null); }}
+                style={{ width: "100%", padding: "8px 10px", border: `1px solid ${toolsDetectStatus === "ambiguous" && !toolsClient ? "#fbbf24" : "#ddd"}`, borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }}>
+                <option value="">Select a client...</option>
+                {(allOutgoingsClients || []).map(c => (
+                  <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
+                ))}
+              </select>
             </div>
 
             <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>

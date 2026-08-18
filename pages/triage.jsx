@@ -3130,8 +3130,11 @@ export default function TriageSystem({ onBack }) {
   );
 
   const processOneToolsFile = async (id, confirmedMonth) => {
-    let target;
-    setToolsFiles(prev => { target = prev.find(f => f.id === id); return prev; });
+    // Reads toolsFiles via normal closure rather than a nested setState
+    // callback — this function is only ever invoked from the queue effect
+    // below (which re-runs right after state changes) or a direct button
+    // click, both of which already have a fresh render's closure.
+    const target = toolsFiles.find(f => f.id === id);
     if (!target) return;
     const client = (allOutgoingsClients || []).find(c => c.clientName === target.client);
     if (!client || !target.uploadId) return;
@@ -3145,44 +3148,43 @@ export default function TriageSystem({ onBack }) {
       const d = await res.json();
       if (!d.success) {
         updateToolsFile(id, { processStatus: "error", processMsg: d.error || "Failed to process document" });
-        continueToolsBatch();
         return;
       }
       if (d.status === "CONFIRM_PERIOD") {
         // Pause the batch here — this file needs a human decision before
-        // anything continues. continueToolsBatch() is called again once
-        // that decision is made (see the Yes/Cancel buttons in the JSX).
+        // anything continues. The queue effect below only advances past
+        // files still in "pending", so this naturally halts the batch
+        // without needing an explicit "pause" call.
         updateToolsFile(id, { processStatus: "confirm_period", pendingConfirm: { extractedData: d.extractedData, fallback: d.fallback }, processMsg: "" });
-        setToolsBatchRunning(false);
         return;
       }
       updateToolsFile(id, { processStatus: d.writeSuccess ? "complete" : "error", result: d, processMsg: d.writeSuccess ? "" : (d.error || "Write failed") });
-      continueToolsBatch();
     } catch (err) {
       updateToolsFile(id, { processStatus: "error", processMsg: err.message });
-      continueToolsBatch();
     }
   };
 
-  // Advances the batch to the next queued file, if any, or stops if the
-  // queue is empty or everything remaining needs human input (ambiguous
-  // client, or paused on a period confirmation).
-  const continueToolsBatch = () => {
-    setToolsFiles(prev => {
-      const next = findNextQueuedFile(prev);
-      if (next) {
-        setToolsBatchRunning(true);
-        processOneToolsFile(next.id);
-      } else {
-        setToolsBatchRunning(false);
-      }
-      return prev;
-    });
-  };
+  // Drives the batch queue. Runs whenever the file list changes or the
+  // batch is armed — finds the next eligible file and processes it, one at
+  // a time, stopping automatically once nothing eligible remains (empty
+  // queue, or everything left needs human input on an ambiguous client or
+  // a period confirmation). Replaces calling processOneToolsFile directly
+  // from inside state updaters, which risked a request never actually
+  // firing — see conversation 18 Aug 2026.
+  useEffect(() => {
+    if (!toolsBatchRunning) return;
+    if (toolsFiles.some(f => f.processStatus === "processing")) return; // one at a time
+    const next = findNextQueuedFile(toolsFiles);
+    if (next) {
+      processOneToolsFile(next.id);
+    } else {
+      setToolsBatchRunning(false);
+    }
+  }, [toolsFiles, toolsBatchRunning]);
 
   const startToolsBatch = () => {
     if (toolsBatchRunning) return;
-    continueToolsBatch();
+    setToolsBatchRunning(true);
   };
 
   const loadOverview = async () => {
@@ -5966,7 +5968,7 @@ export default function TriageSystem({ onBack }) {
                           style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                           Yes, apply
                         </button>
-                        <button onClick={() => { updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled — please check the document and try again." }); continueToolsBatch(); }}
+                        <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled — please check the document and try again." })}
                           style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                           Cancel
                         </button>

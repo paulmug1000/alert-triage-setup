@@ -14,7 +14,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import { google } from "googleapis";
 import { createClient } from "redis";
 import { createHash } from "crypto";
-import { del } from "@vercel/blob";
 
 const anthropic = new Anthropic();
 
@@ -13122,26 +13121,56 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "upload_payroll_chunk") {
+      // Chunked upload — replaces the earlier Vercel Blob direct-upload
+      // approach. That approach hit a genuine, currently-unresolved bug on
+      // Vercel's own infrastructure: their client-upload token/proxy
+      // endpoint (vercel.com/api/blob) doesn't return a CORS header,
+      // independently confirmed by another developer hitting the identical
+      // symptom on the same package version — not something fixable in
+      // this codebase. See conversation 18 Aug 2026.
+      //
+      // The frontend JSON-stringifies the whole {data, type} payload once,
+      // splits that string into chunks safely under Vercel's 4.5MB request
+      // body limit, and POSTs them sequentially, awaiting each before
+      // sending the next — so a plain ordered Redis APPEND is sufficient
+      // for reassembly; no need to track individual chunk indices here,
+      // only for the frontend's own progress display.
+      const { uploadId, chunkData, isFirstChunk } = req.body;
+      if (!uploadId || chunkData === undefined) {
+        return res.status(400).json({ success: false, error: "Missing uploadId or chunkData" });
+      }
+      try {
+        const key = `payroll_upload:${uploadId}`;
+        if (isFirstChunk) {
+          await redisClient.set(key, chunkData, { EX: 3600 }); // 1hr safety-net TTL
+        } else {
+          await redisClient.append(key, chunkData);
+          await redisClient.expire(key, 3600); // refresh TTL on each chunk
+        }
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ upload_payroll_chunk error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "identify_payroll_client") {
       // Stage 2 of the payroll import tool — automatic client detection.
       // Tries, in order: filename match, employer-name-on-document match
       // (both cheap, direct evidence), then employee-name overlap scoring
       // across every client as a fallback (more expensive, fuzzier signal).
       //
-      // fileUrl points at a Vercel Blob object holding the JSON-encoded
-      // {data, type} payload the browser already converted the file into —
-      // fetched server-side here rather than received directly in the
-      // request body, since that body was hitting Vercel's hard 4.5MB
-      // per-function limit (see conversation 18 Aug 2026).
-      const { fileUrl, fileName, automationCommanderSheetId: idAcId } = req.body;
-      if (!fileUrl || !idAcId) {
-        return res.status(400).json({ success: false, error: "Missing fileUrl or automationCommanderSheetId" });
+      // uploadId identifies a payload assembled in Redis via repeated
+      // upload_payroll_chunk calls above.
+      const { uploadId, fileName, automationCommanderSheetId: idAcId } = req.body;
+      if (!uploadId || !idAcId) {
+        return res.status(400).json({ success: false, error: "Missing uploadId or automationCommanderSheetId" });
       }
       let fileData;
       try {
-        const blobResp = await fetch(fileUrl);
-        if (!blobResp.ok) throw new Error(`Failed to fetch uploaded file (${blobResp.status})`);
-        fileData = await blobResp.json();
+        const raw = await redisClient.get(`payroll_upload:${uploadId}`);
+        if (!raw) throw new Error("Upload not found or expired — please try uploading again");
+        fileData = JSON.parse(raw);
         if (!fileData || !fileData.data || !fileData.type) throw new Error("Uploaded file payload was malformed");
       } catch (fetchErr) {
         return res.status(400).json({ success: false, error: "Could not read uploaded file: " + fetchErr.message });
@@ -13227,23 +13256,21 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
       // Stage 1 of the payroll import tool — takes a single already-identified
       // client + an uploaded file and runs the full extraction + write.
       //
-      // fileUrl points at a Vercel Blob object holding the JSON-encoded
-      // {data, type} payload the browser already converted the file into —
-      // fetched server-side here rather than received directly, since that
-      // hit Vercel's hard 4.5MB per-function body limit (conversation 18 Aug
-      // 2026). The blob is cleaned up once this file reaches a final outcome
-      // (complete or genuinely failed) — NOT on CONFIRM_PERIOD, since that
-      // path expects a follow-up call against the same fileUrl.
+      // uploadId identifies a payload assembled in Redis via repeated
+      // upload_payroll_chunk calls (see that action above). The Redis key is
+      // cleaned up once this file reaches a final outcome (complete or
+      // genuinely failed) — NOT on CONFIRM_PERIOD, since that path expects
+      // a follow-up call against the same uploadId.
       const { clientSheetId: payrollClientSheetId, clientName: payrollClientName,
-        fileUrl, confirmedMonth } = req.body;
-      if (!payrollClientSheetId || !fileUrl) {
-        return res.status(400).json({ success: false, error: "Missing clientSheetId or fileUrl" });
+        uploadId, confirmedMonth } = req.body;
+      if (!payrollClientSheetId || !uploadId) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId or uploadId" });
       }
       let fileData;
       try {
-        const blobResp = await fetch(fileUrl);
-        if (!blobResp.ok) throw new Error(`Failed to fetch uploaded file (${blobResp.status})`);
-        fileData = await blobResp.json();
+        const raw = await redisClient.get(`payroll_upload:${uploadId}`);
+        if (!raw) throw new Error("Upload not found or expired — please try uploading again");
+        fileData = JSON.parse(raw);
         if (!fileData || !fileData.data || !fileData.type) throw new Error("Uploaded file payload was malformed");
       } catch (fetchErr) {
         return res.status(400).json({ success: false, error: "Could not read uploaded file: " + fetchErr.message });
@@ -13318,17 +13345,17 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           const d = new Date(); d.setMonth(d.getMonth() - 1);
           const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           const fallback = months[d.getMonth()] + " " + d.getFullYear();
-          // Not a final outcome — do NOT delete the blob, the follow-up
+          // Not a final outcome — do NOT delete the Redis key, the follow-up
           // call with confirmedMonth still needs it.
           return res.status(200).json({ success: true, status: "CONFIRM_PERIOD", extractedData, fallback });
         }
 
         const writeResult = await writePayrollDataToSheet_(sheets, payrollClientSheetId, extractedData, targetMonthStr, validEmployeeNames);
-        await del(fileUrl).catch(e => console.error("  Blob cleanup failed (non-fatal):", e.message));
+        await redisClient.del(`payroll_upload:${uploadId}`).catch(e => console.error("  Upload cleanup failed (non-fatal):", e.message));
         return res.status(200).json({ success: true, status: "COMPLETE", extractedData, ...writeResult });
       } catch (err) {
         console.error("❌ process_payroll_document error:", err);
-        await del(fileUrl).catch(e => console.error("  Blob cleanup failed (non-fatal):", e.message));
+        await redisClient.del(`payroll_upload:${uploadId}`).catch(e => console.error("  Upload cleanup failed (non-fatal):", e.message));
         return res.status(500).json({ success: false, error: err.message });
       }
 

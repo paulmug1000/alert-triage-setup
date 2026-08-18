@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from "react";
-import { upload } from "@vercel/blob/client";
 
 // Helper function defined OUTSIDE component to prevent re-creation on each render
 function getAlertSummary(alert) {
@@ -2990,11 +2989,11 @@ export default function TriageSystem({ onBack }) {
     setToolsFiles(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
   };
 
-  const detectClientForFileId = async (id, fileUrl, fileName) => {
+  const detectClientForFileId = async (id, uploadId, fileName) => {
     updateToolsFile(id, { detectStatus: "detecting" });
     try {
       const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "identify_payroll_client", fileUrl, fileName, automationCommanderSheetId }) });
+        body: JSON.stringify({ action: "identify_payroll_client", uploadId, fileName, automationCommanderSheetId }) });
       const d = await res.json();
       if (!d.success) {
         updateToolsFile(id, { detectStatus: "ambiguous", ambiguousInfo: { error: d.error || "Detection failed", employeeNames: [], candidateScores: [] } });
@@ -3010,22 +3009,33 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
-  // Uploads the converted {data, type} payload straight to Vercel Blob
-  // storage from the browser, then kicks off detection against the
-  // resulting URL. This exists because sending the payload directly in the
-  // /api/triage request body was hitting Vercel's hard 4.5MB per-function
-  // limit — a merged multi-page payroll image easily crosses that once
-  // base64-encoded. See conversation 18 Aug 2026.
+  // Uploads the converted {data, type} payload to our own backend in
+  // pieces, reassembled server-side in Redis before anything else happens.
+  // This replaces an earlier Vercel Blob direct-upload approach that hit a
+  // genuine, currently-unresolved bug on Vercel's own infrastructure —
+  // their client-upload token/proxy endpoint doesn't return a CORS header,
+  // independently confirmed by another developer hitting the identical
+  // symptom on the same package version. Not something fixable from this
+  // codebase, so this sidesteps it entirely rather than working around it.
+  // Chunk size is chosen to stay comfortably under Vercel's 4.5MB request
+  // body limit even with JSON escaping overhead. See conversation 18 Aug 2026.
+  const CHUNK_SIZE = 3000000; // ~3MB per chunk, well under the 4.5MB wall
+
   const uploadAndDetect = async (id, fileData, fileName) => {
-    updateToolsFile(id, { convertMsg: "Uploading..." });
+    const uploadId = id; // reuse the file's own id — already unique per upload
+    const fullPayload = JSON.stringify(fileData);
+    const totalChunks = Math.ceil(fullPayload.length / CHUNK_SIZE);
     try {
-      const blob = await upload(`payroll-${id}.json`, JSON.stringify(fileData), {
-        access: "public",
-        handleUploadUrl: "/api/blob-upload-token",
-        contentType: "application/json",
-      });
-      updateToolsFile(id, { convertStatus: "ready", convertMsg: "Ready.", fileUrl: blob.url });
-      detectClientForFileId(id, blob.url, fileName);
+      for (let i = 0; i < totalChunks; i++) {
+        updateToolsFile(id, { convertMsg: totalChunks > 1 ? `Uploading... ${Math.round(((i + 1) / totalChunks) * 100)}%` : "Uploading..." });
+        const chunk = fullPayload.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "upload_payroll_chunk", uploadId, chunkData: chunk, isFirstChunk: i === 0 }) });
+        const d = await res.json();
+        if (!d.success) throw new Error(d.error || "Chunk upload failed");
+      }
+      updateToolsFile(id, { convertStatus: "ready", convertMsg: "Ready.", uploadId });
+      detectClientForFileId(id, uploadId, fileName);
     } catch (err) {
       updateToolsFile(id, { convertStatus: "error", convertMsg: "Upload failed: " + err.message });
     }
@@ -3101,7 +3111,7 @@ export default function TriageSystem({ onBack }) {
     const newEntries = files.map(file => ({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       file, fileName: file.name,
-      convertStatus: "pending", convertMsg: "", fileUrl: null,
+      convertStatus: "pending", convertMsg: "", uploadId: null,
       detectStatus: "idle", detectMethod: "", client: "", ambiguousInfo: null,
       processStatus: "pending", pendingConfirm: null, result: null, processMsg: "",
     }));
@@ -3124,14 +3134,14 @@ export default function TriageSystem({ onBack }) {
     setToolsFiles(prev => { target = prev.find(f => f.id === id); return prev; });
     if (!target) return;
     const client = (allOutgoingsClients || []).find(c => c.clientName === target.client);
-    if (!client || !target.fileUrl) return;
+    if (!client || !target.uploadId) return;
 
     updateToolsFile(id, { processStatus: "processing", pendingConfirm: null,
       processMsg: confirmedMonth ? `Saving data to ${confirmedMonth}...` : "Sending to AI for payroll processing..." });
     try {
       const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "process_payroll_document", clientSheetId: client.clientSheetId,
-          clientName: target.client, fileUrl: target.fileUrl, confirmedMonth: confirmedMonth || undefined }) });
+          clientName: target.client, uploadId: target.uploadId, confirmedMonth: confirmedMonth || undefined }) });
       const d = await res.json();
       if (!d.success) {
         updateToolsFile(id, { processStatus: "error", processMsg: d.error || "Failed to process document" });

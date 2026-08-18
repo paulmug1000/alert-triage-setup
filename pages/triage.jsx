@@ -1045,16 +1045,11 @@ export default function TriageSystem({ onBack }) {
   const [agentProgressEntries, setAgentProgressEntries] = useState([]);
   const [agentRunStartedAt, setAgentRunStartedAt] = useState(0);
   const [toolsScriptsLoaded, setToolsScriptsLoaded] = useState(false);
-  const [toolsClient, setToolsClient] = useState("");
-  const [toolsFileName, setToolsFileName] = useState("");
-  const [toolsFileData, setToolsFileData] = useState(null); // { data, type }
-  const [toolsStatus, setToolsStatus] = useState("idle"); // idle | converting | ready | processing | confirm_period | complete | error
-  const [toolsMsg, setToolsMsg] = useState("");
-  const [toolsResult, setToolsResult] = useState(null);
-  const [toolsPendingConfirm, setToolsPendingConfirm] = useState(null); // { extractedData, fallback }
-  const [toolsDetectStatus, setToolsDetectStatus] = useState("idle"); // idle | detecting | matched | ambiguous
-  const [toolsDetectMethod, setToolsDetectMethod] = useState("");
-  const [toolsAmbiguousInfo, setToolsAmbiguousInfo] = useState(null); // { employerName, employeeNames, candidateScores, error }
+  // Each entry: { id, file, fileName, convertStatus, convertMsg, fileData,
+  //   detectStatus, detectMethod, client, ambiguousInfo, processStatus,
+  //   pendingConfirm, result, processMsg }
+  const [toolsFiles, setToolsFiles] = useState([]);
+  const [toolsBatchRunning, setToolsBatchRunning] = useState(false);
   const [diagClientName, setDiagClientName] = useState("");
   const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
   const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
@@ -2990,50 +2985,32 @@ export default function TriageSystem({ onBack }) {
     document.head.appendChild(xlsxScript);
   });
 
-  const detectClientForFile = async (fileData, fileName) => {
-    setToolsDetectStatus("detecting");
+  const updateToolsFile = (id, updates) => {
+    setToolsFiles(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
+  };
+
+  const detectClientForFileId = async (id, fileData, fileName) => {
+    updateToolsFile(id, { detectStatus: "detecting" });
     try {
       const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "identify_payroll_client", fileData, fileName, automationCommanderSheetId }) });
       const d = await res.json();
       if (!d.success) {
-        setToolsDetectStatus("ambiguous");
-        setToolsAmbiguousInfo({ error: d.error || "Detection failed", employeeNames: [], candidateScores: [] });
+        updateToolsFile(id, { detectStatus: "ambiguous", ambiguousInfo: { error: d.error || "Detection failed", employeeNames: [], candidateScores: [] } });
         return;
       }
       if (d.status === "MATCHED") {
-        setToolsClient(d.clientName);
-        setToolsDetectStatus("matched");
-        setToolsDetectMethod(d.method);
+        updateToolsFile(id, { detectStatus: "matched", detectMethod: d.method, client: d.clientName });
       } else {
-        setToolsDetectStatus("ambiguous");
-        setToolsAmbiguousInfo({ employerName: d.employerName, employeeNames: d.employeeNames || [], candidateScores: d.candidateScores || [] });
+        updateToolsFile(id, { detectStatus: "ambiguous", ambiguousInfo: { employerName: d.employerName, employeeNames: d.employeeNames || [], candidateScores: d.candidateScores || [] } });
       }
     } catch (err) {
-      setToolsDetectStatus("ambiguous");
-      setToolsAmbiguousInfo({ error: err.message, employeeNames: [], candidateScores: [] });
+      updateToolsFile(id, { detectStatus: "ambiguous", ambiguousInfo: { error: err.message, employeeNames: [], candidateScores: [] } });
     }
   };
 
-  const handleToolsFileSelect = async (file) => {
-    if (!file) return;
-    setToolsFileName(file.name);
-    setToolsFileData(null);
-    setToolsResult(null);
-    setToolsPendingConfirm(null);
-    setToolsClient("");
-    setToolsDetectStatus("idle");
-    setToolsAmbiguousInfo(null);
-    setToolsStatus("converting");
-    setToolsMsg("Preparing file...");
-
-    const finishConversion = (fileData, readyMsg) => {
-      setToolsFileData(fileData);
-      setToolsStatus("ready");
-      setToolsMsg(readyMsg);
-      detectClientForFile(fileData, file.name);
-    };
-
+  const convertOneToolsFile = async (id, file) => {
+    updateToolsFile(id, { convertStatus: "converting", convertMsg: "Preparing file..." });
     try {
       if (!toolsScriptsLoaded) await loadToolsScripts();
 
@@ -3045,7 +3022,9 @@ export default function TriageSystem({ onBack }) {
           excelText += `--- SHEET: ${sheetName} ---\n`;
           excelText += window.XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]) + "\n\n";
         });
-        finishConversion({ data: excelText, type: "text" }, "Excel file parsed and ready.");
+        const fileData = { data: excelText, type: "text" };
+        updateToolsFile(id, { convertStatus: "ready", convertMsg: "Excel file parsed.", fileData });
+        detectClientForFileId(id, fileData, file.name);
         return;
       }
 
@@ -3054,7 +3033,7 @@ export default function TriageSystem({ onBack }) {
         const pdf = await window.pdfjsLib.getDocument(arrayBuffer).promise;
         const scale = 2;
         let totalHeight = 0, maxWidth = 0;
-        setToolsMsg(`Analyzing ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}...`);
+        updateToolsFile(id, { convertMsg: `Analyzing ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}...` });
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const viewport = page.getViewport({ scale });
@@ -3067,7 +3046,7 @@ export default function TriageSystem({ onBack }) {
         const context = canvas.getContext("2d");
         let currentY = 0;
         for (let i = 1; i <= pdf.numPages; i++) {
-          setToolsMsg(`Converting page ${i} of ${pdf.numPages}...`);
+          updateToolsFile(id, { convertMsg: `Converting page ${i} of ${pdf.numPages}...` });
           const page = await pdf.getPage(i);
           const viewport = page.getViewport({ scale });
           const tempCanvas = document.createElement("canvas");
@@ -3079,7 +3058,9 @@ export default function TriageSystem({ onBack }) {
           currentY += viewport.height;
         }
         const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
-        finishConversion({ data: b64, type: "image" }, `Ready! Merged ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}.`);
+        const fileData = { data: b64, type: "image" };
+        updateToolsFile(id, { convertStatus: "ready", convertMsg: `Merged ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}.`, fileData });
+        detectClientForFileId(id, fileData, file.name);
         return;
       }
 
@@ -3087,44 +3068,95 @@ export default function TriageSystem({ onBack }) {
       const reader = new FileReader();
       reader.onload = (e) => {
         const b64 = e.target.result.split(",")[1];
-        finishConversion({ data: b64, type: "image" }, "Image ready.");
+        const fileData = { data: b64, type: "image" };
+        updateToolsFile(id, { convertStatus: "ready", convertMsg: "Image ready.", fileData });
+        detectClientForFileId(id, fileData, file.name);
       };
-      reader.onerror = () => { setToolsStatus("error"); setToolsMsg("Failed to read image file."); };
+      reader.onerror = () => updateToolsFile(id, { convertStatus: "error", convertMsg: "Failed to read image file." });
       reader.readAsDataURL(file);
     } catch (err) {
-      setToolsStatus("error");
-      setToolsMsg("Error reading file: " + err.message);
+      updateToolsFile(id, { convertStatus: "error", convertMsg: "Error reading file: " + err.message });
     }
   };
 
-  const handleToolsProcess = async (confirmedMonth) => {
-    const client = (allOutgoingsClients || []).find(c => c.clientName === toolsClient);
-    if (!client || !toolsFileData) return;
-    setToolsStatus("processing");
-    setToolsMsg(confirmedMonth ? `Saving data to ${confirmedMonth}...` : "Sending to AI for payroll processing...");
-    setToolsPendingConfirm(null);
+  const handleToolsFilesSelect = (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    const newEntries = files.map(file => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file, fileName: file.name,
+      convertStatus: "pending", convertMsg: "", fileData: null,
+      detectStatus: "idle", detectMethod: "", client: "", ambiguousInfo: null,
+      processStatus: "pending", pendingConfirm: null, result: null, processMsg: "",
+    }));
+    setToolsFiles(prev => [...prev, ...newEntries]);
+    // Conversion is client-side (canvas/CPU work, no external API) so these
+    // can run concurrently — only the detect/process steps that follow hit
+    // Claude, and those happen one at a time via the batch queue below.
+    newEntries.forEach(entry => convertOneToolsFile(entry.id, entry.file));
+  };
+
+  // Finds the next file in the queue that's ready to be processed (converted,
+  // has a client assigned — either detected or manually picked — and hasn't
+  // already been processed or isn't already mid-flight).
+  const findNextQueuedFile = (files) => files.find(f =>
+    f.convertStatus === "ready" && f.client && f.processStatus === "pending"
+  );
+
+  const processOneToolsFile = async (id, confirmedMonth) => {
+    let target;
+    setToolsFiles(prev => { target = prev.find(f => f.id === id); return prev; });
+    if (!target) return;
+    const client = (allOutgoingsClients || []).find(c => c.clientName === target.client);
+    if (!client || !target.fileData) return;
+
+    updateToolsFile(id, { processStatus: "processing", pendingConfirm: null,
+      processMsg: confirmedMonth ? `Saving data to ${confirmedMonth}...` : "Sending to AI for payroll processing..." });
     try {
       const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "process_payroll_document", clientSheetId: client.clientSheetId,
-          clientName: toolsClient, fileData: toolsFileData, confirmedMonth: confirmedMonth || undefined }) });
+          clientName: target.client, fileData: target.fileData, confirmedMonth: confirmedMonth || undefined }) });
       const d = await res.json();
       if (!d.success) {
-        setToolsStatus("error"); setToolsMsg(d.error || "Failed to process document");
+        updateToolsFile(id, { processStatus: "error", processMsg: d.error || "Failed to process document" });
+        continueToolsBatch();
         return;
       }
       if (d.status === "CONFIRM_PERIOD") {
-        setToolsPendingConfirm({ extractedData: d.extractedData, fallback: d.fallback });
-        setToolsStatus("confirm_period");
-        setToolsMsg("");
+        // Pause the batch here — this file needs a human decision before
+        // anything continues. continueToolsBatch() is called again once
+        // that decision is made (see the Yes/Cancel buttons in the JSX).
+        updateToolsFile(id, { processStatus: "confirm_period", pendingConfirm: { extractedData: d.extractedData, fallback: d.fallback }, processMsg: "" });
+        setToolsBatchRunning(false);
         return;
       }
-      setToolsResult(d);
-      setToolsStatus(d.writeSuccess ? "complete" : "error");
-      setToolsMsg(d.writeSuccess ? "" : (d.error || "Write failed"));
+      updateToolsFile(id, { processStatus: d.writeSuccess ? "complete" : "error", result: d, processMsg: d.writeSuccess ? "" : (d.error || "Write failed") });
+      continueToolsBatch();
     } catch (err) {
-      setToolsStatus("error");
-      setToolsMsg(err.message);
+      updateToolsFile(id, { processStatus: "error", processMsg: err.message });
+      continueToolsBatch();
     }
+  };
+
+  // Advances the batch to the next queued file, if any, or stops if the
+  // queue is empty or everything remaining needs human input (ambiguous
+  // client, or paused on a period confirmation).
+  const continueToolsBatch = () => {
+    setToolsFiles(prev => {
+      const next = findNextQueuedFile(prev);
+      if (next) {
+        setToolsBatchRunning(true);
+        processOneToolsFile(next.id);
+      } else {
+        setToolsBatchRunning(false);
+      }
+      return prev;
+    });
+  };
+
+  const startToolsBatch = () => {
+    if (toolsBatchRunning) return;
+    continueToolsBatch();
   };
 
   const loadOverview = async () => {
@@ -5790,162 +5822,186 @@ export default function TriageSystem({ onBack }) {
 
   // ── TOOLS SCREEN (payroll import — first slice, single client/file) ────────
   if (activeNav === "tools") {
-    const selectedToolsClient = (allOutgoingsClients || []).find(c => c.clientName === toolsClient);
     const categoryLabels = {
       grossPay: "Gross pay", eeNic: "Ee NIC", erNic: "Er NIC",
       studLoan: "Student loan", eePension: "Ee pension", erPension: "Er pension", paye: "PAYE",
     };
+    const readyToStart = (toolsFiles || []).some(f => f.convertStatus === "ready" && f.client && f.processStatus === "pending");
+    const completeCount = (toolsFiles || []).filter(f => f.processStatus === "complete").length;
+    const errorCount = (toolsFiles || []).filter(f => f.processStatus === "error").length;
 
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
-        <div style={{ padding: "20px", maxWidth: "800px" }}>
+        <div style={{ padding: "20px", maxWidth: "900px" }}>
           <h2 style={{ margin: "0 0 6px", fontSize: "20px", fontWeight: "700" }}>Tools</h2>
           <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
-            Payroll import — upload a client's payroll document (PDF, image, or Excel) and the system will work out which client it belongs to automatically. Time report import isn't built yet; this only handles payroll for now.
+            Payroll import — upload several clients' payroll documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can't work out is flagged for you to assign. Time report import isn't built yet; this only handles payroll for now.
           </p>
 
           <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
             <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Import Payroll</h3>
 
             <div style={{ marginBottom: "14px" }}>
-              <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Payroll document</label>
-              <input type="file" accept=".pdf,image/*,.xlsx,.xls,.csv"
-                onChange={e => handleToolsFileSelect(e.target.files[0])}
+              <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Payroll documents</label>
+              <input type="file" multiple accept=".pdf,image/*,.xlsx,.xls,.csv"
+                onChange={e => { handleToolsFilesSelect(e.target.files); e.target.value = ""; }}
                 style={{ width: "100%", fontSize: "13px" }} />
-              {toolsFileName && <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>{toolsFileName}</div>}
             </div>
 
-            {toolsDetectStatus === "detecting" && (
-              <div style={{ fontSize: "13px", color: "#666", marginBottom: "14px" }}><Spinner /> Working out which client this belongs to...</div>
-            )}
-
-            {toolsDetectStatus === "matched" && (
-              <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "14px" }}>
-                ✓ Detected client: <strong>{toolsClient}</strong>
-                {" "}<span style={{ color: "#888" }}>
-                  ({toolsDetectMethod === "filename" ? "matched by filename" : toolsDetectMethod === "document_name" ? "matched by name on document" : "matched by employee names"})
+            {toolsFiles.length > 0 && (
+              <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "6px" }}>
+                <button
+                  disabled={!readyToStart || toolsBatchRunning}
+                  onClick={startToolsBatch}
+                  style={{ padding: "8px 20px", background: (!readyToStart || toolsBatchRunning) ? "#ccc" : "#0066cc",
+                    color: "#fff", border: "none", borderRadius: "6px",
+                    cursor: (!readyToStart || toolsBatchRunning) ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                  {toolsBatchRunning ? <><Spinner color="#fff" /> Processing...</> : "Process All"}
+                </button>
+                <span style={{ fontSize: "12px", color: "#888" }}>
+                  {completeCount} of {toolsFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
                 </span>
-              </div>
-            )}
-
-            {toolsDetectStatus === "ambiguous" && (
-              <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
-                ⚠️ Couldn't work out the client automatically{toolsAmbiguousInfo?.error ? ` (${toolsAmbiguousInfo.error})` : ""} — please select it below.
-                {toolsAmbiguousInfo?.candidateScores?.length > 0 && (
-                  <div style={{ marginTop: "6px", fontSize: "12px", color: "#92400e" }}>
-                    Closest guesses: {toolsAmbiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div style={{ marginBottom: "14px" }}>
-              <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>
-                Client {toolsDetectStatus === "matched" ? "(detected — change if wrong)" : ""}
-              </label>
-              <select value={toolsClient} onChange={e => { setToolsClient(e.target.value); setToolsResult(null); setToolsPendingConfirm(null); }}
-                style={{ width: "100%", padding: "8px 10px", border: `1px solid ${toolsDetectStatus === "ambiguous" && !toolsClient ? "#fbbf24" : "#ddd"}`, borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }}>
-                <option value="">Select a client...</option>
-                {(allOutgoingsClients || []).map(c => (
-                  <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
-                ))}
-              </select>
-            </div>
-
-            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <button
-                disabled={!selectedToolsClient || !toolsFileData || toolsStatus === "processing" || toolsStatus === "converting"}
-                onClick={() => handleToolsProcess()}
-                style={{ padding: "8px 20px", background: (!selectedToolsClient || !toolsFileData || toolsStatus === "processing" || toolsStatus === "converting") ? "#ccc" : "#0066cc",
-                  color: "#fff", border: "none", borderRadius: "6px",
-                  cursor: (!selectedToolsClient || !toolsFileData) ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
-                {toolsStatus === "converting" ? "Preparing file..." : toolsStatus === "processing" ? "Processing..." : "Process File"}
-              </button>
-              {toolsMsg && (
-                <span style={{ fontSize: "13px", color: toolsStatus === "error" ? "#dc2626" : "#666" }}>{toolsMsg}</span>
-              )}
-            </div>
-
-            {toolsStatus === "confirm_period" && toolsPendingConfirm && (
-              <div style={{ marginTop: "14px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "12px 14px" }}>
-                <div style={{ fontSize: "13px", fontWeight: "700", color: "#664d03", marginBottom: "6px" }}>Date not found</div>
-                <div style={{ fontSize: "13px", color: "#664d03", marginBottom: "10px" }}>
-                  Would you like to apply this data to the most recent period: <strong>{toolsPendingConfirm.fallback}</strong>?
-                </div>
-                <div style={{ display: "flex", gap: "10px" }}>
-                  <button onClick={() => handleToolsProcess(toolsPendingConfirm.fallback)}
-                    style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                    Yes, apply
-                  </button>
-                  <button onClick={() => { setToolsPendingConfirm(null); setToolsStatus("ready"); setToolsMsg("Cancelled — please check the document and try again."); }}
-                    style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                    Cancel
-                  </button>
-                </div>
               </div>
             )}
           </div>
 
-          {toolsResult && toolsStatus === "complete" && (
-            <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-              <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Result — {toolsResult.targetMonthStr}</h3>
-              <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "14px" }}>
-                ✓ Updated {toolsResult.updateCount} row{toolsResult.updateCount !== 1 ? "s" : ""} in column {toolsResult.startCol}
-              </div>
+          {toolsFiles.map(f => (
+            <div key={f.id} style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px", marginBottom: "14px" }}>
+              <div style={{ fontSize: "14px", fontWeight: "700", color: "#1a1a1a", marginBottom: "8px" }}>{f.fileName}</div>
 
-              {toolsResult.totalsCheck && (
-                <div style={{ marginBottom: "16px" }}>
-                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "6px" }}>
-                    Totals check <span style={{ fontWeight: "400", color: "#888" }}>
-                      ({toolsResult.totalsSource === "document" ? "from a totals row on the document" : "AI-calculated — no totals row found on the document"})
-                    </span>
-                  </div>
-                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px" }}>
-                    <thead>
-                      <tr style={{ borderBottom: "2px solid #e0e0e0" }}>
-                        {["Category", "Document", "Written", "Diff", ""].map(h => (
-                          <th key={h} style={{ padding: "5px 8px", textAlign: "left", fontWeight: "600", color: "#555" }}>{h}</th>
+              {(f.convertStatus === "converting" || f.convertStatus === "pending") && (
+                <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.convertMsg || "Preparing..."}</div>
+              )}
+              {f.convertStatus === "error" && (
+                <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.convertMsg}</div>
+              )}
+
+              {f.convertStatus === "ready" && (
+                <>
+                  {f.detectStatus === "detecting" && (
+                    <div style={{ fontSize: "13px", color: "#666", marginBottom: "8px" }}><Spinner /> Working out which client this belongs to...</div>
+                  )}
+                  {f.detectStatus === "matched" && f.processStatus === "pending" && (
+                    <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
+                      ✓ Detected client: <strong>{f.client}</strong>
+                      {" "}<span style={{ color: "#888" }}>
+                        ({f.detectMethod === "filename" ? "matched by filename" : f.detectMethod === "document_name" ? "matched by name on document" : "matched by employee names"})
+                      </span>
+                    </div>
+                  )}
+                  {f.detectStatus === "ambiguous" && f.processStatus === "pending" && (
+                    <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
+                      ⚠️ Couldn't work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} — please select it below.
+                      {f.ambiguousInfo?.candidateScores?.length > 0 && (
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#92400e" }}>
+                          Closest guesses: {f.ambiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {f.processStatus === "pending" && (
+                    <div style={{ marginBottom: "6px" }}>
+                      <select value={f.client} onChange={e => updateToolsFile(f.id, { client: e.target.value })}
+                        style={{ width: "100%", padding: "7px 10px", border: `1px solid ${f.detectStatus === "ambiguous" && !f.client ? "#fbbf24" : "#ddd"}`, borderRadius: "6px", fontSize: "13px", boxSizing: "border-box" }}>
+                        <option value="">Select a client...</option>
+                        {(allOutgoingsClients || []).map(c => (
+                          <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
                         ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {toolsResult.totalsCheck.map(row => (
-                        <tr key={row.category} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                          <td style={{ padding: "5px 8px" }}>{categoryLabels[row.category] || row.category}</td>
-                          <td style={{ padding: "5px 8px" }}>£{row.documentTotal.toFixed(2)}</td>
-                          <td style={{ padding: "5px 8px" }}>£{row.writtenTotal.toFixed(2)}</td>
-                          <td style={{ padding: "5px 8px", color: row.reconciled ? "#166534" : "#dc2626" }}>£{row.diff.toFixed(2)}</td>
-                          <td style={{ padding: "5px 8px" }}>{row.reconciled ? "✓" : "⚠️"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                      </select>
+                    </div>
+                  )}
 
-              {toolsResult.newStarters?.length > 0 && (
-                <div style={{ marginBottom: "12px" }}>
-                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
-                  {toolsResult.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
-                </div>
-              )}
-              {toolsResult.unmatched?.length > 0 && (
-                <div style={{ marginBottom: "12px" }}>
-                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#b45309", marginBottom: "4px" }}>⚠️ Unmatched:</div>
-                  {toolsResult.unmatched.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
-                </div>
-              )}
-              {toolsResult.missingFromDoc?.length > 0 && (
-                <div>
-                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>⚪ In sheet, missing from document:</div>
-                  {toolsResult.missingFromDoc.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
-                </div>
-              )}
-              {!toolsResult.newStarters?.length && !toolsResult.unmatched?.length && !toolsResult.missingFromDoc?.length && (
-                <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly — no discrepancies.</div>
+                  {f.processStatus === "processing" && (
+                    <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.processMsg}</div>
+                  )}
+
+                  {f.processStatus === "confirm_period" && f.pendingConfirm && (
+                    <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
+                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#664d03", marginBottom: "6px" }}>Date not found</div>
+                      <div style={{ fontSize: "13px", color: "#664d03", marginBottom: "10px" }}>
+                        Would you like to apply this data to the most recent period: <strong>{f.pendingConfirm.fallback}</strong>?
+                      </div>
+                      <div style={{ display: "flex", gap: "10px" }}>
+                        <button onClick={() => processOneToolsFile(f.id, f.pendingConfirm.fallback)}
+                          style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          Yes, apply
+                        </button>
+                        <button onClick={() => { updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled — please check the document and try again." }); continueToolsBatch(); }}
+                          style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {f.processStatus === "error" && (
+                    <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.processMsg}</div>
+                  )}
+
+                  {f.processStatus === "complete" && f.result && (
+                    <div>
+                      <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
+                        ✓ {f.client} — updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
+                      </div>
+
+                      {f.result.totalsCheck && (
+                        <div style={{ marginBottom: "12px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "6px" }}>
+                            Totals check <span style={{ fontWeight: "400", color: "#888" }}>
+                              ({f.result.totalsSource === "document" ? "from a totals row on the document" : "AI-calculated — no totals row found on the document"})
+                            </span>
+                          </div>
+                          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px" }}>
+                            <thead>
+                              <tr style={{ borderBottom: "2px solid #e0e0e0" }}>
+                                {["Category", "Document", "Written", "Diff", ""].map(h => (
+                                  <th key={h} style={{ padding: "5px 8px", textAlign: "left", fontWeight: "600", color: "#555" }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {f.result.totalsCheck.map(row => (
+                                <tr key={row.category} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                                  <td style={{ padding: "5px 8px" }}>{categoryLabels[row.category] || row.category}</td>
+                                  <td style={{ padding: "5px 8px" }}>£{row.documentTotal.toFixed(2)}</td>
+                                  <td style={{ padding: "5px 8px" }}>£{row.writtenTotal.toFixed(2)}</td>
+                                  <td style={{ padding: "5px 8px", color: row.reconciled ? "#166534" : "#dc2626" }}>£{row.diff.toFixed(2)}</td>
+                                  <td style={{ padding: "5px 8px" }}>{row.reconciled ? "✓" : "⚠️"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      {f.result.newStarters?.length > 0 && (
+                        <div style={{ marginBottom: "8px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
+                          {f.result.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {f.result.unmatched?.length > 0 && (
+                        <div style={{ marginBottom: "8px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#b45309", marginBottom: "4px" }}>⚠️ Unmatched:</div>
+                          {f.result.unmatched.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {f.result.missingFromDoc?.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>⚪ In sheet, missing from document:</div>
+                          {f.result.missingFromDoc.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {!f.result.newStarters?.length && !f.result.unmatched?.length && !f.result.missingFromDoc?.length && (
+                        <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly — no discrepancies.</div>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </div>
-          )}
+          ))}
         </div>
       </NavShell>
     );

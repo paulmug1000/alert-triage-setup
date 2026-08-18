@@ -1051,7 +1051,7 @@ function colIndexToLetter(colNum) {
 
 // Convert column letter(s) to 1-based number. E.g. A→1, AA→27
 /** Log a Claude API call directly to ClaudeUsage tab */
-async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens) {
+async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens, source) {
   if (!automationCommanderSheetId) return;
   const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
   await ensureClaudeUsageTab_(sheets, acIdClean);
@@ -1063,7 +1063,7 @@ async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, a
     requestBody: {
       values: [[
         new Date().toISOString(),
-        "precompute",
+        source || "precompute",
         clientName || "",
         alertType || "",
         (inputTokens || 0) + (outputTokens || 0),
@@ -1072,6 +1072,164 @@ async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, a
     },
   });
   console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} — ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
+}
+
+// ── Payroll import tool (Tools menu, in progress) — helper functions ────────
+
+/**
+ * Writes extracted payroll data to a client's Salaries tab and computes the
+ * totals reconciliation. Mirrors writePayrollData() from 8_AI_Features.gs,
+ * with two differences: no KeyInfo redirect (triage.js already has
+ * clientSheetId directly), and returns structured data instead of a text
+ * log, since this feeds a proper review UI rather than a sidebar textbox.
+ */
+async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, targetMonthStr, validEmployeeNames) {
+  const headerResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Salaries!1:1" });
+  const headers = (headerResp.data.values && headerResp.data.values[0]) || [];
+  let startColIdx0 = -1; // 0-indexed
+  for (let i = 0; i < headers.length; i++) {
+    if (headers[i] && isDateMatchJs_(headers[i], targetMonthStr)) { startColIdx0 = i; break; }
+  }
+  if (startColIdx0 === -1) {
+    return { writeSuccess: false, error: `Could not find column for '${targetMonthStr}' in the Salaries header row.` };
+  }
+  const startColLetter = columnIndexToLetter_(startColIdx0 + 1);
+  const endColLetter = columnIndexToLetter_(startColIdx0 + 7);
+
+  const sheetNames = validEmployeeNames; // already read by the caller from Salaries!A4:A53
+
+  const namesFoundInDoc = extractedData.employees.filter(e => e.mappedName !== "NEW_STARTER").map(e => e.mappedName);
+  const missingFromDoc = sheetNames.filter(n => n && !namesFoundInDoc.includes(n));
+  const newStarters = extractedData.employees.filter(e => e.mappedName === "NEW_STARTER").map(e => e.originalName);
+  const unmatched = [];
+
+  const writeData = [];
+  const writtenTotals = { grossPay: 0, eeNic: 0, erNic: 0, studLoan: 0, eePension: 0, erPension: 0, paye: 0 };
+  let updateCount = 0;
+
+  for (const emp of extractedData.employees) {
+    if (emp.mappedName === "NEW_STARTER") continue;
+    const rowIdx = sheetNames.indexOf(emp.mappedName);
+    if (rowIdx === -1) { unmatched.push(emp.originalName); continue; }
+    const sheetRow = rowIdx + 4;
+    const vals = [emp.grossPay||0, emp.eeNic||0, emp.erNic||0, emp.studLoan||0, emp.eePension||0, emp.erPension||0, emp.paye||0];
+    writeData.push({ range: `Salaries!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`, values: [vals] });
+    writtenTotals.grossPay += vals[0]; writtenTotals.eeNic += vals[1]; writtenTotals.erNic += vals[2];
+    writtenTotals.studLoan += vals[3]; writtenTotals.eePension += vals[4]; writtenTotals.erPension += vals[5]; writtenTotals.paye += vals[6];
+    updateCount++;
+  }
+
+  if (writeData.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: clientSheetId, requestBody: { data: writeData, valueInputOption: "RAW" } });
+  }
+
+  // Totals reconciliation — documentTotal's meaning depends on totalsSource:
+  // "document" = read directly off a totals row (independent evidence);
+  // "calculated" = AI's own sum of the employee lines it extracted (mainly
+  // catches write-step errors, not read-step errors — see conversation 18 Aug 2026).
+  const docTotals = extractedData.totals || {};
+  const totalsSource = extractedData.totalsSource === "document" ? "document" : "calculated";
+  const TOLERANCE = 1.00;
+  const categories = ["grossPay","eeNic","erNic","studLoan","eePension","erPension","paye"];
+  const totalsCheck = categories.map(cat => {
+    const docVal = parseFloat(docTotals[cat]) || 0;
+    const writtenVal = Math.round(writtenTotals[cat] * 100) / 100;
+    const diff = Math.round(Math.abs(docVal - writtenVal) * 100) / 100;
+    return { category: cat, documentTotal: docVal, writtenTotal: writtenVal, diff, reconciled: diff <= TOLERANCE };
+  });
+
+  return {
+    writeSuccess: true, updateCount, targetMonthStr, startCol: startColLetter,
+    missingFromDoc, newStarters, unmatched, totalsSource, totalsCheck,
+  };
+}
+
+function isDateMatchJs_(sheetHeader, aiDate) {
+  if (!sheetHeader || !aiDate) return false;
+  const s1 = String(sheetHeader).toLowerCase();
+  const s2 = String(aiDate).toLowerCase();
+  if (s1 === s2) return true;
+  const months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+  const m1 = months.find(m => s1.includes(m));
+  const m2 = months.find(m => s2.includes(m));
+  const y1 = s1.match(/\d{2,4}/);
+  const y2 = s2.match(/\d{2,4}/);
+  if (m1 && m2 && m1 === m2) {
+    if (!y1 || !y2) return true;
+    const year1 = y1[0].length === 2 ? "20" + y1[0] : y1[0];
+    const year2 = y2[0].length === 2 ? "20" + y2[0] : y2[0];
+    return year1 === year2;
+  }
+  return false;
+}
+
+function columnIndexToLetter_(colNum1Indexed) {
+  let s = "";
+  let n = colNum1Indexed;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+/**
+ * Minimal CSV parser (handles quoted fields with embedded commas/newlines) —
+ * written inline rather than adding a new npm dependency for this one use.
+ */
+function parseCsvSimple_(text) {
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ""; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i + 1] === '\n') i++;
+        row.push(field); rows.push(row); row = []; field = "";
+      } else field += c;
+    }
+  }
+  if (field !== "" || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+/**
+ * Ports the dynamic-header-detection + vertical key-value transform from
+ * executeGeminiRequest() in 8_AI_Features.gs — same technique, same reason
+ * (keeps token usage down, keeps columns aligned for the AI regardless of
+ * which row the real header sits on in an exported CSV/Excel sheet).
+ */
+function buildVerticalCsvText_(csvText) {
+  let cleanData = "";
+  try {
+    const rows = parseCsvSimple_(csvText);
+    if (rows.length > 1) {
+      let headerIndex = 0;
+      for (let i = 0; i < Math.min(10, rows.length); i++) {
+        const populatedCols = rows[i].filter(c => c && c.trim() !== "");
+        if (populatedCols.length > 2) { headerIndex = i; break; }
+      }
+      const headers = rows[headerIndex].map(h => (h || "").trim());
+      for (let i = headerIndex + 1; i < rows.length; i++) {
+        const row = rows[i];
+        let rowText = "---\n";
+        for (let j = 0; j < headers.length; j++) {
+          let val = row[j] ? row[j].trim() : "";
+          if (val === "" || val === "NaN") val = "0";
+          rowText += `${headers[j]}: ${val}\n`;
+        }
+        cleanData += rowText;
+      }
+    }
+  } catch (e) { /* fall through with whatever was built so far */ }
+  return cleanData;
 }
 
 /** Ensure ClaudeUsage tab exists in Automation Commander with correct headers and config */
@@ -12880,6 +13038,97 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         });
       } catch (err) {
         console.error(`❌ Error in check_existing_task:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "process_payroll_document") {
+      // Stage 1 of the payroll import tool (Tools menu, in progress) — takes a
+      // single already-identified client + an uploaded file (image or CSV text,
+      // same shape the browser-side pdf.js/xlsx.js conversion already produces
+      // in the original GAS sidebar) and runs the full extraction + write.
+      // Client auto-detection and the batch upload UI are separate, later stages.
+      const { clientSheetId: payrollClientSheetId, clientName: payrollClientName,
+        fileData, confirmedMonth } = req.body;
+      if (!payrollClientSheetId || !fileData || !fileData.data || !fileData.type) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId or fileData" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+
+        const empResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: payrollClientSheetId, range: "Salaries!A4:A53",
+        });
+        const validEmployeeNames = (empResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+        const namesString = JSON.stringify(validEmployeeNames);
+        const currentDateContext = new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+
+        const promptText = `You are a payroll data extraction assistant. Analyze this payroll document.
+
+TASK 1: Identify the Period. Find the "Ending Date", "Process Date", or "Tax Point". Output format: "MMM YYYY" (e.g. "Jan 2026").
+- CRITICAL DATE HANDLING: The current real-world date context is ${currentDateContext}. If the document explicitly states a month but does NOT provide a year, calculate and output the most recent instance of that month relative to this context date (e.g. if context is Jun 2026 and doc says May, output "May 2026"; if doc says Dec, output "Dec 2025"). If no period info is found at all, output "Unknown".
+
+TASK 2: Extract Employee Data visible ON THE DOCUMENT.
+- Go through the document row by row. Extract each person exactly ONCE.
+- Match each name on the document to the closest name in this list: ${namesString}.
+- If a name on the document has NO MATCH in the list, set mappedName to "NEW_STARTER".
+- CRITICAL: Do NOT create entries for names in the list if they do not physically appear on the document.
+- STRICT EXTRACTION RULE: Do NOT perform any math or calculations. Extract the exact numbers as they appear.
+- STRICT FIELD MAPPING: map values to output fields based strictly on explicit key names (e.g. 'PAYE' -> 'paye', 'Er NICs' -> 'erNic', 'Employee gross pay' -> 'grossPay').
+- Extract data for THIS PERIOD ONLY (no YTD).
+
+TASK 3: Totals. Look for a totals/summary row or section on the document covering all employees (e.g. "Total Gross Pay", "Total PAYE").
+- If found, extract those totals exactly as printed, and set totalsSource to "document".
+- If NOT found, calculate the totals yourself by summing the individual employee figures from Task 2, and set totalsSource to "calculated".
+
+Return ONLY valid JSON, no other text, matching exactly this structure:
+{
+  "period": "MMM YYYY or Unknown",
+  "employees": [{ "originalName": "", "mappedName": "", "grossPay": 0, "eeNic": 0, "erNic": 0, "studLoan": 0, "eePension": 0, "erPension": 0, "paye": 0 }],
+  "totalsSource": "document or calculated",
+  "totals": { "grossPay": 0, "eeNic": 0, "erNic": 0, "studLoan": 0, "eePension": 0, "erPension": 0, "paye": 0 }
+}`;
+
+        let content;
+        if (fileData.type === "text") {
+          const verticalText = buildVerticalCsvText_(fileData.data);
+          content = promptText + "\n\nDOCUMENT DATA (Vertical List):\n" + verticalText;
+        } else {
+          content = [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: fileData.data } },
+            { type: "text", text: promptText },
+          ];
+        }
+
+        const aiMsg = await anthropic.messages.create({ model: "claude-sonnet-4-6", max_tokens: 6000, messages: [{ role: "user", content }] });
+        await logClaudeUsage_(sheets, automationCommanderSheetId, payrollClientName || "", "payroll_extract", aiMsg.usage?.input_tokens || 0, aiMsg.usage?.output_tokens || 0, "payroll_tool").catch(() => {});
+
+        const rawText = aiMsg.content[0].type === "text" ? aiMsg.content[0].text : "";
+        const cleanText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+        const jsonStart = cleanText.indexOf("{");
+        const jsonEnd = cleanText.lastIndexOf("}");
+        let extractedData;
+        try {
+          extractedData = JSON.parse(cleanText.slice(jsonStart, jsonEnd + 1));
+        } catch (parseErr) {
+          console.error("=== BROKEN AI JSON OUTPUT (payroll) ===\n" + rawText);
+          return res.status(500).json({ success: false, error: "AI generated malformed JSON: " + parseErr.message });
+        }
+        if (!extractedData || !Array.isArray(extractedData.employees)) {
+          return res.status(500).json({ success: false, error: "AI extracted data but 'employees' list was missing or invalid" });
+        }
+
+        const targetMonthStr = confirmedMonth || extractedData.period;
+        if (!targetMonthStr || String(targetMonthStr).toLowerCase() === "unknown" || String(targetMonthStr).toLowerCase() === "null") {
+          const d = new Date(); d.setMonth(d.getMonth() - 1);
+          const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          const fallback = months[d.getMonth()] + " " + d.getFullYear();
+          return res.status(200).json({ success: true, status: "CONFIRM_PERIOD", extractedData, fallback });
+        }
+
+        const writeResult = await writePayrollDataToSheet_(sheets, payrollClientSheetId, extractedData, targetMonthStr, validEmployeeNames);
+        return res.status(200).json({ success: true, status: "COMPLETE", extractedData, ...writeResult });
+      } catch (err) {
+        console.error("❌ process_payroll_document error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

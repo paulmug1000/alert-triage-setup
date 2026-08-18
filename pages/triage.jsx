@@ -779,7 +779,7 @@ const GLOBAL_STYLES = `
 `;
 
 // Persistent top bar — rendered around every screen
-function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, onInvoices, onRetainers, onSettings, homeAlertCount, taskCount, children }) {
+function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, onInvoices, onRetainers, onTools, onSettings, homeAlertCount, taskCount, children }) {
   const [showMore, setShowMore] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(false);
 
@@ -825,6 +825,7 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoing
     { key: "retainers", label: "Retainers", handler: onRetainers },
     { key: "overview", label: "Overview", handler: onOverview },
     { key: "appLog", label: "App Log", handler: onAppLog },
+    { key: "tools", label: "Tools", handler: onTools },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
 
@@ -1043,6 +1044,14 @@ export default function TriageSystem({ onBack }) {
   const [agentRunId, setAgentRunId] = useState(null);
   const [agentProgressEntries, setAgentProgressEntries] = useState([]);
   const [agentRunStartedAt, setAgentRunStartedAt] = useState(0);
+  const [toolsScriptsLoaded, setToolsScriptsLoaded] = useState(false);
+  const [toolsClient, setToolsClient] = useState("");
+  const [toolsFileName, setToolsFileName] = useState("");
+  const [toolsFileData, setToolsFileData] = useState(null); // { data, type }
+  const [toolsStatus, setToolsStatus] = useState("idle"); // idle | converting | ready | processing | confirm_period | complete | error
+  const [toolsMsg, setToolsMsg] = useState("");
+  const [toolsResult, setToolsResult] = useState(null);
+  const [toolsPendingConfirm, setToolsPendingConfirm] = useState(null); // { extractedData, fallback }
   const [diagClientName, setDiagClientName] = useState("");
   const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
   const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
@@ -1169,6 +1178,20 @@ export default function TriageSystem({ onBack }) {
       })
       .catch(e => console.error("get_claude_settings error:", e))
       .finally(() => setSettingsLoading(false));
+  };
+  const handleNavTools = () => {
+    setActiveNav("tools");
+    if (!allClientsLoaded) {
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
+      }).then(r => r.json()).then(data => {
+        if (data.success && Array.isArray(data.clients)) {
+          setAllOutgoingsClients(data.clients);
+          setAllClientsLoaded(true);
+        }
+      }).catch(e => console.error("get_all_clients error:", e));
+    }
   };
   const handleNavOutgoings = () => {
     setActiveNav("outgoings");
@@ -2940,6 +2963,137 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
+  // ── Payroll import tool (Tools screen) ──────────────────────────────────
+  // File conversion (PDF merge-to-image, Excel/CSV parse) ported from the
+  // original SalariesUI.html — same libraries, same technique, run
+  // client-side here for the same reason it had to be client-side there:
+  // canvas-based PDF rendering isn't something a Node backend can do.
+  const loadToolsScripts = () => new Promise((resolve, reject) => {
+    if (window.pdfjsLib && window.XLSX) { setToolsScriptsLoaded(true); resolve(); return; }
+    let remaining = 2;
+    const done = () => { remaining--; if (remaining === 0) { setToolsScriptsLoaded(true); resolve(); } };
+    const pdfScript = document.createElement("script");
+    pdfScript.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js";
+    pdfScript.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+      done();
+    };
+    pdfScript.onerror = reject;
+    document.head.appendChild(pdfScript);
+    const xlsxScript = document.createElement("script");
+    xlsxScript.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    xlsxScript.onload = done;
+    xlsxScript.onerror = reject;
+    document.head.appendChild(xlsxScript);
+  });
+
+  const handleToolsFileSelect = async (file) => {
+    if (!file) return;
+    setToolsFileName(file.name);
+    setToolsFileData(null);
+    setToolsResult(null);
+    setToolsPendingConfirm(null);
+    setToolsStatus("converting");
+    setToolsMsg("Preparing file...");
+    try {
+      if (!toolsScriptsLoaded) await loadToolsScripts();
+
+      if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.name.endsWith(".csv")) {
+        const buf = await file.arrayBuffer();
+        const workbook = window.XLSX.read(new Uint8Array(buf), { type: "array" });
+        let excelText = "";
+        workbook.SheetNames.forEach(sheetName => {
+          excelText += `--- SHEET: ${sheetName} ---\n`;
+          excelText += window.XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]) + "\n\n";
+        });
+        setToolsFileData({ data: excelText, type: "text" });
+        setToolsStatus("ready");
+        setToolsMsg("Excel file parsed and ready.");
+        return;
+      }
+
+      if (file.type === "application/pdf") {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await window.pdfjsLib.getDocument(arrayBuffer).promise;
+        const scale = 2;
+        let totalHeight = 0, maxWidth = 0;
+        setToolsMsg(`Analyzing ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}...`);
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale });
+          totalHeight += viewport.height;
+          if (viewport.width > maxWidth) maxWidth = viewport.width;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = maxWidth;
+        canvas.height = totalHeight;
+        const context = canvas.getContext("2d");
+        let currentY = 0;
+        for (let i = 1; i <= pdf.numPages; i++) {
+          setToolsMsg(`Converting page ${i} of ${pdf.numPages}...`);
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale });
+          const tempCanvas = document.createElement("canvas");
+          tempCanvas.width = viewport.width;
+          tempCanvas.height = viewport.height;
+          const tempContext = tempCanvas.getContext("2d");
+          await page.render({ canvasContext: tempContext, viewport }).promise;
+          context.drawImage(tempCanvas, 0, currentY);
+          currentY += viewport.height;
+        }
+        const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
+        setToolsFileData({ data: b64, type: "image" });
+        setToolsStatus("ready");
+        setToolsMsg(`Ready! Merged ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}.`);
+        return;
+      }
+
+      // Plain image
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const b64 = e.target.result.split(",")[1];
+        setToolsFileData({ data: b64, type: "image" });
+        setToolsStatus("ready");
+        setToolsMsg("Image ready.");
+      };
+      reader.onerror = () => { setToolsStatus("error"); setToolsMsg("Failed to read image file."); };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      setToolsStatus("error");
+      setToolsMsg("Error reading file: " + err.message);
+    }
+  };
+
+  const handleToolsProcess = async (confirmedMonth) => {
+    const client = (allOutgoingsClients || []).find(c => c.clientName === toolsClient);
+    if (!client || !toolsFileData) return;
+    setToolsStatus("processing");
+    setToolsMsg(confirmedMonth ? `Saving data to ${confirmedMonth}...` : "Sending to AI for payroll processing...");
+    setToolsPendingConfirm(null);
+    try {
+      const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "process_payroll_document", clientSheetId: client.clientSheetId,
+          clientName: toolsClient, fileData: toolsFileData, confirmedMonth: confirmedMonth || undefined }) });
+      const d = await res.json();
+      if (!d.success) {
+        setToolsStatus("error"); setToolsMsg(d.error || "Failed to process document");
+        return;
+      }
+      if (d.status === "CONFIRM_PERIOD") {
+        setToolsPendingConfirm({ extractedData: d.extractedData, fallback: d.fallback });
+        setToolsStatus("confirm_period");
+        setToolsMsg("");
+        return;
+      }
+      setToolsResult(d);
+      setToolsStatus(d.writeSuccess ? "complete" : "error");
+      setToolsMsg(d.writeSuccess ? "" : (d.error || "Write failed"));
+    } catch (err) {
+      setToolsStatus("error");
+      setToolsMsg(err.message);
+    }
+  };
+
   const loadOverview = async () => {
     try {
       setOverviewLoading(true);
@@ -3672,7 +3826,7 @@ export default function TriageSystem({ onBack }) {
   // Screen: Ignored Alerts
   if (screen === "ignoredAlerts" && activeNav === "home") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Ignored Alerts</h1>
@@ -4349,7 +4503,7 @@ export default function TriageSystem({ onBack }) {
     const noClient = !outgoingsClient || !outgoingsData;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {outgoingsEditCell && <EditModal />}
         {directCostsEditSlot && <DirectCostsEditModal />}
         {outgoingsEstimate && <EstimateModal />}
@@ -5186,7 +5340,7 @@ export default function TriageSystem({ onBack }) {
     const noInvClient = !invoicesClient;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {invoicesEditSlot && <InvoicesEditModal />}
         {invoicesNewJob && <InvoicesNewJobModal />}
         <div style={{ padding: "20px" }}>
@@ -5448,7 +5602,7 @@ export default function TriageSystem({ onBack }) {
     const noRetClient = !retainersClient;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {retainersEditJob && (
           <RetainersEditModal
             key={retainersEditJob.parentRowNum}
@@ -5601,6 +5755,145 @@ export default function TriageSystem({ onBack }) {
   }
 
 
+  // ── TOOLS SCREEN (payroll import — first slice, single client/file) ────────
+  if (activeNav === "tools") {
+    const selectedToolsClient = (allOutgoingsClients || []).find(c => c.clientName === toolsClient);
+    const categoryLabels = {
+      grossPay: "Gross pay", eeNic: "Ee NIC", erNic: "Er NIC",
+      studLoan: "Student loan", eePension: "Ee pension", erPension: "Er pension", paye: "PAYE",
+    };
+
+    return withModal(
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        <div style={{ padding: "20px", maxWidth: "800px" }}>
+          <h2 style={{ margin: "0 0 6px", fontSize: "20px", fontWeight: "700" }}>Tools</h2>
+          <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
+            Payroll import — pick a client, upload their payroll document (PDF, image, or Excel), and review the result before it's confirmed. Time report import isn't built yet; this only handles payroll for now.
+          </p>
+
+          <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+            <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Import Payroll</h3>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "14px" }}>
+              <div>
+                <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Client</label>
+                <select value={toolsClient} onChange={e => { setToolsClient(e.target.value); setToolsResult(null); setToolsPendingConfirm(null); setToolsStatus(toolsFileData ? "ready" : "idle"); setToolsMsg(""); }}
+                  style={{ width: "100%", padding: "8px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }}>
+                  <option value="">Select a client...</option>
+                  {(allOutgoingsClients || []).map(c => (
+                    <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Payroll document</label>
+                <input type="file" accept=".pdf,image/*,.xlsx,.xls,.csv"
+                  onChange={e => handleToolsFileSelect(e.target.files[0])}
+                  style={{ width: "100%", fontSize: "13px" }} />
+                {toolsFileName && <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>{toolsFileName}</div>}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              <button
+                disabled={!selectedToolsClient || !toolsFileData || toolsStatus === "processing" || toolsStatus === "converting"}
+                onClick={() => handleToolsProcess()}
+                style={{ padding: "8px 20px", background: (!selectedToolsClient || !toolsFileData || toolsStatus === "processing" || toolsStatus === "converting") ? "#ccc" : "#0066cc",
+                  color: "#fff", border: "none", borderRadius: "6px",
+                  cursor: (!selectedToolsClient || !toolsFileData) ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                {toolsStatus === "converting" ? "Preparing file..." : toolsStatus === "processing" ? "Processing..." : "Process File"}
+              </button>
+              {toolsMsg && (
+                <span style={{ fontSize: "13px", color: toolsStatus === "error" ? "#dc2626" : "#666" }}>{toolsMsg}</span>
+              )}
+            </div>
+
+            {toolsStatus === "confirm_period" && toolsPendingConfirm && (
+              <div style={{ marginTop: "14px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "12px 14px" }}>
+                <div style={{ fontSize: "13px", fontWeight: "700", color: "#664d03", marginBottom: "6px" }}>Date not found</div>
+                <div style={{ fontSize: "13px", color: "#664d03", marginBottom: "10px" }}>
+                  Would you like to apply this data to the most recent period: <strong>{toolsPendingConfirm.fallback}</strong>?
+                </div>
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button onClick={() => handleToolsProcess(toolsPendingConfirm.fallback)}
+                    style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                    Yes, apply
+                  </button>
+                  <button onClick={() => { setToolsPendingConfirm(null); setToolsStatus("ready"); setToolsMsg("Cancelled — please check the document and try again."); }}
+                    style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {toolsResult && toolsStatus === "complete" && (
+            <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+              <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Result — {toolsResult.targetMonthStr}</h3>
+              <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "14px" }}>
+                ✓ Updated {toolsResult.updateCount} row{toolsResult.updateCount !== 1 ? "s" : ""} in column {toolsResult.startCol}
+              </div>
+
+              {toolsResult.totalsCheck && (
+                <div style={{ marginBottom: "16px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "6px" }}>
+                    Totals check <span style={{ fontWeight: "400", color: "#888" }}>
+                      ({toolsResult.totalsSource === "document" ? "from a totals row on the document" : "AI-calculated — no totals row found on the document"})
+                    </span>
+                  </div>
+                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px" }}>
+                    <thead>
+                      <tr style={{ borderBottom: "2px solid #e0e0e0" }}>
+                        {["Category", "Document", "Written", "Diff", ""].map(h => (
+                          <th key={h} style={{ padding: "5px 8px", textAlign: "left", fontWeight: "600", color: "#555" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {toolsResult.totalsCheck.map(row => (
+                        <tr key={row.category} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                          <td style={{ padding: "5px 8px" }}>{categoryLabels[row.category] || row.category}</td>
+                          <td style={{ padding: "5px 8px" }}>£{row.documentTotal.toFixed(2)}</td>
+                          <td style={{ padding: "5px 8px" }}>£{row.writtenTotal.toFixed(2)}</td>
+                          <td style={{ padding: "5px 8px", color: row.reconciled ? "#166534" : "#dc2626" }}>£{row.diff.toFixed(2)}</td>
+                          <td style={{ padding: "5px 8px" }}>{row.reconciled ? "✓" : "⚠️"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {toolsResult.newStarters?.length > 0 && (
+                <div style={{ marginBottom: "12px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
+                  {toolsResult.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                </div>
+              )}
+              {toolsResult.unmatched?.length > 0 && (
+                <div style={{ marginBottom: "12px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#b45309", marginBottom: "4px" }}>⚠️ Unmatched:</div>
+                  {toolsResult.unmatched.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                </div>
+              )}
+              {toolsResult.missingFromDoc?.length > 0 && (
+                <div>
+                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>⚪ In sheet, missing from document:</div>
+                  {toolsResult.missingFromDoc.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                </div>
+              )}
+              {!toolsResult.newStarters?.length && !toolsResult.unmatched?.length && !toolsResult.missingFromDoc?.length && (
+                <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly — no discrepancies.</div>
+              )}
+            </div>
+          )}
+        </div>
+      </NavShell>
+    );
+  }
+
+
   // ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
   if (activeNav === "settings") {
 
@@ -5623,7 +5916,7 @@ export default function TriageSystem({ onBack }) {
     const rows = settingsData?.recentRows || [];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ padding: "20px", maxWidth: "800px" }}>
           <h2 style={{ margin: "0 0 20px", fontSize: "20px", fontWeight: "700" }}>Settings</h2>
 
@@ -5991,7 +6284,7 @@ export default function TriageSystem({ onBack }) {
       : null;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ padding: "20px 20px 0" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <div>
@@ -6089,7 +6382,7 @@ export default function TriageSystem({ onBack }) {
   // Overview screen — must come before all screen-based checks so nav always works
   if (activeNav === "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "24px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
             <h2 style={{ fontSize: "22px", fontWeight: "700", color: "#1a1a1a", margin: 0 }}>Overview</h2>
@@ -6227,7 +6520,7 @@ export default function TriageSystem({ onBack }) {
     const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
     if (activeClients.length === 0 && proactiveAlerts.length === 0 && proactiveLoadedAt > 0) {
       return (
-        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
           <div style={styles.container}>
             <div style={styles.header}>
               <h1 style={styles.title}>All Done</h1>
@@ -6246,7 +6539,7 @@ export default function TriageSystem({ onBack }) {
     // If still loading proactive alerts, wait before deciding
     if (activeClients.length === 0 && proactiveLoadedAt === 0) {
       return (
-        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
           <div style={styles.container}>
             <div style={{ textAlign: "center", padding: "60px 20px", color: "#888" }}>
               <Spinner size={28} color="#0066cc" />
@@ -6258,7 +6551,7 @@ export default function TriageSystem({ onBack }) {
     }
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Client</h1>
@@ -6524,7 +6817,7 @@ export default function TriageSystem({ onBack }) {
     };
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
           <h1 style={styles.title}>Proactive Alerts</h1>
@@ -6907,7 +7200,7 @@ export default function TriageSystem({ onBack }) {
     const canProceed = allActionableDone && noActionDone;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
@@ -7584,7 +7877,7 @@ export default function TriageSystem({ onBack }) {
     ];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Clear Flags</h1>
@@ -7675,7 +7968,7 @@ export default function TriageSystem({ onBack }) {
   // Screen 1: Loading state (shown while startTriage runs on mount)
   if (!sessionId && !triageComplete && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Automation Alerts</h1>
@@ -7707,7 +8000,7 @@ export default function TriageSystem({ onBack }) {
   // Screen 2: Triage complete with no alerts
   if (triageComplete && totalAlerts === 0 && noActionCount === 0 && activeNav !== "tasks" && activeNav !== "overview") {
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>✓ All Clear</h1>
@@ -7819,7 +8112,7 @@ export default function TriageSystem({ onBack }) {
     const progress = currentClientAlertIndex + 1;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>
@@ -8723,7 +9016,7 @@ export default function TriageSystem({ onBack }) {
     const allAcknowledged = acknowledgedNoAction.size === noActionCount;
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Info-Only Alerts</h1>
@@ -8803,7 +9096,7 @@ export default function TriageSystem({ onBack }) {
       { key: "resolved", label: "Completed", count: 0 },
     ];
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           <div style={styles.header}>
             <h1 style={styles.title}>Tasks</h1>
@@ -8908,7 +9201,7 @@ export default function TriageSystem({ onBack }) {
     const todayStr = today.toISOString().split("T")[0];
 
     return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
           {/* Back button */}
           <button className="triage-btn" onClick={() => setSelectedTask(null)} style={{ ...styles.buttonSecondary, marginBottom: "16px" }}>
@@ -9124,7 +9417,7 @@ export default function TriageSystem({ onBack }) {
 
   // ── Home screen (initial / loading) ──────────────────────────────────────
   return withModal(
-    <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+    <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alert Triage System</h1>

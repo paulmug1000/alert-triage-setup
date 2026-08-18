@@ -5775,6 +5775,7 @@ export default function TriageSystem({ onBack }) {
                   { name: "Pipeline / Confirmed overlap", detail: "Finds jobs present in both tabs where the Pipeline entry hasn't been properly closed out (likelihood not 0%, not marked copied to Confirmed)." },
                   { name: "Retainer shrink blocked", detail: "Flags retainer child rows that couldn't be automatically trimmed after a contract shrank, because the row already has actuals recorded." },
                   { name: "Uninvoiced revenue on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have uninvoiced revenue, excluding placeholder invoices and Draft invoices that haven't been sent." },
+                  { name: "Unreceived expenses on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have unreceived expenses against their direct cost budget, excluding manual estimates and unreconciled-gap placeholders." },
                   { name: "Deleted invoice detection", detail: "Flags invoices with a real reference on the Confirmed tab that no longer appear in the accounting system — a likely sign the invoice was deleted or voided." },
                   { name: "Job structure errors", detail: "Flags jobs whose invoice/expense slots don't match the expected layout — e.g. a multi-row retainer with an invoice on the parent row, or slots filled out of sequence." },
                   { name: "Deleted expense detection", detail: "Flags expenses with a real reference that no longer appear in the accounting system — the expense equivalent of deleted invoice detection." },
@@ -6458,6 +6459,7 @@ export default function TriageSystem({ onBack }) {
                     deleted_invoice:            "Deleted invoice",
                     job_structure_error:        "Job structure error",
                     deleted_expense:            "Deleted expense",
+                    unreceived_expenses:        "Unreceived expenses",
                   };
                   const typeCounts = {};
                   alerts.forEach(a => {
@@ -7765,6 +7767,7 @@ export default function TriageSystem({ onBack }) {
                     deleted_invoice:            "Deleted invoice",
                     job_structure_error:        "Job structure error",
                     deleted_expense:            "Deleted expense",
+                    unreceived_expenses:        "Unreceived expenses",
                 };
                 const grouped = {};
                 proactiveAlerts.forEach(a => {

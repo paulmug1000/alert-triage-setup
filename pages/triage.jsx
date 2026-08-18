@@ -5852,7 +5852,15 @@ export default function TriageSystem({ onBack }) {
       grossPay: "Gross pay", eeNic: "Ee NIC", erNic: "Er NIC",
       studLoan: "Student loan", eePension: "Ee pension", erPension: "Er pension", paye: "PAYE",
     };
-    const readyToStart = (toolsFiles || []).some(f => f.convertStatus === "ready" && f.client && f.processStatus === "pending");
+    // Every file that hasn't already failed to convert must have a client
+    // resolved (auto-detected or manually assigned) before the batch can
+    // start — avoids starting a run that then stalls partway through on a
+    // file that was still being identified.
+    const stillResolving = (toolsFiles || []).filter(f =>
+      f.convertStatus !== "error" && (f.convertStatus !== "ready" || !f.client)
+    );
+    const readyToStart = stillResolving.length === 0 &&
+      (toolsFiles || []).some(f => f.convertStatus === "ready" && f.client && f.processStatus === "pending");
     const completeCount = (toolsFiles || []).filter(f => f.processStatus === "complete").length;
     const errorCount = (toolsFiles || []).filter(f => f.processStatus === "error").length;
 
@@ -5875,7 +5883,7 @@ export default function TriageSystem({ onBack }) {
             </div>
 
             {toolsFiles.length > 0 && (
-              <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "6px" }}>
+              <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" }}>
                 <button
                   disabled={!readyToStart || toolsBatchRunning}
                   onClick={startToolsBatch}
@@ -5887,6 +5895,11 @@ export default function TriageSystem({ onBack }) {
                 <span style={{ fontSize: "12px", color: "#888" }}>
                   {completeCount} of {toolsFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
                 </span>
+                {stillResolving.length > 0 && (
+                  <span style={{ fontSize: "12px", color: "#b45309" }}>
+                    Waiting on {stillResolving.length} file{stillResolving.length !== 1 ? "s" : ""} to finish identifying before this can start
+                  </span>
+                )}
               </div>
             )}
           </div>

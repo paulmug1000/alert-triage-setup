@@ -14,6 +14,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { google } from "googleapis";
 import { createClient } from "redis";
 import { createHash } from "crypto";
+import { del } from "@vercel/blob";
 
 const anthropic = new Anthropic();
 
@@ -13126,9 +13127,24 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       // Tries, in order: filename match, employer-name-on-document match
       // (both cheap, direct evidence), then employee-name overlap scoring
       // across every client as a fallback (more expensive, fuzzier signal).
-      const { fileData, fileName, automationCommanderSheetId: idAcId } = req.body;
-      if (!fileData || !fileData.data || !fileData.type || !idAcId) {
-        return res.status(400).json({ success: false, error: "Missing fileData or automationCommanderSheetId" });
+      //
+      // fileUrl points at a Vercel Blob object holding the JSON-encoded
+      // {data, type} payload the browser already converted the file into —
+      // fetched server-side here rather than received directly in the
+      // request body, since that body was hitting Vercel's hard 4.5MB
+      // per-function limit (see conversation 18 Aug 2026).
+      const { fileUrl, fileName, automationCommanderSheetId: idAcId } = req.body;
+      if (!fileUrl || !idAcId) {
+        return res.status(400).json({ success: false, error: "Missing fileUrl or automationCommanderSheetId" });
+      }
+      let fileData;
+      try {
+        const blobResp = await fetch(fileUrl);
+        if (!blobResp.ok) throw new Error(`Failed to fetch uploaded file (${blobResp.status})`);
+        fileData = await blobResp.json();
+        if (!fileData || !fileData.data || !fileData.type) throw new Error("Uploaded file payload was malformed");
+      } catch (fetchErr) {
+        return res.status(400).json({ success: false, error: "Could not read uploaded file: " + fetchErr.message });
       }
       try {
         const sheets = await getSheetsClient();
@@ -13208,15 +13224,29 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
       }
 
     } else if (action === "process_payroll_document") {
-      // Stage 1 of the payroll import tool (Tools menu, in progress) — takes a
-      // single already-identified client + an uploaded file (image or CSV text,
-      // same shape the browser-side pdf.js/xlsx.js conversion already produces
-      // in the original GAS sidebar) and runs the full extraction + write.
-      // Client auto-detection and the batch upload UI are separate, later stages.
+      // Stage 1 of the payroll import tool — takes a single already-identified
+      // client + an uploaded file and runs the full extraction + write.
+      //
+      // fileUrl points at a Vercel Blob object holding the JSON-encoded
+      // {data, type} payload the browser already converted the file into —
+      // fetched server-side here rather than received directly, since that
+      // hit Vercel's hard 4.5MB per-function body limit (conversation 18 Aug
+      // 2026). The blob is cleaned up once this file reaches a final outcome
+      // (complete or genuinely failed) — NOT on CONFIRM_PERIOD, since that
+      // path expects a follow-up call against the same fileUrl.
       const { clientSheetId: payrollClientSheetId, clientName: payrollClientName,
-        fileData, confirmedMonth } = req.body;
-      if (!payrollClientSheetId || !fileData || !fileData.data || !fileData.type) {
-        return res.status(400).json({ success: false, error: "Missing clientSheetId or fileData" });
+        fileUrl, confirmedMonth } = req.body;
+      if (!payrollClientSheetId || !fileUrl) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId or fileUrl" });
+      }
+      let fileData;
+      try {
+        const blobResp = await fetch(fileUrl);
+        if (!blobResp.ok) throw new Error(`Failed to fetch uploaded file (${blobResp.status})`);
+        fileData = await blobResp.json();
+        if (!fileData || !fileData.data || !fileData.type) throw new Error("Uploaded file payload was malformed");
+      } catch (fetchErr) {
+        return res.status(400).json({ success: false, error: "Could not read uploaded file: " + fetchErr.message });
       }
       try {
         const sheets = await getSheetsClient();
@@ -13288,13 +13318,17 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           const d = new Date(); d.setMonth(d.getMonth() - 1);
           const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           const fallback = months[d.getMonth()] + " " + d.getFullYear();
+          // Not a final outcome — do NOT delete the blob, the follow-up
+          // call with confirmedMonth still needs it.
           return res.status(200).json({ success: true, status: "CONFIRM_PERIOD", extractedData, fallback });
         }
 
         const writeResult = await writePayrollDataToSheet_(sheets, payrollClientSheetId, extractedData, targetMonthStr, validEmployeeNames);
+        await del(fileUrl).catch(e => console.error("  Blob cleanup failed (non-fatal):", e.message));
         return res.status(200).json({ success: true, status: "COMPLETE", extractedData, ...writeResult });
       } catch (err) {
         console.error("❌ process_payroll_document error:", err);
+        await del(fileUrl).catch(e => console.error("  Blob cleanup failed (non-fatal):", e.message));
         return res.status(500).json({ success: false, error: err.message });
       }
 

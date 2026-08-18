@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { upload } from "@vercel/blob/client";
 
 // Helper function defined OUTSIDE component to prevent re-creation on each render
 function getAlertSummary(alert) {
@@ -2989,11 +2990,11 @@ export default function TriageSystem({ onBack }) {
     setToolsFiles(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
   };
 
-  const detectClientForFileId = async (id, fileData, fileName) => {
+  const detectClientForFileId = async (id, fileUrl, fileName) => {
     updateToolsFile(id, { detectStatus: "detecting" });
     try {
       const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "identify_payroll_client", fileData, fileName, automationCommanderSheetId }) });
+        body: JSON.stringify({ action: "identify_payroll_client", fileUrl, fileName, automationCommanderSheetId }) });
       const d = await res.json();
       if (!d.success) {
         updateToolsFile(id, { detectStatus: "ambiguous", ambiguousInfo: { error: d.error || "Detection failed", employeeNames: [], candidateScores: [] } });
@@ -3006,6 +3007,27 @@ export default function TriageSystem({ onBack }) {
       }
     } catch (err) {
       updateToolsFile(id, { detectStatus: "ambiguous", ambiguousInfo: { error: err.message, employeeNames: [], candidateScores: [] } });
+    }
+  };
+
+  // Uploads the converted {data, type} payload straight to Vercel Blob
+  // storage from the browser, then kicks off detection against the
+  // resulting URL. This exists because sending the payload directly in the
+  // /api/triage request body was hitting Vercel's hard 4.5MB per-function
+  // limit — a merged multi-page payroll image easily crosses that once
+  // base64-encoded. See conversation 18 Aug 2026.
+  const uploadAndDetect = async (id, fileData, fileName) => {
+    updateToolsFile(id, { convertMsg: "Uploading..." });
+    try {
+      const blob = await upload(`payroll-${id}.json`, JSON.stringify(fileData), {
+        access: "public",
+        handleUploadUrl: "/api/blob-upload-token",
+        contentType: "application/json",
+      });
+      updateToolsFile(id, { convertStatus: "ready", convertMsg: "Ready.", fileUrl: blob.url });
+      detectClientForFileId(id, blob.url, fileName);
+    } catch (err) {
+      updateToolsFile(id, { convertStatus: "error", convertMsg: "Upload failed: " + err.message });
     }
   };
 
@@ -3022,9 +3044,7 @@ export default function TriageSystem({ onBack }) {
           excelText += `--- SHEET: ${sheetName} ---\n`;
           excelText += window.XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]) + "\n\n";
         });
-        const fileData = { data: excelText, type: "text" };
-        updateToolsFile(id, { convertStatus: "ready", convertMsg: "Excel file parsed.", fileData });
-        detectClientForFileId(id, fileData, file.name);
+        await uploadAndDetect(id, { data: excelText, type: "text" }, file.name);
         return;
       }
 
@@ -3058,9 +3078,7 @@ export default function TriageSystem({ onBack }) {
           currentY += viewport.height;
         }
         const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
-        const fileData = { data: b64, type: "image" };
-        updateToolsFile(id, { convertStatus: "ready", convertMsg: `Merged ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}.`, fileData });
-        detectClientForFileId(id, fileData, file.name);
+        await uploadAndDetect(id, { data: b64, type: "image" }, file.name);
         return;
       }
 
@@ -3068,9 +3086,7 @@ export default function TriageSystem({ onBack }) {
       const reader = new FileReader();
       reader.onload = (e) => {
         const b64 = e.target.result.split(",")[1];
-        const fileData = { data: b64, type: "image" };
-        updateToolsFile(id, { convertStatus: "ready", convertMsg: "Image ready.", fileData });
-        detectClientForFileId(id, fileData, file.name);
+        uploadAndDetect(id, { data: b64, type: "image" }, file.name);
       };
       reader.onerror = () => updateToolsFile(id, { convertStatus: "error", convertMsg: "Failed to read image file." });
       reader.readAsDataURL(file);
@@ -3085,7 +3101,7 @@ export default function TriageSystem({ onBack }) {
     const newEntries = files.map(file => ({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       file, fileName: file.name,
-      convertStatus: "pending", convertMsg: "", fileData: null,
+      convertStatus: "pending", convertMsg: "", fileUrl: null,
       detectStatus: "idle", detectMethod: "", client: "", ambiguousInfo: null,
       processStatus: "pending", pendingConfirm: null, result: null, processMsg: "",
     }));
@@ -3108,14 +3124,14 @@ export default function TriageSystem({ onBack }) {
     setToolsFiles(prev => { target = prev.find(f => f.id === id); return prev; });
     if (!target) return;
     const client = (allOutgoingsClients || []).find(c => c.clientName === target.client);
-    if (!client || !target.fileData) return;
+    if (!client || !target.fileUrl) return;
 
     updateToolsFile(id, { processStatus: "processing", pendingConfirm: null,
       processMsg: confirmedMonth ? `Saving data to ${confirmedMonth}...` : "Sending to AI for payroll processing..." });
     try {
       const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "process_payroll_document", clientSheetId: client.clientSheetId,
-          clientName: target.client, fileData: target.fileData, confirmedMonth: confirmedMonth || undefined }) });
+          clientName: target.client, fileUrl: target.fileUrl, confirmedMonth: confirmedMonth || undefined }) });
       const d = await res.json();
       if (!d.success) {
         updateToolsFile(id, { processStatus: "error", processMsg: d.error || "Failed to process document" });

@@ -1419,7 +1419,7 @@ export default function TriageSystem({ onBack }) {
     setEomCashSaveError("");
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_save_cash_balance", clientSheetId: client.clientSheetId,
-        clientName: eomCashEntryClient, monthKey: eomCashMonthKey, amounts }) })
+        clientName: eomCashEntryClient, monthKey: eomCashMonthKey, amounts, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
         if (!d.success) { setEomCashSaveStatus("error"); setEomCashSaveError(d.error || "Failed to save"); return; }
@@ -1436,13 +1436,23 @@ export default function TriageSystem({ onBack }) {
     // list only — eomActiveTasks (the denominator) never needs touching
     // here, since a status change doesn't add or remove a task, just its
     // status for this month.
+    const previous = eomStatusOverrides;
     setEomStatusOverrides(prev => {
       const withoutThis = (prev || []).filter(s => !(s.clientName === eomDetailClient && s.taskId === taskId));
       return [...withoutThis, { clientName: eomDetailClient, taskId, status: newStatus }];
     });
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_update_task_status", clientName: eomDetailClient, taskId, monthKey: eomMonthKey, status: newStatus }) })
-      .catch(e => console.error("eom_update_task_status error:", e));
+      body: JSON.stringify({ action: "eom_update_task_status", clientName: eomDetailClient, taskId, monthKey: eomMonthKey, status: newStatus, automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        // The save genuinely failed — revert the optimistic update rather
+        // than let the UI keep showing a status that was never actually
+        // persisted (see conversation 19 Aug 2026: this check was missing
+        // entirely before, so a failed save looked identical to a
+        // succeeded one until the next reload silently corrected it).
+        if (!d.success) { setEomStatusOverrides(previous); setEomClientTasksError(d.error || "Failed to save status"); }
+      })
+      .catch(e => { setEomStatusOverrides(previous); setEomClientTasksError(e.message); });
   };
 
   const handleEomAddTask = () => {
@@ -1456,16 +1466,18 @@ export default function TriageSystem({ onBack }) {
         body: JSON.stringify({ action: "eom_save_client_task", clientName: eomDetailClient,
           templateId: eomAddTaskMode === "template" ? templateId : undefined,
           taskName: eomAddTaskMode === "custom" ? eomNewTaskName.trim() : undefined,
-          clientNotes: eomNewTaskNotes.trim() }) })
+          clientNotes: eomNewTaskNotes.trim(), automationCommanderSheetId }) })
         .then(r => r.json())
         .then(d => {
           if (d.success) {
             setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes("");
             setEomCreatingNewTemplate(false); setEomNewTemplateName(""); setEomTemplates(null); // force template list refresh next time
             reloadEomClientTasks(eomDetailClient);
+          } else {
+            setEomClientTasksError(d.error || "Failed to add task");
           }
         })
-        .catch(e => console.error("eom_save_client_task error:", e))
+        .catch(e => setEomClientTasksError(e.message))
         .finally(() => setEomAddTaskSaving(false));
     };
 
@@ -1487,20 +1499,26 @@ export default function TriageSystem({ onBack }) {
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
         templateId: task.templateId || undefined, taskName: task.templateId ? undefined : task.name,
-        clientNotes: eomNotesDraft, active: true }) })
+        clientNotes: eomNotesDraft, active: true, automationCommanderSheetId }) })
       .then(r => r.json())
-      .then(d => { if (d.success) { setEomEditingNotesFor(""); reloadEomClientTasks(eomDetailClient); } })
-      .catch(e => console.error("eom_save_client_task error:", e));
+      .then(d => {
+        if (d.success) { setEomEditingNotesFor(""); reloadEomClientTasks(eomDetailClient); }
+        else setEomClientTasksError(d.error || "Failed to save notes");
+      })
+      .catch(e => setEomClientTasksError(e.message));
   };
 
   const handleEomToggleTaskActive = (task) => {
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
         templateId: task.templateId || undefined, taskName: task.templateId ? undefined : task.name,
-        clientNotes: task.clientNotes, active: !task.active }) })
+        clientNotes: task.clientNotes, active: !task.active, automationCommanderSheetId }) })
       .then(r => r.json())
-      .then(d => { if (d.success) reloadEomClientTasks(eomDetailClient); })
-      .catch(e => console.error("eom_save_client_task error:", e));
+      .then(d => {
+        if (d.success) reloadEomClientTasks(eomDetailClient);
+        else setEomClientTasksError(d.error || "Failed to update task");
+      })
+      .catch(e => setEomClientTasksError(e.message));
   };
 
   // Persists a new task order given the taskId that was dragged and the

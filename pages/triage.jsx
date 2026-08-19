@@ -1139,6 +1139,7 @@ export default function TriageSystem({ onBack }) {
   const [eomCashSaveStatus, setEomCashSaveStatus] = useState("idle"); // idle | saving | error
   const [eomCashSaveError, setEomCashSaveError] = useState("");
   const [eomMarkActualRunning, setEomMarkActualRunning] = useState(""); // taskId currently running, or ""
+  const [eomCashPendingClient, setEomCashPendingClient] = useState(""); // client to auto-open in Cash Balances once bank accounts are loaded
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
   const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
   const [eomNewTemplateName, setEomNewTemplateName] = useState("");
@@ -1399,6 +1400,17 @@ export default function TriageSystem({ onBack }) {
       .catch(e => console.error("eom_get_cash_balance_progress error:", e))
       .finally(() => setEomCashProgressLoading(false));
   }, [eomSubView, eomCashMonthKey]);
+
+  // Consumes a pending client set by clicking "Enter Cash Balance" on a
+  // task row elsewhere — waits until bank accounts have actually loaded
+  // (not just navigated here) so the entry form shows the right accounts
+  // from the start, rather than opening immediately with an empty/wrong
+  // account list and never correcting itself.
+  useEffect(() => {
+    if (!eomCashPendingClient || eomBankAccountsByClient === null) return;
+    selectSingleCashClient(eomCashPendingClient);
+    setEomCashPendingClient("");
+  }, [eomBankAccountsByClient, eomCashPendingClient]);
 
   const handleLoadBankAccounts = () => {
     setEomBankAccountsLoading(true);
@@ -6614,6 +6626,12 @@ export default function TriageSystem({ onBack }) {
                               </button>
                             );
                           })()}
+                          {t.linkedFunction === "cash_balance" && (
+                            <button onClick={() => { setEomCashPendingClient(eomDetailClient); setEomSubView("cash"); }}
+                              style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                              Enter Cash Balance →
+                            </button>
+                          )}
                         </div>
                         {statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
                         <button onClick={() => handleEomToggleTaskActive(t)} title="Stop tracking this task for this client"

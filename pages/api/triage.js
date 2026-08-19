@@ -13625,6 +13625,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const cName = String(row[0] || "").trim();
           const cSheetUrl = row[11];
           if (!cName || !cSheetUrl) continue;
+          if (cName.toLowerCase() === "client" || cName.toLowerCase() === "client name") continue;
           const cSheetId = extractSheetIdFromUrl(cSheetUrl) || String(cSheetUrl).trim();
           allClients.push({ clientName: cName, clientSheetId: cSheetId });
         }
@@ -13946,14 +13947,19 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
 
     } else if (action === "eom_get_month_status") {
       // Stage 2: monthly status for a given month (all clients, or one).
-      // The three states are exactly: no row = not needed this month,
-      // status="pending" = needed, not done, status="done" = needed, done.
-      // A fourth internal status, "not_applicable", is how a task gets
-      // explicitly marked as not needed THIS month without deleting the
-      // row outright — it's excluded from what's returned below (so it
-      // behaves like "no row" to callers) but its presence stops this
-      // lazy-generation step from recreating it as "pending" next time
-      // this month is viewed.
+      // Strictly READ-ONLY — an earlier version lazily wrote "pending"
+      // rows here for any task without one yet, which raced against a
+      // user's own status-change click landing at the same moment
+      // (opening the detail screen and clicking "Done" almost
+      // immediately could see the click's write silently overwritten by
+      // the lazy-generation's own, slightly slower batch write). Fixed
+      // 18 Aug 2026 by removing all writes from this action.
+      //
+      // Returns activeTasks (every currently-active task, regardless of
+      // whether a status row exists) alongside statusOverrides (only the
+      // EXPLICIT rows that exist for this month). Callers combine the
+      // two: an override of "done" wins; "not_applicable" means excluded
+      // from the count entirely; no override at all defaults to "pending".
       const { monthKey, clientName: statusClient } = req.body;
       if (!monthKey) return res.status(400).json({ success: false, error: "Missing monthKey (e.g. 2026-08)" });
       try {
@@ -13967,33 +13973,11 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           .map(r => ({ taskId: r[0], clientName: r[1] }));
 
         const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
-        const statusRows = statusResp.data.values || [];
-        const existingByKey = {};
-        statusRows.forEach((r, i) => { if (r[0] && r[2] === monthKey) existingByKey[`${r[0]}|||${r[1]}`] = { rowIndex: i + 2, status: r[3] || "pending" }; });
+        const statusOverrides = (statusResp.data.values || [])
+          .filter(r => r[0] && r[2] === monthKey)
+          .map(r => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending" }));
 
-        const newRows = [];
-        const result = [];
-        for (const t of activeTasks) {
-          const key = `${t.clientName}|||${t.taskId}`;
-          const existing = existingByKey[key];
-          if (existing) {
-            if (existing.status !== "not_applicable") {
-              result.push({ clientName: t.clientName, taskId: t.taskId, status: existing.status });
-            }
-            // "not_applicable" rows are deliberately excluded from result —
-            // the row's existence already did its job (stopped recreation).
-          } else {
-            newRows.push([t.clientName, t.taskId, monthKey, "pending", ""]);
-            result.push({ clientName: t.clientName, taskId: t.taskId, status: "pending" });
-          }
-        }
-        if (newRows.length > 0) {
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
-            requestBody: { values: newRows },
-          });
-        }
-        return res.status(200).json({ success: true, monthKey, statuses: result });
+        return res.status(200).json({ success: true, monthKey, activeTasks, statusOverrides });
       } catch (err) {
         console.error("❌ eom_get_month_status error:", err);
         return res.status(500).json({ success: false, error: err.message });
@@ -14087,7 +14071,8 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:N500" });
         const clients = (clientResp.data.values || [])
           .map(r => ({ clientName: String(r[0] || "").trim(), clientSheetUrl: r[11] }))
-          .filter(c => c.clientName && c.clientSheetUrl);
+          .filter(c => c.clientName && c.clientSheetUrl)
+          .filter(c => c.clientName.toLowerCase() !== "client" && c.clientName.toLowerCase() !== "client name");
 
         const loadedAt = new Date().toISOString();
         const newRows = [];
@@ -14238,7 +14223,10 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         await ensureEomTabs_(sheets, automationCommanderSheetId);
 
         const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:N500" });
-        const liveClients = (clientResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+        const liveClients = (clientResp.data.values || [])
+          .map(r => String(r[0] || "").trim())
+          .filter(Boolean)
+          .filter(n => n.toLowerCase() !== "client" && n.toLowerCase() !== "client name");
 
         const matchShortName = (shortName) => {
           const norm = shortName.trim().toLowerCase();

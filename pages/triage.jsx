@@ -1050,7 +1050,8 @@ export default function TriageSystem({ onBack }) {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
-  const [eomStatuses, setEomStatuses] = useState(null); // [{clientName, taskId, status}]
+  const [eomActiveTasks, setEomActiveTasks] = useState(null); // [{clientName, taskId}] — every currently-active task, regardless of status
+  const [eomStatusOverrides, setEomStatusOverrides] = useState(null); // [{clientName, taskId, status}] — only explicit rows for the selected month
   const [eomStatusLoading, setEomStatusLoading] = useState(false);
   const [eomStatusError, setEomStatusError] = useState("");
   const [eomDetailClient, setEomDetailClient] = useState(null); // null = overview; a client name = detail view
@@ -1257,7 +1258,7 @@ export default function TriageSystem({ onBack }) {
       body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
-        if (d.success) setEomStatuses(d.statuses || []);
+        if (d.success) { setEomActiveTasks(d.activeTasks || []); setEomStatusOverrides(d.statusOverrides || []); }
         else setEomStatusError(d.error || "Failed to load status");
       })
       .catch(e => setEomStatusError(e.message))
@@ -1290,7 +1291,7 @@ export default function TriageSystem({ onBack }) {
       body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, clientName: eomDetailClient, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
-        if (d.success) setEomStatuses(d.statuses || []);
+        if (d.success) { setEomActiveTasks(d.activeTasks || []); setEomStatusOverrides(d.statusOverrides || []); }
         else setEomStatusError(d.error || "Failed to load status");
       })
       .catch(e => setEomStatusError(e.message))
@@ -1431,10 +1432,13 @@ export default function TriageSystem({ onBack }) {
 
   const handleEomStatusChange = (taskId, newStatus) => {
     // Optimistic local update — avoids a full refetch for something this
-    // frequent (checking tasks off one at a time).
-    setEomStatuses(prev => {
+    // frequent (checking tasks off one at a time). Updates the override
+    // list only — eomActiveTasks (the denominator) never needs touching
+    // here, since a status change doesn't add or remove a task, just its
+    // status for this month.
+    setEomStatusOverrides(prev => {
       const withoutThis = (prev || []).filter(s => !(s.clientName === eomDetailClient && s.taskId === taskId));
-      return newStatus === "not_applicable" ? withoutThis : [...withoutThis, { clientName: eomDetailClient, taskId, status: newStatus }];
+      return [...withoutThis, { clientName: eomDetailClient, taskId, status: newStatus }];
     });
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_update_task_status", clientName: eomDetailClient, taskId, monthKey: eomMonthKey, status: newStatus }) })
@@ -6260,11 +6264,15 @@ export default function TriageSystem({ onBack }) {
               const d = new Date(y, m - 1 + delta, 1);
               setEomMonthKey(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
             };
+            const overrideByKey = {};
+            (eomStatusOverrides || []).forEach(s => { overrideByKey[`${s.clientName}|||${s.taskId}`] = s.status; });
             const byClient = {};
-            (eomStatuses || []).forEach(s => {
-              if (!byClient[s.clientName]) byClient[s.clientName] = { total: 0, done: 0 };
-              byClient[s.clientName].total++;
-              if (s.status === "done") byClient[s.clientName].done++;
+            (eomActiveTasks || []).forEach(t => {
+              const status = overrideByKey[`${t.clientName}|||${t.taskId}`] || "pending";
+              if (status === "not_applicable") return; // excluded from the count entirely, not just "not done"
+              if (!byClient[t.clientName]) byClient[t.clientName] = { total: 0, done: 0 };
+              byClient[t.clientName].total++;
+              if (status === "done") byClient[t.clientName].done++;
             });
             const clientRows = (allOutgoingsClients || []).map(c => {
               const counts = byClient[c.clientName] || { total: 0, done: 0 };
@@ -6445,7 +6453,7 @@ export default function TriageSystem({ onBack }) {
               setEomMonthKey(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
             };
             const statusByTaskId = {};
-            (eomStatuses || []).forEach(s => { if (s.clientName === eomDetailClient) statusByTaskId[s.taskId] = s.status; });
+            (eomStatusOverrides || []).forEach(s => { if (s.clientName === eomDetailClient) statusByTaskId[s.taskId] = s.status; });
             const activeTasks = (eomClientTasks || []).filter(t => t.active).sort((a, b) => a.sortOrder - b.sortOrder);
             const inactiveTasks = (eomClientTasks || []).filter(t => !t.active);
             const statePill = (taskId, current) => {

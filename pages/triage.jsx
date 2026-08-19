@@ -1053,6 +1053,19 @@ export default function TriageSystem({ onBack }) {
   const [eomStatuses, setEomStatuses] = useState(null); // [{clientName, taskId, status}]
   const [eomStatusLoading, setEomStatusLoading] = useState(false);
   const [eomStatusError, setEomStatusError] = useState("");
+  const [eomDetailClient, setEomDetailClient] = useState(null); // null = overview; a client name = detail view
+  const [eomClientTasks, setEomClientTasks] = useState(null);
+  const [eomClientTasksLoading, setEomClientTasksLoading] = useState(false);
+  const [eomTemplates, setEomTemplates] = useState(null);
+  const [eomAddTaskMode, setEomAddTaskMode] = useState(""); // "" | "template" | "custom"
+  const [eomNewTaskTemplateId, setEomNewTaskTemplateId] = useState("");
+  const [eomNewTaskName, setEomNewTaskName] = useState("");
+  const [eomNewTaskNotes, setEomNewTaskNotes] = useState("");
+  const [eomAddTaskSaving, setEomAddTaskSaving] = useState(false);
+  const [eomEditingNotesFor, setEomEditingNotesFor] = useState(""); // taskId currently being edited
+  const [eomNotesDraft, setEomNotesDraft] = useState("");
+  const [eomSeedStatus, setEomSeedStatus] = useState("idle"); // idle | running | done | error
+  const [eomSeedResult, setEomSeedResult] = useState(null);
   // Each entry: { id, file, fileName, convertStatus, convertMsg, fileData,
   //   detectStatus, detectMethod, client, ambiguousInfo, processStatus,
   //   pendingConfirm, result, processMsg }
@@ -1200,11 +1213,12 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
-  // Loads EoM monthly status whenever the overview sub-view is showing and
-  // the requested month changes — covers the initial nav click and every
-  // prev/next month click without wiring the fetch into each button.
+  // Loads EoM monthly status (all clients) whenever the overview list is
+  // showing and the requested month changes — covers the initial nav click
+  // and every prev/next month click without wiring the fetch into each
+  // button. Only runs for the client LIST, not the per-client detail view.
   useEffect(() => {
-    if (activeNav !== "tools" || eomSubView !== "overview") return;
+    if (activeNav !== "tools" || eomSubView !== "overview" || eomDetailClient) return;
     setEomStatusLoading(true);
     setEomStatusError("");
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1216,7 +1230,107 @@ export default function TriageSystem({ onBack }) {
       })
       .catch(e => setEomStatusError(e.message))
       .finally(() => setEomStatusLoading(false));
-  }, [activeNav, eomSubView, eomMonthKey]);
+  }, [activeNav, eomSubView, eomMonthKey, eomDetailClient]);
+
+  const reloadEomClientTasks = (clientName) => {
+    setEomClientTasksLoading(true);
+    return fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_client_tasks", clientName }) })
+      .then(r => r.json())
+      .then(d => { if (d.success) setEomClientTasks(d.tasks || []); })
+      .catch(e => console.error("eom_get_client_tasks error:", e))
+      .finally(() => setEomClientTasksLoading(false));
+  };
+
+  // Loads a client's task list + this month's status whenever the detail
+  // view opens or the month changes. Templates load once, lazily, the
+  // first time the detail view is opened (needed for the "add task" picker).
+  useEffect(() => {
+    if (!eomDetailClient) return;
+    reloadEomClientTasks(eomDetailClient);
+    setEomStatusLoading(true);
+    setEomStatusError("");
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, clientName: eomDetailClient, automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) setEomStatuses(d.statuses || []);
+        else setEomStatusError(d.error || "Failed to load status");
+      })
+      .catch(e => setEomStatusError(e.message))
+      .finally(() => setEomStatusLoading(false));
+    if (!eomTemplates) {
+      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_templates" }) })
+        .then(r => r.json())
+        .then(d => { if (d.success) setEomTemplates(d.templates || []); })
+        .catch(e => console.error("eom_get_templates error:", e));
+    }
+  }, [eomDetailClient, eomMonthKey]);
+
+  const handleEomStatusChange = (taskId, newStatus) => {
+    // Optimistic local update — avoids a full refetch for something this
+    // frequent (checking tasks off one at a time).
+    setEomStatuses(prev => {
+      const withoutThis = (prev || []).filter(s => !(s.clientName === eomDetailClient && s.taskId === taskId));
+      return newStatus === "not_applicable" ? withoutThis : [...withoutThis, { clientName: eomDetailClient, taskId, status: newStatus }];
+    });
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_update_task_status", clientName: eomDetailClient, taskId, monthKey: eomMonthKey, status: newStatus }) })
+      .catch(e => console.error("eom_update_task_status error:", e));
+  };
+
+  const handleEomAddTask = () => {
+    if (eomAddTaskMode === "template" && !eomNewTaskTemplateId) return;
+    if (eomAddTaskMode === "custom" && !eomNewTaskName.trim()) return;
+    setEomAddTaskSaving(true);
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_save_client_task", clientName: eomDetailClient,
+        templateId: eomAddTaskMode === "template" ? eomNewTaskTemplateId : undefined,
+        taskName: eomAddTaskMode === "custom" ? eomNewTaskName.trim() : undefined,
+        clientNotes: eomNewTaskNotes.trim() }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes("");
+          reloadEomClientTasks(eomDetailClient);
+        }
+      })
+      .catch(e => console.error("eom_save_client_task error:", e))
+      .finally(() => setEomAddTaskSaving(false));
+  };
+
+  const handleEomSaveNotes = (task) => {
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
+        templateId: task.templateId || undefined, taskName: task.templateId ? undefined : task.name,
+        clientNotes: eomNotesDraft, active: true }) })
+      .then(r => r.json())
+      .then(d => { if (d.success) { setEomEditingNotesFor(""); reloadEomClientTasks(eomDetailClient); } })
+      .catch(e => console.error("eom_save_client_task error:", e));
+  };
+
+  const handleEomToggleTaskActive = (task) => {
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
+        templateId: task.templateId || undefined, taskName: task.templateId ? undefined : task.name,
+        clientNotes: task.clientNotes, active: !task.active }) })
+      .then(r => r.json())
+      .then(d => { if (d.success) reloadEomClientTasks(eomDetailClient); })
+      .catch(e => console.error("eom_save_client_task error:", e));
+  };
+
+  const handleEomSeed = () => {
+    setEomSeedStatus("running");
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_seed_from_checklist", automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) { setEomSeedStatus("done"); setEomSeedResult(d); }
+        else { setEomSeedStatus("error"); setEomSeedResult({ error: d.error }); }
+      })
+      .catch(e => { setEomSeedStatus("error"); setEomSeedResult({ error: e.message }); });
+  };
 
   const handleNavOutgoings = () => {
     setActiveNav("outgoings");
@@ -5910,7 +6024,7 @@ export default function TriageSystem({ onBack }) {
             ))}
           </div>
 
-          {eomSubView === "overview" && (() => {
+          {eomSubView === "overview" && !eomDetailClient && (() => {
             const [y, m] = eomMonthKey.split("-").map(Number);
             const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
             const shiftMonth = (delta) => {
@@ -5936,6 +6050,29 @@ export default function TriageSystem({ onBack }) {
 
             return (
               <div>
+                {eomSeedStatus === "idle" && (
+                  <div style={{ marginBottom: "16px" }}>
+                    <button onClick={handleEomSeed}
+                      style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
+                      Seed template library from checklist
+                    </button>
+                  </div>
+                )}
+                {eomSeedStatus === "running" && <div style={{ fontSize: "13px", color: "#666", marginBottom: "16px" }}><Spinner /> Seeding...</div>}
+                {eomSeedStatus === "done" && eomSeedResult && (
+                  <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "10px 14px", marginBottom: "16px" }}>
+                    ✓ Created {eomSeedResult.templatesCreated} template{eomSeedResult.templatesCreated !== 1 ? "s" : ""} and {eomSeedResult.assignmentsCreated} task assignment{eomSeedResult.assignmentsCreated !== 1 ? "s" : ""} across {eomSeedResult.matchedClients} client{eomSeedResult.matchedClients !== 1 ? "s" : ""}.
+                    {eomSeedResult.unmatchedClients?.length > 0 && (
+                      <div style={{ marginTop: "6px", color: "#92400e" }}>
+                        Couldn't confidently match: {eomSeedResult.unmatchedClients.join(", ")} — these weren't seeded, assign their tasks manually.
+                      </div>
+                    )}
+                  </div>
+                )}
+                {eomSeedStatus === "error" && eomSeedResult && (
+                  <div style={{ fontSize: "13px", color: "#dc2626", marginBottom: "16px" }}>Seeding failed: {eomSeedResult.error}</div>
+                )}
+
                 <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
                   <button onClick={() => shiftMonth(-1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>‹</button>
                   <div style={{ fontSize: "15px", fontWeight: "700", minWidth: "140px", textAlign: "center" }}>{monthLabel}</div>
@@ -5947,7 +6084,8 @@ export default function TriageSystem({ onBack }) {
 
                 <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
                   {clientRows.map((c, i) => (
-                    <div key={c.clientName} style={{ display: "flex", alignItems: "center", gap: "14px", padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
+                    <div key={c.clientName} onClick={() => setEomDetailClient(c.clientName)}
+                      style={{ display: "flex", alignItems: "center", gap: "14px", padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none", cursor: "pointer" }}>
                       <div style={{ flex: "0 0 200px", fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{c.clientName}</div>
                       {c.total === 0 ? (
                         <div style={{ fontSize: "12px", color: "#aaa" }}>No tasks assigned yet</div>
@@ -5964,6 +6102,135 @@ export default function TriageSystem({ onBack }) {
                   ))}
                   {clientRows.length === 0 && (
                     <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients found.</div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {eomSubView === "overview" && eomDetailClient && (() => {
+            const [y, m] = eomMonthKey.split("-").map(Number);
+            const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+            const shiftMonth = (delta) => {
+              const d = new Date(y, m - 1 + delta, 1);
+              setEomMonthKey(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+            };
+            const statusByTaskId = {};
+            (eomStatuses || []).forEach(s => { if (s.clientName === eomDetailClient) statusByTaskId[s.taskId] = s.status; });
+            const activeTasks = (eomClientTasks || []).filter(t => t.active);
+            const inactiveTasks = (eomClientTasks || []).filter(t => !t.active);
+            const statePill = (taskId, current) => {
+              const options = [["pending", "Pending", "#f59e0b"], ["done", "Done", "#16a34a"], ["not_applicable", "N/A", "#999"]];
+              return (
+                <div style={{ display: "flex", gap: "4px" }}>
+                  {options.map(([val, label, color]) => (
+                    <button key={val} onClick={() => handleEomStatusChange(taskId, val)}
+                      style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
+                        border: `1px solid ${current === val ? color : "#ddd"}`,
+                        background: current === val ? color : "#fff",
+                        color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400" }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              );
+            };
+
+            return (
+              <div>
+                <button onClick={() => { setEomDetailClient(null); setEomAddTaskMode(""); setEomEditingNotesFor(""); }}
+                  style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
+                  ‹ Back to overview
+                </button>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{eomDetailClient}</h3>
+                  <div style={{ flex: 1 }} />
+                  <button onClick={() => shiftMonth(-1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>‹</button>
+                  <div style={{ fontSize: "14px", fontWeight: "600", minWidth: "130px", textAlign: "center" }}>{monthLabel}</div>
+                  <button onClick={() => shiftMonth(1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>›</button>
+                  {(eomStatusLoading || eomClientTasksLoading) && <Spinner />}
+                </div>
+
+                {eomStatusError && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "14px" }}>{eomStatusError}</div>}
+
+                <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", marginBottom: "16px" }}>
+                  {activeTasks.map((t, i) => (
+                    <div key={t.taskId} style={{ padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
+                        <div style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
+                          {t.name}
+                          {t.templateId && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#888", fontWeight: "400" }}>(shared)</span>}
+                        </div>
+                        {statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
+                        <button onClick={() => handleEomToggleTaskActive(t)} title="Stop tracking this task for this client"
+                          style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", fontSize: "12px", padding: "3px" }}>✕</button>
+                      </div>
+                      {eomEditingNotesFor === t.taskId ? (
+                        <div style={{ marginTop: "8px", display: "flex", gap: "8px" }}>
+                          <input value={eomNotesDraft} onChange={e => setEomNotesDraft(e.target.value)} placeholder="Client-specific notes..."
+                            style={{ flex: 1, padding: "5px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }} />
+                          <button onClick={() => handleEomSaveNotes(t)} style={{ padding: "5px 10px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Save</button>
+                          <button onClick={() => setEomEditingNotesFor("")} style={{ padding: "5px 10px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
+                        </div>
+                      ) : (
+                        <div onClick={() => { setEomEditingNotesFor(t.taskId); setEomNotesDraft(t.clientNotes || ""); }}
+                          style={{ marginTop: "6px", fontSize: "12px", color: t.clientNotes ? "#666" : "#bbb", cursor: "pointer" }}>
+                          {t.clientNotes || "+ add note"}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {activeTasks.length === 0 && !eomClientTasksLoading && (
+                    <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No tasks assigned yet — add one below.</div>
+                  )}
+                </div>
+
+                {inactiveTasks.length > 0 && (
+                  <details style={{ marginBottom: "16px", fontSize: "12px" }}>
+                    <summary style={{ cursor: "pointer", color: "#888" }}>{inactiveTasks.length} inactive task{inactiveTasks.length !== 1 ? "s" : ""}</summary>
+                    {inactiveTasks.map(t => (
+                      <div key={t.taskId} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", color: "#aaa" }}>
+                        <span>{t.name}</span>
+                        <button onClick={() => handleEomToggleTaskActive(t)} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "11px" }}>Reactivate</button>
+                      </div>
+                    ))}
+                  </details>
+                )}
+
+                <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px" }}>
+                  {!eomAddTaskMode ? (
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button onClick={() => setEomAddTaskMode("template")} style={{ padding: "6px 12px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>+ Add from template library</button>
+                      <button onClick={() => setEomAddTaskMode("custom")} style={{ padding: "6px 12px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>+ Add custom task</button>
+                    </div>
+                  ) : (
+                    <div>
+                      {eomAddTaskMode === "template" ? (
+                        <select value={eomNewTaskTemplateId} onChange={e => setEomNewTaskTemplateId(e.target.value)}
+                          style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px" }}>
+                          <option value="">Select a template...</option>
+                          {(eomTemplates || []).filter(t => t.active).map(t => (
+                            <option key={t.templateId} value={t.templateId}>{t.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input value={eomNewTaskName} onChange={e => setEomNewTaskName(e.target.value)} placeholder="Task name"
+                          style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px", boxSizing: "border-box" }} />
+                      )}
+                      <input value={eomNewTaskNotes} onChange={e => setEomNewTaskNotes(e.target.value)} placeholder="Notes (optional)"
+                        style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "10px", boxSizing: "border-box" }} />
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button disabled={eomAddTaskSaving} onClick={handleEomAddTask}
+                          style={{ padding: "6px 14px", background: eomAddTaskSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddTaskSaving ? "default" : "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          {eomAddTaskSaving ? "Saving..." : "Add"}
+                        </button>
+                        <button onClick={() => { setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes(""); }}
+                          style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>

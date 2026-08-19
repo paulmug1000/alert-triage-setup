@@ -1359,6 +1359,319 @@ async function ensureClaudeUsageTab_(sheets, spreadsheetId) {
  *   EomClientTasks:  A=taskId B=clientName C=templateId D=taskName E=clientNotes F=active G=createdAt
  *   EomMonthlyStatus: A=clientName B=taskId C=monthKey D=status E=completedAt
  */
+// Extracted and consolidated from CFO_task_checklist.xlsx (18 Aug 2026).
+// Keys under 'clients'/'customTasks' are the SHORT client names as they
+// appeared in that spreadsheet — matched against the live, full client
+// list at seed time (see eom_seed_from_checklist below), not assumed
+// to be exact matches.
+const EOM_SEED_DATA = {
+  "templates": [
+    {
+      "name": "Check and sort invoice discrepancies (InvComp)",
+      "clients": {
+        "Thrive": "Check and sort invoice discrepancies (InvComp)",
+        "Eleven": "Check and sort invoice discrepancies (InvComp)",
+        "Orinoco": "Check and sort invoice discrepancies (InvComp)",
+        "Rascal": "Check and sort invoice discrepancies (InvComp)",
+        "Base Three": "Check and sort invoice discrepancies (InvComp)",
+        "Incredibble": "Check and sort any invoice discrepancies (InvComp)",
+        "Get Better": "Check and sort any invoice discrepancies (InvComp)",
+        "Starlight": "Check and sort any invoice discrepancies (InvComp)",
+        "GeoBrand": "Check and sort any invoice discrepancies (InvComp)",
+        "Seen": "Check and sort any invoice discrepancies (InvComp)"
+      }
+    },
+    {
+      "name": "Add actuals to salaries",
+      "clients": {
+        "Thrive": "Add actuals to salaries",
+        "Eleven": "Add actuals to salaries",
+        "Orinoco": "Add actuals to salaries",
+        "Advance Online": "Add actuals to salaries",
+        "Incredibble": "Add actuals to salaries",
+        "ANRPR": "Add actuals to salaries",
+        "Starlight": "Import salaries info AND check employee list is accurate",
+        "GeoBrand": "Import salaries info AND check employee list is accurate",
+        "Seen": "Import salaries info AND check employee list is accurate"
+      }
+    },
+    {
+      "name": "Use PLComp to add actual outgoings for current and prev month",
+      "clients": {
+        "Thrive": "Use PLComp to add actual outgoings for current and prev month",
+        "Eleven": "Use PLComp to add actual outgoings for current and prev month",
+        "Orinoco": "Use PLComp to add actual outgoings for current and prev month",
+        "Advance Online": "Use PLComp to add actual outgoings for current and prev month",
+        "Beyond the Blueprint": "Use PLComp to add actual outgoings for current and prev month",
+        "Rascal": "Use PLComp to add actual outgoings for current and prev month",
+        "ANRPR": "Use PLComp to add actual outgoings for current and prev month",
+        "Hancock & Rowe": "Use PLComp to add actual outgoings for current and prev month",
+        "Base Three": "Use PLComp to add actual outgoings for current and prev month",
+        "Incredibble": "Use recon tab and PLComp to add actual outgoings for current and prev month",
+        "Get Better": "Use recon tab and PLComp to add actual outgoings for current and prev month",
+        "Starlight": "Use recon tab and PLComp to add actual outgoings for current and prev month",
+        "GeoBrand": "Use recon tab and PLComp to add actual outgoings for current and prev month",
+        "Seen": "Use recon tab and PLComp to add actual outgoings for current and prev month"
+      }
+    },
+    {
+      "name": "Send end of month data request email",
+      "clients": {
+        "Thrive": "Send end of month data request email (payslips, leave tracker, conf + pipe)",
+        "Eleven": "Send end of month data request email (payslips, contr)",
+        "Orinoco": "Send end of month data request email (payslips, contr, pipe)",
+        "Advance Online": "Send end of month data request email (payslips)",
+        "ANRPR": "Send end of month data request email (payslips)",
+        "Hancock & Rowe": "Send end of month data request email"
+      }
+    },
+    {
+      "name": "Add bank account closing balance",
+      "clients": {
+        "Thrive": "Add bank account closing balance",
+        "Eleven": "Add bank account closing balance",
+        "Orinoco": "Add bank account closing balance",
+        "Advance Online": "Add bank account closing balance",
+        "Incredibble": "Add bank account closing balance",
+        "ANRPR": "Add bank account closing balance",
+        "Starlight": "Add bank account closing balance",
+        "GeoBrand": "Add bank account closing balance",
+        "Seen": "Add bank account closing balance"
+      }
+    },
+    {
+      "name": "Reconcile cashflow forecast against actual",
+      "clients": {
+        "Thrive": "Reconcile cashflow forecast against actual (use bank recon sheet)",
+        "Eleven": "Reconcile cashflow forecast against actual (use bank recon sheet)",
+        "Orinoco": "Reconcile cashflow forecast against actual",
+        "Advance Online": "Reconcile cashflow forecast against actual (use bank recon sheet)",
+        "Incredibble": "Reconcile cashflow forecast against actual",
+        "Rascal": "Reconcile cashflow forecast against actual",
+        "Get Better": "Reconcile cashflow forecast against actual",
+        "ANRPR": "Reconcile cashflow forecast against actual (use bank recon sheet)",
+        "Starlight": "Reconcile cashflow forecast against actual",
+        "GeoBrand": "Reconcile cashflow forecast against actual",
+        "Seen": "Reconcile cashflow forecast against actual",
+        "Hancock & Rowe": "Reconcile cashflow forecast against actual"
+      }
+    },
+    {
+      "name": "Change \"forecast\" to \"actual\" in Master Performance tab",
+      "clients": {
+        "Thrive": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "Eleven": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "Orinoco": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "Advance Online": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "Incredibble": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "Beyond the Blueprint": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "Get Better": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "ANRPR": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "Starlight": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "GeoBrand": "Change \"forecast\" to \"actual\" in Master Performance tab",
+        "Seen": "Change \"forecast\" to \"actual\" in Master Performance tab"
+      }
+    },
+    {
+      "name": "Create backup of dashboard in static sheet",
+      "clients": {
+        "Thrive": "Create backup of dashboard in static sheet",
+        "Eleven": "Create backup of dashboard in static sheet",
+        "Orinoco": "Create backup of dashboard in static sheet",
+        "Advance Online": "Create backup of dashboard in static sheet",
+        "Beyond the Blueprint": "Create backup of dashboard in static sheet",
+        "Rascal": "Create backup of dashboard in static sheet",
+        "Get Better": "Create backup of dashboard in static sheet",
+        "ANRPR": "Create backup of dashboard in static sheet",
+        "Base Three": "Create backup of dashboard in static sheet"
+      }
+    },
+    {
+      "name": "Create and send monthly management report",
+      "clients": {
+        "Thrive": "Create and send monthly management report",
+        "Eleven": "Create and send monthly management report",
+        "Orinoco": "Create and send monthly management report",
+        "Advance Online": "Create and send monthly management report",
+        "ANRPR": "Create and send monthly management report"
+      }
+    },
+    {
+      "name": "Check tracker against Xero re corp tax",
+      "clients": {
+        "Eleven": "Check tracker against Xero re corp tax",
+        "Orinoco": "Check tracker against Xero re corp tax",
+        "Hancock & Rowe": "Check tracker against Xero re corp tax"
+      }
+    },
+    {
+      "name": "Send tax transfer amounts",
+      "clients": {
+        "Eleven": "Send tax transfer amounts",
+        "Orinoco": "Send tax transfer amounts",
+        "Hancock & Rowe": "Send tax transfer amounts"
+      }
+    },
+    {
+      "name": "Check and sort expense discrepancies (DirComp)",
+      "clients": {
+        "Incredibble": "Check and sort expense discrepancies (DirComp)",
+        "Get Better": "Check and sort expense discrepancies (DirComp)",
+        "GeoBrand": "Check and sort expense discrepancies (DirComp)",
+        "Seen": "Check and sort expense discrepancies (DirComp)"
+      }
+    },
+    {
+      "name": "Check and sort confirmed and pipeline discrepancies (CRMComp)",
+      "clients": {
+        "Rascal": "Check and sort confirmed and pipeline discrepancies (CRMComp)",
+        "Starlight": "Check and sort confirmed and pipeline discrepancies (CRMComp)",
+        "GeoBrand": "Check and sort confirmed and pipeline discrepancies (CRMComp)",
+        "Seen": "Check and sort confirmed and pipeline discrepancies (CRMComp)"
+      }
+    },
+    {
+      "name": "Check retainer jobs all have invoices",
+      "clients": {
+        "Get Better": "Check retainer jobs all have invoices (i.e. check they haven't finished without us being told)",
+        "Starlight": "Check retainer jobs all have invoices (i.e. check they haven't finished without us being told)",
+        "GeoBrand": "Check retainer jobs all have invoices (i.e. check they haven't finished without us being told)",
+        "Seen": "Check retainer jobs all have invoices (i.e. check they haven't finished without us being told)"
+      }
+    },
+    {
+      "name": "Compare dashboard month to Xero month and make changes as required",
+      "clients": {
+        "Get Better": "Compare dashboard month to Xero month and make changes as required (if revenue doesn't match, look for phasing differences. Also have the \"revenue comparison\" sheet available - download all revenue items from Xero, compile, then get Gemini to compare with revenue items from dashboard)",
+        "Starlight": "Compare dashboard month to Xero month and make changes as required (if revenue doesn't match, look for phasing differences. Also have the \"revenue comparison\" sheet available - download all revenue items from Xero, compile, then get Gemini to compare with revenue items from dashboard)",
+        "GeoBrand": "Compare dashboard month to Xero month and make changes as required (if revenue doesn't match, look for phasing differences. Also have the \"revenue comparison\" sheet available - download all revenue items from Xero, compile, then get Gemini to compare with revenue items from dashboard)",
+        "Seen": "Compare dashboard month to Xero month and make changes as required (if revenue doesn't match, look for phasing differences. Also have the \"revenue comparison\" sheet available - download all revenue items from Xero, compile, then get Gemini to compare with revenue items from dashboard)"
+      }
+    }
+  ],
+  "customTasks": {
+    "Thrive": [
+      "Update NB to find figures (incl remove any from \"current month\")",
+      "Add actuals to leave",
+      "Send email requesting closing bank account balance",
+      "Update utilisation numbers (WMJ: Reports - Billable Summary - Hours)",
+      "Update project overservicing numbers (Resource Manager - Traffic Calendar - Task Date (make it \"Due\") - custom - enter previous month's dates - click Completed Tasks - click Search - Print ) ... copy into \"Thrive project analysis\" FIRST sheet",
+      "Time breakdown (WMJ: Reports - Proj Fin Reports - Time Detail Data (no costs)) - might need to search for it!"
+    ],
+    "Eleven": [
+      "Check pipeline is updated",
+      "Update contractors based on actual bills and Ben's forecast",
+      "Zero \"making up CoS\" row",
+      "Add extra invoices for prev month once Ben replies",
+      "Check and update third party pass-through costs",
+      "Check N&O commissions against tracker (N&O x Eleven \u2013 Introduction & Referral Tracker)",
+      "Update tax tracker tab",
+      "Send dividend certificate"
+    ],
+    "Orinoco": [
+      "Check confirmed job dates - do any need changing? (During monthly finance meeting)",
+      "Check pipeline is updated (no need for this as Capsule link created)",
+      "Update contractors based on actual bills and Bianca's forecast",
+      "Zero \"making up CoS\" row",
+      "Check and update third party pass-through costs"
+    ],
+    "Advance Online": [
+      "Request closing bank account balances",
+      "Update revenue based on figure from Quickbooks",
+      "Manualy add contractor costs into Outgoings tab (EXCLUDING EMMERL)",
+      "Manualy add total Emmerl costs into Outgoings tab (go into Emmerl in Quickbooks and get \"total expenses\" figure)",
+      "Ensure loan costs are correctly captured in cashflow"
+    ],
+    "Incredibble": [
+      "Send email requesting closing bank account balance",
+      "Move expenses in Outgoings to correct months if required, and split out any Incredibble own marketing to separate 0% delivery row",
+      "Calculate corp tax and VAT amounts to transfer and tell Helen",
+      "Email Helen to say it's ready"
+    ],
+    "Beyond the Blueprint": [
+      "Check and update confirmed tab",
+      "Check and update pipeline tab",
+      "Check and update partner invoices",
+      "Add recharged expenses to column R of Confirmed tab (only include things that have actually been recharged on an invoice)",
+      "Update partner win fees in dashboard",
+      "Send partners emails telling them the win fee amounts",
+      "Create partner win fee accruals bills",
+      "Update partner dashboard tab",
+      "Tell Patrick and Gareth dashboard is updated",
+      "Review transactions for VAT return"
+    ],
+    "Rascal": [
+      "Complete Xero reconciliations (make list of invoices needed first)",
+      "Check all cont. dir. costs updated and captured in conf & pipe for cash",
+      "Create monthly management report",
+      "Check balance sheet accounts (including wages payable, NICs, PAYE, stud. loan)",
+      "Payroll prep",
+      "Update BrightPay PAYE paid figure for prev month",
+      "Download coding notices",
+      "Payroll submission",
+      "Payroll journal",
+      "Ensure FPS submitted in BrightPay",
+      "Pension contributions in Aviva portal",
+      "Schedule salary payments"
+    ],
+    "Get Better": [
+      "Import salaries info AND check employee list is accurate (Rippling - Reports - FY Salaries & Deductions (PAUL) - Change \"Date as of\" and \"Pay Run Name\" Filter Date - Download - IMPORT AS-IS (I FIXED THIS 18/8/26) ... OLD APPROACH WAS: CHANGE COLUMN HEADER NAMES TO REFLECT SHEET - DELETE EXTRANEOUS COLUMNS - SAVE AS JPEG AND IMPORT INTO AMD)",
+      "Check and sort pipeline discrepancies (CRMComp)",
+      "Check depreciation has been captured correctly - enter in Outgoings if not",
+      "Send Patrick any queries and update dashboard accordingly",
+      "Email Rich and Patrick to say it's ready"
+    ],
+    "ANRPR": [
+      "Request closing bank account balances",
+      "Check InvComp and DirComp",
+      "Calculate corp tax and VAT amounts to transfer"
+    ],
+    "Starlight": [
+      "Email Steve asking for payroll summary",
+      "Send Steve any queries and update dashboard accordingly",
+      "Email Steve to say Pulse is updated and ready"
+    ],
+    "GeoBrand": [
+      "Email asking for payroll summary",
+      "Send queries and update dashboard accordingly",
+      "Email to say Pulse is updated and ready"
+    ],
+    "Seen": [
+      "Email asking for payroll summary",
+      "Send queries and update dashboard accordingly",
+      "Calculate \"what salaries + divs should be\" figure",
+      "Email to say Pulse is updated and ready, and provide salaries figure"
+    ],
+    "Hancock & Rowe": [
+      "Use InvComp to make dashboard invoices match Xero",
+      "Check confirmed income for prev month",
+      "Update salaries",
+      "Update contractors",
+      "Update third party pass-through costs",
+      "Create backup of dashboard in extension"
+    ],
+    "Astra": [
+      "Check income for prev month - have we recognised income for all projects - particularly those working from prepayments?",
+      "Review contractor costs for prev month - i.e. compare tracker to QB and flag any discrepancies",
+      "Update outgoings based on QB and flag any issues with bookkeeping",
+      "Overwrite dollar amounts with actuals on Rev and Cont tabs",
+      "Finalise accounts in dashboard"
+    ],
+    "TaxWatch": [
+      "Reconcile tracker against statements etc"
+    ],
+    "Meee": [
+      "Approve bills in Xero"
+    ],
+    "Base Three": [
+      "Check with Dania that pipeline is updated",
+      "Update contractors based on QB numbers",
+      "Update partner payments for previous month from QB + Dania",
+      "Tell Dania dashboard is updated"
+    ]
+  }
+};
+
 async function ensureEomTabs_(sheets, spreadsheetId) {
   try {
     const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
@@ -13519,13 +13832,14 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
 
     } else if (action === "eom_get_month_status") {
       // Stage 2: monthly status for a given month (all clients, or one).
-      // A missing status row means "not applicable this month" — the three
-      // states are exactly: no row (not needed), status="pending" (needed,
-      // not done), status="done" (needed, done). Any active client task
-      // that has no row yet for the requested month is lazily created here
-      // as "pending" — that's the default assumption; marking something
-      // not-applicable-this-month is a later, explicit action, not the
-      // default for a freshly-viewed month.
+      // The three states are exactly: no row = not needed this month,
+      // status="pending" = needed, not done, status="done" = needed, done.
+      // A fourth internal status, "not_applicable", is how a task gets
+      // explicitly marked as not needed THIS month without deleting the
+      // row outright — it's excluded from what's returned below (so it
+      // behaves like "no row" to callers) but its presence stops this
+      // lazy-generation step from recreating it as "pending" next time
+      // this month is viewed.
       const { monthKey, clientName: statusClient } = req.body;
       if (!monthKey) return res.status(400).json({ success: false, error: "Missing monthKey (e.g. 2026-08)" });
       try {
@@ -13549,7 +13863,11 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           const key = `${t.clientName}|||${t.taskId}`;
           const existing = existingByKey[key];
           if (existing) {
-            result.push({ clientName: t.clientName, taskId: t.taskId, status: existing.status });
+            if (existing.status !== "not_applicable") {
+              result.push({ clientName: t.clientName, taskId: t.taskId, status: existing.status });
+            }
+            // "not_applicable" rows are deliberately excluded from result —
+            // the row's existence already did its job (stopped recreation).
           } else {
             newRows.push([t.clientName, t.taskId, monthKey, "pending", ""]);
             result.push({ clientName: t.clientName, taskId: t.taskId, status: "pending" });
@@ -13564,6 +13882,143 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(200).json({ success: true, monthKey, statuses: result });
       } catch (err) {
         console.error("❌ eom_get_month_status error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_update_task_status") {
+      // Sets a client+task's status for a given month: "done", "pending",
+      // or "not_applicable" (see the note on eom_get_month_status above for
+      // why not_applicable is stored, not just deleted).
+      const { clientName: uClientName, taskId: uTaskId, monthKey: uMonthKey, status: uStatus } = req.body;
+      if (!uClientName || !uTaskId || !uMonthKey || !uStatus) {
+        return res.status(400).json({ success: false, error: "Missing clientName, taskId, monthKey, or status" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
+        const rows = resp.data.values || [];
+        const rowIdx = rows.findIndex(r => r[0] === uClientName && r[1] === uTaskId && r[2] === uMonthKey);
+        const completedAt = uStatus === "done" ? new Date().toISOString() : "";
+
+        if (rowIdx === -1) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
+            requestBody: { values: [[uClientName, uTaskId, uMonthKey, uStatus, completedAt]] },
+          });
+        } else {
+          const sheetRow = rowIdx + 2;
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: automationCommanderSheetId, range: `EomMonthlyStatus!D${sheetRow}:E${sheetRow}`,
+            valueInputOption: "RAW", requestBody: { values: [[uStatus, completedAt]] },
+          });
+        }
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ eom_update_task_status error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_seed_from_checklist") {
+      // One-time migration from Paul's original CFO_task_checklist.xlsx —
+      // see conversation 18 Aug 2026. EOM_SEED_DATA uses the SHORT client
+      // names as they appeared in that spreadsheet; matched here against
+      // the live, full client list rather than trusted as exact. Idempotent:
+      // safe to re-run — checks for existing templates/assignments by name
+      // before creating anything, so a partial or repeated run won't create
+      // duplicates.
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+
+        const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:N500" });
+        const liveClients = (clientResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+
+        const matchShortName = (shortName) => {
+          const norm = shortName.trim().toLowerCase();
+          const matches = liveClients.filter(full => full.toLowerCase().startsWith(norm) || full.toLowerCase().includes(norm));
+          return matches.length === 1 ? matches[0] : null;
+        };
+
+        const unmatched = new Set();
+        const shortNamesUsed = new Set();
+        EOM_SEED_DATA.templates.forEach(t => Object.keys(t.clients).forEach(c => shortNamesUsed.add(c)));
+        Object.keys(EOM_SEED_DATA.customTasks).forEach(c => shortNamesUsed.add(c));
+        const shortToFull = {};
+        shortNamesUsed.forEach(s => {
+          const full = matchShortName(s);
+          if (full) shortToFull[s] = full; else unmatched.add(s);
+        });
+
+        const existingTemplatesResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" });
+        const existingTemplateByName = {};
+        (existingTemplatesResp.data.values || []).forEach(r => { if (r[0]) existingTemplateByName[r[1]] = r[0]; });
+
+        const newTemplateRows = [];
+        const templateIdByName = { ...existingTemplateByName };
+        for (const t of EOM_SEED_DATA.templates) {
+          if (templateIdByName[t.name]) continue;
+          const newId = `tmpl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          const linkedFunction = t.name.toLowerCase().includes("salaries") ? "salaries" : "";
+          newTemplateRows.push([newId, t.name, "", linkedFunction, true, new Date().toISOString()]);
+          templateIdByName[t.name] = newId;
+        }
+        if (newTemplateRows.length > 0) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A:F", valueInputOption: "RAW",
+            requestBody: { values: newTemplateRows },
+          });
+        }
+
+        const existingTasksResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" });
+        const existingTaskKeys = new Set();
+        (existingTasksResp.data.values || []).forEach(r => {
+          if (r[0]) existingTaskKeys.add(`${r[1]}|||${r[2] || ""}|||${r[3] || ""}`);
+        });
+
+        const newTaskRows = [];
+        let assignmentsCreated = 0;
+        for (const t of EOM_SEED_DATA.templates) {
+          const templateId = templateIdByName[t.name];
+          for (const [shortName, originalText] of Object.entries(t.clients)) {
+            const fullName = shortToFull[shortName];
+            if (!fullName) continue;
+            const key = `${fullName}|||${templateId}|||`;
+            if (existingTaskKeys.has(key)) continue;
+            const newId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            newTaskRows.push([newId, fullName, templateId, "", originalText, true, new Date().toISOString()]);
+            existingTaskKeys.add(key);
+            assignmentsCreated++;
+          }
+        }
+        for (const [shortName, taskList] of Object.entries(EOM_SEED_DATA.customTasks)) {
+          const fullName = shortToFull[shortName];
+          if (!fullName) continue;
+          for (const taskName of taskList) {
+            const key = `${fullName}|||${""}|||${taskName}`;
+            if (existingTaskKeys.has(key)) continue;
+            const newId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            newTaskRows.push([newId, fullName, "", taskName, "", true, new Date().toISOString()]);
+            existingTaskKeys.add(key);
+            assignmentsCreated++;
+          }
+        }
+        if (newTaskRows.length > 0) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A:G", valueInputOption: "RAW",
+            requestBody: { values: newTaskRows },
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          templatesCreated: newTemplateRows.length,
+          assignmentsCreated,
+          matchedClients: Object.keys(shortToFull).length,
+          unmatchedClients: Array.from(unmatched),
+        });
+      } catch (err) {
+        console.error("❌ eom_seed_from_checklist error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

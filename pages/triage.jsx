@@ -1067,6 +1067,10 @@ export default function TriageSystem({ onBack }) {
   const [eomNotesDraft, setEomNotesDraft] = useState("");
   const [eomSeedStatus, setEomSeedStatus] = useState("idle"); // idle | running | done | error
   const [eomSeedResult, setEomSeedResult] = useState(null);
+  const [eomDraggedTaskId, setEomDraggedTaskId] = useState(null);
+  const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
+  const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
+  const [eomNewTemplateName, setEomNewTemplateName] = useState("");
   // Each entry: { id, file, fileName, convertStatus, convertMsg, fileData,
   //   detectStatus, detectMethod, client, ambiguousInfo, processStatus,
   //   pendingConfirm, result, processMsg }
@@ -1286,23 +1290,41 @@ export default function TriageSystem({ onBack }) {
   };
 
   const handleEomAddTask = () => {
-    if (eomAddTaskMode === "template" && !eomNewTaskTemplateId) return;
+    if (eomAddTaskMode === "template" && !eomCreatingNewTemplate && !eomNewTaskTemplateId) return;
+    if (eomAddTaskMode === "template" && eomCreatingNewTemplate && !eomNewTemplateName.trim()) return;
     if (eomAddTaskMode === "custom" && !eomNewTaskName.trim()) return;
     setEomAddTaskSaving(true);
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_save_client_task", clientName: eomDetailClient,
-        templateId: eomAddTaskMode === "template" ? eomNewTaskTemplateId : undefined,
-        taskName: eomAddTaskMode === "custom" ? eomNewTaskName.trim() : undefined,
-        clientNotes: eomNewTaskNotes.trim() }) })
-      .then(r => r.json())
-      .then(d => {
-        if (d.success) {
-          setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes("");
-          reloadEomClientTasks(eomDetailClient);
-        }
-      })
-      .catch(e => console.error("eom_save_client_task error:", e))
-      .finally(() => setEomAddTaskSaving(false));
+
+    const finishAdd = (templateId) => {
+      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_save_client_task", clientName: eomDetailClient,
+          templateId: eomAddTaskMode === "template" ? templateId : undefined,
+          taskName: eomAddTaskMode === "custom" ? eomNewTaskName.trim() : undefined,
+          clientNotes: eomNewTaskNotes.trim() }) })
+        .then(r => r.json())
+        .then(d => {
+          if (d.success) {
+            setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes("");
+            setEomCreatingNewTemplate(false); setEomNewTemplateName(""); setEomTemplates(null); // force template list refresh next time
+            reloadEomClientTasks(eomDetailClient);
+          }
+        })
+        .catch(e => console.error("eom_save_client_task error:", e))
+        .finally(() => setEomAddTaskSaving(false));
+    };
+
+    if (eomAddTaskMode === "template" && eomCreatingNewTemplate) {
+      // Create the shared template first, then assign it to this client —
+      // satisfies "the ability to create new shared items if they become
+      // required" without a separate template-management screen.
+      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_save_template", name: eomNewTemplateName.trim(), automationCommanderSheetId }) })
+        .then(r => r.json())
+        .then(d => { if (d.success) finishAdd(d.templateId); else setEomAddTaskSaving(false); })
+        .catch(e => { console.error("eom_save_template error:", e); setEomAddTaskSaving(false); });
+    } else {
+      finishAdd(eomNewTaskTemplateId);
+    }
   };
 
   const handleEomSaveNotes = (task) => {
@@ -1323,6 +1345,33 @@ export default function TriageSystem({ onBack }) {
       .then(r => r.json())
       .then(d => { if (d.success) reloadEomClientTasks(eomDetailClient); })
       .catch(e => console.error("eom_save_client_task error:", e));
+  };
+
+  // Persists a new task order given the taskId that was dragged and the
+  // taskId it was dropped onto — inserts the dragged task at the target's
+  // position (shifting others along), rather than a simple adjacent swap.
+  const persistEomTaskOrder = (draggedTaskId, targetTaskId) => {
+    if (!draggedTaskId || draggedTaskId === targetTaskId) return;
+    const active = (eomClientTasks || []).filter(t => t.active).sort((a, b) => a.sortOrder - b.sortOrder);
+    const fromIdx = active.findIndex(t => t.taskId === draggedTaskId);
+    const toIdx = active.findIndex(t => t.taskId === targetTaskId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    const reordered = [...active];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    const orderedTaskIds = reordered.map(t => t.taskId);
+
+    // Optimistic local update — reassign sortOrder to match the new order
+    // immediately, rather than waiting on a round trip before rows move.
+    setEomClientTasks(prev => (prev || []).map(t => {
+      const newIdx = orderedTaskIds.indexOf(t.taskId);
+      return newIdx === -1 ? t : { ...t, sortOrder: (newIdx + 1) * 10 };
+    }));
+
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_reorder_tasks", clientName: eomDetailClient, orderedTaskIds, automationCommanderSheetId }) })
+      .catch(e => console.error("eom_reorder_tasks error:", e));
   };
 
   const handleEomSeed = () => {
@@ -6122,7 +6171,7 @@ export default function TriageSystem({ onBack }) {
             };
             const statusByTaskId = {};
             (eomStatuses || []).forEach(s => { if (s.clientName === eomDetailClient) statusByTaskId[s.taskId] = s.status; });
-            const activeTasks = (eomClientTasks || []).filter(t => t.active);
+            const activeTasks = (eomClientTasks || []).filter(t => t.active).sort((a, b) => a.sortOrder - b.sortOrder);
             const inactiveTasks = (eomClientTasks || []).filter(t => !t.active);
             const statePill = (taskId, current) => {
               const options = [["pending", "Pending", "#f59e0b"], ["done", "Done", "#16a34a"], ["not_applicable", "N/A", "#999"]];
@@ -6162,11 +6211,27 @@ export default function TriageSystem({ onBack }) {
 
                 <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", marginBottom: "16px" }}>
                   {activeTasks.map((t, i) => (
-                    <div key={t.taskId} style={{ padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
+                    <div key={t.taskId}
+                      draggable
+                      onDragStart={() => setEomDraggedTaskId(t.taskId)}
+                      onDragOver={e => { e.preventDefault(); if (eomDragOverTaskId !== t.taskId) setEomDragOverTaskId(t.taskId); }}
+                      onDragLeave={() => setEomDragOverTaskId(prev => prev === t.taskId ? null : prev)}
+                      onDrop={e => { e.preventDefault(); persistEomTaskOrder(eomDraggedTaskId, t.taskId); setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
+                      onDragEnd={() => { setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
+                      style={{ padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
+                        background: eomDragOverTaskId === t.taskId ? "#f0f7ff" : "transparent",
+                        opacity: eomDraggedTaskId === t.taskId ? 0.4 : 1 }}>
                       <div style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
+                        <div title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", lineHeight: "20px", userSelect: "none" }}>⠿</div>
                         <div style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
                           {t.name}
                           {t.templateId && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#888", fontWeight: "400" }}>(shared)</span>}
+                          {t.linkedFunction === "salaries" && (
+                            <button onClick={() => setEomSubView("payroll")}
+                              style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                              Import Payroll →
+                            </button>
+                          )}
                         </div>
                         {statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
                         <button onClick={() => handleEomToggleTaskActive(t)} title="Stop tracking this task for this client"
@@ -6213,13 +6278,28 @@ export default function TriageSystem({ onBack }) {
                   ) : (
                     <div>
                       {eomAddTaskMode === "template" ? (
-                        <select value={eomNewTaskTemplateId} onChange={e => setEomNewTaskTemplateId(e.target.value)}
-                          style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px" }}>
-                          <option value="">Select a template...</option>
-                          {(eomTemplates || []).filter(t => t.active).map(t => (
-                            <option key={t.templateId} value={t.templateId}>{t.name}</option>
-                          ))}
-                        </select>
+                        eomCreatingNewTemplate ? (
+                          <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+                            <input value={eomNewTemplateName} onChange={e => setEomNewTemplateName(e.target.value)} placeholder="New template name"
+                              style={{ flex: 1, padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", boxSizing: "border-box" }} />
+                            <button onClick={() => { setEomCreatingNewTemplate(false); setEomNewTemplateName(""); }}
+                              style={{ padding: "7px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
+                              Pick existing instead
+                            </button>
+                          </div>
+                        ) : (
+                          <select value={eomNewTaskTemplateId} onChange={e => {
+                              if (e.target.value === "__new__") { setEomCreatingNewTemplate(true); setEomNewTaskTemplateId(""); }
+                              else setEomNewTaskTemplateId(e.target.value);
+                            }}
+                            style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px" }}>
+                            <option value="">Select a template...</option>
+                            {(eomTemplates || []).filter(t => t.active).map(t => (
+                              <option key={t.templateId} value={t.templateId}>{t.name}</option>
+                            ))}
+                            <option value="__new__">+ Create new template...</option>
+                          </select>
+                        )
                       ) : (
                         <input value={eomNewTaskName} onChange={e => setEomNewTaskName(e.target.value)} placeholder="Task name"
                           style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px", boxSizing: "border-box" }} />
@@ -6231,7 +6311,7 @@ export default function TriageSystem({ onBack }) {
                           style={{ padding: "6px 14px", background: eomAddTaskSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddTaskSaving ? "default" : "pointer", fontSize: "12px", fontWeight: "600" }}>
                           {eomAddTaskSaving ? "Saving..." : "Add"}
                         </button>
-                        <button onClick={() => { setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes(""); }}
+                        <button onClick={() => { setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes(""); setEomCreatingNewTemplate(false); setEomNewTemplateName(""); }}
                           style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
                           Cancel
                         </button>

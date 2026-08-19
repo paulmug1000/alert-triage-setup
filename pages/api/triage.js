@@ -1672,31 +1672,58 @@ const EOM_SEED_DATA = {
   }
 };
 
+// Converts a payroll period like "Aug 2026" (the format targetMonthStr uses
+// throughout the payroll import flow) into the "YYYY-MM" format EoM's
+// monthKey uses. Returns null if it can't confidently parse it — callers
+// should treat that as "skip the auto-complete", not an error.
+function monthStrToEomKey_(monthStr) {
+  const monthAbbrs = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+  const parts = String(monthStr || "").trim().split(/\s+/);
+  if (parts.length !== 2) return null;
+  const monthNum = monthAbbrs[parts[0].slice(0, 3).toLowerCase()];
+  const year = parseInt(parts[1], 10);
+  if (!monthNum || !year) return null;
+  return `${year}-${String(monthNum).padStart(2, "0")}`;
+}
+
 async function ensureEomTabs_(sheets, spreadsheetId) {
   try {
     const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
     const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
     const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus"].filter(t => !existingTitles.has(t));
-    if (toCreate.length === 0) return;
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: { requests: toCreate.map(title => ({ addSheet: { properties: { title } } })) },
-    });
+    if (toCreate.length > 0) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: { requests: toCreate.map(title => ({ addSheet: { properties: { title } } })) },
+      });
 
-    const headerWrites = [];
-    if (toCreate.includes("EomTemplates")) {
-      headerWrites.push({ range: "EomTemplates!A1:F1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt"]] });
+      const headerWrites = [];
+      if (toCreate.includes("EomTemplates")) {
+        headerWrites.push({ range: "EomTemplates!A1:F1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt"]] });
+      }
+      if (toCreate.includes("EomClientTasks")) {
+        headerWrites.push({ range: "EomClientTasks!A1:H1", values: [["taskId", "clientName", "templateId", "taskName", "clientNotes", "active", "createdAt", "sortOrder"]] });
+      }
+      if (toCreate.includes("EomMonthlyStatus")) {
+        headerWrites.push({ range: "EomMonthlyStatus!A1:E1", values: [["clientName", "taskId", "monthKey", "status", "completedAt"]] });
+      }
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId, requestBody: { valueInputOption: "RAW", data: headerWrites },
+      });
     }
-    if (toCreate.includes("EomClientTasks")) {
-      headerWrites.push({ range: "EomClientTasks!A1:G1", values: [["taskId", "clientName", "templateId", "taskName", "clientNotes", "active", "createdAt"]] });
+
+    // sortOrder (column H) was added to EomClientTasks after that tab may
+    // already have been created on a live sheet — patch the header label in
+    // if it's missing, without disturbing anything else already there.
+    if (!toCreate.includes("EomClientTasks")) {
+      const h1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomClientTasks!H1" });
+      if (!h1.data.values || !h1.data.values[0] || !h1.data.values[0][0]) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId, range: "EomClientTasks!H1", valueInputOption: "RAW", requestBody: { values: [["sortOrder"]] },
+        });
+      }
     }
-    if (toCreate.includes("EomMonthlyStatus")) {
-      headerWrites.push({ range: "EomMonthlyStatus!A1:E1", values: [["clientName", "taskId", "monthKey", "status", "completedAt"]] });
-    }
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId, requestBody: { valueInputOption: "RAW", data: headerWrites },
-    });
   } catch (e) {
     console.error("ensureEomTabs_ error:", e.message);
   }
@@ -13704,6 +13731,49 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
 
         const writeResult = await writePayrollDataToSheet_(sheets, payrollClientSheetId, extractedData, targetMonthStr, validEmployeeNames);
         await redisClient.del(`payroll_upload:${uploadId}`).catch(e => console.error("  Upload cleanup failed (non-fatal):", e.message));
+
+        // Auto-complete the linked EoM "salaries" task for this client, if
+        // one is active — Option B, conversation 18 Aug 2026: a successful
+        // import IS the task being done, not a separate manual step.
+        // Marks the month the PAYROLL DATA is actually for (targetMonthStr),
+        // not necessarily the current calendar month — importing a
+        // catch-up/back-dated month should complete that month's checklist
+        // item, not this one. Wrapped separately so any failure here can
+        // never affect the payroll import result itself.
+        if (writeResult.writeSuccess) {
+          try {
+            const eomMonthKeyFromPayroll = monthStrToEomKey_(targetMonthStr);
+            if (eomMonthKeyFromPayroll) {
+              const [templatesR, clientTasksR] = await Promise.all([
+                sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
+                sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
+              ]);
+              const salaryTemplateIds = new Set((templatesR.data.values || []).filter(r => r[0] && r[3] === "salaries").map(r => r[0]));
+              const linkedTask = (clientTasksR.data.values || []).find(r =>
+                r[0] && r[1] === payrollClientName && salaryTemplateIds.has(r[2]) && (r[5] !== "FALSE" && r[5] !== false)
+              );
+              if (linkedTask) {
+                const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
+                const statusRows = statusResp.data.values || [];
+                const existingIdx = statusRows.findIndex(r => r[0] === payrollClientName && r[1] === linkedTask[0] && r[2] === eomMonthKeyFromPayroll);
+                if (existingIdx === -1) {
+                  await sheets.spreadsheets.values.append({
+                    spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
+                    requestBody: { values: [[payrollClientName, linkedTask[0], eomMonthKeyFromPayroll, "done", new Date().toISOString()]] },
+                  });
+                } else {
+                  await sheets.spreadsheets.values.update({
+                    spreadsheetId: automationCommanderSheetId, range: `EomMonthlyStatus!D${existingIdx + 2}:E${existingIdx + 2}`,
+                    valueInputOption: "RAW", requestBody: { values: [["done", new Date().toISOString()]] },
+                  });
+                }
+              }
+            }
+          } catch (eomErr) {
+            console.error("  EoM auto-complete failed (non-fatal):", eomErr.message);
+          }
+        }
+
         return res.status(200).json({ success: true, status: "COMPLETE", extractedData, ...writeResult });
       } catch (err) {
         console.error("❌ process_payroll_document error:", err);
@@ -13774,20 +13844,30 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
         const [tasksResp, templatesResp] = await Promise.all([
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
           sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
         ]);
         const templateNameById = {};
-        (templatesResp.data.values || []).forEach(r => { if (r[0]) templateNameById[r[0]] = r[1] || ""; });
+        const templateLinkedFunctionById = {};
+        (templatesResp.data.values || []).forEach(r => {
+          if (r[0]) { templateNameById[r[0]] = r[1] || ""; templateLinkedFunctionById[r[0]] = r[3] || ""; }
+        });
 
         const rows = (tasksResp.data.values || []).filter(r => r[0]);
         const tasks = rows
           .filter(r => !filterClient || r[1] === filterClient)
-          .map(r => ({
+          .map((r, i) => ({
             taskId: r[0], clientName: r[1], templateId: r[2] || "",
             name: r[2] ? (templateNameById[r[2]] || "(template deleted)") : (r[3] || ""),
+            linkedFunction: r[2] ? (templateLinkedFunctionById[r[2]] || "") : "",
             clientNotes: r[4] || "", active: r[5] !== "FALSE" && r[5] !== false, createdAt: r[6] || "",
-          }));
+            // Tasks created before sortOrder existed have no value here —
+            // fall back to their row position so they still sort sensibly
+            // (in whatever order they were originally created) rather than
+            // all collapsing to the same rank.
+            sortOrder: r[7] !== undefined && r[7] !== "" ? Number(r[7]) : 1000000 + i,
+          }))
+          .sort((a, b) => a.sortOrder - b.sortOrder);
         return res.status(200).json({ success: true, tasks });
       } catch (err) {
         console.error("❌ eom_get_client_tasks error:", err);
@@ -13805,7 +13885,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" });
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" });
         const rows = resp.data.values || [];
 
         if (taskId) {
@@ -13820,9 +13900,12 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         }
 
         const newId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        // Default sortOrder is "now" — large enough to always sort after any
+        // explicitly-ordered task, so a new task lands at the end of the
+        // list by default; reorder afterward if it needs to move.
         await sheets.spreadsheets.values.append({
-          spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A:G", valueInputOption: "RAW",
-          requestBody: { values: [[newId, taskClientName, taskTemplateId || "", taskName || "", clientNotes || "", true, new Date().toISOString()]] },
+          spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A:H", valueInputOption: "RAW",
+          requestBody: { values: [[newId, taskClientName, taskTemplateId || "", taskName || "", clientNotes || "", true, new Date().toISOString(), Date.now()]] },
         });
         return res.status(200).json({ success: true, taskId: newId });
       } catch (err) {
@@ -13919,6 +14002,42 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "eom_reorder_tasks") {
+      // Persists a new task order for one client. Takes the FULL desired
+      // order (a list of taskIds), not just a single move — the frontend
+      // computes the swap locally and sends the complete resulting list,
+      // which this simply rewrites as sequential sortOrder values. Simpler
+      // and more robust than a "move up/down by one" server-side operation,
+      // since it can never end up ambiguous about what order things were in.
+      const { clientName: rClientName, orderedTaskIds } = req.body;
+      if (!rClientName || !Array.isArray(orderedTaskIds) || orderedTaskIds.length === 0) {
+        return res.status(400).json({ success: false, error: "Missing clientName or orderedTaskIds" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" });
+        const rows = resp.data.values || [];
+        const rowIndexByTaskId = {};
+        rows.forEach((r, i) => { if (r[0]) rowIndexByTaskId[r[0]] = i + 2; });
+
+        const writes = [];
+        orderedTaskIds.forEach((taskId, index) => {
+          const sheetRow = rowIndexByTaskId[taskId];
+          if (!sheetRow) return; // unknown taskId — skip rather than fail the whole reorder
+          writes.push({ range: `EomClientTasks!H${sheetRow}`, values: [[(index + 1) * 10]] });
+        });
+        if (writes.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: automationCommanderSheetId, requestBody: { valueInputOption: "RAW", data: writes },
+          });
+        }
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ eom_reorder_tasks error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "eom_seed_from_checklist") {
       // One-time migration from Paul's original CFO_task_checklist.xlsx —
       // see conversation 18 Aug 2026. EOM_SEED_DATA uses the SHORT client
@@ -13978,6 +14097,9 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
 
         const newTaskRows = [];
         let assignmentsCreated = 0;
+        const orderCounter = {}; // per-client counter, so each client's seeded tasks get a sensible sequential order
+        const nextOrder = (client) => { orderCounter[client] = (orderCounter[client] || 0) + 1; return orderCounter[client]; };
+
         for (const t of EOM_SEED_DATA.templates) {
           const templateId = templateIdByName[t.name];
           for (const [shortName, originalText] of Object.entries(t.clients)) {
@@ -13986,7 +14108,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
             const key = `${fullName}|||${templateId}|||`;
             if (existingTaskKeys.has(key)) continue;
             const newId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-            newTaskRows.push([newId, fullName, templateId, "", originalText, true, new Date().toISOString()]);
+            newTaskRows.push([newId, fullName, templateId, "", originalText, true, new Date().toISOString(), nextOrder(fullName)]);
             existingTaskKeys.add(key);
             assignmentsCreated++;
           }
@@ -13998,14 +14120,14 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
             const key = `${fullName}|||${""}|||${taskName}`;
             if (existingTaskKeys.has(key)) continue;
             const newId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-            newTaskRows.push([newId, fullName, "", taskName, "", true, new Date().toISOString()]);
+            newTaskRows.push([newId, fullName, "", taskName, "", true, new Date().toISOString(), nextOrder(fullName)]);
             existingTaskKeys.add(key);
             assignmentsCreated++;
           }
         }
         if (newTaskRows.length > 0) {
           await sheets.spreadsheets.values.append({
-            spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A:G", valueInputOption: "RAW",
+            spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A:H", valueInputOption: "RAW",
             requestBody: { values: newTaskRows },
           });
         }

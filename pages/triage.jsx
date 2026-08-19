@@ -1078,6 +1078,23 @@ export default function TriageSystem({ onBack }) {
   const [eomNewTplNotes, setEomNewTplNotes] = useState("");
   const [eomNewTplLinkedFunction, setEomNewTplLinkedFunction] = useState("");
   const [eomAddingNewTemplateSaving, setEomAddingNewTemplateSaving] = useState(false);
+  const [eomCashSubView, setEomCashSubView] = useState("list"); // "list" | "flow" | "single"
+  const [eomCashMonthKey, setEomCashMonthKey] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1); // defaults to the previous calendar month
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [eomBankAccountsByClient, setEomBankAccountsByClient] = useState(null);
+  const [eomBankAccountsLoadedAt, setEomBankAccountsLoadedAt] = useState("");
+  const [eomBankAccountsLoading, setEomBankAccountsLoading] = useState(false);
+  const [eomBankAccountsLoadResult, setEomBankAccountsLoadResult] = useState(null);
+  const [eomCashCompletedClients, setEomCashCompletedClients] = useState(null);
+  const [eomCashProgressLoading, setEomCashProgressLoading] = useState(false);
+  const [eomCashFlowQueue, setEomCashFlowQueue] = useState([]);
+  const [eomCashFlowIndex, setEomCashFlowIndex] = useState(0);
+  const [eomCashEntryClient, setEomCashEntryClient] = useState("");
+  const [eomCashEntryAmounts, setEomCashEntryAmounts] = useState({});
+  const [eomCashSaveStatus, setEomCashSaveStatus] = useState("idle"); // idle | saving | error
+  const [eomCashSaveError, setEomCashSaveError] = useState("");
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
   const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
   const [eomNewTemplateName, setEomNewTemplateName] = useState("");
@@ -1311,6 +1328,106 @@ export default function TriageSystem({ onBack }) {
     if (!eomShowTemplateManager) return;
     reloadEomTemplateManager();
   }, [eomShowTemplateManager]);
+
+  // Loads the cached bank-account list (never touches live client sheets —
+  // that's the whole point) plus which clients are already done for the
+  // selected month, whenever the Cash Balances tab is opened or the month
+  // changes. Deliberately does NOT reload bank accounts on every visit —
+  // that's a separate, explicit "Load bank account information" action,
+  // since account names change rarely and reading every client's sheet is
+  // comparatively slow.
+  useEffect(() => {
+    if (eomSubView !== "cash") return;
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_bank_accounts", automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => { if (d.success) { setEomBankAccountsByClient(d.accountsByClient || {}); setEomBankAccountsLoadedAt(d.loadedAt || ""); } })
+      .catch(e => console.error("eom_get_bank_accounts error:", e));
+  }, [eomSubView]);
+
+  useEffect(() => {
+    if (eomSubView !== "cash") return;
+    setEomCashProgressLoading(true);
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_cash_balance_progress", monthKey: eomCashMonthKey, automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => { if (d.success) setEomCashCompletedClients(d.completedClients || []); })
+      .catch(e => console.error("eom_get_cash_balance_progress error:", e))
+      .finally(() => setEomCashProgressLoading(false));
+  }, [eomSubView, eomCashMonthKey]);
+
+  const handleLoadBankAccounts = () => {
+    setEomBankAccountsLoading(true);
+    setEomBankAccountsLoadResult(null);
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_load_bank_accounts", automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          setEomBankAccountsLoadResult(d);
+          // Refresh the cached view immediately with the freshly-loaded data.
+          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "eom_get_bank_accounts", automationCommanderSheetId }) })
+            .then(r => r.json())
+            .then(d2 => { if (d2.success) { setEomBankAccountsByClient(d2.accountsByClient || {}); setEomBankAccountsLoadedAt(d2.loadedAt || ""); } });
+        } else {
+          setEomBankAccountsLoadResult({ error: d.error });
+        }
+      })
+      .catch(e => setEomBankAccountsLoadResult({ error: e.message }))
+      .finally(() => setEomBankAccountsLoading(false));
+  };
+
+  const setupEntryForClient = (clientName) => {
+    setEomCashEntryClient(clientName);
+    const accounts = (eomBankAccountsByClient && eomBankAccountsByClient[clientName]) || [];
+    const blank = {};
+    (accounts.length > 0 ? accounts : ["Balance"]).forEach(a => { blank[a] = ""; });
+    setEomCashEntryAmounts(blank);
+    setEomCashSaveStatus("idle");
+    setEomCashSaveError("");
+  };
+
+  const startCashFlow = () => {
+    const allClientNames = (allOutgoingsClients || []).map(c => c.clientName);
+    const queue = allClientNames.filter(name => !(eomCashCompletedClients || []).includes(name));
+    if (queue.length === 0) return;
+    setEomCashFlowQueue(queue);
+    setEomCashFlowIndex(0);
+    setupEntryForClient(queue[0]);
+    setEomCashSubView("flow");
+  };
+
+  const selectSingleCashClient = (clientName) => {
+    setupEntryForClient(clientName);
+    setEomCashSubView("single");
+  };
+
+  const handleCashSkip = () => {
+    const nextIndex = eomCashFlowIndex + 1;
+    if (nextIndex >= eomCashFlowQueue.length) { setEomCashSubView("list"); return; }
+    setEomCashFlowIndex(nextIndex);
+    setupEntryForClient(eomCashFlowQueue[nextIndex]);
+  };
+
+  const handleCashSave = () => {
+    const client = (allOutgoingsClients || []).find(c => c.clientName === eomCashEntryClient);
+    if (!client) return;
+    const amounts = Object.values(eomCashEntryAmounts);
+    setEomCashSaveStatus("saving");
+    setEomCashSaveError("");
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_save_cash_balance", clientSheetId: client.clientSheetId,
+        clientName: eomCashEntryClient, monthKey: eomCashMonthKey, amounts }) })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) { setEomCashSaveStatus("error"); setEomCashSaveError(d.error || "Failed to save"); return; }
+        setEomCashCompletedClients(prev => [...(prev || []), eomCashEntryClient]);
+        if (eomCashSubView === "flow") handleCashSkip();
+        else setEomCashSubView("list");
+      })
+      .catch(e => { setEomCashSaveStatus("error"); setEomCashSaveError(e.message); });
+  };
 
   const handleEomStatusChange = (taskId, newStatus) => {
     // Optimistic local update — avoids a full refetch for something this
@@ -6125,7 +6242,7 @@ export default function TriageSystem({ onBack }) {
           <h2 style={{ margin: "0 0 14px", fontSize: "20px", fontWeight: "700" }}>EoM</h2>
 
           <div style={{ display: "flex", gap: "4px", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
-            {[["overview", "Overview"], ["payroll", "Payroll Import"]].map(([key, label]) => (
+            {[["overview", "Overview"], ["payroll", "Payroll Import"], ["cash", "Cash Balances"]].map(([key, label]) => (
               <button key={key} onClick={() => setEomSubView(key)}
                 style={{ padding: "8px 16px", background: "none", border: "none",
                   borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
@@ -6242,6 +6359,7 @@ export default function TriageSystem({ onBack }) {
                               style={{ padding: "4px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }}>
                               <option value="">None</option>
                               <option value="salaries">Salaries</option>
+                              <option value="cash_balance">Cash Balance</option>
                             </select>
                             <label style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "4px", marginLeft: "10px" }}>
                               <input type="checkbox" checked={eomTemplateDraft.active} onChange={e => setEomTemplateDraft(d => ({ ...d, active: e.target.checked }))} />
@@ -6299,6 +6417,7 @@ export default function TriageSystem({ onBack }) {
                           style={{ padding: "5px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }}>
                           <option value="">None</option>
                           <option value="salaries">Salaries</option>
+                              <option value="cash_balance">Cash Balance</option>
                         </select>
                       </div>
                       <div style={{ display: "flex", gap: "8px" }}>
@@ -6654,6 +6773,125 @@ export default function TriageSystem({ onBack }) {
             </div>
           ))}
           </>)}
+
+          {eomSubView === "cash" && (() => {
+            const [y, m] = eomCashMonthKey.split("-").map(Number);
+            const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+            const shiftCashMonth = (delta) => {
+              const d = new Date(y, m - 1 + delta, 1);
+              setEomCashMonthKey(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+            };
+
+            if (eomCashSubView === "list") {
+              const remaining = (allOutgoingsClients || []).filter(c => !(eomCashCompletedClients || []).includes(c.clientName)).length;
+              return (
+                <div>
+                  <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#666" }}>
+                    Enter each client's closing cash balance for the selected month. Account names are cached — use "Load bank account information" if they've changed.
+                  </p>
+
+                  <div style={{ marginBottom: "16px" }}>
+                    <button onClick={handleLoadBankAccounts} disabled={eomBankAccountsLoading}
+                      style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: eomBankAccountsLoading ? "default" : "pointer", fontSize: "12px", color: "#666" }}>
+                      {eomBankAccountsLoading ? <><Spinner /> Loading...</> : "Load bank account information"}
+                    </button>
+                    {eomBankAccountsLoadedAt && (
+                      <span style={{ marginLeft: "10px", fontSize: "11px", color: "#999" }}>
+                        Last loaded {new Date(eomBankAccountsLoadedAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
+                      </span>
+                    )}
+                    {eomBankAccountsLoadResult && (
+                      eomBankAccountsLoadResult.error ? (
+                        <div style={{ marginTop: "6px", fontSize: "12px", color: "#dc2626" }}>Load failed: {eomBankAccountsLoadResult.error}</div>
+                      ) : (
+                        <div style={{ marginTop: "6px", fontSize: "12px", color: "#166534" }}>
+                          ✓ Loaded {eomBankAccountsLoadResult.accountsLoaded} account{eomBankAccountsLoadResult.accountsLoaded !== 1 ? "s" : ""} across {eomBankAccountsLoadResult.clientsProcessed} client{eomBankAccountsLoadResult.clientsProcessed !== 1 ? "s" : ""}
+                          {eomBankAccountsLoadResult.failedClients?.length > 0 && (
+                            <span style={{ color: "#b45309" }}> — couldn't read: {eomBankAccountsLoadResult.failedClients.join(", ")}</span>
+                          )}
+                        </div>
+                      )
+                    )}
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+                    <button onClick={() => shiftCashMonth(-1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>‹</button>
+                    <div style={{ fontSize: "15px", fontWeight: "700", minWidth: "140px", textAlign: "center" }}>{monthLabel}</div>
+                    <button onClick={() => shiftCashMonth(1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>›</button>
+                    {eomCashProgressLoading && <Spinner />}
+                  </div>
+
+                  <div style={{ marginBottom: "16px" }}>
+                    <button onClick={startCashFlow} disabled={remaining === 0}
+                      style={{ padding: "8px 20px", background: remaining === 0 ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: remaining === 0 ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                      {remaining === 0 ? "All clients entered" : `Start entry (${remaining} remaining)`}
+                    </button>
+                  </div>
+
+                  <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
+                    {(allOutgoingsClients || []).map((c, i) => {
+                      const done = (eomCashCompletedClients || []).includes(c.clientName);
+                      return (
+                        <div key={c.clientName} onClick={() => selectSingleCashClient(c.clientName)}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none", cursor: "pointer" }}>
+                          <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{c.clientName}</div>
+                          <div style={{ fontSize: "12px", color: done ? "#166534" : "#999" }}>{done ? "✓ Entered" : "Not yet entered"}</div>
+                        </div>
+                      );
+                    })}
+                    {(allOutgoingsClients || []).length === 0 && (
+                      <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients found.</div>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+
+            // "flow" or "single" — the shared entry form
+            const accounts = Object.keys(eomCashEntryAmounts);
+            const isFlow = eomCashSubView === "flow";
+            return (
+              <div>
+                <button onClick={() => setEomCashSubView("list")}
+                  style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
+                  ‹ Back to list
+                </button>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{eomCashEntryClient}</h3>
+                  {isFlow && <span style={{ fontSize: "12px", color: "#888" }}>({eomCashFlowIndex + 1} of {eomCashFlowQueue.length})</span>}
+                </div>
+                <div style={{ fontSize: "12px", color: "#888", marginBottom: "16px" }}>Closing balance for {monthLabel}</div>
+
+                <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "16px" }}>
+                  {accounts.map(accountName => (
+                    <div key={accountName} style={{ marginBottom: "10px" }}>
+                      <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>{accountName}</label>
+                      <input type="number" step="0.01" value={eomCashEntryAmounts[accountName]}
+                        onChange={e => setEomCashEntryAmounts(prev => ({ ...prev, [accountName]: e.target.value }))}
+                        placeholder="0.00"
+                        style={{ width: "100%", padding: "8px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }} />
+                    </div>
+                  ))}
+                </div>
+
+                {eomCashSaveStatus === "error" && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "12px" }}>{eomCashSaveError}</div>}
+
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button disabled={eomCashSaveStatus === "saving"} onClick={handleCashSave}
+                    style={{ padding: "8px 20px", background: eomCashSaveStatus === "saving" ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomCashSaveStatus === "saving" ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                    {eomCashSaveStatus === "saving" ? "Saving..." : "Save" + (isFlow ? " and continue" : "")}
+                  </button>
+                  {isFlow && (
+                    <button onClick={handleCashSkip} disabled={eomCashSaveStatus === "saving"}
+                      style={{ padding: "8px 16px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>
+                      Skip
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </NavShell>
     );

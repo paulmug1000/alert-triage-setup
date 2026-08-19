@@ -1686,11 +1686,69 @@ function monthStrToEomKey_(monthStr) {
   return `${year}-${String(monthNum).padStart(2, "0")}`;
 }
 
+// Inverse of the above — "2026-07" -> "Jul 2026". Used when a monthKey needs
+// to be matched against a sheet header via isDateMatchJs_, which requires a
+// 3-letter month abbreviation on both sides to compare, not a plain "YYYY-MM".
+function eomKeyToMonthStr_(monthKey) {
+  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const parts = String(monthKey || "").split("-");
+  if (parts.length !== 2) return null;
+  const year = parseInt(parts[0], 10);
+  const monthNum = parseInt(parts[1], 10);
+  if (!year || !monthNum || monthNum < 1 || monthNum > 12) return null;
+  return `${monthNames[monthNum - 1]} ${year}`;
+}
+
+/**
+ * Marks a client's EoM task done for a given month, if that client has an
+ * active task assigned from a template with the given linkedFunction value
+ * (e.g. "salaries", "cash_balance"). Extracted from the original inline
+ * salaries auto-complete (conversation 18 Aug 2026) so the cash-balance
+ * tool can share the exact same mechanism rather than duplicate it.
+ * Deliberately swallows its own errors — callers wrap this so a failure
+ * here never affects the actual action (payroll write, balance write) that
+ * triggered it. Returns true if a task was found and marked, false
+ * otherwise (including on error) — purely informational for logging.
+ */
+async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, linkedFunctionValue, monthKey) {
+  try {
+    if (!monthKey) return false;
+    const [templatesR, clientTasksR] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
+      sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
+    ]);
+    const linkedTemplateIds = new Set((templatesR.data.values || []).filter(r => r[0] && r[3] === linkedFunctionValue).map(r => r[0]));
+    const linkedTask = (clientTasksR.data.values || []).find(r =>
+      r[0] && r[1] === clientName && linkedTemplateIds.has(r[2]) && (r[5] !== "FALSE" && r[5] !== false)
+    );
+    if (!linkedTask) return false;
+
+    const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
+    const statusRows = statusResp.data.values || [];
+    const existingIdx = statusRows.findIndex(r => r[0] === clientName && r[1] === linkedTask[0] && r[2] === monthKey);
+    if (existingIdx === -1) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
+        requestBody: { values: [[clientName, linkedTask[0], monthKey, "done", new Date().toISOString()]] },
+      });
+    } else {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId, range: `EomMonthlyStatus!D${existingIdx + 2}:E${existingIdx + 2}`,
+        valueInputOption: "RAW", requestBody: { values: [["done", new Date().toISOString()]] },
+      });
+    }
+    return true;
+  } catch (e) {
+    console.error("  autoCompleteLinkedEomTask_ error (non-fatal):", e.message);
+    return false;
+  }
+}
+
 async function ensureEomTabs_(sheets, spreadsheetId) {
   try {
     const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
     const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
-    const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus"].filter(t => !existingTitles.has(t));
+    const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus", "EomBankAccounts"].filter(t => !existingTitles.has(t));
 
     if (toCreate.length > 0) {
       await sheets.spreadsheets.batchUpdate({
@@ -1707,6 +1765,9 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
       }
       if (toCreate.includes("EomMonthlyStatus")) {
         headerWrites.push({ range: "EomMonthlyStatus!A1:E1", values: [["clientName", "taskId", "monthKey", "status", "completedAt"]] });
+      }
+      if (toCreate.includes("EomBankAccounts")) {
+        headerWrites.push({ range: "EomBankAccounts!A1:C1", values: [["clientName", "accountName", "loadedAt"]] });
       }
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId, requestBody: { valueInputOption: "RAW", data: headerWrites },
@@ -13738,40 +13799,10 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         // Marks the month the PAYROLL DATA is actually for (targetMonthStr),
         // not necessarily the current calendar month — importing a
         // catch-up/back-dated month should complete that month's checklist
-        // item, not this one. Wrapped separately so any failure here can
-        // never affect the payroll import result itself.
+        // item, not this one.
         if (writeResult.writeSuccess) {
-          try {
-            const eomMonthKeyFromPayroll = monthStrToEomKey_(targetMonthStr);
-            if (eomMonthKeyFromPayroll) {
-              const [templatesR, clientTasksR] = await Promise.all([
-                sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
-                sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
-              ]);
-              const salaryTemplateIds = new Set((templatesR.data.values || []).filter(r => r[0] && r[3] === "salaries").map(r => r[0]));
-              const linkedTask = (clientTasksR.data.values || []).find(r =>
-                r[0] && r[1] === payrollClientName && salaryTemplateIds.has(r[2]) && (r[5] !== "FALSE" && r[5] !== false)
-              );
-              if (linkedTask) {
-                const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
-                const statusRows = statusResp.data.values || [];
-                const existingIdx = statusRows.findIndex(r => r[0] === payrollClientName && r[1] === linkedTask[0] && r[2] === eomMonthKeyFromPayroll);
-                if (existingIdx === -1) {
-                  await sheets.spreadsheets.values.append({
-                    spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
-                    requestBody: { values: [[payrollClientName, linkedTask[0], eomMonthKeyFromPayroll, "done", new Date().toISOString()]] },
-                  });
-                } else {
-                  await sheets.spreadsheets.values.update({
-                    spreadsheetId: automationCommanderSheetId, range: `EomMonthlyStatus!D${existingIdx + 2}:E${existingIdx + 2}`,
-                    valueInputOption: "RAW", requestBody: { values: [["done", new Date().toISOString()]] },
-                  });
-                }
-              }
-            }
-          } catch (eomErr) {
-            console.error("  EoM auto-complete failed (non-fatal):", eomErr.message);
-          }
+          const eomMonthKeyFromPayroll = monthStrToEomKey_(targetMonthStr);
+          await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, payrollClientName, "salaries", eomMonthKeyFromPayroll);
         }
 
         return res.status(200).json({ success: true, status: "COMPLETE", extractedData, ...writeResult });
@@ -14035,6 +14066,162 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error("❌ eom_reorder_tasks error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_load_bank_accounts") {
+      // Refreshes the cached bank-account list for every client, reading
+      // KeyInfo!H12:H22 on each client's own sheet (confirmed mirrored
+      // identically between client and master sheets, so client sheet is
+      // used, consistent with where the Cash tab write also happens).
+      // A per-client failure doesn't abort the whole load — reported back
+      // so it's clear which clients need a manual look. Wholesale refresh:
+      // clears whatever was cached before, then writes the fresh set —
+      // deliberately manual/on-demand (a button), not run automatically,
+      // since account names change rarely and this reads every client's
+      // sheet in one pass.
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+
+        const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:N500" });
+        const clients = (clientResp.data.values || [])
+          .map(r => ({ clientName: String(r[0] || "").trim(), clientSheetUrl: r[11] }))
+          .filter(c => c.clientName && c.clientSheetUrl);
+
+        const loadedAt = new Date().toISOString();
+        const newRows = [];
+        const failedClients = [];
+        for (const c of clients) {
+          try {
+            const clientSheetId = extractSheetIdFromUrl(c.clientSheetUrl) || String(c.clientSheetUrl).trim();
+            const resp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "KeyInfo!H12:H22" });
+            const accountNames = (resp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+            accountNames.forEach(name => newRows.push([c.clientName, name, loadedAt]));
+          } catch (clientErr) {
+            failedClients.push(c.clientName);
+          }
+        }
+
+        const existingResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2:C50000" });
+        const existingRowCount = (existingResp.data.values || []).length;
+        if (existingRowCount > 0) {
+          await sheets.spreadsheets.values.clear({
+            spreadsheetId: automationCommanderSheetId, range: `EomBankAccounts!A2:C${existingRowCount + 1}`,
+          });
+        }
+        if (newRows.length > 0) {
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2", valueInputOption: "RAW",
+            requestBody: { values: newRows },
+          });
+        }
+
+        return res.status(200).json({ success: true, clientsProcessed: clients.length, accountsLoaded: newRows.length, failedClients });
+      } catch (err) {
+        console.error("❌ eom_load_bank_accounts error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_get_bank_accounts") {
+      // Reads the cached bank-account list (populated by eom_load_bank_accounts)
+      // — never touches live client sheets, that's the whole point of caching.
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2:C50000" });
+        const rows = (resp.data.values || []).filter(r => r[0] && r[1]);
+        const accountsByClient = {};
+        let loadedAt = "";
+        rows.forEach(r => {
+          if (!accountsByClient[r[0]]) accountsByClient[r[0]] = [];
+          accountsByClient[r[0]].push(r[1]);
+          if (r[2]) loadedAt = r[2]; // every row from the same load shares this — any one is representative
+        });
+        return res.status(200).json({ success: true, accountsByClient, loadedAt });
+      } catch (err) {
+        console.error("❌ eom_get_bank_accounts error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_get_cash_balance_progress") {
+      // Returns which clients already have their "cash_balance"-linked task
+      // marked done for the given month — used to filter the sequential
+      // entry flow down to only clients not yet completed this month.
+      const { monthKey: progressMonthKey } = req.body;
+      if (!progressMonthKey) return res.status(400).json({ success: false, error: "Missing monthKey" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const [templatesR, clientTasksR, statusR] = await Promise.all([
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" }),
+        ]);
+        const cashTemplateIds = new Set((templatesR.data.values || []).filter(r => r[0] && r[3] === "cash_balance").map(r => r[0]));
+        const cashTaskIdByClient = {};
+        (clientTasksR.data.values || []).forEach(r => {
+          if (r[0] && cashTemplateIds.has(r[2]) && (r[5] !== "FALSE" && r[5] !== false)) cashTaskIdByClient[r[1]] = r[0];
+        });
+        const statusRows = statusR.data.values || [];
+        const completedClients = Object.keys(cashTaskIdByClient).filter(clientName => {
+          const taskId = cashTaskIdByClient[clientName];
+          return statusRows.some(r => r[0] === clientName && r[1] === taskId && r[2] === progressMonthKey && r[3] === "done");
+        });
+        return res.status(200).json({ success: true, completedClients, hasLinkedTemplate: cashTemplateIds.size > 0 });
+      } catch (err) {
+        console.error("❌ eom_get_cash_balance_progress error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_save_cash_balance") {
+      // Writes a client's closing cash balance as a formula (sum of each
+      // account's amount, e.g. =1045.45+105.67+4109.07) into the Cash
+      // tab's "Actual closing balance" row, in the column matching the
+      // given month. Auto-completes the linked "cash_balance" EoM task on
+      // success, same mechanism as salaries.
+      const { clientSheetId: cashClientSheetId, clientName: cashClientName, monthKey: cashMonthKey, amounts } = req.body;
+      if (!cashClientSheetId || !cashClientName || !cashMonthKey || !Array.isArray(amounts) || amounts.length === 0) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId, clientName, monthKey, or amounts" });
+      }
+      const numericAmounts = amounts.map(a => parseFloat(a)).filter(a => !isNaN(a) && a !== 0);
+      if (numericAmounts.length === 0) {
+        return res.status(400).json({ success: false, error: "No valid, non-zero amounts provided" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const monthLabel = eomKeyToMonthStr_(cashMonthKey);
+        const [headerResp, colAResp] = await Promise.all([
+          sheets.spreadsheets.values.get({ spreadsheetId: cashClientSheetId, range: "Cash!1:1" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: cashClientSheetId, range: "Cash!A1:A200" }),
+        ]);
+        const headers = headerResp.data.values?.[0] || [];
+        let targetColIdx0 = -1;
+        for (let i = 0; i < headers.length; i++) {
+          if (headers[i] && isDateMatchJs_(headers[i], monthLabel)) { targetColIdx0 = i; break; }
+        }
+        if (targetColIdx0 === -1) {
+          return res.status(400).json({ success: false, error: `Could not find a column for ${monthLabel} on the Cash tab.` });
+        }
+        const colAValues = colAResp.data.values || [];
+        const targetRowIdx = colAValues.findIndex(r => String(r[0] || "").trim().toLowerCase() === "actual closing balance");
+        if (targetRowIdx === -1) {
+          return res.status(400).json({ success: false, error: `Could not find a row labelled "Actual closing balance" on the Cash tab.` });
+        }
+        const targetColLetter = columnIndexToLetter_(targetColIdx0 + 1);
+        const targetRow = targetRowIdx + 1;
+        const formula = "=" + numericAmounts.join("+");
+
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: cashClientSheetId, range: `Cash!${targetColLetter}${targetRow}`,
+          valueInputOption: "USER_ENTERED", requestBody: { values: [[formula]] },
+        });
+
+        await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashMonthKey);
+
+        return res.status(200).json({ success: true, formula, targetCol: targetColLetter, targetRow });
+      } catch (err) {
+        console.error("❌ eom_save_cash_balance error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

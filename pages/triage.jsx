@@ -1056,6 +1056,7 @@ export default function TriageSystem({ onBack }) {
   const [eomDetailClient, setEomDetailClient] = useState(null); // null = overview; a client name = detail view
   const [eomClientTasks, setEomClientTasks] = useState(null);
   const [eomClientTasksLoading, setEomClientTasksLoading] = useState(false);
+  const [eomClientTasksError, setEomClientTasksError] = useState("");
   const [eomTemplates, setEomTemplates] = useState(null);
   const [eomAddTaskMode, setEomAddTaskMode] = useState(""); // "" | "template" | "custom"
   const [eomNewTaskTemplateId, setEomNewTaskTemplateId] = useState("");
@@ -1234,11 +1235,15 @@ export default function TriageSystem({ onBack }) {
 
   const reloadEomClientTasks = (clientName) => {
     setEomClientTasksLoading(true);
+    setEomClientTasksError("");
     return fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_client_tasks", clientName }) })
+      body: JSON.stringify({ action: "eom_get_client_tasks", clientName, automationCommanderSheetId }) })
       .then(r => r.json())
-      .then(d => { if (d.success) setEomClientTasks(d.tasks || []); })
-      .catch(e => console.error("eom_get_client_tasks error:", e))
+      .then(d => {
+        if (d.success) setEomClientTasks(d.tasks || []);
+        else setEomClientTasksError(d.error || "Failed to load tasks");
+      })
+      .catch(e => setEomClientTasksError(e.message))
       .finally(() => setEomClientTasksLoading(false));
   };
 
@@ -1261,7 +1266,7 @@ export default function TriageSystem({ onBack }) {
       .finally(() => setEomStatusLoading(false));
     if (!eomTemplates) {
       fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_get_templates" }) })
+        body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId }) })
         .then(r => r.json())
         .then(d => { if (d.success) setEomTemplates(d.templates || []); })
         .catch(e => console.error("eom_get_templates error:", e));
@@ -6153,6 +6158,7 @@ export default function TriageSystem({ onBack }) {
                 </div>
 
                 {eomStatusError && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "14px" }}>{eomStatusError}</div>}
+                {eomClientTasksError && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "14px" }}>{eomClientTasksError}</div>}
 
                 <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", marginBottom: "16px" }}>
                   {activeTasks.map((t, i) => (

@@ -825,7 +825,7 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoing
     { key: "retainers", label: "Retainers", handler: onRetainers },
     { key: "overview", label: "Overview", handler: onOverview },
     { key: "appLog", label: "App Log", handler: onAppLog },
-    { key: "tools", label: "Tools", handler: onTools },
+    { key: "tools", label: "EoM", handler: onTools },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
 
@@ -1045,6 +1045,14 @@ export default function TriageSystem({ onBack }) {
   const [agentProgressEntries, setAgentProgressEntries] = useState([]);
   const [agentRunStartedAt, setAgentRunStartedAt] = useState(0);
   const [toolsScriptsLoaded, setToolsScriptsLoaded] = useState(false);
+  const [eomSubView, setEomSubView] = useState("overview"); // "overview" | "payroll"
+  const [eomMonthKey, setEomMonthKey] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [eomStatuses, setEomStatuses] = useState(null); // [{clientName, taskId, status}]
+  const [eomStatusLoading, setEomStatusLoading] = useState(false);
+  const [eomStatusError, setEomStatusError] = useState("");
   // Each entry: { id, file, fileName, convertStatus, convertMsg, fileData,
   //   detectStatus, detectMethod, client, ambiguousInfo, processStatus,
   //   pendingConfirm, result, processMsg }
@@ -1191,6 +1199,25 @@ export default function TriageSystem({ onBack }) {
       }).catch(e => console.error("get_all_clients error:", e));
     }
   };
+
+  // Loads EoM monthly status whenever the overview sub-view is showing and
+  // the requested month changes — covers the initial nav click and every
+  // prev/next month click without wiring the fetch into each button.
+  useEffect(() => {
+    if (activeNav !== "tools" || eomSubView !== "overview") return;
+    setEomStatusLoading(true);
+    setEomStatusError("");
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) setEomStatuses(d.statuses || []);
+        else setEomStatusError(d.error || "Failed to load status");
+      })
+      .catch(e => setEomStatusError(e.message))
+      .finally(() => setEomStatusLoading(false));
+  }, [activeNav, eomSubView, eomMonthKey]);
+
   const handleNavOutgoings = () => {
     setActiveNav("outgoings");
     // Always go back to client selection when navigating to Outgoings
@@ -5869,7 +5896,81 @@ export default function TriageSystem({ onBack }) {
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={{ padding: "20px", maxWidth: "900px" }}>
-          <h2 style={{ margin: "0 0 6px", fontSize: "20px", fontWeight: "700" }}>Tools</h2>
+          <h2 style={{ margin: "0 0 14px", fontSize: "20px", fontWeight: "700" }}>EoM</h2>
+
+          <div style={{ display: "flex", gap: "4px", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
+            {[["overview", "Overview"], ["payroll", "Payroll Import"]].map(([key, label]) => (
+              <button key={key} onClick={() => setEomSubView(key)}
+                style={{ padding: "8px 16px", background: "none", border: "none",
+                  borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
+                  color: eomSubView === key ? "#0066cc" : "#666", fontWeight: eomSubView === key ? "600" : "400",
+                  fontSize: "13px", cursor: "pointer" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {eomSubView === "overview" && (() => {
+            const [y, m] = eomMonthKey.split("-").map(Number);
+            const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+            const shiftMonth = (delta) => {
+              const d = new Date(y, m - 1 + delta, 1);
+              setEomMonthKey(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+            };
+            const byClient = {};
+            (eomStatuses || []).forEach(s => {
+              if (!byClient[s.clientName]) byClient[s.clientName] = { total: 0, done: 0 };
+              byClient[s.clientName].total++;
+              if (s.status === "done") byClient[s.clientName].done++;
+            });
+            const clientRows = (allOutgoingsClients || []).map(c => {
+              const counts = byClient[c.clientName] || { total: 0, done: 0 };
+              const pct = counts.total > 0 ? counts.done / counts.total : null;
+              return { clientName: c.clientName, ...counts, pct };
+            }).sort((a, b) => {
+              if (a.total === 0 && b.total === 0) return a.clientName.localeCompare(b.clientName);
+              if (a.total === 0) return 1; // no tasks assigned yet — push to the end
+              if (b.total === 0) return -1;
+              return a.pct - b.pct; // least complete first
+            });
+
+            return (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+                  <button onClick={() => shiftMonth(-1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>‹</button>
+                  <div style={{ fontSize: "15px", fontWeight: "700", minWidth: "140px", textAlign: "center" }}>{monthLabel}</div>
+                  <button onClick={() => shiftMonth(1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>›</button>
+                  {eomStatusLoading && <Spinner />}
+                </div>
+
+                {eomStatusError && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "14px" }}>{eomStatusError}</div>}
+
+                <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
+                  {clientRows.map((c, i) => (
+                    <div key={c.clientName} style={{ display: "flex", alignItems: "center", gap: "14px", padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
+                      <div style={{ flex: "0 0 200px", fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{c.clientName}</div>
+                      {c.total === 0 ? (
+                        <div style={{ fontSize: "12px", color: "#aaa" }}>No tasks assigned yet</div>
+                      ) : (
+                        <>
+                          <div style={{ flex: 1, height: "8px", background: "#f0f0f0", borderRadius: "4px", overflow: "hidden" }}>
+                            <div style={{ width: `${c.pct * 100}%`, height: "100%",
+                              background: c.pct === 1 ? "#16a34a" : c.pct === 0 ? "#dc2626" : "#f59e0b" }} />
+                          </div>
+                          <div style={{ flex: "0 0 70px", fontSize: "12px", color: "#666", textAlign: "right" }}>{c.done} of {c.total}</div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                  {clientRows.length === 0 && (
+                    <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients found.</div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {eomSubView === "payroll" && (<>
           <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
             Payroll import — upload several clients' payroll documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can't work out is flagged for you to assign. Time report import isn't built yet; this only handles payroll for now.
           </p>
@@ -6043,6 +6144,7 @@ export default function TriageSystem({ onBack }) {
               )}
             </div>
           ))}
+          </>)}
         </div>
       </NavShell>
     );

@@ -1350,6 +1350,45 @@ async function ensureClaudeUsageTab_(sheets, spreadsheetId) {
   }
 }
 
+/**
+ * Creates the three EoM (End of Month) tracking tabs on the Automation
+ * Commander sheet if they don't already exist — same pattern as
+ * ensureClaudeUsageTab_ above. Checks all three existence flags in one
+ * metadata call before creating anything.
+ *   EomTemplates:    A=templateId B=name C=defaultNotes D=linkedFunction E=active F=createdAt
+ *   EomClientTasks:  A=taskId B=clientName C=templateId D=taskName E=clientNotes F=active G=createdAt
+ *   EomMonthlyStatus: A=clientName B=taskId C=monthKey D=status E=completedAt
+ */
+async function ensureEomTabs_(sheets, spreadsheetId) {
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
+    const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
+    const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus"].filter(t => !existingTitles.has(t));
+    if (toCreate.length === 0) return;
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: toCreate.map(title => ({ addSheet: { properties: { title } } })) },
+    });
+
+    const headerWrites = [];
+    if (toCreate.includes("EomTemplates")) {
+      headerWrites.push({ range: "EomTemplates!A1:F1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt"]] });
+    }
+    if (toCreate.includes("EomClientTasks")) {
+      headerWrites.push({ range: "EomClientTasks!A1:G1", values: [["taskId", "clientName", "templateId", "taskName", "clientNotes", "active", "createdAt"]] });
+    }
+    if (toCreate.includes("EomMonthlyStatus")) {
+      headerWrites.push({ range: "EomMonthlyStatus!A1:E1", values: [["clientName", "taskId", "monthKey", "status", "completedAt"]] });
+    }
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId, requestBody: { valueInputOption: "RAW", data: headerWrites },
+    });
+  } catch (e) {
+    console.error("ensureEomTabs_ error:", e.message);
+  }
+}
+
 function colLetterToNum(col) {
   return String(col).toUpperCase().split("").reduce((acc, ch) => acc * 26 + ch.charCodeAt(0) - 64, 0);
 }
@@ -13356,6 +13395,175 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       } catch (err) {
         console.error("❌ process_payroll_document error:", err);
         await redisClient.del(`payroll_upload:${uploadId}`).catch(e => console.error("  Upload cleanup failed (non-fatal):", e.message));
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_get_templates") {
+      // EoM (End of Month) tracking — Stage 1a: shared task template library.
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" });
+        const rows = resp.data.values || [];
+        const templates = rows.filter(r => r[0]).map(r => ({
+          templateId: r[0], name: r[1] || "", defaultNotes: r[2] || "", linkedFunction: r[3] || "",
+          active: r[4] !== "FALSE" && r[4] !== false, createdAt: r[5] || "",
+        }));
+        return res.status(200).json({ success: true, templates });
+      } catch (err) {
+        console.error("❌ eom_get_templates error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_save_template") {
+      // Create (no templateId given) or update (templateId given) a shared
+      // task template. Templates are never hard-deleted — set active:false
+      // to retire one without breaking existing client assignments that
+      // still reference it.
+      const { templateId, name, defaultNotes, linkedFunction, active } = req.body;
+      if (!name) return res.status(400).json({ success: false, error: "Missing name" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" });
+        const rows = resp.data.values || [];
+
+        if (templateId) {
+          const rowIdx = rows.findIndex(r => r[0] === templateId);
+          if (rowIdx === -1) return res.status(404).json({ success: false, error: "Template not found" });
+          const sheetRow = rowIdx + 2;
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: automationCommanderSheetId, range: `EomTemplates!B${sheetRow}:E${sheetRow}`,
+            valueInputOption: "RAW", requestBody: { values: [[name, defaultNotes || "", linkedFunction || "", active !== false]] },
+          });
+          return res.status(200).json({ success: true, templateId });
+        }
+
+        const newId = `tmpl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A:F", valueInputOption: "RAW",
+          requestBody: { values: [[newId, name, defaultNotes || "", linkedFunction || "", true, new Date().toISOString()]] },
+        });
+        return res.status(200).json({ success: true, templateId: newId });
+      } catch (err) {
+        console.error("❌ eom_save_template error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_get_client_tasks") {
+      // Stage 1b: per-client task assignments — either a reference to a
+      // shared template (templateId set) or a one-off task unique to that
+      // client (templateId blank, taskName set directly). Resolves the
+      // effective task name server-side so the frontend doesn't need to
+      // separately fetch templates just to display a list.
+      const { clientName: filterClient } = req.body;
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const [tasksResp, templatesResp] = await Promise.all([
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
+        ]);
+        const templateNameById = {};
+        (templatesResp.data.values || []).forEach(r => { if (r[0]) templateNameById[r[0]] = r[1] || ""; });
+
+        const rows = (tasksResp.data.values || []).filter(r => r[0]);
+        const tasks = rows
+          .filter(r => !filterClient || r[1] === filterClient)
+          .map(r => ({
+            taskId: r[0], clientName: r[1], templateId: r[2] || "",
+            name: r[2] ? (templateNameById[r[2]] || "(template deleted)") : (r[3] || ""),
+            clientNotes: r[4] || "", active: r[5] !== "FALSE" && r[5] !== false, createdAt: r[6] || "",
+          }));
+        return res.status(200).json({ success: true, tasks });
+      } catch (err) {
+        console.error("❌ eom_get_client_tasks error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_save_client_task") {
+      // Create/update a client's task assignment. Either templateId (pulls
+      // from the shared library) or taskName (a one-off custom task) must
+      // be given — not both. clientNotes sit alongside a template
+      // assignment without altering the shared template itself.
+      const { taskId, clientName: taskClientName, templateId: taskTemplateId, taskName, clientNotes, active: taskActive } = req.body;
+      if (!taskClientName) return res.status(400).json({ success: false, error: "Missing clientName" });
+      if (!taskTemplateId && !taskName) return res.status(400).json({ success: false, error: "Must provide either templateId or taskName" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" });
+        const rows = resp.data.values || [];
+
+        if (taskId) {
+          const rowIdx = rows.findIndex(r => r[0] === taskId);
+          if (rowIdx === -1) return res.status(404).json({ success: false, error: "Task assignment not found" });
+          const sheetRow = rowIdx + 2;
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: automationCommanderSheetId, range: `EomClientTasks!B${sheetRow}:F${sheetRow}`,
+            valueInputOption: "RAW", requestBody: { values: [[taskClientName, taskTemplateId || "", taskName || "", clientNotes || "", taskActive !== false]] },
+          });
+          return res.status(200).json({ success: true, taskId });
+        }
+
+        const newId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A:G", valueInputOption: "RAW",
+          requestBody: { values: [[newId, taskClientName, taskTemplateId || "", taskName || "", clientNotes || "", true, new Date().toISOString()]] },
+        });
+        return res.status(200).json({ success: true, taskId: newId });
+      } catch (err) {
+        console.error("❌ eom_save_client_task error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_get_month_status") {
+      // Stage 2: monthly status for a given month (all clients, or one).
+      // A missing status row means "not applicable this month" — the three
+      // states are exactly: no row (not needed), status="pending" (needed,
+      // not done), status="done" (needed, done). Any active client task
+      // that has no row yet for the requested month is lazily created here
+      // as "pending" — that's the default assumption; marking something
+      // not-applicable-this-month is a later, explicit action, not the
+      // default for a freshly-viewed month.
+      const { monthKey, clientName: statusClient } = req.body;
+      if (!monthKey) return res.status(400).json({ success: false, error: "Missing monthKey (e.g. 2026-08)" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+
+        const tasksResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" });
+        const activeTasks = (tasksResp.data.values || [])
+          .filter(r => r[0] && (r[5] !== "FALSE" && r[5] !== false))
+          .filter(r => !statusClient || r[1] === statusClient)
+          .map(r => ({ taskId: r[0], clientName: r[1] }));
+
+        const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
+        const statusRows = statusResp.data.values || [];
+        const existingByKey = {};
+        statusRows.forEach((r, i) => { if (r[0] && r[2] === monthKey) existingByKey[`${r[0]}|||${r[1]}`] = { rowIndex: i + 2, status: r[3] || "pending" }; });
+
+        const newRows = [];
+        const result = [];
+        for (const t of activeTasks) {
+          const key = `${t.clientName}|||${t.taskId}`;
+          const existing = existingByKey[key];
+          if (existing) {
+            result.push({ clientName: t.clientName, taskId: t.taskId, status: existing.status });
+          } else {
+            newRows.push([t.clientName, t.taskId, monthKey, "pending", ""]);
+            result.push({ clientName: t.clientName, taskId: t.taskId, status: "pending" });
+          }
+        }
+        if (newRows.length > 0) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
+            requestBody: { values: newRows },
+          });
+        }
+        return res.status(200).json({ success: true, monthKey, statuses: result });
+      } catch (err) {
+        console.error("❌ eom_get_month_status error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

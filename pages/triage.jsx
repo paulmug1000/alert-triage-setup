@@ -1096,6 +1096,7 @@ export default function TriageSystem({ onBack }) {
   const [eomCashEntryAmounts, setEomCashEntryAmounts] = useState({});
   const [eomCashSaveStatus, setEomCashSaveStatus] = useState("idle"); // idle | saving | error
   const [eomCashSaveError, setEomCashSaveError] = useState("");
+  const [eomMarkActualRunning, setEomMarkActualRunning] = useState(""); // taskId currently running, or ""
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
   const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
   const [eomNewTemplateName, setEomNewTemplateName] = useState("");
@@ -1428,6 +1429,29 @@ export default function TriageSystem({ onBack }) {
         else setEomCashSubView("list");
       })
       .catch(e => { setEomCashSaveStatus("error"); setEomCashSaveError(e.message); });
+  };
+
+  // Called directly from a task row (not a separate batch-tool tab, unlike
+  // payroll/cash balance) — always targets the previous calendar month
+  // relative to today, computed server-side. Reloads this month's status
+  // afterward so the task's pill updates if the auto-completed month
+  // happens to match whatever month is currently selected on screen.
+  const handleEomMarkActual = (taskId) => {
+    const client = (allOutgoingsClients || []).find(c => c.clientName === eomDetailClient);
+    if (!client) return;
+    setEomMarkActualRunning(taskId);
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_mark_month_actual", clientSheetId: client.clientSheetId, clientName: eomDetailClient, automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) { setEomClientTasksError(d.error || "Failed to mark month actual"); return; }
+        fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, clientName: eomDetailClient, automationCommanderSheetId }) })
+          .then(r => r.json())
+          .then(d2 => { if (d2.success) { setEomActiveTasks(d2.activeTasks || []); setEomStatusOverrides(d2.statusOverrides || []); } });
+      })
+      .catch(e => setEomClientTasksError(e.message))
+      .finally(() => setEomMarkActualRunning(""));
   };
 
   const handleEomStatusChange = (taskId, newStatus) => {
@@ -6296,12 +6320,7 @@ export default function TriageSystem({ onBack }) {
               const counts = byClient[c.clientName] || { total: 0, done: 0 };
               const pct = counts.total > 0 ? counts.done / counts.total : null;
               return { clientName: c.clientName, ...counts, pct };
-            }).sort((a, b) => {
-              if (a.total === 0 && b.total === 0) return a.clientName.localeCompare(b.clientName);
-              if (a.total === 0) return 1; // no tasks assigned yet — push to the end
-              if (b.total === 0) return -1;
-              return a.pct - b.pct; // least complete first
-            });
+            }).sort((a, b) => a.clientName.localeCompare(b.clientName));
 
             return (
               <div>
@@ -6386,6 +6405,7 @@ export default function TriageSystem({ onBack }) {
                               <option value="">None</option>
                               <option value="salaries">Salaries</option>
                               <option value="cash_balance">Cash Balance</option>
+                              <option value="mark_actual">Mark Month Actual</option>
                             </select>
                             <label style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "4px", marginLeft: "10px" }}>
                               <input type="checkbox" checked={eomTemplateDraft.active} onChange={e => setEomTemplateDraft(d => ({ ...d, active: e.target.checked }))} />
@@ -6444,6 +6464,7 @@ export default function TriageSystem({ onBack }) {
                           <option value="">None</option>
                           <option value="salaries">Salaries</option>
                               <option value="cash_balance">Cash Balance</option>
+                              <option value="mark_actual">Mark Month Actual</option>
                         </select>
                       </div>
                       <div style={{ display: "flex", gap: "8px" }}>
@@ -6531,6 +6552,13 @@ export default function TriageSystem({ onBack }) {
                             <button onClick={() => setEomSubView("payroll")}
                               style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                               Import Payroll →
+                            </button>
+                          )}
+                          {t.linkedFunction === "mark_actual" && (
+                            <button onClick={() => handleEomMarkActual(t.taskId)} disabled={eomMarkActualRunning === t.taskId}
+                              style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                                color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
+                              {eomMarkActualRunning === t.taskId ? "Marking..." : "Mark Actual"}
                             </button>
                           )}
                         </div>

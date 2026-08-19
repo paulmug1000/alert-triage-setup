@@ -14210,6 +14210,50 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "eom_mark_month_actual") {
+      // Simple, single-client EoM function called directly from a task
+      // row (not a batch tool with its own sub-tab, unlike payroll/cash
+      // balance — Paul was explicit this is always per-client, triggered
+      // from the checklist itself). Writes "Actual" into row 2 of the
+      // client's Performance tab, in the column matching the month being
+      // finalised — which is always the PREVIOUS calendar month relative
+      // to today, computed here server-side, independent of whatever
+      // month happens to be selected on the EoM screen. Auto-completes
+      // the linked "mark_actual" EoM task on success.
+      const { clientSheetId: perfClientSheetId, clientName: perfClientName } = req.body;
+      if (!perfClientSheetId || !perfClientName) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId or clientName" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const d = new Date(); d.setMonth(d.getMonth() - 1);
+        const targetMonthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        const monthLabel = eomKeyToMonthStr_(targetMonthKey);
+
+        const headerResp = await sheets.spreadsheets.values.get({ spreadsheetId: perfClientSheetId, range: "Performance!1:1" });
+        const headers = headerResp.data.values?.[0] || [];
+        let targetColIdx0 = -1;
+        for (let i = 0; i < headers.length; i++) {
+          if (headers[i] && isDateMatchJs_(headers[i], monthLabel)) { targetColIdx0 = i; break; }
+        }
+        if (targetColIdx0 === -1) {
+          return res.status(400).json({ success: false, error: `Could not find a column for ${monthLabel} on the Performance tab.` });
+        }
+        const targetColLetter = columnIndexToLetter_(targetColIdx0 + 1);
+
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: perfClientSheetId, range: `Performance!${targetColLetter}2`,
+          valueInputOption: "USER_ENTERED", requestBody: { values: [["Actual"]] },
+        });
+
+        await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, perfClientName, "mark_actual", targetMonthKey);
+
+        return res.status(200).json({ success: true, monthLabel, targetCol: targetColLetter });
+      } catch (err) {
+        console.error("❌ eom_mark_month_actual error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "eom_seed_from_checklist") {
       // One-time migration from Paul's original CFO_task_checklist.xlsx —
       // see conversation 18 Aug 2026. EOM_SEED_DATA uses the SHORT client

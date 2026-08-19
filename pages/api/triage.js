@@ -1814,7 +1814,7 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
 
       const headerWrites = [];
       if (toCreate.includes("EomTemplates")) {
-        headerWrites.push({ range: "EomTemplates!A1:F1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt"]] });
+        headerWrites.push({ range: "EomTemplates!A1:G1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt", "alertCategories"]] });
       }
       if (toCreate.includes("EomClientTasks")) {
         headerWrites.push({ range: "EomClientTasks!A1:H1", values: [["taskId", "clientName", "templateId", "taskName", "clientNotes", "active", "createdAt", "sortOrder"]] });
@@ -1841,9 +1841,49 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
         });
       }
     }
+    // alertCategories (column G) was added to EomTemplates after that tab
+    // may already have been created — same patch pattern as sortOrder above.
+    if (!toCreate.includes("EomTemplates")) {
+      const g1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomTemplates!G1" });
+      if (!g1.data.values || !g1.data.values[0] || !g1.data.values[0][0]) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId, range: "EomTemplates!G1", valueInputOption: "RAW", requestBody: { values: [["alertCategories"]] },
+        });
+      }
+    }
     eomTabsVerified = true;
   } catch (e) {
     console.error("ensureEomTabs_ error:", e.message);
+  }
+}
+
+// Same warm-instance caching pattern as eomTabsVerified above — once
+// confirmed on this instance, never needs re-checking.
+let assignedExpensesTabVerified = false;
+
+/**
+ * Server-side replacement for the old localStorage-only "assigned expense"
+ * tracking (conversation 19 Aug 2026) — one row per clientName+appId,
+ * shared across devices/sessions rather than trapped in one browser.
+ * AssignedExpenses columns: A=clientName, B=appId, C=assignedAt.
+ */
+async function ensureAssignedExpensesTab_(sheets, spreadsheetId) {
+  if (assignedExpensesTabVerified) return;
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
+    const exists = meta.data.sheets.some(s => s.properties.title === "AssignedExpenses");
+    if (!exists) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: "AssignedExpenses" } } }] },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId, range: "AssignedExpenses!A1:C1", valueInputOption: "RAW",
+        requestBody: { values: [["clientName", "appId", "assignedAt"]] },
+      });
+    }
+    assignedExpensesTabVerified = true;
+  } catch (e) {
+    console.error("ensureAssignedExpensesTab_ error:", e.message);
   }
 }
 
@@ -2936,6 +2976,83 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, clients: clientsArray, clientsMap: clientsObj });
       } catch (err) {
         console.error("❌ get_all_clients error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_assigned_expenses") {
+      // Server-side replacement for the old localStorage-only assigned-expense
+      // tracking (conversation 19 Aug 2026) — reads the full AssignedExpenses
+      // table and groups it by client, matching the shape the frontend's
+      // assignedByClient state already expects.
+      const { automationCommanderSheetId: aeAcId } = req.body;
+      if (!aeAcId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAssignedExpensesTab_(sheets, aeAcId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: aeAcId, range: "AssignedExpenses!A2:C50000" });
+        const assignedByClient = {};
+        (resp.data.values || []).forEach(r => {
+          if (!r[0] || !r[1]) return;
+          if (!assignedByClient[r[0]]) assignedByClient[r[0]] = [];
+          assignedByClient[r[0]].push(r[1]);
+        });
+        return res.status(200).json({ success: true, assignedByClient });
+      } catch (err) {
+        console.error("❌ get_assigned_expenses error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "mark_expense_assigned") {
+      // Records that an expense has been assigned, server-side — shared
+      // across devices/sessions rather than trapped in one browser's
+      // localStorage. No duplicate check on write: the frontend already
+      // treats this as a Set, and pruning (below) periodically cleans up
+      // the table anyway, so a rare duplicate row is harmless.
+      const { automationCommanderSheetId: aeAcId, clientName: aeClientName, appId: aeAppId } = req.body;
+      if (!aeAcId || !aeClientName || !aeAppId) {
+        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId, clientName, or appId" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAssignedExpensesTab_(sheets, aeAcId);
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: aeAcId, range: "AssignedExpenses!A:C", valueInputOption: "RAW",
+          requestBody: { values: [[aeClientName, aeAppId, new Date().toISOString()]] },
+        });
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ mark_expense_assigned error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "prune_assigned_expenses") {
+      // Removes assigned-expense rows for one client whose appId is no
+      // longer present in that client's current inbox — meaning the real
+      // underlying data has caught up and the suppression is no longer
+      // needed. Mirrors the pruning the old localStorage version did on
+      // every Outgoings load, now applied to the shared server-side table.
+      const { automationCommanderSheetId: aeAcId, clientName: aeClientName, validAppIds } = req.body;
+      if (!aeAcId || !aeClientName || !Array.isArray(validAppIds)) {
+        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId, clientName, or validAppIds" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAssignedExpensesTab_(sheets, aeAcId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: aeAcId, range: "AssignedExpenses!A2:C50000" });
+        const rows = resp.data.values || [];
+        const validSet = new Set(validAppIds);
+        const keptRows = rows.filter(r => !(r[0] === aeClientName) || validSet.has(r[1]));
+        if (keptRows.length !== rows.length) {
+          await sheets.spreadsheets.values.clear({ spreadsheetId: aeAcId, range: `AssignedExpenses!A2:C${rows.length + 1}` });
+          if (keptRows.length > 0) {
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: aeAcId, range: "AssignedExpenses!A2", valueInputOption: "RAW", requestBody: { values: keptRows },
+            });
+          }
+        }
+        return res.status(200).json({ success: true, removed: rows.length - keptRows.length });
+      } catch (err) {
+        console.error("❌ prune_assigned_expenses error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 
@@ -13878,11 +13995,11 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" });
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" });
         const rows = resp.data.values || [];
         const templates = rows.filter(r => r[0]).map(r => ({
           templateId: r[0], name: r[1] || "", defaultNotes: r[2] || "", linkedFunction: r[3] || "",
-          active: r[4] !== "FALSE" && r[4] !== false, createdAt: r[5] || "",
+          active: r[4] !== "FALSE" && r[4] !== false, createdAt: r[5] || "", alertCategories: r[6] || "",
         }));
         return res.status(200).json({ success: true, templates });
       } catch (err) {
@@ -13894,13 +14011,16 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       // Create (no templateId given) or update (templateId given) a shared
       // task template. Templates are never hard-deleted — set active:false
       // to retire one without breaking existing client assignments that
-      // still reference it.
-      const { templateId, name, defaultNotes, linkedFunction, active } = req.body;
+      // still reference it. alertCategories only applies when
+      // linkedFunction === "alert_check" — a comma-separated subset of
+      // "invoice,expense,crm" picking which live discrepancy categories
+      // this template checks (see conversation 19 Aug 2026).
+      const { templateId, name, defaultNotes, linkedFunction, active, alertCategories } = req.body;
       if (!name) return res.status(400).json({ success: false, error: "Missing name" });
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" });
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" });
         const rows = resp.data.values || [];
 
         if (templateId) {
@@ -13911,13 +14031,17 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
             spreadsheetId: automationCommanderSheetId, range: `EomTemplates!B${sheetRow}:E${sheetRow}`,
             valueInputOption: "RAW", requestBody: { values: [[name, defaultNotes || "", linkedFunction || "", active !== false]] },
           });
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: automationCommanderSheetId, range: `EomTemplates!G${sheetRow}`,
+            valueInputOption: "RAW", requestBody: { values: [[alertCategories || ""]] },
+          });
           return res.status(200).json({ success: true, templateId });
         }
 
         const newId = `tmpl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         await sheets.spreadsheets.values.append({
-          spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A:F", valueInputOption: "RAW",
-          requestBody: { values: [[newId, name, defaultNotes || "", linkedFunction || "", true, new Date().toISOString()]] },
+          spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A:G", valueInputOption: "RAW",
+          requestBody: { values: [[newId, name, defaultNotes || "", linkedFunction || "", true, new Date().toISOString(), alertCategories || ""]] },
         });
         return res.status(200).json({ success: true, templateId: newId });
       } catch (err) {
@@ -13937,12 +14061,13 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         await ensureEomTabs_(sheets, automationCommanderSheetId);
         const [tasksResp, templatesResp] = await Promise.all([
           sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" }),
         ]);
         const templateNameById = {};
         const templateLinkedFunctionById = {};
+        const templateAlertCategoriesById = {};
         (templatesResp.data.values || []).forEach(r => {
-          if (r[0]) { templateNameById[r[0]] = r[1] || ""; templateLinkedFunctionById[r[0]] = r[3] || ""; }
+          if (r[0]) { templateNameById[r[0]] = r[1] || ""; templateLinkedFunctionById[r[0]] = r[3] || ""; templateAlertCategoriesById[r[0]] = r[6] || ""; }
         });
 
         const rows = (tasksResp.data.values || []).filter(r => r[0]);
@@ -13952,6 +14077,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
             taskId: r[0], clientName: r[1], templateId: r[2] || "",
             name: r[2] ? (templateNameById[r[2]] || "(template deleted)") : (r[3] || ""),
             linkedFunction: r[2] ? (templateLinkedFunctionById[r[2]] || "") : "",
+            alertCategories: r[2] ? (templateAlertCategoriesById[r[2]] || "") : "",
             clientNotes: r[4] || "", active: r[5] !== "FALSE" && r[5] !== false, createdAt: r[6] || "",
             // Tasks created before sortOrder existed have no value here —
             // fall back to their row position so they still sort sensibly
@@ -13985,13 +14111,14 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         await ensureEomTabs_(sheets, automationCommanderSheetId);
         const [tasksResp, templatesResp, statusResp] = await Promise.all([
           sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" }),
           sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" }),
         ]);
         const templateNameById = {};
         const templateLinkedFunctionById = {};
+        const templateAlertCategoriesById = {};
         (templatesResp.data.values || []).forEach(r => {
-          if (r[0]) { templateNameById[r[0]] = r[1] || ""; templateLinkedFunctionById[r[0]] = r[3] || ""; }
+          if (r[0]) { templateNameById[r[0]] = r[1] || ""; templateLinkedFunctionById[r[0]] = r[3] || ""; templateAlertCategoriesById[r[0]] = r[6] || ""; }
         });
 
         const rows = (tasksResp.data.values || []).filter(r => r[0]);
@@ -14001,6 +14128,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
             taskId: r[0], clientName: r[1], templateId: r[2] || "",
             name: r[2] ? (templateNameById[r[2]] || "(template deleted)") : (r[3] || ""),
             linkedFunction: r[2] ? (templateLinkedFunctionById[r[2]] || "") : "",
+            alertCategories: r[2] ? (templateAlertCategoriesById[r[2]] || "") : "",
             clientNotes: r[4] || "", active: r[5] !== "FALSE" && r[5] !== false, createdAt: r[6] || "",
             sortOrder: r[7] !== undefined && r[7] !== "" ? Number(r[7]) : 1000000 + i,
           }))

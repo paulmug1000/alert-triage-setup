@@ -1031,15 +1031,24 @@ export default function TriageSystem({ onBack }) {
   // Tracks whether a GAS outgoings pull is needed. Using a ref (not state) so it
   // doesn't trigger re-renders. Reset to null after the pull fires.
   const outgoingsPullPendingRef = React.useRef(null); // null | masterSheetId
-  const [assignedByClient, setAssignedByClient] = useState(() => {
-    try {
-      const stored = localStorage.getItem("pulse_assignedByClient");
-      if (!stored) return {};
-      const parsed = JSON.parse(stored);
-      // Convert arrays back to Sets
-      return Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, new Set(v)]));
-    } catch { return {}; }
-  });
+  // assignedByClient: server-side, shared across devices/sessions (migrated
+  // from localStorage 19 Aug 2026 — a mobile assignment wasn't visible on
+  // desktop until the underlying flag itself caught up, hours later).
+  // Starts empty and is populated by the effect below on mount.
+  const [assignedByClient, setAssignedByClient] = useState({});
+  useEffect(() => {
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "get_assigned_expenses", automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          setAssignedByClient(Object.fromEntries(
+            Object.entries(d.assignedByClient || {}).map(([k, v]) => [k, new Set(v)])
+          ));
+        }
+      })
+      .catch(e => console.error("get_assigned_expenses error:", e));
+  }, []);
   const addAssignedAppId = (id, clientName) => {
     setAssignedAppIds(prev => {
       const next = new Set([...prev, id]);
@@ -1049,12 +1058,13 @@ export default function TriageSystem({ onBack }) {
     if (clientName) {
       setAssignedByClient(prev => {
         const clientSet = new Set([...(prev[clientName] || []), id]);
-        const next = { ...prev, [clientName]: clientSet };
-        try { localStorage.setItem("pulse_assignedByClient", JSON.stringify(
-          Object.fromEntries(Object.entries(next).map(([k, v]) => [k, [...v]]))
-        )); } catch {}
-        return next;
+        return { ...prev, [clientName]: clientSet };
       });
+      // Optimistic local update happens above; this persists it server-side
+      // so it's visible from any other device/session too.
+      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "mark_expense_assigned", automationCommanderSheetId, clientName, appId: id }) })
+        .catch(e => console.error("mark_expense_assigned error:", e));
     }
   };
   const [outgoingsReplacePrompt, setOutgoingsReplacePrompt] = useState(null); // { exp, contractor, colLetter, realBlocks, manualTotal, blocksToKeep }
@@ -1109,11 +1119,12 @@ export default function TriageSystem({ onBack }) {
   const [eomManagerLoading, setEomManagerLoading] = useState(false);
   const [eomManagerError, setEomManagerError] = useState("");
   const [eomEditingTemplateId, setEomEditingTemplateId] = useState("");
-  const [eomTemplateDraft, setEomTemplateDraft] = useState({ name: "", defaultNotes: "", linkedFunction: "", active: true });
+  const [eomTemplateDraft, setEomTemplateDraft] = useState({ name: "", defaultNotes: "", linkedFunction: "", active: true, alertCategories: "" });
   const [eomAddingNewTemplate, setEomAddingNewTemplate] = useState(false);
   const [eomNewTplName, setEomNewTplName] = useState("");
   const [eomNewTplNotes, setEomNewTplNotes] = useState("");
   const [eomNewTplLinkedFunction, setEomNewTplLinkedFunction] = useState("");
+  const [eomNewTplAlertCategories, setEomNewTplAlertCategories] = useState("");
   const [eomAddingNewTemplateSaving, setEomAddingNewTemplateSaving] = useState(false);
   const [eomCashSubView, setEomCashSubView] = useState("list"); // "list" | "flow" | "single"
   const [eomCashMonthKey, setEomCashMonthKey] = useState(() => {
@@ -1139,6 +1150,7 @@ export default function TriageSystem({ onBack }) {
   const [eomCashSaveStatus, setEomCashSaveStatus] = useState("idle"); // idle | saving | error
   const [eomCashSaveError, setEomCashSaveError] = useState("");
   const [eomMarkActualRunning, setEomMarkActualRunning] = useState(""); // taskId currently running, or ""
+  const [eomAlertDataReady, setEomAlertDataReady] = useState(!!sessionId);
   const [eomCashPendingClient, setEomCashPendingClient] = useState(""); // client to auto-open in Cash Balances once bank accounts are loaded
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
   const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
@@ -1417,6 +1429,23 @@ export default function TriageSystem({ onBack }) {
     setEomCashPendingClient("");
   }, [eomBankAccountsByClient, eomCashPendingClient]);
 
+  // Triggers a triage load (via the existing startTriage — cheap precomputed
+  // cache first, full scan only if that's unavailable) when the client
+  // detail screen has an "alert_check"-linked task but clientsWithFlags
+  // hasn't been loaded yet this session — e.g. going straight to EoM
+  // without visiting home first. Only pays this cost when actually needed,
+  // not on every EoM visit. sessionId (empty until a load has completed,
+  // successfully or not) is the readiness signal, not clientsWithFlags —
+  // that array is legitimately empty both before any load AND after a
+  // load that found zero clients with active flags, so it can't
+  // distinguish those two cases on its own.
+  useEffect(() => {
+    if (sessionId) { setEomAlertDataReady(true); return; }
+    const hasAlertCheckTask = (eomClientTasks || []).some(t => t.active && t.linkedFunction === "alert_check");
+    if (!hasAlertCheckTask || isLoading) return;
+    startTriage().finally(() => setEomAlertDataReady(true));
+  }, [eomClientTasks, sessionId, isLoading]);
+
   const handleLoadBankAccounts = () => {
     setEomBankAccountsLoading(true);
     setEomBankAccountsLoadResult(null);
@@ -1641,7 +1670,7 @@ export default function TriageSystem({ onBack }) {
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_save_template", templateId, name: eomTemplateDraft.name.trim(),
         defaultNotes: eomTemplateDraft.defaultNotes.trim(), linkedFunction: eomTemplateDraft.linkedFunction,
-        active: eomTemplateDraft.active, automationCommanderSheetId }) })
+        active: eomTemplateDraft.active, alertCategories: eomTemplateDraft.alertCategories || "", automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
         if (d.success) {
@@ -1658,11 +1687,12 @@ export default function TriageSystem({ onBack }) {
     setEomAddingNewTemplateSaving(true);
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_save_template", name: eomNewTplName.trim(),
-        defaultNotes: eomNewTplNotes.trim(), linkedFunction: eomNewTplLinkedFunction, automationCommanderSheetId }) })
+        defaultNotes: eomNewTplNotes.trim(), linkedFunction: eomNewTplLinkedFunction,
+        alertCategories: eomNewTplAlertCategories, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
         if (d.success) {
-          setEomAddingNewTemplate(false); setEomNewTplName(""); setEomNewTplNotes(""); setEomNewTplLinkedFunction("");
+          setEomAddingNewTemplate(false); setEomNewTplName(""); setEomNewTplNotes(""); setEomNewTplLinkedFunction(""); setEomNewTplAlertCategories("");
           setEomTemplates(null);
           reloadEomTemplateManager();
         }
@@ -3733,16 +3763,22 @@ export default function TriageSystem({ onBack }) {
           return pruned;
         });
         setAssignedByClient(prev => {
-          const next = {};
-          for (const [cn, ids] of Object.entries(prev)) {
-            const pruned = new Set([...ids].filter(id => allInboxIds.has(id)));
-            if (pruned.size > 0) next[cn] = pruned;
-          }
-          try { localStorage.setItem("pulse_assignedByClient", JSON.stringify(
-            Object.fromEntries(Object.entries(next).map(([k, v]) => [k, [...v]]))
-          )); } catch {}
+          // Scoped to only THIS client — previously this compared every
+          // client's assigned ids against this one client's inbox ids,
+          // which would never match for any other client and silently
+          // wiped their assignments out on every Outgoings load. Fixed as
+          // part of the server-side migration, 19 Aug 2026.
+          const next = { ...prev };
+          const existingIds = prev[client.clientName] || new Set();
+          const pruned = new Set([...existingIds].filter(id => allInboxIds.has(id)));
+          if (pruned.size > 0) next[client.clientName] = pruned;
+          else delete next[client.clientName];
           return next;
         });
+        fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "prune_assigned_expenses", automationCommanderSheetId,
+            clientName: client.clientName, validAppIds: [...allInboxIds] }) })
+          .catch(e => console.error("prune_assigned_expenses error:", e));
         // Filter inbox: hide items that are in assignedAppIds (assigned but not yet processed)
         // Use the current state directly since setAssignedAppIds above is async
         const currentAssigned = new Set([
@@ -6438,7 +6474,7 @@ export default function TriageSystem({ onBack }) {
 
             const startEditingTemplate = (tpl) => {
               setEomEditingTemplateId(tpl.templateId);
-              setEomTemplateDraft({ name: tpl.name, defaultNotes: tpl.defaultNotes || "", linkedFunction: tpl.linkedFunction || "", active: tpl.active });
+              setEomTemplateDraft({ name: tpl.name, defaultNotes: tpl.defaultNotes || "", linkedFunction: tpl.linkedFunction || "", active: tpl.active, alertCategories: tpl.alertCategories || "" });
             };
 
             return (
@@ -6470,12 +6506,30 @@ export default function TriageSystem({ onBack }) {
                               <option value="salaries">Salaries</option>
                               <option value="cash_balance">Cash Balance</option>
                               <option value="mark_actual">Mark Month Actual</option>
+                              <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                             </select>
                             <label style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "4px", marginLeft: "10px" }}>
                               <input type="checkbox" checked={eomTemplateDraft.active} onChange={e => setEomTemplateDraft(d => ({ ...d, active: e.target.checked }))} />
                               Active
                             </label>
                           </div>
+                          {eomTemplateDraft.linkedFunction === "alert_check" && (
+                            <div style={{ display: "flex", gap: "12px", marginBottom: "8px", paddingLeft: "2px" }}>
+                              {[["invoice", "InvComp"], ["expense", "DirComp"], ["crm", "CRMComp"]].map(([val, label]) => {
+                                const cats = (eomTemplateDraft.alertCategories || "").split(",").filter(Boolean);
+                                const checked = cats.includes(val);
+                                return (
+                                  <label key={val} style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "4px" }}>
+                                    <input type="checkbox" checked={checked} onChange={e => {
+                                      const next = e.target.checked ? [...cats, val] : cats.filter(c => c !== val);
+                                      setEomTemplateDraft(d => ({ ...d, alertCategories: next.join(",") }));
+                                    }} />
+                                    {label}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
                           <div style={{ display: "flex", gap: "8px" }}>
                             <button onClick={() => handleEomSaveTemplateEdit(tpl.templateId)}
                               style={{ padding: "5px 12px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
@@ -6527,16 +6581,34 @@ export default function TriageSystem({ onBack }) {
                           style={{ padding: "5px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }}>
                           <option value="">None</option>
                           <option value="salaries">Salaries</option>
-                              <option value="cash_balance">Cash Balance</option>
-                              <option value="mark_actual">Mark Month Actual</option>
+                          <option value="cash_balance">Cash Balance</option>
+                          <option value="mark_actual">Mark Month Actual</option>
+                          <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                         </select>
                       </div>
+                      {eomNewTplLinkedFunction === "alert_check" && (
+                        <div style={{ display: "flex", gap: "12px", marginBottom: "10px", paddingLeft: "2px" }}>
+                          {[["invoice", "InvComp"], ["expense", "DirComp"], ["crm", "CRMComp"]].map(([val, label]) => {
+                            const cats = eomNewTplAlertCategories.split(",").filter(Boolean);
+                            const checked = cats.includes(val);
+                            return (
+                              <label key={val} style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "4px" }}>
+                                <input type="checkbox" checked={checked} onChange={e => {
+                                  const next = e.target.checked ? [...cats, val] : cats.filter(c => c !== val);
+                                  setEomNewTplAlertCategories(next.join(","));
+                                }} />
+                                {label}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
                       <div style={{ display: "flex", gap: "8px" }}>
                         <button disabled={eomAddingNewTemplateSaving} onClick={handleEomCreateTemplate}
                           style={{ padding: "6px 14px", background: eomAddingNewTemplateSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddingNewTemplateSaving ? "default" : "pointer", fontSize: "12px", fontWeight: "600" }}>
                           {eomAddingNewTemplateSaving ? "Saving..." : "Add"}
                         </button>
-                        <button onClick={() => { setEomAddingNewTemplate(false); setEomNewTplName(""); setEomNewTplNotes(""); setEomNewTplLinkedFunction(""); }}
+                        <button onClick={() => { setEomAddingNewTemplate(false); setEomNewTplName(""); setEomNewTplNotes(""); setEomNewTplLinkedFunction(""); setEomNewTplAlertCategories(""); }}
                           style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
                           Cancel
                         </button>
@@ -6573,6 +6645,50 @@ export default function TriageSystem({ onBack }) {
                     </button>
                   ))}
                 </div>
+              );
+            };
+
+            // Live-computed status for "alert_check"-linked tasks — never
+            // persisted, always reflects current reality (see conversation
+            // 19 Aug 2026: Paul explicitly wanted this to auto-revert to
+            // Pending if a new discrepancy appears, not stay "done" forever
+            // like a one-time action). Reuses the exact same category
+            // grouping and assigned-expense suppression as liveAlertCount
+            // (the home screen's own badge count), rather than a separate,
+            // possibly-inconsistent definition of the same thing.
+            const ALERT_CATEGORY_FLAGS = {
+              invoice: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges"],
+              expense: ["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"],
+              crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr", "crmPipeSkippedBlank", "crmConfSkippedBlank"],
+            };
+            const EXPENSE_SUPPRESSIBLE = new Set(["expenseDashboardDiscr", "expenseAppDiscr"]);
+            const computeAlertCheckCount = (categoriesStr) => {
+              const client = (clientsWithFlags || []).find(c => c.clientName === eomDetailClient);
+              if (!client) return 0; // not in clientsWithFlags at all means zero active flags for this client
+              const assignedCount = assignedByClient[eomDetailClient]?.size || 0;
+              const categories = (categoriesStr || "").split(",").filter(Boolean);
+              let total = 0;
+              categories.forEach(cat => {
+                (ALERT_CATEGORY_FLAGS[cat] || []).forEach(flagKey => {
+                  let count = client.alertCounts?.[flagKey] || 0;
+                  if (EXPENSE_SUPPRESSIBLE.has(flagKey)) count = Math.max(0, count - assignedCount);
+                  total += count;
+                });
+              });
+              return total;
+            };
+            const alertCheckPill = (categoriesStr) => {
+              if (!eomAlertDataReady) {
+                return <span style={{ fontSize: "11px", color: "#999", padding: "3px 9px" }}><Spinner /> Checking...</span>;
+              }
+              const count = computeAlertCheckCount(categoriesStr);
+              const isDone = count === 0;
+              return (
+                <span title={isDone ? "No active alerts in the selected categories" : `${count} active alert${count !== 1 ? "s" : ""} in the selected categories`}
+                  style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", fontWeight: "600",
+                    border: `1px solid ${isDone ? "#16a34a" : "#f59e0b"}`, background: isDone ? "#16a34a" : "#f59e0b", color: "#fff" }}>
+                  {isDone ? "Done" : `Pending (${count})`}
+                </span>
               );
             };
 
@@ -6637,8 +6753,13 @@ export default function TriageSystem({ onBack }) {
                               Enter Cash Balance →
                             </button>
                           )}
+                          {t.linkedFunction === "alert_check" && (
+                            <span style={{ marginLeft: "8px", fontSize: "10px", color: "#888" }}>
+                              ({(t.alertCategories || "").split(",").filter(Boolean).map(c => ({ invoice: "InvComp", expense: "DirComp", crm: "CRMComp" }[c])).join(", ") || "no categories set"})
+                            </span>
+                          )}
                         </div>
-                        {statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
+                        {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
                         <button onClick={() => handleEomToggleTaskActive(t)} title="Stop tracking this task for this client"
                           style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", fontSize: "12px", padding: "3px" }}>✕</button>
                       </div>

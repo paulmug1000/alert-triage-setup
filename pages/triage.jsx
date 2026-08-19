@@ -1065,9 +1065,19 @@ export default function TriageSystem({ onBack }) {
   const [eomAddTaskSaving, setEomAddTaskSaving] = useState(false);
   const [eomEditingNotesFor, setEomEditingNotesFor] = useState(""); // taskId currently being edited
   const [eomNotesDraft, setEomNotesDraft] = useState("");
-  const [eomSeedStatus, setEomSeedStatus] = useState("idle"); // idle | running | done | error
-  const [eomSeedResult, setEomSeedResult] = useState(null);
   const [eomDraggedTaskId, setEomDraggedTaskId] = useState(null);
+  const [eomShowTemplateManager, setEomShowTemplateManager] = useState(false);
+  const [eomManagerTemplates, setEomManagerTemplates] = useState(null);
+  const [eomManagerClientTasks, setEomManagerClientTasks] = useState(null); // unfiltered, used only to compute per-template usage counts
+  const [eomManagerLoading, setEomManagerLoading] = useState(false);
+  const [eomManagerError, setEomManagerError] = useState("");
+  const [eomEditingTemplateId, setEomEditingTemplateId] = useState("");
+  const [eomTemplateDraft, setEomTemplateDraft] = useState({ name: "", defaultNotes: "", linkedFunction: "", active: true });
+  const [eomAddingNewTemplate, setEomAddingNewTemplate] = useState(false);
+  const [eomNewTplName, setEomNewTplName] = useState("");
+  const [eomNewTplNotes, setEomNewTplNotes] = useState("");
+  const [eomNewTplLinkedFunction, setEomNewTplLinkedFunction] = useState("");
+  const [eomAddingNewTemplateSaving, setEomAddingNewTemplateSaving] = useState(false);
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
   const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
   const [eomNewTemplateName, setEomNewTemplateName] = useState("");
@@ -1277,6 +1287,31 @@ export default function TriageSystem({ onBack }) {
     }
   }, [eomDetailClient, eomMonthKey]);
 
+  const reloadEomTemplateManager = () => {
+    setEomManagerLoading(true);
+    setEomManagerError("");
+    Promise.all([
+      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId }) }).then(r => r.json()),
+      // Unfiltered — every client's tasks, purely to compute how many
+      // clients actively use each template.
+      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId }) }).then(r => r.json()),
+    ])
+      .then(([templatesD, tasksD]) => {
+        if (templatesD.success) setEomManagerTemplates(templatesD.templates || []);
+        else setEomManagerError(templatesD.error || "Failed to load templates");
+        if (tasksD.success) setEomManagerClientTasks(tasksD.tasks || []);
+      })
+      .catch(e => setEomManagerError(e.message))
+      .finally(() => setEomManagerLoading(false));
+  };
+
+  useEffect(() => {
+    if (!eomShowTemplateManager) return;
+    reloadEomTemplateManager();
+  }, [eomShowTemplateManager]);
+
   const handleEomStatusChange = (taskId, newStatus) => {
     // Optimistic local update — avoids a full refetch for something this
     // frequent (checking tasks off one at a time).
@@ -1374,16 +1409,39 @@ export default function TriageSystem({ onBack }) {
       .catch(e => console.error("eom_reorder_tasks error:", e));
   };
 
-  const handleEomSeed = () => {
-    setEomSeedStatus("running");
+  const handleEomSaveTemplateEdit = (templateId) => {
+    if (!eomTemplateDraft.name.trim()) return;
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_seed_from_checklist", automationCommanderSheetId }) })
+      body: JSON.stringify({ action: "eom_save_template", templateId, name: eomTemplateDraft.name.trim(),
+        defaultNotes: eomTemplateDraft.defaultNotes.trim(), linkedFunction: eomTemplateDraft.linkedFunction,
+        active: eomTemplateDraft.active, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
-        if (d.success) { setEomSeedStatus("done"); setEomSeedResult(d); }
-        else { setEomSeedStatus("error"); setEomSeedResult({ error: d.error }); }
+        if (d.success) {
+          setEomEditingTemplateId("");
+          setEomTemplates(null); // force the client-detail template picker to refresh next time it's opened
+          reloadEomTemplateManager();
+        }
       })
-      .catch(e => { setEomSeedStatus("error"); setEomSeedResult({ error: e.message }); });
+      .catch(e => console.error("eom_save_template error:", e));
+  };
+
+  const handleEomCreateTemplate = () => {
+    if (!eomNewTplName.trim()) return;
+    setEomAddingNewTemplateSaving(true);
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_save_template", name: eomNewTplName.trim(),
+        defaultNotes: eomNewTplNotes.trim(), linkedFunction: eomNewTplLinkedFunction, automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          setEomAddingNewTemplate(false); setEomNewTplName(""); setEomNewTplNotes(""); setEomNewTplLinkedFunction("");
+          setEomTemplates(null);
+          reloadEomTemplateManager();
+        }
+      })
+      .catch(e => console.error("eom_save_template error:", e))
+      .finally(() => setEomAddingNewTemplateSaving(false));
   };
 
   const handleNavOutgoings = () => {
@@ -6078,7 +6136,7 @@ export default function TriageSystem({ onBack }) {
             ))}
           </div>
 
-          {eomSubView === "overview" && !eomDetailClient && (() => {
+          {eomSubView === "overview" && !eomDetailClient && !eomShowTemplateManager && (() => {
             const [y, m] = eomMonthKey.split("-").map(Number);
             const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
             const shiftMonth = (delta) => {
@@ -6104,29 +6162,6 @@ export default function TriageSystem({ onBack }) {
 
             return (
               <div>
-                {eomSeedStatus === "idle" && (
-                  <div style={{ marginBottom: "16px" }}>
-                    <button onClick={handleEomSeed}
-                      style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
-                      Seed template library from checklist
-                    </button>
-                  </div>
-                )}
-                {eomSeedStatus === "running" && <div style={{ fontSize: "13px", color: "#666", marginBottom: "16px" }}><Spinner /> Seeding...</div>}
-                {eomSeedStatus === "done" && eomSeedResult && (
-                  <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "10px 14px", marginBottom: "16px" }}>
-                    ✓ Created {eomSeedResult.templatesCreated} template{eomSeedResult.templatesCreated !== 1 ? "s" : ""} and {eomSeedResult.assignmentsCreated} task assignment{eomSeedResult.assignmentsCreated !== 1 ? "s" : ""} across {eomSeedResult.matchedClients} client{eomSeedResult.matchedClients !== 1 ? "s" : ""}.
-                    {eomSeedResult.unmatchedClients?.length > 0 && (
-                      <div style={{ marginTop: "6px", color: "#92400e" }}>
-                        Couldn't confidently match: {eomSeedResult.unmatchedClients.join(", ")} — these weren't seeded, assign their tasks manually.
-                      </div>
-                    )}
-                  </div>
-                )}
-                {eomSeedStatus === "error" && eomSeedResult && (
-                  <div style={{ fontSize: "13px", color: "#dc2626", marginBottom: "16px" }}>Seeding failed: {eomSeedResult.error}</div>
-                )}
-
                 <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
                   <button onClick={() => shiftMonth(-1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>‹</button>
                   <div style={{ fontSize: "15px", fontWeight: "700", minWidth: "140px", textAlign: "center" }}>{monthLabel}</div>
@@ -6158,11 +6193,132 @@ export default function TriageSystem({ onBack }) {
                     <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients found.</div>
                   )}
                 </div>
+
+                <div style={{ marginTop: "16px" }}>
+                  <button onClick={() => setEomShowTemplateManager(true)}
+                    style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
+                    Manage Templates
+                  </button>
+                </div>
               </div>
             );
           })()}
 
-          {eomSubView === "overview" && eomDetailClient && (() => {
+          {eomSubView === "overview" && eomShowTemplateManager && (() => {
+            const usageCount = {};
+            (eomManagerClientTasks || []).forEach(t => {
+              if (t.templateId && t.active) usageCount[t.templateId] = (usageCount[t.templateId] || 0) + 1;
+            });
+
+            const startEditingTemplate = (tpl) => {
+              setEomEditingTemplateId(tpl.templateId);
+              setEomTemplateDraft({ name: tpl.name, defaultNotes: tpl.defaultNotes || "", linkedFunction: tpl.linkedFunction || "", active: tpl.active });
+            };
+
+            return (
+              <div>
+                <button onClick={() => { setEomShowTemplateManager(false); setEomEditingTemplateId(""); setEomAddingNewTemplate(false); }}
+                  style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
+                  ‹ Back to overview
+                </button>
+
+                <h3 style={{ margin: "0 0 14px", fontSize: "16px", fontWeight: "700" }}>Manage Templates</h3>
+
+                {eomManagerLoading && <div style={{ fontSize: "13px", color: "#666", marginBottom: "14px" }}><Spinner /> Loading...</div>}
+                {eomManagerError && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "14px" }}>{eomManagerError}</div>}
+
+                <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", marginBottom: "16px" }}>
+                  {(eomManagerTemplates || []).map((tpl, i) => (
+                    <div key={tpl.templateId} style={{ padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none", opacity: tpl.active ? 1 : 0.55 }}>
+                      {eomEditingTemplateId === tpl.templateId ? (
+                        <div>
+                          <input value={eomTemplateDraft.name} onChange={e => setEomTemplateDraft(d => ({ ...d, name: e.target.value }))} placeholder="Template name"
+                            style={{ width: "100%", padding: "6px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", marginBottom: "6px", boxSizing: "border-box", fontWeight: "600" }} />
+                          <input value={eomTemplateDraft.defaultNotes} onChange={e => setEomTemplateDraft(d => ({ ...d, defaultNotes: e.target.value }))} placeholder="Default notes (optional)"
+                            style={{ width: "100%", padding: "6px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px", marginBottom: "6px", boxSizing: "border-box" }} />
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+                            <label style={{ fontSize: "12px", color: "#666" }}>Linked function:</label>
+                            <select value={eomTemplateDraft.linkedFunction} onChange={e => setEomTemplateDraft(d => ({ ...d, linkedFunction: e.target.value }))}
+                              style={{ padding: "4px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }}>
+                              <option value="">None</option>
+                              <option value="salaries">Salaries</option>
+                            </select>
+                            <label style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "4px", marginLeft: "10px" }}>
+                              <input type="checkbox" checked={eomTemplateDraft.active} onChange={e => setEomTemplateDraft(d => ({ ...d, active: e.target.checked }))} />
+                              Active
+                            </label>
+                          </div>
+                          <div style={{ display: "flex", gap: "8px" }}>
+                            <button onClick={() => handleEomSaveTemplateEdit(tpl.templateId)}
+                              style={{ padding: "5px 12px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                              Save
+                            </button>
+                            <button onClick={() => setEomEditingTemplateId("")}
+                              style={{ padding: "5px 12px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "12px" }}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div onClick={() => startEditingTemplate(tpl)} style={{ cursor: "pointer", display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
+                              {tpl.name}
+                              {!tpl.active && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#b45309" }}>(inactive)</span>}
+                              {tpl.linkedFunction === "salaries" && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#0066cc" }}>(linked: salaries)</span>}
+                            </div>
+                            {tpl.defaultNotes && <div style={{ fontSize: "12px", color: "#888", marginTop: "2px" }}>{tpl.defaultNotes}</div>}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#999", whiteSpace: "nowrap" }}>
+                            used by {usageCount[tpl.templateId] || 0} client{(usageCount[tpl.templateId] || 0) !== 1 ? "s" : ""}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {(eomManagerTemplates || []).length === 0 && !eomManagerLoading && (
+                    <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No templates yet.</div>
+                  )}
+                </div>
+
+                <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px" }}>
+                  {!eomAddingNewTemplate ? (
+                    <button onClick={() => setEomAddingNewTemplate(true)}
+                      style={{ padding: "6px 12px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
+                      + Add new template
+                    </button>
+                  ) : (
+                    <div>
+                      <input value={eomNewTplName} onChange={e => setEomNewTplName(e.target.value)} placeholder="Template name"
+                        style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px", boxSizing: "border-box" }} />
+                      <input value={eomNewTplNotes} onChange={e => setEomNewTplNotes(e.target.value)} placeholder="Default notes (optional)"
+                        style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px", boxSizing: "border-box" }} />
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
+                        <label style={{ fontSize: "12px", color: "#666" }}>Linked function:</label>
+                        <select value={eomNewTplLinkedFunction} onChange={e => setEomNewTplLinkedFunction(e.target.value)}
+                          style={{ padding: "5px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }}>
+                          <option value="">None</option>
+                          <option value="salaries">Salaries</option>
+                        </select>
+                      </div>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button disabled={eomAddingNewTemplateSaving} onClick={handleEomCreateTemplate}
+                          style={{ padding: "6px 14px", background: eomAddingNewTemplateSaving ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomAddingNewTemplateSaving ? "default" : "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          {eomAddingNewTemplateSaving ? "Saving..." : "Add"}
+                        </button>
+                        <button onClick={() => { setEomAddingNewTemplate(false); setEomNewTplName(""); setEomNewTplNotes(""); setEomNewTplLinkedFunction(""); }}
+                          style={{ padding: "6px 14px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px" }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {eomSubView === "overview" && eomDetailClient && !eomShowTemplateManager && (() => {
             const [y, m] = eomMonthKey.split("-").map(Number);
             const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
             const shiftMonth = (delta) => {

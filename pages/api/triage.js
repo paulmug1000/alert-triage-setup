@@ -24,6 +24,16 @@ const redisClient = createClient({
 
 redisClient.connect().catch(console.error);
 
+// Caches whether ensureEomTabs_ has already verified the EoM tabs exist on
+// this warm serverless instance — once true, it can never become false
+// again (nothing in this app deletes these tabs or un-patches the header),
+// so re-checking on every single EoM action call was pure wasted quota.
+// Reset naturally on cold start, which is exactly the one case where a
+// fresh check is actually needed. See conversation 19 Aug 2026 — this was
+// contributing meaningfully to hitting Google's 60-reads/minute-per-user
+// quota during normal EoM screen use.
+let eomTabsVerified = false;
+
 // ============================================================================
 // CONSTANTS & CONFIGURATION
 // ============================================================================
@@ -1790,6 +1800,7 @@ async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cl
 }
 
 async function ensureEomTabs_(sheets, spreadsheetId) {
+  if (eomTabsVerified) return; // already confirmed on this warm instance — nothing can have changed
   try {
     const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
     const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
@@ -1830,6 +1841,7 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
         });
       }
     }
+    eomTabsVerified = true;
   } catch (e) {
     console.error("ensureEomTabs_ error:", e.message);
   }

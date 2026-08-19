@@ -1699,20 +1699,65 @@ function eomKeyToMonthStr_(monthKey) {
   return `${monthNames[monthNum - 1]} ${year}`;
 }
 
+// ============================================================================
+// EoM WORK MONTH vs TARGET MONTH — the model every EoM tool must follow.
+//
+// The EoM checklist always shows the CURRENT calendar month as the "work
+// month" — e.g. the checklist shows August while August is in progress.
+// But the actual data being finalised during that work is always the
+// month before it — the "target month" — e.g. July's books get finalised
+// during August. This offset is FIXED (always exactly one month) and
+// applies to every EoM tool without exception: payroll, cash balance,
+// mark-actual, and anything built after this comment.
+//
+// The rule that matters: task DONE/PENDING status is always tracked
+// against the WORK month. Real data (Performance tab, Cash tab, Salaries
+// tab) is always written to the TARGET month. A tool only ever knows one
+// of the two directly — it must derive the other using the functions
+// below, NEVER by independently computing "today" or "today minus one".
+// That independent-computation pattern is exactly what caused work month
+// and target month to silently drift apart and stay wrong for two
+// separate tools before this was fixed (19 Aug 2026) — each tool's own
+// "today minus one" logic agreed with the others only by coincidence,
+// and broke the moment one of them changed without the others.
+function eomWorkMonthToTargetMonth_(workMonthKey) {
+  const [y, m] = String(workMonthKey || "").split("-").map(Number);
+  if (!y || !m) return null;
+  const d = new Date(y, m - 1 - 1, 1); // one month before the work month
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function eomTargetMonthToWorkMonth_(targetMonthKey) {
+  const [y, m] = String(targetMonthKey || "").split("-").map(Number);
+  if (!y || !m) return null;
+  const d = new Date(y, m - 1 + 1, 1); // one month after the target month
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+// ============================================================================
+
 /**
- * Marks a client's EoM task done for a given month, if that client has an
- * active task assigned from a template with the given linkedFunction value
- * (e.g. "salaries", "cash_balance"). Extracted from the original inline
- * salaries auto-complete (conversation 18 Aug 2026) so the cash-balance
- * tool can share the exact same mechanism rather than duplicate it.
+ * Marks a client's EoM task done for a given WORK month, if that client
+ * has an active task assigned from a template with the given
+ * linkedFunction value (e.g. "salaries", "cash_balance", "mark_actual").
+ * Extracted from the original inline salaries auto-complete (conversation
+ * 18 Aug 2026) so every linked tool shares the exact same mechanism
+ * rather than duplicating it.
+ *
+ * IMPORTANT: workMonthKey must be a WORK month, not a target month — if
+ * the caller only has a target month (e.g. a payroll document's own
+ * extracted period, or cash balance's target-month selector), it must
+ * convert with eomTargetMonthToWorkMonth_ before calling this. Passing a
+ * target month directly here is the exact bug fixed on 19 Aug 2026 — the
+ * parameter name is deliberately explicit about this so it can't happen
+ * by accident again.
+ *
  * Deliberately swallows its own errors — callers wrap this so a failure
  * here never affects the actual action (payroll write, balance write) that
  * triggered it. Returns true if a task was found and marked, false
  * otherwise (including on error) — purely informational for logging.
  */
-async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, linkedFunctionValue, monthKey) {
+async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, linkedFunctionValue, workMonthKey) {
   try {
-    if (!monthKey) return false;
+    if (!workMonthKey) return false;
     const [templatesR, clientTasksR] = await Promise.all([
       sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
       sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
@@ -1725,11 +1770,11 @@ async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cl
 
     const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
     const statusRows = statusResp.data.values || [];
-    const existingIdx = statusRows.findIndex(r => r[0] === clientName && r[1] === linkedTask[0] && r[2] === monthKey);
+    const existingIdx = statusRows.findIndex(r => r[0] === clientName && r[1] === linkedTask[0] && r[2] === workMonthKey);
     if (existingIdx === -1) {
       await sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
-        requestBody: { values: [[clientName, linkedTask[0], monthKey, "done", new Date().toISOString()]] },
+        requestBody: { values: [[clientName, linkedTask[0], workMonthKey, "done", new Date().toISOString()]] },
       });
     } else {
       await sheets.spreadsheets.values.update({
@@ -13797,13 +13842,16 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         // Auto-complete the linked EoM "salaries" task for this client, if
         // one is active — Option B, conversation 18 Aug 2026: a successful
         // import IS the task being done, not a separate manual step.
-        // Marks the month the PAYROLL DATA is actually for (targetMonthStr),
-        // not necessarily the current calendar month — importing a
-        // catch-up/back-dated month should complete that month's checklist
-        // item, not this one.
+        // targetMonthStr is the TARGET month (the month the payroll data
+        // is actually for, e.g. July) — task status is tracked by WORK
+        // month (August), so it must be derived before completing (see
+        // the EoM WORK MONTH vs TARGET MONTH block above; this was
+        // marking the target month done directly until fixed 19 Aug 2026,
+        // same bug as cash balance and mark-actual).
         if (writeResult.writeSuccess) {
-          const eomMonthKeyFromPayroll = monthStrToEomKey_(targetMonthStr);
-          await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, payrollClientName, "salaries", eomMonthKeyFromPayroll);
+          const payrollTargetMonthKey = monthStrToEomKey_(targetMonthStr);
+          const payrollWorkMonthKey = eomTargetMonthToWorkMonth_(payrollTargetMonthKey);
+          await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, payrollClientName, "salaries", payrollWorkMonthKey);
         }
 
         return res.status(200).json({ success: true, status: "COMPLETE", extractedData, ...writeResult });
@@ -14130,11 +14178,16 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       }
 
     } else if (action === "eom_get_cash_balance_progress") {
-      // Returns which clients already have their "cash_balance"-linked task
-      // marked done for the given month — used to filter the sequential
-      // entry flow down to only clients not yet completed this month.
-      const { monthKey: progressMonthKey } = req.body;
-      if (!progressMonthKey) return res.status(400).json({ success: false, error: "Missing monthKey" });
+      // Returns which clients already have their "cash_balance"-linked
+      // task marked done for the given TARGET month — used to filter the
+      // sequential entry flow down to only clients not yet completed.
+      // monthKey here is the target month (the screen's own selector,
+      // "which month's closing balance") — task status is tracked by WORK
+      // month, so it must be derived before checking (see the EoM WORK
+      // MONTH vs TARGET MONTH block above).
+      const { monthKey: progressTargetMonthKey } = req.body;
+      if (!progressTargetMonthKey) return res.status(400).json({ success: false, error: "Missing monthKey" });
+      const progressWorkMonthKey = eomTargetMonthToWorkMonth_(progressTargetMonthKey);
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
@@ -14151,7 +14204,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         const statusRows = statusR.data.values || [];
         const completedClients = Object.keys(cashTaskIdByClient).filter(clientName => {
           const taskId = cashTaskIdByClient[clientName];
-          return statusRows.some(r => r[0] === clientName && r[1] === taskId && r[2] === progressMonthKey && r[3] === "done");
+          return statusRows.some(r => r[0] === clientName && r[1] === taskId && r[2] === progressWorkMonthKey && r[3] === "done");
         });
         return res.status(200).json({ success: true, completedClients, hasLinkedTemplate: cashTemplateIds.size > 0 });
       } catch (err) {
@@ -14163,10 +14216,11 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       // Writes a client's closing cash balance as a formula (sum of each
       // account's amount, e.g. =1045.45+105.67+4109.07) into the Cash
       // tab's "Actual closing balance" row, in the column matching the
-      // given month. Auto-completes the linked "cash_balance" EoM task on
-      // success, same mechanism as salaries.
-      const { clientSheetId: cashClientSheetId, clientName: cashClientName, monthKey: cashMonthKey, amounts } = req.body;
-      if (!cashClientSheetId || !cashClientName || !cashMonthKey || !Array.isArray(amounts) || amounts.length === 0) {
+      // given TARGET month. Auto-completes the linked "cash_balance" EoM
+      // task for the derived WORK month (target + 1) — never the target
+      // month itself, which was the bug fixed 19 Aug 2026.
+      const { clientSheetId: cashClientSheetId, clientName: cashClientName, monthKey: cashTargetMonthKey, amounts } = req.body;
+      if (!cashClientSheetId || !cashClientName || !cashTargetMonthKey || !Array.isArray(amounts) || amounts.length === 0) {
         return res.status(400).json({ success: false, error: "Missing clientSheetId, clientName, monthKey, or amounts" });
       }
       const numericAmounts = amounts.map(a => parseFloat(a)).filter(a => !isNaN(a) && a !== 0);
@@ -14175,7 +14229,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       }
       try {
         const sheets = await getSheetsClient();
-        const monthLabel = eomKeyToMonthStr_(cashMonthKey);
+        const monthLabel = eomKeyToMonthStr_(cashTargetMonthKey);
         const [headerResp, colAResp] = await Promise.all([
           sheets.spreadsheets.values.get({ spreadsheetId: cashClientSheetId, range: "Cash!1:1" }),
           sheets.spreadsheets.values.get({ spreadsheetId: cashClientSheetId, range: "Cash!A1:A200" }),
@@ -14202,7 +14256,8 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           valueInputOption: "USER_ENTERED", requestBody: { values: [[formula]] },
         });
 
-        await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashMonthKey);
+        const cashWorkMonthKey = eomTargetMonthToWorkMonth_(cashTargetMonthKey);
+        await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashWorkMonthKey);
 
         return res.status(200).json({ success: true, formula, targetCol: targetColLetter, targetRow });
       } catch (err) {
@@ -14215,19 +14270,20 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       // row (not a batch tool with its own sub-tab, unlike payroll/cash
       // balance — Paul was explicit this is always per-client, triggered
       // from the checklist itself). Writes "Actual" into row 2 of the
-      // client's Performance tab, in the column matching the month being
-      // finalised — which is always the PREVIOUS calendar month relative
-      // to today, computed here server-side, independent of whatever
-      // month happens to be selected on the EoM screen. Auto-completes
-      // the linked "mark_actual" EoM task on success.
-      const { clientSheetId: perfClientSheetId, clientName: perfClientName } = req.body;
-      if (!perfClientSheetId || !perfClientName) {
-        return res.status(400).json({ success: false, error: "Missing clientSheetId or clientName" });
+      // client's Performance tab, in the TARGET month's column, derived
+      // from the WORK month the checklist screen was actually showing
+      // when this was called — never computed independently from "today"
+      // (see the EoM WORK MONTH vs TARGET MONTH block above; that
+      // independent-computation pattern is what caused this to mark the
+      // wrong checklist item done on 19 Aug 2026). Auto-completes the
+      // linked "mark_actual" EoM task for the WORK month.
+      const { clientSheetId: perfClientSheetId, clientName: perfClientName, workMonthKey: perfWorkMonthKey } = req.body;
+      if (!perfClientSheetId || !perfClientName || !perfWorkMonthKey) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId, clientName, or workMonthKey" });
       }
       try {
         const sheets = await getSheetsClient();
-        const d = new Date(); d.setMonth(d.getMonth() - 1);
-        const targetMonthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        const targetMonthKey = eomWorkMonthToTargetMonth_(perfWorkMonthKey);
         const monthLabel = eomKeyToMonthStr_(targetMonthKey);
 
         const headerResp = await sheets.spreadsheets.values.get({ spreadsheetId: perfClientSheetId, range: "Performance!1:1" });
@@ -14246,7 +14302,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           valueInputOption: "USER_ENTERED", requestBody: { values: [["Actual"]] },
         });
 
-        await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, perfClientName, "mark_actual", targetMonthKey);
+        await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, perfClientName, "mark_actual", perfWorkMonthKey);
 
         return res.status(200).json({ success: true, monthLabel, targetCol: targetColLetter });
       } catch (err) {

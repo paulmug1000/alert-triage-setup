@@ -778,6 +778,35 @@ const GLOBAL_STYLES = `
   .pulse-nav-item:hover { color: #0066cc !important; }
 `;
 
+// ============================================================================
+// EoM WORK MONTH vs TARGET MONTH — mirrors the identical block in triage.js;
+// keep both in sync if this model ever changes.
+//
+// The EoM checklist always shows the CURRENT calendar month as the "work
+// month" — e.g. the checklist shows August while August is in progress.
+// But the actual data being finalised during that work is always the
+// month before it — the "target month" — e.g. July's books get finalised
+// during August. This offset is FIXED (always exactly one month) and
+// applies to every EoM tool without exception. A tool only ever knows one
+// of the two directly — it must derive the other using the functions
+// below, NEVER by independently computing "today" or "today minus one".
+// That independent-computation pattern is exactly what caused work month
+// and target month to silently drift apart and stay wrong for two
+// separate tools before this was fixed (19 Aug 2026).
+function eomWorkMonthToTargetMonth(workMonthKey) {
+  const [y, m] = String(workMonthKey || "").split("-").map(Number);
+  if (!y || !m) return null;
+  const d = new Date(y, m - 1 - 1, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function eomTargetMonthToWorkMonth(targetMonthKey) {
+  const [y, m] = String(targetMonthKey || "").split("-").map(Number);
+  if (!y || !m) return null;
+  const d = new Date(y, m - 1 + 1, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+// ============================================================================
+
 // Persistent top bar — rendered around every screen
 function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, onInvoices, onRetainers, onTools, onSettings, homeAlertCount, taskCount, children }) {
   const [showMore, setShowMore] = React.useState(false);
@@ -1047,6 +1076,13 @@ export default function TriageSystem({ onBack }) {
   const [toolsScriptsLoaded, setToolsScriptsLoaded] = useState(false);
   const [eomSubView, setEomSubView] = useState("overview"); // "overview" | "payroll"
   const [eomMonthKey, setEomMonthKey] = useState(() => {
+    // The checklist always shows the WORK month — the current calendar
+    // month, while it's in progress (e.g. shows August during August).
+    // See the EoM WORK MONTH vs TARGET MONTH block above. This was
+    // briefly (and incorrectly) changed to default to the previous month
+    // instead — reverted 19 Aug 2026 once the actual bug (target vs work
+    // month getting mixed up in the linked-task auto-complete calls) was
+    // found and fixed at its real source.
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
@@ -1081,8 +1117,14 @@ export default function TriageSystem({ onBack }) {
   const [eomAddingNewTemplateSaving, setEomAddingNewTemplateSaving] = useState(false);
   const [eomCashSubView, setEomCashSubView] = useState("list"); // "list" | "flow" | "single"
   const [eomCashMonthKey, setEomCashMonthKey] = useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() - 1); // defaults to the previous calendar month
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    // Cash Balance's own selector represents the TARGET month (which
+    // month's closing balance is being entered) — derived from today's
+    // work month via the shared helper, rather than separately computing
+    // "today minus one" here. See the EoM WORK MONTH vs TARGET MONTH
+    // block above.
+    const now = new Date();
+    const currentWorkMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return eomWorkMonthToTargetMonth(currentWorkMonthKey);
   });
   const [eomBankAccountsByClient, setEomBankAccountsByClient] = useState(null);
   const [eomBankAccountsLoadedAt, setEomBankAccountsLoadedAt] = useState("");
@@ -1432,16 +1474,21 @@ export default function TriageSystem({ onBack }) {
   };
 
   // Called directly from a task row (not a separate batch-tool tab, unlike
-  // payroll/cash balance) — always targets the previous calendar month
-  // relative to today, computed server-side. Reloads this month's status
-  // afterward so the task's pill updates if the auto-completed month
-  // happens to match whatever month is currently selected on screen.
+  // payroll/cash balance). Sends eomMonthKey — the WORK month the checklist
+  // screen is currently showing — as workMonthKey; the backend derives the
+  // target month from it (see the EoM WORK MONTH vs TARGET MONTH block in
+  // triage.js). Previously computed its target month independently
+  // server-side from "today", which silently disagreed with whatever work
+  // month the checklist was actually showing — fixed 19 Aug 2026 by having
+  // this always inherit the checklist's own current month instead.
+  // Reloads this month's status afterward so the task's pill updates to
+  // reflect the completion that just happened.
   const handleEomMarkActual = (taskId) => {
     const client = (allOutgoingsClients || []).find(c => c.clientName === eomDetailClient);
     if (!client) return;
     setEomMarkActualRunning(taskId);
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_mark_month_actual", clientSheetId: client.clientSheetId, clientName: eomDetailClient, automationCommanderSheetId }) })
+      body: JSON.stringify({ action: "eom_mark_month_actual", clientSheetId: client.clientSheetId, clientName: eomDetailClient, workMonthKey: eomMonthKey, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
         if (!d.success) { setEomClientTasksError(d.error || "Failed to mark month actual"); return; }
@@ -6554,13 +6601,19 @@ export default function TriageSystem({ onBack }) {
                               Import Payroll →
                             </button>
                           )}
-                          {t.linkedFunction === "mark_actual" && (
-                            <button onClick={() => handleEomMarkActual(t.taskId)} disabled={eomMarkActualRunning === t.taskId}
-                              style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
-                                color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
-                              {eomMarkActualRunning === t.taskId ? "Marking..." : "Mark Actual"}
-                            </button>
-                          )}
+                          {t.linkedFunction === "mark_actual" && (() => {
+                            const targetKey = eomWorkMonthToTargetMonth(eomMonthKey);
+                            const [ty, tm] = (targetKey || "").split("-").map(Number);
+                            const targetLabel = ty ? new Date(ty, tm - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "";
+                            return (
+                              <button onClick={() => handleEomMarkActual(t.taskId)} disabled={eomMarkActualRunning === t.taskId}
+                                title={`Writes "Actual" to the ${targetLabel} column on the Performance tab`}
+                                style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                                  color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                {eomMarkActualRunning === t.taskId ? "Marking..." : `Mark ${targetLabel} Actual`}
+                              </button>
+                            );
+                          })()}
                         </div>
                         {statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
                         <button onClick={() => handleEomToggleTaskActive(t)} title="Stop tracking this task for this client"

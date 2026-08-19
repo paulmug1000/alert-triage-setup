@@ -13966,6 +13966,56 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "eom_get_client_detail") {
+      // Combines eom_get_client_tasks + eom_get_month_status (scoped to one
+      // client) into a single call — these two always fire together
+      // whenever the detail screen opens or its month changes, and were
+      // separately reading EomClientTasks each time, doubling that read
+      // for no reason. Added 19 Aug 2026 to reduce load on Google's
+      // per-user read quota, alongside caching ensureEomTabs_'s own check.
+      // Other callers that only need the task list refreshed (saving
+      // notes, toggling active, adding a task — none of which touch
+      // status) still use the lighter eom_get_client_tasks on its own.
+      const { clientName: detailClient, monthKey: detailMonthKey } = req.body;
+      if (!detailClient || !detailMonthKey) {
+        return res.status(400).json({ success: false, error: "Missing clientName or monthKey" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const [tasksResp, templatesResp, statusResp] = await Promise.all([
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" }),
+        ]);
+        const templateNameById = {};
+        const templateLinkedFunctionById = {};
+        (templatesResp.data.values || []).forEach(r => {
+          if (r[0]) { templateNameById[r[0]] = r[1] || ""; templateLinkedFunctionById[r[0]] = r[3] || ""; }
+        });
+
+        const rows = (tasksResp.data.values || []).filter(r => r[0]);
+        const tasks = rows
+          .filter(r => r[1] === detailClient)
+          .map((r, i) => ({
+            taskId: r[0], clientName: r[1], templateId: r[2] || "",
+            name: r[2] ? (templateNameById[r[2]] || "(template deleted)") : (r[3] || ""),
+            linkedFunction: r[2] ? (templateLinkedFunctionById[r[2]] || "") : "",
+            clientNotes: r[4] || "", active: r[5] !== "FALSE" && r[5] !== false, createdAt: r[6] || "",
+            sortOrder: r[7] !== undefined && r[7] !== "" ? Number(r[7]) : 1000000 + i,
+          }))
+          .sort((a, b) => a.sortOrder - b.sortOrder);
+
+        const statusOverrides = (statusResp.data.values || [])
+          .filter(r => r[0] === detailClient && r[2] === detailMonthKey)
+          .map(r => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending" }));
+
+        return res.status(200).json({ success: true, tasks, statusOverrides });
+      } catch (err) {
+        console.error("❌ eom_get_client_detail error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "eom_save_client_task") {
       // Create/update a client's task assignment. Either templateId (pulls
       // from the shared library) or taskName (a one-off custom task) must

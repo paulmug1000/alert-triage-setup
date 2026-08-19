@@ -1324,22 +1324,27 @@ export default function TriageSystem({ onBack }) {
   };
 
   // Loads a client's task list + this month's status whenever the detail
-  // view opens or the month changes. Templates load once, lazily, the
-  // first time the detail view is opened (needed for the "add task" picker).
+  // view opens or the month changes — one combined backend call rather
+  // than two separate ones that were both reading EomClientTasks each
+  // time (fixed 19 Aug 2026, alongside caching ensureEomTabs_, to reduce
+  // load on Google's per-user read quota). Templates load once, lazily,
+  // the first time the detail view is opened (needed for the "add task"
+  // picker) — that's a genuinely separate concern, not combined here.
   useEffect(() => {
     if (!eomDetailClient) return;
-    reloadEomClientTasks(eomDetailClient);
     setEomStatusLoading(true);
     setEomStatusError("");
+    setEomClientTasksLoading(true);
+    setEomClientTasksError("");
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, clientName: eomDetailClient, automationCommanderSheetId }) })
+      body: JSON.stringify({ action: "eom_get_client_detail", clientName: eomDetailClient, monthKey: eomMonthKey, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
-        if (d.success) { setEomActiveTasks(d.activeTasks || []); setEomStatusOverrides(d.statusOverrides || []); }
-        else setEomStatusError(d.error || "Failed to load status");
+        if (d.success) { setEomClientTasks(d.tasks || []); setEomStatusOverrides(d.statusOverrides || []); }
+        else { setEomStatusError(d.error || "Failed to load client detail"); setEomClientTasksError(d.error || "Failed to load client detail"); }
       })
-      .catch(e => setEomStatusError(e.message))
-      .finally(() => setEomStatusLoading(false));
+      .catch(e => { setEomStatusError(e.message); setEomClientTasksError(e.message); })
+      .finally(() => { setEomStatusLoading(false); setEomClientTasksLoading(false); });
     if (!eomTemplates) {
       fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId }) })

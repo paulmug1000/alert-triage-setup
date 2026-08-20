@@ -1814,7 +1814,7 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
 
       const headerWrites = [];
       if (toCreate.includes("EomTemplates")) {
-        headerWrites.push({ range: "EomTemplates!A1:G1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt", "alertCategories"]] });
+        headerWrites.push({ range: "EomTemplates!A1:H1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt", "alertCategories", "sortOrder"]] });
       }
       if (toCreate.includes("EomClientTasks")) {
         headerWrites.push({ range: "EomClientTasks!A1:H1", values: [["taskId", "clientName", "templateId", "taskName", "clientNotes", "active", "createdAt", "sortOrder"]] });
@@ -1851,6 +1851,12 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
       if (!g1.data.values || !g1.data.values[0] || !g1.data.values[0][0]) {
         await sheets.spreadsheets.values.update({
           spreadsheetId, range: "EomTemplates!G1", valueInputOption: "RAW", requestBody: { values: [["alertCategories"]] },
+        });
+      }
+      const th1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomTemplates!H1" });
+      if (!th1.data.values || !th1.data.values[0] || !th1.data.values[0][0]) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId, range: "EomTemplates!H1", valueInputOption: "RAW", requestBody: { values: [["sortOrder"]] },
         });
       }
     }
@@ -13998,12 +14004,15 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" });
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:H1000" });
         const rows = resp.data.values || [];
-        const templates = rows.filter(r => r[0]).map(r => ({
+        const templates = rows.filter(r => r[0]).map((r, i) => ({
           templateId: r[0], name: r[1] || "", defaultNotes: r[2] || "", linkedFunction: r[3] || "",
           active: r[4] !== "FALSE" && r[4] !== false, createdAt: r[5] || "", alertCategories: r[6] || "",
-        }));
+          // Templates created before sortOrder existed have no value here —
+          // fall back to row position, same pattern as EomClientTasks.
+          sortOrder: r[7] !== undefined && r[7] !== "" ? Number(r[7]) : 1000000 + i,
+        })).sort((a, b) => a.sortOrder - b.sortOrder);
         return res.status(200).json({ success: true, templates });
       } catch (err) {
         console.error("❌ eom_get_templates error:", err);
@@ -14074,7 +14083,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" });
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:H1000" });
         const rows = resp.data.values || [];
 
         if (templateId) {
@@ -14092,10 +14101,13 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           return res.status(200).json({ success: true, templateId });
         }
 
+        // Default sortOrder is "now" — large enough to always sort after
+        // any explicitly-ordered template, so a new one lands at the end
+        // of the picker by default; reorder afterward if it needs to move.
         const newId = `tmpl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         await sheets.spreadsheets.values.append({
-          spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A:G", valueInputOption: "RAW",
-          requestBody: { values: [[newId, name, defaultNotes || "", linkedFunction || "", true, new Date().toISOString(), alertCategories || ""]] },
+          spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A:H", valueInputOption: "RAW",
+          requestBody: { values: [[newId, name, defaultNotes || "", linkedFunction || "", true, new Date().toISOString(), alertCategories || "", Date.now()]] },
         });
         return res.status(200).json({ success: true, templateId: newId });
       } catch (err) {
@@ -14363,6 +14375,40 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error("❌ eom_reorder_tasks error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_reorder_templates") {
+      // Persists a new order for the whole template library — controls the
+      // order templates appear in the "add task" picker dropdown. Same
+      // full-list-rewrite approach as eom_reorder_tasks above, for the
+      // same reason: never ambiguous about what order things were in.
+      const { orderedTemplateIds } = req.body;
+      if (!Array.isArray(orderedTemplateIds) || orderedTemplateIds.length === 0) {
+        return res.status(400).json({ success: false, error: "Missing orderedTemplateIds" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:H1000" });
+        const rows = resp.data.values || [];
+        const rowIndexByTemplateId = {};
+        rows.forEach((r, i) => { if (r[0]) rowIndexByTemplateId[r[0]] = i + 2; });
+
+        const writes = [];
+        orderedTemplateIds.forEach((templateId, index) => {
+          const sheetRow = rowIndexByTemplateId[templateId];
+          if (!sheetRow) return; // unknown templateId — skip rather than fail the whole reorder
+          writes.push({ range: `EomTemplates!H${sheetRow}`, values: [[(index + 1) * 10]] });
+        });
+        if (writes.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: automationCommanderSheetId, requestBody: { valueInputOption: "RAW", data: writes },
+          });
+        }
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ eom_reorder_templates error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

@@ -1111,12 +1111,16 @@ export default function TriageSystem({ onBack }) {
   const [eomClientTasksLoading, setEomClientTasksLoading] = useState(false);
   const [eomClientTasksError, setEomClientTasksError] = useState("");
   const [eomTemplates, setEomTemplates] = useState(null);
+  const [eomTemplatesError, setEomTemplatesError] = useState("");
   const [eomAddTaskMode, setEomAddTaskMode] = useState(""); // "" | "template" | "custom"
   const [eomNewTaskTemplateId, setEomNewTaskTemplateId] = useState("");
   const [eomNewTaskName, setEomNewTaskName] = useState("");
   const [eomNewTaskNotes, setEomNewTaskNotes] = useState("");
   const [eomAddTaskSaving, setEomAddTaskSaving] = useState(false);
   const [eomEditingNotesFor, setEomEditingNotesFor] = useState(""); // taskId currently being edited
+  const [eomEditingNameFor, setEomEditingNameFor] = useState(""); // taskId currently being edited (custom tasks only — template-based names are edited via Manage Templates)
+  const [eomDeactivateConfirm, setEomDeactivateConfirm] = useState(null); // the task object pending confirmation, or null
+  const [eomNameDraft, setEomNameDraft] = useState("");
   const [eomExpandedNotesFor, setEomExpandedNotesFor] = useState(() => new Set()); // taskIds with notes currently shown, not collapsed
   const [eomNotesDraft, setEomNotesDraft] = useState("");
   const [eomDraggedTaskId, setEomDraggedTaskId] = useState(null);
@@ -1162,6 +1166,8 @@ export default function TriageSystem({ onBack }) {
   const [eomAlertDataReady, setEomAlertDataReady] = useState(!!sessionId);
   const [eomCashPendingClient, setEomCashPendingClient] = useState(""); // client to auto-open in Cash Balances once bank accounts are loaded
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
+  const [eomDraggedTemplateId, setEomDraggedTemplateId] = useState(null);
+  const [eomDragOverTemplateId, setEomDragOverTemplateId] = useState(null);
   const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
   const [eomNewTemplateName, setEomNewTemplateName] = useState("");
   // Derived, not fetched — the detail screen's view of one client's tasks
@@ -1385,13 +1391,20 @@ export default function TriageSystem({ onBack }) {
   // Lazily loads templates once, the first time the detail view is opened
   // (needed for the "add task" picker) — independent of the main task/status
   // load above, which no longer needs to run per client click at all.
-  useEffect(() => {
-    if (!eomDetailClient || eomTemplates) return;
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+  const reloadEomTemplatesForPicker = () => {
+    setEomTemplatesError("");
+    return fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId }) })
       .then(r => r.json())
-      .then(d => { if (d.success) setEomTemplates(d.templates || []); })
-      .catch(e => console.error("eom_get_templates error:", e));
+      .then(d => {
+        if (d.success) setEomTemplates(d.templates || []);
+        else setEomTemplatesError(d.error || "Failed to load templates");
+      })
+      .catch(e => setEomTemplatesError(e.message));
+  };
+  useEffect(() => {
+    if (!eomDetailClient || eomTemplates) return;
+    reloadEomTemplatesForPicker();
   }, [eomDetailClient, eomTemplates]);
 
   const reloadEomTemplateManager = () => {
@@ -1616,8 +1629,10 @@ export default function TriageSystem({ onBack }) {
         .then(r => r.json())
         .then(d => {
           if (d.success) {
+            const createdNewTemplate = eomCreatingNewTemplate;
             setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes("");
-            setEomCreatingNewTemplate(false); setEomNewTemplateName(""); setEomTemplates(null); // force template list refresh next time
+            setEomCreatingNewTemplate(false); setEomNewTemplateName("");
+            if (createdNewTemplate) reloadEomTemplatesForPicker(); // only the template list itself needs refreshing here
             reloadEomClientTasks();
           } else {
             setEomClientTasksError(d.error || "Failed to add task");
@@ -1650,6 +1665,21 @@ export default function TriageSystem({ onBack }) {
       .then(d => {
         if (d.success) { setEomEditingNotesFor(""); reloadEomClientTasks(); }
         else setEomClientTasksError(d.error || "Failed to save notes");
+      })
+      .catch(e => setEomClientTasksError(e.message));
+  };
+
+  // Custom (non-template) tasks only — a template-based task's name is
+  // edited via Manage Templates instead, since it's shared across clients.
+  const handleEomSaveName = (task) => {
+    if (!eomNameDraft.trim()) return;
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
+        taskName: eomNameDraft.trim(), clientNotes: task.clientNotes, active: true, automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) { setEomEditingNameFor(""); reloadEomClientTasks(); }
+        else setEomClientTasksError(d.error || "Failed to save name");
       })
       .catch(e => setEomClientTasksError(e.message));
   };
@@ -1696,6 +1726,37 @@ export default function TriageSystem({ onBack }) {
       .catch(e => console.error("eom_reorder_tasks error:", e));
   };
 
+  // Persists a new template order given the templateId that was dragged and
+  // the templateId it was dropped onto — same insert-at-target-position
+  // approach as persistEomTaskOrder above. Updates both eomManagerTemplates
+  // (the Manage Templates list itself) and eomTemplates (the "add task"
+  // picker dropdown), since both need to reflect the new order.
+  const persistEomTemplateOrder = (draggedTemplateId, targetTemplateId) => {
+    if (!draggedTemplateId || draggedTemplateId === targetTemplateId) return;
+    const ordered = (eomManagerTemplates || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+    const fromIdx = ordered.findIndex(t => t.templateId === draggedTemplateId);
+    const toIdx = ordered.findIndex(t => t.templateId === targetTemplateId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    const reordered = [...ordered];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    const orderedTemplateIds = reordered.map(t => t.templateId);
+
+    // Optimistic local update — reassign sortOrder to match the new order
+    // immediately, rather than waiting on a round trip before rows move.
+    const applyNewOrder = (list) => (list || []).map(t => {
+      const newIdx = orderedTemplateIds.indexOf(t.templateId);
+      return newIdx === -1 ? t : { ...t, sortOrder: (newIdx + 1) * 10 };
+    });
+    setEomManagerTemplates(prev => applyNewOrder(prev));
+    setEomTemplates(prev => prev ? applyNewOrder(prev) : prev);
+
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_reorder_templates", orderedTemplateIds, automationCommanderSheetId }) })
+      .catch(e => console.error("eom_reorder_templates error:", e));
+  };
+
   const handleEomSaveTemplateEdit = (templateId) => {
     if (!eomTemplateDraft.name.trim()) return;
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1706,7 +1767,7 @@ export default function TriageSystem({ onBack }) {
       .then(d => {
         if (d.success) {
           setEomEditingTemplateId("");
-          setEomTemplates(null); // force the client-detail template picker to refresh next time it's opened
+          reloadEomTemplatesForPicker(); // this template's data (name/active/etc) may have changed, refresh the picker
           reloadEomTemplateManager();
         }
       })
@@ -1724,7 +1785,7 @@ export default function TriageSystem({ onBack }) {
       .then(d => {
         if (d.success) {
           setEomAddingNewTemplate(false); setEomNewTplName(""); setEomNewTplNotes(""); setEomNewTplLinkedFunction(""); setEomNewTplAlertCategories("");
-          setEomTemplates(null);
+          reloadEomTemplatesForPicker();
           reloadEomTemplateManager();
         }
       })
@@ -4489,6 +4550,26 @@ export default function TriageSystem({ onBack }) {
             onResolved={() => loadProactiveAlerts()}
           />
         )}
+        {eomDeactivateConfirm && (
+          <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setEomDeactivateConfirm(null); }}>
+            <div style={styles.modalCard}>
+              <h3 style={styles.modalTitle}>Stop tracking this task?</h3>
+              <p style={styles.modalSubtitle}>
+                "{eomDeactivateConfirm.name}" will stop appearing on {eomDetailClient}'s checklist. It won't be deleted — you can reactivate it later from the inactive tasks list.
+              </p>
+              <div style={{ display: "flex", gap: "10px", marginTop: "14px" }}>
+                <button onClick={() => { handleEomToggleTaskActive(eomDeactivateConfirm); setEomDeactivateConfirm(null); }}
+                  style={{ padding: "8px 16px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
+                  Stop tracking
+                </button>
+                <button onClick={() => setEomDeactivateConfirm(null)}
+                  style={{ padding: "8px 16px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </>
     );
   };
@@ -6596,8 +6677,16 @@ export default function TriageSystem({ onBack }) {
                 {eomManagerError && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "14px" }}>{eomManagerError}</div>}
 
                 <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", marginBottom: "16px" }}>
-                  {(eomManagerTemplates || []).map((tpl, i) => (
-                    <div key={tpl.templateId} style={{ padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none", opacity: tpl.active ? 1 : 0.55 }}>
+                  {(eomManagerTemplates || []).slice().sort((a, b) => a.sortOrder - b.sortOrder).map((tpl, i) => (
+                    <div key={tpl.templateId}
+                      draggable
+                      onDragStart={() => setEomDraggedTemplateId(tpl.templateId)}
+                      onDragOver={e => { e.preventDefault(); if (eomDragOverTemplateId !== tpl.templateId) setEomDragOverTemplateId(tpl.templateId); }}
+                      onDragLeave={() => setEomDragOverTemplateId(prev => prev === tpl.templateId ? null : prev)}
+                      onDrop={e => { e.preventDefault(); persistEomTemplateOrder(eomDraggedTemplateId, tpl.templateId); setEomDraggedTemplateId(null); setEomDragOverTemplateId(null); }}
+                      onDragEnd={() => { setEomDraggedTemplateId(null); setEomDragOverTemplateId(null); }}
+                      style={{ padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none", opacity: tpl.active ? (eomDraggedTemplateId === tpl.templateId ? 0.4 : 1) : 0.55,
+                        background: eomDragOverTemplateId === tpl.templateId ? "#f0f7ff" : "transparent" }}>
                       {eomEditingTemplateId === tpl.templateId ? (
                         <div>
                           <input value={eomTemplateDraft.name} onChange={e => setEomTemplateDraft(d => ({ ...d, name: e.target.value }))} placeholder="Template name"
@@ -6649,6 +6738,7 @@ export default function TriageSystem({ onBack }) {
                         </div>
                       ) : (
                         <div onClick={() => startEditingTemplate(tpl)} style={{ cursor: "pointer", display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                          <div onClick={e => e.stopPropagation()} title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", lineHeight: "20px", userSelect: "none" }}>⠿</div>
                           <div style={{ flex: 1 }}>
                             <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
                               {tpl.name}
@@ -6810,7 +6900,20 @@ export default function TriageSystem({ onBack }) {
                       <div style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
                         <div title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", lineHeight: "20px", userSelect: "none" }}>⠿</div>
                         <div style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
-                          {t.name}
+                          {eomEditingNameFor === t.taskId ? (
+                            <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                              <input value={eomNameDraft} onChange={e => setEomNameDraft(e.target.value)} autoFocus
+                                style={{ flex: 1, padding: "4px 7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", fontWeight: "600" }} />
+                              <button onClick={() => handleEomSaveName(t)} style={{ padding: "4px 9px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "11px", fontWeight: "600" }}>Save</button>
+                              <button onClick={() => setEomEditingNameFor("")} style={{ padding: "4px 9px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
+                            </div>
+                          ) : (
+                            <span onClick={t.templateId ? undefined : () => { setEomEditingNameFor(t.taskId); setEomNameDraft(t.name); }}
+                              title={t.templateId ? "Shared template — edit via Manage Templates" : "Click to rename"}
+                              style={{ cursor: t.templateId ? "default" : "pointer" }}>
+                              {t.name}
+                            </span>
+                          )}
                           {t.templateId && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#888", fontWeight: "400" }}>(shared)</span>}
                           {t.linkedFunction === "salaries" && (
                             <button onClick={() => setEomSubView("payroll")}
@@ -6854,7 +6957,7 @@ export default function TriageSystem({ onBack }) {
                             color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400" }}>
                           {eomExpandedNotesFor.has(t.taskId) ? "−" : "+"}
                         </button>
-                        <button onClick={() => handleEomToggleTaskActive(t)} title="Stop tracking this task for this client"
+                        <button onClick={() => setEomDeactivateConfirm(t)} title="Stop tracking this task for this client"
                           style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", fontSize: "12px", padding: "3px" }}>✕</button>
                       </div>
                       {(eomExpandedNotesFor.has(t.taskId) || eomEditingNotesFor === t.taskId) && (
@@ -6910,17 +7013,24 @@ export default function TriageSystem({ onBack }) {
                             </button>
                           </div>
                         ) : (
-                          <select value={eomNewTaskTemplateId} onChange={e => {
-                              if (e.target.value === "__new__") { setEomCreatingNewTemplate(true); setEomNewTaskTemplateId(""); }
-                              else setEomNewTaskTemplateId(e.target.value);
-                            }}
-                            style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px", marginBottom: "8px" }}>
-                            <option value="">Select a template...</option>
-                            {(eomTemplates || []).filter(t => t.active).map(t => (
-                              <option key={t.templateId} value={t.templateId}>{t.name}</option>
-                            ))}
-                            <option value="__new__">+ Create new template...</option>
-                          </select>
+                          <div style={{ marginBottom: "8px" }}>
+                            <select value={eomNewTaskTemplateId} onChange={e => {
+                                if (e.target.value === "__new__") { setEomCreatingNewTemplate(true); setEomNewTaskTemplateId(""); }
+                                else setEomNewTaskTemplateId(e.target.value);
+                              }}
+                              style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px" }}>
+                              <option value="">{eomTemplates === null ? "Loading templates..." : "Select a template..."}</option>
+                              {(eomTemplates || []).filter(t => t.active).map(t => (
+                                <option key={t.templateId} value={t.templateId}>{t.name}</option>
+                              ))}
+                              <option value="__new__">+ Create new template...</option>
+                            </select>
+                            {eomTemplatesError && (
+                              <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "4px" }}>
+                                {eomTemplatesError} — <button onClick={reloadEomTemplatesForPicker} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "11px", padding: 0, textDecoration: "underline" }}>retry</button>
+                              </div>
+                            )}
+                          </div>
                         )
                       ) : (
                         <input value={eomNewTaskName} onChange={e => setEomNewTaskName(e.target.value)} placeholder="Task name"

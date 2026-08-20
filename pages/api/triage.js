@@ -8005,7 +8005,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
           console.log(`  Confirmed job description matches: ${jobDescMatches.length}`);
 
-          // Rank: budget fit → exact client match → most recent job first
+          // Rank: budget fit → exact client match → partial client overlap → most recent job first
           const parseRankDateExp = (d) => {
             if (!d) return null;
             const MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
@@ -8019,6 +8019,12 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           jobDescMatches.sort((a, b) => {
             if (a.budgetFits !== b.budgetFits) return a.budgetFits ? -1 : 1;
             if (a.isExactClient !== b.isExactClient) return a.isExactClient ? -1 : 1;
+            // clientOverlap (bracketed end-client text overlapping the job's
+            // client name) was already computed per candidate above but
+            // never actually used here — added 20 Aug 2026, prompted by
+            // Paul asking whether partial client matches are considered on
+            // the invoice side. This was sitting right there, unused.
+            if (a.clientOverlap !== b.clientOverlap) return a.clientOverlap ? -1 : 1;
             const da = parseRankDateExp(a.job.startDate);
             const db = parseRankDateExp(b.job.startDate);
             if (da === null && db === null) return 0;
@@ -8040,11 +8046,23 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               targetSlotType: "expense",
               targetSlotNum: availSlot.slotNum,
               matchingDetails: {
+                // Same bug as the invoice side (fixed 20 Aug 2026, confirmed
+                // during Paul's review of expense-matching for parity) —
+                // unmatchedJobSummary must hold the JOB's own true
+                // revenue/start date for row-verification to work (it
+                // compares this against what's actually in the sheet
+                // before writing), not the expense's own amount/date. This
+                // previously used expenseAmount/expenseDate here, which
+                // structurally can never match the job row's actual
+                // revenue/start date, silently blocking every write through
+                // this path. job.revenue/job.startDate are the job's real
+                // values (already correctly used below in matchedJobDetails,
+                // which row-verification never reads).
                 unmatchedJobSummary: {
-                  clientName: alert.clientName,
-                  jobName: expenseDescription || expenseRef,
-                  revenue: String(expenseAmount),
-                  startDate: expenseDate,
+                  clientName: job.parentClient,
+                  jobName: job.parentJob,
+                  revenue: String(job.revenue || ""),
+                  startDate: job.startDate || "",
                 },
                 matchedJobDetails: {
                   clientName: job.parentClient,
@@ -9972,6 +9990,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             _rankBudgetFits: budgetFits,
             _rankExactClient: isExactClient,
             _rankDateMatch: best.dateMatch === true,
+            _rankPartialClient: fuzzyClientMatch(invClient, best.client),
           });
         }
 
@@ -10100,6 +10119,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 _rankBudgetFits: bBudgetFits,
                 _rankExactClient: bIsExactClient,
                 _rankDateMatch: bDateMatch === true,
+                _rankPartialClient: fuzzyClientMatch(invClient, rc),
               });
               if (tier2Options.length >= 5) break; // cap at 5 options total
             }
@@ -10123,18 +10143,29 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           if (a._rankBudgetFits !== b._rankBudgetFits) return a._rankBudgetFits ? -1 : 1;
           // 2. Exact client name match comes first
           if (a._rankExactClient !== b._rankExactClient) return a._rankExactClient ? -1 : 1;
-          // 3. Invoice sent date within tolerance of the slot's expected
+          // 3. Partial client name match (word overlap, e.g. "Oxford" in
+          // both) comes next — added 20 Aug 2026, prompted by Paul asking
+          // whether this was considered at all (it wasn't). Reuses the same
+          // fuzzyClientMatch already used elsewhere in this block to decide
+          // clientFound, rather than a second, separate definition. A
+          // completely unrelated client is a stronger disqualifier than a
+          // date mismatch, so this ranks above date-match below — mirrors
+          // the equivalent fix just made to the expense-matching side's
+          // clientOverlap, which was being computed but never actually used
+          // in its own ranking either.
+          if (a._rankPartialClient !== b._rankPartialClient) return a._rankPartialClient ? -1 : 1;
+          // 4. Invoice sent date within tolerance of the slot's expected
           // date comes first — added 20 Aug 2026, confirmed via a live
           // example (Orinoco Communications) where an option with the
           // invoice date 4 months from the slot's expected date outranked
           // one only 5 days off, because date proximity was never
           // considered here at all — only the unrelated signal of which
-          // JOB itself started more recently (step 4 below). This is a
+          // JOB itself started more recently (step 5 below). This is a
           // direct, strong signal of whether the invoice actually belongs
           // to this slot; job recency is a much weaker, indirect one and
           // now only decides remaining ties.
           if (a._rankDateMatch !== b._rankDateMatch) return a._rankDateMatch ? -1 : 1;
-          // 4. More recent job (later start date) comes first
+          // 5. More recent job (later start date) comes first
           const da = parseRankDate(a._rankStartDate);
           const db = parseRankDate(b._rankStartDate);
           if (da === null && db === null) return 0;
@@ -10164,7 +10195,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
         // Renumber and cache
         let options = tier2Options.map((o, i) => {
-          const { _rankStartDate, _rankBudgetFits, _rankExactClient, _rankDateMatch, ...clean } = o;
+          const { _rankStartDate, _rankBudgetFits, _rankExactClient, _rankDateMatch, _rankPartialClient, ...clean } = o;
           return { ...clean, optionId: i + 1 };
         });
         console.log(`  ✅ System-generated ${options.length} invoice options`);

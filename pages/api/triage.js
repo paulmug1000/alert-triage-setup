@@ -1207,6 +1207,37 @@ async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targe
   };
 }
 
+/**
+ * Parses a date string in either the sheet's own "DD-MMM-YY" convention
+ * (e.g. "15-Aug-26") or a full JS Date.toString() string (e.g. "Thu Aug 20
+ * 2026 00:00:00 GMT+0100 (British Summer Time)" — confirmed 20 Aug 2026:
+ * alert.summary.sentDate/date arrive in this format, not the sheet's own).
+ * Shared by both invoice and expense matching's date-tolerance checks so a
+ * future fix to date parsing only needs to happen once, not twice.
+ */
+function parseSheetOrJsDate_(d) {
+  if (!d) return null;
+  const MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+  const parts = String(d).split(/[-\/]/);
+  if (parts.length === 3) {
+    const mNum = MONTHS_MAP[parts[1]?.toLowerCase()?.substring(0,3)];
+    if (mNum !== undefined) {
+      const yr = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
+      return new Date(yr, mNum, parseInt(parts[0]));
+    }
+  }
+  const nativeParsed = new Date(d);
+  if (!isNaN(nativeParsed.getTime())) return nativeParsed;
+  return null;
+}
+
+/** Whole-calendar-months difference between two already-parsed Dates, within tolerance. Null = unknown (a date was missing/unparseable), not a value the caller should treat as "false". */
+function monthsWithinTolerance_(dateA, dateB, tolMonths) {
+  if (!dateA || !dateB) return null;
+  const diffMonths = (dateB.getFullYear() - dateA.getFullYear()) * 12 + (dateB.getMonth() - dateA.getMonth());
+  return Math.abs(diffMonths) <= tolMonths;
+}
+
 function isDateMatchJs_(sheetHeader, aiDate) {
   if (!sheetHeader || !aiDate) return false;
   const s1 = String(sheetHeader).toLowerCase();
@@ -7755,7 +7786,12 @@ BUDGET AND REVENUE:
                     const date = cr[dt] || '';
                     const appId = String(cr[id] || '').trim();
                     if (!descr && !amt) {
-                      childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s+1}`, empty: true, sheetRow: childSheetRow, slotNum: s+1 });
+                      // date was already read above but previously omitted
+                      // here — fixed 20 Aug 2026, confirmed with Paul that
+                      // empty expense placeholders do carry a real expected
+                      // date the same way invoice placeholders do, needed
+                      // for the date-tolerance check added below.
+                      childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s+1}`, empty: true, date, sheetRow: childSheetRow, slotNum: s+1 });
                       continue;
                     }
                     const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
@@ -7788,7 +7824,8 @@ BUDGET AND REVENUE:
                     const date = r[dt] || '';
                     const appId = String(r[id] || '').trim();
                     if (!descr && !amt) {
-                      slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, empty: true, sheetRow, slotNum: s+1 });
+                      // Same fix as the retainer branch above (20 Aug 2026).
+                      slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, empty: true, date, sheetRow, slotNum: s+1 });
                       continue;
                     }
                     const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
@@ -7979,6 +8016,27 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const expBracketMatch = (expenseDescription || "").match(/\(([^)]*)\)/);
           const expBracketWords = expBracketMatch ? normExpWords(expBracketMatch[1]) : [];
 
+          // Date tolerance: ±expenseMonthsTolerance months from expense date —
+          // added 20 Aug 2026, prompted by Paul after the invoice-side date
+          // fix. expenseMonthsTolerance was already a configured tolerance
+          // value (default 1 month) but was never actually used in this
+          // matching logic at all — nothing here previously compared dates.
+          // Confirmed with Paul that empty expense placeholder slots DO
+          // carry a real expected date the same way invoice placeholders
+          // do, which is what makes this comparison meaningful (the empty-
+          // slot date was also being silently dropped before this same
+          // change — see candidateJobs construction above). Reuses the
+          // same parseSheetOrJsDate_/monthsWithinTolerance_ helpers as the
+          // invoice side, not a second, separate definition.
+          const expMonthsTol = Number(tolerances.expenseMonthsTolerance) || 1;
+          const expDateParsed = parseSheetOrJsDate_(expenseDate);
+          const dateWithinToleranceExp = (slotDateStr) => {
+            if (!expDateParsed || !slotDateStr) return null; // null = unknown, not "false"
+            const slotDate = parseSheetOrJsDate_(slotDateStr);
+            if (!slotDate) return null;
+            return monthsWithinTolerance_(expDateParsed, slotDate, expMonthsTol);
+          };
+
           for (const job of candidateJobs) {
             const jobWords = normExpWords(job.parentJob);
             const clientWords = normExpWords(job.parentClient);
@@ -8001,7 +8059,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             // Exact client match: bracketed text exactly equals the job's client name
             const bracketText = expBracketMatch ? expBracketMatch[1].trim().toLowerCase() : "";
             const isExactClient = !!bracketText && bracketText === String(job.parentClient||"").trim().toLowerCase();
-            jobDescMatches.push({ job, availSlot, cols, row, realAllocated, newTotal, budgetFit, budgetFits, isExactClient, clientOverlap });
+            const dateMatch = dateWithinToleranceExp(availSlot.date);
+            jobDescMatches.push({ job, availSlot, cols, row, realAllocated, newTotal, budgetFit, budgetFits, isExactClient, clientOverlap, dateMatch });
           }
           console.log(`  Confirmed job description matches: ${jobDescMatches.length}`);
 
@@ -8025,6 +8084,13 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             // Paul asking whether partial client matches are considered on
             // the invoice side. This was sitting right there, unused.
             if (a.clientOverlap !== b.clientOverlap) return a.clientOverlap ? -1 : 1;
+            // Expense date within tolerance of the slot's expected date —
+            // added 20 Aug 2026, mirroring the same fix and priority
+            // position on the invoice side (a direct match signal, ranked
+            // above the much weaker/indirect job-recency tie-breaker below).
+            const aDateMatch = a.dateMatch === true;
+            const bDateMatch = b.dateMatch === true;
+            if (aDateMatch !== bDateMatch) return aDateMatch ? -1 : 1;
             const da = parseRankDateExp(a.job.startDate);
             const db = parseRankDateExp(b.job.startDate);
             if (da === null && db === null) return 0;
@@ -8034,7 +8100,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           });
 
           for (const jm of jobDescMatches.slice(0, 3)) {
-            const { job, availSlot, cols, row, realAllocated, newTotal, budgetFit } = jm;
+            const { job, availSlot, cols, row, realAllocated, newTotal, budgetFit, dateMatch } = jm;
             const jobClientLabel = job.parentClient ? `${job.parentClient} — ${job.parentJob}` : job.parentJob;
             jobSysOptions.push({
               optionId: jobSysOptions.length + 1,
@@ -8074,9 +8140,15 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 },
               },
               matchAnalysis: {
-                matchConfidence: "Medium",
+                // Upgraded to High when the expense date falls within
+                // tolerance of the slot's expected date — added 20 Aug
+                // 2026, mirroring the invoice side's confidence logic
+                // exactly (previously hardcoded "Medium" regardless of date
+                // proximity, since no date comparison existed at all).
+                matchConfidence: dateMatch ? "High" : "Medium",
                 placeholderMatch: availSlot.empty ? `YES — Row ${row} ExpSlot${availSlot.slotNum} is empty` : `PARTIAL — unallocated slot available`,
                 budgetFit,
+                dateRangeMatch: dateMatch === null ? "UNKNOWN" : (dateMatch ? "YES" : "PARTIAL — outside date tolerance"),
                 reasonForChoice: `Job name "${job.parentJob}" matches expense description word(s). Currently allocated: £${realAllocated.toFixed(2)}, this expense adds £${expenseAmount.toFixed(2)} → new total £${newTotal.toFixed(2)} vs budget £${job.totalBudget}.`,
                 discrepancies: budgetFit.startsWith("OVER") ? `Budget would be exceeded by £${(newTotal-(parseFloat(String(job.totalBudget||"0").replace(/[£$€,]/g,""))||0)).toFixed(2)}` : "None",
               },
@@ -9419,41 +9491,12 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
 
           // Date tolerance: ±invoiceMonthsTolerance months from invoice sent date
           const invMonthsTol = Number(tolerances.invoiceMonthsTolerance) || 2;
-          const parseConfirmedDate = (d) => {
-            if (!d) return null;
-            const MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-            const parts = String(d).split(/[-\/]/);
-            if (parts.length === 3) {
-              const mNum = MONTHS_MAP[parts[1]?.toLowerCase()?.substring(0,3)];
-              if (mNum !== undefined) {
-                const yr = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
-                return new Date(yr, mNum, parseInt(parts[0]));
-              }
-            }
-            // Fallback for full JS Date.toString() strings (e.g.
-            // "Thu Aug 20 2026 00:00:00 GMT+0100 (British Summer Time)") —
-            // confirmed 20 Aug 2026: alert.summary.sentDate arrives in this
-            // format, not the sheet's "DD-MMM-YY" convention, so the
-            // split-based parse above always silently failed for it,
-            // making invSentDateParsed null and every single
-            // dateWithinTolerance() call below return null regardless of
-            // how close the actual dates were — this in turn made
-            // "confidence" always show Medium (never High) and
-            // dateRangeMatch always show "outside tolerance", even for a
-            // same-week match. Native Date parsing handles its own
-            // toString() output directly.
-            const nativeParsed = new Date(d);
-            if (!isNaN(nativeParsed.getTime())) return nativeParsed;
-            return null;
-          };
-          const invSentDateParsed = parseConfirmedDate(sentDate);
+          const invSentDateParsed = parseSheetOrJsDate_(sentDate);
           const dateWithinTolerance = (slotDateStr) => {
             if (!invSentDateParsed || !slotDateStr) return null; // null = unknown (no date to compare)
-            const slotDate = parseConfirmedDate(slotDateStr);
+            const slotDate = parseSheetOrJsDate_(slotDateStr);
             if (!slotDate) return null;
-            const diffMonths = (slotDate.getFullYear() - invSentDateParsed.getFullYear()) * 12
-              + (slotDate.getMonth() - invSentDateParsed.getMonth());
-            return Math.abs(diffMonths) <= invMonthsTol;
+            return monthsWithinTolerance_(invSentDateParsed, slotDate, invMonthsTol);
           };
 
           // Sweep all non-real slots across all active Confirmed rows
@@ -9669,9 +9712,9 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
                     let dateTag;
                     if (!slotDate) {
                       dateTag = "no date recorded";
-                    } else if (invSentDateParsed && parseConfirmedDate(slotDate)) {
-                      const diffMonths = Math.abs((parseConfirmedDate(slotDate) - invSentDateParsed) / (1000*60*60*24*30.4));
-                      const direction = parseConfirmedDate(slotDate) > invSentDateParsed ? "after" : "before";
+                    } else if (invSentDateParsed && parseSheetOrJsDate_(slotDate)) {
+                      const diffMonths = Math.abs((parseSheetOrJsDate_(slotDate) - invSentDateParsed) / (1000*60*60*24*30.4));
+                      const direction = parseSheetOrJsDate_(slotDate) > invSentDateParsed ? "after" : "before";
                       if (diffMonths < 0.1) {
                         dateTag = `slot date ${slotDate} vs invoice ${sentDate} = EXACT MATCH`;
                       } else {

@@ -9412,6 +9412,20 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
                 return new Date(yr, mNum, parseInt(parts[0]));
               }
             }
+            // Fallback for full JS Date.toString() strings (e.g.
+            // "Thu Aug 20 2026 00:00:00 GMT+0100 (British Summer Time)") —
+            // confirmed 20 Aug 2026: alert.summary.sentDate arrives in this
+            // format, not the sheet's "DD-MMM-YY" convention, so the
+            // split-based parse above always silently failed for it,
+            // making invSentDateParsed null and every single
+            // dateWithinTolerance() call below return null regardless of
+            // how close the actual dates were — this in turn made
+            // "confidence" always show Medium (never High) and
+            // dateRangeMatch always show "outside tolerance", even for a
+            // same-week match. Native Date parsing handles its own
+            // toString() output directly.
+            const nativeParsed = new Date(d);
+            if (!isNaN(nativeParsed.getTime())) return nativeParsed;
             return null;
           };
           const invSentDateParsed = parseConfirmedDate(sentDate);
@@ -9957,6 +9971,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             _rankStartDate: best.startDate || "",
             _rankBudgetFits: budgetFits,
             _rankExactClient: isExactClient,
+            _rankDateMatch: best.dateMatch === true,
           });
         }
 
@@ -10028,6 +10043,11 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 : "slot amount unknown";
               const overUnder = bRevNum > 0 ? (bNewTotal > bRevNum ? ` (over budget by £${(bNewTotal-bRevNum).toFixed(2)})` : ` (£${(bRevNum-bNewTotal).toFixed(2)} remaining)`) : "";
               const slotLabel = isManual ? "MANUAL-INV placeholder" : "blank placeholder";
+              // This path had slotDate available but never actually checked
+              // it against the invoice's sent date — dateRangeMatch was
+              // hardcoded to "UNKNOWN"/"N/A" regardless of actual
+              // proximity. Fixed 20 Aug 2026 alongside the ranking fix below.
+              const bDateMatch = dateWithinTolerance(slotDate);
 
               tier2Options.push({
                 optionId: tier2Options.length + 1,
@@ -10055,9 +10075,9 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                   },
                 },
                 matchAnalysis: {
-                  matchConfidence: "Low",
+                  matchConfidence: bDateMatch ? "Medium" : "Low",
                   amountMatch: slotAmt > 0 ? (Math.abs(invoiceAmtForMatch-slotAmt)<0.01 ? "YES" : `PARTIAL — ${amtNote}`) : "UNKNOWN",
-                  dateRangeMatch: slotDate ? "UNKNOWN" : "N/A",
+                  dateRangeMatch: bDateMatch === null ? (slotDate ? "UNKNOWN" : "N/A") : (bDateMatch ? "YES" : "PARTIAL — outside date tolerance"),
                   projectCodeMatch: "N/A",
                   reasonForChoice: `Job/client name has word overlap with invoice. ${amtNote}. Current real invoiced: £${bRealTotal.toFixed(2)}, new total would be £${bNewTotal.toFixed(2)}${overUnder}.`,
                   discrepancies: amtDiff && Math.abs(amtDiff) > 0.01 ? `Amount mismatch: slot £${slotAmt.toFixed(2)} vs invoice £${invoiceAmtForMatch.toFixed(2)}` : "None",
@@ -10079,6 +10099,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 _rankStartDate: bStartDate,
                 _rankBudgetFits: bBudgetFits,
                 _rankExactClient: bIsExactClient,
+                _rankDateMatch: bDateMatch === true,
               });
               if (tier2Options.length >= 5) break; // cap at 5 options total
             }
@@ -10102,7 +10123,18 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           if (a._rankBudgetFits !== b._rankBudgetFits) return a._rankBudgetFits ? -1 : 1;
           // 2. Exact client name match comes first
           if (a._rankExactClient !== b._rankExactClient) return a._rankExactClient ? -1 : 1;
-          // 3. More recent job (later start date) comes first
+          // 3. Invoice sent date within tolerance of the slot's expected
+          // date comes first — added 20 Aug 2026, confirmed via a live
+          // example (Orinoco Communications) where an option with the
+          // invoice date 4 months from the slot's expected date outranked
+          // one only 5 days off, because date proximity was never
+          // considered here at all — only the unrelated signal of which
+          // JOB itself started more recently (step 4 below). This is a
+          // direct, strong signal of whether the invoice actually belongs
+          // to this slot; job recency is a much weaker, indirect one and
+          // now only decides remaining ties.
+          if (a._rankDateMatch !== b._rankDateMatch) return a._rankDateMatch ? -1 : 1;
+          // 4. More recent job (later start date) comes first
           const da = parseRankDate(a._rankStartDate);
           const db = parseRankDate(b._rankStartDate);
           if (da === null && db === null) return 0;
@@ -10132,7 +10164,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
         // Renumber and cache
         let options = tier2Options.map((o, i) => {
-          const { _rankStartDate, _rankBudgetFits, _rankExactClient, ...clean } = o;
+          const { _rankStartDate, _rankBudgetFits, _rankExactClient, _rankDateMatch, ...clean } = o;
           return { ...clean, optionId: i + 1 };
         });
         console.log(`  ✅ System-generated ${options.length} invoice options`);

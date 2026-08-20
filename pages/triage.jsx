@@ -1096,12 +1096,18 @@ export default function TriageSystem({ onBack }) {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
-  const [eomActiveTasks, setEomActiveTasks] = useState(null); // [{clientName, taskId}] — every currently-active task, regardless of status
-  const [eomStatusOverrides, setEomStatusOverrides] = useState(null); // [{clientName, taskId, status}] — only explicit rows for the selected month
+  // eomAllTasks: every client's tasks, fully resolved (name, active,
+  // linkedFunction, alertCategories, sortOrder) — loaded once per month
+  // change, not per client click. Both the Overview's totals and the
+  // detail screen's per-client list derive from this single source, so
+  // navigating between clients or back to Overview never needs a fetch —
+  // see conversation 19 Aug 2026 (Paul: "every page available instantly
+  // except the initial load").
+  const [eomAllTasks, setEomAllTasks] = useState(null);
+  const [eomStatusOverrides, setEomStatusOverrides] = useState(null); // [{clientName, taskId, status}] — only explicit rows for the selected month, all clients
   const [eomStatusLoading, setEomStatusLoading] = useState(false);
   const [eomStatusError, setEomStatusError] = useState("");
   const [eomDetailClient, setEomDetailClient] = useState(null); // null = overview; a client name = detail view
-  const [eomClientTasks, setEomClientTasks] = useState(null);
   const [eomClientTasksLoading, setEomClientTasksLoading] = useState(false);
   const [eomClientTasksError, setEomClientTasksError] = useState("");
   const [eomTemplates, setEomTemplates] = useState(null);
@@ -1111,9 +1117,12 @@ export default function TriageSystem({ onBack }) {
   const [eomNewTaskNotes, setEomNewTaskNotes] = useState("");
   const [eomAddTaskSaving, setEomAddTaskSaving] = useState(false);
   const [eomEditingNotesFor, setEomEditingNotesFor] = useState(""); // taskId currently being edited
+  const [eomExpandedNotesFor, setEomExpandedNotesFor] = useState(() => new Set()); // taskIds with notes currently shown, not collapsed
   const [eomNotesDraft, setEomNotesDraft] = useState("");
   const [eomDraggedTaskId, setEomDraggedTaskId] = useState(null);
   const [eomShowTemplateManager, setEomShowTemplateManager] = useState(false);
+  const [eomExcludedClients, setEomExcludedClients] = useState(null); // [clientName, ...] — clients on AutoUpdates but not managed via EoM at all
+  const [eomShowExcludedManager, setEomShowExcludedManager] = useState(false);
   const [eomManagerTemplates, setEomManagerTemplates] = useState(null);
   const [eomManagerClientTasks, setEomManagerClientTasks] = useState(null); // unfiltered, used only to compute per-template usage counts
   const [eomManagerLoading, setEomManagerLoading] = useState(false);
@@ -1155,6 +1164,10 @@ export default function TriageSystem({ onBack }) {
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
   const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
   const [eomNewTemplateName, setEomNewTemplateName] = useState("");
+  // Derived, not fetched — the detail screen's view of one client's tasks
+  // is just a filter over the already-loaded eomAllTasks. Recomputes only
+  // when the underlying data or the selected client actually changes.
+  const eomClientTasks = React.useMemo(() => (eomAllTasks || []).filter(t => t.clientName === eomDetailClient), [eomAllTasks, eomDetailClient]);
   // Each entry: { id, file, fileName, convertStatus, convertMsg, fileData,
   //   detectStatus, detectMethod, client, ambiguousInfo, processStatus,
   //   pendingConfirm, result, processMsg }
@@ -1302,85 +1315,84 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
-  // Loads EoM monthly status (all clients) whenever the overview list is
-  // showing and the requested month changes — covers the initial nav click
-  // and every prev/next month click without wiring the fetch into each
-  // button. Only runs for the client LIST, not the per-client detail view.
+  // Loads every client's tasks + this month's status ONCE whenever the EoM
+  // section is open and the month changes — not per client click. Both the
+  // Overview screen and the detail screen derive everything they display
+  // from this single load (eomClientTasks above is just a filter over
+  // eomAllTasks), so navigating between clients or back to Overview never
+  // triggers a fetch — see conversation 19 Aug 2026 (Paul: "every page
+  // available instantly except the initial load"). Templates load once,
+  // lazily, the first time they're actually needed (the "add task" picker)
+  // — a genuinely separate concern, not combined here.
   useEffect(() => {
-    if (activeNav !== "tools" || eomSubView !== "overview" || eomDetailClient) return;
-    // Clear immediately, before fetching — eomStatusOverrides is shared
-    // with the detail screen's own effect below, so without this, leftover
-    // data from whichever client was last viewed stays fully visible and
-    // rendered (not just a background value) until this fetch resolves,
-    // producing a visible "shows wrong numbers, then corrects itself"
-    // flicker. Fixed 19 Aug 2026.
-    setEomActiveTasks([]);
+    if (activeNav !== "tools" || eomSubView !== "overview") return;
+    setEomAllTasks([]);
     setEomStatusOverrides([]);
     setEomStatusLoading(true);
     setEomStatusError("");
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId }) })
-      .then(r => r.json())
-      .then(d => {
-        if (d.success) { setEomActiveTasks(d.activeTasks || []); setEomStatusOverrides(d.statusOverrides || []); }
-        else setEomStatusError(d.error || "Failed to load status");
+    Promise.all([
+      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId }) }).then(r => r.json()),
+      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId }) }).then(r => r.json()),
+    ])
+      .then(([tasksD, statusD]) => {
+        if (tasksD.success) setEomAllTasks(tasksD.tasks || []);
+        else setEomStatusError(tasksD.error || "Failed to load tasks");
+        if (statusD.success) setEomStatusOverrides(statusD.statusOverrides || []);
+        else setEomStatusError(statusD.error || "Failed to load status");
       })
       .catch(e => setEomStatusError(e.message))
       .finally(() => setEomStatusLoading(false));
-  }, [activeNav, eomSubView, eomMonthKey, eomDetailClient]);
+  }, [activeNav, eomSubView, eomMonthKey]);
 
-  const reloadEomClientTasks = (clientName) => {
+  // Excluded clients load once, lazily — unlike tasks/status they aren't
+  // month-scoped, so there's no reason to re-fetch on every month change.
+  useEffect(() => {
+    if (activeNav !== "tools" || eomExcludedClients !== null) return;
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_excluded_clients", automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => { if (d.success) setEomExcludedClients(d.excludedClients || []); })
+      .catch(e => console.error("eom_get_excluded_clients error:", e));
+  }, [activeNav, eomExcludedClients]);
+
+  const handleEomToggleClientExcluded = (clientName, excluded) => {
+    setEomExcludedClients(prev => excluded ? [...(prev || []), clientName] : (prev || []).filter(c => c !== clientName));
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_toggle_client_excluded", clientName, excluded, automationCommanderSheetId }) })
+      .catch(e => console.error("eom_toggle_client_excluded error:", e));
+  };
+
+  // Re-fetches everything after a task-list write (add/edit notes/toggle
+  // active) — these are deliberate user actions, not navigation, so a
+  // brief reload here is expected and acceptable, unlike clicking between
+  // clients or back to Overview which must stay instant.
+  const reloadEomClientTasks = () => {
     setEomClientTasksLoading(true);
     setEomClientTasksError("");
     return fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_client_tasks", clientName, automationCommanderSheetId }) })
+      body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
-        if (d.success) setEomClientTasks(d.tasks || []);
+        if (d.success) setEomAllTasks(d.tasks || []);
         else setEomClientTasksError(d.error || "Failed to load tasks");
       })
       .catch(e => setEomClientTasksError(e.message))
       .finally(() => setEomClientTasksLoading(false));
   };
 
-  // Loads a client's task list + this month's status whenever the detail
-  // view opens or the month changes — one combined backend call rather
-  // than two separate ones that were both reading EomClientTasks each
-  // time (fixed 19 Aug 2026, alongside caching ensureEomTabs_, to reduce
-  // load on Google's per-user read quota). Templates load once, lazily,
-  // the first time the detail view is opened (needed for the "add task"
-  // picker) — that's a genuinely separate concern, not combined here.
+  // Lazily loads templates once, the first time the detail view is opened
+  // (needed for the "add task" picker) — independent of the main task/status
+  // load above, which no longer needs to run per client click at all.
   useEffect(() => {
-    if (!eomDetailClient) return;
-    // Clear immediately, before fetching — same reasoning as the Overview
-    // effect above: without this, the previously-viewed client's task
-    // list (or the Overview's own all-clients data, since
-    // eomStatusOverrides is shared) stays fully visible until the new
-    // fetch resolves, showing the wrong client's tasks/order/statuses
-    // briefly before correcting itself. Fixed 19 Aug 2026.
-    setEomClientTasks([]);
-    setEomStatusOverrides([]);
-    setEomStatusLoading(true);
-    setEomStatusError("");
-    setEomClientTasksLoading(true);
-    setEomClientTasksError("");
+    if (!eomDetailClient || eomTemplates) return;
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_client_detail", clientName: eomDetailClient, monthKey: eomMonthKey, automationCommanderSheetId }) })
+      body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId }) })
       .then(r => r.json())
-      .then(d => {
-        if (d.success) { setEomClientTasks(d.tasks || []); setEomStatusOverrides(d.statusOverrides || []); }
-        else { setEomStatusError(d.error || "Failed to load client detail"); setEomClientTasksError(d.error || "Failed to load client detail"); }
-      })
-      .catch(e => { setEomStatusError(e.message); setEomClientTasksError(e.message); })
-      .finally(() => { setEomStatusLoading(false); setEomClientTasksLoading(false); });
-    if (!eomTemplates) {
-      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId }) })
-        .then(r => r.json())
-        .then(d => { if (d.success) setEomTemplates(d.templates || []); })
-        .catch(e => console.error("eom_get_templates error:", e));
-    }
-  }, [eomDetailClient, eomMonthKey]);
+      .then(d => { if (d.success) setEomTemplates(d.templates || []); })
+      .catch(e => console.error("eom_get_templates error:", e));
+  }, [eomDetailClient, eomTemplates]);
 
   const reloadEomTemplateManager = () => {
     setEomManagerLoading(true);
@@ -1446,25 +1458,22 @@ export default function TriageSystem({ onBack }) {
   }, [eomBankAccountsByClient, eomCashPendingClient]);
 
   // Triggers a triage load (via the existing startTriage — cheap precomputed
-  // cache first, full scan only if that's unavailable) when either the
-  // Overview screen's totals or the client detail screen has an
-  // "alert_check"-linked task but clientsWithFlags hasn't been loaded yet
-  // this session — e.g. going straight to EoM without visiting home first.
-  // Checks both eomActiveTasks (Overview, all clients) and eomClientTasks
-  // (detail screen, one client) since either can be viewed independently
-  // of the other ever having loaded. Only pays this cost when actually
-  // needed, not on every EoM visit. sessionId (empty until a load has
-  // completed, successfully or not) is the readiness signal, not
-  // clientsWithFlags — that array is legitimately empty both before any
-  // load AND after a load that found zero clients with active flags, so
-  // it can't distinguish those two cases on its own.
+  // cache first, full scan only if that's unavailable) when eomAllTasks has
+  // an "alert_check"-linked task but clientsWithFlags hasn't been loaded
+  // yet this session — e.g. going straight to EoM without visiting home
+  // first. eomAllTasks alone is sufficient here now (both the Overview and
+  // the detail screen's eomClientTasks derive from it). Only pays this
+  // cost when actually needed, not on every EoM visit. sessionId (empty
+  // until a load has completed, successfully or not) is the readiness
+  // signal, not clientsWithFlags — that array is legitimately empty both
+  // before any load AND after a load that found zero clients with active
+  // flags, so it can't distinguish those two cases on its own.
   useEffect(() => {
     if (sessionId) { setEomAlertDataReady(true); return; }
-    const hasAlertCheckTask = (eomClientTasks || []).some(t => t.active && t.linkedFunction === "alert_check")
-      || (eomActiveTasks || []).some(t => t.linkedFunction === "alert_check");
+    const hasAlertCheckTask = (eomAllTasks || []).some(t => t.linkedFunction === "alert_check");
     if (!hasAlertCheckTask || isLoading) return;
     startTriage().finally(() => setEomAlertDataReady(true));
-  }, [eomClientTasks, eomActiveTasks, sessionId, isLoading]);
+  }, [eomAllTasks, sessionId, isLoading]);
 
   const handleLoadBankAccounts = () => {
     setEomBankAccountsLoading(true);
@@ -1570,7 +1579,7 @@ export default function TriageSystem({ onBack }) {
   const handleEomStatusChange = (taskId, newStatus) => {
     // Optimistic local update — avoids a full refetch for something this
     // frequent (checking tasks off one at a time). Updates the override
-    // list only — eomActiveTasks (the denominator) never needs touching
+    // list only — eomAllTasks (the denominator) never needs touching
     // here, since a status change doesn't add or remove a task, just its
     // status for this month.
     const previous = eomStatusOverrides;
@@ -1609,7 +1618,7 @@ export default function TriageSystem({ onBack }) {
           if (d.success) {
             setEomAddTaskMode(""); setEomNewTaskTemplateId(""); setEomNewTaskName(""); setEomNewTaskNotes("");
             setEomCreatingNewTemplate(false); setEomNewTemplateName(""); setEomTemplates(null); // force template list refresh next time
-            reloadEomClientTasks(eomDetailClient);
+            reloadEomClientTasks();
           } else {
             setEomClientTasksError(d.error || "Failed to add task");
           }
@@ -1639,7 +1648,7 @@ export default function TriageSystem({ onBack }) {
         clientNotes: eomNotesDraft, active: true, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
-        if (d.success) { setEomEditingNotesFor(""); reloadEomClientTasks(eomDetailClient); }
+        if (d.success) { setEomEditingNotesFor(""); reloadEomClientTasks(); }
         else setEomClientTasksError(d.error || "Failed to save notes");
       })
       .catch(e => setEomClientTasksError(e.message));
@@ -1652,7 +1661,7 @@ export default function TriageSystem({ onBack }) {
         clientNotes: task.clientNotes, active: !task.active, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
-        if (d.success) reloadEomClientTasks(eomDetailClient);
+        if (d.success) reloadEomClientTasks();
         else setEomClientTasksError(d.error || "Failed to update task");
       })
       .catch(e => setEomClientTasksError(e.message));
@@ -1675,7 +1684,9 @@ export default function TriageSystem({ onBack }) {
 
     // Optimistic local update — reassign sortOrder to match the new order
     // immediately, rather than waiting on a round trip before rows move.
-    setEomClientTasks(prev => (prev || []).map(t => {
+    // Updates the underlying eomAllTasks (eomClientTasks is now just a
+    // derived filter over it, not settable directly).
+    setEomAllTasks(prev => (prev || []).map(t => {
       const newIdx = orderedTaskIds.indexOf(t.taskId);
       return newIdx === -1 ? t : { ...t, sortOrder: (newIdx + 1) * 10 };
     }));
@@ -6449,7 +6460,7 @@ export default function TriageSystem({ onBack }) {
             ))}
           </div>
 
-          {eomSubView === "overview" && !eomDetailClient && !eomShowTemplateManager && (() => {
+          {eomSubView === "overview" && !eomDetailClient && !eomShowTemplateManager && !eomShowExcludedManager && (() => {
             const [y, m] = eomMonthKey.split("-").map(Number);
             const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
             const shiftMonth = (delta) => {
@@ -6459,7 +6470,7 @@ export default function TriageSystem({ onBack }) {
             const overrideByKey = {};
             (eomStatusOverrides || []).forEach(s => { overrideByKey[`${s.clientName}|||${s.taskId}`] = s.status; });
             const byClient = {};
-            (eomActiveTasks || []).forEach(t => {
+            (eomAllTasks || []).filter(t => t.active).forEach(t => {
               let status;
               if (t.linkedFunction === "alert_check") {
                 // Never has a persisted override — always live-computed,
@@ -6475,11 +6486,13 @@ export default function TriageSystem({ onBack }) {
               byClient[t.clientName].total++;
               if (status === "done") byClient[t.clientName].done++;
             });
-            const clientRows = (allOutgoingsClients || []).map(c => {
-              const counts = byClient[c.clientName] || { total: 0, done: 0 };
-              const pct = counts.total > 0 ? counts.done / counts.total : null;
-              return { clientName: c.clientName, ...counts, pct };
-            }).sort((a, b) => a.clientName.localeCompare(b.clientName));
+            const clientRows = (allOutgoingsClients || [])
+              .filter(c => !(eomExcludedClients || []).includes(c.clientName))
+              .map(c => {
+                const counts = byClient[c.clientName] || { total: 0, done: 0 };
+                const pct = counts.total > 0 ? counts.done / counts.total : null;
+                return { clientName: c.clientName, ...counts, pct };
+              }).sort((a, b) => a.clientName.localeCompare(b.clientName));
 
             return (
               <div>
@@ -6515,17 +6528,51 @@ export default function TriageSystem({ onBack }) {
                   )}
                 </div>
 
-                <div style={{ marginTop: "16px" }}>
+                <div style={{ marginTop: "16px", display: "flex", gap: "10px" }}>
                   <button onClick={() => setEomShowTemplateManager(true)}
                     style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
                     Manage Templates
+                  </button>
+                  <button onClick={() => setEomShowExcludedManager(true)}
+                    style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
+                    Manage Excluded Clients
                   </button>
                 </div>
               </div>
             );
           })()}
 
-          {eomSubView === "overview" && eomShowTemplateManager && (() => {
+          {eomSubView === "overview" && eomShowExcludedManager && (() => (
+            <div>
+              <button onClick={() => setEomShowExcludedManager(false)}
+                style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
+                ‹ Back to overview
+              </button>
+              <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700" }}>Manage Excluded Clients</h3>
+              <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#666" }}>
+                Excluded clients won't appear on the EoM overview at all — for clients on AutoUpdates that don't have any monthly tasks to complete.
+              </p>
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
+                {(allOutgoingsClients || []).slice().sort((a, b) => a.clientName.localeCompare(b.clientName)).map((c, i) => {
+                  const isExcluded = (eomExcludedClients || []).includes(c.clientName);
+                  return (
+                    <div key={c.clientName} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
+                      <div style={{ fontSize: "13px", color: isExcluded ? "#999" : "#1a1a1a", fontWeight: "600" }}>{c.clientName}</div>
+                      <label style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                        <input type="checkbox" checked={isExcluded} onChange={e => handleEomToggleClientExcluded(c.clientName, e.target.checked)} />
+                        Excluded from EoM
+                      </label>
+                    </div>
+                  );
+                })}
+                {(allOutgoingsClients || []).length === 0 && (
+                  <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients found.</div>
+                )}
+              </div>
+            </div>
+          ))()}
+
+          {eomSubView === "overview" && eomShowTemplateManager && !eomShowExcludedManager && (() => {
             const usageCount = {};
             (eomManagerClientTasks || []).forEach(t => {
               if (t.templateId && t.active) usageCount[t.templateId] = (usageCount[t.templateId] || 0) + 1;
@@ -6679,7 +6726,7 @@ export default function TriageSystem({ onBack }) {
             );
           })()}
 
-          {eomSubView === "overview" && eomDetailClient && !eomShowTemplateManager && (() => {
+          {eomSubView === "overview" && eomDetailClient && !eomShowTemplateManager && !eomShowExcludedManager && (() => {
             const [y, m] = eomMonthKey.split("-").map(Number);
             const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
             const shiftMonth = (delta) => {
@@ -6757,7 +6804,7 @@ export default function TriageSystem({ onBack }) {
                       onDragLeave={() => setEomDragOverTaskId(prev => prev === t.taskId ? null : prev)}
                       onDrop={e => { e.preventDefault(); persistEomTaskOrder(eomDraggedTaskId, t.taskId); setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
                       onDragEnd={() => { setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
-                      style={{ padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
+                      style={{ padding: "8px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
                         background: eomDragOverTaskId === t.taskId ? "#f0f7ff" : "transparent",
                         opacity: eomDraggedTaskId === t.taskId ? 0.4 : 1 }}>
                       <div style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
@@ -6797,21 +6844,33 @@ export default function TriageSystem({ onBack }) {
                           )}
                         </div>
                         {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
+                        <button onClick={() => setEomExpandedNotesFor(prev => {
+                            const next = new Set(prev);
+                            if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
+                            return next;
+                          })}
+                          title={t.clientNotes ? "Show/hide note" : "Add note"}
+                          style={{ background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
+                            color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400" }}>
+                          {eomExpandedNotesFor.has(t.taskId) ? "−" : "+"}
+                        </button>
                         <button onClick={() => handleEomToggleTaskActive(t)} title="Stop tracking this task for this client"
                           style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", fontSize: "12px", padding: "3px" }}>✕</button>
                       </div>
-                      {eomEditingNotesFor === t.taskId ? (
-                        <div style={{ marginTop: "8px", display: "flex", gap: "8px" }}>
-                          <input value={eomNotesDraft} onChange={e => setEomNotesDraft(e.target.value)} placeholder="Client-specific notes..."
-                            style={{ flex: 1, padding: "5px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }} />
-                          <button onClick={() => handleEomSaveNotes(t)} style={{ padding: "5px 10px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Save</button>
-                          <button onClick={() => setEomEditingNotesFor("")} style={{ padding: "5px 10px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
-                        </div>
-                      ) : (
-                        <div onClick={() => { setEomEditingNotesFor(t.taskId); setEomNotesDraft(t.clientNotes || ""); }}
-                          style={{ marginTop: "6px", fontSize: "12px", color: t.clientNotes ? "#666" : "#bbb", cursor: "pointer" }}>
-                          {t.clientNotes || "+ add note"}
-                        </div>
+                      {(eomExpandedNotesFor.has(t.taskId) || eomEditingNotesFor === t.taskId) && (
+                        eomEditingNotesFor === t.taskId ? (
+                          <div style={{ marginTop: "8px", display: "flex", gap: "8px" }}>
+                            <input value={eomNotesDraft} onChange={e => setEomNotesDraft(e.target.value)} placeholder="Client-specific notes..."
+                              style={{ flex: 1, padding: "5px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }} />
+                            <button onClick={() => handleEomSaveNotes(t)} style={{ padding: "5px 10px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Save</button>
+                            <button onClick={() => setEomEditingNotesFor("")} style={{ padding: "5px 10px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
+                          </div>
+                        ) : (
+                          <div onClick={() => { setEomEditingNotesFor(t.taskId); setEomNotesDraft(t.clientNotes || ""); }}
+                            style={{ marginTop: "6px", fontSize: "12px", color: t.clientNotes ? "#666" : "#bbb", cursor: "pointer" }}>
+                            {t.clientNotes || "+ add note"}
+                          </div>
+                        )
                       )}
                     </div>
                   ))}

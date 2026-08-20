@@ -1804,7 +1804,7 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
   try {
     const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
     const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
-    const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus", "EomBankAccounts"].filter(t => !existingTitles.has(t));
+    const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus", "EomBankAccounts", "EomExcludedClients"].filter(t => !existingTitles.has(t));
 
     if (toCreate.length > 0) {
       await sheets.spreadsheets.batchUpdate({
@@ -1824,6 +1824,9 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
       }
       if (toCreate.includes("EomBankAccounts")) {
         headerWrites.push({ range: "EomBankAccounts!A1:C1", values: [["clientName", "accountName", "loadedAt"]] });
+      }
+      if (toCreate.includes("EomExcludedClients")) {
+        headerWrites.push({ range: "EomExcludedClients!A1:A1", values: [["clientName"]] });
       }
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId, requestBody: { valueInputOption: "RAW", data: headerWrites },
@@ -14004,6 +14007,57 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(200).json({ success: true, templates });
       } catch (err) {
         console.error("❌ eom_get_templates error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_get_excluded_clients") {
+      // Clients present on AutoUpdates but not managed via EoM at all — a
+      // client here is simply omitted from the Overview's list entirely,
+      // rather than showing up with a permanent "no tasks assigned"
+      // (conversation 19 Aug 2026).
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:A1000" });
+        const excludedClients = (resp.data.values || []).map(r => r[0]).filter(Boolean);
+        return res.status(200).json({ success: true, excludedClients });
+      } catch (err) {
+        console.error("❌ eom_get_excluded_clients error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_toggle_client_excluded") {
+      // Adds or removes a client from EomExcludedClients. No duplicate
+      // check needed on add — the frontend list is deduplicated by nature
+      // (a client is either in the array or not), and an accidental
+      // duplicate row is harmless since removal filters out every
+      // matching row for that client name, not just the first.
+      const { clientName: exClientName, excluded } = req.body;
+      if (!exClientName) return res.status(400).json({ success: false, error: "Missing clientName" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:A1000" });
+        const rows = resp.data.values || [];
+        const alreadyExcluded = rows.some(r => r[0] === exClientName);
+
+        if (excluded && !alreadyExcluded) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A:A", valueInputOption: "RAW",
+            requestBody: { values: [[exClientName]] },
+          });
+        } else if (!excluded && alreadyExcluded) {
+          const kept = rows.filter(r => r[0] !== exClientName);
+          await sheets.spreadsheets.values.clear({ spreadsheetId: automationCommanderSheetId, range: `EomExcludedClients!A2:A${rows.length + 1}` });
+          if (kept.length > 0) {
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2", valueInputOption: "RAW", requestBody: { values: kept },
+            });
+          }
+        }
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ eom_toggle_client_excluded error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

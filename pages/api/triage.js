@@ -657,19 +657,6 @@ async function ensureFreshData(sheets, spreadsheetId, sheetName) {
   await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
-async function readAIKnowledgeBase(sheets, automationCommanderSheetId) {
-  try {
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AIKnowledgeBase!A2:E1000",
-    });
-    return response.data.values || [];
-  } catch (err) {
-    console.log("⚠️ Could not read AIKnowledgeBase");
-    return [];
-  }
-}
-
 async function getToleranceValues(sheets, masterSheetId) {
   try {
     const response = await sheets.spreadsheets.values.batchGet({
@@ -7326,39 +7313,6 @@ export default async function handler(req, res) {
         }
         // ────────────────────────────────────────────────────────────────────
 
-        // Shared structure explanation used across all three prompt types
-        const SHEET_STRUCTURE_BLOCK = `
-CRITICAL: CONFIRMED TAB STRUCTURE — READ THIS CAREFULLY BEFORE ANALYSING
-
-Each job consists of ONE PARENT ROW plus ZERO OR MORE CHILD ROWS:
-
-PARENT ROW — identified by having Revenue, DirectCostBudget, Start date, End date values.
-CHILD ROW — has the same Client name and Job name as its parent, but Revenue/Start date/End date are BLANK.
-Child rows inherit Client name and Job name from their parent (this is how you identify them).
-The DirectCostBudget and Revenue for a job ALWAYS come from the parent row — child rows never have their own budget.
-
-Each row (parent or child) has 3 invoice slots (Inv1-3) and 3 direct cost expense slots (ExpSlot1-3).
-
-PROJECT JOBS:
-  Parent row:  Inv1, Inv2, Inv3  /  ExpSlot1, ExpSlot2, ExpSlot3  (invoices/expenses 1-3)
-  Child row 1: Inv1, Inv2, Inv3  /  ExpSlot1, ExpSlot2, ExpSlot3  (invoices/expenses 4-6)
-  Child row 2: Inv1, Inv2, Inv3  /  ExpSlot1, ExpSlot2, ExpSlot3  (invoices/expenses 7-9)
-
-RETAINER JOBS — TWO MODES:
-  Mode A (1 invoice total): Parent row has Inv1 only. No child rows needed.
-  Mode B (2+ invoices):     Parent row has NO invoices (all invoice slots empty).
-                             Each child row has exactly 1 invoice in Inv1 slot only.
-
-IDENTIFYING PARENT vs CHILD:
-  Parent: has Revenue value AND/OR Start date AND/OR End date
-  Child:  same Client + same Job name as the parent row directly above it, but Revenue/Start/End are ALL blank
-
-BUDGET AND REVENUE:
-  Revenue and DirectCostBudget live on the parent row only.
-  To calculate total invoiced or total expenses: sum ALL relevant slot amounts across the parent AND all its child rows.
-  Allocated expenses = has a valid App ID (not blank, not MANUAL-ENTRY).
-  Placeholder expenses = blank App ID or MANUAL-ENTRY — do NOT subtract these from remaining budget.`;
-
         // Handle expense alerts (DirComp)
         if (alert.type === "expense" || alert.sheetName === "DirComp") {
 
@@ -7735,28 +7689,7 @@ BUDGET AND REVENUE:
 
           // Read tolerance values for expenses
           const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
-          
-          // Read AIKnowledgeBase for expense rules
-          console.log(`  📚 Reading AIKnowledgeBase...`);
-          let knowledgeBase = [];
-          if (req.body.automationCommanderSheetId) {
-            console.log(`  Using automationCommanderSheetId from request body`);
-            knowledgeBase = await readAIKnowledgeBase(sheets, req.body.automationCommanderSheetId);
-          } else {
-            console.log(`  ⚠️ No automationCommanderSheetId in request body, skipping AIKnowledgeBase`);
-          }
-          
-          let kbRules = "";
-          if (knowledgeBase && knowledgeBase.length > 0) {
-            kbRules = knowledgeBase
-              .filter(row => row[0] === "EXPENSE_MATCHING")
-              .map(row => `- **${row[2]}** (${row[1]}): ${row[3]}`)
-              .join("\n");
-            console.log(`  ✓ Found ${knowledgeBase.filter(row => row[0] === "EXPENSE_MATCHING").length} EXPENSE_MATCHING rules`);
-          } else {
-            console.log(`  ⚠️ No AIKnowledgeBase rules found`);
-          }
-          
+
           // Extract expense details
           const expenseAmount = parseFloat(alert.summary?.amount) || 0;
           const expenseRef = alert.summary?.reference || "(unknown)";
@@ -8921,11 +8854,6 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const slot2 = { ref: String(matchedJob[49]||""), amt: String(matchedJob[48]||""), sent: String(matchedJob[50]||""), status: String(matchedJob[52]||"") };
             const slot3 = { ref: String(matchedJob[56]||""), amt: String(matchedJob[55]||""), sent: String(matchedJob[57]||""), status: String(matchedJob[59]||"") };
 
-            const jobSummary = `Client: ${jobClient} | Job: ${jobName}${jobCode ? ` (${jobCode})` : ""} | Revenue: ${jobRevenue} | VAT: ${jobVAT} | Type: ${jobType} | Start: ${jobStart} | End: ${jobEnd}
-Inv1: ${slot1.ref || "(empty)"} £${slot1.amt} ${slot1.sent} ${slot1.status}
-Inv2: ${slot2.ref || "(empty)"} £${slot2.amt} ${slot2.sent} ${slot2.status}
-Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
-
             console.log(`  Found invoice in Confirmed at slot ${matchedSlot}: ${jobClient} — ${jobName}, VAT=${jobVAT}, type=${jobType}`);
 
             // Step 2: VAT scenario detection
@@ -9046,47 +8974,6 @@ Inv3: ${slot3.ref || "(empty)"} £${slot3.amt} ${slot3.sent} ${slot3.status}`;
               }];
               console.log(`  ✅ Rounding difference (£${amtDiff.toFixed(2)}) — writing ${correctAmount.toFixed(2)} to ${cellRef}`);
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
-            }
-
-            // Build retainer revenue context for Claude if applicable
-            let retainerContext = "";
-            if (isRetainer) {
-              const monthlyRevNum = parseFloat(String(jobRevenue || "0").replace(/[£$€,]/g, "")) || 0;
-              // Calculate total months from start to end date
-              const parseJobDate = (d) => {
-                if (!d) return null;
-                const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-                const parts = d.split(/[-\/]/);
-                if (parts.length === 3) {
-                  const mNum = months[parts[1]?.toLowerCase()?.substring(0,3)];
-                  if (mNum !== undefined) {
-                    const yr = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
-                    return new Date(yr, mNum, parseInt(parts[0]));
-                  }
-                }
-                return null;
-              };
-              const startD = parseJobDate(jobStart);
-              const endD   = parseJobDate(jobEnd);
-              let totalMonths = null;
-              let totalRevenue = null;
-              if (startD && endD) {
-                totalMonths = (endD.getFullYear() - startD.getFullYear()) * 12 + (endD.getMonth() - startD.getMonth()) + 1;
-                // Child rows cover past periods + up to 18 months into the future from today
-                const today = new Date();
-                const futureEndD = new Date(today.getFullYear(), today.getMonth() + 18, 1);
-                const effectiveEnd = endD < futureEndD ? endD : futureEndD;
-                const effectiveMonths = (effectiveEnd.getFullYear() - startD.getFullYear()) * 12 + (effectiveEnd.getMonth() - startD.getMonth()) + 1;
-                totalRevenue = monthlyRevNum * Math.max(effectiveMonths, 1);
-              }
-              retainerContext = `
-RETAINER JOB CONTEXT (IMPORTANT):
-- The revenue figure (${jobRevenue}) is the MONTHLY amount, NOT the total contract value
-- Start: ${jobStart}, End: ${jobEnd}${totalMonths ? `, Duration: ${totalMonths} months` : ""}
-- Child rows cover past periods + up to 18 months into the future from today (no fixed maximum)
-${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = £${monthlyRevNum.toFixed(2)} × months = £${totalRevenue.toFixed(2)}` : ""}
-- When comparing "total invoiced" to revenue, use the EFFECTIVE CONTRACT REVENUE above, not the monthly figure
-- Do NOT include placeholder slots (blank reference or MANUAL-INV) in the "total invoiced" calculation`;
             }
 
             // Send to Claude with job details and retainer context

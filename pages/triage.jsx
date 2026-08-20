@@ -1646,10 +1646,22 @@ export default function TriageSystem({ onBack }) {
       .then(r => r.json())
       .then(d => {
         if (!d.success) { setEomClientTasksError(d.error || "Failed to mark month actual"); return; }
-        fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, clientName: eomDetailClient, automationCommanderSheetId }) })
-          .then(r => r.json())
-          .then(d2 => { if (d2.success) { setEomActiveTasks(d2.activeTasks || []); setEomStatusOverrides(d2.statusOverrides || []); } });
+        // Optimistic update instead of a re-fetch (fixed 20 Aug 2026, found
+        // during a full-codebase sweep) — this previously called the
+        // now-removed setEomActiveTasks (a ReferenceError at runtime,
+        // silently swallowed with no .catch on this inner fetch, so the
+        // task's pill just never updated to "done" until an unrelated
+        // reload happened to fix it). A same-shape re-fetch wouldn't have
+        // been the right fix either: eomAllTasks is the single, all-clients
+        // source of truth now, and this call is scoped to one client —
+        // replacing it with a partial response would have wiped out every
+        // other client's task data. Mark Actual always completes the task
+        // (never toggles), so this mirrors handleEomStatusChange's own
+        // optimistic-update approach exactly.
+        setEomStatusOverrides(prev => {
+          const withoutThis = (prev || []).filter(s => !(s.clientName === eomDetailClient && s.taskId === taskId));
+          return [...withoutThis, { clientName: eomDetailClient, taskId, status: "done" }];
+        });
       })
       .catch(e => setEomClientTasksError(e.message))
       .finally(() => setEomMarkActualRunning(""));
@@ -3586,6 +3598,12 @@ export default function TriageSystem({ onBack }) {
 
   const markPipelineCopied = async (alert) => {
     const md = alert.metadata || {};
+    // clientInfo was referenced here without ever being defined anywhere in
+    // scope — a guaranteed ReferenceError the moment this function actually
+    // ran. Found via a full-codebase sweep (20 Aug 2026); derived the same
+    // way every other call site in this file resolves a client's sheet IDs
+    // from an alert's clientName, rather than inventing a new approach.
+    const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
     if (!md.pipelineRow || !clientInfo?.clientSheetId) {
       console.error("Cannot mark pipeline copied: missing pipelineRow or clientSheetId");
       return;
@@ -4362,12 +4380,6 @@ export default function TriageSystem({ onBack }) {
       marginTop: "8px",
       fontStyle: "italic",
     },
-    decisionButtons: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr 1fr",
-      gap: "12px",
-      marginTop: "20px",
-    },
     decisionButton: {
       padding: "12px 16px",
       borderRadius: "6px",
@@ -4810,7 +4822,14 @@ export default function TriageSystem({ onBack }) {
     };
 
     const EditModal = () => {
-      if (!outgoingsEditCell) return null;
+      // Guard removed 20 Aug 2026 (full-codebase sweep) — outgoingsEditCell
+      // is always truthy whenever this component runs at all, since the only
+      // render site is {outgoingsEditCell && <EditModal />}. The old guard
+      // was unreachable dead code, but its real risk was structural: calling
+      // hooks (useState/useRef/useEffect below) after a conditional early
+      // return violates React's rules of hooks — harmless only by
+      // coincidence of how this happens to be called today, and would
+      // become a live crash the moment anything changed that assumption.
       const { contractor, colLetter, monthLabel } = outgoingsEditCell;
       const [blocks, setBlocks] = React.useState(
         (contractor.cells[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))
@@ -5008,7 +5027,8 @@ export default function TriageSystem({ onBack }) {
     };
 
     const DirectCostsEditModal = () => {
-      if (!directCostsEditSlot) return null;
+      // Guard removed 20 Aug 2026 — same fix and reasoning as EditModal
+      // above: the only render site is {directCostsEditSlot && <DirectCostsEditModal />}.
       const { rowNum, slotNum, slot } = directCostsEditSlot;
       const stripCurrency = v => String(v ?? "").replace(/^[£$€]/, "").trim();
       const [description, setDescription] = React.useState(slot.description || "");
@@ -5164,7 +5184,8 @@ export default function TriageSystem({ onBack }) {
     };
 
     const EstimateModal = () => {
-      if (!outgoingsEstimate) return null;
+      // Guard removed 20 Aug 2026 — same fix and reasoning as EditModal
+      // above: the only render site is {outgoingsEstimate && <EstimateModal />}.
       const { contractor } = outgoingsEstimate;
       const [amount, setAmount] = React.useState("");
       const [payDate, setPayDate] = React.useState("");
@@ -5235,7 +5256,8 @@ export default function TriageSystem({ onBack }) {
     };
 
     const NewVendorModal = () => {
-      if (!outgoingsNewVendor) return null;
+      // Guard removed 20 Aug 2026 — same fix and reasoning as EditModal
+      // above: the only render site is {outgoingsNewVendor && <NewVendorModal />}.
       const { exp } = outgoingsNewVendor;
       const [vendorName, setVendorName] = React.useState(exp.description || exp.accountName || "");
       const [vatFlag, setVatFlag] = React.useState("Yes");
@@ -5893,7 +5915,8 @@ export default function TriageSystem({ onBack }) {
 
   // ── INVOICES SCREEN ─────────────────────────────────────────────────────────
   const InvoicesEditModal = () => {
-    if (!invoicesEditSlot) return null;
+    // Guard removed 20 Aug 2026 — same fix and reasoning as EditModal
+    // above: the only render site is {invoicesEditSlot && <InvoicesEditModal />}.
     const { rowNum, slotNum, slot } = invoicesEditSlot;
     const stripCurrency = v => String(v ?? "").replace(/^[£$€]/, "").trim();
     const [invoiceNo, setInvoiceNo] = React.useState(slot.ref || "");
@@ -6034,7 +6057,8 @@ export default function TriageSystem({ onBack }) {
   };
 
   const InvoicesNewJobModal = () => {
-    if (!invoicesNewJob) return null;
+    // Guard removed 20 Aug 2026 — same fix and reasoning as EditModal
+    // above: the only render site is {invoicesNewJob && <InvoicesNewJobModal />}.
     const { inv } = invoicesNewJob;
     const [jobName, setJobName] = React.useState(inv.job || "");
     const [projectCode, setProjectCode] = React.useState("");
@@ -8854,33 +8878,49 @@ export default function TriageSystem({ onBack }) {
                       </div>
                       <div style={{ display: "flex", gap: "8px" }}>
                         {(() => {
+                          // clientInfo previously computed here but only used
+                          // by the "Open Sheets" button below — the
+                          // "Assign Outgoings" button right after it also
+                          // referenced clientInfo, assuming it was still in
+                          // scope from this IIFE. It wasn't: IIFE scope
+                          // doesn't leak to sibling JSX, so that second
+                          // usage was a guaranteed ReferenceError during
+                          // React's render for any expenseDashboardDiscr
+                          // alert — not just an async error silently
+                          // swallowed, but a render-time crash. Found via a
+                          // full-codebase sweep (20 Aug 2026) and fixed by
+                          // combining both buttons into one IIFE so they
+                          // share the same clientInfo, computed once.
                           const clientInfo = clientsWithFlags.find(c => c.clientName === proactiveSelectedClient)
                             || allClientsMap[proactiveSelectedClient];
-                          if (!clientInfo?.clientSheetId && !clientInfo?.masterSheetId) return null;
                           return (
-                            <button className="triage-btn"
-                              onClick={() => {
-                                if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
-                                if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
-                              }}
-                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
-                            >
-                              📊 Open Sheets
-                            </button>
+                            <>
+                              {(clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
+                                <button className="triage-btn"
+                                  onClick={() => {
+                                    if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
+                                    if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
+                                  }}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
+                                >
+                                  📊 Open Sheets
+                                </button>
+                              )}
+                              {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
+                                <button
+                                  className="triage-btn"
+                                  onClick={() => {
+                                    setActiveNav("outgoings");
+                                    if (clientInfo) loadOutgoings(clientInfo);
+                                  }}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}
+                                >
+                                  📤 Assign Outgoings
+                                </button>
+                              )}
+                            </>
                           );
                         })()}
-                        {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                          <button
-                            className="triage-btn"
-                            onClick={() => {
-                              setActiveNav("outgoings");
-                              if (clientInfo) loadOutgoings(clientInfo);
-                            }}
-                            style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}
-                          >
-                            📤 Assign Outgoings
-                          </button>
-                        )}
                         <button
                           className="triage-btn"
                           onClick={() => openCreateTaskModal(alert, true)}

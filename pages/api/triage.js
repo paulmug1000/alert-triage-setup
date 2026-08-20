@@ -1238,6 +1238,62 @@ function monthsWithinTolerance_(dateA, dateB, tolMonths) {
   return Math.abs(diffMonths) <= tolMonths;
 }
 
+/** Words to strip when fuzzy-comparing client/company names — legal suffixes and generic terms that don't help distinguish one company from another. */
+const CLIENT_NAME_NOISE_WORDS_ = new Set([
+  "ltd","limited","plc","inc","llc","llp","the","and","&",
+  "group","co","corp","corporation","holdings","international",
+  "uk","us","solutions","services","consulting","consultancy",
+]);
+function normClientWords_(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/['\-.,()]/g, " ")   // punctuation → space
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(w => w.length > 1 && !CLIENT_NAME_NOISE_WORDS_.has(w));
+}
+// Check if words in name A form the abbreviation of name B (or vice versa)
+function isAbbreviationOf_(abbrev, full) {
+  const abbrevClean = abbrev.replace(/\./g, "").toLowerCase();
+  const fullWords = normClientWords_(full);
+  if (fullWords.length < 2 || abbrevClean.length < 2) return false;
+  // Initials of full words should spell the abbreviation
+  const initials = fullWords.map(w => w[0]).join("");
+  return initials === abbrevClean || initials.startsWith(abbrevClean);
+}
+/**
+ * Fuzzy client/company name match — word overlap, substring containment, or
+ * abbreviation in either direction. Extracted to module level 20 Aug 2026:
+ * originally a local function scoped inside the invoice isMissingInvoice
+ * pre-analysis block, but Tier 1/2 option-generation (which the date-match
+ * and partial-client-match ranking fixes needed this for) is a SIBLING
+ * scope outside that block, not a child of it — the local version was never
+ * actually reachable from there, confirmed via Babel's own scope resolution
+ * (not just an ESLint guess) after a full-codebase sweep turned it up. That
+ * meant every accept-option call touching Tier 2 ranking would have thrown
+ * a ReferenceError at runtime despite passing a plain syntax check, since
+ * no-undef-style errors are a runtime-only failure JS syntax checking can't
+ * catch. Moving it here — not just widening the local scope — also lets
+ * expense matching's client comparisons reuse the exact same logic if
+ * needed later, rather than a second, separate definition.
+ */
+function fuzzyClientMatch_(clientStrA, clientStrB) {
+  const wordsA = normClientWords_(clientStrA);
+  const wordsB = normClientWords_(clientStrB);
+  if (wordsA.length === 0 || wordsB.length === 0) return false;
+  // Any single meaningful word overlap
+  if (wordsA.some(w => wordsB.includes(w))) return true;
+  // Substring containment after noise-stripping (catches "Peoples Health" vs "Peoples Health Trust")
+  const joinedA = wordsA.join(" ");
+  const joinedB = wordsB.join(" ");
+  if (joinedB.includes(joinedA) || joinedA.includes(joinedB)) return true;
+  // Abbreviation: one client string is an abbreviation of the other
+  if (isAbbreviationOf_(joinedA.replace(/\s/g,""), clientStrB)) return true;
+  if (isAbbreviationOf_(joinedB.replace(/\s/g,""), clientStrA))  return true;
+  return false;
+}
+
 function isDateMatchJs_(sheetHeader, aiDate) {
   if (!sheetHeader || !aiDate) return false;
   const s1 = String(sheetHeader).toLowerCase();
@@ -9360,6 +9416,25 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
         let invoiceAmtForMatch = invoiceAmount;
         const datePaid = alert.summary?.datePaid || '';
 
+        // Date tolerance: ±invoiceMonthsTolerance months from invoice sent date.
+        // Same reasoning as invoiceAmtForMatch above — moved here 20 Aug 2026 from
+        // inside the isMissingInvoice block below, which Tier 1/2 (further down,
+        // a SIBLING scope, not a child of that block) also needs this for. The
+        // original placement meant every accept-option call touching the
+        // "name match" Tier 2 path threw a ReferenceError at runtime (confirmed via
+        // Babel's own scope resolution during a full-codebase sweep, not just an
+        // ESLint guess) — a plain syntax check can't catch an undefined-reference
+        // error since it's runtime-only, so this had been silently broken since it
+        // was first added.
+        const invMonthsTol = Number(tolerances.invoiceMonthsTolerance) || 2;
+        const invSentDateParsed = parseSheetOrJsDate_(sentDate);
+        const dateWithinTolerance = (slotDateStr) => {
+          if (!invSentDateParsed || !slotDateStr) return null; // null = unknown (no date to compare)
+          const slotDate = parseSheetOrJsDate_(slotDateStr);
+          if (!slotDate) return null;
+          return monthsWithinTolerance_(invSentDateParsed, slotDate, invMonthsTol);
+        };
+
         // Days to pay: if Paid, calculate from sentDate → datePaid; otherwise use DataChgAlert!B52
         let daysToPayValue = tolerances.defaultDaysToPay;
         if (invoiceStatus.toLowerCase() === 'paid' && sentDate && datePaid) {
@@ -9414,51 +9489,9 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
 
         if (isMissingInvoice) {
 
-          // ── Noise-word stripping & normalisation ──────────────────────────
-          const NOISE_WORDS = new Set([
-            "ltd","limited","plc","inc","llc","llp","the","and","&",
-            "group","co","corp","corporation","holdings","international",
-            "uk","us","solutions","services","consulting","consultancy",
-          ]);
-          const normClientWords = (s) => {
-            return String(s || "")
-              .toLowerCase()
-              .replace(/['\-.,()]/g, " ")   // punctuation → space
-              .replace(/\s+/g, " ")
-              .trim()
-              .split(" ")
-              .filter(w => w.length > 1 && !NOISE_WORDS.has(w));
-          };
-
-          // Check if words in name A form the abbreviation of name B (or vice versa)
-          const isAbbreviationOf = (abbrev, full) => {
-            const abbrevClean = abbrev.replace(/\./g, "").toLowerCase();
-            const fullWords = normClientWords(full);
-            if (fullWords.length < 2 || abbrevClean.length < 2) return false;
-            // Initials of full words should spell the abbreviation
-            const initials = fullWords.map(w => w[0]).join("");
-            return initials === abbrevClean || initials.startsWith(abbrevClean);
-          };
-
-          const fuzzyClientMatch = (invoiceClientStr, confirmedClientStr) => {
-            const invWords  = normClientWords(invoiceClientStr);
-            const confWords = normClientWords(confirmedClientStr);
-            if (invWords.length === 0 || confWords.length === 0) return false;
-            // Any single meaningful word overlap
-            if (invWords.some(w => confWords.includes(w))) return true;
-            // Substring containment after noise-stripping (catches "Peoples Health" vs "Peoples Health Trust")
-            const invJoined  = invWords.join(" ");
-            const confJoined = confWords.join(" ");
-            if (confJoined.includes(invJoined) || invJoined.includes(confJoined)) return true;
-            // Abbreviation: invoice client is abbreviation of confirmed client or vice versa
-            if (isAbbreviationOf(invJoined.replace(/\s/g,""), confirmedClientStr)) return true;
-            if (isAbbreviationOf(confJoined.replace(/\s/g,""), invoiceClientStr))  return true;
-            return false;
-          };
-
           const alertClientStr = alert.summary?.client || invoiceClient;
           clientFound = alertClientStr && activeData.some(row =>
-            fuzzyClientMatch(alertClientStr, String(row[0] || ""))
+            fuzzyClientMatch_(alertClientStr, String(row[0] || ""))
           );
           console.log(`  Fuzzy client match for "${alertClientStr}": ${clientFound}`);
 
@@ -9487,16 +9520,6 @@ ${totalRevenue ? `- EFFECTIVE CONTRACT REVENUE (to date + 18 months forward) = �
             }
             // Domestic: 5p tolerance (compare in pennies to avoid float errors)
             return Math.abs(Math.round(slotAmt * 100) - Math.round(invoiceAmtForMatch * 100)) <= 5;
-          };
-
-          // Date tolerance: ±invoiceMonthsTolerance months from invoice sent date
-          const invMonthsTol = Number(tolerances.invoiceMonthsTolerance) || 2;
-          const invSentDateParsed = parseSheetOrJsDate_(sentDate);
-          const dateWithinTolerance = (slotDateStr) => {
-            if (!invSentDateParsed || !slotDateStr) return null; // null = unknown (no date to compare)
-            const slotDate = parseSheetOrJsDate_(slotDateStr);
-            if (!slotDate) return null;
-            return monthsWithinTolerance_(invSentDateParsed, slotDate, invMonthsTol);
           };
 
           // Sweep all non-real slots across all active Confirmed rows
@@ -10033,7 +10056,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             _rankBudgetFits: budgetFits,
             _rankExactClient: isExactClient,
             _rankDateMatch: best.dateMatch === true,
-            _rankPartialClient: fuzzyClientMatch(invClient, best.client),
+            _rankPartialClient: fuzzyClientMatch_(invClient, best.client),
           });
         }
 
@@ -10162,7 +10185,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 _rankBudgetFits: bBudgetFits,
                 _rankExactClient: bIsExactClient,
                 _rankDateMatch: bDateMatch === true,
-                _rankPartialClient: fuzzyClientMatch(invClient, rc),
+                _rankPartialClient: fuzzyClientMatch_(invClient, rc),
               });
               if (tier2Options.length >= 5) break; // cap at 5 options total
             }
@@ -10188,14 +10211,16 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           if (a._rankExactClient !== b._rankExactClient) return a._rankExactClient ? -1 : 1;
           // 3. Partial client name match (word overlap, e.g. "Oxford" in
           // both) comes next — added 20 Aug 2026, prompted by Paul asking
-          // whether this was considered at all (it wasn't). Reuses the same
-          // fuzzyClientMatch already used elsewhere in this block to decide
-          // clientFound, rather than a second, separate definition. A
-          // completely unrelated client is a stronger disqualifier than a
-          // date mismatch, so this ranks above date-match below — mirrors
-          // the equivalent fix just made to the expense-matching side's
-          // clientOverlap, which was being computed but never actually used
-          // in its own ranking either.
+          // whether this was considered at all (it wasn't). Uses the shared
+          // module-level fuzzyClientMatch_ (also used to decide
+          // clientFound above) rather than a second, separate definition —
+          // originally a local reuse here, but that turned out to be
+          // unreachable from this scope; see fuzzyClientMatch_'s own
+          // comment. A completely unrelated client is a stronger
+          // disqualifier than a date mismatch, so this ranks above
+          // date-match below — mirrors the equivalent fix just made to the
+          // expense-matching side's clientOverlap, which was being computed
+          // but never actually used in its own ranking either.
           if (a._rankPartialClient !== b._rankPartialClient) return a._rankPartialClient ? -1 : 1;
           // 4. Invoice sent date within tolerance of the slot's expected
           // date comes first — added 20 Aug 2026, confirmed via a live

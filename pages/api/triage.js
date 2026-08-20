@@ -13171,19 +13171,30 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           return metadata;
         };
 
-        // Auto-dismiss active alerts of the same alertType(s) that are NOT in the incoming list.
+        // Auto-dismiss alerts of the same alertType(s) that are NOT in the incoming list.
         // This handles cases where a previously-valid alert is no longer triggered (e.g. invoice
         // was sent, retainer was fully invoiced, etc.) — without this, stale alerts persist forever.
+        //
+        // Considers both "active" AND "task" status rows (fixed 19 Aug 2026 — confirmed via a
+        // live example, Thrive Recruitment Marketing's uninvoiced_revenue alert). Converting an
+        // alert into a task moves its status to "task" (see create_task_from_alert below), which
+        // this check previously excluded entirely via `status !== "active"` — meaning ANY alert
+        // that had ever been turned into a task could never be auto-dismissed again, even once
+        // its underlying condition had genuinely cleared, silently defeating the auto-resolve-
+        // linked-task logic a few dozen lines down for every task-linked alert, unconditionally.
+        // "acknowledged" rows are still deliberately excluded — that's an explicit user dismissal,
+        // not something the system should override. "auto_dismissed"/"resolved" rows are already
+        // terminal and don't need reconsidering here.
         const incomingAlertTypes = new Set(incomingAlerts.map(a => a.alertType));
         const incomingKeys = new Set(incomingAlerts.map(a => a.alertKey));
         const incomingSignatures = new Set(incomingAlerts.map(buildSigForIncoming));
         const autoDismissedKeys = [];
         for (const row of existing) {
-          if (row.status !== "active") continue;
+          if (row.status !== "active" && row.status !== "task") continue;
           if (!incomingAlertTypes.has(row.alertType)) continue; // different type — don't touch
           const sig = buildSig(row);
           if (!incomingKeys.has(row.alertKey) && !incomingSignatures.has(sig)) {
-            // This alert was active but not in the incoming run — auto-dismiss
+            // This alert was active/task but not in the incoming run — auto-dismiss
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["auto_dismissed"]] });
             writes.push({ range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] });
             dismissed++;

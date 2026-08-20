@@ -1430,21 +1430,25 @@ export default function TriageSystem({ onBack }) {
   }, [eomBankAccountsByClient, eomCashPendingClient]);
 
   // Triggers a triage load (via the existing startTriage — cheap precomputed
-  // cache first, full scan only if that's unavailable) when the client
-  // detail screen has an "alert_check"-linked task but clientsWithFlags
-  // hasn't been loaded yet this session — e.g. going straight to EoM
-  // without visiting home first. Only pays this cost when actually needed,
-  // not on every EoM visit. sessionId (empty until a load has completed,
-  // successfully or not) is the readiness signal, not clientsWithFlags —
-  // that array is legitimately empty both before any load AND after a
-  // load that found zero clients with active flags, so it can't
-  // distinguish those two cases on its own.
+  // cache first, full scan only if that's unavailable) when either the
+  // Overview screen's totals or the client detail screen has an
+  // "alert_check"-linked task but clientsWithFlags hasn't been loaded yet
+  // this session — e.g. going straight to EoM without visiting home first.
+  // Checks both eomActiveTasks (Overview, all clients) and eomClientTasks
+  // (detail screen, one client) since either can be viewed independently
+  // of the other ever having loaded. Only pays this cost when actually
+  // needed, not on every EoM visit. sessionId (empty until a load has
+  // completed, successfully or not) is the readiness signal, not
+  // clientsWithFlags — that array is legitimately empty both before any
+  // load AND after a load that found zero clients with active flags, so
+  // it can't distinguish those two cases on its own.
   useEffect(() => {
     if (sessionId) { setEomAlertDataReady(true); return; }
-    const hasAlertCheckTask = (eomClientTasks || []).some(t => t.active && t.linkedFunction === "alert_check");
+    const hasAlertCheckTask = (eomClientTasks || []).some(t => t.active && t.linkedFunction === "alert_check")
+      || (eomActiveTasks || []).some(t => t.linkedFunction === "alert_check");
     if (!hasAlertCheckTask || isLoading) return;
     startTriage().finally(() => setEomAlertDataReady(true));
-  }, [eomClientTasks, sessionId, isLoading]);
+  }, [eomClientTasks, eomActiveTasks, sessionId, isLoading]);
 
   const handleLoadBankAccounts = () => {
     setEomBankAccountsLoading(true);
@@ -2866,6 +2870,36 @@ export default function TriageSystem({ onBack }) {
       return total + actionable + infoFlags;
     }, 0);
   }, [clientsWithFlags, assignedByClient]);
+
+  // EoM "alert_check" live-status computation — shared by both the Overview
+  // screen's totals and the client detail screen's per-task pill, so they
+  // can never disagree about what "done" means for these tasks. Mirrors
+  // liveAlertCount's exact category grouping and assigned-expense
+  // suppression above (invoice/expense/crm flag groups, only the two
+  // "Dashboard"/"App" discrepancy expense flags get the assigned
+  // subtraction) rather than a second, separately-maintained definition of
+  // the same thing.
+  const ALERT_CATEGORY_FLAGS = {
+    invoice: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges"],
+    expense: ["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"],
+    crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr", "crmPipeSkippedBlank", "crmConfSkippedBlank"],
+  };
+  const EXPENSE_SUPPRESSIBLE = new Set(["expenseDashboardDiscr", "expenseAppDiscr"]);
+  const computeAlertCheckCount = (clientName, categoriesStr) => {
+    const client = (clientsWithFlags || []).find(c => c.clientName === clientName);
+    if (!client) return 0; // not in clientsWithFlags at all means zero active flags for this client
+    const assignedCount = assignedByClient[clientName]?.size || 0;
+    const categories = (categoriesStr || "").split(",").filter(Boolean);
+    let total = 0;
+    categories.forEach(cat => {
+      (ALERT_CATEGORY_FLAGS[cat] || []).forEach(flagKey => {
+        let count = client.alertCounts?.[flagKey] || 0;
+        if (EXPENSE_SUPPRESSIBLE.has(flagKey)) count = Math.max(0, count - assignedCount);
+        total += count;
+      });
+    });
+    return total;
+  };
 
   // ── Bulk action helpers ──────────────────────────────────────────────────
 
@@ -6410,7 +6444,16 @@ export default function TriageSystem({ onBack }) {
             (eomStatusOverrides || []).forEach(s => { overrideByKey[`${s.clientName}|||${s.taskId}`] = s.status; });
             const byClient = {};
             (eomActiveTasks || []).forEach(t => {
-              const status = overrideByKey[`${t.clientName}|||${t.taskId}`] || "pending";
+              let status;
+              if (t.linkedFunction === "alert_check") {
+                // Never has a persisted override — always live-computed,
+                // same logic and same shared function the detail screen's
+                // pill uses, so the two can never disagree (see
+                // conversation 19 Aug 2026).
+                status = eomAlertDataReady ? (computeAlertCheckCount(t.clientName, t.alertCategories) === 0 ? "done" : "pending") : "pending";
+              } else {
+                status = overrideByKey[`${t.clientName}|||${t.taskId}`] || "pending";
+              }
               if (status === "not_applicable") return; // excluded from the count entirely, not just "not done"
               if (!byClient[t.clientName]) byClient[t.clientName] = { total: 0, done: 0 };
               byClient[t.clientName].total++;
@@ -6652,36 +6695,14 @@ export default function TriageSystem({ onBack }) {
             // persisted, always reflects current reality (see conversation
             // 19 Aug 2026: Paul explicitly wanted this to auto-revert to
             // Pending if a new discrepancy appears, not stay "done" forever
-            // like a one-time action). Reuses the exact same category
-            // grouping and assigned-expense suppression as liveAlertCount
-            // (the home screen's own badge count), rather than a separate,
-            // possibly-inconsistent definition of the same thing.
-            const ALERT_CATEGORY_FLAGS = {
-              invoice: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges"],
-              expense: ["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"],
-              crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr", "crmPipeSkippedBlank", "crmConfSkippedBlank"],
-            };
-            const EXPENSE_SUPPRESSIBLE = new Set(["expenseDashboardDiscr", "expenseAppDiscr"]);
-            const computeAlertCheckCount = (categoriesStr) => {
-              const client = (clientsWithFlags || []).find(c => c.clientName === eomDetailClient);
-              if (!client) return 0; // not in clientsWithFlags at all means zero active flags for this client
-              const assignedCount = assignedByClient[eomDetailClient]?.size || 0;
-              const categories = (categoriesStr || "").split(",").filter(Boolean);
-              let total = 0;
-              categories.forEach(cat => {
-                (ALERT_CATEGORY_FLAGS[cat] || []).forEach(flagKey => {
-                  let count = client.alertCounts?.[flagKey] || 0;
-                  if (EXPENSE_SUPPRESSIBLE.has(flagKey)) count = Math.max(0, count - assignedCount);
-                  total += count;
-                });
-              });
-              return total;
-            };
+            // like a one-time action). computeAlertCheckCount itself lives
+            // at component level now (shared with the Overview screen's
+            // totals) — this just renders it for one task's pill.
             const alertCheckPill = (categoriesStr) => {
               if (!eomAlertDataReady) {
                 return <span style={{ fontSize: "11px", color: "#999", padding: "3px 9px" }}><Spinner /> Checking...</span>;
               }
-              const count = computeAlertCheckCount(categoriesStr);
+              const count = computeAlertCheckCount(eomDetailClient, categoriesStr);
               const isDone = count === 0;
               return (
                 <span title={isDone ? "No active alerts in the selected categories" : `${count} active alert${count !== 1 ? "s" : ""} in the selected categories`}

@@ -14198,17 +14198,38 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       // EXPLICIT rows that exist for this month). Callers combine the
       // two: an override of "done" wins; "not_applicable" means excluded
       // from the count entirely; no override at all defaults to "pending".
+      //
+      // activeTasks also carries linkedFunction/alertCategories (added 19
+      // Aug 2026) — "alert_check" tasks never write status overrides at
+      // all, by design (their status is always computed live from current
+      // alert state, never persisted — see conversation 19 Aug 2026), so
+      // any caller aggregating counts (the Overview screen) needs these
+      // fields to compute their live status itself, rather than always
+      // defaulting them to "pending" the way a genuinely-unset task would.
       const { monthKey, clientName: statusClient } = req.body;
       if (!monthKey) return res.status(400).json({ success: false, error: "Missing monthKey (e.g. 2026-08)" });
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
 
-        const tasksResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" });
+        const [tasksResp, templatesResp] = await Promise.all([
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" }),
+        ]);
+        const templateLinkedFunctionById = {};
+        const templateAlertCategoriesById = {};
+        (templatesResp.data.values || []).forEach(r => {
+          if (r[0]) { templateLinkedFunctionById[r[0]] = r[3] || ""; templateAlertCategoriesById[r[0]] = r[6] || ""; }
+        });
+
         const activeTasks = (tasksResp.data.values || [])
           .filter(r => r[0] && (r[5] !== "FALSE" && r[5] !== false))
           .filter(r => !statusClient || r[1] === statusClient)
-          .map(r => ({ taskId: r[0], clientName: r[1] }));
+          .map(r => ({
+            taskId: r[0], clientName: r[1],
+            linkedFunction: r[2] ? (templateLinkedFunctionById[r[2]] || "") : "",
+            alertCategories: r[2] ? (templateAlertCategoriesById[r[2]] || "") : "",
+          }));
 
         const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
         const statusOverrides = (statusResp.data.values || [])

@@ -1308,6 +1308,14 @@ export default function TriageSystem({ onBack }) {
   // button. Only runs for the client LIST, not the per-client detail view.
   useEffect(() => {
     if (activeNav !== "tools" || eomSubView !== "overview" || eomDetailClient) return;
+    // Clear immediately, before fetching — eomStatusOverrides is shared
+    // with the detail screen's own effect below, so without this, leftover
+    // data from whichever client was last viewed stays fully visible and
+    // rendered (not just a background value) until this fetch resolves,
+    // producing a visible "shows wrong numbers, then corrects itself"
+    // flicker. Fixed 19 Aug 2026.
+    setEomActiveTasks([]);
+    setEomStatusOverrides([]);
     setEomStatusLoading(true);
     setEomStatusError("");
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1344,6 +1352,14 @@ export default function TriageSystem({ onBack }) {
   // picker) — that's a genuinely separate concern, not combined here.
   useEffect(() => {
     if (!eomDetailClient) return;
+    // Clear immediately, before fetching — same reasoning as the Overview
+    // effect above: without this, the previously-viewed client's task
+    // list (or the Overview's own all-clients data, since
+    // eomStatusOverrides is shared) stays fully visible until the new
+    // fetch resolves, showing the wrong client's tasks/order/statuses
+    // briefly before correcting itself. Fixed 19 Aug 2026.
+    setEomClientTasks([]);
+    setEomStatusOverrides([]);
     setEomStatusLoading(true);
     setEomStatusError("");
     setEomClientTasksLoading(true);

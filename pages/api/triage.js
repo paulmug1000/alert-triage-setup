@@ -1154,6 +1154,59 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
   };
 }
 
+/**
+ * Time-report equivalent of writePayrollDataToSheet_ above — same overall
+ * shape, with the structural differences confirmed directly against the
+ * original GAS script (8_AI_Features.gs, writeTimeData) rather than
+ * assumed: header row is row 4 (not row 1), employee names start at row
+ * 12 (not row 4), and only two adjacent columns are written per employee
+ * (billableHrs, totalHrs) rather than seven. The original script also has
+ * no totals-reconciliation concept for time at all, unlike payroll, so
+ * none is added here either.
+ */
+async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targetMonthStr, validEmployeeNames) {
+  const headerResp = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "TimeComp!4:4" });
+  const headers = (headerResp.data.values && headerResp.data.values[0]) || [];
+  let startColIdx0 = -1; // 0-indexed
+  for (let i = 0; i < headers.length; i++) {
+    if (headers[i] && isDateMatchJs_(headers[i], targetMonthStr)) { startColIdx0 = i; break; }
+  }
+  if (startColIdx0 === -1) {
+    return { writeSuccess: false, error: `Could not find column for '${targetMonthStr}' in the TimeComp row 4 header.` };
+  }
+  const startColLetter = columnIndexToLetter_(startColIdx0 + 1);
+  const endColLetter = columnIndexToLetter_(startColIdx0 + 2);
+
+  const sheetNames = validEmployeeNames; // already read by the caller from TimeComp!A12:A62
+
+  const namesFoundInDoc = extractedData.employees.filter(e => e.mappedName !== "NEW_STARTER").map(e => e.mappedName);
+  const missingFromDoc = sheetNames.filter(n => n && !namesFoundInDoc.includes(n));
+  const newStarters = extractedData.employees.filter(e => e.mappedName === "NEW_STARTER").map(e => e.originalName);
+  const unmatched = [];
+
+  const writeData = [];
+  let updateCount = 0;
+
+  for (const emp of extractedData.employees) {
+    if (emp.mappedName === "NEW_STARTER") continue;
+    const rowIdx = sheetNames.indexOf(emp.mappedName);
+    if (rowIdx === -1) { unmatched.push(emp.originalName); continue; }
+    const sheetRow = rowIdx + 12;
+    const vals = [emp.billableHrs || 0, emp.totalHrs || 0];
+    writeData.push({ range: `TimeComp!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`, values: [vals] });
+    updateCount++;
+  }
+
+  if (writeData.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: masterSheetId, requestBody: { data: writeData, valueInputOption: "RAW" } });
+  }
+
+  return {
+    writeSuccess: true, updateCount, targetMonthStr, startCol: startColLetter,
+    missingFromDoc, newStarters, unmatched,
+  };
+}
+
 function isDateMatchJs_(sheetHeader, aiDate) {
   if (!sheetHeader || !aiDate) return false;
   const s1 = String(sheetHeader).toLowerCase();
@@ -1290,15 +1343,21 @@ function findClientByNameMatch_(candidateText, allClients) {
  * tuned value — see conversation 18 Aug 2026. Expect these to need
  * adjusting once run against real documents.
  */
-async function scoreClientsByEmployeeOverlap_(sheets, allClients, extractedEmployeeNames) {
+// sheetIdField: "clientSheetId" (payroll, Salaries lives on the client
+// sheet) or "masterSheetId" (time, TimeComp lives on the master sheet —
+// see conversation 19 Aug 2026, confirmed directly against the original
+// GAS script rather than assumed).
+async function scoreClientsByEmployeeOverlap_(sheets, allClients, extractedEmployeeNames, sheetIdField = "clientSheetId", range = "Salaries!A4:A53") {
   const normalizedExtracted = extractedEmployeeNames.map(n => normalizeForMatch_(n)).filter(Boolean);
   if (normalizedExtracted.length === 0) return { matched: null, scores: [] };
 
   const scores = [];
   for (const client of allClients) {
+    const sheetId = client[sheetIdField];
+    if (!sheetId) continue;
     try {
       const resp = await sheets.spreadsheets.values.get({
-        spreadsheetId: client.clientSheetId, range: "Salaries!A4:A53",
+        spreadsheetId: sheetId, range,
       });
       const sheetNames = (resp.data.values || []).map(r => normalizeForMatch_(r[0])).filter(Boolean);
       if (sheetNames.length === 0) continue;
@@ -1307,7 +1366,7 @@ async function scoreClientsByEmployeeOverlap_(sheets, allClients, extractedEmplo
         if (sheetNames.some(sn => sn === en)) overlap++;
       }
       if (overlap > 0) scores.push({ clientName: client.clientName, overlap });
-    } catch (e) { /* client sheet may have no Salaries tab at all — skip it */ }
+    } catch (e) { /* sheet may have no matching tab at all — skip it */ }
   }
   scores.sort((a, b) => b.overlap - a.overlap);
   if (scores.length === 0) return { matched: null, scores: [] };
@@ -1826,7 +1885,7 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
         headerWrites.push({ range: "EomBankAccounts!A1:C1", values: [["clientName", "accountName", "loadedAt"]] });
       }
       if (toCreate.includes("EomExcludedClients")) {
-        headerWrites.push({ range: "EomExcludedClients!A1:A1", values: [["clientName"]] });
+        headerWrites.push({ range: "EomExcludedClients!A1:C1", values: [["clientName", "excluded", "sortOrder"]] });
       }
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId, requestBody: { valueInputOption: "RAW", data: headerWrites },
@@ -1858,6 +1917,34 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
         await sheets.spreadsheets.values.update({
           spreadsheetId, range: "EomTemplates!H1", valueInputOption: "RAW", requestBody: { values: [["sortOrder"]] },
         });
+      }
+    }
+    // EomExcludedClients gained "excluded" and "sortOrder" columns after
+    // that tab may already have been created and populated (19 Aug 2026) —
+    // under the old schema, a row's mere presence meant "excluded". Patch
+    // the header in, and for any existing row with no explicit "excluded"
+    // value yet, set it to TRUE — otherwise those clients would silently
+    // stop being excluded the moment this ran, since the new read logic
+    // checks the column explicitly rather than just row presence.
+    if (!toCreate.includes("EomExcludedClients")) {
+      const b1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomExcludedClients!B1" });
+      if (!b1.data.values || !b1.data.values[0] || !b1.data.values[0][0]) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId, range: "EomExcludedClients!B1:C1", valueInputOption: "RAW", requestBody: { values: [["excluded", "sortOrder"]] },
+        });
+        const existingRows = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomExcludedClients!A2:C1000" });
+        const rows = existingRows.data.values || [];
+        const migrateWrites = [];
+        rows.forEach((r, i) => {
+          if (r[0] && (r[1] === undefined || r[1] === "")) {
+            migrateWrites.push({ range: `EomExcludedClients!B${i + 2}`, values: [[true]] });
+          }
+        });
+        if (migrateWrites.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId, requestBody: { valueInputOption: "RAW", data: migrateWrites },
+          });
+        }
       }
     }
     eomTabsVerified = true;
@@ -13876,6 +13963,98 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "identify_time_client") {
+      // Time report client detection — mirrors identify_payroll_client
+      // closely, with one structural difference confirmed directly against
+      // the original GAS script (8_AI_Features.gs) rather than assumed:
+      // TimeComp lives on the client's MASTER sheet, not the client sheet
+      // itself (unlike Salaries), so allClients here carries masterSheetId
+      // and the overlap scoring targets that instead.
+      const { uploadId, fileName, automationCommanderSheetId: idAcId } = req.body;
+      if (!uploadId || !idAcId) {
+        return res.status(400).json({ success: false, error: "Missing uploadId or automationCommanderSheetId" });
+      }
+      let fileData;
+      try {
+        const raw = await redisClient.get(`payroll_upload:${uploadId}`);
+        if (!raw) throw new Error("Upload not found or expired — please try uploading again");
+        fileData = JSON.parse(raw);
+        if (!fileData || !fileData.data || !fileData.type) throw new Error("Uploaded file payload was malformed");
+      } catch (fetchErr) {
+        return res.status(400).json({ success: false, error: "Could not read uploaded file: " + fetchErr.message });
+      }
+      try {
+        const sheets = await getSheetsClient();
+
+        const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: idAcId, range: "AutoUpdates!A2:N500" });
+        const clientRows = clientResp.data.values || [];
+        const allClients = [];
+        for (const row of clientRows) {
+          const cName = String(row[0] || "").trim();
+          const cMasterUrl = row[12];
+          if (!cName || !cMasterUrl) continue;
+          if (cName.toLowerCase() === "client" || cName.toLowerCase() === "client name") continue;
+          const cMasterSheetId = extractSheetIdFromUrl(cMasterUrl) || String(cMasterUrl).trim();
+          allClients.push({ clientName: cName, masterSheetId: cMasterSheetId });
+        }
+
+        if (fileName) {
+          const fnMatch = findClientByNameMatch_(fileName, allClients);
+          if (fnMatch.matched) {
+            return res.status(200).json({ success: true, status: "MATCHED", clientName: fnMatch.matched, method: "filename" });
+          }
+        }
+
+        const identifyPrompt = `Look at this document. Extract:
+1. Any employer/company name that appears on it (the business the time report is FOR), if visible. If not visible, use "".
+2. Every employee/person name visible on the document, exactly as written — do not try to match them to anything, just list them as they appear.
+Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["..."] }`;
+
+        let idContent;
+        if (fileData.type === "text") {
+          idContent = identifyPrompt + "\n\nDOCUMENT DATA:\n" + buildVerticalCsvText_(fileData.data);
+        } else {
+          idContent = [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: fileData.data } },
+            { type: "text", text: identifyPrompt },
+          ];
+        }
+        const idMsg = await anthropic.messages.create({ model: "claude-sonnet-4-6", max_tokens: 1500, messages: [{ role: "user", content: idContent }] });
+        await logClaudeUsage_(sheets, idAcId, "", "time_identify", idMsg.usage?.input_tokens || 0, idMsg.usage?.output_tokens || 0, "time_tool").catch(() => {});
+
+        const idRaw = idMsg.content[0].type === "text" ? idMsg.content[0].text : "";
+        const idClean = idRaw.replace(/```json/g, "").replace(/```/g, "").trim();
+        const idJsonStart = idClean.indexOf("{");
+        const idJsonEnd = idClean.lastIndexOf("}");
+        let idData;
+        try {
+          idData = JSON.parse(idClean.slice(idJsonStart, idJsonEnd + 1));
+        } catch (e) {
+          idData = { employerName: "", employeeNames: [] };
+        }
+
+        if (idData.employerName) {
+          const empMatch = findClientByNameMatch_(idData.employerName, allClients);
+          if (empMatch.matched) {
+            return res.status(200).json({ success: true, status: "MATCHED", clientName: empMatch.matched, method: "document_name" });
+          }
+        }
+
+        const employeeNames = Array.isArray(idData.employeeNames) ? idData.employeeNames : [];
+        if (employeeNames.length > 0) {
+          const overlapResult = await scoreClientsByEmployeeOverlap_(sheets, allClients, employeeNames, "masterSheetId", "TimeComp!A12:A62");
+          if (overlapResult.matched) {
+            return res.status(200).json({ success: true, status: "MATCHED", clientName: overlapResult.matched, method: "employee_overlap", scores: overlapResult.scores });
+          }
+          return res.status(200).json({ success: true, status: "AMBIGUOUS", employerName: idData.employerName, employeeNames, candidateScores: overlapResult.scores });
+        }
+
+        return res.status(200).json({ success: true, status: "AMBIGUOUS", employerName: idData.employerName || "", employeeNames: [], candidateScores: [] });
+      } catch (err) {
+        console.error("❌ identify_time_client error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "process_payroll_document") {
       // Stage 1 of the payroll import tool — takes a single already-identified
       // client + an uploaded file and runs the full extraction + write.
@@ -13999,6 +14178,116 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "process_time_document") {
+      // Time-report equivalent of process_payroll_document — same overall
+      // flow, targeting TimeComp on the client's MASTER sheet instead of
+      // Salaries on the client sheet, confirmed directly against the
+      // original GAS script rather than assumed.
+      const { masterSheetId: timeMasterSheetId, clientName: timeClientName,
+        uploadId, confirmedMonth } = req.body;
+      if (!timeMasterSheetId || !uploadId) {
+        return res.status(400).json({ success: false, error: "Missing masterSheetId or uploadId" });
+      }
+      let fileData;
+      try {
+        const raw = await redisClient.get(`payroll_upload:${uploadId}`);
+        if (!raw) throw new Error("Upload not found or expired — please try uploading again");
+        fileData = JSON.parse(raw);
+        if (!fileData || !fileData.data || !fileData.type) throw new Error("Uploaded file payload was malformed");
+      } catch (fetchErr) {
+        return res.status(400).json({ success: false, error: "Could not read uploaded file: " + fetchErr.message });
+      }
+      try {
+        const sheets = await getSheetsClient();
+
+        const empResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: timeMasterSheetId, range: "TimeComp!A12:A62",
+        });
+        const validEmployeeNames = (empResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+        const namesString = JSON.stringify(validEmployeeNames);
+        const currentDateContext = new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+
+        const promptText = `You are a time-tracking data extraction assistant. Analyze this time tracking document.
+
+TASK 1: Identify the Period (Month/Year). Output format: "MMM YYYY" (e.g. "Jan 2026").
+- CRITICAL DATE HANDLING: The current real-world date context is ${currentDateContext}. If the document explicitly states a month but does NOT provide a year, calculate and output the most recent instance of that month relative to this context date (e.g. if context is Jun 2026 and doc says May, output "May 2026"; if doc says Dec, output "Dec 2025"). If no period info is found at all, output "Unknown".
+
+TASK 2: Extract Employee Data visible ON THE DOCUMENT.
+- Go through the document row by row. Extract each person exactly ONCE.
+- Match each name on the document to the closest name in this list: ${namesString}.
+- If a name on the document has NO MATCH in the list, set mappedName to "NEW_STARTER".
+- CRITICAL: Do NOT create entries for names in the list if they do not physically appear on the document.
+
+TASK 3: Extract Hours.
+- SEMANTIC FIELD MAPPING FOR HOURS: Document headers vary by client. Map the document's keys to output fields based on these concepts:
+  * 'billableHrs': Billable, chargeable, or client hours (e.g. Billable Hours, Actual Billable, Charged Time).
+  * 'totalHrs': Total, logged, worked, or overall hours (e.g. Total Hours, Total Logged, Hours Worked, Gross Hours).
+
+Return ONLY valid JSON, no other text, matching exactly this structure:
+{
+  "period": "MMM YYYY or Unknown",
+  "employees": [{ "originalName": "", "mappedName": "", "billableHrs": 0, "totalHrs": 0 }]
+}`;
+
+        let content;
+        if (fileData.type === "text") {
+          const verticalText = buildVerticalCsvText_(fileData.data);
+          content = promptText + "\n\nDOCUMENT DATA (Vertical List):\n" + verticalText;
+        } else {
+          content = [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: fileData.data } },
+            { type: "text", text: promptText },
+          ];
+        }
+
+        const aiMsg = await anthropic.messages.create({ model: "claude-sonnet-4-6", max_tokens: 6000, messages: [{ role: "user", content }] });
+        await logClaudeUsage_(sheets, automationCommanderSheetId, timeClientName || "", "time_extract", aiMsg.usage?.input_tokens || 0, aiMsg.usage?.output_tokens || 0, "time_tool").catch(() => {});
+
+        const rawText = aiMsg.content[0].type === "text" ? aiMsg.content[0].text : "";
+        const cleanText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+        const jsonStart = cleanText.indexOf("{");
+        const jsonEnd = cleanText.lastIndexOf("}");
+        let extractedData;
+        try {
+          extractedData = JSON.parse(cleanText.slice(jsonStart, jsonEnd + 1));
+        } catch (parseErr) {
+          console.error("=== BROKEN AI JSON OUTPUT (time) ===\n" + rawText);
+          return res.status(500).json({ success: false, error: "AI generated malformed JSON: " + parseErr.message });
+        }
+        if (!extractedData || !Array.isArray(extractedData.employees)) {
+          return res.status(500).json({ success: false, error: "AI extracted data but 'employees' list was missing or invalid" });
+        }
+
+        const targetMonthStr = confirmedMonth || extractedData.period;
+        if (!targetMonthStr || String(targetMonthStr).toLowerCase() === "unknown" || String(targetMonthStr).toLowerCase() === "null") {
+          const d = new Date(); d.setMonth(d.getMonth() - 1);
+          const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          const fallback = months[d.getMonth()] + " " + d.getFullYear();
+          // Not a final outcome — do NOT delete the Redis key, the follow-up
+          // call with confirmedMonth still needs it.
+          return res.status(200).json({ success: true, status: "CONFIRM_PERIOD", extractedData, fallback });
+        }
+
+        const writeResult = await writeTimeDataToSheet_(sheets, timeMasterSheetId, extractedData, targetMonthStr, validEmployeeNames);
+        await redisClient.del(`payroll_upload:${uploadId}`).catch(e => console.error("  Upload cleanup failed (non-fatal):", e.message));
+
+        // Auto-complete the linked EoM "time_import" task for this client,
+        // same Option B pattern as payroll/cash/mark-actual — targetMonthStr
+        // is the TARGET month, task status is tracked by WORK month, so it
+        // must be derived before completing.
+        if (writeResult.writeSuccess) {
+          const timeTargetMonthKey = monthStrToEomKey_(targetMonthStr);
+          const timeWorkMonthKey = eomTargetMonthToWorkMonth_(timeTargetMonthKey);
+          await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, timeClientName, "time_import", timeWorkMonthKey);
+        }
+
+        return res.status(200).json({ success: true, status: "COMPLETE", extractedData, ...writeResult });
+      } catch (err) {
+        console.error("❌ process_time_document error:", err);
+        await redisClient.del(`payroll_upload:${uploadId}`).catch(e => console.error("  Upload cleanup failed (non-fatal):", e.message));
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "eom_get_templates") {
       // EoM (End of Month) tracking — Stage 1a: shared task template library.
       try {
@@ -14020,53 +14309,100 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       }
 
     } else if (action === "eom_get_excluded_clients") {
-      // Clients present on AutoUpdates but not managed via EoM at all — a
-      // client here is simply omitted from the Overview's list entirely,
-      // rather than showing up with a permanent "no tasks assigned"
-      // (conversation 19 Aug 2026).
+      // Renamed conceptually to "Manage Clients" on the frontend (19 Aug
+      // 2026) — now tracks BOTH exclusion and display order for every
+      // client, not just excluded ones. A client with no row here simply
+      // isn't excluded and has no explicit order yet (frontend falls back
+      // to alphabetical for those, matching the pre-existing default so
+      // nothing shuffles until Paul actually drags something).
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:A1000" });
-        const excludedClients = (resp.data.values || []).map(r => r[0]).filter(Boolean);
-        return res.status(200).json({ success: true, excludedClients });
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:C1000" });
+        const clients = (resp.data.values || []).filter(r => r[0]).map(r => ({
+          clientName: r[0], excluded: r[1] === "TRUE" || r[1] === true,
+          sortOrder: r[2] !== undefined && r[2] !== "" ? Number(r[2]) : null,
+        }));
+        return res.status(200).json({ success: true, clients });
       } catch (err) {
         console.error("❌ eom_get_excluded_clients error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 
     } else if (action === "eom_toggle_client_excluded") {
-      // Adds or removes a client from EomExcludedClients. No duplicate
-      // check needed on add — the frontend list is deduplicated by nature
-      // (a client is either in the array or not), and an accidental
-      // duplicate row is harmless since removal filters out every
-      // matching row for that client name, not just the first.
+      // Creates a row (excluded=true, no sortOrder yet) or updates the
+      // excluded flag on an existing row — never touches sortOrder here,
+      // that's eom_reorder_clients' job.
       const { clientName: exClientName, excluded } = req.body;
       if (!exClientName) return res.status(400).json({ success: false, error: "Missing clientName" });
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:A1000" });
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:C1000" });
         const rows = resp.data.values || [];
-        const alreadyExcluded = rows.some(r => r[0] === exClientName);
+        const rowIdx = rows.findIndex(r => r[0] === exClientName);
 
-        if (excluded && !alreadyExcluded) {
+        if (rowIdx === -1) {
           await sheets.spreadsheets.values.append({
-            spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A:A", valueInputOption: "RAW",
-            requestBody: { values: [[exClientName]] },
+            spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A:C", valueInputOption: "RAW",
+            requestBody: { values: [[exClientName, excluded, ""]] },
           });
-        } else if (!excluded && alreadyExcluded) {
-          const kept = rows.filter(r => r[0] !== exClientName);
-          await sheets.spreadsheets.values.clear({ spreadsheetId: automationCommanderSheetId, range: `EomExcludedClients!A2:A${rows.length + 1}` });
-          if (kept.length > 0) {
-            await sheets.spreadsheets.values.update({
-              spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2", valueInputOption: "RAW", requestBody: { values: kept },
-            });
-          }
+        } else {
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: automationCommanderSheetId, range: `EomExcludedClients!B${rowIdx + 2}`,
+            valueInputOption: "RAW", requestBody: { values: [[excluded]] },
+          });
         }
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error("❌ eom_toggle_client_excluded error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_reorder_clients") {
+      // Persists a new display order for every client on the EoM screen.
+      // Takes the FULL desired order — same full-list-rewrite approach as
+      // the other reorder actions. Creates a row (excluded=false) for any
+      // client that doesn't have one yet, since sortOrder needs to live
+      // somewhere and this tab is already the place client-level EoM
+      // settings live.
+      const { orderedClientNames } = req.body;
+      if (!Array.isArray(orderedClientNames) || orderedClientNames.length === 0) {
+        return res.status(400).json({ success: false, error: "Missing orderedClientNames" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:C1000" });
+        const rows = resp.data.values || [];
+        const rowIdxByClient = {};
+        rows.forEach((r, i) => { if (r[0]) rowIdxByClient[r[0]] = i; });
+
+        const writes = [];
+        const newRows = [];
+        orderedClientNames.forEach((clientName, index) => {
+          const sortOrder = (index + 1) * 10;
+          if (clientName in rowIdxByClient) {
+            const sheetRow = rowIdxByClient[clientName] + 2;
+            writes.push({ range: `EomExcludedClients!C${sheetRow}`, values: [[sortOrder]] });
+          } else {
+            newRows.push([clientName, false, sortOrder]);
+          }
+        });
+        if (writes.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: automationCommanderSheetId, requestBody: { valueInputOption: "RAW", data: writes },
+          });
+        }
+        if (newRows.length > 0) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A:C", valueInputOption: "RAW",
+            requestBody: { values: newRows },
+          });
+        }
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ eom_reorder_clients error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

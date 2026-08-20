@@ -1125,7 +1125,7 @@ export default function TriageSystem({ onBack }) {
   const [eomNotesDraft, setEomNotesDraft] = useState("");
   const [eomDraggedTaskId, setEomDraggedTaskId] = useState(null);
   const [eomShowTemplateManager, setEomShowTemplateManager] = useState(false);
-  const [eomExcludedClients, setEomExcludedClients] = useState(null); // [clientName, ...] — clients on AutoUpdates but not managed via EoM at all
+  const [eomClientSettings, setEomClientSettings] = useState(null); // [{clientName, excluded, sortOrder}, ...] — every client that's been touched (excluded and/or reordered)
   const [eomShowExcludedManager, setEomShowExcludedManager] = useState(false);
   const [eomManagerTemplates, setEomManagerTemplates] = useState(null);
   const [eomManagerClientTasks, setEomManagerClientTasks] = useState(null); // unfiltered, used only to compute per-template usage counts
@@ -1167,6 +1167,8 @@ export default function TriageSystem({ onBack }) {
   const [eomCashPendingClient, setEomCashPendingClient] = useState(""); // client to auto-open in Cash Balances once bank accounts are loaded
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
   const [eomDraggedTemplateId, setEomDraggedTemplateId] = useState(null);
+  const [eomDraggedClientName, setEomDraggedClientName] = useState(null);
+  const [eomDragOverClientName, setEomDragOverClientName] = useState(null);
   const [eomDragOverTemplateId, setEomDragOverTemplateId] = useState(null);
   const [eomCreatingNewTemplate, setEomCreatingNewTemplate] = useState(false);
   const [eomNewTemplateName, setEomNewTemplateName] = useState("");
@@ -1352,23 +1354,87 @@ export default function TriageSystem({ onBack }) {
       .finally(() => setEomStatusLoading(false));
   }, [activeNav, eomSubView, eomMonthKey]);
 
-  // Excluded clients load once, lazily — unlike tasks/status they aren't
-  // month-scoped, so there's no reason to re-fetch on every month change.
+  // Client settings (excluded + order) load once, lazily — unlike
+  // tasks/status they aren't month-scoped, so there's no reason to
+  // re-fetch on every month change.
   useEffect(() => {
-    if (activeNav !== "tools" || eomExcludedClients !== null) return;
+    if (activeNav !== "tools" || eomClientSettings !== null) return;
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_get_excluded_clients", automationCommanderSheetId }) })
       .then(r => r.json())
-      .then(d => { if (d.success) setEomExcludedClients(d.excludedClients || []); })
+      .then(d => { if (d.success) setEomClientSettings(d.clients || []); })
       .catch(e => console.error("eom_get_excluded_clients error:", e));
-  }, [activeNav, eomExcludedClients]);
+  }, [activeNav, eomClientSettings]);
 
   const handleEomToggleClientExcluded = (clientName, excluded) => {
-    setEomExcludedClients(prev => excluded ? [...(prev || []), clientName] : (prev || []).filter(c => c !== clientName));
+    setEomClientSettings(prev => {
+      const list = prev || [];
+      const existing = list.find(c => c.clientName === clientName);
+      if (existing) return list.map(c => c.clientName === clientName ? { ...c, excluded } : c);
+      return [...list, { clientName, excluded, sortOrder: null }];
+    });
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_toggle_client_excluded", clientName, excluded, automationCommanderSheetId }) })
       .catch(e => console.error("eom_toggle_client_excluded error:", e));
   };
+
+  // Persists a new client display order given the clientName that was
+  // dragged and the one it was dropped onto — same insert-at-target
+  // approach as the other drag-reorder handlers. orderedClientList is the
+  // full, currently-visible-and-sorted list of client names (computed at
+  // render time from allOutgoingsClients + eomClientSettings).
+  const persistEomClientOrder = (draggedClientName, targetClientName, orderedClientList) => {
+    if (!draggedClientName || draggedClientName === targetClientName) return;
+    const fromIdx = orderedClientList.indexOf(draggedClientName);
+    const toIdx = orderedClientList.indexOf(targetClientName);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    const reordered = [...orderedClientList];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+
+    // Optimistic local update — reassign sortOrder to match immediately.
+    setEomClientSettings(prev => {
+      const list = prev || [];
+      return reordered.map((clientName, i) => {
+        const existing = list.find(c => c.clientName === clientName);
+        return { clientName, excluded: existing?.excluded || false, sortOrder: (i + 1) * 10 };
+      });
+    });
+
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_reorder_clients", orderedClientNames: reordered, automationCommanderSheetId }) })
+      .catch(e => console.error("eom_reorder_clients error:", e));
+  };
+
+  // Cash Balances' client-eligibility filter (below) depends on
+  // eomAllTasks, which normally only loads via the Overview's own effect.
+  // If Cash Balances is opened without ever visiting Overview first,
+  // eomAllTasks would still be null — this lazily loads it exactly once
+  // in that case, without re-triggering on every subsequent visit (once
+  // populated, it stays populated) and without widening the Overview's
+  // own effect, which would undo the instant-navigation fix by re-fetching
+  // on every sub-tab switch instead of just on month changes.
+  useEffect(() => {
+    if (activeNav !== "tools" || eomSubView !== "cash" || eomAllTasks !== null) return;
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => { if (d.success) setEomAllTasks(d.tasks || []); })
+      .catch(e => console.error("eom_get_client_tasks error:", e));
+  }, [activeNav, eomSubView, eomAllTasks]);
+
+  // Which clients are eligible for the Cash Balances tool — not excluded
+  // from EoM, and have an active task linked to "cash_balance". Shared
+  // between the list render and startCashFlow below, so they can never
+  // disagree about who's eligible.
+  const eomCashEligibleClients = React.useMemo(() => {
+    const excludedNames = new Set((eomClientSettings || []).filter(c => c.excluded).map(c => c.clientName));
+    const cashLinkedClientNames = new Set(
+      (eomAllTasks || []).filter(t => t.active && t.linkedFunction === "cash_balance").map(t => t.clientName)
+    );
+    return (allOutgoingsClients || []).filter(c => !excludedNames.has(c.clientName) && cashLinkedClientNames.has(c.clientName));
+  }, [allOutgoingsClients, eomClientSettings, eomAllTasks]);
 
   // Re-fetches everything after a task-list write (add/edit notes/toggle
   // active) — these are deliberate user actions, not navigation, so a
@@ -1521,7 +1587,7 @@ export default function TriageSystem({ onBack }) {
   };
 
   const startCashFlow = () => {
-    const allClientNames = (allOutgoingsClients || []).map(c => c.clientName);
+    const allClientNames = eomCashEligibleClients.map(c => c.clientName);
     const queue = allClientNames.filter(name => !(eomCashCompletedClients || []).includes(name));
     if (queue.length === 0) return;
     setEomCashFlowQueue(queue);
@@ -3621,11 +3687,12 @@ export default function TriageSystem({ onBack }) {
     setToolsFiles(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
   };
 
-  const detectClientForFileId = async (id, uploadId, fileName) => {
+  const detectClientForFileId = async (id, uploadId, fileName, toolType) => {
     updateToolsFile(id, { detectStatus: "detecting" });
     try {
+      const action = toolType === "time" ? "identify_time_client" : "identify_payroll_client";
       const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "identify_payroll_client", uploadId, fileName, automationCommanderSheetId }) });
+        body: JSON.stringify({ action, uploadId, fileName, automationCommanderSheetId }) });
       const d = await res.json();
       if (!d.success) {
         updateToolsFile(id, { detectStatus: "ambiguous", ambiguousInfo: { error: d.error || "Detection failed", employeeNames: [], candidateScores: [] } });
@@ -3653,7 +3720,7 @@ export default function TriageSystem({ onBack }) {
   // body limit even with JSON escaping overhead. See conversation 18 Aug 2026.
   const CHUNK_SIZE = 3000000; // ~3MB per chunk, well under the 4.5MB wall
 
-  const uploadAndDetect = async (id, fileData, fileName) => {
+  const uploadAndDetect = async (id, fileData, fileName, toolType) => {
     const uploadId = id; // reuse the file's own id — already unique per upload
     const fullPayload = JSON.stringify(fileData);
     const totalChunks = Math.ceil(fullPayload.length / CHUNK_SIZE);
@@ -3667,13 +3734,13 @@ export default function TriageSystem({ onBack }) {
         if (!d.success) throw new Error(d.error || "Chunk upload failed");
       }
       updateToolsFile(id, { convertStatus: "ready", convertMsg: "Ready.", uploadId });
-      detectClientForFileId(id, uploadId, fileName);
+      detectClientForFileId(id, uploadId, fileName, toolType);
     } catch (err) {
       updateToolsFile(id, { convertStatus: "error", convertMsg: "Upload failed: " + err.message });
     }
   };
 
-  const convertOneToolsFile = async (id, file) => {
+  const convertOneToolsFile = async (id, file, toolType) => {
     updateToolsFile(id, { convertStatus: "converting", convertMsg: "Preparing file..." });
     try {
       if (!toolsScriptsLoaded) await loadToolsScripts();
@@ -3686,7 +3753,7 @@ export default function TriageSystem({ onBack }) {
           excelText += `--- SHEET: ${sheetName} ---\n`;
           excelText += window.XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]) + "\n\n";
         });
-        await uploadAndDetect(id, { data: excelText, type: "text" }, file.name);
+        await uploadAndDetect(id, { data: excelText, type: "text" }, file.name, toolType);
         return;
       }
 
@@ -3720,7 +3787,7 @@ export default function TriageSystem({ onBack }) {
           currentY += viewport.height;
         }
         const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
-        await uploadAndDetect(id, { data: b64, type: "image" }, file.name);
+        await uploadAndDetect(id, { data: b64, type: "image" }, file.name, toolType);
         return;
       }
 
@@ -3728,7 +3795,7 @@ export default function TriageSystem({ onBack }) {
       const reader = new FileReader();
       reader.onload = (e) => {
         const b64 = e.target.result.split(",")[1];
-        uploadAndDetect(id, { data: b64, type: "image" }, file.name);
+        uploadAndDetect(id, { data: b64, type: "image" }, file.name, toolType);
       };
       reader.onerror = () => updateToolsFile(id, { convertStatus: "error", convertMsg: "Failed to read image file." });
       reader.readAsDataURL(file);
@@ -3737,12 +3804,12 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
-  const handleToolsFilesSelect = (fileList) => {
+  const handleToolsFilesSelect = (fileList, toolType) => {
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
     const newEntries = files.map(file => ({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      file, fileName: file.name,
+      file, fileName: file.name, toolType,
       convertStatus: "pending", convertMsg: "", uploadId: null,
       detectStatus: "idle", detectMethod: "", client: "", ambiguousInfo: null,
       processStatus: "pending", pendingConfirm: null, result: null, processMsg: "",
@@ -3751,7 +3818,7 @@ export default function TriageSystem({ onBack }) {
     // Conversion is client-side (canvas/CPU work, no external API) so these
     // can run concurrently — only the detect/process steps that follow hit
     // Claude, and those happen one at a time via the batch queue below.
-    newEntries.forEach(entry => convertOneToolsFile(entry.id, entry.file));
+    newEntries.forEach(entry => convertOneToolsFile(entry.id, entry.file, toolType));
   };
 
   // Finds the next file in the queue that's ready to be processed (converted,
@@ -3770,13 +3837,24 @@ export default function TriageSystem({ onBack }) {
     if (!target) return;
     const client = (allOutgoingsClients || []).find(c => c.clientName === target.client);
     if (!client || !target.uploadId) return;
+    const isTime = target.toolType === "time";
+    // Time targets TimeComp on the client's MASTER sheet, not the client
+    // sheet — confirmed directly against the original GAS script, not
+    // assumed (see conversation 19 Aug 2026).
+    if (isTime && !client.masterSheetId) {
+      updateToolsFile(id, { processStatus: "error", processMsg: "This client has no master sheet linked — can't locate TimeComp." });
+      return;
+    }
 
     updateToolsFile(id, { processStatus: "processing", pendingConfirm: null,
-      processMsg: confirmedMonth ? `Saving data to ${confirmedMonth}...` : "Sending to AI for payroll processing..." });
+      processMsg: confirmedMonth ? `Saving data to ${confirmedMonth}...` : `Sending to AI for ${isTime ? "time report" : "payroll"} processing...` });
     try {
+      const action = isTime ? "process_time_document" : "process_payroll_document";
+      const body = isTime
+        ? { action, masterSheetId: client.masterSheetId, clientName: target.client, uploadId: target.uploadId, confirmedMonth: confirmedMonth || undefined }
+        : { action, clientSheetId: client.clientSheetId, clientName: target.client, uploadId: target.uploadId, confirmedMonth: confirmedMonth || undefined };
       const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "process_payroll_document", clientSheetId: client.clientSheetId,
-          clientName: target.client, uploadId: target.uploadId, confirmedMonth: confirmedMonth || undefined }) });
+        body: JSON.stringify(body) });
       const d = await res.json();
       if (!d.success) {
         updateToolsFile(id, { processStatus: "error", processMsg: d.error || "Failed to process document" });
@@ -6515,14 +6593,19 @@ export default function TriageSystem({ onBack }) {
     // Every file that hasn't already failed to convert must have a client
     // resolved (auto-detected or manually assigned) before the batch can
     // start — avoids starting a run that then stalls partway through on a
-    // file that was still being identified.
-    const stillResolving = (toolsFiles || []).filter(f =>
-      f.convertStatus !== "error" && (f.convertStatus !== "ready" || !f.client)
-    );
-    const readyToStart = stillResolving.length === 0 &&
-      (toolsFiles || []).some(f => f.convertStatus === "ready" && f.client && f.processStatus === "pending");
-    const completeCount = (toolsFiles || []).filter(f => f.processStatus === "complete").length;
-    const errorCount = (toolsFiles || []).filter(f => f.processStatus === "error").length;
+    // file that was still being identified. Scoped per toolType (19 Aug
+    // 2026) so the payroll and time import tabs have independent batches —
+    // otherwise a file in one tool's queue would gate or count toward the
+    // other's "Process All" button. Missing toolType (files created before
+    // this existed) is treated as "payroll", the original default.
+    const toolsFileStats = (toolType) => {
+      const files = (toolsFiles || []).filter(f => (f.toolType || "payroll") === toolType);
+      const stillResolving = files.filter(f => f.convertStatus !== "error" && (f.convertStatus !== "ready" || !f.client));
+      const readyToStart = stillResolving.length === 0 && files.some(f => f.convertStatus === "ready" && f.client && f.processStatus === "pending");
+      const completeCount = files.filter(f => f.processStatus === "complete").length;
+      const errorCount = files.filter(f => f.processStatus === "error").length;
+      return { files, stillResolving, readyToStart, completeCount, errorCount };
+    };
 
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
@@ -6530,7 +6613,7 @@ export default function TriageSystem({ onBack }) {
           <h2 style={{ margin: "0 0 14px", fontSize: "20px", fontWeight: "700" }}>EoM</h2>
 
           <div style={{ display: "flex", gap: "4px", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
-            {[["overview", "Overview"], ["payroll", "Payroll Import"], ["cash", "Cash Balances"]].map(([key, label]) => (
+            {[["overview", "Overview"], ["payroll", "Payroll Import"], ["time", "Time Import"], ["cash", "Cash Balances"]].map(([key, label]) => (
               <button key={key} onClick={() => setEomSubView(key)}
                 style={{ padding: "8px 16px", background: "none", border: "none",
                   borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
@@ -6567,13 +6650,21 @@ export default function TriageSystem({ onBack }) {
               byClient[t.clientName].total++;
               if (status === "done") byClient[t.clientName].done++;
             });
+            const settingsByClient = {};
+            (eomClientSettings || []).forEach(c => { settingsByClient[c.clientName] = c; });
+            const alphabeticalNames = (allOutgoingsClients || []).map(c => c.clientName).slice().sort((a, b) => a.localeCompare(b));
             const clientRows = (allOutgoingsClients || [])
-              .filter(c => !(eomExcludedClients || []).includes(c.clientName))
+              .filter(c => !settingsByClient[c.clientName]?.excluded)
               .map(c => {
                 const counts = byClient[c.clientName] || { total: 0, done: 0 };
                 const pct = counts.total > 0 ? counts.done / counts.total : null;
-                return { clientName: c.clientName, ...counts, pct };
-              }).sort((a, b) => a.clientName.localeCompare(b.clientName));
+                const explicitOrder = settingsByClient[c.clientName]?.sortOrder;
+                // No explicit order yet — fall back to alphabetical
+                // position, so nothing shuffles until Paul actually drags
+                // something (matches the pre-existing default sort).
+                const sortOrder = explicitOrder != null ? explicitOrder : 1000000 + alphabeticalNames.indexOf(c.clientName);
+                return { clientName: c.clientName, ...counts, pct, sortOrder };
+              }).sort((a, b) => a.sortOrder - b.sortOrder);
 
             return (
               <div>
@@ -6616,42 +6707,64 @@ export default function TriageSystem({ onBack }) {
                   </button>
                   <button onClick={() => setEomShowExcludedManager(true)}
                     style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
-                    Manage Excluded Clients
+                    Manage Clients
                   </button>
                 </div>
               </div>
             );
           })()}
 
-          {eomSubView === "overview" && eomShowExcludedManager && (() => (
-            <div>
-              <button onClick={() => setEomShowExcludedManager(false)}
-                style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
-                ‹ Back to overview
-              </button>
-              <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700" }}>Manage Excluded Clients</h3>
-              <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#666" }}>
-                Excluded clients won't appear on the EoM overview at all — for clients on AutoUpdates that don't have any monthly tasks to complete.
-              </p>
-              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
-                {(allOutgoingsClients || []).slice().sort((a, b) => a.clientName.localeCompare(b.clientName)).map((c, i) => {
-                  const isExcluded = (eomExcludedClients || []).includes(c.clientName);
-                  return (
-                    <div key={c.clientName} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
-                      <div style={{ fontSize: "13px", color: isExcluded ? "#999" : "#1a1a1a", fontWeight: "600" }}>{c.clientName}</div>
+          {eomSubView === "overview" && eomShowExcludedManager && (() => {
+            const settingsByClient = {};
+            (eomClientSettings || []).forEach(c => { settingsByClient[c.clientName] = c; });
+            const alphabeticalNames = (allOutgoingsClients || []).map(c => c.clientName).slice().sort((a, b) => a.localeCompare(b));
+            const orderedClients = (allOutgoingsClients || []).map(c => {
+              const explicitOrder = settingsByClient[c.clientName]?.sortOrder;
+              const sortOrder = explicitOrder != null ? explicitOrder : 1000000 + alphabeticalNames.indexOf(c.clientName);
+              return { clientName: c.clientName, excluded: settingsByClient[c.clientName]?.excluded || false, sortOrder };
+            }).sort((a, b) => a.sortOrder - b.sortOrder);
+            const orderedClientNames = orderedClients.map(c => c.clientName);
+
+            return (
+              <div>
+                <button onClick={() => setEomShowExcludedManager(false)}
+                  style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
+                  ‹ Back to overview
+                </button>
+                <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700" }}>Manage Clients</h3>
+                <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#666" }}>
+                  Drag to set the order clients appear in on the EoM overview. Excluded clients won't appear there at all — for clients on AutoUpdates that don't have any monthly tasks to complete.
+                </p>
+                <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
+                  {orderedClients.map((c, i) => (
+                    <div key={c.clientName}
+                      draggable
+                      onDragStart={() => setEomDraggedClientName(c.clientName)}
+                      onDragOver={e => { e.preventDefault(); if (eomDragOverClientName !== c.clientName) setEomDragOverClientName(c.clientName); }}
+                      onDragLeave={() => setEomDragOverClientName(prev => prev === c.clientName ? null : prev)}
+                      onDrop={e => { e.preventDefault(); persistEomClientOrder(eomDraggedClientName, c.clientName, orderedClientNames); setEomDraggedClientName(null); setEomDragOverClientName(null); }}
+                      onDragEnd={() => { setEomDraggedClientName(null); setEomDragOverClientName(null); }}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 18px",
+                        borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
+                        background: eomDragOverClientName === c.clientName ? "#f0f7ff" : "transparent",
+                        opacity: eomDraggedClientName === c.clientName ? 0.4 : 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <div title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", userSelect: "none" }}>⠿</div>
+                        <div style={{ fontSize: "13px", color: c.excluded ? "#999" : "#1a1a1a", fontWeight: "600" }}>{c.clientName}</div>
+                      </div>
                       <label style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-                        <input type="checkbox" checked={isExcluded} onChange={e => handleEomToggleClientExcluded(c.clientName, e.target.checked)} />
+                        <input type="checkbox" checked={c.excluded} onChange={e => handleEomToggleClientExcluded(c.clientName, e.target.checked)} />
                         Excluded from EoM
                       </label>
                     </div>
-                  );
-                })}
-                {(allOutgoingsClients || []).length === 0 && (
-                  <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients found.</div>
-                )}
+                  ))}
+                  {orderedClients.length === 0 && (
+                    <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients found.</div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))()}
+            );
+          })()}
 
           {eomSubView === "overview" && eomShowTemplateManager && !eomShowExcludedManager && (() => {
             const usageCount = {};
@@ -6701,6 +6814,7 @@ export default function TriageSystem({ onBack }) {
                               <option value="salaries">Salaries</option>
                               <option value="cash_balance">Cash Balance</option>
                               <option value="mark_actual">Mark Month Actual</option>
+                              <option value="time_import">Time Report Import</option>
                               <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                             </select>
                             <label style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "4px", marginLeft: "10px" }}>
@@ -6779,6 +6893,7 @@ export default function TriageSystem({ onBack }) {
                           <option value="salaries">Salaries</option>
                           <option value="cash_balance">Cash Balance</option>
                           <option value="mark_actual">Mark Month Actual</option>
+                              <option value="time_import">Time Report Import</option>
                           <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                         </select>
                       </div>
@@ -7055,9 +7170,11 @@ export default function TriageSystem({ onBack }) {
             );
           })()}
 
-          {eomSubView === "payroll" && (<>
+          {eomSubView === "payroll" && (() => {
+          const { files: payrollFiles, stillResolving, readyToStart, completeCount, errorCount } = toolsFileStats("payroll");
+          return (<>
           <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
-            Payroll import — upload several clients' payroll documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can't work out is flagged for you to assign. Time report import isn't built yet; this only handles payroll for now.
+            Payroll import — upload several clients' payroll documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can't work out is flagged for you to assign.
           </p>
 
           <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
@@ -7066,11 +7183,11 @@ export default function TriageSystem({ onBack }) {
             <div style={{ marginBottom: "14px" }}>
               <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Payroll documents</label>
               <input type="file" multiple accept=".pdf,image/*,.xlsx,.xls,.csv"
-                onChange={e => { handleToolsFilesSelect(e.target.files); e.target.value = ""; }}
+                onChange={e => { handleToolsFilesSelect(e.target.files, "payroll"); e.target.value = ""; }}
                 style={{ width: "100%", fontSize: "13px" }} />
             </div>
 
-            {toolsFiles.length > 0 && (
+            {payrollFiles.length > 0 && (
               <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" }}>
                 <button
                   disabled={!readyToStart || toolsBatchRunning}
@@ -7081,7 +7198,7 @@ export default function TriageSystem({ onBack }) {
                   {toolsBatchRunning ? <><Spinner color="#fff" /> Processing...</> : "Process All"}
                 </button>
                 <span style={{ fontSize: "12px", color: "#888" }}>
-                  {completeCount} of {toolsFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
+                  {completeCount} of {payrollFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
                 </span>
                 {stillResolving.length > 0 && (
                   <span style={{ fontSize: "12px", color: "#b45309" }}>
@@ -7092,7 +7209,7 @@ export default function TriageSystem({ onBack }) {
             )}
           </div>
 
-          {toolsFiles.map(f => (
+          {payrollFiles.map(f => (
             <div key={f.id} style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px", marginBottom: "14px" }}>
               <div style={{ fontSize: "14px", fontWeight: "700", color: "#1a1a1a", marginBottom: "8px" }}>{f.fileName}</div>
 
@@ -7229,7 +7346,157 @@ export default function TriageSystem({ onBack }) {
               )}
             </div>
           ))}
-          </>)}
+          </>);
+          })()}
+
+          {eomSubView === "time" && (() => {
+          const { files: timeFiles, stillResolving, readyToStart, completeCount, errorCount } = toolsFileStats("time");
+          return (<>
+          <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
+            Time report import — upload several clients' time tracking documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can't work out is flagged for you to assign.
+          </p>
+
+          <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+            <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Import Time Reports</h3>
+
+            <div style={{ marginBottom: "14px" }}>
+              <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Time report documents</label>
+              <input type="file" multiple accept=".pdf,image/*,.xlsx,.xls,.csv"
+                onChange={e => { handleToolsFilesSelect(e.target.files, "time"); e.target.value = ""; }}
+                style={{ width: "100%", fontSize: "13px" }} />
+            </div>
+
+            {timeFiles.length > 0 && (
+              <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" }}>
+                <button
+                  disabled={!readyToStart || toolsBatchRunning}
+                  onClick={startToolsBatch}
+                  style={{ padding: "8px 20px", background: (!readyToStart || toolsBatchRunning) ? "#ccc" : "#0066cc",
+                    color: "#fff", border: "none", borderRadius: "6px",
+                    cursor: (!readyToStart || toolsBatchRunning) ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
+                  {toolsBatchRunning ? <><Spinner color="#fff" /> Processing...</> : "Process All"}
+                </button>
+                <span style={{ fontSize: "12px", color: "#888" }}>
+                  {completeCount} of {timeFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
+                </span>
+                {stillResolving.length > 0 && (
+                  <span style={{ fontSize: "12px", color: "#b45309" }}>
+                    Waiting on {stillResolving.length} file{stillResolving.length !== 1 ? "s" : ""} to finish identifying before this can start
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {timeFiles.map(f => (
+            <div key={f.id} style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px", marginBottom: "14px" }}>
+              <div style={{ fontSize: "14px", fontWeight: "700", color: "#1a1a1a", marginBottom: "8px" }}>{f.fileName}</div>
+
+              {(f.convertStatus === "converting" || f.convertStatus === "pending") && (
+                <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.convertMsg || "Preparing..."}</div>
+              )}
+              {f.convertStatus === "error" && (
+                <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.convertMsg}</div>
+              )}
+
+              {f.convertStatus === "ready" && (
+                <>
+                  {f.detectStatus === "detecting" && (
+                    <div style={{ fontSize: "13px", color: "#666", marginBottom: "8px" }}><Spinner /> Working out which client this belongs to...</div>
+                  )}
+                  {f.detectStatus === "matched" && f.processStatus === "pending" && (
+                    <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
+                      ✓ Detected client: <strong>{f.client}</strong>
+                      {" "}<span style={{ color: "#888" }}>
+                        ({f.detectMethod === "filename" ? "matched by filename" : f.detectMethod === "document_name" ? "matched by name on document" : "matched by employee names"})
+                      </span>
+                    </div>
+                  )}
+                  {f.detectStatus === "ambiguous" && f.processStatus === "pending" && (
+                    <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
+                      ⚠️ Couldn't work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} — please select it below.
+                      {f.ambiguousInfo?.candidateScores?.length > 0 && (
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#92400e" }}>
+                          Closest guesses: {f.ambiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {f.processStatus === "pending" && (
+                    <div style={{ marginBottom: "6px" }}>
+                      <select value={f.client} onChange={e => updateToolsFile(f.id, { client: e.target.value })}
+                        style={{ width: "100%", padding: "7px 10px", border: `1px solid ${f.detectStatus === "ambiguous" && !f.client ? "#fbbf24" : "#ddd"}`, borderRadius: "6px", fontSize: "13px", boxSizing: "border-box" }}>
+                        <option value="">Select a client...</option>
+                        {(allOutgoingsClients || []).map(c => (
+                          <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {f.processStatus === "processing" && (
+                    <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.processMsg}</div>
+                  )}
+
+                  {f.processStatus === "confirm_period" && f.pendingConfirm && (
+                    <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
+                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#664d03", marginBottom: "6px" }}>Date not found</div>
+                      <div style={{ fontSize: "13px", color: "#664d03", marginBottom: "10px" }}>
+                        Would you like to apply this data to the most recent period: <strong>{f.pendingConfirm.fallback}</strong>?
+                      </div>
+                      <div style={{ display: "flex", gap: "10px" }}>
+                        <button onClick={() => processOneToolsFile(f.id, f.pendingConfirm.fallback)}
+                          style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          Yes, apply
+                        </button>
+                        <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled — please check the document and try again." })}
+                          style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {f.processStatus === "error" && (
+                    <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.processMsg}</div>
+                  )}
+
+                  {f.processStatus === "complete" && f.result && (
+                    <div>
+                      <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
+                        ✓ {f.client} — updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
+                      </div>
+
+                      {f.result.newStarters?.length > 0 && (
+                        <div style={{ marginBottom: "8px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
+                          {f.result.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {f.result.unmatched?.length > 0 && (
+                        <div style={{ marginBottom: "8px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#b45309", marginBottom: "4px" }}>⚠️ Unmatched:</div>
+                          {f.result.unmatched.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {f.result.missingFromDoc?.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>⚪ In sheet, missing from document:</div>
+                          {f.result.missingFromDoc.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {!f.result.newStarters?.length && !f.result.unmatched?.length && !f.result.missingFromDoc?.length && (
+                        <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly — no discrepancies.</div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          ))}
+          </>);
+          })()}
 
           {eomSubView === "cash" && (() => {
             const [y, m] = eomCashMonthKey.split("-").map(Number);
@@ -7240,7 +7507,7 @@ export default function TriageSystem({ onBack }) {
             };
 
             if (eomCashSubView === "list") {
-              const remaining = (allOutgoingsClients || []).filter(c => !(eomCashCompletedClients || []).includes(c.clientName)).length;
+              const remaining = eomCashEligibleClients.filter(c => !(eomCashCompletedClients || []).includes(c.clientName)).length;
               return (
                 <div>
                   <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#666" }}>
@@ -7286,7 +7553,7 @@ export default function TriageSystem({ onBack }) {
                   </div>
 
                   <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
-                    {(allOutgoingsClients || []).map((c, i) => {
+                    {eomCashEligibleClients.map((c, i) => {
                       const done = (eomCashCompletedClients || []).includes(c.clientName);
                       return (
                         <div key={c.clientName} onClick={() => selectSingleCashClient(c.clientName)}
@@ -7296,8 +7563,8 @@ export default function TriageSystem({ onBack }) {
                         </div>
                       );
                     })}
-                    {(allOutgoingsClients || []).length === 0 && (
-                      <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients found.</div>
+                    {eomCashEligibleClients.length === 0 && (
+                      <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients with an active "Cash Balance" task found.</div>
                     )}
                   </div>
                 </div>

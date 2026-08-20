@@ -6857,7 +6857,11 @@ export default function TriageSystem({ onBack }) {
                             <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
                               {tpl.name}
                               {!tpl.active && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#b45309" }}>(inactive)</span>}
-                              {tpl.linkedFunction === "salaries" && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#0066cc" }}>(linked: salaries)</span>}
+                              {tpl.linkedFunction && (
+                                <span style={{ marginLeft: "6px", fontSize: "10px", color: "#0066cc" }}>
+                                  (linked: {({ salaries: "salaries", cash_balance: "cash balance", mark_actual: "mark actual", alert_check: "alert check", time_import: "time import" }[tpl.linkedFunction]) || tpl.linkedFunction})
+                                </span>
+                              )}
                             </div>
                             {tpl.defaultNotes && <div style={{ fontSize: "12px", color: "#888", marginTop: "2px" }}>{tpl.defaultNotes}</div>}
                           </div>
@@ -7034,6 +7038,12 @@ export default function TriageSystem({ onBack }) {
                             <button onClick={() => setEomSubView("payroll")}
                               style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                               Import Payroll →
+                            </button>
+                          )}
+                          {t.linkedFunction === "time_import" && (
+                            <button onClick={() => setEomSubView("time")}
+                              style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                              Import Time →
                             </button>
                           )}
                           {t.linkedFunction === "mark_actual" && (() => {

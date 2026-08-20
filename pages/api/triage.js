@@ -9902,12 +9902,28 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             targetSlotType: "invoice",
             targetSlotNum: best.slotNum,
             matchingDetails: {
+              // revenue/startDate here must be the JOB's own true values — the
+              // row-re-verification check before writing (a few hundred lines
+              // down) reads this field expecting the target row's expected
+              // state, to confirm cell references haven't gone stale. This
+              // previously held the INVOICE's own amount/sent-date instead
+              // (invoiceAmtForMatch/sentDate) — which never matches the job
+              // row's actual revenue/start date, so verification failed on
+              // every single write through this path. Fixed 20 Aug 2026,
+              // confirmed via a live example (Orinoco Communications →
+              // Oxford Health NHS Foundation Trust). best.revenue is the
+              // job's real revenue (already used correctly elsewhere in this
+              // same option, in matchedJobDetails below); the job's true
+              // start date isn't reliably available here, so it's left empty
+              // rather than populated with another wrong value — the
+              // verification guard already skips its date check cleanly when
+              // the expected value is empty.
               unmatchedJobSummary: {
                 clientName: invClient,
-                jobName: invJob,
+                jobName: best.jobName,
                 projectCode: "",
-                revenue: String(invoiceAmtForMatch),
-                startDate: sentDate,
+                revenue: String(best.revenue || ""),
+                startDate: "",
                 endDate: "",
                 likelihood: "",
               },
@@ -10024,9 +10040,15 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 targetSlotType: "invoice",
                 targetSlotNum: sd.slotNum,
                 matchingDetails: {
+                  // Same fix as the amount-match Tier 2 path above (20 Aug
+                  // 2026) — unmatchedJobSummary must hold the job's own true
+                  // revenue/start date for row-verification to work, not the
+                  // invoice's. bStartDate is available here (read from the
+                  // sheet just above), so it's populated correctly rather
+                  // than left empty.
                   unmatchedJobSummary: {
-                    clientName: invClient, jobName: invJob, projectCode: "",
-                    revenue: String(invoiceAmtForMatch), startDate: sentDate, endDate: "",
+                    clientName: invClient, jobName: rj || rc, projectCode: "",
+                    revenue: String(bRev || ""), startDate: bStartDate, endDate: "",
                   },
                   matchedJobDetails: {
                     clientName: rc, jobName: rj, projectCode: String(r[2]||""), revenue: bRev, startDate: "", endDate: "",

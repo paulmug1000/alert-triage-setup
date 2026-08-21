@@ -7000,7 +7000,24 @@ export default async function handler(req, res) {
           return client.flags[flagType] !== false;
         });
         const mergedNoActionAlerts = (noActionAlerts || []).filter(na => {
-          const client = mergedClientsWithFlags.find(c => c.clientName === na.clientName);
+          // Fixed 21 Aug 2026: was comparing na.clientName against c.clientName, but
+          // noActionAlert objects (built above, in the main no-action-flag collection
+          // loop) never had a clientName field at all — only clientId (set to
+          // masterSheetId). That made this comparison always undefined === "some
+          // string", i.e. always false, so `client` was always undefined and every
+          // single noActionAlert was silently dropped here, every time this ran.
+          // Found by tracing Paul's own observation ("I can't remember the last time
+          // I saw an info alert") back through the full pipeline — confirmed this
+          // specific filter as the cause, not a guess: mergedAlerts right above this
+          // uses the same pattern correctly because actionable alert objects DO get a
+          // clientName assigned elsewhere, which is why that one worked and made this
+          // one easy to miss by visual similarity. This runs inside the hourly cron
+          // job (store_precomputed) that refreshes the shared precomputed cache the
+          // app loads from on almost every visit (90-minute freshness window against
+          // a 60-minute cron interval) — so this wasn't an occasional glitch, it was
+          // silently zeroing every client's informational flags on every single
+          // refresh, which is exactly the pattern Paul noticed.
+          const client = mergedClientsWithFlags.find(c => c.masterSheetId === na.clientId);
           if (!client) return false; // client has no active flags — drop their noAction alerts
           return client.flags[na.flagType] !== false;
         });
@@ -12437,10 +12454,22 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             if (a.clientName !== clientName) return true;
             return !keysToZero.has(a.flagType || a.type);
           });
+          // Look up this client's masterSheetId — noActionAlerts are keyed by
+          // clientId (=masterSheetId), never by clientName directly.
+          const targetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
           // Remove noAction alerts for this client that belong to cleared flag groups
           if (parsed.noActionAlerts) {
             parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
-              if (na.clientId !== clientName && !na.flagType) return true; // keep if can't determine
+              // Fixed 21 Aug 2026: previously compared na.clientId (a sheet ID)
+              // directly against clientName (a human-readable name) — always a type
+              // mismatch, so the "keep if can't determine" branch never actually
+              // fired, and every noAction alert fell through to being matched purely
+              // by flagType regardless of which client it belonged to — meaning
+              // clearing one client's flags could silently clear another client's
+              // matching informational flag too. Found while tracing the same
+              // clientId/clientName confusion pattern in the store_precomputed fix
+              // just above.
+              if (na.clientId !== targetClientId) return true; // different client, keep untouched
               return !keysToZero.has(na.flagType);
             });
           }
@@ -12466,8 +12495,15 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             return !keysToZero.has(a.flagType || a.type);
           });
           if (parsed.noActionAlerts) {
+            // Fixed 21 Aug 2026 — same clientId/clientName type-mismatch bug as the
+            // session-update block above, but here it made the filter completely
+            // inert instead: na.clientId !== clientName was always true (different
+            // types never equal), so `!keysToZero.has(...) || true` was always true
+            // and nothing was ever actually removed from the precomputed cache.
+            const precompTargetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
             parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
-              return !keysToZero.has(na.flagType) || na.clientId !== clientName;
+              if (na.clientId !== precompTargetClientId) return true;
+              return !keysToZero.has(na.flagType);
             });
           }
           if (parsed.clientsWithFlags) {

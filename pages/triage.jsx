@@ -7677,7 +7677,81 @@ export default function TriageSystem({ onBack }) {
                 </div>
               </div>
 
-              {/* Usage summary */}
+              {/* Alert Types & Auto-Clearing */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Alert Types & Auto-Clearing</h3>
+                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
+                  Every alert type the system can raise, and what actually clears it in the sheet. Alerts fall into three groups (invoice, CRM, expense) — each group's flags only clear together, once every alert in that group for the client has been handled.
+                </p>
+
+                {[
+                  {
+                    group: "Invoice",
+                    rule: "Clears once every invoice alert for the client is resolved, and \"Invoice stale/unsent changes\" (if present) has also been acknowledged.",
+                    items: [
+                      { name: "Invoice dashboard discrepancy", kind: "actionable" },
+                      { name: "Invoice app discrepancy", kind: "info" },
+                      { name: "Invoice stale/unsent changes", kind: "blocking" },
+                      { name: "Retainer invoices created", kind: "info" },
+                      { name: "Retainer invoices deleted", kind: "info" },
+                    ],
+                  },
+                  {
+                    group: "CRM",
+                    rule: "Clears once every CRM alert for the client is resolved, and the three \"copied to Confirmed\" flags (if present) have also been acknowledged.",
+                    items: [
+                      { name: "CRM pipeline dashboard discrepancy", kind: "actionable" },
+                      { name: "CRM pipeline app discrepancy", kind: "actionable" },
+                      { name: "CRM confirmed dashboard discrepancy", kind: "actionable" },
+                      { name: "CRM confirmed app discrepancy", kind: "actionable" },
+                      { name: "CRM pipeline skipped (blank)", kind: "info" },
+                      { name: "CRM confirmed skipped (blank)", kind: "info" },
+                      { name: "CRM copied to Confirmed — checked", kind: "blocking" },
+                      { name: "CRM copied to Confirmed — unchecked", kind: "blocking" },
+                      { name: "CRM copied to Confirmed — delete", kind: "blocking" },
+                    ],
+                  },
+                  {
+                    group: "Expense",
+                    rule: "Clears once every expense alert for the client is resolved. No informational flag blocks this group — there's no expense equivalent of the invoice/CRM \"blocking\" flags.",
+                    items: [
+                      { name: "Expense dashboard discrepancy", kind: "actionable" },
+                      { name: "Expense app discrepancy", kind: "info" },
+                      { name: "Expense added", kind: "info" },
+                      { name: "Expense reconciliation gaps", kind: "info" },
+                    ],
+                  },
+                ].map((g, gi) => (
+                  <div key={g.group} style={{ marginTop: gi > 0 ? "18px" : 0, paddingTop: gi > 0 ? "16px" : 0, borderTop: gi > 0 ? "1px solid #f0f0f0" : "none" }}>
+                    <div style={{ fontSize: "13px", fontWeight: "700", color: "#1a56db", marginBottom: "4px" }}>{g.group} group</div>
+                    <div style={{ fontSize: "11px", color: "#888", marginBottom: "10px", lineHeight: "1.5" }}>{g.rule}</div>
+                    {g.items.map((it, i) => (
+                      <div key={it.name} style={{ display: "flex", gap: "10px", padding: "6px 0", borderTop: i > 0 ? "1px solid #f5f5f5" : "none" }}>
+                        <span style={{
+                          fontSize: "10px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.02em",
+                          padding: "2px 7px", borderRadius: "10px", height: "fit-content", whiteSpace: "nowrap",
+                          ...(it.kind === "actionable"
+                            ? { background: "#eef4ff", color: "#1d4ed8" }
+                            : it.kind === "blocking"
+                              ? { background: "#fff7ed", color: "#c2410c" }
+                              : { background: "#f4f4f5", color: "#71717a" }),
+                        }}>
+                          {it.kind === "actionable" ? "Actionable" : it.kind === "blocking" ? "Info · blocking" : "Info"}
+                        </span>
+                        <div style={{ fontSize: "13px", color: "#1a1a1a", paddingTop: "1px" }}>{it.name}</div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+
+                <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e8e8e8", fontSize: "11px", color: "#888", lineHeight: "1.6" }}>
+                  <strong>Actionable</strong> — generates an individual alert you accept or ignore directly.{" "}
+                  <strong>Info</strong> — shown under Informational Flags on the client's alert screen; must be acknowledged there, but doesn't hold up the rest of its group from clearing.{" "}
+                  <strong>Info · blocking</strong> — same, but this specific flag must also be acknowledged before the rest of its group can clear, even once every actionable alert in the group is done.
+                </div>
+              </div>
+
+
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
                 <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Claude API Usage</h3>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>

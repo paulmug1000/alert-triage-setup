@@ -2134,6 +2134,12 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
       if (!clientName || !clientSheetUrl || !masterSheetUrl) {
         continue;
       }
+      // Skip a stray header-style row (found via Paul's own refresh log, 21 Aug 2026 —
+      // row 2 was literally logged as client "Client"). Same defensive check already
+      // used elsewhere in this file for the same reason.
+      if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") {
+        continue;
+      }
 
       console.log(`  Row ${sheetRowNum}: ${clientName}`);
 

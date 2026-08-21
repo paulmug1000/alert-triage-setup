@@ -10886,7 +10886,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const sample = tabRows.slice(1,4).map(r => `"${r[0]||""}/${r[1]||""}"`).join(", ");
           return res.status(404).json({
             success: false,
-            error: `Job "${option.jobName}" not found in ${tabName} tab — client name or job name may not match exactly.`,
+            error: `Job "${option.jobName}" not found in ${tabName} tab — client name or job name may not match exactly. Nearby rows: ${sample}`,
           });
         }
 
@@ -11334,7 +11334,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 checks.push({
                   ok: confExists,
                   message: confExists
-                    ? `✓ Confirmed tab: "${confirmedMatch.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confirmedRowStr}${clientStr} found`
+                    ? `✓ Confirmed tab: "${confirmedMatch.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confirmedRowStr}${pipelineRowStr}${clientStr} found`
                     : pipelineProjectCode
                       ? `✗ Confirmed tab: job "${job.jobName}" not found by project code (${pipelineProjectCode}) or name — Confirmed col C may be blank for this job, or copy may have failed`
                       : `✗ Confirmed tab: job "${job.jobName}" not found — copy may have failed`,
@@ -13539,7 +13539,19 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           || alert.heading
           || `${alert.type || alert.flagType || alert.alertType || "alert"} ${alert.summary?.invoiceNo || alert.summary?.reference || ""} ${alert.summary?.amount ? "£" + alert.summary.amount : ""}`.trim();
 
-        const dataSnapshot = JSON.stringify({
+        // Kept as a plain object (not stringified here) so it can be merged
+        // into both branches below — previously this was JSON.stringify'd
+        // immediately and then never actually used in either branch, so
+        // invoiceNo/reference/amount/status/flagType/masterSheetId were
+        // silently never stored at the top level of a task's dataSnapshot.
+        // Found via a full-codebase sweep (20 Aug 2026): findPreviousIgnoreReason
+        // (used to surface "you previously handled this" context for a new,
+        // recurring alert) reads exactly these fields directly off the parsed
+        // dataSnapshot (snap.invoiceNo/snap.reference) — so any alert that was
+        // ever turned into a task, later superseded, and then recurred would
+        // silently fail that match, since the fields it needed were never
+        // there for a task-derived row.
+        const alertFieldsSnapshot = {
           alertType:     alert.type || alert.flagType || "",
           invoiceNo:     alert.summary?.invoiceNo     || "",
           reference:     alert.summary?.reference     || "",
@@ -13548,7 +13560,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           flagType:      alert.flagType               || "",
           masterSheetId: alert.masterSheetId          || "",
           taskKey,
-        });
+        };
 
         // Get cached options if available
         let cachedOptionsJSON = "";
@@ -13575,7 +13587,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             status: "task",
             ignoreReason: "",
             cachedOptionsJSON,
-            dataSnapshot: JSON.stringify({ ...JSON.parse(memoryRow.dataSnapshot || "{}"), ...taskMeta }),
+            dataSnapshot: JSON.stringify({ ...JSON.parse(memoryRow.dataSnapshot || "{}"), ...alertFieldsSnapshot, ...taskMeta }),
           });
         } else {
           await appendAlertMemoryRow(sheets, acId, {
@@ -13586,7 +13598,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             cachedOptionsJSON,
             status: "task",
             ignoreReason: "",
-            dataSnapshot: JSON.stringify(taskMeta),
+            dataSnapshot: JSON.stringify({ ...alertFieldsSnapshot, ...taskMeta }),
           });
         }
 

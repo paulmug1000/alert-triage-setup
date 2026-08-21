@@ -940,15 +940,10 @@ export default function TriageSystem({ onBack }) {
   const [sessionId, setSessionId] = useState("");
   const [totalAlerts, setTotalAlerts] = useState(0);
   const [noActionCount, setNoActionCount] = useState(0);
-  const [showNoAction, setShowNoAction] = useState(false);
   const [acknowledgedNoAction, setAcknowledgedNoAction] = useState(new Set());
   const [triageComplete, setTriageComplete] = useState(false);
-  const [alerts, setAlerts] = useState([]);
-  const [currentAlertIndex, setCurrentAlertIndex] = useState(0);
   const [claudeAnalysis, setClaudeAnalysis] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [alertsLoaded, setAlertsLoaded] = useState(false);
-  const [userDecision, setUserDecision] = useState(null);
   
   // NEW: Client selection states
   const [screen, setScreen] = useState("initial"); // initial | clientSelection | alertSelection | triageAnalysis | ignoredAlerts
@@ -987,9 +982,6 @@ export default function TriageSystem({ onBack }) {
   const outgoingsPlacingRef = React.useRef(null);
   const setOutgoingsPlacing = (val) => { outgoingsPlacingRef.current = val; setOutgoingsPlacingState(val); };
   const [outgoingsEstimate, setOutgoingsEstimate] = useState(null); // { contractor, colLetter, monthLabel }
-  const [outgoingsDragging, setOutgoingsDraggingState] = useState(null); // { contractor, colLetter, blockIdx, block }
-  const outgoingsDraggingRef = React.useRef(null);
-  const setOutgoingsDragging = (val) => { outgoingsDraggingRef.current = val; setOutgoingsDraggingState(val); };
   const [outgoingsNewVendor, setOutgoingsNewVendor] = useState(null); // { exp } — inbox item to place as new vendor
   const [vendorsSubTab, setVendorsSubTab] = useState("contractors"); // "contractors" | "directCosts"
   const [directCostsJobs, setDirectCostsJobs] = useState(null); // [{ client, jobName, projectCode, rows }]
@@ -1232,7 +1224,6 @@ export default function TriageSystem({ onBack }) {
   const [taskSnoozeSubmitting, setTaskSnoozeSubmitting] = useState(false);
   const [taskActionError, setTaskActionError] = useState("");
   const [existingTaskBanner, setExistingTaskBanner] = useState(null); // {task, dataChanged}
-  const [existingTaskChecking, setExistingTaskChecking] = useState(false);
 
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [debugClientName, setDebugClientName] = useState("");
@@ -2251,7 +2242,6 @@ export default function TriageSystem({ onBack }) {
   // Check if incoming alert has existing task (called from analyzeAlert)
   const checkExistingTask = async (alert) => {
     try {
-      setExistingTaskChecking(true);
       setExistingTaskBanner(null);
       const res = await fetch("/api/triage", {
         method: "POST",
@@ -2261,7 +2251,6 @@ export default function TriageSystem({ onBack }) {
       const data = await res.json();
       if (data.success && data.found) setExistingTaskBanner(data.task);
     } catch (e) { /* silent */ }
-    finally { setExistingTaskChecking(false); }
   };
 
   // Inject global button/interaction styles once on mount, and set page title/favicon
@@ -2302,95 +2291,6 @@ export default function TriageSystem({ onBack }) {
   const [noActionAnalysisLoading, setNoActionAnalysisLoading] = useState({}); // keyed by flagType
   const [precomputedNoActionResults, setPrecomputedNoActionResults] = useState({}); // keyed by "clientName___flagType", never wiped
 
-  const fetchAndAnalyzeAlerts = async (sessionId) => {
-    try {
-      setIsAnalyzing(true);
-      
-      // Fetch alerts from Redis via API
-      const response = await fetch(`/api/triage?action=get_alerts&sessionId=${sessionId}`);
-      const data = await response.json();
-      
-      if (!data.success || !data.alerts) {
-        setError("Failed to load alerts");
-        return;
-      }
-      
-      console.log(`📋 Loaded ${data.alerts.length} alerts from Redis`);
-      setAlerts(data.alerts);
-      setCurrentAlertIndex(0);
-      setAlertsLoaded(true);
-      
-      // Start analyzing the first alert
-      if (data.alerts.length > 0) {
-        await analyzeAlert(data.alerts[0]);
-      }
-    } catch (err) {
-      setError(`Failed to load alerts: ${err.message}`);
-      console.error(err);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const analyzeAlert = async (alert) => {
-    try {
-      setIsAnalyzing(true);
-      setClaudeAnalysis(""); setPreviousIgnoreReason("");
-      
-      console.log(`🔍 Generating options for alert:`, alert.flagType);
-      
-      // Call API to get matching options
-      const response = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "analyze_alert",
-          alert,
-          automationCommanderSheetId,
-        }),
-      });
-      
-      const data = await response.json();
-      
-      if (!data.success) {
-        setClaudeAnalysis("Error generating options: " + (data.error || "Unknown error"));
-        return;
-      }
-      
-      console.log(`✅ Options generated:`, data.options?.length || 0);
-      const pir = data.previousIgnoreReason; setPreviousIgnoreReason(pir && typeof pir === "object" ? pir : pir ? { ignoreReason: pir, changeReason: null } : null);
-      setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
-    } catch (err) {
-      setClaudeAnalysis(`Error generating options: ${err.message}`);
-      console.error(err);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleAlertDecision = async (decision) => {
-    const alert = alerts[currentAlertIndex];
-    
-    console.log(`📝 Recording decision for alert: ${decision}`, alert);
-    
-    try {
-      // TODO: Log decision to TriageLog sheet
-      setUserDecision(decision);
-      
-      // Move to next alert
-      if (currentAlertIndex < alerts.length - 1) {
-        const nextAlert = alerts[currentAlertIndex + 1];
-        setCurrentAlertIndex(currentAlertIndex + 1);
-        setUserDecision(null);
-        await analyzeAlert(nextAlert);
-      } else {
-        // All alerts processed
-        setTriageComplete(true);
-      }
-    } catch (err) {
-      setError(`Failed to record decision: ${err.message}`);
-    }
-  };
 
   // Manual refresh — skips precomputed cache and runs a live start_triage
   const refreshTriage = async () => {
@@ -2545,40 +2445,6 @@ export default function TriageSystem({ onBack }) {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const toggleAckNoAction = (index) => {
-    const newAcknowledged = new Set(acknowledgedNoAction);
-    if (newAcknowledged.has(index)) {
-      newAcknowledged.delete(index);
-    } else {
-      newAcknowledged.add(index);
-    }
-    setAcknowledgedNoAction(newAcknowledged);
-
-    // Check if all acknowledged
-    if (newAcknowledged.size === noActionCount) {
-      setTriageComplete(true);
-    }
-  };
-
-  const goToNoAction = () => {
-    setShowNoAction(true);
-  };
-
-  const resetTriage = () => {
-    setSessionId("");
-    setTotalAlerts(0);
-    setNoActionCount(0);
-    setShowNoAction(false);
-    setAcknowledgedNoAction(new Set());
-    setTriageComplete(false);
-    setError("");
-    setAlerts([]);
-    setCurrentAlertIndex(0);
-    setClaudeAnalysis(""); setPreviousIgnoreReason("");
-    setAlertsLoaded(false);
-    setUserDecision(null);
   };
 
   // NEW: Helper function to get flag name from flag key
@@ -2955,18 +2821,6 @@ export default function TriageSystem({ onBack }) {
     const client = clientOverride || selectedClient;
     const autoCleared = await autoClearFlags(remainingAlerts, resolvedNoActionFlagsOverride, clientOverride);
     const groups = computeFlagGroups(client, remainingAlerts);
-    const resolvedSet = resolvedNoActionFlagsOverride || resolvedNoActionFlags;
-    const activeNoActionAlerts = clientOverride ? [] : clientNoActionAlerts;
-
-    // Check what's left that wasn't auto-cleared
-    const invoiceBlockingFlags  = ["invoiceStaleUnsentChanges"];
-    const crmBlockingFlags      = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"];
-    const invoiceNoActionDone  = invoiceBlockingFlags
-      .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
-      .every(f => resolvedSet.has(f));
-    const crmNoActionDone      = crmBlockingFlags
-      .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
-      .every(f => resolvedSet.has(f));
 
     const remainingGroups = {
       invoice: groups.invoice && !autoCleared.has("invoice"),
@@ -4779,8 +4633,6 @@ export default function TriageSystem({ onBack }) {
       // Already formatted (e.g. "Jan-26") — return as-is
       return String(labelOrIso).slice(0, 7);
     };
-
-    const getIsoMonth = (m) => m.isoMonth || m.label || "";
 
     const isCurrentMonth = (labelOrIso) => {
       const now = new Date();
@@ -8039,7 +7891,6 @@ export default function TriageSystem({ onBack }) {
 
   if (activeNav === "appLog") {
     // Derive column headers from first row, pad to 22 cols
-    const COL_COUNT = 22;
     const colLabels = ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V"];
     const lastRefresh = appLogLoadedAt
       ? new Date(appLogLoadedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
@@ -8973,10 +8824,6 @@ export default function TriageSystem({ onBack }) {
   if (screen === "alertSelection" && selectedClient && activeNav !== "tasks") {
     // groupedAlerts is hoisted above as a useMemo
 
-    const noActionDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.flagType));
-    const allActionableDone = clientAlerts.length === 0;
-    const canProceed = allActionableDone && noActionDone;
-
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
@@ -9051,8 +8898,9 @@ export default function TriageSystem({ onBack }) {
                         if (allSelected) { groupKeys.forEach(k => newSel.delete(k)); }
                         else             { groupKeys.forEach(k => newSel.add(k)); }
                         setBulkSelected(newSel);
-                      }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "3px 8px" }}>
-                        {allSelected ? "Deselect all" : "Select all"}
+                      }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "3px 8px",
+                        ...(anySelected && !allSelected ? { background: "#eef4ff", borderColor: "#93c5fd", color: "#1d4ed8" } : {}) }}>
+                        {allSelected ? "Deselect all" : anySelected ? `− Select remaining (${groupKeys.length - groupKeys.filter(k => bulkSelected.has(k)).length})` : "Select all"}
                       </button>
                     )}
                   </div>
@@ -9363,7 +9211,6 @@ export default function TriageSystem({ onBack }) {
                   if (isRichFlag && !isResolved) {
                     // Rich analysis card
                     const overallOk = analysis?.overallOk;
-                    const hasIssues = analysis && !analysis.overallOk;
                     const borderColor = !analysis ? "#e0e0e0" : overallOk ? "#c8e6c9" : "#ffccbc";
                     const bgColor = !analysis ? "#fff" : overallOk ? "#f1f8f2" : "#fff8f6";
 
@@ -10785,66 +10632,6 @@ export default function TriageSystem({ onBack }) {
               </div>
             </div>
           )}
-        </div>
-      </div>
-      </NavShell>
-    );
-  }
-  if (showNoAction && noActionCount > 0 && activeNav !== "tasks") {
-    const allAcknowledged = acknowledgedNoAction.size === noActionCount;
-
-    return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
-      <div style={styles.container}>
-        <div style={styles.header}>
-          <h1 style={styles.title}>Info-Only Alerts</h1>
-          <p style={styles.subtitle}>These require no action - acknowledge to clear</p>
-        </div>
-
-        <div style={styles.noActionSection}>
-          <div style={{ marginBottom: "16px" }}>
-            <button className="triage-btn" onClick={() => setShowNoAction(false)} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
-              ← Back to Actionable Alerts
-            </button>
-          </div>
-          <h2 style={{ margin: "0 0 16px 0", fontSize: "16px", fontWeight: "600" }}>
-            {acknowledgedNoAction.size} of {noActionCount} Acknowledged
-          </h2>
-
-          {/* TODO: Replace with actual no-action alerts from API response */}
-          <div style={styles.noActionItem}>
-            <div style={styles.noActionLabel}>
-              <div style={styles.noActionTitle}>Invoice app discr</div>
-              <div style={styles.noActionDesc}>No action required - informational only</div>
-            </div>
-            <div
-              style={{
-                ...styles.checkmark,
-                ...(acknowledgedNoAction.has(0) ? styles.checkmarkChecked : {}),
-              }}
-              onClick={() => toggleAckNoAction(0)}
-            >
-              {acknowledgedNoAction.has(0) ? "✓" : ""}
-            </div>
-          </div>
-
-          {allAcknowledged && (
-            <div style={styles.successBanner}>
-              All info-only alerts acknowledged. Ready to complete triage!
-            </div>
-          )}
-
-          <div style={styles.buttonGroup}>
-
-            {allAcknowledged && (
-              <button className="triage-btn"
-                onClick={() => setTriageComplete(true)}
-                style={styles.button}
-              >
-                Complete Triage ✓
-              </button>
-            )}
-          </div>
         </div>
       </div>
       </NavShell>

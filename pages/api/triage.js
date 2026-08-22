@@ -45,8 +45,6 @@ const FLAG_COLUMNS = {
   crmPipeAppDiscr: "DR",
   crmConfDashDiscr: "DY",
   crmConfAppDiscr: "EF",
-  crmPipeSkippedBlank: "EM",
-  crmConfSkippedBlank: "ET",
   crmCopiedConfChecked: "FA",
   crmCopiedConfUnchecked: "FH",
   crmCopiedConfDelete: "FO",
@@ -70,8 +68,6 @@ const FLAG_ROW_INDEX_BY_KEY = {
   crmPipeAppDiscr: 21,
   crmConfDashDiscr: 28,
   crmConfAppDiscr: 35,
-  crmPipeSkippedBlank: 42,
-  crmConfSkippedBlank: 49,
   crmCopiedConfChecked: 56,
   crmCopiedConfUnchecked: 63,
   crmCopiedConfDelete: 70,
@@ -90,8 +86,6 @@ const PRECOMPUTED_MAX_AGE_MS = 90 * 60 * 1000; // 90 minutes (GAS precompute run
 
 const NO_ACTION_FLAGS = [
   "invoiceAppDiscr",
-  "crmPipeSkippedBlank",
-  "crmConfSkippedBlank",
   "crmCopiedConfChecked",
   "crmCopiedConfUnchecked",
   "crmCopiedConfDelete",
@@ -110,8 +104,6 @@ const FLAG_NAMES = {
   crmPipeAppDiscr: "CRM pipe app discr",
   crmConfDashDiscr: "CRM conf dash discr",
   crmConfAppDiscr: "CRM conf app discr",
-  crmPipeSkippedBlank: "CRM pipe skipped with blank",
-  crmConfSkippedBlank: "CRM conf skipped with blank",
   crmCopiedConfChecked: "CRM copied to conf box checked",
   crmCopiedConfUnchecked: "CRM copied to conf box UNchecked",
   crmCopiedConfDelete: "CRM copied to conf box DELETE",
@@ -138,8 +130,6 @@ const DATACHGALERT_COLUMN_OFFSETS = {
   crmPipeAppDiscr: 3,         // AI
   crmConfDashDiscr: 4,        // AJ
   crmConfAppDiscr: 5,         // AK
-  crmPipeSkippedBlank: 6,     // AL
-  crmConfSkippedBlank: 7,     // AM
   crmCopiedConfChecked: 8,    // AN
   crmCopiedConfUnchecked: 9,  // AO
   crmCopiedConfDelete: 10,    // AP
@@ -2355,8 +2345,6 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         crmPipeAppDiscr: String(flagRow[21] || "").toUpperCase() === "TRUE", // DR
         crmConfDashDiscr: String(flagRow[28] || "").toUpperCase() === "TRUE", // DY
         crmConfAppDiscr: String(flagRow[35] || "").toUpperCase() === "TRUE", // EF
-        crmPipeSkippedBlank: String(flagRow[42] || "").toUpperCase() === "TRUE", // EM
-        crmConfSkippedBlank: String(flagRow[49] || "").toUpperCase() === "TRUE", // ET
         crmCopiedConfChecked: String(flagRow[56] || "").toUpperCase() === "TRUE", // FA
         crmCopiedConfUnchecked: String(flagRow[63] || "").toUpperCase() === "TRUE", // FH
         crmCopiedConfDelete: String(flagRow[70] || "").toUpperCase() === "TRUE", // FO
@@ -2391,8 +2379,6 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         flags.crmPipeAppDiscr = false;
         flags.crmConfDashDiscr = false;
         flags.crmConfAppDiscr = false;
-        flags.crmPipeSkippedBlank = false;
-        flags.crmConfSkippedBlank = false;
       }
       if (clearAll || clearCopied) {
         flags.crmCopiedConfChecked = false;
@@ -2557,6 +2543,72 @@ function buildDirCompSummary(alert) {
 // ============================================================================
 
 // Check if GAS automation is currently running for a given sequence type.
+// AutoLog line prefixes for the 8 confirmed informational types (22 Aug
+// 2026) — traced against the actual GAS source for 5 of them
+// (1_Core_and_Xero.gs, 7_Cost_Sync.gs, 2_Internal_Sheet_Logic.gs); the
+// three crmCopiedConf* patterns were supplied directly by Paul from his own
+// tracing of runAgencyAutomator/_copyPipelineJobToConfirmed, not derived
+// independently. Matched via .includes() rather than .startsWith() since
+// some lines carry a "[SheetName]" prefix before the pattern and some
+// don't. crmPipeSkippedBlank/crmConfSkippedBlank removed entirely per
+// Paul's explicit confirmation (22 Aug 2026) — no longer tracked as flag
+// types at all, not merely unmatched here.
+const AUTOLOG_TYPE_PATTERNS = {
+  retainerInvoicesCreated:   ["Created Manual Invoice:"],
+  retainerInvoicesDeleted:   ["Removed Manual Invoice"],
+  expenseUnreconGaps:        ["Created Manual Gap:", "Changed Manual Gap:", "Removed Manual Gap"],
+  expenseAdded:              ["Created New Row:"],
+  invoiceStaleUnsentChanges: ["Stale Invoice - Row"],
+  // AN2 — job copied Pipeline -> Confirmed. Includes the fail-safe
+  // duplicate-skip line at Paul's explicit request (22 Aug 2026) — a
+  // detected-duplicate skip is still a "checked" event worth surfacing,
+  // even though no actual copy happened.
+  crmCopiedConfChecked:      [
+    "Copied Pipeline Project to Confirmed:",
+    "Copied Pipeline Project (with",
+    "Converted Pipeline Job to Confirmed Retainer:",
+    "Skipped Copy: Job with Project Code",
+  ],
+  // AO2 — source CRM reverted a job's copied status from Yes back to No.
+  // Matched on the row-level log line (one per job), not the summary line
+  // at the bottom of the AutoLog entry that lists multiple IDs together —
+  // the row-level line is what gives each reversion its own discrete
+  // identity to fingerprint.
+  crmCopiedConfUnchecked:    ["Copied Status: 'Yes' -> 'No' (Reverted by Source)"],
+  // AP2 — CRM passed a DELETE command for a Confirmed job. Same reasoning
+  // as above: row-level line, not either of the two summary lines.
+  crmCopiedConfDelete:       ["Deleted Confirmed Job: Row"],
+};
+
+/**
+ * Reads the most recent AutoLog rows for a client's master sheet — newest
+ * always at row 2, per the actual writeToAutoLog implementation (confirmed
+ * 22 Aug 2026, 1_Core_and_Xero.gs), not assumed. Each row's Details text
+ * can bundle multiple distinct log lines from one automation run
+ * (joined with "\n\n"), so this returns the raw rows for the caller to
+ * split and match against known patterns — matching isn't this function's
+ * job, since different callers may want different patterns.
+ */
+async function readRecentAutoLogEntries_(sheets, masterSheetId, limit = 30) {
+  try {
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: `AutoLog!A2:D${limit + 1}`,
+    });
+    const rows = resp.data.values || [];
+    return rows.map(row => ({
+      timestamp: row[0] || "",
+      category: row[1] || "",
+      summary: row[2] || "",
+      details: row[3] || "",
+    }));
+  } catch (err) {
+    // Tab may not exist yet for a client with no automation runs logged —
+    // not an error worth surfacing per-client, just no entries to check.
+    return [];
+  }
+}
+
 // Reads DataChgAlert tab of the master sheet:
 //   Invoices: B4 (flag), C4 (timestamp)
 //   Expenses: F4 (flag), G4 (timestamp)
@@ -7076,8 +7128,6 @@ export default async function handler(req, res) {
             21: "crmPipeAppDiscr (DR)",
             28: "crmConfDashDiscr (DY)",
             35: "crmConfAppDiscr (EF)",
-            42: "crmPipeSkippedBlank (EM)",
-            49: "crmConfSkippedBlank (ET)",
             56: "crmCopiedConfChecked (FA)",
             63: "crmCopiedConfUnchecked (FH)",
             70: "crmCopiedConfDelete (FO)",
@@ -7386,7 +7436,7 @@ export default async function handler(req, res) {
           "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
         ]);
         const NO_ACTION_FLAG_KEYS = new Set([
-          "invoiceAppDiscr", "crmPipeSkippedBlank", "crmConfSkippedBlank",
+          "invoiceAppDiscr",
           "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
           "retainerInvoicesCreated", "retainerInvoicesDeleted", "expenseAppDiscr",
           "expenseAdded", "expenseUnreconGaps", "invoiceStaleUnsentChanges",
@@ -7433,8 +7483,6 @@ export default async function handler(req, res) {
           crmPipeAppDiscr:       ["crm"],
           crmConfDashDiscr:      ["crm"],
           crmConfAppDiscr:       ["crm"],
-          crmPipeSkippedBlank:   ["crm"],
-          crmConfSkippedBlank:   ["crm"],
           crmCopiedConfChecked:  ["crm"],
           crmCopiedConfUnchecked: ["crm"],
           crmCopiedConfDelete:   ["crm"],
@@ -7463,8 +7511,6 @@ export default async function handler(req, res) {
           crmPipeAppDiscr:       "DR",
           crmConfDashDiscr:      "DY",
           crmConfAppDiscr:       "EF",
-          crmPipeSkippedBlank:   "EM",
-          crmConfSkippedBlank:   "ET",
           crmCopiedConfChecked:  "FA",
           crmCopiedConfUnchecked: "FH",
           crmCopiedConfDelete:   "FO",
@@ -7877,6 +7923,7 @@ export default async function handler(req, res) {
                   clientName: client.clientName, alertType: "invoiceDashboardDiscr",
                   alerts: invAlerts,
                   autoUpdatesRow: client.sheetRowNum,
+                  category: "discrepancy",
                 });
               }
             }
@@ -7890,6 +7937,7 @@ export default async function handler(req, res) {
                   clientName: client.clientName, alertType: "expenseDashboardDiscr",
                   alerts: expAlerts,
                   autoUpdatesRow: client.sheetRowNum,
+                  category: "discrepancy",
                 });
               }
             }
@@ -7906,11 +7954,44 @@ export default async function handler(req, res) {
                   const dashAlerts = crmAlerts.filter(a => (a.flagType || a.alertType) === dashKey);
                   const appAlerts  = crmAlerts.filter(a => (a.flagType || a.alertType) === appKey);
                   if (!alreadyDash && dashAlerts.length > 0) {
-                    sweepItems.push({ clientName: client.clientName, alertType: dashKey, alerts: dashAlerts, autoUpdatesRow: client.sheetRowNum });
+                    sweepItems.push({ clientName: client.clientName, alertType: dashKey, alerts: dashAlerts, autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
                   }
                   if (!alreadyApp && appAlerts.length > 0) {
-                    sweepItems.push({ clientName: client.clientName, alertType: appKey, alerts: appAlerts, autoUpdatesRow: client.sheetRowNum });
+                    sweepItems.push({ clientName: client.clientName, alertType: appKey, alerts: appAlerts, autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
                   }
+                }
+              }
+            }
+
+            // AutoLog-derived informational types (22 Aug 2026) — the 5
+            // confirmed ones only (see AUTOLOG_TYPE_PATTERNS). Each
+            // matched line becomes its own synthetic "alert" — the line
+            // text itself already contains everything (row/client/job/
+            // amount) that makes it a discrete, fingerprintable event, so
+            // no field-by-field parsing is needed, just matching which
+            // pattern a line contains and hashing the whole line.
+            {
+              const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId);
+              for (const [autoLogType, patterns] of Object.entries(AUTOLOG_TYPE_PATTERNS)) {
+                const alreadyRaised = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[autoLogType]] || "").toUpperCase() === "TRUE";
+                if (alreadyRaised) continue;
+
+                const matchedAlerts = [];
+                for (const entry of logEntries) {
+                  const lines = (entry.details || "").split("\n\n");
+                  for (const line of lines) {
+                    if (!patterns.some(p => line.includes(p))) continue;
+                    const fingerprintInput = `${client.clientName}|${autoLogType}|${line}`;
+                    matchedAlerts.push({
+                      clientName: client.clientName,
+                      alertType: autoLogType,
+                      summary: line,
+                      _fingerprint: createHash("sha256").update(fingerprintInput).digest("hex").substring(0, 16),
+                    });
+                  }
+                }
+                if (matchedAlerts.length > 0) {
+                  sweepItems.push({ clientName: client.clientName, alertType: autoLogType, alerts: matchedAlerts, autoUpdatesRow: client.sheetRowNum, category: "proactive" });
                 }
               }
             }
@@ -7985,7 +8066,7 @@ export default async function handler(req, res) {
                   alertSummary: summary,
                   cachedOptionsJSON: "",
                   status: "cached",
-                  category: "discrepancy",
+                  category: item.category || "discrepancy",
                   dataSnapshot: JSON.stringify(alertForSnapshot),
                 });
               } catch (memErr) {

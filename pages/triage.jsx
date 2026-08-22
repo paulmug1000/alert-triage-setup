@@ -2471,8 +2471,6 @@ export default function TriageSystem({ onBack }) {
       "crmPipeAppDiscr":       "CRM app discrepancy (Pipeline)",
       "crmConfDashDiscr":      "CRM dashboard discrepancy (Confirmed)",
       "crmConfAppDiscr":       "CRM app discrepancy (Confirmed)",
-      "crmPipeSkippedBlank":   "CRM pipeline skipped (blank)",
-      "crmConfSkippedBlank":   "CRM confirmed skipped (blank)",
       "crmCopiedConfChecked":  "CRM copied to conf box checked",
       "crmCopiedConfUnchecked":"CRM copied to conf box UNchecked",
       "crmCopiedConfDelete":   "CRM copied to conf box DELETE",
@@ -2781,7 +2779,7 @@ export default function TriageSystem({ onBack }) {
     // even if noAction blocking flags prevent the full clear_flags API call
     const ACTIONABLE_FLAG_TYPE_MAP = {
       invoice: ["invoiceDashboardDiscr","invoiceAppDiscr","retainerInvoicesCreated","retainerInvoicesDeleted","invoiceStaleUnsentChanges"],
-      crm:     ["crmPipeDashDiscr","crmPipeAppDiscr","crmConfDashDiscr","crmConfAppDiscr","crmPipeSkippedBlank","crmConfSkippedBlank"],
+      crm:     ["crmPipeDashDiscr","crmPipeAppDiscr","crmConfDashDiscr","crmConfAppDiscr"],
       expense: ["expenseDashboardDiscr","expenseAppDiscr","expenseAdded","expenseUnreconGaps"],
     };
     const FULL_FLAG_TYPE_MAP = {
@@ -2885,7 +2883,6 @@ export default function TriageSystem({ onBack }) {
     const COUNTED_ALERT_TYPES = [
       "invoiceDashboardDiscr", "invoiceAppDiscr",
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
-      "crmPipeSkippedBlank", "crmConfSkippedBlank",
       "expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps",
       "invoiceStaleUnsentChanges",
     ];
@@ -2917,7 +2914,7 @@ export default function TriageSystem({ onBack }) {
   const ALERT_CATEGORY_FLAGS = {
     invoice: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges"],
     expense: ["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"],
-    crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr", "crmPipeSkippedBlank", "crmConfSkippedBlank"],
+    crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr"],
   };
   const EXPENSE_SUPPRESSIBLE = new Set(["expenseDashboardDiscr", "expenseAppDiscr"]);
   const computeAlertCheckCount = (clientName, categoriesStr) => {
@@ -3096,13 +3093,13 @@ export default function TriageSystem({ onBack }) {
     // (b) there are no remaining unprocessed alerts for that group
     const invoiceAlertTypes = new Set(["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted"]);
     const crmAlertTypes = new Set(["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
-      "crmPipeSkippedBlank", "crmConfSkippedBlank", "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"]);
+      "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"]);
     const expenseAlertTypes = new Set(["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"]);
 
     const remaining = remainingAlerts || [];
     const hasInvoiceFlag = !!(f.invoiceDashboardDiscr || f.invoiceAppDiscr || f.invoiceStaleUnsentChanges || f.retainerInvoicesCreated || f.retainerInvoicesDeleted);
     const hasCRMFlag = !!(f.crmPipeDashDiscr || f.crmPipeAppDiscr || f.crmConfDashDiscr || f.crmConfAppDiscr ||
-      f.crmPipeSkippedBlank || f.crmConfSkippedBlank || f.crmCopiedConfChecked || f.crmCopiedConfUnchecked || f.crmCopiedConfDelete);
+      f.crmCopiedConfChecked || f.crmCopiedConfUnchecked || f.crmCopiedConfDelete);
     const hasExpenseFlag = !!(f.expenseDashboardDiscr || f.expenseAppDiscr || f.expenseAdded || f.expenseUnreconGaps);
 
     const remainingInvoice = remaining.some(a => invoiceAlertTypes.has(a.flagType || a.type));
@@ -3159,8 +3156,7 @@ export default function TriageSystem({ onBack }) {
       const FLAG_GROUP_KEYS = {
         invoice: ["invoiceDashboardDiscr", "invoiceAppDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted"],
         crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
-              "crmPipeSkippedBlank", "crmConfSkippedBlank", "crmCopiedConfChecked",
-              "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
+              "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
         expense: ["expenseDashboardDiscr", "expenseAppDiscr", "expenseAdded", "expenseUnreconGaps"],
       };
       const clearedKeys = new Set(selected.flatMap(group => FLAG_GROUP_KEYS[group] || []));
@@ -7801,8 +7797,6 @@ export default function TriageSystem({ onBack }) {
                       { key: "crmPipeAppDiscr", name: "CRM pipeline app discrepancy", kind: "actionable" },
                       { key: "crmConfDashDiscr", name: "CRM confirmed dashboard discrepancy", kind: "actionable" },
                       { key: "crmConfAppDiscr", name: "CRM confirmed app discrepancy", kind: "actionable" },
-                      { key: "crmPipeSkippedBlank", name: "CRM pipeline skipped (blank)", kind: "info" },
-                      { key: "crmConfSkippedBlank", name: "CRM confirmed skipped (blank)", kind: "info" },
                       { key: "crmCopiedConfChecked", name: "CRM copied to Confirmed — checked", kind: "blocking" },
                       { key: "crmCopiedConfUnchecked", name: "CRM copied to Confirmed — unchecked", kind: "blocking" },
                       { key: "crmCopiedConfDelete", name: "CRM copied to Confirmed — delete", kind: "blocking" },
@@ -9786,8 +9780,7 @@ export default function TriageSystem({ onBack }) {
         label: "CRM flags",
         sub: "Clears AT2 and AU2 in DataChgAlert",
         flags: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
-                "crmPipeSkippedBlank", "crmConfSkippedBlank", "crmCopiedConfChecked",
-                "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
+                "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
       },
       {
         key: "expense",

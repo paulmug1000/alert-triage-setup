@@ -7599,6 +7599,7 @@ export default async function handler(req, res) {
         // client was never flagged via the old path at all.
         let finalAlerts = mergedAlerts;
         let finalClientsWithFlags = reconciledClients;
+        let finalNoActionAlerts = mergedNoActionAlerts;
         try {
           const sheetsForMerge = await getSheetsClient();
           const acIdForMerge = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
@@ -7610,35 +7611,79 @@ export default async function handler(req, res) {
           // recomputing via the one, single fingerprint function is the
           // safer, consistent choice either way.
           const oldPathFingerprints = new Set(mergedAlerts.map(a => buildAlertFingerprint(a)));
+          // Proactive-category rows aren't individually fingerprinted the
+          // way discrepancy alerts are — clientId+flagType is the
+          // equivalent "already covered by the old NO_ACTION_FLAGS path"
+          // check for this side.
+          const oldPathNoActionKeys = new Set(mergedNoActionAlerts.map(na => `${na.clientId}|||${na.flagType}`));
 
           const newAlertsFromMemory = [];
+          const newNoActionFromMemory = [];
           const extraFlagsByClient = new Map(); // clientName -> { flagKey: true, ... }
           const newClientMeta = new Map(); // clientName -> { clientId, masterSheetId } for clients not already in finalClientsWithFlags
 
+          // Looked up lazily, once, only if there are actually proactive
+          // rows to resolve — proactive AlertMemory rows only store
+          // clientName, not masterSheetId (unlike discrepancy rows, which
+          // get clientId/masterSheetId set on their dataSnapshot before
+          // analyze_alert runs — proactive rows skip that stage entirely
+          // since they need no options built).
+          let clientNameToMeta = null;
+
           for (const row of memoryRowsForMerge) {
-            if (row.status !== "cached" || row.category !== "discrepancy" || !row.cachedOptionsJSON) continue;
-            if (oldPathFingerprints.has(row.fingerprintHash)) continue; // already present via the old path
+            if (row.status !== "cached") continue;
 
-            let alertObj = null;
-            try { alertObj = JSON.parse(row.dataSnapshot); } catch (e) { continue; } // malformed snapshot — skip
-            let options = [];
-            try { options = JSON.parse(row.cachedOptionsJSON); } catch (e) { continue; } // malformed options — skip
+            if (row.category === "discrepancy") {
+              if (!row.cachedOptionsJSON) continue;
+              if (oldPathFingerprints.has(row.fingerprintHash)) continue; // already present via the old path
 
-            newAlertsFromMemory.push({ ...alertObj, fingerprintHash: row.fingerprintHash, options });
+              let alertObj = null;
+              try { alertObj = JSON.parse(row.dataSnapshot); } catch (e) { continue; } // malformed snapshot — skip
+              let options = [];
+              try { options = JSON.parse(row.cachedOptionsJSON); } catch (e) { continue; } // malformed options — skip
 
-            if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
-            extraFlagsByClient.get(row.clientName)[row.alertType] = true;
+              newAlertsFromMemory.push({ ...alertObj, fingerprintHash: row.fingerprintHash, options });
 
-            if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
-              newClientMeta.set(row.clientName, {
-                clientId: alertObj.clientId || "",
-                masterSheetId: alertObj.masterSheetId || "",
+              if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
+              extraFlagsByClient.get(row.clientName)[row.alertType] = true;
+
+              if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
+                newClientMeta.set(row.clientName, {
+                  clientId: alertObj.clientId || "",
+                  masterSheetId: alertObj.masterSheetId || "",
+                });
+              }
+            } else if (row.category === "proactive") {
+              if (clientNameToMeta === null) {
+                const { clientRows } = await readAutoUpdatesClientRows_(sheetsForMerge, acIdForMerge);
+                clientNameToMeta = new Map(clientRows.map(c => [c.clientName, c]));
+              }
+              const clientMeta = clientNameToMeta.get(row.clientName);
+              if (!clientMeta) continue; // client no longer in AutoUpdates — skip rather than guess
+
+              if (oldPathNoActionKeys.has(`${clientMeta.masterSheetId}|||${row.alertType}`)) continue; // already covered by the old path
+
+              newNoActionFromMemory.push({
+                clientId: clientMeta.masterSheetId,
+                flagType: row.alertType,
+                flagName: FLAG_NAMES[row.alertType] || row.alertType,
               });
+
+              if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
+              extraFlagsByClient.get(row.clientName)[row.alertType] = true;
+
+              if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
+                newClientMeta.set(row.clientName, {
+                  clientId: clientMeta.clientSheetId,
+                  masterSheetId: clientMeta.masterSheetId,
+                });
+              }
             }
           }
 
-          if (newAlertsFromMemory.length > 0) {
+          if (newAlertsFromMemory.length > 0 || newNoActionFromMemory.length > 0) {
             finalAlerts = [...mergedAlerts, ...newAlertsFromMemory];
+            finalNoActionAlerts = [...mergedNoActionAlerts, ...newNoActionFromMemory];
 
             // Rebuild rather than mutate — reconciledClients' objects are
             // shared references even after the array spread above, so
@@ -7655,7 +7700,7 @@ export default async function handler(req, res) {
                 flags: extraFlagsByClient.get(clientName) || {},
               });
             }
-            console.log(`  store_precomputed: merged ${newAlertsFromMemory.length} AlertMemory-sourced alert(s) across ${newClientMeta.size} new + ${extraFlagsByClient.size - newClientMeta.size} existing client(s)`);
+            console.log(`  store_precomputed: merged ${newAlertsFromMemory.length} discrepancy + ${newNoActionFromMemory.length} proactive AlertMemory-sourced item(s) across ${newClientMeta.size} new + ${extraFlagsByClient.size - newClientMeta.size} existing client(s)`);
           }
         } catch (mergeErr) {
           console.log(`  ⚠️ Could not merge AlertMemory-sourced alerts: ${mergeErr.message}`);
@@ -7664,9 +7709,9 @@ export default async function handler(req, res) {
         const precomputedData = {
           computedAt: computedAt || Date.now(),
           totalAlerts: finalAlerts.length,
-          noActionCount: mergedNoActionAlerts.length,
+          noActionCount: finalNoActionAlerts.length,
           alerts: finalAlerts,
-          noActionAlerts: mergedNoActionAlerts,
+          noActionAlerts: finalNoActionAlerts,
           clientsWithFlags: finalClientsWithFlags,
           noActionAnalysisResults: noActionAnalysisResults || {},
         };
@@ -7690,7 +7735,7 @@ export default async function handler(req, res) {
           const clientDetail = (finalClientsWithFlags || []).map(c => ({
             clientName: c.clientName,
             alertCount: finalAlerts.filter(a => a.clientName === c.clientName).length,
-            noActionCount: mergedNoActionAlerts.filter(na => {
+            noActionCount: finalNoActionAlerts.filter(na => {
               const naClient = (finalClientsWithFlags || []).find(rc => rc.masterSheetId === na.clientId);
               return naClient && naClient.clientName === c.clientName;
             }).length,

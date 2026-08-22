@@ -2464,8 +2464,19 @@ function buildDirCompSummary(alert) {
 // Paul's explicit confirmation (22 Aug 2026) — no longer tracked as flag
 // types at all, not merely unmatched here.
 const AUTOLOG_TYPE_PATTERNS = {
-  retainerInvoicesCreated:   ["Created Manual Invoice:"],
-  retainerInvoicesDeleted:   ["Removed Manual Invoice"],
+  // Fixed 23 Aug 2026 — the original patterns here ("Created Manual
+  // Invoice:"/"Removed Manual Invoice") turned out to fire for BOTH
+  // retainer AND project jobs: auditInvoiceGaps/runInvoiceSheetAudit_ reads
+  // a "Project / retainer" type column but never actually used it to
+  // distinguish its own logging, so every general invoice-gap-filling
+  // event (any job type) matched here too — confirmed by Paul finding a
+  // genuine project-side "invoice gap" event mislabelled as a retainer
+  // alert. Paul confirmed he only wants retainer-specific events and
+  // updated the GAS source (5_Agent_Receiver.gs) to genuinely distinguish
+  // them via isRetainer/rowType checks — these patterns now match that
+  // exact, new wording, not the old, ambiguous one.
+  retainerInvoicesCreated:   ["Created Retainer Invoice", "Adjusted Retainer Invoice"],
+  retainerInvoicesDeleted:   ["Removed Retainer Invoice"],
   expenseUnreconGaps:        ["Created Manual Gap:", "Changed Manual Gap:", "Removed Manual Gap"],
   expenseAdded:              ["Created New Row:"],
   invoiceStaleUnsentChanges: ["Stale Invoice - Row"],
@@ -7886,11 +7897,24 @@ export default async function handler(req, res) {
           await ensureAlertMemoryTab(sheets, acIdSweep);
           const memoryRows = await readAlertMemory(sheets, acIdSweep);
           const handledHashes = getHandledFingerprintHashes_(memoryRows);
-          console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes`);
+          // Fixed 23 Aug 2026 — Paul found multiple AlertMemory rows with
+          // the exact same fingerprint. Root cause: handledHashes only
+          // covers resolved/ignored/task/superseded/accepted rows (by
+          // design, for its original purpose elsewhere) — it does NOT
+          // cover "cached" rows still sitting there unresolved. Using it
+          // alone as the "should I append a new row" check meant every
+          // still-outstanding discrepancy got re-appended as a fresh
+          // duplicate on every single 30-min sweep, since its fingerprint
+          // never became "handled" until Paul actually resolved it.
+          // existingHashes covers every fingerprint already in AlertMemory
+          // at all, any status — the correct check for "don't duplicate
+          // a row that's already there".
+          const existingHashes = new Set(memoryRows.map(r => r.fingerprintHash).filter(Boolean));
+          console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes, ${existingHashes.size} existing hashes`);
 
           for (const item of sweepItems) {
             if (!item.alerts || item.alerts.length === 0) continue;
-            const newAlerts = item.alerts.filter(a => a._fingerprint && !handledHashes.has(a._fingerprint));
+            const newAlerts = item.alerts.filter(a => a._fingerprint && !existingHashes.has(a._fingerprint));
             if (newAlerts.length === 0) continue;
             flagsRaised++;
             raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, method: "fingerprint", totalFingerprints: item.alerts.length, newFingerprints: newAlerts.length });
@@ -7904,14 +7928,25 @@ export default async function handler(req, res) {
               try {
                 // alert.summary is already correctly built by
                 // buildInvCompSummary/buildDirCompSummary for invoice/
-                // expense — confirmed by reading those functions directly
-                // rather than assumed. CRM alerts have no equivalent
-                // internal summary builder (the existing dashSummary
-                // pattern elsewhere is built by ITS caller from raw array
-                // indices into alert.data — not something to replicate here
-                // without the same care), so a safer, verified fallback
-                // using only alert.rowNumber (a confirmed top-level field).
-                const summary = alert.summary || `${item.alertType} — ${item.clientName} (row ${alert.rowNumber})`;
+                // expense — confirmed by reading those functions directly.
+                // CRM has no equivalent internal summary builder, so this
+                // replicates the exact logic the live analyze_alert path
+                // uses for CRM alerts (traced directly from that working
+                // code, 23 Aug 2026, after an earlier row-number-only
+                // fallback here was flagged by Paul as a real regression —
+                // row numbers shift whenever the sheet changes, and the
+                // job name/project code carry the actual identity).
+                let summary = alert.summary;
+                if (!summary && (item.alertType.startsWith("crmPipe") || item.alertType.startsWith("crmConf"))) {
+                  const crmArr = alert.data?.crmData || [];
+                  const shtArr = alert.data?.sheetData || [];
+                  const client = crmArr[0] || shtArr[1] || "";
+                  const job    = crmArr[1] || shtArr[2] || "";
+                  const code   = crmArr[2] || shtArr[0] || "";
+                  const jobDesc = [client, job, code].filter(Boolean).join(" — ");
+                  summary = `CRM ${item.alertType} ${jobDesc}`.trim();
+                }
+                summary = summary || `${item.alertType} — ${item.clientName} (row ${alert.rowNumber})`;
                 // Store the full alert object (minus the internal _fingerprint
                 // field, redundant with the fingerprintHash column) so the
                 // eventual read-path can display it without a third re-read

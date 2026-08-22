@@ -1177,6 +1177,10 @@ export default function TriageSystem({ onBack }) {
   const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
   const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
   const [proactiveCheckLogLoaded, setProactiveCheckLogLoaded] = useState(false);
+  const [flagRules, setFlagRules] = useState({}); // { flagKey: "increase"|"decrease"|"if true"|"if changed"|"" }
+  const [flagRulesLoading, setFlagRulesLoading] = useState(false);
+  const [flagRulesLoaded, setFlagRulesLoaded] = useState(false);
+  const [flagRuleSaving, setFlagRuleSaving] = useState(""); // flagKey currently being saved, "" = none
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagResult, setDiagResult] = useState(null);
   const [diagError, setDiagError] = useState("");
@@ -1275,6 +1279,7 @@ export default function TriageSystem({ onBack }) {
     setActiveNav("settings");
     setSettingsLoading(true);
     if (!proactiveCheckLogLoaded) loadProactiveCheckLog();
+    if (!flagRulesLoaded) loadFlagRules();
     if (!allClientsLoaded) {
       fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3797,6 +3802,46 @@ export default function TriageSystem({ onBack }) {
       if (data.success) setProactiveCheckLog(data.runs || []);
     } catch(e) { console.error("loadProactiveCheckLog error:", e); }
     finally { setProactiveCheckLogLoading(false); setProactiveCheckLogLoaded(true); }
+  };
+
+  const loadFlagRules = async () => {
+    try {
+      setFlagRulesLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_flag_rules", automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) setFlagRules(data.rules || {});
+    } catch(e) { console.error("loadFlagRules error:", e); }
+    finally { setFlagRulesLoading(false); setFlagRulesLoaded(true); }
+  };
+
+  // Immediate-save, per Paul's preference (21 Aug 2026) — optimistic update
+  // so the dropdown reflects the choice instantly, with a per-flag "saving"
+  // indicator and a revert-on-failure so a failed save is visible rather
+  // than silently leaving the UI showing something that isn't actually
+  // saved.
+  const saveFlagRule = async (flagKey, newRule) => {
+    const previousRule = flagRules[flagKey] || "";
+    setFlagRules(prev => ({ ...prev, [flagKey]: newRule }));
+    setFlagRuleSaving(flagKey);
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save_flag_rule", automationCommanderSheetId, flagKey, rule: newRule }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setFlagRules(prev => ({ ...prev, [flagKey]: previousRule }));
+        console.error("save_flag_rule failed:", data.error);
+      }
+    } catch (e) {
+      setFlagRules(prev => ({ ...prev, [flagKey]: previousRule }));
+      console.error("saveFlagRule error:", e);
+    } finally {
+      setFlagRuleSaving("");
+    }
   };
 
   const loadOutgoings = async (client) => {
@@ -7681,7 +7726,7 @@ export default function TriageSystem({ onBack }) {
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
                 <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Alert Types & Auto-Clearing</h3>
                 <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-                  Every alert type the system can raise, and what actually clears it in the sheet. Alerts fall into three groups (invoice, CRM, expense) — each group's flags only clear together, once every alert in that group for the client has been handled.
+                  Every alert type the system can raise, and what actually clears it in the sheet. Alerts fall into three groups (invoice, CRM, expense) — each group's flags only clear together, once every alert in that group for the client has been handled. The rule dropdown controls what triggers each flag — changes save immediately.
                 </p>
 
                 {[
@@ -7689,36 +7734,36 @@ export default function TriageSystem({ onBack }) {
                     group: "Invoice",
                     rule: "Clears once every invoice alert for the client is resolved, and \"Invoice stale/unsent changes\" (if present) has also been acknowledged.",
                     items: [
-                      { name: "Invoice dashboard discrepancy", kind: "actionable" },
-                      { name: "Invoice app discrepancy", kind: "info" },
-                      { name: "Invoice stale/unsent changes", kind: "blocking" },
-                      { name: "Retainer invoices created", kind: "info" },
-                      { name: "Retainer invoices deleted", kind: "info" },
+                      { key: "invoiceDashboardDiscr", name: "Invoice dashboard discrepancy", kind: "actionable" },
+                      { key: "invoiceAppDiscr", name: "Invoice app discrepancy", kind: "info" },
+                      { key: "invoiceStaleUnsentChanges", name: "Invoice stale/unsent changes", kind: "blocking" },
+                      { key: "retainerInvoicesCreated", name: "Retainer invoices created", kind: "info" },
+                      { key: "retainerInvoicesDeleted", name: "Retainer invoices deleted", kind: "info" },
                     ],
                   },
                   {
                     group: "CRM",
                     rule: "Clears once every CRM alert for the client is resolved, and the three \"copied to Confirmed\" flags (if present) have also been acknowledged.",
                     items: [
-                      { name: "CRM pipeline dashboard discrepancy", kind: "actionable" },
-                      { name: "CRM pipeline app discrepancy", kind: "actionable" },
-                      { name: "CRM confirmed dashboard discrepancy", kind: "actionable" },
-                      { name: "CRM confirmed app discrepancy", kind: "actionable" },
-                      { name: "CRM pipeline skipped (blank)", kind: "info" },
-                      { name: "CRM confirmed skipped (blank)", kind: "info" },
-                      { name: "CRM copied to Confirmed — checked", kind: "blocking" },
-                      { name: "CRM copied to Confirmed — unchecked", kind: "blocking" },
-                      { name: "CRM copied to Confirmed — delete", kind: "blocking" },
+                      { key: "crmPipeDashDiscr", name: "CRM pipeline dashboard discrepancy", kind: "actionable" },
+                      { key: "crmPipeAppDiscr", name: "CRM pipeline app discrepancy", kind: "actionable" },
+                      { key: "crmConfDashDiscr", name: "CRM confirmed dashboard discrepancy", kind: "actionable" },
+                      { key: "crmConfAppDiscr", name: "CRM confirmed app discrepancy", kind: "actionable" },
+                      { key: "crmPipeSkippedBlank", name: "CRM pipeline skipped (blank)", kind: "info" },
+                      { key: "crmConfSkippedBlank", name: "CRM confirmed skipped (blank)", kind: "info" },
+                      { key: "crmCopiedConfChecked", name: "CRM copied to Confirmed — checked", kind: "blocking" },
+                      { key: "crmCopiedConfUnchecked", name: "CRM copied to Confirmed — unchecked", kind: "blocking" },
+                      { key: "crmCopiedConfDelete", name: "CRM copied to Confirmed — delete", kind: "blocking" },
                     ],
                   },
                   {
                     group: "Expense",
                     rule: "Clears once every expense alert for the client is resolved. No informational flag blocks this group — there's no expense equivalent of the invoice/CRM \"blocking\" flags.",
                     items: [
-                      { name: "Expense dashboard discrepancy", kind: "actionable" },
-                      { name: "Expense app discrepancy", kind: "info" },
-                      { name: "Expense added", kind: "info" },
-                      { name: "Expense reconciliation gaps", kind: "info" },
+                      { key: "expenseDashboardDiscr", name: "Expense dashboard discrepancy", kind: "actionable" },
+                      { key: "expenseAppDiscr", name: "Expense app discrepancy", kind: "info" },
+                      { key: "expenseAdded", name: "Expense added", kind: "info" },
+                      { key: "expenseUnreconGaps", name: "Expense reconciliation gaps", kind: "info" },
                     ],
                   },
                 ].map((g, gi) => (
@@ -7726,7 +7771,7 @@ export default function TriageSystem({ onBack }) {
                     <div style={{ fontSize: "13px", fontWeight: "700", color: "#1a56db", marginBottom: "4px" }}>{g.group} group</div>
                     <div style={{ fontSize: "11px", color: "#888", marginBottom: "10px", lineHeight: "1.5" }}>{g.rule}</div>
                     {g.items.map((it, i) => (
-                      <div key={it.name} style={{ display: "flex", gap: "10px", padding: "6px 0", borderTop: i > 0 ? "1px solid #f5f5f5" : "none" }}>
+                      <div key={it.key} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "6px 0", borderTop: i > 0 ? "1px solid #f5f5f5" : "none" }}>
                         <span style={{
                           fontSize: "10px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.02em",
                           padding: "2px 7px", borderRadius: "10px", height: "fit-content", whiteSpace: "nowrap",
@@ -7738,7 +7783,19 @@ export default function TriageSystem({ onBack }) {
                         }}>
                           {it.kind === "actionable" ? "Actionable" : it.kind === "blocking" ? "Info · blocking" : "Info"}
                         </span>
-                        <div style={{ fontSize: "13px", color: "#1a1a1a", paddingTop: "1px" }}>{it.name}</div>
+                        <div style={{ fontSize: "13px", color: "#1a1a1a", paddingTop: "1px", flex: 1 }}>{it.name}</div>
+                        <select
+                          value={flagRules[it.key] ?? ""}
+                          disabled={flagRulesLoading}
+                          onChange={(e) => saveFlagRule(it.key, e.target.value)}
+                          style={{ fontSize: "12px", padding: "3px 6px", borderRadius: "6px", border: "1px solid #ddd", color: "#333", background: "#fff", opacity: flagRuleSaving === it.key ? 0.5 : 1 }}
+                        >
+                          <option value="">— none —</option>
+                          <option value="increase">Increase</option>
+                          <option value="decrease">Decrease</option>
+                          <option value="if true">If true</option>
+                          <option value="if changed">If changed</option>
+                        </select>
                       </div>
                     ))}
                   </div>

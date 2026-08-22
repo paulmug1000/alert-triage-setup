@@ -59,6 +59,31 @@ const FLAG_COLUMNS = {
   invoiceStaleUnsentChanges: "HE",
 };
 
+// Index of each flag within an AutoUpdates!CW2:HL1000 bulk read (0 = column
+// CW) — the exact same offsets already used inline in getClientFlags below
+// (flagRow[0], flagRow[7], etc.), named here so run_flag_sweep references
+// the one source rather than a third hand-copied set of magic numbers.
+const FLAG_ROW_INDEX_BY_KEY = {
+  invoiceDashboardDiscr: 0,
+  invoiceAppDiscr: 7,
+  crmPipeDashDiscr: 14,
+  crmPipeAppDiscr: 21,
+  crmConfDashDiscr: 28,
+  crmConfAppDiscr: 35,
+  crmPipeSkippedBlank: 42,
+  crmConfSkippedBlank: 49,
+  crmCopiedConfChecked: 56,
+  crmCopiedConfUnchecked: 63,
+  crmCopiedConfDelete: 70,
+  retainerInvoicesCreated: 77,
+  retainerInvoicesDeleted: 119,
+  expenseDashboardDiscr: 84,
+  expenseAppDiscr: 91,
+  expenseAdded: 98,
+  expenseUnreconGaps: 105,
+  invoiceStaleUnsentChanges: 112,
+};
+
 // Precomputed triage data — stored by cron job, consumed by frontend on Start
 const PRECOMPUTED_KEY = "triage_precomputed";
 const PRECOMPUTED_MAX_AGE_MS = 90 * 60 * 1000; // 90 minutes (GAS precompute runs every 60 min)
@@ -98,6 +123,67 @@ const FLAG_NAMES = {
   expenseUnreconGaps: "Expense unrecon gaps",
   invoiceStaleUnsentChanges: "Invoice stale unsent changes",
 };
+
+// Column offsets within a DataChgAlert!AF2:BG2 read (0 = column AF), per
+// Paul's exact cell list (21 Aug 2026) — computed programmatically, not
+// hand-counted, given how easy off-by-one column math is to get wrong.
+// Each client's own DataChgAlert tab carries these — this is the raw source
+// the client-side reconciliation scripts write to every 30 minutes, which
+// run_flag_sweep now reads directly, replacing the IMPORTRANGE formula that
+// used to mirror these into AutoUpdates.
+const DATACHGALERT_COLUMN_OFFSETS = {
+  invoiceDashboardDiscr: 0,   // AF
+  invoiceAppDiscr: 1,         // AG
+  crmPipeDashDiscr: 2,        // AH
+  crmPipeAppDiscr: 3,         // AI
+  crmConfDashDiscr: 4,        // AJ
+  crmConfAppDiscr: 5,         // AK
+  crmPipeSkippedBlank: 6,     // AL
+  crmConfSkippedBlank: 7,     // AM
+  crmCopiedConfChecked: 8,    // AN
+  crmCopiedConfUnchecked: 9,  // AO
+  crmCopiedConfDelete: 10,    // AP
+  retainerInvoicesCreated: 11, // AQ
+  retainerInvoicesDeleted: 12, // AR
+  expenseDashboardDiscr: 21,  // BA
+  expenseAppDiscr: 22,        // BB
+  expenseAdded: 23,           // BC
+  expenseUnreconGaps: 24,     // BD
+  invoiceStaleUnsentChanges: 27, // BG
+};
+
+/**
+ * Applies a FlagRules comparison rule to decide whether THIS run's pulled
+ * value should raise the flag — a direct, careful port of compareAutoResults'
+ * comparison logic (Code.gs, confirmed via Paul's own file), not a
+ * reinterpretation. Returns a boolean. A blank/unrecognised rule always
+ * returns false — this is deliberate for the four "app discr" types
+ * (confirmed intentional by Paul, 21 Aug 2026), not a gap to "fix" by
+ * defaulting to some other behavior.
+ */
+function applyFlagRule_(rule, pullVal, prevVal) {
+  const errorStrings = ["#N/A", "#REF!", "#ERROR!", "#VALUE!", "#NAME?", "Loading..."];
+  const isError = errorStrings.some(err => String(pullVal || "").includes(err));
+  if (isError || pullVal === "" || pullVal === undefined || pullVal === null) return false;
+
+  const isText = isNaN(Number(pullVal)) || pullVal === "" || typeof pullVal === "string";
+
+  if (isText && rule !== "increase" && rule !== "decrease") {
+    const sPull = String(pullVal).trim();
+    const sPrev = String(prevVal ?? "").trim();
+    const changed = sPull !== sPrev;
+    if ((rule === "if true" || rule === "if changed") && changed) return true;
+    return false;
+  } else {
+    const nPull = Number(pullVal) || 0;
+    const nPrev = Number(prevVal) || 0;
+    const diffVal = nPull - nPrev;
+    if (rule === "increase" && diffVal > 0) return true;
+    if (rule === "decrease" && diffVal < 0) return true;
+    if ((rule === "if true" || rule === "if changed") && Math.abs(diffVal) > 0.001) return true;
+    return false;
+  }
+}
 
 // ============================================================================
 // ALERT MEMORY — fingerprinting, caching, ignore management
@@ -206,6 +292,23 @@ async function readAlertMemory(sheets, automationCommanderSheetId) {
     console.log(`⚠️ Could not read AlertMemory tab: ${err.message}`);
     return [];
   }
+}
+
+/**
+ * Set of fingerprint hashes already "handled" in AlertMemory — ignored,
+ * task, superseded, or accepted. "Cached" is deliberately NOT handled: it
+ * means the alert exists but hasn't been triaged yet, so it should still
+ * count as new. Extracted from the check_new_fingerprints action (21 Aug
+ * 2026) so run_flag_sweep can reuse the exact same definition of "handled"
+ * directly, in-process, rather than a third copy or a wasteful self-call.
+ */
+function getHandledFingerprintHashes_(memoryRows) {
+  return new Set(
+    memoryRows
+      .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded" || r.status === "accepted")
+      .map(r => r.fingerprintHash)
+      .filter(Boolean)
+  );
 }
 
 /**
@@ -2073,19 +2176,102 @@ async function getSheetGid(sheets, spreadsheetId, sheetName) {
 // FLAG READING
 // ============================================================================
 
+/**
+ * Reads the FlagRules sheet (Section | Rule columns) and maps each section
+ * name back to its internal flag key via FLAG_NAMES, case-insensitively —
+ * confirmed exact match against Paul's own FlagRules screenshot (21 Aug 2026).
+ * Returns a flag-key-keyed map: { flagKey: "increase"|"decrease"|"if true"|
+ * "if changed"|"" }. An empty string means deliberately no rule (confirmed by
+ * Paul: the four "app discr" types are intentionally blank, not a gap) — a
+ * flag key with no matching row in the sheet at all is simply absent from
+ * the returned map, treated the same as "" by the caller.
+ */
+async function readFlagRules_(sheets, automationCommanderSheetId) {
+  const rules = {};
+  try {
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "FlagRules!A2:B1000",
+    });
+    const rows = response.data.values || [];
+
+    // Build a reverse lookup: lowercased display name -> flag key
+    const nameToKey = {};
+    for (const [key, name] of Object.entries(FLAG_NAMES)) {
+      nameToKey[name.trim().toLowerCase()] = key;
+    }
+
+    for (const row of rows) {
+      const sectionName = String(row[0] || "").trim();
+      if (!sectionName) continue;
+      const flagKey = nameToKey[sectionName.toLowerCase()];
+      if (!flagKey) {
+        console.log(`  ⚠️ FlagRules section "${sectionName}" doesn't match any known flag — skipping`);
+        continue;
+      }
+      rules[flagKey] = String(row[1] || "").trim().toLowerCase();
+    }
+  } catch (err) {
+    console.error("readFlagRules_ error:", err.message);
+  }
+  return rules;
+}
+
+/**
+ * Reads the client list (name + sheet IDs) from AutoUpdates!A2:M — shared by
+ * getClientFlags and run_flag_sweep, extracted 21 Aug 2026 so both use the
+ * exact same list-building logic (including the header-row skip) rather
+ * than two copies that could drift apart. rowIndex is the 0-based index
+ * into the original A2:M read (row 2 = index 0) — needed by callers that
+ * also bulk-read a parallel range (like flagRows in getClientFlags) and
+ * must index into it the same way.
+ */
+async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
+  const mainResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId: automationCommanderSheetId,
+    range: "AutoUpdates!A2:M1000",
+  });
+  const rows = mainResponse.data.values || [];
+  console.log(`📊 Total rows: ${rows.length}`);
+
+  const clientRows = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const sheetRowNum = i + 2;
+
+    if (!row || row.length < 13) continue;
+
+    const clientName = String(row[0] || "").trim();
+    const scriptId    = String(row[10] || "").trim();
+    const clientSheetUrl = row[11];
+    const masterSheetUrl = row[12];
+
+    if (!clientName || !clientSheetUrl || !masterSheetUrl) continue;
+    if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
+
+    const clientId = extractSheetIdFromUrl(clientSheetUrl);
+    const masterId = extractSheetIdFromUrl(masterSheetUrl);
+    if (!clientId || !masterId) continue;
+
+    clientRows.push({
+      rowIndex: i,
+      sheetRowNum,
+      clientName,
+      clientSheetId: clientId,
+      masterSheetId: masterId,
+      clientSheetUrl: String(clientSheetUrl),
+      masterSheetUrl: String(masterSheetUrl),
+      scriptId,
+    });
+  }
+  return { rows, clientRows };
+}
+
 async function getClientFlags(sheets, automationCommanderSheetId) {
   try {
     console.log("🔍 Reading AutoUpdates: Clients from A, URLs from L:M, flags from CW:HE...");
-    
-    // Fetch client names and sheet URLs (A:M)
-    const mainResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!A2:M1000",
-    });
 
-    const rows = mainResponse.data.values || [];
-    console.log(`📊 Total rows: ${rows.length}`);
-    
+    const { rows, clientRows } = await readAutoUpdatesClientRows_(sheets, automationCommanderSheetId);
     if (rows.length === 0) {
       console.error("❌ No data in AutoUpdates!");
       throw new Error("AutoUpdates sheet appears empty");
@@ -2113,43 +2299,16 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
 
     const clients = [];
 
-    // rows are from A2:M, so:
-    // A (0) = Client name
-    // L (11) = Client sheet URL  
-    // M (12) = Master sheet URL
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const sheetRowNum = i + 2; // Row 2 is i=0, so sheet row = i + 2
-      
-      if (!row || row.length < 13) {
-        continue;
-      }
+    for (const cr of clientRows) {
+      const i = cr.rowIndex;
+      console.log(`  Row ${cr.sheetRowNum}: ${cr.clientName}`);
 
-      const clientName = String(row[0] || "").trim(); // Column A - ACTUAL CLIENT NAME
-      const scriptId    = String(row[10] || "").trim(); // Column K - GAS Script ID
-      const clientSheetUrl = row[11]; // Column L
-      const masterSheetUrl = row[12]; // Column M
-
-      // OPTIMIZATION: Skip rows with no client name - no need to check flags
-      if (!clientName || !clientSheetUrl || !masterSheetUrl) {
-        continue;
-      }
-      // Skip a stray header-style row (found via Paul's own refresh log, 21 Aug 2026 —
-      // row 2 was literally logged as client "Client"). Same defensive check already
-      // used elsewhere in this file for the same reason.
-      if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") {
-        continue;
-      }
-
-      console.log(`  Row ${sheetRowNum}: ${clientName}`);
-
-      // Extract sheet IDs
-      const clientId = extractSheetIdFromUrl(clientSheetUrl);
-      const masterId = extractSheetIdFromUrl(masterSheetUrl);
-
-      if (!clientId || !masterId) {
-        continue;
-      }
+      const clientName = cr.clientName;
+      const clientId = cr.clientSheetId;
+      const masterId = cr.masterSheetId;
+      const clientSheetUrl = cr.clientSheetUrl;
+      const masterSheetUrl = cr.masterSheetUrl;
+      const scriptId = cr.scriptId;
 
       // Get flags for this row from the pre-fetched data
       // flagRows array index = i (because we fetched starting from row 2)
@@ -7165,6 +7324,282 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, stored: precomputedData.totalAlerts });
       } catch (err) {
         console.error("❌ Error storing precomputed data:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "get_flag_rules") {
+      // Returns the current FlagRules configuration for the Settings page.
+      const { automationCommanderSheetId: acIdRules } = req.body;
+      if (!acIdRules) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const rules = await readFlagRules_(sheets, acIdRules);
+        return res.status(200).json({ success: true, rules });
+      } catch (err) {
+        console.error("❌ get_flag_rules error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "save_flag_rule") {
+      // Immediate-save from the Settings page: writes a single rule change
+      // back to the FlagRules sheet. flagKey must be one of the 18 known
+      // flag types (validated against FLAG_NAMES); rule must be one of the
+      // four known rule strings or empty (deliberately no rule — confirmed
+      // intentional for the four "app discr" types, so empty is a valid,
+      // supported value here, not rejected as missing input).
+      const { automationCommanderSheetId: acIdSaveRule, flagKey, rule } = req.body;
+      if (!acIdSaveRule) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      if (!flagKey || !FLAG_NAMES[flagKey]) {
+        return res.status(400).json({ success: false, error: `Unknown flagKey: ${flagKey}` });
+      }
+      const VALID_RULES = ["", "increase", "decrease", "if true", "if changed"];
+      const normalisedRule = String(rule || "").trim().toLowerCase();
+      if (!VALID_RULES.includes(normalisedRule)) {
+        return res.status(400).json({ success: false, error: `Invalid rule: "${rule}"` });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sectionName = FLAG_NAMES[flagKey];
+        const response = await sheets.spreadsheets.values.get({
+          spreadsheetId: acIdSaveRule,
+          range: "FlagRules!A2:A1000",
+        });
+        const rows = response.data.values || [];
+        const rowIdx = rows.findIndex(r => String(r[0] || "").trim().toLowerCase() === sectionName.toLowerCase());
+
+        if (rowIdx === -1) {
+          // No existing row for this section — append one rather than fail silently.
+          // Not expected in normal use (all 18 rows already exist per Paul's sheet),
+          // but keeps this action correct if a row is ever missing.
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: acIdSaveRule,
+            range: "FlagRules!A:B",
+            valueInputOption: "RAW",
+            requestBody: { values: [[sectionName, normalisedRule]] },
+          });
+        } else {
+          const sheetRow = rowIdx + 2; // +2: row 1 is header, rows array is 0-indexed from row 2
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: acIdSaveRule,
+            range: `FlagRules!B${sheetRow}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [[normalisedRule]] },
+          });
+        }
+        console.log(`✅ save_flag_rule: ${flagKey} (${sectionName}) → "${normalisedRule}"`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ save_flag_rule error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "run_flag_sweep") {
+      // The 6 flag types that use fingerprint-based detection (reading
+      // InvComp/DirComp/CRMComp directly, same precision as the old
+      // runFullSweep) rather than the DataChgAlert count comparison the
+      // other 12 use — extended into run_flag_sweep at Paul's explicit
+      // request (21 Aug 2026) so runFullSweep can be fully retired, not
+      // just compareAutoResults. Fingerprint-based detection catches a case
+      // count comparison can miss: an old discrepancy gets resolved and a
+      // new, different one appears with the count unchanged (e.g. still
+      // "1" before and after) — count comparison sees no change and misses
+      // it; comparing the specific fingerprint does not.
+      const FINGERPRINT_BASED_FLAGS = new Set([
+        "invoiceDashboardDiscr",
+        "crmPipeDashDiscr",
+        "crmPipeAppDiscr",
+        "crmConfDashDiscr",
+        "crmConfAppDiscr",
+        "expenseDashboardDiscr",
+      ]);
+
+      // Replaces compareAutoResults (Code.gs) + the AutoUpdates IMPORTRANGE
+      // layer entirely — the new GAS "clock" trigger calls this on a
+      // schedule instead of running the comparison itself. Reads each
+      // client's DataChgAlert directly (confirmed stable cell layout by
+      // Paul, 21 Aug 2026), compares against the previous run (stored in
+      // Redis, not the sheet — a design choice flagged to Paul, not silently
+      // assumed), applies the same rule types as the original
+      // (increase/decrease/if true/if changed, from FlagRules), and writes
+      // only flags that need to newly become true. Never writes false —
+      // clearing stays exclusively triage.js's clear_flags responsibility,
+      // same ownership model as today.
+      const { secret: sweepSecret, automationCommanderSheetId: acIdSweep } = req.body;
+      if (sweepSecret !== process.env.CRON_SECRET) {
+        return res.status(401).json({ success: false, error: "Unauthorised" });
+      }
+      if (!acIdSweep) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+
+      const sweepStart = Date.now();
+      try {
+        const sheets = await getSheetsClient();
+
+        const rules = await readFlagRules_(sheets, acIdSweep);
+        const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdSweep);
+        console.log(`run_flag_sweep: ${clientRows.length} clients to check`);
+
+        // Bulk-read current sticky state once, same range getClientFlags reads —
+        // needed to know isAlreadySticky per client+flag before writing anything.
+        const flagsResponse = await sheets.spreadsheets.values.get({
+          spreadsheetId: acIdSweep,
+          range: "AutoUpdates!CW2:HL1000",
+        });
+        const currentFlagRows = flagsResponse.data.values || [];
+
+        // Invoice/CRM/expense automation frequency (columns O/P/Q) — needed
+        // to know which of the 6 fingerprint-based checks actually apply to
+        // each client, same as runFullSweep_stage1_'s hasInvoice/hasCRM/
+        // hasExpense gating (GAS), so a client with no invoice automation
+        // active doesn't get an InvComp read it doesn't need.
+        const freqResponse = await sheets.spreadsheets.values.get({
+          spreadsheetId: acIdSweep,
+          range: "AutoUpdates!O2:Q1000",
+        });
+        const freqRows = freqResponse.data.values || [];
+
+        const writes = []; // { range, values } for the final batchUpdate
+        const sweepItems = []; // { clientName, alertType, fingerprints } — fingerprint-based flags, checked once against AlertMemory after the main loop
+        let clientsChecked = 0, flagsRaised = 0, errors = 0;
+
+        for (const client of clientRows) {
+          try {
+            const dcaResponse = await sheets.spreadsheets.values.get({
+              spreadsheetId: client.masterSheetId,
+              range: "DataChgAlert!AF2:BG2",
+            });
+            const dcaRow = (dcaResponse.data.values || [])[0] || [];
+
+            const prevKey = `flag_sweep_prev:${client.masterSheetId}`;
+            let prevSnapshot = {};
+            try {
+              const prevRaw = await redisClient.get(prevKey);
+              if (prevRaw) prevSnapshot = JSON.parse(prevRaw);
+            } catch (e) { /* no previous snapshot yet — treat as empty */ }
+
+            const newSnapshot = {};
+            const currentFlagRow = currentFlagRows[client.rowIndex] || [];
+
+            for (const [flagKey, offset] of Object.entries(DATACHGALERT_COLUMN_OFFSETS)) {
+              if (FINGERPRINT_BASED_FLAGS.has(flagKey)) continue; // handled separately below, more precisely
+
+              const pullVal = dcaRow[offset];
+              newSnapshot[flagKey] = pullVal ?? "";
+
+              const rule = rules[flagKey] || "";
+              const isAlreadySticky = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[flagKey]] || "").toUpperCase() === "TRUE";
+              if (isAlreadySticky) continue; // already true — nothing to raise, clear_flags owns turning it off
+
+              const currentFlag = applyFlagRule_(rule, pullVal, prevSnapshot[flagKey]);
+              if (currentFlag) {
+                writes.push({
+                  range: `AutoUpdates!${FLAG_COLUMNS[flagKey]}${client.sheetRowNum}`,
+                  values: [["TRUE"]],
+                });
+                flagsRaised++;
+                console.log(`  ✅ ${client.clientName} / ${flagKey} → TRUE`);
+              }
+            }
+
+            // Fingerprint-based check for the 6 dashboard-style flags — same
+            // approach runFullSweep used (GAS), now here instead. Only reads
+            // a tab if that automation is actually active for this client,
+            // and skips it entirely if that automation's GAS sequence is
+            // currently mid-run (checkGASLock — restores the safety check
+            // runFullSweep had that this sweep didn't originally replicate).
+            const freqRow = freqRows[client.rowIndex] || [];
+            const hasInvoice = !!freqRow[0];
+            const hasCRM     = !!freqRow[1];
+            const hasExpense = !!freqRow[2];
+
+            if (hasInvoice && String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY.invoiceDashboardDiscr] || "").toUpperCase() !== "TRUE") {
+              const invLock = await checkGASLock(sheets, client.masterSheetId, "invoice");
+              if (!invLock.locked) {
+                const invAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
+                invAlerts.forEach(a => { a.flagType = "invoiceDashboardDiscr"; });
+                sweepItems.push({
+                  clientName: client.clientName, alertType: "invoiceDashboardDiscr",
+                  fingerprints: invAlerts.map(buildAlertFingerprint),
+                  autoUpdatesRow: client.sheetRowNum,
+                });
+              }
+            }
+
+            if (hasExpense && String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY.expenseDashboardDiscr] || "").toUpperCase() !== "TRUE") {
+              const expLock = await checkGASLock(sheets, client.masterSheetId, "expense");
+              if (!expLock.locked) {
+                const expAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
+                expAlerts.forEach(a => { a.flagType = "expenseDashboardDiscr"; });
+                sweepItems.push({
+                  clientName: client.clientName, alertType: "expenseDashboardDiscr",
+                  fingerprints: expAlerts.map(buildAlertFingerprint),
+                  autoUpdatesRow: client.sheetRowNum,
+                });
+              }
+            }
+
+            if (hasCRM) {
+              const crmLock = await checkGASLock(sheets, client.masterSheetId, "crm");
+              if (!crmLock.locked) {
+                for (const [mode, dashKey, appKey] of [["Pipeline", "crmPipeDashDiscr", "crmPipeAppDiscr"], ["Confirmed", "crmConfDashDiscr", "crmConfAppDiscr"]]) {
+                  const alreadyDash = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[dashKey]] || "").toUpperCase() === "TRUE";
+                  const alreadyApp  = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[appKey]] || "").toUpperCase() === "TRUE";
+                  if (alreadyDash && alreadyApp) continue; // both already raised, nothing this mode can add
+                  const crmAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, [dashKey, appKey], client.masterSheetId);
+                  const dashFingerprints = crmAlerts.filter(a => (a.flagType || a.alertType) === dashKey).map(buildAlertFingerprint);
+                  const appFingerprints  = crmAlerts.filter(a => (a.flagType || a.alertType) === appKey).map(buildAlertFingerprint);
+                  if (!alreadyDash && dashFingerprints.length > 0) {
+                    sweepItems.push({ clientName: client.clientName, alertType: dashKey, fingerprints: dashFingerprints, autoUpdatesRow: client.sheetRowNum });
+                  }
+                  if (!alreadyApp && appFingerprints.length > 0) {
+                    sweepItems.push({ clientName: client.clientName, alertType: appKey, fingerprints: appFingerprints, autoUpdatesRow: client.sheetRowNum });
+                  }
+                }
+              }
+            }
+
+            await redisClient.set(prevKey, JSON.stringify(newSnapshot), { EX: 7 * 24 * 3600 }); // 7-day TTL, well beyond any sweep gap
+            clientsChecked++;
+          } catch (clientErr) {
+            errors++;
+            console.error(`  run_flag_sweep: error for ${client.clientName}: ${clientErr.message}`);
+          }
+
+          // Small delay between clients — 99 sequential Sheets API calls without
+          // pacing risks tripping per-minute quota, same caution as the GAS
+          // sweep's own Utilities.sleep(200) between clients.
+          await new Promise(r => setTimeout(r, 150));
+        }
+
+        // Resolve fingerprint-based sweepItems against AlertMemory — one
+        // read, not per-client, same batching approach runFullSweep used.
+        if (sweepItems.length > 0) {
+          await ensureAlertMemoryTab(sheets, acIdSweep);
+          const memoryRows = await readAlertMemory(sheets, acIdSweep);
+          const handledHashes = getHandledFingerprintHashes_(memoryRows);
+          console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes`);
+
+          for (const item of sweepItems) {
+            if (!item.fingerprints || item.fingerprints.length === 0) continue;
+            const hasNew = item.fingerprints.some(hash => hash && !handledHashes.has(hash));
+            if (!hasNew) continue;
+            writes.push({
+              range: `AutoUpdates!${FLAG_COLUMNS[item.alertType]}${item.autoUpdatesRow}`,
+              values: [["TRUE"]],
+            });
+            flagsRaised++;
+            console.log(`  ✅ ${item.clientName} / ${item.alertType} → TRUE (fingerprint)`);
+          }
+        }
+
+        if (writes.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: acIdSweep,
+            requestBody: { valueInputOption: "RAW", data: writes },
+          });
+        }
+
+        const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
+        console.log(`run_flag_sweep complete in ${elapsedS}s: ${clientsChecked} clients checked, ${flagsRaised} flags raised, ${errors} errors`);
+        return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS });
+      } catch (err) {
+        console.error("❌ run_flag_sweep error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "bust_cache") {
@@ -13164,13 +13599,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         await ensureAlertMemoryTab(sheets, acId);
         const memoryRows = await readAlertMemory(sheets, acId);
 
-        // Build set of handled fingerprints — ignored, task, superseded, or accepted
-        const handledHashes = new Set(
-          memoryRows
-            .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded" || r.status === "accepted")
-            .map(r => r.fingerprintHash)
-            .filter(Boolean)
-        );
+        const handledHashes = getHandledFingerprintHashes_(memoryRows);
 
         console.log(`  check_new_fingerprints: ${memoryRows.length} AlertMemory rows, ${handledHashes.size} handled hashes`);
 

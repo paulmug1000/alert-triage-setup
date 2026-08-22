@@ -7579,11 +7579,30 @@ export default async function handler(req, res) {
               if (FINGERPRINT_BASED_FLAGS.has(flagKey)) continue; // handled separately below, more precisely
 
               const pullVal = dcaRow[offset];
+              const hasPriorObservation = Object.prototype.hasOwnProperty.call(prevSnapshot, flagKey);
               newSnapshot[flagKey] = pullVal ?? "";
 
               const rule = rules[flagKey] || "";
               const isAlreadySticky = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[flagKey]] || "").toUpperCase() === "TRUE";
               if (isAlreadySticky) continue; // already true — nothing to raise, clear_flags owns turning it off
+
+              // Cold-start guard, added 21 Aug 2026 after Paul's first manual
+              // run raised 44 flags across nearly every client. Root cause:
+              // with no prior Redis snapshot, every existing non-zero count
+              // on an "increase"-ruled flag compared against an implicit
+              // baseline of 0 and looked like a brand-new increase — even
+              // for counts that had been sitting there, unchanged, for
+              // months. compareAutoResults never hit this because it had
+              // years of accumulated sheet-side history by the time anyone
+              // would notice; this system started from nothing. Fix: the
+              // very first observation of a client+flag combination only
+              // establishes the baseline — never raises — so the *second*
+              // run (comparing against a real prior value) is what starts
+              // actually detecting genuine changes.
+              if (!hasPriorObservation) {
+                console.log(`  ⏭ ${client.clientName} / ${flagKey}: first observation (pullVal=${JSON.stringify(pullVal)}) — establishing baseline, not raising`);
+                continue;
+              }
 
               const currentFlag = applyFlagRule_(rule, pullVal, prevSnapshot[flagKey]);
               if (currentFlag) {
@@ -7592,8 +7611,8 @@ export default async function handler(req, res) {
                   values: [["TRUE"]],
                 });
                 flagsRaised++;
-                raisedDetail.push({ clientName: client.clientName, flagKey });
-                console.log(`  ✅ ${client.clientName} / ${flagKey} → TRUE`);
+                raisedDetail.push({ clientName: client.clientName, flagKey, method: "count", rule, pullVal: pullVal ?? "", prevVal: prevSnapshot[flagKey] ?? "" });
+                console.log(`  ✅ ${client.clientName} / ${flagKey} → TRUE (rule="${rule}", pullVal=${JSON.stringify(pullVal)}, prevVal=${JSON.stringify(prevSnapshot[flagKey])})`);
               }
             }
 
@@ -7677,15 +7696,15 @@ export default async function handler(req, res) {
 
           for (const item of sweepItems) {
             if (!item.fingerprints || item.fingerprints.length === 0) continue;
-            const hasNew = item.fingerprints.some(hash => hash && !handledHashes.has(hash));
-            if (!hasNew) continue;
+            const newFingerprintCount = item.fingerprints.filter(hash => hash && !handledHashes.has(hash)).length;
+            if (newFingerprintCount === 0) continue;
             writes.push({
               range: `AutoUpdates!${FLAG_COLUMNS[item.alertType]}${item.autoUpdatesRow}`,
               values: [["TRUE"]],
             });
             flagsRaised++;
-            raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType });
-            console.log(`  ✅ ${item.clientName} / ${item.alertType} → TRUE (fingerprint)`);
+            raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, method: "fingerprint", totalFingerprints: item.fingerprints.length, newFingerprints: newFingerprintCount });
+            console.log(`  ✅ ${item.clientName} / ${item.alertType} → TRUE (fingerprint: ${newFingerprintCount} of ${item.fingerprints.length} new)`);
           }
         }
 

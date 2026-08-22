@@ -7872,10 +7872,17 @@ export default function TriageSystem({ onBack }) {
                             </span>
                           </div>
                           {flagSweepLogExpanded.has(i) && run.raisedDetail?.length > 0 && (
-                            <div style={{ margin: "2px 0 6px 16px", padding: "6px 10px", background: "#fafafa", borderRadius: "6px", display: "flex", flexDirection: "column", gap: "2px" }}>
+                            <div style={{ margin: "2px 0 6px 16px", padding: "6px 10px", background: "#fafafa", borderRadius: "6px", display: "flex", flexDirection: "column", gap: "4px" }}>
                               {run.raisedDetail.map((d, di) => (
                                 <div key={di} style={{ fontSize: "11px", color: "#555" }}>
-                                  <strong>{d.clientName}</strong> — {getFlagName(d.flagKey)}
+                                  <div><strong>{d.clientName}</strong> — {getFlagName(d.flagKey)}</div>
+                                  <div style={{ color: "#999", marginTop: "1px" }}>
+                                    {d.method === "fingerprint"
+                                      ? `${d.newFingerprints} of ${d.totalFingerprints} discrepancy row${d.totalFingerprints === 1 ? "" : "s"} new (not previously ignored/handled)`
+                                      : d.method === "count"
+                                        ? `rule "${d.rule || "—"}" · was ${d.prevVal === "" ? "(none)" : JSON.stringify(d.prevVal)} → now ${d.pullVal === "" ? "(none)" : JSON.stringify(d.pullVal)}`
+                                        : "(logged before this level of detail was added — re-run to see the reasoning for future runs)"}
+                                  </div>
                                 </div>
                               ))}
                             </div>

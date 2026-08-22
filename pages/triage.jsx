@@ -1181,6 +1181,10 @@ export default function TriageSystem({ onBack }) {
   const [flagRulesLoading, setFlagRulesLoading] = useState(false);
   const [flagRulesLoaded, setFlagRulesLoaded] = useState(false);
   const [flagRuleSaving, setFlagRuleSaving] = useState(""); // flagKey currently being saved, "" = none
+  const [flagSweepLog, setFlagSweepLog] = useState(null);
+  const [flagSweepLogLoading, setFlagSweepLogLoading] = useState(false);
+  const [flagSweepLogLoaded, setFlagSweepLogLoaded] = useState(false);
+  const [flagSweepLogExpanded, setFlagSweepLogExpanded] = useState(new Set()); // indices of runs with detail shown
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagResult, setDiagResult] = useState(null);
   const [diagError, setDiagError] = useState("");
@@ -1280,6 +1284,7 @@ export default function TriageSystem({ onBack }) {
     setSettingsLoading(true);
     if (!proactiveCheckLogLoaded) loadProactiveCheckLog();
     if (!flagRulesLoaded) loadFlagRules();
+    if (!flagSweepLogLoaded) loadFlagSweepLog();
     if (!allClientsLoaded) {
       fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3842,6 +3847,27 @@ export default function TriageSystem({ onBack }) {
     } finally {
       setFlagRuleSaving("");
     }
+  };
+
+  const loadFlagSweepLog = async () => {
+    try {
+      setFlagSweepLogLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_flag_sweep_log", automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) setFlagSweepLog(data.runs || []);
+    } catch(e) { console.error("loadFlagSweepLog error:", e); }
+    finally { setFlagSweepLogLoading(false); setFlagSweepLogLoaded(true); }
+  };
+
+  const toggleFlagSweepLogDetail = (i) => {
+    setFlagSweepLogExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
   };
 
   const loadOutgoings = async (client) => {
@@ -7806,6 +7832,59 @@ export default function TriageSystem({ onBack }) {
                   <strong>Info</strong> — shown under Informational Flags on the client's alert screen; must be acknowledged there, but doesn't hold up the rest of its group from clearing.{" "}
                   <strong>Info · blocking</strong> — same, but this specific flag must also be acknowledged before the rest of its group can clear, even once every actionable alert in the group is done.
                 </div>
+              </div>
+
+              {/* Flag Sweep Activity */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Flag Sweep Activity</h3>
+                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
+                  run_flag_sweep replaces compareAutoResults and runFullSweep — this is its run history, so you can see it's actually running and what it's finding. Runs every 30 minutes via the GAS trigger.
+                </p>
+                {flagSweepLogLoading && <div style={{ fontSize: "12px", color: "#999" }}>Loading...</div>}
+                {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length === 0 && (
+                  <div style={{ fontSize: "12px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
+                    No runs logged yet — either the new GAS trigger hasn't been installed yet, or it hasn't fired since.
+                  </div>
+                )}
+                {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: "12px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
+                      ✓ Last ran {new Date(flagSweepLog[0].runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
+                      {` — ${flagSweepLog[0].clientsChecked} clients checked, ${flagSweepLog[0].flagsRaised} flag${flagSweepLog[0].flagsRaised === 1 ? "" : "s"} raised`}
+                      {flagSweepLog[0].errors > 0 ? `, ${flagSweepLog[0].errors} error${flagSweepLog[0].errors === 1 ? "" : "s"}` : ""}
+                      {` (${flagSweepLog[0].elapsedSeconds}s)`}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                      {flagSweepLog.map((run, i) => (
+                        <div key={i} style={{ fontSize: "11px", color: "#888" }}>
+                          <div
+                            onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(i)}
+                            style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default" }}
+                          >
+                            <span>
+                              {run.raisedDetail?.length > 0 ? (flagSweepLogExpanded.has(i) ? "▾ " : "▸ ") : ""}
+                              {new Date(run.runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
+                            </span>
+                            <span>
+                              {run.flagsRaised > 0 ? `${run.flagsRaised} raised` : "No flags raised"}
+                              {run.errors > 0 ? ` · ${run.errors} error${run.errors === 1 ? "" : "s"}` : ""}
+                              {` · ${run.clientsChecked} checked`}
+                            </span>
+                          </div>
+                          {flagSweepLogExpanded.has(i) && run.raisedDetail?.length > 0 && (
+                            <div style={{ margin: "2px 0 6px 16px", padding: "6px 10px", background: "#fafafa", borderRadius: "6px", display: "flex", flexDirection: "column", gap: "2px" }}>
+                              {run.raisedDetail.map((d, di) => (
+                                <div key={di} style={{ fontSize: "11px", color: "#555" }}>
+                                  <strong>{d.clientName}</strong> — {getFlagName(d.flagKey)}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
 

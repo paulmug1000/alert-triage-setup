@@ -194,6 +194,7 @@ const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:K`;
 const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
 const PROACTIVE_ALERTS_TAB = "ProactiveAlerts";
 const PROACTIVE_CHECK_LOG_TAB = "ProactiveCheckLog";
+const FLAG_SWEEP_LOG_TAB = "FlagSweepLog";
 
 /**
 /**
@@ -2725,6 +2726,103 @@ async function readProactiveCheckLog(sheets, automationCommanderSheetId, limit =
     })).reverse().slice(0, limit); // most recent first
   } catch (err) {
     console.log(`⚠️ Could not read ${PROACTIVE_CHECK_LOG_TAB}: ${err.message}`);
+    return [];
+  }
+}
+
+async function ensureFlagSweepLogTab(sheets, automationCommanderSheetId) {
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${FLAG_SWEEP_LOG_TAB}!A1`,
+    });
+  } catch (err) {
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: { requests: [{ addSheet: { properties: { title: FLAG_SWEEP_LOG_TAB } } }] },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${FLAG_SWEEP_LOG_TAB}!A1:F1`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[
+          "runAt", "clientsChecked", "flagsRaised", "errors", "elapsedSeconds", "raisedDetailJSON",
+        ]] },
+      });
+      console.log(`✅ Created ${FLAG_SWEEP_LOG_TAB} tab`);
+    } catch (createErr) {
+      console.log(`⚠️ Could not create ${FLAG_SWEEP_LOG_TAB} tab: ${createErr.message}`);
+    }
+  }
+}
+
+// Appends one run-summary row and trims the log to the most recent 200
+// entries. Same pattern as logProactiveCheckRun, but a larger cap — this
+// runs every 30 min (not nightly), so 200 entries covers roughly 4 days,
+// comparable real-world coverage to the proactive log's 30 nightly runs.
+// raisedDetail is an array of { clientName, flagKey } — Paul specifically
+// asked to see which flags were raised, not just a count (21 Aug 2026).
+async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChecked, flagsRaised, errors, elapsedSeconds, raisedDetail }) {
+  try {
+    await ensureFlagSweepLogTab(sheets, automationCommanderSheetId);
+    const nowISO = new Date().toISOString();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${FLAG_SWEEP_LOG_TAB}!A:F`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[
+        nowISO, clientsChecked || 0, flagsRaised || 0, errors || 0, elapsedSeconds || 0,
+        JSON.stringify(raisedDetail || []),
+      ]] },
+    });
+    // Trim to most recent 200 rows (plus header)
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${FLAG_SWEEP_LOG_TAB}!A:A`,
+    });
+    const rowCount = (resp.data.values || []).length;
+    if (rowCount > 201) {
+      const deleteCount = rowCount - 201;
+      const meta = await sheets.spreadsheets.get({ spreadsheetId: automationCommanderSheetId, fields: "sheets.properties" });
+      const sheetMeta = meta.data.sheets.find(s => s.properties.title === FLAG_SWEEP_LOG_TAB);
+      if (sheetMeta) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: automationCommanderSheetId,
+          requestBody: { requests: [{
+            deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },
+          }] },
+        });
+      }
+    }
+  } catch (err) {
+    console.log(`⚠️ Could not log flag sweep run: ${err.message}`);
+  }
+}
+
+async function readFlagSweepLog(sheets, automationCommanderSheetId, limit = 20) {
+  try {
+    await ensureFlagSweepLogTab(sheets, automationCommanderSheetId);
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${FLAG_SWEEP_LOG_TAB}!A:F`,
+    });
+    const rows = resp.data.values || [];
+    if (rows.length < 2) return [];
+    return rows.slice(1).map(row => {
+      let raisedDetail = [];
+      try { raisedDetail = JSON.parse(row[5] || "[]"); } catch (e) { /* malformed row, treat as empty */ }
+      return {
+        runAt: row[0] || "",
+        clientsChecked: parseInt(row[1]) || 0,
+        flagsRaised: parseInt(row[2]) || 0,
+        errors: parseInt(row[3]) || 0,
+        elapsedSeconds: parseInt(row[4]) || 0,
+        raisedDetail,
+      };
+    }).reverse().slice(0, limit); // most recent first
+  } catch (err) {
+    console.log(`⚠️ Could not read ${FLAG_SWEEP_LOG_TAB}: ${err.message}`);
     return [];
   }
 }
@@ -7456,6 +7554,7 @@ export default async function handler(req, res) {
 
         const writes = []; // { range, values } for the final batchUpdate
         const sweepItems = []; // { clientName, alertType, fingerprints } — fingerprint-based flags, checked once against AlertMemory after the main loop
+        const raisedDetail = []; // { clientName, flagKey } — for the FlagSweepLog, so Paul can see exactly what was raised, not just a count
         let clientsChecked = 0, flagsRaised = 0, errors = 0;
 
         for (const client of clientRows) {
@@ -7493,6 +7592,7 @@ export default async function handler(req, res) {
                   values: [["TRUE"]],
                 });
                 flagsRaised++;
+                raisedDetail.push({ clientName: client.clientName, flagKey });
                 console.log(`  ✅ ${client.clientName} / ${flagKey} → TRUE`);
               }
             }
@@ -7584,6 +7684,7 @@ export default async function handler(req, res) {
               values: [["TRUE"]],
             });
             flagsRaised++;
+            raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType });
             console.log(`  ✅ ${item.clientName} / ${item.alertType} → TRUE (fingerprint)`);
           }
         }
@@ -7597,7 +7698,8 @@ export default async function handler(req, res) {
 
         const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
         console.log(`run_flag_sweep complete in ${elapsedS}s: ${clientsChecked} clients checked, ${flagsRaised} flags raised, ${errors} errors`);
-        return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS });
+        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail });
+        return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail });
       } catch (err) {
         console.error("❌ run_flag_sweep error:", err);
         return res.status(500).json({ success: false, error: err.message });
@@ -13907,6 +14009,22 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(200).json({ success: true, runs });
       } catch (err) {
         console.error(`❌ Error in get_proactive_check_log:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_flag_sweep_log") {
+      // Returns the most recent flag-sweep run summaries, for the Settings
+      // screen — same purpose as get_proactive_check_log, but for
+      // run_flag_sweep (21 Aug 2026, Paul's explicit request for visibility
+      // into how the new sweep is behaving).
+      const acIdFlagLog = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+      if (!acIdFlagLog) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const runs = await readFlagSweepLog(sheets, acIdFlagLog, 20);
+        return res.status(200).json({ success: true, runs });
+      } catch (err) {
+        console.error(`❌ Error in get_flag_sweep_log:`, err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

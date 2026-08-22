@@ -967,7 +967,6 @@ export default function TriageSystem({ onBack }) {
   const [proactiveCountsByClient, setProactiveCountsByClient] = useState({});
   const [proactiveLoading, setProactiveLoading] = useState(false);
   const [proactiveLoadedAt, setProactiveLoadedAt] = useState(0); // epoch ms of last load
-  const [proactiveSelectedClient, setProactiveSelectedClient] = useState(null);
   const [overviewData, setOverviewData] = useState([]);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [activeNav, setActiveNav] = useState("home"); // "home" | "overview" | "tasks" | "appLog" | "outgoings"
@@ -3450,8 +3449,11 @@ export default function TriageSystem({ onBack }) {
         const counts = {};
         remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
         setProactiveCountsByClient(counts);
-        const remainingForClient = remaining.filter(a => a.clientName === proactiveSelectedClient);
-        if (remainingForClient.length === 0) setScreen("clientSelection");
+        // No longer auto-navigates away when a client's last proactive
+        // alert is handled (23 Aug 2026) — this screen is now merged with
+        // the main alert screen, so the client may still have other alert
+        // types visible; the proactive section here just naturally
+        // disappears once empty, no navigation needed.
         return remaining;
       });
     } catch (err) {
@@ -3497,8 +3499,11 @@ export default function TriageSystem({ onBack }) {
         const counts = {};
         remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
         setProactiveCountsByClient(counts);
-        const remainingForClient = remaining.filter(a => a.clientName === proactiveSelectedClient);
-        if (remainingForClient.length === 0) setScreen("clientSelection");
+        // No longer auto-navigates away when a client's last proactive
+        // alert is handled (23 Aug 2026) — this screen is now merged with
+        // the main alert screen, so the client may still have other alert
+        // types visible; the proactive section here just naturally
+        // disappears once empty, no navigation needed.
         return remaining;
       });
     } catch (err) {
@@ -3527,8 +3532,11 @@ export default function TriageSystem({ onBack }) {
         const counts = {};
         remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
         setProactiveCountsByClient(counts);
-        const remainingForClient = remaining.filter(a => a.clientName === proactiveSelectedClient);
-        if (remainingForClient.length === 0) setScreen("clientSelection");
+        // No longer auto-navigates away when a client's last proactive
+        // alert is handled (23 Aug 2026) — this screen is now merged with
+        // the main alert screen, so the client may still have other alert
+        // types visible; the proactive section here just naturally
+        // disappears once empty, no navigation needed.
         return remaining;
       });
       setProactiveBulkSelected(new Set());
@@ -8666,7 +8674,10 @@ export default function TriageSystem({ onBack }) {
                     <button
                       key={idx}
                       className="triage-client-card"
-                      onClick={() => { setProactiveSelectedClient(clientName); setScreen("proactiveReview"); }}
+                      onClick={() => {
+                        const clientObj = clientsWithFlags.find(c => c.clientName === clientName) || allClientsMap[clientName];
+                        if (clientObj) selectClient(clientObj);
+                      }}
                       style={{
                         ...styles.optionButton,
                         textAlign: "left",
@@ -8704,9 +8715,14 @@ export default function TriageSystem({ onBack }) {
     );
   }
 
-  // Screen 1b: Proactive Alert Review Screen
-  if (screen === "proactiveReview" && proactiveSelectedClient && activeNav !== "tasks") {
-    const clientAlertsList = proactiveAlerts.filter(a => a.clientName === proactiveSelectedClient);
+  // Screen 1c: Alert Selection Screen
+  if (screen === "alertSelection" && selectedClient && activeNav !== "tasks") {
+    // groupedAlerts is hoisted above as a useMemo
+    // Merged in here per Paul's direction (23 Aug 2026) — this screen now
+    // shows all three alert kinds (actionable, informational, proactive)
+    // together, rather than sending proactive alerts to a separate
+    // destination screen.
+    const clientProactiveAlertsList = proactiveAlerts.filter(a => a.clientName === selectedClient.clientName);
     const freqLabel = (days) => {
       if (days <= 31) return "monthly";
       if (days <= 65) return "bi-monthly";
@@ -8714,401 +8730,6 @@ export default function TriageSystem({ onBack }) {
       if (days <= 190) return "semi-annual";
       return "annual";
     };
-
-    return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
-        <div style={styles.container}>
-          <div style={styles.header}>
-          <h1 style={styles.title}>Proactive Alerts</h1>
-            <p style={styles.subtitle}>{proactiveSelectedClient} — {clientAlertsList.length} alert{clientAlertsList.length !== 1 ? "s" : ""}</p>
-          </div>
-          <div style={styles.card}>
-            <div style={{ marginBottom: "16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <button className="triage-btn" onClick={() => setScreen("clientSelection")} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
-                ← Back to Client List
-              </button>
-              {clientAlertsList.length > 1 && (
-                <button className="triage-btn" onClick={() => { setProactiveBulkMode(m => !m); setProactiveBulkSelected(new Set()); }}
-                  style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
-                  {proactiveBulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
-                </button>
-              )}
-            </div>
-            {proactiveBulkMode && clientAlertsList.length > 0 && (() => {
-              const allKeys = clientAlertsList.map(a => a.rowIndex);
-              const allSelected = allKeys.every(k => proactiveBulkSelected.has(k));
-              return (
-                <div style={{ marginBottom: "10px" }}>
-                  <button className="triage-btn" onClick={() => {
-                    setProactiveBulkSelected(allSelected ? new Set() : new Set(allKeys));
-                  }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "3px 8px" }}>
-                    {allSelected ? "Deselect all" : "Select all"}
-                  </button>
-                </div>
-              );
-            })()}
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {clientAlertsList.map((alert, idx) => {
-                const m = alert.metadata || {};
-                const isBulkSelected = proactiveBulkSelected.has(alert.rowIndex);
-                return (
-                  <div key={idx} style={{ border: `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#ddd"}`, borderRadius: "6px", padding: "14px", backgroundColor: proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#fafafa" }}>
-                    {proactiveBulkMode && (
-                      <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
-                        <input type="checkbox" checked={isBulkSelected} onChange={() => {
-                          setProactiveBulkSelected(prev => {
-                            const next = new Set(prev);
-                            if (isBulkSelected) next.delete(alert.rowIndex); else next.add(alert.rowIndex);
-                            return next;
-                          });
-                        }} style={{ accentColor: "#7c3aed", cursor: "pointer" }} />
-                        Select for bulk action
-                      </label>
-                    )}
-                    <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px" }}>
-                      {alert.heading}
-                    </div>
-                    <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_revenue" ? null : alert.detail}
-                    </div>
-
-                    {/* Retainer invoice detail */}
-                    {alert.alertType === "retainer_invoice" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
-                        {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
-                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
-                        {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
-                        {m.startDate && <div><strong>Contract period:</strong> {m.startDate} → {m.endDate}</div>}
-                        {m.frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(m.frequencyDays)} (every ~{m.frequencyDays} days)</div>}
-                        {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
-                        {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
-                        {m.possibleMatchInvoiceNo && (
-                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
-                            {m.possibleMatchCase === "changed" && (
-                              <div style={{
-                                display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
-                                background: m.possibleMatchConfidence === "high" ? "#fee2e2" : "#fef9c3",
-                                color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12",
-                                border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}`,
-                              }}>
-                                Possible retainer change — {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
-                              </div>
-                            )}
-                            {m.possibleMatchCase === "draft" && (
-                              <div style={{
-                                display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
-                                background: "#e0f2fe", color: "#075985", border: "1px solid #7dd3fc",
-                              }}>
-                                Draft invoice found nearby
-                              </div>
-                            )}
-                            <div>
-                              <strong>{m.possibleMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}
-                            </div>
-                            <div>
-                              {m.possibleMatchConfirmedRow
-                                ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</>
-                                : <>Not yet attached to any job in the Confirmed tab</>}
-                            </div>
-                            {m.possibleMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
-                            {m.possibleMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
-                            {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
-                          </div>
-                        )}
-                        {m.confirmedRow && m.jobName && (!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
-                          <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                            {m.possibleMatchInvoiceNo ? (
-                              <>
-                                <button className="triage-btn" onClick={() => {
-                                  const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                  setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
-                                }}
-                                  style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                                  Change retainer amount
-                                </button>
-                                <button className="triage-btn" onClick={() => {
-                                  const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                  setRetainerSplitInvoice({ alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
-                                }}
-                                  style={{ padding: "6px 12px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                                  Split invoice
-                                </button>
-                              </>
-                            ) : (
-                              <button className="triage-btn" onClick={() => {
-                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
-                              }}
-                                style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                                End retainer
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Uninvoiced revenue detail */}
-                    {alert.alertType === "uninvoiced_revenue" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
-                        {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
-                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
-                        {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
-                        {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
-                        {m.uninvoicedAmount && (
-                          <div style={{ marginTop: "6px", fontWeight: "700", color: "#991b1b" }}>
-                            £{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)
-                          </div>
-                        )}
-                        {m.draftCount && parseInt(m.draftCount) > 0 && (
-                          <div style={{ marginTop: "6px", padding: "6px 8px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", color: "#78350f" }}>
-                            {m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) — not counted as invoiced above.
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* CRM wipe detail */}
-                    {alert.alertType === "crm_wipe" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {m.timestamp && <div><strong>Log timestamp:</strong> {m.timestamp}</div>}
-                        {m.sequenceType && <div><strong>Sequence:</strong> {m.sequenceType}</div>}
-                        {m.summary && <div><strong>Summary:</strong> {m.summary}</div>}
-                        {m.jobInfo && <div><strong>Job:</strong> {m.jobInfo}</div>}
-                        {m.detailsSnippet && (
-                          <div style={{ marginTop: "4px" }}>
-                            <strong>AutoLog details:</strong>
-                            <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                              {m.detailsSnippet}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Revenue / invoiced mismatch detail */}
-                    {alert.alertType === "revenue_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef3c7", border: "1px solid #fcd34d", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {(() => {
-                          const detail = alert.detail || "";
-                          const mismatchIdx = detail.indexOf("Mismatched rows:");
-                          if (mismatchIdx === -1) {
-                            // No mismatch breakdown — just show the whole detail bolded
-                            return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                          }
-                          const header = detail.slice(0, mismatchIdx).trim();
-                          const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
-                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
-                          return (
-                            <>
-                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
-                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
-                              {rows.map((row, i) => {
-                                // Bold the "— diff £X" part
-                                const diffIdx = row.indexOf("— diff");
-                                if (diffIdx === -1) {
-                                  return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
-                                }
-                                return (
-                                  <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>
-                                    • {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong>
-                                  </div>
-                                );
-                              })}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    )}
-
-                    {/* Direct costs / expenses mismatch detail */}
-                    {alert.alertType === "direct_costs_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fce7f3", border: "1px solid #f9a8d4", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {alert.metadata?.tab && (
-                          <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: alert.metadata.tab === "Pipeline" ? "#fef3c7" : "#dbeafe", color: alert.metadata.tab === "Pipeline" ? "#92400e" : "#1e40af", border: `1px solid ${alert.metadata.tab === "Pipeline" ? "#fcd34d" : "#93c5fd"}` }}>
-                            {alert.metadata.tab} tab
-                          </span>
-                        )}
-                        {(() => {
-                          const detail = alert.detail || "";
-                          const mismatchIdx = detail.indexOf("Mismatched rows:");
-                          if (mismatchIdx === -1) {
-                            return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                          }
-                          const header = detail.slice(0, mismatchIdx).trim();
-                          const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
-                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
-                          return (
-                            <>
-                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
-                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
-                              {rows.map((row, i) => {
-                                const diffIdx = row.indexOf("— diff");
-                                if (diffIdx === -1) {
-                                  return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
-                                }
-                                return (
-                                  <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>
-                                    • {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong>
-                                  </div>
-                                );
-                              })}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    )}
-
-                    {/* Pipeline / Confirmed overlap detail */}
-                    {alert.alertType === "pipeline_confirmed_overlap" && (() => {
-                      const md = alert.metadata || {};
-                      return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0fdf4", border: "1px solid #86efac", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Job exists in both tabs but Pipeline is not closed out</div>
-                          <div style={{ marginBottom: "4px" }}><strong>Confirmed tab</strong></div>
-                          {md.confirmedRow  && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
-                          {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
-                          {md.jobName       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
-                          {md.projectCode   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
-                          {md.jobType       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
-                          <div style={{ marginBottom: "4px", marginTop: "6px" }}><strong>Pipeline tab</strong></div>
-                          {md.pipelineRow   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.pipelineRow}</div>}
-                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
-                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>"Copied to confirmed?": <strong>{md.copiedToConf || "(blank)"}</strong></div>
-                          <div style={{ marginTop: "6px", color: "#166534", fontStyle: "italic" }}>
-                            Expected fix: set Pipeline likelihood to 0% or mark "Copied to confirmed?" as Yes.
-                          </div>
-                          {md.pipelineRow && (
-                            <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #86efac" }}>
-                              <button className="triage-btn"
-                                onClick={() => markPipelineCopied(alert)}
-                                style={{ padding: "6px 14px", background: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                                ✓ Mark "Copied to confirmed?" = Yes
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-
-                    {/* Retainer shrink blocked detail */}
-                    {alert.alertType === "retainer_shrink_blocked" && (() => {
-                      const md = alert.metadata || {};
-                      return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Retainer contract shrunk — excess child row could not be removed automatically</div>
-                          {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
-                          {md.childRowNum  && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
-                          {md.timestamp    && <div style={{ marginBottom: "6px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
-                          <div style={{ color: "#92400e", fontStyle: "italic" }}>
-                            Row {md.childRowNum} falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div style={{ fontSize: "11px", color: "#aaa" }}>
-                        First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}
-                      </div>
-                      <div style={{ display: "flex", gap: "8px" }}>
-                        {(() => {
-                          // clientInfo previously computed here but only used
-                          // by the "Open Sheets" button below — the
-                          // "Assign Outgoings" button right after it also
-                          // referenced clientInfo, assuming it was still in
-                          // scope from this IIFE. It wasn't: IIFE scope
-                          // doesn't leak to sibling JSX, so that second
-                          // usage was a guaranteed ReferenceError during
-                          // React's render for any expenseDashboardDiscr
-                          // alert — not just an async error silently
-                          // swallowed, but a render-time crash. Found via a
-                          // full-codebase sweep (20 Aug 2026) and fixed by
-                          // combining both buttons into one IIFE so they
-                          // share the same clientInfo, computed once.
-                          const clientInfo = clientsWithFlags.find(c => c.clientName === proactiveSelectedClient)
-                            || allClientsMap[proactiveSelectedClient];
-                          return (
-                            <>
-                              {(clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
-                                <button className="triage-btn"
-                                  onClick={() => {
-                                    if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
-                                    if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
-                                  }}
-                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
-                                >
-                                  📊 Open Sheets
-                                </button>
-                              )}
-                              {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                                <button
-                                  className="triage-btn"
-                                  onClick={() => {
-                                    setActiveNav("outgoings");
-                                    if (clientInfo) loadOutgoings(clientInfo);
-                                  }}
-                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}
-                                >
-                                  📤 Assign Outgoings
-                                </button>
-                              )}
-                            </>
-                          );
-                        })()}
-                        <button
-                          className="triage-btn"
-                          onClick={() => openCreateTaskModal(alert, true)}
-                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
-                        >
-                          📋 Create Task
-                        </button>
-                        <button
-                          className="triage-btn"
-                          onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)}
-                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
-                        >
-                          ✓ Acknowledge
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              {clientAlertsList.length === 0 && (
-                <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
-                  All alerts acknowledged
-                </div>
-              )}
-            </div>
-
-            {proactiveBulkMode && proactiveBulkSelected.size > 0 && (
-              <div style={{ position: "sticky", bottom: 0, background: "#fff", borderTop: "2px solid #7c3aed",
-                padding: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
-                boxShadow: "0 -2px 8px rgba(0,0,0,0.08)", zIndex: 10, marginTop: "12px" }}>
-                <span style={{ fontSize: "13px", color: "#5b21b6", fontWeight: "600", flex: 1 }}>
-                  {proactiveBulkSelected.size} alert{proactiveBulkSelected.size !== 1 ? "s" : ""} selected
-                </span>
-                <button className="triage-btn" onClick={bulkAcknowledgeProactive} disabled={proactiveBulkSubmitting}
-                  style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
-                    padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
-                    opacity: proactiveBulkSubmitting ? 0.5 : 1 }}>
-                  {proactiveBulkSubmitting ? <><Spinner />Acknowledging...</> : `✓ Acknowledge ${proactiveBulkSelected.size} alert${proactiveBulkSelected.size !== 1 ? "s" : ""}`}
-                </button>
-              </div>
-            )}
-
-          </div>
-        </div>
-      </NavShell>
-    );
-  }
-
-  // Screen 1c: Alert Selection Screen
-  if (screen === "alertSelection" && selectedClient && activeNav !== "tasks") {
-    // groupedAlerts is hoisted above as a useMemo
 
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
@@ -9740,6 +9361,393 @@ export default function TriageSystem({ onBack }) {
             </div>
           )}
 
+          {/* Proactive Alerts — merged into this screen per Paul's direction
+              (23 Aug 2026), replacing the separate proactiveReview screen */}
+          {clientProactiveAlertsList.length > 0 && (
+            <div style={styles.noActionSection}>
+              <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#d97706", marginBottom: "10px" }}>
+                Proactive Alerts
+                <span style={{ fontWeight: "400", marginLeft: "8px", fontSize: "12px" }}>
+                  ({clientProactiveAlertsList.length})
+                </span>
+              </h3>
+            <div style={{ marginBottom: "16px", display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
+              {clientProactiveAlertsList.length > 1 && (
+                <button className="triage-btn" onClick={() => { setProactiveBulkMode(m => !m); setProactiveBulkSelected(new Set()); }}
+                  style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
+                  {proactiveBulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
+                </button>
+              )}
+            </div>
+            {proactiveBulkMode && clientProactiveAlertsList.length > 0 && (() => {
+              const allKeys = clientProactiveAlertsList.map(a => a.rowIndex);
+              const allSelected = allKeys.every(k => proactiveBulkSelected.has(k));
+              return (
+                <div style={{ marginBottom: "10px" }}>
+                  <button className="triage-btn" onClick={() => {
+                    setProactiveBulkSelected(allSelected ? new Set() : new Set(allKeys));
+                  }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "3px 8px" }}>
+                    {allSelected ? "Deselect all" : "Select all"}
+                  </button>
+                </div>
+              );
+            })()}
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {clientProactiveAlertsList.map((alert, idx) => {
+                const m = alert.metadata || {};
+                const isBulkSelected = proactiveBulkSelected.has(alert.rowIndex);
+                return (
+                  <div key={idx} style={{ border: `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#ddd"}`, borderRadius: "6px", padding: "14px", backgroundColor: proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#fafafa" }}>
+                    {proactiveBulkMode && (
+                      <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
+                        <input type="checkbox" checked={isBulkSelected} onChange={() => {
+                          setProactiveBulkSelected(prev => {
+                            const next = new Set(prev);
+                            if (isBulkSelected) next.delete(alert.rowIndex); else next.add(alert.rowIndex);
+                            return next;
+                          });
+                        }} style={{ accentColor: "#7c3aed", cursor: "pointer" }} />
+                        Select for bulk action
+                      </label>
+                    )}
+                    <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px" }}>
+                      {alert.heading}
+                    </div>
+                    <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
+                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_revenue" ? null : alert.detail}
+                    </div>
+
+                    {/* Retainer invoice detail */}
+                    {alert.alertType === "retainer_invoice" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
+                        {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
+                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                        {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
+                        {m.startDate && <div><strong>Contract period:</strong> {m.startDate} → {m.endDate}</div>}
+                        {m.frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(m.frequencyDays)} (every ~{m.frequencyDays} days)</div>}
+                        {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
+                        {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
+                        {m.possibleMatchInvoiceNo && (
+                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
+                            {m.possibleMatchCase === "changed" && (
+                              <div style={{
+                                display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
+                                background: m.possibleMatchConfidence === "high" ? "#fee2e2" : "#fef9c3",
+                                color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12",
+                                border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}`,
+                              }}>
+                                Possible retainer change — {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
+                              </div>
+                            )}
+                            {m.possibleMatchCase === "draft" && (
+                              <div style={{
+                                display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
+                                background: "#e0f2fe", color: "#075985", border: "1px solid #7dd3fc",
+                              }}>
+                                Draft invoice found nearby
+                              </div>
+                            )}
+                            <div>
+                              <strong>{m.possibleMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}
+                            </div>
+                            <div>
+                              {m.possibleMatchConfirmedRow
+                                ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</>
+                                : <>Not yet attached to any job in the Confirmed tab</>}
+                            </div>
+                            {m.possibleMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
+                            {m.possibleMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
+                            {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
+                          </div>
+                        )}
+                        {m.confirmedRow && m.jobName && (!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
+                          <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                            {m.possibleMatchInvoiceNo ? (
+                              <>
+                                <button className="triage-btn" onClick={() => {
+                                  const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
+                                  setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                }}
+                                  style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                                  Change retainer amount
+                                </button>
+                                <button className="triage-btn" onClick={() => {
+                                  const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
+                                  setRetainerSplitInvoice({ alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                }}
+                                  style={{ padding: "6px 12px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                                  Split invoice
+                                </button>
+                              </>
+                            ) : (
+                              <button className="triage-btn" onClick={() => {
+                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
+                                setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                              }}
+                                style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                                End retainer
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Uninvoiced revenue detail */}
+                    {alert.alertType === "uninvoiced_revenue" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
+                        {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
+                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                        {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
+                        {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
+                        {m.uninvoicedAmount && (
+                          <div style={{ marginTop: "6px", fontWeight: "700", color: "#991b1b" }}>
+                            £{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)
+                          </div>
+                        )}
+                        {m.draftCount && parseInt(m.draftCount) > 0 && (
+                          <div style={{ marginTop: "6px", padding: "6px 8px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", color: "#78350f" }}>
+                            {m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) — not counted as invoiced above.
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* CRM wipe detail */}
+                    {alert.alertType === "crm_wipe" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {m.timestamp && <div><strong>Log timestamp:</strong> {m.timestamp}</div>}
+                        {m.sequenceType && <div><strong>Sequence:</strong> {m.sequenceType}</div>}
+                        {m.summary && <div><strong>Summary:</strong> {m.summary}</div>}
+                        {m.jobInfo && <div><strong>Job:</strong> {m.jobInfo}</div>}
+                        {m.detailsSnippet && (
+                          <div style={{ marginTop: "4px" }}>
+                            <strong>AutoLog details:</strong>
+                            <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                              {m.detailsSnippet}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Revenue / invoiced mismatch detail */}
+                    {alert.alertType === "revenue_mismatch" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef3c7", border: "1px solid #fcd34d", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {(() => {
+                          const detail = alert.detail || "";
+                          const mismatchIdx = detail.indexOf("Mismatched rows:");
+                          if (mismatchIdx === -1) {
+                            // No mismatch breakdown — just show the whole detail bolded
+                            return <div style={{ fontWeight: "600" }}>{detail}</div>;
+                          }
+                          const header = detail.slice(0, mismatchIdx).trim();
+                          const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
+                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
+                          return (
+                            <>
+                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
+                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
+                              {rows.map((row, i) => {
+                                // Bold the "— diff £X" part
+                                const diffIdx = row.indexOf("— diff");
+                                if (diffIdx === -1) {
+                                  return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
+                                }
+                                return (
+                                  <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>
+                                    • {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong>
+                                  </div>
+                                );
+                              })}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+
+                    {/* Direct costs / expenses mismatch detail */}
+                    {alert.alertType === "direct_costs_mismatch" && (
+                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fce7f3", border: "1px solid #f9a8d4", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                        {alert.metadata?.tab && (
+                          <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: alert.metadata.tab === "Pipeline" ? "#fef3c7" : "#dbeafe", color: alert.metadata.tab === "Pipeline" ? "#92400e" : "#1e40af", border: `1px solid ${alert.metadata.tab === "Pipeline" ? "#fcd34d" : "#93c5fd"}` }}>
+                            {alert.metadata.tab} tab
+                          </span>
+                        )}
+                        {(() => {
+                          const detail = alert.detail || "";
+                          const mismatchIdx = detail.indexOf("Mismatched rows:");
+                          if (mismatchIdx === -1) {
+                            return <div style={{ fontWeight: "600" }}>{detail}</div>;
+                          }
+                          const header = detail.slice(0, mismatchIdx).trim();
+                          const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
+                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
+                          return (
+                            <>
+                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
+                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
+                              {rows.map((row, i) => {
+                                const diffIdx = row.indexOf("— diff");
+                                if (diffIdx === -1) {
+                                  return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
+                                }
+                                return (
+                                  <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>
+                                    • {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong>
+                                  </div>
+                                );
+                              })}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+
+                    {/* Pipeline / Confirmed overlap detail */}
+                    {alert.alertType === "pipeline_confirmed_overlap" && (() => {
+                      const md = alert.metadata || {};
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0fdf4", border: "1px solid #86efac", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Job exists in both tabs but Pipeline is not closed out</div>
+                          <div style={{ marginBottom: "4px" }}><strong>Confirmed tab</strong></div>
+                          {md.confirmedRow  && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
+                          {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
+                          {md.jobName       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
+                          {md.projectCode   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
+                          {md.jobType       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
+                          <div style={{ marginBottom: "4px", marginTop: "6px" }}><strong>Pipeline tab</strong></div>
+                          {md.pipelineRow   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.pipelineRow}</div>}
+                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
+                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>"Copied to confirmed?": <strong>{md.copiedToConf || "(blank)"}</strong></div>
+                          <div style={{ marginTop: "6px", color: "#166534", fontStyle: "italic" }}>
+                            Expected fix: set Pipeline likelihood to 0% or mark "Copied to confirmed?" as Yes.
+                          </div>
+                          {md.pipelineRow && (
+                            <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #86efac" }}>
+                              <button className="triage-btn"
+                                onClick={() => markPipelineCopied(alert)}
+                                style={{ padding: "6px 14px", background: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                                ✓ Mark "Copied to confirmed?" = Yes
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Retainer shrink blocked detail */}
+                    {alert.alertType === "retainer_shrink_blocked" && (() => {
+                      const md = alert.metadata || {};
+                      return (
+                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Retainer contract shrunk — excess child row could not be removed automatically</div>
+                          {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
+                          {md.childRowNum  && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
+                          {md.timestamp    && <div style={{ marginBottom: "6px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
+                          <div style={{ color: "#92400e", fontStyle: "italic" }}>
+                            Row {md.childRowNum} falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ fontSize: "11px", color: "#aaa" }}>
+                        First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}
+                      </div>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        {(() => {
+                          // clientInfo previously computed here but only used
+                          // by the "Open Sheets" button below — the
+                          // "Assign Outgoings" button right after it also
+                          // referenced clientInfo, assuming it was still in
+                          // scope from this IIFE. It wasn't: IIFE scope
+                          // doesn't leak to sibling JSX, so that second
+                          // usage was a guaranteed ReferenceError during
+                          // React's render for any expenseDashboardDiscr
+                          // alert — not just an async error silently
+                          // swallowed, but a render-time crash. Found via a
+                          // full-codebase sweep (20 Aug 2026) and fixed by
+                          // combining both buttons into one IIFE so they
+                          // share the same clientInfo, computed once.
+                          const clientInfo = clientsWithFlags.find(c => c.clientName === selectedClient.clientName)
+                            || allClientsMap[selectedClient.clientName];
+                          return (
+                            <>
+                              {(clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
+                                <button className="triage-btn"
+                                  onClick={() => {
+                                    if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
+                                    if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
+                                  }}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
+                                >
+                                  📊 Open Sheets
+                                </button>
+                              )}
+                              {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
+                                <button
+                                  className="triage-btn"
+                                  onClick={() => {
+                                    setActiveNav("outgoings");
+                                    if (clientInfo) loadOutgoings(clientInfo);
+                                  }}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}
+                                >
+                                  📤 Assign Outgoings
+                                </button>
+                              )}
+                            </>
+                          );
+                        })()}
+                        <button
+                          className="triage-btn"
+                          onClick={() => openCreateTaskModal(alert, true)}
+                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
+                        >
+                          📋 Create Task
+                        </button>
+                        <button
+                          className="triage-btn"
+                          onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)}
+                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
+                        >
+                          ✓ Acknowledge
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {clientProactiveAlertsList.length === 0 && (
+                <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
+                  All alerts acknowledged
+                </div>
+              )}
+            </div>
+
+            {proactiveBulkMode && proactiveBulkSelected.size > 0 && (
+              <div style={{ position: "sticky", bottom: 0, background: "#fff", borderTop: "2px solid #7c3aed",
+                padding: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
+                boxShadow: "0 -2px 8px rgba(0,0,0,0.08)", zIndex: 10, marginTop: "12px" }}>
+                <span style={{ fontSize: "13px", color: "#5b21b6", fontWeight: "600", flex: 1 }}>
+                  {proactiveBulkSelected.size} alert{proactiveBulkSelected.size !== 1 ? "s" : ""} selected
+                </span>
+                <button className="triage-btn" onClick={bulkAcknowledgeProactive} disabled={proactiveBulkSubmitting}
+                  style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
+                    padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
+                    opacity: proactiveBulkSubmitting ? 0.5 : 1 }}>
+                  {proactiveBulkSubmitting ? <><Spinner />Acknowledging...</> : `✓ Acknowledge ${proactiveBulkSelected.size} alert${proactiveBulkSelected.size !== 1 ? "s" : ""}`}
+                </button>
+              </div>
+            )}
+
+          </div>
+            )}
+
           {/* Bottom button row — always visible */}
           <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: "20px" }}>
             <button className="triage-btn"
@@ -9989,7 +9997,10 @@ export default function TriageSystem({ onBack }) {
                   });
                   return (
                     <button key={idx} className="triage-client-card"
-                      onClick={() => { setProactiveSelectedClient(clientName); setScreen("proactiveReview"); }}
+                      onClick={() => {
+                        const clientObj = clientsWithFlags.find(c => c.clientName === clientName) || allClientsMap[clientName];
+                        if (clientObj) selectClient(clientObj);
+                      }}
                       style={{ ...styles.optionButton, textAlign: "left", padding: "16px", border: "1px solid #ddd", borderRadius: "6px", backgroundColor: "#f9f9f9", width: "100%" }}>
                       <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px" }}>{clientName}</div>
                       {Object.entries(typeCounts).map(([type, count], i) => (

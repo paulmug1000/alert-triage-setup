@@ -1185,6 +1185,10 @@ export default function TriageSystem({ onBack }) {
   const [flagSweepLogLoading, setFlagSweepLogLoading] = useState(false);
   const [flagSweepLogLoaded, setFlagSweepLogLoaded] = useState(false);
   const [flagSweepLogExpanded, setFlagSweepLogExpanded] = useState(new Set()); // indices of runs with detail shown
+  const [precomputeLog, setPrecomputeLog] = useState(null);
+  const [precomputeLogLoading, setPrecomputeLogLoading] = useState(false);
+  const [precomputeLogLoaded, setPrecomputeLogLoaded] = useState(false);
+  const [precomputeLogExpanded, setPrecomputeLogExpanded] = useState(new Set());
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagResult, setDiagResult] = useState(null);
   const [diagError, setDiagError] = useState("");
@@ -1285,6 +1289,7 @@ export default function TriageSystem({ onBack }) {
     if (!proactiveCheckLogLoaded) loadProactiveCheckLog();
     if (!flagRulesLoaded) loadFlagRules();
     if (!flagSweepLogLoaded) loadFlagSweepLog();
+    if (!precomputeLogLoaded) loadPrecomputeLog();
     if (!allClientsLoaded) {
       fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3864,6 +3869,27 @@ export default function TriageSystem({ onBack }) {
 
   const toggleFlagSweepLogDetail = (i) => {
     setFlagSweepLogExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
+
+  const loadPrecomputeLog = async () => {
+    try {
+      setPrecomputeLogLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_precompute_log", automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) setPrecomputeLog(data.runs || []);
+    } catch(e) { console.error("loadPrecomputeLog error:", e); }
+    finally { setPrecomputeLogLoading(false); setPrecomputeLogLoaded(true); }
+  };
+
+  const togglePrecomputeLogDetail = (i) => {
+    setPrecomputeLogExpanded(prev => {
       const next = new Set(prev);
       if (next.has(i)) next.delete(i); else next.add(i);
       return next;
@@ -7883,6 +7909,59 @@ export default function TriageSystem({ onBack }) {
                                         ? `rule "${d.rule || "—"}" · was ${d.prevVal === "" ? "(none)" : JSON.stringify(d.prevVal)} → now ${d.pullVal === "" ? "(none)" : JSON.stringify(d.pullVal)}`
                                         : "(logged before this level of detail was added — re-run to see the reasoning for future runs)"}
                                   </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Precompute Activity */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Precompute Activity</h3>
+                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
+                  The other end of the pipeline from Flag Sweep Activity above — once flags are raised, this stage builds the full alert detail and options and caches it, so the app loads instantly. Runs on its own schedule via the existing GAS trigger.
+                </p>
+                {precomputeLogLoading && <div style={{ fontSize: "12px", color: "#999" }}>Loading...</div>}
+                {!precomputeLogLoading && precomputeLog && precomputeLog.length === 0 && (
+                  <div style={{ fontSize: "12px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
+                    No runs logged yet — either the precompute trigger hasn't fired since this logging was added, or it needs checking.
+                  </div>
+                )}
+                {!precomputeLogLoading && precomputeLog && precomputeLog.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: "12px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
+                      ✓ Last ran {new Date(precomputeLog[0].runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
+                      {` — ${precomputeLog[0].clientsWithFlags} client${precomputeLog[0].clientsWithFlags === 1 ? "" : "s"} with flags, ${precomputeLog[0].totalAlerts} alert${precomputeLog[0].totalAlerts === 1 ? "" : "s"} built, ${precomputeLog[0].noActionCount} informational`}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                      {precomputeLog.map((run, i) => (
+                        <div key={i} style={{ fontSize: "11px", color: "#888" }}>
+                          <div
+                            onClick={() => run.clientDetail?.length > 0 && togglePrecomputeLogDetail(i)}
+                            style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", cursor: run.clientDetail?.length > 0 ? "pointer" : "default" }}
+                          >
+                            <span>
+                              {run.clientDetail?.length > 0 ? (precomputeLogExpanded.has(i) ? "▾ " : "▸ ") : ""}
+                              {new Date(run.runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
+                            </span>
+                            <span>
+                              {run.totalAlerts > 0 || run.noActionCount > 0
+                                ? `${run.totalAlerts} alerts · ${run.noActionCount} informational`
+                                : "Nothing to build"}
+                              {` · ${run.clientsWithFlags} client${run.clientsWithFlags === 1 ? "" : "s"}`}
+                            </span>
+                          </div>
+                          {precomputeLogExpanded.has(i) && run.clientDetail?.length > 0 && (
+                            <div style={{ margin: "2px 0 6px 16px", padding: "6px 10px", background: "#fafafa", borderRadius: "6px", display: "flex", flexDirection: "column", gap: "2px" }}>
+                              {run.clientDetail.map((c, ci) => (
+                                <div key={ci} style={{ fontSize: "11px", color: "#555" }}>
+                                  <strong>{c.clientName}</strong> — {c.alertCount} alert{c.alertCount === 1 ? "" : "s"}
+                                  {c.noActionCount > 0 ? `, ${c.noActionCount} informational` : ""}
                                 </div>
                               ))}
                             </div>

@@ -195,6 +195,7 @@ const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
 const PROACTIVE_ALERTS_TAB = "ProactiveAlerts";
 const PROACTIVE_CHECK_LOG_TAB = "ProactiveCheckLog";
 const FLAG_SWEEP_LOG_TAB = "FlagSweepLog";
+const PRECOMPUTE_LOG_TAB = "PrecomputeLog";
 
 /**
 /**
@@ -2823,6 +2824,108 @@ async function readFlagSweepLog(sheets, automationCommanderSheetId, limit = 20) 
     }).reverse().slice(0, limit); // most recent first
   } catch (err) {
     console.log(`⚠️ Could not read ${FLAG_SWEEP_LOG_TAB}: ${err.message}`);
+    return [];
+  }
+}
+
+async function ensurePrecomputeLogTab(sheets, automationCommanderSheetId) {
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PRECOMPUTE_LOG_TAB}!A1`,
+    });
+  } catch (err) {
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: { requests: [{ addSheet: { properties: { title: PRECOMPUTE_LOG_TAB } } }] },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${PRECOMPUTE_LOG_TAB}!A1:F1`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[
+          "runAt", "clientsWithFlags", "totalAlerts", "noActionCount", "analysisCount", "clientDetailJSON",
+        ]] },
+      });
+      console.log(`✅ Created ${PRECOMPUTE_LOG_TAB} tab`);
+    } catch (createErr) {
+      console.log(`⚠️ Could not create ${PRECOMPUTE_LOG_TAB} tab: ${createErr.message}`);
+    }
+  }
+}
+
+// Logs each store_precomputed run — the other end of the pipeline from
+// FlagSweepLog: run_flag_sweep raises flags, this records what the
+// precompute stage then built from them and cached for the app to load.
+// Added 21 Aug 2026 at Paul's request, so the two logs together show the
+// whole pipeline end to end rather than just the flag-raising half.
+// clientDetail is an array of { clientName, alertCount, noActionCount } —
+// logged post-merge (after the clientId/clientName reconciliation this
+// action already does), so this reflects what actually got cached, not the
+// raw input from the GAS side.
+async function logPrecomputeRun(sheets, automationCommanderSheetId, { clientsWithFlags, totalAlerts, noActionCount, analysisCount, clientDetail }) {
+  try {
+    await ensurePrecomputeLogTab(sheets, automationCommanderSheetId);
+    const nowISO = new Date().toISOString();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PRECOMPUTE_LOG_TAB}!A:F`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[
+        nowISO, clientsWithFlags || 0, totalAlerts || 0, noActionCount || 0, analysisCount || 0,
+        JSON.stringify(clientDetail || []),
+      ]] },
+    });
+    // Trim to most recent 200 rows (plus header) — same cadence reasoning as
+    // FlagSweepLog: this runs on the same schedule as run_flag_sweep once
+    // the GAS side calls it that often, so a comparable cap.
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PRECOMPUTE_LOG_TAB}!A:A`,
+    });
+    const rowCount = (resp.data.values || []).length;
+    if (rowCount > 201) {
+      const deleteCount = rowCount - 201;
+      const meta = await sheets.spreadsheets.get({ spreadsheetId: automationCommanderSheetId, fields: "sheets.properties" });
+      const sheetMeta = meta.data.sheets.find(s => s.properties.title === PRECOMPUTE_LOG_TAB);
+      if (sheetMeta) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: automationCommanderSheetId,
+          requestBody: { requests: [{
+            deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },
+          }] },
+        });
+      }
+    }
+  } catch (err) {
+    console.log(`⚠️ Could not log precompute run: ${err.message}`);
+  }
+}
+
+async function readPrecomputeLog(sheets, automationCommanderSheetId, limit = 20) {
+  try {
+    await ensurePrecomputeLogTab(sheets, automationCommanderSheetId);
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${PRECOMPUTE_LOG_TAB}!A:F`,
+    });
+    const rows = resp.data.values || [];
+    if (rows.length < 2) return [];
+    return rows.slice(1).map(row => {
+      let clientDetail = [];
+      try { clientDetail = JSON.parse(row[5] || "[]"); } catch (e) { /* malformed row, treat as empty */ }
+      return {
+        runAt: row[0] || "",
+        clientsWithFlags: parseInt(row[1]) || 0,
+        totalAlerts: parseInt(row[2]) || 0,
+        noActionCount: parseInt(row[3]) || 0,
+        analysisCount: parseInt(row[4]) || 0,
+        clientDetail,
+      };
+    }).reverse().slice(0, limit); // most recent first
+  } catch (err) {
+    console.log(`⚠️ Could not read ${PRECOMPUTE_LOG_TAB}: ${err.message}`);
     return [];
   }
 }
@@ -7419,6 +7522,33 @@ export default async function handler(req, res) {
 
         const analysisCount = Object.keys(precomputedData.noActionAnalysisResults).length;
         console.log(`✅ store_precomputed: ${precomputedData.totalAlerts} alerts, ${analysisCount} pre-analysed flags saved to Redis`);
+
+        // Log this run — the other end of the pipeline from FlagSweepLog,
+        // so Paul can see what the precompute stage actually built from
+        // whatever flags run_flag_sweep raised. Per-client counts computed
+        // from the final, already-merged result (not raw GAS input), so
+        // this reflects what actually got cached.
+        try {
+          const sheetsForLog = await getSheetsClient();
+          const clientDetail = (reconciledClients || []).map(c => ({
+            clientName: c.clientName,
+            alertCount: mergedAlerts.filter(a => a.clientName === c.clientName).length,
+            noActionCount: mergedNoActionAlerts.filter(na => {
+              const naClient = (reconciledClients || []).find(rc => rc.masterSheetId === na.clientId);
+              return naClient && naClient.clientName === c.clientName;
+            }).length,
+          })).filter(c => c.alertCount > 0 || c.noActionCount > 0);
+          await logPrecomputeRun(sheetsForLog, extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId, {
+            clientsWithFlags: (reconciledClients || []).length,
+            totalAlerts: precomputedData.totalAlerts,
+            noActionCount: precomputedData.noActionCount,
+            analysisCount,
+            clientDetail,
+          });
+        } catch (logErr) {
+          console.log(`⚠️ Could not log precompute run: ${logErr.message}`);
+        }
+
         return res.status(200).json({ success: true, stored: precomputedData.totalAlerts });
       } catch (err) {
         console.error("❌ Error storing precomputed data:", err);
@@ -14044,6 +14174,23 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(200).json({ success: true, runs });
       } catch (err) {
         console.error(`❌ Error in get_flag_sweep_log:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_precompute_log") {
+      // Returns the most recent precompute-stage run summaries — the other
+      // end of the pipeline from get_flag_sweep_log. Added 21 Aug 2026 at
+      // Paul's request, so both logs together show the whole flow end to
+      // end: run_flag_sweep raises flags, this shows what the precompute
+      // stage then built from them and cached for the app to load.
+      const acIdPrecomputeLog = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+      if (!acIdPrecomputeLog) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const runs = await readPrecomputeLog(sheets, acIdPrecomputeLog, 20);
+        return res.status(200).json({ success: true, runs });
+      } catch (err) {
+        console.error(`❌ Error in get_precompute_log:`, err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

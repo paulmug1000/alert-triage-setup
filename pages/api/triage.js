@@ -190,7 +190,7 @@ function applyFlagRule_(rule, pullVal, prevVal) {
 // ============================================================================
 
 const ALERT_MEMORY_TAB = "AlertMemory";
-const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:K`;
+const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:L`;
 const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
 const PROACTIVE_ALERTS_TAB = "ProactiveAlerts";
 const PROACTIVE_CHECK_LOG_TAB = "ProactiveCheckLog";
@@ -289,6 +289,11 @@ async function readAlertMemory(sheets, automationCommanderSheetId) {
       lastSeen:         row[8] || "",
       lastRechecked:    row[9] || "",
       dataSnapshot:     row[10] || "",
+      // Added 22 Aug 2026 for the unified alert-system redesign — every row
+      // written before this column existed genuinely is a "discrepancy"
+      // type (invoice/expense/CRM), so that's the correct default rather
+      // than an empty/unknown value.
+      category:         row[11] || "discrepancy",
     }));
   } catch (err) {
     console.log(`⚠️ Could not read AlertMemory tab: ${err.message}`);
@@ -323,6 +328,28 @@ async function ensureAlertMemoryTab(sheets, automationCommanderSheetId) {
       spreadsheetId: automationCommanderSheetId,
       range: `${ALERT_MEMORY_TAB}!A1`,
     });
+    // Tab exists — but may predate the "category" column (added 22 Aug 2026
+    // as part of the unified alert-system redesign, appended at the end so
+    // existing column positions for Paul's already-live tab aren't
+    // disturbed). Check L1 specifically and backfill the header if missing.
+    try {
+      const l1 = await sheets.spreadsheets.values.get({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${ALERT_MEMORY_TAB}!L1`,
+      });
+      const hasCategoryHeader = (l1.data.values || [])[0]?.[0];
+      if (!hasCategoryHeader) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: automationCommanderSheetId,
+          range: `${ALERT_MEMORY_TAB}!L1`,
+          valueInputOption: "RAW",
+          requestBody: { values: [["category"]] },
+        });
+        console.log(`✅ Backfilled "category" header on existing AlertMemory tab`);
+      }
+    } catch (backfillErr) {
+      console.log(`⚠️ Could not check/backfill category header: ${backfillErr.message}`);
+    }
   } catch (err) {
     // Tab doesn't exist — create it
     try {
@@ -334,13 +361,13 @@ async function ensureAlertMemoryTab(sheets, automationCommanderSheetId) {
       });
       await sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId,
-        range: `${ALERT_MEMORY_TAB}!A1:K1`,
+        range: `${ALERT_MEMORY_TAB}!A1:L1`,
         valueInputOption: "RAW",
         requestBody: {
           values: [[
             "fingerprintHash", "alertType", "clientName", "alertSummary",
             "cachedOptionsJSON", "status", "ignoreReason", "firstSeen", "lastSeen",
-            "lastRechecked", "dataSnapshot",
+            "lastRechecked", "dataSnapshot", "category",
           ]],
         },
       });
@@ -600,12 +627,12 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
  */
 async function appendAlertMemoryRow(sheets, automationCommanderSheetId, {
   fingerprintHash, alertType, clientName, alertSummary,
-  cachedOptionsJSON, status, ignoreReason, dataSnapshot,
+  cachedOptionsJSON, status, ignoreReason, dataSnapshot, category,
 }) {
   const now = new Date().toISOString().split("T")[0];
   await sheets.spreadsheets.values.append({
     spreadsheetId: automationCommanderSheetId,
-    range: `${ALERT_MEMORY_TAB}!A:K`,
+    range: `${ALERT_MEMORY_TAB}!A:L`,
     valueInputOption: "RAW",
     requestBody: {
       values: [[
@@ -613,6 +640,11 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, {
         cachedOptionsJSON, status, ignoreReason || "", now, now,
         now, // lastRechecked = now on creation
         dataSnapshot || "",
+        // Added 22 Aug 2026 for the unified alert-system redesign. Existing
+        // callers don't pass this and keep getting "discrepancy" — the
+        // correct value for every one of them, since none of today's
+        // callers are anything else yet.
+        category || "discrepancy",
       ]],
     },
   });
@@ -7504,13 +7536,92 @@ export default async function handler(req, res) {
           }
         }
 
+        // ── Merge in AlertMemory-sourced alerts (unified alert-system
+        // redesign, 22 Aug 2026, Paul's explicit direction) ─────────────
+        // The 6 dashboard types are now ALSO detected via run_flag_sweep,
+        // writing directly to AlertMemory, with options built separately
+        // by build_cached_alert_options. This merges those in here,
+        // deduplicated against the old GAS-provided path by fingerprint —
+        // both paths can be active simultaneously during this transition
+        // (run_flag_sweep still also writes AutoUpdates for now), so
+        // without this dedup the same discrepancy could show twice.
+        // Deliberately done as a separate, additive step after all the
+        // existing reconciliation/zeroing logic above, rather than
+        // threaded through it — that logic is specifically shaped around
+        // the old clientsWithFlags-sourced input and forcing the new
+        // source through it risked incorrectly dropping alerts whose
+        // client was never flagged via the old path at all.
+        let finalAlerts = mergedAlerts;
+        let finalClientsWithFlags = reconciledClients;
+        try {
+          const sheetsForMerge = await getSheetsClient();
+          const acIdForMerge = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
+          await ensureAlertMemoryTab(sheetsForMerge, acIdForMerge);
+          const memoryRowsForMerge = await readAlertMemory(sheetsForMerge, acIdForMerge);
+
+          // Recomputed rather than trusted from a possible existing field —
+          // not confirmed present on every alert reaching this action, and
+          // recomputing via the one, single fingerprint function is the
+          // safer, consistent choice either way.
+          const oldPathFingerprints = new Set(mergedAlerts.map(a => buildAlertFingerprint(a)));
+
+          const newAlertsFromMemory = [];
+          const extraFlagsByClient = new Map(); // clientName -> { flagKey: true, ... }
+          const newClientMeta = new Map(); // clientName -> { clientId, masterSheetId } for clients not already in finalClientsWithFlags
+
+          for (const row of memoryRowsForMerge) {
+            if (row.status !== "cached" || row.category !== "discrepancy" || !row.cachedOptionsJSON) continue;
+            if (oldPathFingerprints.has(row.fingerprintHash)) continue; // already present via the old path
+
+            let alertObj = null;
+            try { alertObj = JSON.parse(row.dataSnapshot); } catch (e) { continue; } // malformed snapshot — skip
+            let options = [];
+            try { options = JSON.parse(row.cachedOptionsJSON); } catch (e) { continue; } // malformed options — skip
+
+            newAlertsFromMemory.push({ ...alertObj, fingerprintHash: row.fingerprintHash, options });
+
+            if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
+            extraFlagsByClient.get(row.clientName)[row.alertType] = true;
+
+            if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
+              newClientMeta.set(row.clientName, {
+                clientId: alertObj.clientId || "",
+                masterSheetId: alertObj.masterSheetId || "",
+              });
+            }
+          }
+
+          if (newAlertsFromMemory.length > 0) {
+            finalAlerts = [...mergedAlerts, ...newAlertsFromMemory];
+
+            // Rebuild rather than mutate — reconciledClients' objects are
+            // shared references even after the array spread above, so
+            // mutating them in place would be a real aliasing risk.
+            finalClientsWithFlags = reconciledClients.map(c => {
+              const extra = extraFlagsByClient.get(c.clientName);
+              return extra ? { ...c, flags: { ...c.flags, ...extra } } : c;
+            });
+            for (const [clientName, meta] of newClientMeta.entries()) {
+              finalClientsWithFlags.push({
+                clientName,
+                clientId: meta.clientId,
+                masterSheetId: meta.masterSheetId,
+                flags: extraFlagsByClient.get(clientName) || {},
+              });
+            }
+            console.log(`  store_precomputed: merged ${newAlertsFromMemory.length} AlertMemory-sourced alert(s) across ${newClientMeta.size} new + ${extraFlagsByClient.size - newClientMeta.size} existing client(s)`);
+          }
+        } catch (mergeErr) {
+          console.log(`  ⚠️ Could not merge AlertMemory-sourced alerts: ${mergeErr.message}`);
+        }
+
         const precomputedData = {
           computedAt: computedAt || Date.now(),
-          totalAlerts: mergedAlerts.length,
+          totalAlerts: finalAlerts.length,
           noActionCount: mergedNoActionAlerts.length,
-          alerts: mergedAlerts,
+          alerts: finalAlerts,
           noActionAlerts: mergedNoActionAlerts,
-          clientsWithFlags: reconciledClients,
+          clientsWithFlags: finalClientsWithFlags,
           noActionAnalysisResults: noActionAnalysisResults || {},
         };
 
@@ -7530,16 +7641,16 @@ export default async function handler(req, res) {
         // this reflects what actually got cached.
         try {
           const sheetsForLog = await getSheetsClient();
-          const clientDetail = (reconciledClients || []).map(c => ({
+          const clientDetail = (finalClientsWithFlags || []).map(c => ({
             clientName: c.clientName,
-            alertCount: mergedAlerts.filter(a => a.clientName === c.clientName).length,
+            alertCount: finalAlerts.filter(a => a.clientName === c.clientName).length,
             noActionCount: mergedNoActionAlerts.filter(na => {
-              const naClient = (reconciledClients || []).find(rc => rc.masterSheetId === na.clientId);
+              const naClient = (finalClientsWithFlags || []).find(rc => rc.masterSheetId === na.clientId);
               return naClient && naClient.clientName === c.clientName;
             }).length,
           })).filter(c => c.alertCount > 0 || c.noActionCount > 0);
           await logPrecomputeRun(sheetsForLog, extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId, {
-            clientsWithFlags: (reconciledClients || []).length,
+            clientsWithFlags: (finalClientsWithFlags || []).length,
             totalAlerts: precomputedData.totalAlerts,
             noActionCount: precomputedData.noActionCount,
             analysisCount,
@@ -7761,10 +7872,10 @@ export default async function handler(req, res) {
               const invLock = await checkGASLock(sheets, client.masterSheetId, "invoice");
               if (!invLock.locked) {
                 const invAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
-                invAlerts.forEach(a => { a.flagType = "invoiceDashboardDiscr"; });
+                invAlerts.forEach(a => { a.flagType = "invoiceDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
                 sweepItems.push({
                   clientName: client.clientName, alertType: "invoiceDashboardDiscr",
-                  fingerprints: invAlerts.map(buildAlertFingerprint),
+                  alerts: invAlerts,
                   autoUpdatesRow: client.sheetRowNum,
                 });
               }
@@ -7774,10 +7885,10 @@ export default async function handler(req, res) {
               const expLock = await checkGASLock(sheets, client.masterSheetId, "expense");
               if (!expLock.locked) {
                 const expAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
-                expAlerts.forEach(a => { a.flagType = "expenseDashboardDiscr"; });
+                expAlerts.forEach(a => { a.flagType = "expenseDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
                 sweepItems.push({
                   clientName: client.clientName, alertType: "expenseDashboardDiscr",
-                  fingerprints: expAlerts.map(buildAlertFingerprint),
+                  alerts: expAlerts,
                   autoUpdatesRow: client.sheetRowNum,
                 });
               }
@@ -7791,13 +7902,14 @@ export default async function handler(req, res) {
                   const alreadyApp  = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[appKey]] || "").toUpperCase() === "TRUE";
                   if (alreadyDash && alreadyApp) continue; // both already raised, nothing this mode can add
                   const crmAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, [dashKey, appKey], client.masterSheetId);
-                  const dashFingerprints = crmAlerts.filter(a => (a.flagType || a.alertType) === dashKey).map(buildAlertFingerprint);
-                  const appFingerprints  = crmAlerts.filter(a => (a.flagType || a.alertType) === appKey).map(buildAlertFingerprint);
-                  if (!alreadyDash && dashFingerprints.length > 0) {
-                    sweepItems.push({ clientName: client.clientName, alertType: dashKey, fingerprints: dashFingerprints, autoUpdatesRow: client.sheetRowNum });
+                  crmAlerts.forEach(a => { a._fingerprint = buildAlertFingerprint(a); });
+                  const dashAlerts = crmAlerts.filter(a => (a.flagType || a.alertType) === dashKey);
+                  const appAlerts  = crmAlerts.filter(a => (a.flagType || a.alertType) === appKey);
+                  if (!alreadyDash && dashAlerts.length > 0) {
+                    sweepItems.push({ clientName: client.clientName, alertType: dashKey, alerts: dashAlerts, autoUpdatesRow: client.sheetRowNum });
                   }
-                  if (!alreadyApp && appFingerprints.length > 0) {
-                    sweepItems.push({ clientName: client.clientName, alertType: appKey, fingerprints: appFingerprints, autoUpdatesRow: client.sheetRowNum });
+                  if (!alreadyApp && appAlerts.length > 0) {
+                    sweepItems.push({ clientName: client.clientName, alertType: appKey, alerts: appAlerts, autoUpdatesRow: client.sheetRowNum });
                   }
                 }
               }
@@ -7825,16 +7937,61 @@ export default async function handler(req, res) {
           console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes`);
 
           for (const item of sweepItems) {
-            if (!item.fingerprints || item.fingerprints.length === 0) continue;
-            const newFingerprintCount = item.fingerprints.filter(hash => hash && !handledHashes.has(hash)).length;
-            if (newFingerprintCount === 0) continue;
+            if (!item.alerts || item.alerts.length === 0) continue;
+            const newAlerts = item.alerts.filter(a => a._fingerprint && !handledHashes.has(a._fingerprint));
+            if (newAlerts.length === 0) continue;
             writes.push({
               range: `AutoUpdates!${FLAG_COLUMNS[item.alertType]}${item.autoUpdatesRow}`,
               values: [["TRUE"]],
             });
             flagsRaised++;
-            raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, method: "fingerprint", totalFingerprints: item.fingerprints.length, newFingerprints: newFingerprintCount });
-            console.log(`  ✅ ${item.clientName} / ${item.alertType} → TRUE (fingerprint: ${newFingerprintCount} of ${item.fingerprints.length} new)`);
+            raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, method: "fingerprint", totalFingerprints: item.alerts.length, newFingerprints: newAlerts.length });
+            console.log(`  ✅ ${item.clientName} / ${item.alertType} → TRUE (fingerprint: ${newAlerts.length} of ${item.alerts.length} new)`);
+
+            // First step of the unified alert-system redesign (22 Aug 2026,
+            // Paul's explicit direction): also write a proper AlertMemory
+            // row directly for each new discrepancy, at detection time —
+            // deliberately alongside the AutoUpdates write above, not
+            // replacing it yet. Nothing downstream reads these new rows
+            // yet (the live app still only reads AutoUpdates flags), so
+            // this is purely additive and inspectable with zero risk to
+            // what Paul currently sees. cachedOptionsJSON is intentionally
+            // left empty — building options is a separate, later stage in
+            // the new design, not detection's job.
+            for (const alert of newAlerts) {
+              try {
+                // alert.summary is already correctly built by
+                // buildInvCompSummary/buildDirCompSummary for invoice/
+                // expense — confirmed by reading those functions directly
+                // rather than assumed. CRM alerts have no equivalent
+                // internal summary builder (the existing dashSummary
+                // pattern elsewhere is built by ITS caller from raw array
+                // indices into alert.data — not something to replicate here
+                // without the same care), so a safer, verified fallback
+                // using only alert.rowNumber (a confirmed top-level field).
+                const summary = alert.summary || `${item.alertType} — ${item.clientName} (row ${alert.rowNumber})`;
+                // Store the full alert object (minus the internal _fingerprint
+                // field, redundant with the fingerprintHash column) so the
+                // eventual read-path can display it without a third re-read
+                // of the underlying sheet. build_cached_alert_options
+                // deliberately still re-derives fresh from the sheet itself
+                // (options-building benefits from the most current data) —
+                // this snapshot is for display only, not re-analysis.
+                const { _fingerprint, ...alertForSnapshot } = alert;
+                await appendAlertMemoryRow(sheets, acIdSweep, {
+                  fingerprintHash: alert._fingerprint,
+                  alertType: item.alertType,
+                  clientName: item.clientName,
+                  alertSummary: summary,
+                  cachedOptionsJSON: "",
+                  status: "cached",
+                  category: "discrepancy",
+                  dataSnapshot: JSON.stringify(alertForSnapshot),
+                });
+              } catch (memErr) {
+                console.log(`  ⚠️ Could not write AlertMemory row for ${item.clientName}/${item.alertType}: ${memErr.message}`);
+              }
+            }
           }
         }
 
@@ -7851,6 +8008,147 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail });
       } catch (err) {
         console.error("❌ run_flag_sweep error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "build_cached_alert_options") {
+      // Second stage of the unified alert-system redesign (22 Aug 2026,
+      // Paul's explicit direction). run_flag_sweep now writes a "cached"
+      // AlertMemory row directly for each new discrepancy (6 dashboard
+      // types so far), with no options yet — that's detection's job, not
+      // this one. This action finds those rows and builds options for them.
+      //
+      // Deliberately reuses analyze_alert's existing, unchanged logic via a
+      // genuine internal HTTP call, rather than extracting it — that block
+      // is ~3000 lines of the most carefully-debugged matching logic in
+      // this file (Tier 1/2, several real bugs already found and fixed
+      // there this session), and extracting it wholesale would be a far
+      // larger risk than one more HTTP round-trip. analyze_alert already
+      // reads AlertMemory, builds options, and writes them back — this
+      // action's only job is finding the right rows and re-deriving the
+      // full alert object each one needs, the same shape start_triage
+      // already prepares before calling analyze_alert live.
+      const { secret: buildSecret, automationCommanderSheetId: acIdBuild } = req.body;
+      if (buildSecret !== process.env.CRON_SECRET) {
+        return res.status(401).json({ success: false, error: "Unauthorised" });
+      }
+      if (!acIdBuild) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+
+      const buildStart = Date.now();
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acIdBuild);
+        const memoryRows = await readAlertMemory(sheets, acIdBuild);
+
+        const pending = memoryRows.filter(r =>
+          r.status === "cached" && r.category === "discrepancy" && !r.cachedOptionsJSON
+        );
+        console.log(`build_cached_alert_options: ${pending.length} rows pending options`);
+
+        if (pending.length === 0) {
+          return res.status(200).json({ success: true, processed: 0, built: 0, notFound: 0, errors: 0 });
+        }
+
+        // Group by client+alertType so each client+type combination is
+        // only re-read once, regardless of how many individual rows within
+        // it need options.
+        const groups = new Map(); // key: `${clientName}::${alertType}` -> AlertMemory rows
+        for (const row of pending) {
+          const key = `${row.clientName}::${row.alertType}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(row);
+        }
+
+        const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdBuild);
+        const clientByName = new Map(clientRows.map(c => [c.clientName, c]));
+
+        const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+          ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+          : `https://${process.env.VERCEL_URL}`;
+
+        let built = 0, notFound = 0, errors = 0;
+
+        for (const [key, rows] of groups.entries()) {
+          const [clientName, alertType] = key.split("::");
+          const client = clientByName.get(clientName);
+          if (!client) {
+            console.log(`  ⚠️ ${clientName}: not found in current client list — skipping ${rows.length} row(s)`);
+            notFound += rows.length;
+            continue;
+          }
+
+          try {
+            let currentAlerts = [];
+            if (alertType === "invoiceDashboardDiscr") {
+              currentAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
+              currentAlerts.forEach(a => { a.flagType = "invoiceDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
+            } else if (alertType === "expenseDashboardDiscr") {
+              currentAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
+              currentAlerts.forEach(a => { a.flagType = "expenseDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
+            } else if (["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr"].includes(alertType)) {
+              const mode = alertType.startsWith("crmPipe") ? "Pipeline" : "Confirmed";
+              const pairKey = alertType.endsWith("DashDiscr")
+                ? [alertType, alertType.replace("DashDiscr", "AppDiscr")]
+                : [alertType.replace("AppDiscr", "DashDiscr"), alertType];
+              currentAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, pairKey, client.masterSheetId);
+              currentAlerts.forEach(a => { a._fingerprint = buildAlertFingerprint(a); });
+              currentAlerts = currentAlerts.filter(a => (a.flagType || a.alertType) === alertType);
+            } else {
+              console.log(`  ⚠️ Unknown alertType "${alertType}" for ${clientName} — skipping`);
+              notFound += rows.length;
+              continue;
+            }
+
+            for (const row of rows) {
+              const match = currentAlerts.find(a => a._fingerprint === row.fingerprintHash);
+              if (!match) {
+                // Underlying discrepancy no longer present on the sheet —
+                // e.g. resolved between detection and now. Leave the row
+                // as-is rather than take destructive action on a new,
+                // not-yet-proven path; it simply won't get options and
+                // won't show anywhere once the read path checks for them.
+                console.log(`  ⏭ ${clientName}/${alertType}: fingerprint ${row.fingerprintHash.slice(0, 8)}… no longer found — skipping`);
+                notFound++;
+                continue;
+              }
+
+              match.clientId = client.clientSheetId;
+              match.masterSheetId = client.masterSheetId;
+              match.clientName = client.clientName;
+              match.flagType = alertType;
+              match.fingerprintHash = row.fingerprintHash;
+
+              try {
+                const analyzeRes = await fetch(`${baseUrl}/api/triage`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "analyze_alert", alert: match, automationCommanderSheetId: acIdBuild }),
+                });
+                const analyzeData = await analyzeRes.json();
+                if (analyzeData.success) {
+                  built++;
+                  console.log(`  ✅ ${clientName}/${alertType}: options built`);
+                } else {
+                  errors++;
+                  console.log(`  ❌ ${clientName}/${alertType}: analyze_alert failed — ${analyzeData.error || "unknown"}`);
+                }
+              } catch (fetchErr) {
+                errors++;
+                console.log(`  ❌ ${clientName}/${alertType}: analyze_alert call failed — ${fetchErr.message}`);
+              }
+
+              await new Promise(r => setTimeout(r, 150));
+            }
+          } catch (groupErr) {
+            errors += rows.length;
+            console.log(`  ❌ ${clientName}/${alertType}: group processing failed — ${groupErr.message}`);
+          }
+        }
+
+        const elapsedS = Math.round((Date.now() - buildStart) / 1000);
+        console.log(`build_cached_alert_options complete in ${elapsedS}s: ${built} built, ${notFound} not found, ${errors} errors`);
+        return res.status(200).json({ success: true, processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS });
+      } catch (err) {
+        console.error("❌ build_cached_alert_options error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "bust_cache") {

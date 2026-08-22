@@ -7654,6 +7654,19 @@ export default async function handler(req, res) {
                 });
               }
             } else if (row.category === "proactive") {
+              // Only the 8 confirmed AutoLog-derived types belong here —
+              // they've always displayed via the per-client "Informational
+              // Flags" section this feeds. The 11 ProactiveAlerts-sourced
+              // types (revenue_mismatch, crm_wipe, etc.) are also written
+              // with category="proactive" now (unified alert-system
+              // redesign), but they belong in the separate, existing
+              // "Proactive Alerts" home-page section instead — which
+              // already reads directly from ProactiveAlerts via
+              // get_proactive_alerts, unchanged. Merging those here too
+              // would show them in the wrong place AND duplicate them
+              // across both sections.
+              if (!Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) continue;
+
               if (clientNameToMeta === null) {
                 const { clientRows } = await readAutoUpdatesClientRows_(sheetsForMerge, acIdForMerge);
                 clientNameToMeta = new Map(clientRows.map(c => [c.clientName, c]));
@@ -14440,6 +14453,30 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               ]] },
             });
             stored++;
+
+            // Also record in AlertMemory (unified alert-system redesign,
+            // 22 Aug 2026, Paul's explicit direction) — same fingerprint
+            // basis create_task_from_alert already uses for proactive
+            // alerts (hash of alertKey), so if this alert is later
+            // converted to a task, that action's own lookup finds this
+            // exact row and updates it in place rather than creating a
+            // duplicate. category="proactive" so store_precomputed's merge
+            // surfaces it via noActionAlerts, not the main alerts list.
+            try {
+              const proactiveFingerprint = createHash("sha256").update(alert.alertKey).digest("hex").substring(0, 16);
+              await appendAlertMemoryRow(sheets, acId, {
+                fingerprintHash: proactiveFingerprint,
+                alertType: alert.alertType,
+                clientName: alert.clientName,
+                alertSummary: alert.heading || alert.detail || alert.alertType,
+                cachedOptionsJSON: "",
+                status: "cached",
+                category: "proactive",
+                dataSnapshot: JSON.stringify(alert),
+              });
+            } catch (memErr) {
+              console.log(`  ⚠️ Could not write AlertMemory row for proactive alert ${alert.alertKey}: ${memErr.message}`);
+            }
           }
         }
         if (writes.length > 0) {

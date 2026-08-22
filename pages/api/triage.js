@@ -40,7 +40,6 @@ let eomTabsVerified = false;
 
 const FLAG_COLUMNS = {
   invoiceDashboardDiscr: "CW",
-  invoiceAppDiscr: "DD",
   crmPipeDashDiscr: "DK",
   crmPipeAppDiscr: "DR",
   crmConfDashDiscr: "DY",
@@ -51,33 +50,9 @@ const FLAG_COLUMNS = {
   retainerInvoicesCreated: "FV",
   retainerInvoicesDeleted: "HL",
   expenseDashboardDiscr: "GC",
-  expenseAppDiscr: "GJ",
   expenseAdded: "GQ",
   expenseUnreconGaps: "GX",
   invoiceStaleUnsentChanges: "HE",
-};
-
-// Index of each flag within an AutoUpdates!CW2:HL1000 bulk read (0 = column
-// CW) — the exact same offsets already used inline in getClientFlags below
-// (flagRow[0], flagRow[7], etc.), named here so run_flag_sweep references
-// the one source rather than a third hand-copied set of magic numbers.
-const FLAG_ROW_INDEX_BY_KEY = {
-  invoiceDashboardDiscr: 0,
-  invoiceAppDiscr: 7,
-  crmPipeDashDiscr: 14,
-  crmPipeAppDiscr: 21,
-  crmConfDashDiscr: 28,
-  crmConfAppDiscr: 35,
-  crmCopiedConfChecked: 56,
-  crmCopiedConfUnchecked: 63,
-  crmCopiedConfDelete: 70,
-  retainerInvoicesCreated: 77,
-  retainerInvoicesDeleted: 119,
-  expenseDashboardDiscr: 84,
-  expenseAppDiscr: 91,
-  expenseAdded: 98,
-  expenseUnreconGaps: 105,
-  invoiceStaleUnsentChanges: 112,
 };
 
 // Precomputed triage data — stored by cron job, consumed by frontend on Start
@@ -85,13 +60,11 @@ const PRECOMPUTED_KEY = "triage_precomputed";
 const PRECOMPUTED_MAX_AGE_MS = 90 * 60 * 1000; // 90 minutes (GAS precompute runs every 60 min)
 
 const NO_ACTION_FLAGS = [
-  "invoiceAppDiscr",
   "crmCopiedConfChecked",
   "crmCopiedConfUnchecked",
   "crmCopiedConfDelete",
   "retainerInvoicesCreated",
   "retainerInvoicesDeleted",
-  "expenseAppDiscr",
   "expenseAdded",
   "expenseUnreconGaps",
   "invoiceStaleUnsentChanges",
@@ -99,7 +72,6 @@ const NO_ACTION_FLAGS = [
 
 const FLAG_NAMES = {
   invoiceDashboardDiscr: "Invoice dashboard discr",
-  invoiceAppDiscr: "Invoice app discr",
   crmPipeDashDiscr: "CRM pipe dash discr",
   crmPipeAppDiscr: "CRM pipe app discr",
   crmConfDashDiscr: "CRM conf dash discr",
@@ -110,7 +82,6 @@ const FLAG_NAMES = {
   retainerInvoicesCreated: "Retainer invoices created",
   retainerInvoicesDeleted: "Retainer invoices deleted",
   expenseDashboardDiscr: "Expense dashboard discr",
-  expenseAppDiscr: "Expense app discr",
   expenseAdded: "Expense added",
   expenseUnreconGaps: "Expense unrecon gaps",
   invoiceStaleUnsentChanges: "Invoice stale unsent changes",
@@ -118,63 +89,6 @@ const FLAG_NAMES = {
 
 // Column offsets within a DataChgAlert!AF2:BG2 read (0 = column AF), per
 // Paul's exact cell list (21 Aug 2026) — computed programmatically, not
-// hand-counted, given how easy off-by-one column math is to get wrong.
-// Each client's own DataChgAlert tab carries these — this is the raw source
-// the client-side reconciliation scripts write to every 30 minutes, which
-// run_flag_sweep now reads directly, replacing the IMPORTRANGE formula that
-// used to mirror these into AutoUpdates.
-const DATACHGALERT_COLUMN_OFFSETS = {
-  invoiceDashboardDiscr: 0,   // AF
-  invoiceAppDiscr: 1,         // AG
-  crmPipeDashDiscr: 2,        // AH
-  crmPipeAppDiscr: 3,         // AI
-  crmConfDashDiscr: 4,        // AJ
-  crmConfAppDiscr: 5,         // AK
-  crmCopiedConfChecked: 8,    // AN
-  crmCopiedConfUnchecked: 9,  // AO
-  crmCopiedConfDelete: 10,    // AP
-  retainerInvoicesCreated: 11, // AQ
-  retainerInvoicesDeleted: 12, // AR
-  expenseDashboardDiscr: 21,  // BA
-  expenseAppDiscr: 22,        // BB
-  expenseAdded: 23,           // BC
-  expenseUnreconGaps: 24,     // BD
-  invoiceStaleUnsentChanges: 27, // BG
-};
-
-/**
- * Applies a FlagRules comparison rule to decide whether THIS run's pulled
- * value should raise the flag — a direct, careful port of compareAutoResults'
- * comparison logic (Code.gs, confirmed via Paul's own file), not a
- * reinterpretation. Returns a boolean. A blank/unrecognised rule always
- * returns false — this is deliberate for the four "app discr" types
- * (confirmed intentional by Paul, 21 Aug 2026), not a gap to "fix" by
- * defaulting to some other behavior.
- */
-function applyFlagRule_(rule, pullVal, prevVal) {
-  const errorStrings = ["#N/A", "#REF!", "#ERROR!", "#VALUE!", "#NAME?", "Loading..."];
-  const isError = errorStrings.some(err => String(pullVal || "").includes(err));
-  if (isError || pullVal === "" || pullVal === undefined || pullVal === null) return false;
-
-  const isText = isNaN(Number(pullVal)) || pullVal === "" || typeof pullVal === "string";
-
-  if (isText && rule !== "increase" && rule !== "decrease") {
-    const sPull = String(pullVal).trim();
-    const sPrev = String(prevVal ?? "").trim();
-    const changed = sPull !== sPrev;
-    if ((rule === "if true" || rule === "if changed") && changed) return true;
-    return false;
-  } else {
-    const nPull = Number(pullVal) || 0;
-    const nPrev = Number(prevVal) || 0;
-    const diffVal = nPull - nPrev;
-    if (rule === "increase" && diffVal > 0) return true;
-    if (rule === "decrease" && diffVal < 0) return true;
-    if ((rule === "if true" || rule === "if changed") && Math.abs(diffVal) > 0.001) return true;
-    return false;
-  }
-}
-
 // ============================================================================
 // ALERT MEMORY — fingerprinting, caching, ignore management
 // ============================================================================
@@ -2340,7 +2254,6 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
       
       const flags = {
         invoiceDashboardDiscr: String(flagRow[0] || "").toUpperCase() === "TRUE", // CW
-        invoiceAppDiscr: String(flagRow[7] || "").toUpperCase() === "TRUE", // DD
         crmPipeDashDiscr: String(flagRow[14] || "").toUpperCase() === "TRUE", // DK
         crmPipeAppDiscr: String(flagRow[21] || "").toUpperCase() === "TRUE", // DR
         crmConfDashDiscr: String(flagRow[28] || "").toUpperCase() === "TRUE", // DY
@@ -2351,7 +2264,6 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
         retainerInvoicesCreated: String(flagRow[77] || "").toUpperCase() === "TRUE", // FV
         retainerInvoicesDeleted: String(flagRow[119] || "").toUpperCase() === "TRUE", // HL
         expenseDashboardDiscr: String(flagRow[84] || "").toUpperCase() === "TRUE", // GC
-        expenseAppDiscr: String(flagRow[91] || "").toUpperCase() === "TRUE", // GJ
         expenseAdded: String(flagRow[98] || "").toUpperCase() === "TRUE", // GQ
         expenseUnreconGaps: String(flagRow[105] || "").toUpperCase() === "TRUE", // GX
         invoiceStaleUnsentChanges: String(flagRow[112] || "").toUpperCase() === "TRUE", // HE
@@ -2369,7 +2281,6 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
 
       if (clearAll || clearInvoice) {
         flags.invoiceDashboardDiscr = false;
-        flags.invoiceAppDiscr = false;
         flags.invoiceStaleUnsentChanges = false;
         flags.retainerInvoicesCreated = false;
         flags.retainerInvoicesDeleted = false;
@@ -2387,7 +2298,6 @@ async function getClientFlags(sheets, automationCommanderSheetId) {
       }
       if (clearAll || clearExpense) {
         flags.expenseDashboardDiscr = false;
-        flags.expenseAppDiscr = false;
         flags.expenseAdded = false;
         flags.expenseUnreconGaps = false;
       }
@@ -7123,7 +7033,6 @@ export default async function handler(req, res) {
           const flagRow = flagResp.data.values?.[0] || [];
           const FLAG_COL_NAMES = {
             0:  "invoiceDashboardDiscr (CW)",
-            7:  "invoiceAppDiscr (DD)",
             14: "crmPipeDashDiscr (DK)",
             21: "crmPipeAppDiscr (DR)",
             28: "crmConfDashDiscr (DY)",
@@ -7133,7 +7042,6 @@ export default async function handler(req, res) {
             70: "crmCopiedConfDelete (FO)",
             77: "retainerInvoicesCreated (FV)",
             84: "expenseDashboardDiscr (GC)",
-            91: "expenseAppDiscr (GJ)",
             98: "expenseAdded (GQ)",
             105:"expenseUnreconGaps (GX)",
             112:"invoiceStaleUnsentChanges (HE)",
@@ -7436,9 +7344,8 @@ export default async function handler(req, res) {
           "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
         ]);
         const NO_ACTION_FLAG_KEYS = new Set([
-          "invoiceAppDiscr",
           "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
-          "retainerInvoicesCreated", "retainerInvoicesDeleted", "expenseAppDiscr",
+          "retainerInvoicesCreated", "retainerInvoicesDeleted",
           "expenseAdded", "expenseUnreconGaps", "invoiceStaleUnsentChanges",
         ]);
         const mergedAlerts = (alerts || []).filter(a => {
@@ -7477,7 +7384,6 @@ export default async function handler(req, res) {
         // AutoUpdates and the client appears in the UI with an empty alert list.
         const ACTIONABLE_FLAG_TO_ALERT_TYPE = {
           invoiceDashboardDiscr: ["invoice"],
-          invoiceAppDiscr:       ["invoice"],
           invoiceStaleUnsentChanges: ["invoice"],
           crmPipeDashDiscr:      ["crm"],
           crmPipeAppDiscr:       ["crm"],
@@ -7487,7 +7393,6 @@ export default async function handler(req, res) {
           crmCopiedConfUnchecked: ["crm"],
           crmCopiedConfDelete:   ["crm"],
           expenseDashboardDiscr: ["expense"],
-          expenseAppDiscr:       ["expense"],
           expenseAdded:          ["expense"],
           expenseUnreconGaps:    ["expense"],
           retainerInvoicesCreated: ["retainerInvoicesCreated"],
@@ -7505,7 +7410,6 @@ export default async function handler(req, res) {
 
         const ACTIONABLE_FLAG_TO_STICKY_COL = {
           invoiceDashboardDiscr: "CW",
-          invoiceAppDiscr:       "DD",
           invoiceStaleUnsentChanges: "HE",
           crmPipeDashDiscr:      "DK",
           crmPipeAppDiscr:       "DR",
@@ -7515,7 +7419,6 @@ export default async function handler(req, res) {
           crmCopiedConfUnchecked: "FH",
           crmCopiedConfDelete:   "FO",
           expenseDashboardDiscr: "GC",
-          expenseAppDiscr:       "GJ",
           expenseAdded:          "GQ",
           expenseUnreconGaps:    "GX",
           retainerInvoicesCreated: "FV",
@@ -7654,19 +7557,11 @@ export default async function handler(req, res) {
                 });
               }
             } else if (row.category === "proactive") {
-              // Only the 8 confirmed AutoLog-derived types belong here —
-              // they've always displayed via the per-client "Informational
-              // Flags" section this feeds. The 11 ProactiveAlerts-sourced
-              // types (revenue_mismatch, crm_wipe, etc.) are also written
-              // with category="proactive" now (unified alert-system
-              // redesign), but they belong in the separate, existing
-              // "Proactive Alerts" home-page section instead — which
-              // already reads directly from ProactiveAlerts via
-              // get_proactive_alerts, unchanged. Merging those here too
-              // would show them in the wrong place AND duplicate them
-              // across both sections.
-              if (!Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) continue;
-
+              // Both the 8 AutoLog-derived types and the 11 ProactiveAlerts-
+              // sourced types now merge here, per Paul's explicit direction
+              // (23 Aug 2026) for a single, unified alert section — this
+              // supersedes the earlier design that kept them in two
+              // separate UI locations.
               if (clientNameToMeta === null) {
                 const { clientRows } = await readAutoUpdatesClientRows_(sheetsForMerge, acIdForMerge);
                 clientNameToMeta = new Map(clientRows.map(c => [c.clientName, c]));
@@ -7679,7 +7574,19 @@ export default async function handler(req, res) {
               newNoActionFromMemory.push({
                 clientId: clientMeta.masterSheetId,
                 flagType: row.alertType,
-                flagName: FLAG_NAMES[row.alertType] || row.alertType,
+                // alertSummary is specific per-instance text (the exact log
+                // line, or the proactive alert's own heading/detail) —
+                // preferred over a generic type label, and necessary for
+                // the 11 snake_case proactive types since FLAG_NAMES only
+                // covers the 18 camelCase AutoUpdates types.
+                flagName: row.alertSummary || FLAG_NAMES[row.alertType] || row.alertType,
+                // Needed so multiple distinct alerts of the same type for
+                // the same client (e.g. several jobs each with their own
+                // revenue_mismatch) don't collapse into one — the old
+                // AutoUpdates-based flags were booleans (at most one per
+                // type per client), an assumption that doesn't hold for
+                // the 11 proactive types.
+                fingerprintHash: row.fingerprintHash,
               });
 
               if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
@@ -7834,36 +7741,16 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "run_flag_sweep") {
-      // The 6 flag types that use fingerprint-based detection (reading
-      // InvComp/DirComp/CRMComp directly, same precision as the old
-      // runFullSweep) rather than the DataChgAlert count comparison the
-      // other 12 use — extended into run_flag_sweep at Paul's explicit
-      // request (21 Aug 2026) so runFullSweep can be fully retired, not
-      // just compareAutoResults. Fingerprint-based detection catches a case
-      // count comparison can miss: an old discrepancy gets resolved and a
-      // new, different one appears with the count unchanged (e.g. still
-      // "1" before and after) — count comparison sees no change and misses
-      // it; comparing the specific fingerprint does not.
-      const FINGERPRINT_BASED_FLAGS = new Set([
-        "invoiceDashboardDiscr",
-        "crmPipeDashDiscr",
-        "crmPipeAppDiscr",
-        "crmConfDashDiscr",
-        "crmConfAppDiscr",
-        "expenseDashboardDiscr",
-      ]);
-
-      // Replaces compareAutoResults (Code.gs) + the AutoUpdates IMPORTRANGE
-      // layer entirely — the new GAS "clock" trigger calls this on a
-      // schedule instead of running the comparison itself. Reads each
-      // client's DataChgAlert directly (confirmed stable cell layout by
-      // Paul, 21 Aug 2026), compares against the previous run (stored in
-      // Redis, not the sheet — a design choice flagged to Paul, not silently
-      // assumed), applies the same rule types as the original
-      // (increase/decrease/if true/if changed, from FlagRules), and writes
-      // only flags that need to newly become true. Never writes false —
-      // clearing stays exclusively triage.js's clear_flags responsibility,
-      // same ownership model as today.
+      // Detects the 14 remaining flag types by reading InvComp/DirComp/
+      // CRMComp (6 dashboard types, fingerprint-based) and AutoLog (8
+      // informational types, matched on structured log lines) directly —
+      // replaces compareAutoResults, runFullSweep, and the AutoUpdates
+      // IMPORTRANGE layer entirely. The old count-based DataChgAlert
+      // comparison this action originally also did for the 8 AutoLog types
+      // was removed once every remaining type had proper discrete
+      // detection (confirmed programmatically, 23 Aug 2026) — no type is
+      // left relying on it. Writes directly to AlertMemory now, not
+      // AutoUpdates (unified alert-system redesign).
       const { secret: sweepSecret, automationCommanderSheetId: acIdSweep } = req.body;
       if (sweepSecret !== process.env.CRON_SECRET) {
         return res.status(401).json({ success: false, error: "Unauthorised" });
@@ -7874,17 +7761,8 @@ export default async function handler(req, res) {
       try {
         const sheets = await getSheetsClient();
 
-        const rules = await readFlagRules_(sheets, acIdSweep);
         const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdSweep);
         console.log(`run_flag_sweep: ${clientRows.length} clients to check`);
-
-        // Bulk-read current sticky state once, same range getClientFlags reads —
-        // needed to know isAlreadySticky per client+flag before writing anything.
-        const flagsResponse = await sheets.spreadsheets.values.get({
-          spreadsheetId: acIdSweep,
-          range: "AutoUpdates!CW2:HL1000",
-        });
-        const currentFlagRows = flagsResponse.data.values || [];
 
         // Invoice/CRM/expense automation frequency (columns O/P/Q) — needed
         // to know which of the 6 fingerprint-based checks actually apply to
@@ -7897,70 +7775,12 @@ export default async function handler(req, res) {
         });
         const freqRows = freqResponse.data.values || [];
 
-        const writes = []; // { range, values } for the final batchUpdate
         const sweepItems = []; // { clientName, alertType, fingerprints } — fingerprint-based flags, checked once against AlertMemory after the main loop
         const raisedDetail = []; // { clientName, flagKey } — for the FlagSweepLog, so Paul can see exactly what was raised, not just a count
         let clientsChecked = 0, flagsRaised = 0, errors = 0;
 
         for (const client of clientRows) {
           try {
-            const dcaResponse = await sheets.spreadsheets.values.get({
-              spreadsheetId: client.masterSheetId,
-              range: "DataChgAlert!AF2:BG2",
-            });
-            const dcaRow = (dcaResponse.data.values || [])[0] || [];
-
-            const prevKey = `flag_sweep_prev:${client.masterSheetId}`;
-            let prevSnapshot = {};
-            try {
-              const prevRaw = await redisClient.get(prevKey);
-              if (prevRaw) prevSnapshot = JSON.parse(prevRaw);
-            } catch (e) { /* no previous snapshot yet — treat as empty */ }
-
-            const newSnapshot = {};
-            const currentFlagRow = currentFlagRows[client.rowIndex] || [];
-
-            for (const [flagKey, offset] of Object.entries(DATACHGALERT_COLUMN_OFFSETS)) {
-              if (FINGERPRINT_BASED_FLAGS.has(flagKey)) continue; // handled separately below, more precisely
-
-              const pullVal = dcaRow[offset];
-              const hasPriorObservation = Object.prototype.hasOwnProperty.call(prevSnapshot, flagKey);
-              newSnapshot[flagKey] = pullVal ?? "";
-
-              const rule = rules[flagKey] || "";
-              const isAlreadySticky = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[flagKey]] || "").toUpperCase() === "TRUE";
-              if (isAlreadySticky) continue; // already true — nothing to raise, clear_flags owns turning it off
-
-              // Cold-start guard, added 21 Aug 2026 after Paul's first manual
-              // run raised 44 flags across nearly every client. Root cause:
-              // with no prior Redis snapshot, every existing non-zero count
-              // on an "increase"-ruled flag compared against an implicit
-              // baseline of 0 and looked like a brand-new increase — even
-              // for counts that had been sitting there, unchanged, for
-              // months. compareAutoResults never hit this because it had
-              // years of accumulated sheet-side history by the time anyone
-              // would notice; this system started from nothing. Fix: the
-              // very first observation of a client+flag combination only
-              // establishes the baseline — never raises — so the *second*
-              // run (comparing against a real prior value) is what starts
-              // actually detecting genuine changes.
-              if (!hasPriorObservation) {
-                console.log(`  ⏭ ${client.clientName} / ${flagKey}: first observation (pullVal=${JSON.stringify(pullVal)}) — establishing baseline, not raising`);
-                continue;
-              }
-
-              const currentFlag = applyFlagRule_(rule, pullVal, prevSnapshot[flagKey]);
-              if (currentFlag) {
-                writes.push({
-                  range: `AutoUpdates!${FLAG_COLUMNS[flagKey]}${client.sheetRowNum}`,
-                  values: [["TRUE"]],
-                });
-                flagsRaised++;
-                raisedDetail.push({ clientName: client.clientName, flagKey, method: "count", rule, pullVal: pullVal ?? "", prevVal: prevSnapshot[flagKey] ?? "" });
-                console.log(`  ✅ ${client.clientName} / ${flagKey} → TRUE (rule="${rule}", pullVal=${JSON.stringify(pullVal)}, prevVal=${JSON.stringify(prevSnapshot[flagKey])})`);
-              }
-            }
-
             // Fingerprint-based check for the 6 dashboard-style flags — same
             // approach runFullSweep used (GAS), now here instead. Only reads
             // a tab if that automation is actually active for this client,
@@ -7972,7 +7792,7 @@ export default async function handler(req, res) {
             const hasCRM     = !!freqRow[1];
             const hasExpense = !!freqRow[2];
 
-            if (hasInvoice && String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY.invoiceDashboardDiscr] || "").toUpperCase() !== "TRUE") {
+            if (hasInvoice) {
               const invLock = await checkGASLock(sheets, client.masterSheetId, "invoice");
               if (!invLock.locked) {
                 const invAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
@@ -7986,7 +7806,7 @@ export default async function handler(req, res) {
               }
             }
 
-            if (hasExpense && String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY.expenseDashboardDiscr] || "").toUpperCase() !== "TRUE") {
+            if (hasExpense) {
               const expLock = await checkGASLock(sheets, client.masterSheetId, "expense");
               if (!expLock.locked) {
                 const expAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
@@ -8004,17 +7824,14 @@ export default async function handler(req, res) {
               const crmLock = await checkGASLock(sheets, client.masterSheetId, "crm");
               if (!crmLock.locked) {
                 for (const [mode, dashKey, appKey] of [["Pipeline", "crmPipeDashDiscr", "crmPipeAppDiscr"], ["Confirmed", "crmConfDashDiscr", "crmConfAppDiscr"]]) {
-                  const alreadyDash = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[dashKey]] || "").toUpperCase() === "TRUE";
-                  const alreadyApp  = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[appKey]] || "").toUpperCase() === "TRUE";
-                  if (alreadyDash && alreadyApp) continue; // both already raised, nothing this mode can add
                   const crmAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, [dashKey, appKey], client.masterSheetId);
                   crmAlerts.forEach(a => { a._fingerprint = buildAlertFingerprint(a); });
                   const dashAlerts = crmAlerts.filter(a => (a.flagType || a.alertType) === dashKey);
                   const appAlerts  = crmAlerts.filter(a => (a.flagType || a.alertType) === appKey);
-                  if (!alreadyDash && dashAlerts.length > 0) {
+                  if (dashAlerts.length > 0) {
                     sweepItems.push({ clientName: client.clientName, alertType: dashKey, alerts: dashAlerts, autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
                   }
-                  if (!alreadyApp && appAlerts.length > 0) {
+                  if (appAlerts.length > 0) {
                     sweepItems.push({ clientName: client.clientName, alertType: appKey, alerts: appAlerts, autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
                   }
                 }
@@ -8031,9 +7848,6 @@ export default async function handler(req, res) {
             {
               const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId);
               for (const [autoLogType, patterns] of Object.entries(AUTOLOG_TYPE_PATTERNS)) {
-                const alreadyRaised = String(currentFlagRow[FLAG_ROW_INDEX_BY_KEY[autoLogType]] || "").toUpperCase() === "TRUE";
-                if (alreadyRaised) continue;
-
                 const matchedAlerts = [];
                 for (const entry of logEntries) {
                   const lines = (entry.details || "").split("\n\n");
@@ -8054,7 +7868,6 @@ export default async function handler(req, res) {
               }
             }
 
-            await redisClient.set(prevKey, JSON.stringify(newSnapshot), { EX: 7 * 24 * 3600 }); // 7-day TTL, well beyond any sweep gap
             clientsChecked++;
           } catch (clientErr) {
             errors++;
@@ -8079,24 +7892,14 @@ export default async function handler(req, res) {
             if (!item.alerts || item.alerts.length === 0) continue;
             const newAlerts = item.alerts.filter(a => a._fingerprint && !handledHashes.has(a._fingerprint));
             if (newAlerts.length === 0) continue;
-            writes.push({
-              range: `AutoUpdates!${FLAG_COLUMNS[item.alertType]}${item.autoUpdatesRow}`,
-              values: [["TRUE"]],
-            });
             flagsRaised++;
             raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, method: "fingerprint", totalFingerprints: item.alerts.length, newFingerprints: newAlerts.length });
             console.log(`  ✅ ${item.clientName} / ${item.alertType} → TRUE (fingerprint: ${newAlerts.length} of ${item.alerts.length} new)`);
 
-            // First step of the unified alert-system redesign (22 Aug 2026,
-            // Paul's explicit direction): also write a proper AlertMemory
-            // row directly for each new discrepancy, at detection time —
-            // deliberately alongside the AutoUpdates write above, not
-            // replacing it yet. Nothing downstream reads these new rows
-            // yet (the live app still only reads AutoUpdates flags), so
-            // this is purely additive and inspectable with zero risk to
-            // what Paul currently sees. cachedOptionsJSON is intentionally
-            // left empty — building options is a separate, later stage in
-            // the new design, not detection's job.
+            // AlertMemory is now the only place a detected item gets
+            // recorded (unified alert-system redesign) — the AutoUpdates
+            // write this action used to also make alongside this has been
+            // fully retired now that nothing reads it any more.
             for (const alert of newAlerts) {
               try {
                 // alert.summary is already correctly built by
@@ -8132,13 +7935,6 @@ export default async function handler(req, res) {
               }
             }
           }
-        }
-
-        if (writes.length > 0) {
-          await sheets.spreadsheets.values.batchUpdate({
-            spreadsheetId: acIdSweep,
-            requestBody: { valueInputOption: "RAW", data: writes },
-          });
         }
 
         const elapsedS = Math.round((Date.now() - sweepStart) / 1000);

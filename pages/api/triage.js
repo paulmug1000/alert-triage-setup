@@ -7347,11 +7347,19 @@ export default async function handler(req, res) {
                 });
               }
             } else if (row.category === "proactive") {
-              // Both the 8 AutoLog-derived types and the 11 ProactiveAlerts-
-              // sourced types now merge here, per Paul's explicit direction
-              // (23 Aug 2026) for a single, unified alert section — this
-              // supersedes the earlier design that kept them in two
-              // separate UI locations.
+              // Restricted to the 8 AutoLog-derived types only (23 Aug 2026,
+              // fixing a real duplicate-display bug Paul found). The 11
+              // ProactiveAlerts-sourced types already have their own
+              // dedicated, unified display — the separate proactiveAlerts/
+              // get_proactive_alerts path, already shown alongside
+              // actionable/informational alerts on both the home screen and
+              // the alert screen. Also merging them into noActionAlerts/
+              // client.flags here double-counted the same underlying event
+              // through two different paths at once, not achieving any
+              // separation — this fix removes the duplicate, it doesn't
+              // reintroduce a separate section.
+              if (!Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) continue;
+
               if (clientNameToMeta === null) {
                 const { clientRows } = await readAutoUpdatesClientRows_(sheetsForMerge, acIdForMerge);
                 clientNameToMeta = new Map(clientRows.map(c => [c.clientName, c]));

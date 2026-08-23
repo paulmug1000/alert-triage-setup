@@ -2591,14 +2591,16 @@ export default function TriageSystem({ onBack }) {
       
       if (filteredAlerts.length === 0) {
         // No actionable alerts — only run handlePostClear if no-action flags are all resolved too
+        // AND there are no proactive alerts
         // Use restoredResolved directly — resolvedNoActionFlags state update is async
+        const clientProactive = proactiveAlerts.filter(a => a.clientName === client.clientName);
         const noActionAllDone = filteredNoAction.length === 0 ||
           filteredNoAction.every(na => restoredResolved.has(na.flagType));
-        if (noActionAllDone) {
-          console.log(`  → No unprocessed alerts and all no-action flags resolved, auto-clearing`);
+        if (noActionAllDone && clientProactive.length === 0) {
+          console.log(`  → No unprocessed alerts, all no-action flags resolved, and no proactive alerts, auto-clearing`);
           handlePostClear([], restoredResolved, client);
         } else {
-          console.log(`  → No actionable alerts but ${filteredNoAction.length} non-actionable flag(s) need resolving`);
+          console.log(`  → No actionable alerts but ${filteredNoAction.length} non-actionable flag(s) or ${clientProactive.length} proactive alert(s) need resolving`);
           setScreen("alertSelection");
         }
       } else {
@@ -2750,9 +2752,12 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
-  // Returns true when all non-actionable flags for the current client are resolved
-  const allNoActionResolved = () =>
-    clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.flagType));
+  // Returns true when all non-actionable flags AND proactive alerts for the current client are resolved
+  const allNoActionResolved = () => {
+    const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.flagType));
+    const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+    return infoDone && proactiveDone;
+  };
 
   // Rich noAction flags that belong to CRM or invoice groups —
   // when marked resolved, trigger auto-clear for their parent group
@@ -9022,12 +9027,13 @@ export default function TriageSystem({ onBack }) {
                                   autoClearFlags(clientAlerts, newResolved).catch(() => {});
                                 }
                                 // If all noAction flags are now resolved AND no actionable alerts remain,
-                                // auto-proceed to clear flags and return to client selection
-                                const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.flagType));
-                                if (allResolved && clientAlerts.length === 0) {
-                                  handlePostClear([], newResolved);
-                                }
-                              }}
+                  						              // auto-proceed to clear flags and return to client selection
+       							                         const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.flagType));
+         						                       const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+             						                   if (allResolved && proactiveDone && clientAlerts.length === 0) {
+          						                        handlePostClear([], newResolved);
+      						                             }
+           						                   }}
                               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
                             >
                               ✓ Mark resolved
@@ -9175,7 +9181,8 @@ export default function TriageSystem({ onBack }) {
                                 // auto-proceed to clear flags and return to client selection
                                 const newResolved2 = new Set([...resolvedNoActionFlags, na.flagType]);
                                 const allResolved2 = clientNoActionAlerts.every(n => newResolved2.has(n.flagType));
-                                if (allResolved2 && clientAlerts.length === 0) {
+                                const proactiveDone2 = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+                                if (allResolved2 && proactiveDone2 && clientAlerts.length === 0) {
                                   handlePostClear([], newResolved2);
                                 }
                               }}

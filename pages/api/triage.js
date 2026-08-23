@@ -7536,12 +7536,14 @@ export default async function handler(req, res) {
             for (const row of rows) {
               const match = currentAlerts.find(a => a._fingerprint === row.fingerprintHash);
               if (!match) {
-                // Underlying discrepancy no longer present on the sheet —
-                // e.g. resolved between detection and now. Leave the row
-                // as-is rather than take destructive action on a new,
-                // not-yet-proven path; it simply won't get options and
-                // won't show anywhere once the read path checks for them.
-                console.log(`  ⏭ ${clientName}/${alertType}: fingerprint ${row.fingerprintHash.slice(0, 8)}… no longer found — skipping`);
+                console.log(`  ⏭ ${clientName}/${alertType}: fingerprint ${row.fingerprintHash.slice(0, 8)}… no longer found — marking auto_resolved`);
+                try {
+                  await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
+                    ...row, status: "auto_resolved"
+                  });
+                } catch (e) {
+                  console.log(`  ⚠️ Failed to mark ghost row resolved: ${e.message}`);
+                }
                 notFound++;
                 continue;
               }

@@ -2302,30 +2302,42 @@ export default function TriageSystem({ onBack }) {
   const [precomputedNoActionResults, setPrecomputedNoActionResults] = useState({}); // keyed by "clientName___flagType", never wiped
 
 
-  // Manual refresh — skips precomputed cache and runs a live start_triage
+  // Manual refresh — orchestrated from the frontend to bypass 300s timeout limits
   const refreshTriage = async () => {
     try {
       setIsLoading(true);
       setError("");
       setAcceptError("");
-      // Invalidate proactive alerts so they reload fresh after refresh
       setProactiveLoadedAt(0);
       setProactiveAlerts([]);
 
-      const response = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "start_triage",
-          automationCommanderSheetId,
-        }),
+      // Step 1: Sweep for flags
+      await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start_triage", step: "sweep", automationCommanderSheetId }),
       });
 
-      const data = await response.json();
+      // Step 2: Build options (loop safely until all are processed)
+      let hasMore = true;
+      while (hasMore) {
+        const buildResp = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "start_triage", step: "build", automationCommanderSheetId }),
+        });
+        const buildData = await buildResp.json();
+        if (!buildResp.ok || !buildData.success) throw new Error(buildData.error || "Failed to build options");
+        hasMore = buildData.hasMore;
+      }
 
-      if (!response.ok || !data.success) {
-        setError(data.error || "Failed to refresh triage data");
-        return;
+      // Step 3: Store and get session
+      const storeResp = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start_triage", step: "store", automationCommanderSheetId }),
+      });
+      const data = await storeResp.json();
+
+      if (!storeResp.ok || !data.success) {
+        throw new Error(data.error || "Failed to finalize refresh data");
       }
 
       setSessionId(data.sessionId);

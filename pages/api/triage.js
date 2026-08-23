@@ -6165,103 +6165,82 @@ export default async function handler(req, res) {
       }
 
     } else if (action === "start_triage") {
-      // Redesigned 24 Aug 2026 (fixing a real bug Paul found) — the old
-      // implementation depended entirely on getClientFlags reading
-      // AutoUpdates' sticky flag columns to decide what to check. Those
-      // columns are now permanently FALSE (nothing has written them since
-      // compareAutoResults/runFullSweep were disabled), so this always
-      // returned "0 alerts" regardless of AlertMemory's actual state. It
-      // also directly overwrote the shared PRECOMPUTED_KEY cache with an
-      // old-path-only shape carrying none of the AlertMemory merge logic —
-      // harmless while broken, but would have corrupted the live cache had
-      // it ever actually run with real clientsWithFlags data.
-      //
-      // Now a thin orchestrator rather than a parallel implementation:
-      // triggers a fresh detection pass, ensures options are built for
-      // anything newly cached, then reuses store_precomputed's own
-      // (already-correct, already-merged) logic instead of duplicating it —
-      // and stores a fresh session for the frontend under the same
-      // triage_alerts:{sessionId} contract it's always used.
+      // Proxy orchestrator for frontend chunking. Protects CRON_SECRET.
       try {
-        const baseUrl = `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+        const { step } = req.body;
+        const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : `https://${process.env.VERCEL_URL}`;
         const cronSecret = process.env.CRON_SECRET;
 
-        console.log(`🔄 start_triage: running fresh detection pass...`);
-        const sweepResp = await fetch(`${baseUrl}/api/triage`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "run_flag_sweep", secret: cronSecret, automationCommanderSheetId }),
-        });
-        if (!sweepResp.ok) console.error(`  ⚠ run_flag_sweep step returned ${sweepResp.status} (continuing anyway)`);
-
-        console.log(`🔄 start_triage: building options for any newly-cached discrepancies...`);
-        const buildResp = await fetch(`${baseUrl}/api/triage`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "build_cached_alert_options", secret: cronSecret, automationCommanderSheetId }),
-        });
-        if (!buildResp.ok) console.error(`  ⚠ build_cached_alert_options step returned ${buildResp.status} (continuing anyway)`);
-
-        // Preserve any existing noActionAnalysisResults, matching the old
-        // implementation's own behaviour — store_precomputed defaults this
-        // to {} if not passed, which would silently wipe out cached
-        // "Analyse" results if we didn't carry them forward explicitly.
-        let existingNoActionAnalysis = {};
-        try {
-          const existingRaw = await redisClient.get(PRECOMPUTED_KEY);
-          if (existingRaw) existingNoActionAnalysis = JSON.parse(existingRaw).noActionAnalysisResults || {};
-        } catch (e) { /* fine to proceed with {} */ }
-
-        console.log(`🔄 start_triage: rebuilding precomputed cache...`);
-        const storeResp = await fetch(`${baseUrl}/api/triage`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "store_precomputed", secret: cronSecret, automationCommanderSheetId,
-            noActionAnalysisResults: existingNoActionAnalysis,
-          }),
-        });
-        if (!storeResp.ok) {
-          const errText = await storeResp.text().catch(() => "");
-          throw new Error(`store_precomputed step failed (${storeResp.status}): ${errText}`);
+        // Step 1: Sweep
+        if (step === "sweep") {
+          console.log(`🔄 start_triage (sweep): running fresh detection pass...`);
+          await fetch(`${baseUrl}/api/triage`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "run_flag_sweep", secret: cronSecret, automationCommanderSheetId }),
+          });
+          return res.status(200).json({ success: true });
         }
 
-        const freshRaw = await redisClient.get(PRECOMPUTED_KEY);
-        if (!freshRaw) {
-          return res.status(500).json({ success: false, error: "Refresh completed but no precomputed data was found afterwards" });
-        }
-        const fresh = JSON.parse(freshRaw);
-
-        // Rebuild alertCounts dynamically so the frontend renders the alerts correctly
-        const alertCountsByClientAndFlag = {};
-        for (const alert of (fresh.alerts || [])) {
-          const key = alert.clientName;
-          const flagKey = alert.flagType || alert.alertType || alert.type;
-          if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
-          alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+        // Step 2: Build Options (Can be looped by frontend)
+        if (step === "build") {
+          console.log(`🔄 start_triage (build): building options...`);
+          const buildResp = await fetch(`${baseUrl}/api/triage`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "build_cached_alert_options", secret: cronSecret, automationCommanderSheetId }),
+          });
+          const buildData = await buildResp.json();
+          return res.status(200).json({ success: true, hasMore: buildData.hasMore });
         }
 
-        const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
-          ...c,
-          alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
-        }));
+        // Step 3: Store and Generate Session
+        if (step === "store") {
+          console.log(`🔄 start_triage (store): rebuilding precomputed cache...`);
+          let existingNoActionAnalysis = {};
+          try {
+            const existingRaw = await redisClient.get(PRECOMPUTED_KEY);
+            if (existingRaw) existingNoActionAnalysis = JSON.parse(existingRaw).noActionAnalysisResults || {};
+          } catch (e) { /* fine to proceed with {} */ }
 
-        const sessionId = Math.random().toString(36).substring(2, 15);
-        await redisClient.set(
-          `triage_alerts:${sessionId}`,
-          JSON.stringify({
-            alerts: fresh.alerts || [],
-            noActionAlerts: fresh.noActionAlerts || [],
-            clientsWithFlags: clientsWithUpdatedCounts,
-          }),
-          { EX: 86400 }
-        );
+          const storeResp = await fetch(`${baseUrl}/api/triage`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "store_precomputed", secret: cronSecret, automationCommanderSheetId,
+              noActionAnalysisResults: existingNoActionAnalysis,
+            }),
+          });
+          if (!storeResp.ok) throw new Error(`store_precomputed failed (${storeResp.status})`);
 
-        console.log(`✅ start_triage: refresh complete — ${(fresh.alerts || []).length} alerts, ${(fresh.noActionAlerts || []).length} no-action alerts`);
-        return res.status(200).json({
-          success: true,
-          sessionId,
-          totalAlerts: (fresh.alerts || []).length,
-          noActionCount: (fresh.noActionAlerts || []).length,
-          clientsWithFlags: clientsWithUpdatedCounts,
-        });
+          const freshRaw = await redisClient.get(PRECOMPUTED_KEY);
+          if (!freshRaw) return res.status(500).json({ success: false, error: "No precomputed data was found afterwards" });
+          const fresh = JSON.parse(freshRaw);
+
+          const alertCountsByClientAndFlag = {};
+          for (const alert of (fresh.alerts || [])) {
+            const key = alert.clientName;
+            const flagKey = alert.flagType || alert.alertType || alert.type;
+            if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+            alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+          }
+
+          const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
+            ...c, alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
+          }));
+
+          const sessionId = Math.random().toString(36).substring(2, 15);
+          await redisClient.set(
+            `triage_alerts:${sessionId}`,
+            JSON.stringify({ alerts: fresh.alerts || [], noActionAlerts: fresh.noActionAlerts || [], clientsWithFlags: clientsWithUpdatedCounts }),
+            { EX: 86400 }
+          );
+
+          console.log(`✅ start_triage: refresh complete`);
+          return res.status(200).json({
+            success: true, sessionId, totalAlerts: (fresh.alerts || []).length,
+            noActionCount: (fresh.noActionAlerts || []).length, clientsWithFlags: clientsWithUpdatedCounts,
+          });
+        }
+
+        return res.status(400).json({ success: false, error: "Invalid step parameter" });
       } catch (err) {
         console.error("❌ start_triage error:", err);
         return res.status(500).json({ success: false, error: err.message });
@@ -7413,9 +7392,18 @@ export default async function handler(req, res) {
           : `https://${process.env.VERCEL_URL}`;
 
         let built = 0, notFound = 0, errors = 0;
+        let hasMore = false;
+        const TIME_LIMIT_MS = 220000; // 3.6 minutes (leaves a safe buffer before Vercel's 300s kill)
 
         for (const [key, rows] of groups.entries()) {
-            const [clientName, alertType] = key.split("::");
+          // Time-Based Chunking Eject
+          if (Date.now() - buildStart > TIME_LIMIT_MS) {
+            console.log(`  ⏳ Time limit reached (${Math.round((Date.now() - buildStart)/1000)}s). Exiting cleanly to avoid 300s timeout.`);
+            hasMore = true;
+            break;
+          }
+
+          const [clientName, alertType] = key.split("::");
             const client = clientByName.get(clientName);
             if (!client) {
               console.log(`  ⚠️ ${clientName}: not found in current client list — skipping ${rows.length} row(s)`);
@@ -7507,8 +7495,8 @@ export default async function handler(req, res) {
         }
 
         const elapsedS = Math.round((Date.now() - buildStart) / 1000);
-        console.log(`build_cached_alert_options complete in ${elapsedS}s: ${built} built, ${notFound} not found, ${errors} errors`);
-        return res.status(200).json({ success: true, processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS });
+        console.log(`build_cached_alert_options complete in ${elapsedS}s: ${built} built, ${notFound} not found, ${errors} errors, hasMore: ${hasMore}`);
+        return res.status(200).json({ success: true, processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, hasMore });
       } catch (err) {
         console.error("❌ build_cached_alert_options error:", err);
         return res.status(500).json({ success: false, error: err.message });

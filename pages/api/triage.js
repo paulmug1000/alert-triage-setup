@@ -96,7 +96,6 @@ const FLAG_NAMES = {
 const ALERT_MEMORY_TAB = "AlertMemory";
 const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:L`;
 const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
-const PROACTIVE_ALERTS_TAB = "ProactiveAlerts";
 const PROACTIVE_CHECK_LOG_TAB = "ProactiveCheckLog";
 const FLAG_SWEEP_LOG_TAB = "FlagSweepLog";
 const PRECOMPUTE_LOG_TAB = "PrecomputeLog";
@@ -2113,47 +2112,11 @@ async function getSheetGid(sheets, spreadsheetId, sheetName) {
 // ============================================================================
 // FLAG READING
 // ============================================================================
-
-/**
- * Reads the FlagRules sheet (Section | Rule columns) and maps each section
- * name back to its internal flag key via FLAG_NAMES, case-insensitively —
- * confirmed exact match against Paul's own FlagRules screenshot (21 Aug 2026).
- * Returns a flag-key-keyed map: { flagKey: "increase"|"decrease"|"if true"|
- * "if changed"|"" }. An empty string means deliberately no rule (confirmed by
- * Paul: the four "app discr" types are intentionally blank, not a gap) — a
- * flag key with no matching row in the sheet at all is simply absent from
- * the returned map, treated the same as "" by the caller.
- */
-async function readFlagRules_(sheets, automationCommanderSheetId) {
-  const rules = {};
-  try {
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "FlagRules!A2:B1000",
-    });
-    const rows = response.data.values || [];
-
-    // Build a reverse lookup: lowercased display name -> flag key
-    const nameToKey = {};
-    for (const [key, name] of Object.entries(FLAG_NAMES)) {
-      nameToKey[name.trim().toLowerCase()] = key;
-    }
-
-    for (const row of rows) {
-      const sectionName = String(row[0] || "").trim();
-      if (!sectionName) continue;
-      const flagKey = nameToKey[sectionName.toLowerCase()];
-      if (!flagKey) {
-        console.log(`  ⚠️ FlagRules section "${sectionName}" doesn't match any known flag — skipping`);
-        continue;
-      }
-      rules[flagKey] = String(row[1] || "").trim().toLowerCase();
-    }
-  } catch (err) {
-    console.error("readFlagRules_ error:", err.message);
-  }
-  return rules;
-}
+// readFlagRules_ retired 23 Aug 2026 (Paul's direction) — the FlagRules
+// sheet's comparison rules (increase/decrease/if true/if changed) only ever
+// applied to the old count-based DataChgAlert comparison, which was removed
+// once every remaining flag type had proper discrete detection instead.
+// Nothing reads FlagRules any more; the sheet itself is left untouched.
 
 /**
  * Reads the client list (name + sheet IDs) from AutoUpdates!A2:M — shared by
@@ -2595,61 +2558,12 @@ async function checkGASLock(sheets, masterSheetId, sequenceType) {
 // ============================================================================
 // PROACTIVE ALERTS — storage helpers
 // ============================================================================
-
-async function ensureProactiveAlertsTab(sheets, automationCommanderSheetId) {
-  try {
-    await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${PROACTIVE_ALERTS_TAB}!A1`,
-    });
-  } catch (err) {
-    try {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: automationCommanderSheetId,
-        requestBody: { requests: [{ addSheet: { properties: { title: PROACTIVE_ALERTS_TAB } } }] },
-      });
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId,
-        range: `${PROACTIVE_ALERTS_TAB}!A1:J1`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[
-          "alertKey", "alertType", "clientName", "heading", "detail",
-          "status", "firstSeen", "lastSeen", "acknowledgedAt", "metadata",
-        ]] },
-      });
-      console.log(`✅ Created ${PROACTIVE_ALERTS_TAB} tab`);
-    } catch (createErr) {
-      console.log(`⚠️ Could not create ${PROACTIVE_ALERTS_TAB} tab: ${createErr.message}`);
-    }
-  }
-}
-
-async function readProactiveAlerts(sheets, automationCommanderSheetId) {
-  try {
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${PROACTIVE_ALERTS_TAB}!A:J`,
-    });
-    const rows = resp.data.values || [];
-    if (rows.length < 2) return [];
-    return rows.slice(1).map((row, i) => ({
-      rowIndex:       i + 2,
-      alertKey:       row[0] || "",
-      alertType:      row[1] || "",
-      clientName:     row[2] || "",
-      heading:        row[3] || "",
-      detail:         row[4] || "",
-      status:         row[5] || "active",
-      firstSeen:      row[6] || "",
-      lastSeen:       row[7] || "",
-      acknowledgedAt: row[8] || "",
-      metadata:       row[9] ? (() => { try { return JSON.parse(row[9]); } catch(e) { return {}; } })() : {},
-    }));
-  } catch (err) {
-    console.log(`⚠️ Could not read ${PROACTIVE_ALERTS_TAB}: ${err.message}`);
-    return [];
-  }
-}
+// ensureProactiveAlertsTab/readProactiveAlerts retired 23 Aug 2026 (Paul's
+// explicit direction) — every action that used them (store_proactive_alerts,
+// get_proactive_alerts, acknowledge/bulk_acknowledge_proactive_alerts,
+// resolve_proactive_alert, create_task) now reads and writes AlertMemory
+// exclusively. The ProactiveAlerts tab itself is left untouched — this only
+// retires the code path, not the sheet data, which is Paul's own call.
 
 async function ensureProactiveCheckLogTab(sheets, automationCommanderSheetId) {
   try {
@@ -7338,163 +7252,28 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "store_precomputed") {
-      const { secret, alerts, noActionAlerts, clientsWithFlags,
-              totalAlerts, noActionCount, computedAt,
-              noActionAnalysisResults, automationCommanderSheetId } = req.body;
+      const { secret, computedAt, noActionAnalysisResults, automationCommanderSheetId } = req.body;
 
       if (secret !== process.env.CRON_SECRET) {
         return res.status(401).json({ success: false, error: "Unauthorised" });
       }
 
       try {
-        let mergedClientsWithFlags = clientsWithFlags || [];
-
-        // Recount alerts after applying preserved clears
-        const ACTIONABLE_FLAG_KEYS = new Set([
-          "invoiceDashboardDiscr", "expenseDashboardDiscr",
-          "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
-        ]);
-        const NO_ACTION_FLAG_KEYS = new Set([
-          "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
-          "retainerInvoicesCreated", "retainerInvoicesDeleted",
-          "expenseAdded", "expenseUnreconGaps", "invoiceStaleUnsentChanges",
-        ]);
-        const mergedAlerts = (alerts || []).filter(a => {
-          const client = mergedClientsWithFlags.find(c => c.clientName === a.clientName);
-          if (!client) return false; // client has no active flags — drop their alerts
-          const flagType = a.flagType || a.type;
-          return client.flags[flagType] !== false;
-        });
-        const mergedNoActionAlerts = (noActionAlerts || []).filter(na => {
-          // Fixed 21 Aug 2026: was comparing na.clientName against c.clientName, but
-          // noActionAlert objects (built above, in the main no-action-flag collection
-          // loop) never had a clientName field at all — only clientId (set to
-          // masterSheetId). That made this comparison always undefined === "some
-          // string", i.e. always false, so `client` was always undefined and every
-          // single noActionAlert was silently dropped here, every time this ran.
-          // Found by tracing Paul's own observation ("I can't remember the last time
-          // I saw an info alert") back through the full pipeline — confirmed this
-          // specific filter as the cause, not a guess: mergedAlerts right above this
-          // uses the same pattern correctly because actionable alert objects DO get a
-          // clientName assigned elsewhere, which is why that one worked and made this
-          // one easy to miss by visual similarity. This runs inside the hourly cron
-          // job (store_precomputed) that refreshes the shared precomputed cache the
-          // app loads from on almost every visit (90-minute freshness window against
-          // a 60-minute cron interval) — so this wasn't an occasional glitch, it was
-          // silently zeroing every client's informational flags on every single
-          // refresh, which is exactly the pattern Paul noticed.
-          const client = mergedClientsWithFlags.find(c => c.masterSheetId === na.clientId);
-          if (!client) return false; // client has no active flags — drop their noAction alerts
-          return client.flags[na.flagType] !== false;
-        });
-
-        // Zero out actionable flags in clientsWithFlags where no alerts exist in the blob.
-        // This prevents client cards appearing with no actionable items — which happens when
-        // recheckIgnoredAlerts_ raises a flag but get_handled_fingerprints correctly skips
-        // all those alerts (they're already handled). Without this, the flag stays TRUE in
-        // AutoUpdates and the client appears in the UI with an empty alert list.
-        const ACTIONABLE_FLAG_TO_ALERT_TYPE = {
-          invoiceDashboardDiscr: ["invoice"],
-          invoiceStaleUnsentChanges: ["invoice"],
-          crmPipeDashDiscr:      ["crm"],
-          crmPipeAppDiscr:       ["crm"],
-          crmConfDashDiscr:      ["crm"],
-          crmConfAppDiscr:       ["crm"],
-          crmCopiedConfChecked:  ["crm"],
-          crmCopiedConfUnchecked: ["crm"],
-          crmCopiedConfDelete:   ["crm"],
-          expenseDashboardDiscr: ["expense"],
-          expenseAdded:          ["expense"],
-          expenseUnreconGaps:    ["expense"],
-          retainerInvoicesCreated: ["retainerInvoicesCreated"],
-          retainerInvoicesDeleted: ["retainerInvoicesDeleted"],
-        };
-
-        // Build set of clientName+flagType combinations that have at least one alert OR noAction alert
-        const alertPresence = new Set();
-        for (const a of mergedAlerts) {
-          alertPresence.add(`${a.clientName}|||${a.flagType || a.type}`);
-        }
-        for (const na of mergedNoActionAlerts) {
-          alertPresence.add(`${na.clientName}|||${na.flagType}`);
-        }
-
-        const ACTIONABLE_FLAG_TO_STICKY_COL = {
-          invoiceDashboardDiscr: "CW",
-          invoiceStaleUnsentChanges: "HE",
-          crmPipeDashDiscr:      "DK",
-          crmPipeAppDiscr:       "DR",
-          crmConfDashDiscr:      "DY",
-          crmConfAppDiscr:       "EF",
-          crmCopiedConfChecked:  "FA",
-          crmCopiedConfUnchecked: "FH",
-          crmCopiedConfDelete:   "FO",
-          expenseDashboardDiscr: "GC",
-          expenseAdded:          "GQ",
-          expenseUnreconGaps:    "GX",
-          retainerInvoicesCreated: "FV",
-          retainerInvoicesDeleted: "HL",
-        };
-
-        // Track which flags need to be cleared in AutoUpdates
-        const flagsToClearInAutoUpdates = []; // { clientName, col, rowNum }
-
-        const reconciledClients = mergedClientsWithFlags.map(c => {
-          const reconciledFlags = { ...c.flags };
-          for (const [flagKey, alertTypes] of Object.entries(ACTIONABLE_FLAG_TO_ALERT_TYPE)) {
-            if (!reconciledFlags[flagKey]) continue;
-            // Flag is TRUE — check if any alert in the blob matches this client + flag
-            const hasAlert = alertPresence.has(`${c.clientName}|||${flagKey}`)
-              || alertTypes.some(at => alertPresence.has(`${c.clientName}|||${at}`));
-            if (!hasAlert) {
-              reconciledFlags[flagKey] = false;
-              console.log(`  store_precomputed: zeroing ${flagKey} for ${c.clientName} — no alerts in blob`);
-              const stickyCol = ACTIONABLE_FLAG_TO_STICKY_COL[flagKey];
-              if (stickyCol && c.autoUpdatesRow) {
-                flagsToClearInAutoUpdates.push({ col: stickyCol, rowNum: c.autoUpdatesRow });
-              }
-            }
-          }
-          return { ...c, flags: reconciledFlags };
-        }).filter(c => Object.values(c.flags).some(v => v));
-        // Remove clients where all flags were zeroed out
-
-        // Second pass: catch clients that were in the incoming clientsWithFlags (from GAS)
-        // but are NOT in reconciledClients — they've been fully reconciled away in a previous
-        // cycle and are no longer in mergedClientsWithFlags at all. Their AutoUpdates flags
-        // were never written FALSE because the reconciliation loop never reached them.
-        const reconciledClientNames = new Set(reconciledClients.map(c => c.clientName));
-        console.log(`  store_precomputed: ${(clientsWithFlags||[]).length} incoming clients, ${reconciledClients.length} after reconciliation`);
-        for (const c of (clientsWithFlags || [])) {
-          if (reconciledClientNames.has(c.clientName)) continue;
-          for (const [flagKey, stickyCol] of Object.entries(ACTIONABLE_FLAG_TO_STICKY_COL)) {
-            if (c.flags?.[flagKey] && c.autoUpdatesRow) {
-              flagsToClearInAutoUpdates.push({ col: stickyCol, rowNum: c.autoUpdatesRow });
-              console.log(`  store_precomputed: clearing ${flagKey} (${stickyCol}) for removed client ${c.clientName}`);
-            }
-          }
-        }
-
-        // Write FALSE to AutoUpdates for any zeroed flags — triage system owns flag clearing
-        if (flagsToClearInAutoUpdates.length > 0) {
-          try {
-            const sheets = await getSheetsClient();
-            const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
-            await sheets.spreadsheets.values.batchUpdate({
-              spreadsheetId: acIdClean,
-              requestBody: {
-                valueInputOption: "RAW",
-                data: flagsToClearInAutoUpdates.map(({ col, rowNum }) => ({
-                  range: `AutoUpdates!${col}${rowNum}`,
-                  values: [["FALSE"]],
-                })),
-              },
-            });
-            console.log(`  store_precomputed: cleared ${flagsToClearInAutoUpdates.length} zeroed flag(s) in AutoUpdates`);
-          } catch (auErr) {
-            console.error(`  store_precomputed: failed to clear AutoUpdates flags: ${auErr.message}`);
-          }
-        }
+        // Old-path reconciliation retired 23 Aug 2026 (Paul's direction,
+        // confirmed the old compareAutoResults/runFullSweep GAS triggers
+        // are now disabled) — clientsWithFlags/alerts/noActionAlerts were
+        // GAS-provided inputs that nothing populates any more, since
+        // AutoUpdates' sticky flag columns never get set to TRUE by
+        // anything now (removed from this action's destructured inputs
+        // entirely, since nothing here reads them any more either). The
+        // removed logic (dashboard-type reconciliation, zeroing stale
+        // flags, clearing AutoUpdates) always produced empty results
+        // against empty input — these plain initializations are exactly
+        // equivalent, just without the dead machinery. The AlertMemory
+        // merge below (unchanged) still builds on these same variable names.
+        let mergedAlerts = [];
+        let mergedNoActionAlerts = [];
+        let reconciledClients = [];
 
         // ── Merge in AlertMemory-sourced alerts (unified alert-system
         // redesign, 22 Aug 2026, Paul's explicit direction) ─────────────
@@ -7685,70 +7464,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, stored: precomputedData.totalAlerts });
       } catch (err) {
         console.error("❌ Error storing precomputed data:", err);
-        return res.status(500).json({ success: false, error: err.message });
-      }
-    } else if (action === "get_flag_rules") {
-      // Returns the current FlagRules configuration for the Settings page.
-      const { automationCommanderSheetId: acIdRules } = req.body;
-      if (!acIdRules) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
-      try {
-        const sheets = await getSheetsClient();
-        const rules = await readFlagRules_(sheets, acIdRules);
-        return res.status(200).json({ success: true, rules });
-      } catch (err) {
-        console.error("❌ get_flag_rules error:", err);
-        return res.status(500).json({ success: false, error: err.message });
-      }
-    } else if (action === "save_flag_rule") {
-      // Immediate-save from the Settings page: writes a single rule change
-      // back to the FlagRules sheet. flagKey must be one of the 18 known
-      // flag types (validated against FLAG_NAMES); rule must be one of the
-      // four known rule strings or empty (deliberately no rule — confirmed
-      // intentional for the four "app discr" types, so empty is a valid,
-      // supported value here, not rejected as missing input).
-      const { automationCommanderSheetId: acIdSaveRule, flagKey, rule } = req.body;
-      if (!acIdSaveRule) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
-      if (!flagKey || !FLAG_NAMES[flagKey]) {
-        return res.status(400).json({ success: false, error: `Unknown flagKey: ${flagKey}` });
-      }
-      const VALID_RULES = ["", "increase", "decrease", "if true", "if changed"];
-      const normalisedRule = String(rule || "").trim().toLowerCase();
-      if (!VALID_RULES.includes(normalisedRule)) {
-        return res.status(400).json({ success: false, error: `Invalid rule: "${rule}"` });
-      }
-      try {
-        const sheets = await getSheetsClient();
-        const sectionName = FLAG_NAMES[flagKey];
-        const response = await sheets.spreadsheets.values.get({
-          spreadsheetId: acIdSaveRule,
-          range: "FlagRules!A2:A1000",
-        });
-        const rows = response.data.values || [];
-        const rowIdx = rows.findIndex(r => String(r[0] || "").trim().toLowerCase() === sectionName.toLowerCase());
-
-        if (rowIdx === -1) {
-          // No existing row for this section — append one rather than fail silently.
-          // Not expected in normal use (all 18 rows already exist per Paul's sheet),
-          // but keeps this action correct if a row is ever missing.
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: acIdSaveRule,
-            range: "FlagRules!A:B",
-            valueInputOption: "RAW",
-            requestBody: { values: [[sectionName, normalisedRule]] },
-          });
-        } else {
-          const sheetRow = rowIdx + 2; // +2: row 1 is header, rows array is 0-indexed from row 2
-          await sheets.spreadsheets.values.update({
-            spreadsheetId: acIdSaveRule,
-            range: `FlagRules!B${sheetRow}`,
-            valueInputOption: "RAW",
-            requestBody: { values: [[normalisedRule]] },
-          });
-        }
-        console.log(`✅ save_flag_rule: ${flagKey} (${sectionName}) → "${normalisedRule}"`);
-        return res.status(200).json({ success: true });
-      } catch (err) {
-        console.error("❌ save_flag_rule error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "run_flag_sweep") {
@@ -11984,9 +11699,13 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         const clientSheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
         const acIdClean = extractSheetIdFromUrl(acId) || acId;
 
-        // ── Step 1: Find when the flag was last cleared ──────────────────────────
-        // Read AlertMemory for the most recent flag_cleared record for this client.
-        // Written by clear_flags whenever the triage system clears flags.
+        // ── Step 1: Find when this flag type was last resolved for this client ────
+        // Replaced 23 Aug 2026 (clear_flags retirement) — previously looked for a
+        // group-level flag_cleared record written by clear_flags; now looks at
+        // this client+flagType's own AlertMemory rows directly, since
+        // resolve_noaction_flag marks them "accepted" the moment Paul resolves
+        // this flag. Using the most recent lastSeen among non-cached rows is the
+        // per-event equivalent of "when was this last cleared".
 
         const now = new Date();
         let windowStart = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000); // default: 90 days ago
@@ -11994,41 +11713,23 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
         try {
           const memoryRows = await readAlertMemory(sheets, acIdClean);
-          const clearRows = memoryRows
-            .filter(r => r.alertType === "flag_cleared" && r.clientName === clientName)
-            .sort((a, b) => {
-              // Sort by clearedAt from dataSnapshot for precision (has time component)
-              const getTs = (row) => {
-                try {
-                  const snap = JSON.parse(row.dataSnapshot || "{}");
-                  if (snap.clearedAt) return new Date(snap.clearedAt).getTime();
-                } catch(e) { /* ignore */ }
-                return new Date(row.lastSeen || 0).getTime();
-              };
-              return getTs(b) - getTs(a);
-            });
-          if (clearRows.length > 0) {
-            // Use dataSnapshot.clearedAt for precision (has time component), fall back to lastSeen date
-            let clearedAt = null;
-            try {
-              const snap = JSON.parse(clearRows[0].dataSnapshot || "{}");
-              if (snap.clearedAt) clearedAt = new Date(snap.clearedAt);
-            } catch(e) { /* ignore */ }
-            if (!clearedAt || isNaN(clearedAt.getTime())) {
-              clearedAt = new Date(clearRows[0].lastSeen || clearRows[0].firstSeen);
-            }
-            if (!isNaN(clearedAt.getTime())) {
-              windowStart = clearedAt;
+          const resolvedRows = memoryRows
+            .filter(r => r.clientName === clientName && r.alertType === flagType && r.status !== "cached")
+            .sort((a, b) => new Date(b.lastSeen || 0).getTime() - new Date(a.lastSeen || 0).getTime());
+          if (resolvedRows.length > 0) {
+            const resolvedAt = new Date(resolvedRows[0].lastSeen || resolvedRows[0].firstSeen);
+            if (!isNaN(resolvedAt.getTime())) {
+              windowStart = resolvedAt;
               foundClear = true;
-              console.log(`  ✓ Flag last cleared at ${clearedAt.toISOString()} (AlertMemory flag_cleared)`);
+              console.log(`  ✓ ${flagType} last resolved for ${clientName} at ${resolvedAt.toISOString()} (AlertMemory)`);
             }
           }
         } catch (e) {
-          console.log(`  ⚠ Could not read AlertMemory for clear timestamp: ${e.message}`);
+          console.log(`  ⚠ Could not read AlertMemory for last-resolved timestamp: ${e.message}`);
         }
 
         if (!foundClear) {
-          console.log(`  ℹ No clear record found in AlertMemory — using 90-day window from ${windowStart.toISOString()}`);
+          console.log(`  ℹ No prior resolution found in AlertMemory — using 90-day window from ${windowStart.toISOString()}`);
         }
 
         // ── Step 2: Read AutoLog and filter to entries after windowStart ──────────
@@ -13267,113 +12968,6 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(500).json({ success: false, error: `Analysis failed: ${err.message}` });
       }
 
-    } else if (action === "clear_flags") {
-
-      // Clear flags by writing FALSE directly to the sticky flag columns in AutoUpdates.
-      // The triage system is the sole owner of clearing flags — no DataChgAlert intermediary.
-      // flagsToClear is an array of: "invoice", "crm", "expense" (any combination).
-      const { automationCommanderSheetId, flagsToClear, clientName } = req.body;
-
-      if (!automationCommanderSheetId || !flagsToClear || flagsToClear.length === 0 || !clientName) {
-        return res.status(400).json({
-          success: false,
-          error: "Missing automationCommanderSheetId, clientName, or flagsToClear",
-        });
-      }
-
-      try {
-        console.log(`\n🔄 Clearing flags for client: ${clientName}`);
-        console.log(`   Flag groups to clear: ${flagsToClear.join(", ")}`);
-
-        const sheets = await getSheetsClient();
-        const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
-
-        // Map flag groups to their AutoUpdates sticky columns
-        const FLAG_GROUP_COLUMNS = {
-          invoice: ["CW", "DD", "FV", "HL", "HE"], // invoiceDashboardDiscr, invoiceAppDiscr, retainerInvoicesCreated, retainerInvoicesDeleted, invoiceStaleUnsentChanges
-          crm:     ["DK", "DR", "DY", "EF", "EM", "ET", "FA", "FH", "FO"], // all CRM flags
-          expense: ["GC", "GJ", "GQ", "GX"], // all expense flags
-        };
-
-        // Find the client row in AutoUpdates
-        const namesResp = await sheets.spreadsheets.values.get({
-          spreadsheetId: acIdClean,
-          range: "AutoUpdates!A2:A1000",
-        });
-        const nameRows = namesResp.data.values || [];
-        let clientRowNum = -1;
-        for (let i = 0; i < nameRows.length; i++) {
-          if (String(nameRows[i]?.[0] || "").trim() === clientName.trim()) {
-            clientRowNum = i + 2; // 1-indexed, starts at row 2
-            break;
-          }
-        }
-        if (clientRowNum === -1) {
-          return res.status(404).json({ success: false, error: `Client "${clientName}" not found in AutoUpdates` });
-        }
-
-        const colsToZero = flagsToClear.flatMap(group => FLAG_GROUP_COLUMNS[group] || []);
-        if (colsToZero.length === 0) {
-          return res.status(400).json({ success: false, error: "No valid flag groups specified" });
-        }
-
-        // Write FALSE to all sticky columns for this client in one batch
-        await sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: acIdClean,
-          requestBody: {
-            valueInputOption: "RAW",
-            data: colsToZero.map(col => ({
-              range: `AutoUpdates!${col}${clientRowNum}`,
-              values: [["FALSE"]],
-            })),
-          },
-        });
-
-        console.log(`  ✅ AutoUpdates cleared for ${clientName} row ${clientRowNum}: ${colsToZero.join(", ")}`);
-
-        // Write a flag_cleared record to AlertMemory so analyze_noaction_flag can
-        // determine the windowStart for AutoLog lookback without needing a separate tab.
-        try {
-          const nowISO = new Date().toISOString();
-          const nowDate = nowISO.split("T")[0];
-          const clearHash = `flag_cleared_${clientName.replace(/\s+/g, "_").toLowerCase()}_${Date.now()}`;
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: acIdClean,
-            range: `${ALERT_MEMORY_TAB}!A:K`,
-            valueInputOption: "RAW",
-            requestBody: {
-              values: [[
-                clearHash,
-                "flag_cleared",
-                clientName,
-                `Flags cleared: ${flagsToClear.join(", ")}`,
-                "", // cachedOptionsJSON
-                "accepted",
-                "", // ignoreReason
-                nowDate, // firstSeen
-                nowDate, // lastSeen
-                nowDate, // lastRechecked
-                JSON.stringify({ clearedGroups: flagsToClear, clearedCols: colsToZero, clearedAt: nowISO }),
-              ]],
-            },
-          });
-          console.log(`  ✅ AlertMemory flag_cleared record written for ${clientName}`);
-        } catch (amErr) {
-          console.error(`  ⚠ Could not write flag_cleared to AlertMemory: ${amErr.message}`);
-        }
-
-        return res.status(200).json({
-          success: true,
-          message: `Cleared: ${flagsToClear.join(", ")}`,
-          colsCleared: colsToZero,
-        });
-      } catch (err) {
-        console.error(`❌ Error clearing flags:`, err);
-        return res.status(500).json({
-          success: false,
-          error: `Failed to clear flags: ${err.message}`,
-        });
-      }
     } else if (action === "remove_alert") {
       // Remove a specific alert from the Redis session after it's been accepted/ignored.
       const { sessionId, alertId } = req.body;
@@ -13497,8 +13091,15 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       }
 
     } else if (action === "resolve_noaction_flag") {
-      // Mark a noAction flag as resolved in the Redis session so it persists across reloads.
-      const { sessionId, clientName, flagType } = req.body;
+      // Mark a noAction flag as resolved in the Redis session so it persists
+      // across reloads, AND (23 Aug 2026, replacing the old group-level
+      // flag_cleared marker) mark every currently-cached AlertMemory row for
+      // this client+flagType as "accepted" — giving analyze_noaction_flag a
+      // genuine, per-event timestamp to compute its lookback window from,
+      // rather than a separate group-clear record. automationCommanderSheetId
+      // was already being sent by the frontend for this call but previously
+      // unused here.
+      const { sessionId, clientName, flagType, automationCommanderSheetId: acIdResolve } = req.body;
       if (!sessionId || !clientName || !flagType) {
         return res.status(400).json({ success: false, error: "Missing sessionId, clientName, or flagType" });
       }
@@ -13514,6 +13115,28 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         }
         await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 });
         console.log(`  resolve_noaction_flag: marked "${key}" as resolved`);
+
+        if (acIdResolve) {
+          try {
+            const sheets = await getSheetsClient();
+            const acIdClean = extractSheetIdFromUrl(acIdResolve) || acIdResolve;
+            const memoryRows = await readAlertMemory(sheets, acIdClean);
+            const toAccept = memoryRows.filter(r =>
+              r.clientName === clientName && r.alertType === flagType && r.status === "cached");
+            for (const row of toAccept) {
+              await updateAlertMemoryRow(sheets, acIdClean, row.rowIndex, {
+                fingerprintHash: row.fingerprintHash, alertType: row.alertType, clientName: row.clientName,
+                alertSummary: row.alertSummary, cachedOptionsJSON: row.cachedOptionsJSON,
+                status: "accepted", firstSeen: row.firstSeen, dataSnapshot: row.dataSnapshot,
+              });
+            }
+            if (toAccept.length > 0) {
+              console.log(`  resolve_noaction_flag: marked ${toAccept.length} AlertMemory row(s) accepted for ${clientName}/${flagType}`);
+            }
+          } catch (amErr) {
+            console.log(`  ⚠️ resolve_noaction_flag: could not update AlertMemory (non-fatal): ${amErr.message}`);
+          }
+        }
 
         return res.status(200).json({ success: true });
       } catch (err) {
@@ -14140,26 +13763,46 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       }
 
     } else if (action === "store_proactive_alerts") {
-      // Called by GAS overnight checks to store/update alerts in ProactiveAlerts tab.
+      // Called by GAS overnight checks. Writes exclusively to AlertMemory
+      // now (unified alert-system redesign, 23 Aug 2026, Paul's explicit
+      // direction to fully retire the ProactiveAlerts tab) — this action
+      // no longer touches ProactiveAlerts at all. Every category="proactive"
+      // AlertMemory row is the single source of truth for these alerts.
       const { alerts: incomingAlerts, automationCommanderSheetId: acId } = req.body;
       if (!incomingAlerts || !acId) {
         return res.status(400).json({ success: false, error: "Missing alerts or automationCommanderSheetId" });
       }
       try {
         const sheets = await getSheetsClient();
-        await ensureProactiveAlertsTab(sheets, acId);
-        const existing = await readProactiveAlerts(sheets, acId);
+        await ensureAlertMemoryTab(sheets, acId);
+        const existing = (await readAlertMemory(sheets, acId)).filter(r => r.category === "proactive");
 
-        // Build two lookup maps:
-        // 1. By exact alertKey (primary)
-        // 2. By a stable signature (fallback — handles key format changes, and critically,
-        //    survives row shifts). Prefers stableJobKey (client+job+code, or client+job+dates
-        //    when no code exists) when the alert type provides it; falls back to the older
-        //    row-based signature for alert types that don't yet provide stableJobKey.
+        const fingerprintFor = (alertKey) => createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
+
+        // Parsed once per row — dataSnapshot is the full original alert
+        // object (JSON), which carries alertKey/stableJobKey/confirmedRow
+        // etc. AlertMemory has no dedicated metadata column the way
+        // ProactiveAlerts did, so signature fields and the original
+        // alertKey (needed for the task auto-resolve step below, since
+        // AlertMemory only stores the hashed fingerprint) both come from
+        // here instead.
+        const parsedSnapshots = new Map(); // rowIndex -> parsed dataSnapshot, or {}
+        for (const row of existing) {
+          try { parsedSnapshots.set(row.rowIndex, JSON.parse(row.dataSnapshot || "{}")); }
+          catch (e) { parsedSnapshots.set(row.rowIndex, {}); }
+        }
+
+        // Same two-tier matching ProactiveAlerts used: exact fingerprint
+        // first, then a stable signature fallback (survives alertKey
+        // format changes and row shifts) — preferring stableJobKey
+        // (client+job+code, or client+job+dates) when the alert type
+        // provides it, falling back to client+type+confirmedRow.
         const buildSig = (row) => {
-          const meta = row.metadata || {};
-          if (meta.stableJobKey) return `${row.clientName}|||${row.alertType}|||stable:${meta.stableJobKey}`;
-          const confirmedRow = meta.confirmedRow || "";
+          const snap = parsedSnapshots.get(row.rowIndex) || {};
+          const meta = snap.metadata || {};
+          const stableJobKey = snap.stableJobKey || meta.stableJobKey || "";
+          if (stableJobKey) return `${row.clientName}|||${row.alertType}|||stable:${stableJobKey}`;
+          const confirmedRow = snap.confirmedRow || meta.confirmedRow || "";
           return `${row.clientName}|||${row.alertType}|||${confirmedRow}`;
         };
         const buildSigForIncoming = (alert) => {
@@ -14170,161 +13813,108 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           return `${alert.clientName}|||${alert.alertType}|||${cr}`;
         };
 
-        const existingByKey = {};
+        const existingByFingerprint = {};
         const existingBySignature = {};
         for (const row of existing) {
-          existingByKey[row.alertKey] = row;
+          existingByFingerprint[row.fingerprintHash] = row;
           const sig = buildSig(row);
-          // Keep the most recent row per signature (last writer wins)
+          // Keep the most recent row per signature (last writer wins) —
+          // same rule as before; higher rowIndex means written more
+          // recently, since AlertMemory is append-only like ProactiveAlerts was.
           if (!existingBySignature[sig] || row.rowIndex > existingBySignature[sig].rowIndex) {
             existingBySignature[sig] = row;
           }
         }
 
-        const nowISO = new Date().toISOString().split("T")[0];
         let stored = 0, updated = 0, dismissed = 0;
-        const writes = [];
 
-        // Shared field whitelist for building the metadata JSON — used identically
-        // whether appending a brand-new row or refreshing an existing one, so no
-        // metadata field (row numbers, amounts, dates, etc.) is ever left stale on
-        // a row that's matched an existing alert rather than freshly appended.
-        const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
-          "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
-          "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
-          "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
-          "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
-          "directCosts","unreceivedAmount","placeholderCount","placeholderTotal"];
-        const buildMetadata = (alert) => {
-          const metadata = {};
-          for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
-          return metadata;
-        };
-
-        // Auto-dismiss alerts of the same alertType(s) that are NOT in the incoming list.
-        // This handles cases where a previously-valid alert is no longer triggered (e.g. invoice
-        // was sent, retainer was fully invoiced, etc.) — without this, stale alerts persist forever.
-        //
-        // Considers both "active" AND "task" status rows (fixed 19 Aug 2026 — confirmed via a
-        // live example, Thrive Recruitment Marketing's uninvoiced_revenue alert). Converting an
-        // alert into a task moves its status to "task" (see create_task_from_alert below), which
-        // this check previously excluded entirely via `status !== "active"` — meaning ANY alert
-        // that had ever been turned into a task could never be auto-dismissed again, even once
-        // its underlying condition had genuinely cleared, silently defeating the auto-resolve-
-        // linked-task logic a few dozen lines down for every task-linked alert, unconditionally.
-        // "acknowledged" rows are still deliberately excluded — that's an explicit user dismissal,
-        // not something the system should override. "auto_dismissed"/"resolved" rows are already
-        // terminal and don't need reconsidering here.
+        // Auto-dismiss: an existing cached/task row whose alertType is
+        // present in this run but whose specific alert is no longer in the
+        // incoming list — its underlying condition resolved on its own.
+        // "ignored" rows (explicit user dismissal) are deliberately left
+        // alone; "auto_resolved" rows are already terminal. Considers
+        // "task" status too (same fix as before, 19 Aug 2026 — an alert
+        // converted to a task must still be auto-dismissable once its
+        // condition genuinely clears, or the task auto-resolve step below
+        // would never fire for any task-linked alert).
         const incomingAlertTypes = new Set(incomingAlerts.map(a => a.alertType));
-        const incomingKeys = new Set(incomingAlerts.map(a => a.alertKey));
+        const incomingFingerprints = new Set(incomingAlerts.map(a => fingerprintFor(a.alertKey)));
         const incomingSignatures = new Set(incomingAlerts.map(buildSigForIncoming));
-        const autoDismissedKeys = [];
+        const autoDismissedKeys = []; // original alertKeys, for the task auto-resolve step below
+
         for (const row of existing) {
-          if (row.status !== "active" && row.status !== "task") continue;
-          if (!incomingAlertTypes.has(row.alertType)) continue; // different type — don't touch
+          if (row.status !== "cached" && row.status !== "task") continue;
+          if (!incomingAlertTypes.has(row.alertType)) continue;
           const sig = buildSig(row);
-          if (!incomingKeys.has(row.alertKey) && !incomingSignatures.has(sig)) {
-            // This alert was active/task but not in the incoming run — auto-dismiss
-            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["auto_dismissed"]] });
-            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] });
-            dismissed++;
-            autoDismissedKeys.push(row.alertKey);
-            console.log(`  Auto-dismissed stale ${row.alertType} alert for ${row.clientName}: ${row.alertKey}`);
-          }
+          if (incomingFingerprints.has(row.fingerprintHash) || incomingSignatures.has(sig)) continue;
+          const snap = parsedSnapshots.get(row.rowIndex) || {};
+          await updateAlertMemoryRow(sheets, acId, row.rowIndex, {
+            fingerprintHash: row.fingerprintHash, alertType: row.alertType, clientName: row.clientName,
+            alertSummary: row.alertSummary, cachedOptionsJSON: row.cachedOptionsJSON,
+            status: "auto_resolved", firstSeen: row.firstSeen, dataSnapshot: row.dataSnapshot,
+          });
+          dismissed++;
+          if (snap.alertKey) autoDismissedKeys.push(snap.alertKey);
+          console.log(`  Auto-resolved stale ${row.alertType} alert for ${row.clientName}: ${row.fingerprintHash}`);
         }
 
         for (const alert of incomingAlerts) {
-          // Build the signature for this incoming alert
+          const fp = fingerprintFor(alert.alertKey);
           const sig = buildSigForIncoming(alert);
-
-          // Look up by exact key first, then by signature
-          const ex = existingByKey[alert.alertKey] || existingBySignature[sig];
+          const ex = existingByFingerprint[fp] || existingBySignature[sig];
+          const summary = alert.heading || alert.detail || alert.alertType;
 
           if (ex) {
-            if (ex.status === "acknowledged") { dismissed++; continue; }
-            if (ex.status === "auto_dismissed" || ex.status === "resolved") {
-              // The condition was previously marked gone/fixed but has been detected
-              // again — reactivate rather than leaving it permanently suppressed.
-              // (Only "acknowledged" — an explicit user dismissal — stays suppressed.)
-              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!A${ex.rowIndex}`, values: [[alert.alertKey]] });
-              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!D${ex.rowIndex}`, values: [[alert.heading || ""]] });
-              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!E${ex.rowIndex}`, values: [[alert.detail || ""]] });
-              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!F${ex.rowIndex}`, values: [["active"]] });
-              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!H${ex.rowIndex}`, values: [[nowISO]] });
-              writes.push({ range: `${PROACTIVE_ALERTS_TAB}!J${ex.rowIndex}`, values: [[JSON.stringify(buildMetadata(alert))]] });
+            if (ex.status === "ignored") { dismissed++; continue; }
+            if (ex.status === "auto_resolved") {
+              // Condition was previously marked gone but has been detected
+              // again — reactivate rather than leaving it permanently
+              // suppressed. Only "ignored" (an explicit user dismissal)
+              // stays suppressed.
+              await updateAlertMemoryRow(sheets, acId, ex.rowIndex, {
+                fingerprintHash: fp, alertType: alert.alertType, clientName: alert.clientName,
+                alertSummary: summary, cachedOptionsJSON: "", status: "cached",
+                firstSeen: ex.firstSeen, dataSnapshot: JSON.stringify(alert),
+              });
               updated++;
-              console.log(`  Reactivated ${ex.status} ${alert.alertType} alert for ${alert.clientName}: ${alert.alertKey} — condition detected again`);
+              console.log(`  Reactivated ${alert.alertType} alert for ${alert.clientName}: condition detected again`);
               continue;
             }
-            // Active match found — refresh EVERYTHING from the incoming alert (not
-            // just lastSeen/alertKey). The alert's condition can still be true while
-            // its details drift — e.g. a job's row number shifts, an amount changes,
-            // a date updates — and previously only the timestamp was refreshed here,
-            // leaving every other field (including the row number shown on the alert
-            // card) permanently frozen at whatever it was the first time this alert
-            // fired, even though the check re-derives it fresh on every run.
-            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!A${ex.rowIndex}`, values: [[alert.alertKey]] });
-            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!D${ex.rowIndex}`, values: [[alert.heading || ""]] });
-            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!E${ex.rowIndex}`, values: [[alert.detail || ""]] });
-            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!H${ex.rowIndex}`, values: [[nowISO]] });
-            writes.push({ range: `${PROACTIVE_ALERTS_TAB}!J${ex.rowIndex}`, values: [[JSON.stringify(buildMetadata(alert))]] });
+            // "cached" or "task" — refresh summary/snapshot from this run
+            // (the alert's condition can still be true while its details
+            // drift — a row number shifts, an amount changes), keeping
+            // status as-is so a task-linked alert doesn't revert to
+            // "cached" just because its condition is still true.
+            await updateAlertMemoryRow(sheets, acId, ex.rowIndex, {
+              fingerprintHash: fp, alertType: alert.alertType, clientName: alert.clientName,
+              alertSummary: summary, cachedOptionsJSON: ex.cachedOptionsJSON, status: ex.status,
+              firstSeen: ex.firstSeen, dataSnapshot: JSON.stringify(alert),
+            });
             updated++;
           } else {
-            // No match — append new row
-            const metadata = buildMetadata(alert);
-
-            await sheets.spreadsheets.values.append({
-              spreadsheetId: acId,
-              range: `${PROACTIVE_ALERTS_TAB}!A:J`,
-              valueInputOption: "RAW",
-              requestBody: { values: [[
-                alert.alertKey, alert.alertType, alert.clientName,
-                alert.heading, alert.detail, "active", nowISO, nowISO, "",
-                JSON.stringify(metadata),
-              ]] },
-            });
-            stored++;
-
-            // Also record in AlertMemory (unified alert-system redesign,
-            // 22 Aug 2026, Paul's explicit direction) — same fingerprint
-            // basis create_task_from_alert already uses for proactive
-            // alerts (hash of alertKey), so if this alert is later
-            // converted to a task, that action's own lookup finds this
-            // exact row and updates it in place rather than creating a
-            // duplicate. category="proactive" so store_precomputed's merge
-            // surfaces it via noActionAlerts, not the main alerts list.
             try {
-              const proactiveFingerprint = createHash("sha256").update(alert.alertKey).digest("hex").substring(0, 16);
               await appendAlertMemoryRow(sheets, acId, {
-                fingerprintHash: proactiveFingerprint,
-                alertType: alert.alertType,
-                clientName: alert.clientName,
-                alertSummary: alert.heading || alert.detail || alert.alertType,
-                cachedOptionsJSON: "",
-                status: "cached",
-                category: "proactive",
-                dataSnapshot: JSON.stringify(alert),
+                fingerprintHash: fp, alertType: alert.alertType, clientName: alert.clientName,
+                alertSummary: summary, cachedOptionsJSON: "", status: "cached",
+                category: "proactive", dataSnapshot: JSON.stringify(alert),
               });
+              stored++;
             } catch (memErr) {
               console.log(`  ⚠️ Could not write AlertMemory row for proactive alert ${alert.alertKey}: ${memErr.message}`);
             }
           }
         }
-        if (writes.length > 0) {
-          await sheets.spreadsheets.values.batchUpdate({
-            spreadsheetId: acId,
-            requestBody: { data: writes, valueInputOption: "RAW" },
-          });
-        }
 
-        // Auto-resolve any task whose linked proactive alert just got auto-dismissed —
-        // the alert's condition is gone, so a task about it is stale too. Only
-        // touches tasks still in status "task" (won't reopen or override anything
-        // a person has already resolved manually).
+        // Auto-resolve any task whose linked proactive alert just got
+        // auto-resolved — the alert's condition is gone, so a task about
+        // it is stale too. Only touches tasks still in status "task"
+        // (won't reopen or override anything a person has already
+        // resolved manually). Unchanged from before — already operated
+        // on AlertMemory directly, just now fed alertKeys extracted from
+        // dataSnapshot above instead of from ProactiveAlerts rows.
         let tasksAutoResolved = 0;
         if (autoDismissedKeys.length > 0) {
           try {
-            await ensureAlertMemoryTab(sheets, acId);
             const memoryRows = await readAlertMemory(sheets, acId);
             const dismissedKeySet = new Set(autoDismissedKeys);
             const taskWrites = [];
@@ -14333,7 +13923,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               let taskMeta = {};
               try { taskMeta = JSON.parse(row.dataSnapshot || "{}"); } catch (e) { continue; }
               if (!taskMeta.proactiveAlertKey || !dismissedKeySet.has(taskMeta.proactiveAlertKey)) continue;
-              taskMeta.resolvedAt = nowISO;
+              taskMeta.resolvedAt = new Date().toISOString();
               taskMeta.autoResolvedReason = "Underlying proactive alert condition no longer detected";
               taskWrites.push({ range: `AlertMemory!F${row.rowIndex}`, values: [["task_resolved"]] });
               taskWrites.push({ range: `AlertMemory!K${row.rowIndex}`, values: [[JSON.stringify(taskMeta)]] });
@@ -14364,29 +13954,32 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       }
 
     } else if (action === "resolve_proactive_alert") {
-      // Marks a single ProactiveAlerts row as resolved, so it stops appearing in
-      // get_proactive_alerts. Used after an alert-driven action (e.g. "End
-      // retainer" / "Change retainer amount") has actually fixed the underlying
-      // condition — the alert itself is a persisted row, not a live check, so
-      // resolving the sheet doesn't automatically remove it; this call does.
-      const { automationCommanderSheetId: acId2, rowIndex, resolution } = req.body;
-      if (!acId2 || !rowIndex) {
+      // Marks a proactive alert's AlertMemory row as resolved, so it stops
+      // appearing in the merged alert list. Used after an alert-driven fix
+      // action (e.g. "End Retainer" / "Change retainer amount") has
+      // actually fixed the underlying condition — the alert itself is a
+      // persisted row, not a live check, so fixing the sheet doesn't
+      // automatically remove it; this call does. Migrated 23 Aug 2026
+      // (ProactiveAlerts retirement) from a direct rowIndex reference to
+      // alertKey, since AlertMemory rows are looked up by fingerprintHash
+      // (a hash of alertKey), not a row number into a tab this action no
+      // longer touches.
+      const { automationCommanderSheetId: acId2, alertKey, resolution } = req.body;
+      if (!acId2 || !alertKey) {
         return res.status(400).json({ success: false, error: "Missing required fields" });
       }
       try {
         const sheets = await getSheetsClient();
-        const nowISO = new Date().toISOString();
-        await sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: acId2,
-          requestBody: {
-            valueInputOption: "RAW",
-            data: [
-              { range: `${PROACTIVE_ALERTS_TAB}!F${rowIndex}`, values: [["resolved"]] },
-              { range: `${PROACTIVE_ALERTS_TAB}!I${rowIndex}`, values: [[nowISO]] },
-            ],
-          },
+        const fp = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
+        const memoryRows = await readAlertMemory(sheets, acId2);
+        const row = memoryRows.find(r => r.fingerprintHash === fp && r.category === "proactive");
+        if (!row) return res.status(404).json({ success: false, error: "Alert not found" });
+        await updateAlertMemoryRow(sheets, acId2, row.rowIndex, {
+          fingerprintHash: row.fingerprintHash, alertType: row.alertType, clientName: row.clientName,
+          alertSummary: row.alertSummary, cachedOptionsJSON: row.cachedOptionsJSON,
+          status: "resolved", firstSeen: row.firstSeen, dataSnapshot: row.dataSnapshot,
         });
-        console.log(`  ✅ resolve_proactive_alert: row ${rowIndex} marked resolved (${resolution || "no reason given"})`);
+        console.log(`  ✅ resolve_proactive_alert: alertKey ${alertKey} marked resolved (${resolution || "no reason given"})`);
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error("❌ resolve_proactive_alert error:", err);
@@ -14418,14 +14011,41 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       }
 
     } else if (action === "get_proactive_alerts") {
-      // Returns all active proactive alerts, optionally filtered by clientName.
+      // Returns all active proactive alerts, optionally filtered by
+      // clientName. Migrated 23 Aug 2026 (ProactiveAlerts retirement) to
+      // read from AlertMemory instead — each alert's original shape
+      // (heading/detail/metadata/alertKey etc.) is reconstructed from its
+      // stored dataSnapshot, which is exactly the original incoming alert
+      // object from the GAS overnight check. rowIndex here is AlertMemory's
+      // own row number, not a ProactiveAlerts reference — used only for
+      // frontend bulk-select tracking now, since both resolve_proactive_alert
+      // and acknowledge_proactive_alert key off alertKey, not a row number.
       const acId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
       if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
       try {
         const sheets = await getSheetsClient();
-        await ensureProactiveAlertsTab(sheets, acId);
-        const all = await readProactiveAlerts(sheets, acId);
-        const active = all.filter(r => r.status === "active");
+        await ensureAlertMemoryTab(sheets, acId);
+        const all = await readAlertMemory(sheets, acId);
+        // Same field whitelist the old ProactiveAlerts-based metadata used
+        // — needed here so the frontend's alert.metadata.jobName-style
+        // access (built around that nested shape, e.g. the retainer_invoice/
+        // uninvoiced_revenue/crm_wipe detail panels) keeps working, even
+        // though dataSnapshot stores these fields at the alert's top level.
+        const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
+          "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
+          "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
+          "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
+          "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
+          "directCosts","unreceivedAmount","placeholderCount","placeholderTotal"];
+        const active = all
+          .filter(r => r.category === "proactive" && r.status === "cached")
+          .map(r => {
+            let alert = {};
+            try { alert = JSON.parse(r.dataSnapshot || "{}"); } catch (e) { alert = {}; }
+            const metadata = {};
+            for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
+            return { ...alert, rowIndex: r.rowIndex, clientName: alert.clientName || r.clientName, alertType: alert.alertType || r.alertType, metadata };
+          });
         // Group by clientName for count display
         const countsByClient = {};
         for (const a of active) {
@@ -14487,25 +14107,27 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       }
 
     } else if (action === "acknowledge_proactive_alert") {
-      // Marks a proactive alert as acknowledged so it won't reappear.
-      // Updates ALL rows with the matching alertKey (handles duplicates from repeated GAS runs).
+      // Marks a proactive alert as acknowledged (AlertMemory status
+      // "ignored" — the existing, equivalent concept for an explicit user
+      // dismissal) so it won't reappear. Updates ALL matching rows (handles
+      // any leftover duplicates). Migrated 23 Aug 2026 (ProactiveAlerts
+      // retirement) from matching on ProactiveAlerts' own alertKey column
+      // to matching on AlertMemory's fingerprintHash (a hash of alertKey).
       const { alertKey, automationCommanderSheetId: acId } = req.body;
       if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
       try {
         const sheets = await getSheetsClient();
-        const all = await readProactiveAlerts(sheets, acId);
-        const matchingRows = all.filter(r => r.alertKey === alertKey);
+        const fp = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
+        const all = await readAlertMemory(sheets, acId);
+        const matchingRows = all.filter(r => r.fingerprintHash === fp && r.category === "proactive");
         if (matchingRows.length === 0) return res.status(404).json({ success: false, error: "Alert not found" });
-        const nowISO = new Date().toISOString();
-        const writeData = [];
         for (const row of matchingRows) {
-          writeData.push({ range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["acknowledged"]] });
-          writeData.push({ range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] });
+          await updateAlertMemoryRow(sheets, acId, row.rowIndex, {
+            fingerprintHash: row.fingerprintHash, alertType: row.alertType, clientName: row.clientName,
+            alertSummary: row.alertSummary, cachedOptionsJSON: row.cachedOptionsJSON,
+            status: "ignored", firstSeen: row.firstSeen, dataSnapshot: row.dataSnapshot,
+          });
         }
-        await sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: acId,
-          requestBody: { data: writeData, valueInputOption: "RAW" },
-        });
         console.log(`  ✅ Acknowledged ${matchingRows.length} row(s) for alertKey: ${alertKey}`);
         return res.status(200).json({ success: true });
       } catch (err) {
@@ -14514,28 +14136,26 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       }
 
     } else if (action === "bulk_acknowledge_proactive_alerts") {
-      // Same as acknowledge_proactive_alert, but for several alerts (identified
-      // by their alertKey) in one batch write instead of one request each.
+      // Same as acknowledge_proactive_alert, but for several alerts
+      // (identified by their alertKey) in one pass. Migrated 23 Aug 2026
+      // alongside the single-alert version above, same reasoning.
       const { alertKeys, automationCommanderSheetId: bulkAckAcId } = req.body;
       if (!Array.isArray(alertKeys) || alertKeys.length === 0 || !bulkAckAcId) {
         return res.status(400).json({ success: false, error: "Missing alertKeys or automationCommanderSheetId" });
       }
       try {
         const sheets = await getSheetsClient();
-        const all = await readProactiveAlerts(sheets, bulkAckAcId);
-        const keySet = new Set(alertKeys);
-        const matchingRows = all.filter(r => keySet.has(r.alertKey));
+        const fpSet = new Set(alertKeys.map(k => createHash("sha256").update(k).digest("hex").substring(0, 16)));
+        const all = await readAlertMemory(sheets, bulkAckAcId);
+        const matchingRows = all.filter(r => fpSet.has(r.fingerprintHash) && r.category === "proactive");
         if (matchingRows.length === 0) return res.status(404).json({ success: false, error: "No matching alerts found" });
-        const nowISO = new Date().toISOString();
-        const writeData = [];
         for (const row of matchingRows) {
-          writeData.push({ range: `${PROACTIVE_ALERTS_TAB}!F${row.rowIndex}`, values: [["acknowledged"]] });
-          writeData.push({ range: `${PROACTIVE_ALERTS_TAB}!I${row.rowIndex}`, values: [[nowISO]] });
+          await updateAlertMemoryRow(sheets, bulkAckAcId, row.rowIndex, {
+            fingerprintHash: row.fingerprintHash, alertType: row.alertType, clientName: row.clientName,
+            alertSummary: row.alertSummary, cachedOptionsJSON: row.cachedOptionsJSON,
+            status: "ignored", firstSeen: row.firstSeen, dataSnapshot: row.dataSnapshot,
+          });
         }
-        await sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: bulkAckAcId,
-          requestBody: { data: writeData, valueInputOption: "RAW" },
-        });
         console.log(`  ✅ Bulk acknowledged ${matchingRows.length} row(s) across ${alertKeys.length} alertKey(s)`);
         return res.status(200).json({ success: true, count: matchingRows.length });
       } catch (err) {
@@ -14647,24 +14267,6 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             ignoreReason: "",
             dataSnapshot: JSON.stringify({ ...alertFieldsSnapshot, ...taskMeta }),
           });
-        }
-
-        // If from ProactiveAlerts tab, mark it as "task" there too
-        if (isProactive && proactiveAlertKey) {
-          try {
-            const all = await readProactiveAlerts(sheets, acId);
-            const proRow = all.find(r => r.alertKey === proactiveAlertKey);
-            if (proRow) {
-              await sheets.spreadsheets.values.update({
-                spreadsheetId: acId,
-                range: `${PROACTIVE_ALERTS_TAB}!F${proRow.rowIndex}`,
-                valueInputOption: "RAW",
-                requestBody: { values: [["task"]] },
-              });
-            }
-          } catch (e) {
-            console.log(`  ⚠️ Could not update ProactiveAlerts tab: ${e.message}`);
-          }
         }
 
         // Invalidate task cache

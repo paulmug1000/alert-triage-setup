@@ -443,7 +443,7 @@ function CreateRetainerModal({ clientName: agencyClientName, clientSheetId, mast
 // different amount — the retainer's rate has likely changed). Fetches a computed
 // preview first (no changes made), shows it for confirmation, then applies it via
 // the existing change_retainer_end_date / change_retainer_monthly_amount actions.
-function RetainerAlertResolutionModal({ resolutionType, alertMeta, alertRowIndex, automationCommanderSheetId, clientSheetId, masterSheetId, onClose, onResolved }) {
+function RetainerAlertResolutionModal({ resolutionType, alertMeta, alertKey, automationCommanderSheetId, clientSheetId, masterSheetId, onClose, onResolved }) {
   const [loading, setLoading] = React.useState(true);
   const [preview, setPreview] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
@@ -518,13 +518,13 @@ function RetainerAlertResolutionModal({ resolutionType, alertMeta, alertRowIndex
       // persisted row, not a live check, so fixing the sheet doesn't remove it
       // on its own. Best-effort: if this fails, don't block the user from
       // seeing that the retainer change itself succeeded.
-      if (alertRowIndex && automationCommanderSheetId) {
+      if (alertKey && automationCommanderSheetId) {
         try {
           await fetch("/api/triage", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               action: "resolve_proactive_alert",
-              automationCommanderSheetId, rowIndex: alertRowIndex,
+              automationCommanderSheetId, alertKey,
               resolution: resolutionType === "end" ? "Retainer ended" : "Retainer amount changed",
             }),
           });
@@ -606,7 +606,7 @@ function RetainerAlertResolutionModal({ resolutionType, alertMeta, alertRowIndex
 // alternative invoice's actual amount and the standard amount onto a separate
 // "extra revenue" job (converting an existing orphan job in place if one already
 // holds the alternative invoice, or creating a new standalone one otherwise).
-function RetainerSplitInvoiceModal({ alertMeta, alertRowIndex, automationCommanderSheetId, clientSheetId, masterSheetId, onClose, onResolved }) {
+function RetainerSplitInvoiceModal({ alertMeta, alertKey, automationCommanderSheetId, clientSheetId, masterSheetId, onClose, onResolved }) {
   const [loading, setLoading] = React.useState(true);
   const [preview, setPreview] = React.useState(null);
   const [applying, setApplying] = React.useState(false);
@@ -666,13 +666,13 @@ function RetainerSplitInvoiceModal({ alertMeta, alertRowIndex, automationCommand
       const data = await res.json();
       if (!data.success) { setError(data.error || "Failed to apply the split."); setApplying(false); return; }
 
-      if (alertRowIndex && automationCommanderSheetId) {
+      if (alertKey && automationCommanderSheetId) {
         try {
           await fetch("/api/triage", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               action: "resolve_proactive_alert",
-              automationCommanderSheetId, rowIndex: alertRowIndex,
+              automationCommanderSheetId, alertKey,
               resolution: "Invoice split between retainer and extra revenue job",
             }),
           });
@@ -1009,7 +1009,7 @@ export default function TriageSystem({ onBack }) {
   const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(() => new Set()); // parentRowNum values currently expanded
   const [showCreateRetainerModal, setShowCreateRetainerModal] = useState(false);
   const [retainerAlertResolution, setRetainerAlertResolution] = useState(null); // { alert, resolutionType, computed... } while confirming
-  const [retainerSplitInvoice, setRetainerSplitInvoice] = useState(null); // { alertMeta, alertRowIndex, clientSheetId, masterSheetId } while confirming split
+  const [retainerSplitInvoice, setRetainerSplitInvoice] = useState(null); // { alertMeta, alertKey, clientSheetId, masterSheetId } while confirming split
   // assignedAppIds: Set of transactionIds assigned via outgoings — persisted to localStorage
   // until refreshOutgoingsAndUI runs and removes them from DirComp properly
   // assignedAppIdsByClient: Map of {clientName → Set<transactionId>} for per-client count adjustment
@@ -1176,10 +1176,6 @@ export default function TriageSystem({ onBack }) {
   const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
   const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
   const [proactiveCheckLogLoaded, setProactiveCheckLogLoaded] = useState(false);
-  const [flagRules, setFlagRules] = useState({}); // { flagKey: "increase"|"decrease"|"if true"|"if changed"|"" }
-  const [flagRulesLoading, setFlagRulesLoading] = useState(false);
-  const [flagRulesLoaded, setFlagRulesLoaded] = useState(false);
-  const [flagRuleSaving, setFlagRuleSaving] = useState(""); // flagKey currently being saved, "" = none
   const [flagSweepLog, setFlagSweepLog] = useState(null);
   const [flagSweepLogLoading, setFlagSweepLogLoading] = useState(false);
   const [flagSweepLogLoaded, setFlagSweepLogLoaded] = useState(false);
@@ -1286,7 +1282,6 @@ export default function TriageSystem({ onBack }) {
     setActiveNav("settings");
     setSettingsLoading(true);
     if (!proactiveCheckLogLoaded) loadProactiveCheckLog();
-    if (!flagRulesLoaded) loadFlagRules();
     if (!flagSweepLogLoaded) loadFlagSweepLog();
     if (!precomputeLogLoaded) loadPrecomputeLog();
     if (!allClientsLoaded) {
@@ -2294,7 +2289,8 @@ export default function TriageSystem({ onBack }) {
   const [fromCache, setFromCache] = useState(false);
 
   // Clear flags: which flag groups to clear
-  const [flagsToClear, setFlagsToClear] = useState({ invoice: false, crm: false, expense: false });
+  // flagsToClear state removed 23 Aug 2026 — was only used by the now-removed
+  // Clear Flags screen and clearSelectedFlags.
 
   // Non-actionable flags for the selected client
   const [clientNoActionAlerts, setClientNoActionAlerts] = useState([]);
@@ -2461,6 +2457,26 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
+  // Shared across every place a proactive alert's type needs a display
+  // label (the merged client list, the merged detail screen) — previously
+  // three separate inline copies of this same mapping existed across
+  // different screens; consolidated to one, here, per Paul's direction
+  // (23 Aug 2026) to merge the proactive-alert display into the rest of
+  // the app rather than leave it duplicated.
+  const PROACTIVE_TYPE_LABELS = {
+    retainer_invoice:           "Retainer invoice",
+    crm_wipe:                   "CRM data wipe",
+    revenue_mismatch:           "Revenue / invoiced mismatch",
+    direct_costs_mismatch:      "Direct costs / expenses mismatch",
+    pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
+    retainer_shrink_blocked:    "Retainer row blocked from trimming",
+    uninvoiced_revenue:         "Uninvoiced revenue",
+    deleted_invoice:            "Deleted invoice",
+    job_structure_error:        "Job structure error",
+    deleted_expense:            "Deleted expense",
+    unreceived_expenses:        "Unreceived expenses",
+  };
+
   // NEW: Helper function to get flag name from flag key
   const getFlagName = (flagKey) => {
     const flagNames = {
@@ -2558,7 +2574,7 @@ export default function TriageSystem({ onBack }) {
       setNoActionAnalysis(precomputedForClient);
       
       if (filteredAlerts.length === 0) {
-        // No actionable alerts — only go to clearFlags if no-action flags are all resolved too
+        // No actionable alerts — only run handlePostClear if no-action flags are all resolved too
         // Use restoredResolved directly — resolvedNoActionFlags state update is async
         const noActionAllDone = filteredNoAction.length === 0 ||
           filteredNoAction.every(na => restoredResolved.has(na.flagType));
@@ -2733,9 +2749,13 @@ export default function TriageSystem({ onBack }) {
     invoiceStaleUnsentChanges: "invoice",
   };
 
-  // Silently fires clear_flags for any flag groups that are now fully resolved.
-  // Called after every alert action and after rich noAction "Mark resolved".
-  // Does NOT navigate to clearFlags screen — clears happen in the background.
+  // Locally zeroes flags/counts for any groups now fully resolved, giving
+  // immediate UI feedback (client card counts update without waiting for a
+  // refresh). Called after every alert action and after rich noAction "Mark
+  // resolved". The clear_flags backend call this used to also make was
+  // retired 23 Aug 2026 — it was a confirmed no-op, and its one genuinely
+  // important side effect (analyze_noaction_flag's lookback window) is now
+  // computed directly from AlertMemory instead.
   // Returns the set of groups that were auto-cleared (for downstream use).
   const autoClearFlags = async (remainingAlerts, resolvedNoActionFlagsOverride, clientOverride) => {
     const client = clientOverride || selectedClient;
@@ -2773,7 +2793,7 @@ export default function TriageSystem({ onBack }) {
     const selected = Object.entries(toClear).filter(([, v]) => v).map(([k]) => k);
 
     // Always zero ACTIONABLE flag types visually (removes blue items from client card)
-    // even if noAction blocking flags prevent the full clear_flags API call
+    // even if noAction blocking flags prevent the group from being fully resolved
     const ACTIONABLE_FLAG_TYPE_MAP = {
       invoice: ["invoiceDashboardDiscr","retainerInvoicesCreated","retainerInvoicesDeleted","invoiceStaleUnsentChanges"],
       crm:     ["crmPipeDashDiscr","crmPipeAppDiscr","crmConfDashDiscr","crmConfAppDiscr"],
@@ -2805,47 +2825,25 @@ export default function TriageSystem({ onBack }) {
       }));
     }
 
-    if (selected.length === 0) return new Set();
-
-    try {
-      await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "clear_flags",
-          automationCommanderSheetId,
-          flagsToClear: selected,
-          clientName: client.clientName,
-        }),
-      });
-      console.log(`Auto-cleared flags: ${selected.join(", ")} for ${client.clientName}`);
-    } catch (e) {
-      console.log(`Auto-clear failed (non-fatal): ${e.message}`);
-    }
+    // clear_flags backend call retired 23 Aug 2026 — the AutoUpdates write it
+    // made was a confirmed no-op (nothing reads those cells for display any
+    // more), and its one genuinely important side effect (the flag_cleared
+    // marker analyze_noaction_flag used for its lookback window) has been
+    // replaced by resolve_noaction_flag updating AlertMemory directly. The
+    // optimistic local update above is unaffected — that's what gives
+    // immediate UI feedback, independent of any backend call.
     return new Set(selected);
   };
 
-  // After processing alerts/noAction flags, decide whether to show clearFlags screen
-  // or skip it (if auto-clear handled everything) or go back to client selection.
+  // After processing alerts/noAction flags, apply the local auto-clear
+  // update and return to client selection. Simplified 23 Aug 2026 — this
+  // used to also decide whether to route to a "Clear Flags" screen for any
+  // groups auto-clear didn't fully handle; that screen (and the concept of
+  // manually clearing a flag group) is retired now that each alert is
+  // resolved independently.
   const handlePostClear = async (remainingAlerts, resolvedNoActionFlagsOverride, clientOverride) => {
-    const client = clientOverride || selectedClient;
-    const autoCleared = await autoClearFlags(remainingAlerts, resolvedNoActionFlagsOverride, clientOverride);
-    const groups = computeFlagGroups(client, remainingAlerts);
-
-    const remainingGroups = {
-      invoice: groups.invoice && !autoCleared.has("invoice"),
-      crm:     groups.crm     && !autoCleared.has("crm"),
-      expense: groups.expense && !autoCleared.has("expense"),
-    };
-    const anyRemaining = remainingGroups.invoice || remainingGroups.crm || remainingGroups.expense;
-
-    if (anyRemaining) {
-      setFlagsToClear(remainingGroups);
-      setScreen("clearFlags");
-    } else {
-      // Everything cleared — go back to client selection
-      setScreen("clientSelection");
-    }
+    await autoClearFlags(remainingAlerts, resolvedNoActionFlagsOverride, clientOverride);
+    setScreen("clientSelection");
   };
 
   // Hoist groupedAlerts so bulk helpers can reference it
@@ -3110,92 +3108,6 @@ export default function TriageSystem({ onBack }) {
     };
   };
 
-  // Clear selected flag groups by writing directly to DataChgAlert cells
-  const clearSelectedFlags = async () => {
-    if (!selectedClient) return;
-
-    const selected = Object.entries(flagsToClear)
-      .filter(([, checked]) => checked)
-      .map(([group]) => group);
-
-    if (selected.length === 0) {
-      setAcceptError("Please select at least one flag group to clear.");
-      return;
-    }
-
-    try {
-      setIsLoading(true);
-      setAcceptError("");
-
-      console.log(`Clearing flags for ${selectedClient.clientName}: ${selected.join(", ")}`);
-
-      const response = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "clear_flags",
-          automationCommanderSheetId,
-          flagsToClear: selected,
-          clientName: selectedClient.clientName,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!data.success) {
-        setAcceptError(`Failed to clear flags: ${data.error || "Unknown error"}`);
-        return;
-      }
-
-      console.log(`✅ Flags cleared for ${selectedClient.clientName}: ${data.cellsWritten?.join(", ")}`);
-
-      // Map cleared groups back to individual flag keys
-      const FLAG_GROUP_KEYS = {
-        invoice: ["invoiceDashboardDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted"],
-        crm: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
-              "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
-        expense: ["expenseDashboardDiscr", "expenseAdded", "expenseUnreconGaps"],
-      };
-      const clearedKeys = new Set(selected.flatMap(group => FLAG_GROUP_KEYS[group] || []));
-
-      // Update Redis session and precomputed cache so reloads reflect the cleared state
-      if (sessionId) {
-        fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "update_session_flags",
-            sessionId,
-            clientName: selectedClient.clientName,
-            clearedFlagKeys: [...clearedKeys],
-          }),
-        }).catch(() => {});
-      }
-
-      // Zero out the cleared flag keys on the selected client only.
-      // Do NOT remove any clients from the list — the list only refreshes from the
-      // server on reload. Removing clients here causes other clients to vanish too.
-      setClientsWithFlags(prev =>
-        prev.map(client => {
-          if (client.clientName !== selectedClient.clientName) return client;
-          const updatedFlags = { ...client.flags };
-          clearedKeys.forEach(key => { updatedFlags[key] = false; });
-          return { ...client, flags: updatedFlags };
-        })
-      );
-
-      // Go back to client selection
-      setSelectedClient(null);
-      setClientAlerts([]);
-      setFlagsToClear({ invoice: false, crm: false, expense: false });
-      setScreen("clientSelection");
-    } catch (err) {
-      setAcceptError(`Failed to clear flags: ${err.message}`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   // Analyze a rich non-actionable flag (CRM copied / retainer invoices)
   const analyzeNoActionFlag = async (flagType) => {
     if (!selectedClient || noActionAnalysisLoading[flagType]) return;
@@ -3278,7 +3190,7 @@ export default function TriageSystem({ onBack }) {
       }));
 
       if (updatedAlerts.length === 0) {
-        // Same gate as acceptOption — only go to clearFlags if no-action flags resolved too
+        // Same gate as acceptOption — only run handlePostClear if no-action flags resolved too
         if (allNoActionResolved()) {
           handlePostClear([], resolvedNoActionFlags);
         } else {
@@ -3352,7 +3264,7 @@ export default function TriageSystem({ onBack }) {
     if (triageComplete && totalAlerts === 0 && noActionCount === 0
         && proactiveLoadedAt > 0 && proactiveAlerts.length > 0
         && activeNav !== "tasks" && activeNav !== "overview"
-        && screen !== "proactiveReview" && screen !== "clientSelection") {
+        && screen !== "clientSelection") {
       console.log(`📋 Proactive alerts loaded (${proactiveAlerts.length}), redirecting to clientSelection`);
       setScreen("clientSelection");
     }
@@ -3486,11 +3398,11 @@ export default function TriageSystem({ onBack }) {
       console.log(`✅ Marked Pipeline row ${md.pipelineRow} as copied to confirmed`);
       // This is a real fix, not just a dismissal — mark the alert "resolved"
       // (same distinction the retainer alerts use), not "acknowledged".
-      if (alert.rowIndex && automationCommanderSheetId) {
+      if (alert.alertKey && automationCommanderSheetId) {
         try {
           await fetch("/api/triage", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "resolve_proactive_alert", automationCommanderSheetId, rowIndex: alert.rowIndex, resolution: "Marked \"Copied to confirmed?\" = Yes in Pipeline" }),
+            body: JSON.stringify({ action: "resolve_proactive_alert", automationCommanderSheetId, alertKey: alert.alertKey, resolution: "Marked \"Copied to confirmed?\" = Yes in Pipeline" }),
           });
         } catch (resolveErr) { console.error("Failed to mark alert resolved:", resolveErr); }
       }
@@ -3814,46 +3726,6 @@ export default function TriageSystem({ onBack }) {
       if (data.success) setProactiveCheckLog(data.runs || []);
     } catch(e) { console.error("loadProactiveCheckLog error:", e); }
     finally { setProactiveCheckLogLoading(false); setProactiveCheckLogLoaded(true); }
-  };
-
-  const loadFlagRules = async () => {
-    try {
-      setFlagRulesLoading(true);
-      const res = await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_flag_rules", automationCommanderSheetId }),
-      });
-      const data = await res.json();
-      if (data.success) setFlagRules(data.rules || {});
-    } catch(e) { console.error("loadFlagRules error:", e); }
-    finally { setFlagRulesLoading(false); setFlagRulesLoaded(true); }
-  };
-
-  // Immediate-save, per Paul's preference (21 Aug 2026) — optimistic update
-  // so the dropdown reflects the choice instantly, with a per-flag "saving"
-  // indicator and a revert-on-failure so a failed save is visible rather
-  // than silently leaving the UI showing something that isn't actually
-  // saved.
-  const saveFlagRule = async (flagKey, newRule) => {
-    const previousRule = flagRules[flagKey] || "";
-    setFlagRules(prev => ({ ...prev, [flagKey]: newRule }));
-    setFlagRuleSaving(flagKey);
-    try {
-      const res = await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save_flag_rule", automationCommanderSheetId, flagKey, rule: newRule }),
-      });
-      const data = await res.json();
-      if (!data.success) {
-        setFlagRules(prev => ({ ...prev, [flagKey]: previousRule }));
-        console.error("save_flag_rule failed:", data.error);
-      }
-    } catch (e) {
-      setFlagRules(prev => ({ ...prev, [flagKey]: previousRule }));
-      console.error("saveFlagRule error:", e);
-    } finally {
-      setFlagRuleSaving("");
-    }
   };
 
   const loadFlagSweepLog = async () => {
@@ -4574,7 +4446,7 @@ export default function TriageSystem({ onBack }) {
           <RetainerAlertResolutionModal
             resolutionType={retainerAlertResolution.resolutionType}
             alertMeta={retainerAlertResolution.alertMeta}
-            alertRowIndex={retainerAlertResolution.alertRowIndex}
+            alertKey={retainerAlertResolution.alertKey}
             automationCommanderSheetId={automationCommanderSheetId}
             clientSheetId={retainerAlertResolution.clientSheetId}
             masterSheetId={retainerAlertResolution.masterSheetId}
@@ -4585,7 +4457,7 @@ export default function TriageSystem({ onBack }) {
         {retainerSplitInvoice && (
           <RetainerSplitInvoiceModal
             alertMeta={retainerSplitInvoice.alertMeta}
-            alertRowIndex={retainerSplitInvoice.alertRowIndex}
+            alertKey={retainerSplitInvoice.alertKey}
             automationCommanderSheetId={automationCommanderSheetId}
             clientSheetId={retainerSplitInvoice.clientSheetId}
             masterSheetId={retainerSplitInvoice.masterSheetId}
@@ -7834,18 +7706,6 @@ export default function TriageSystem({ onBack }) {
                           {it.kind === "actionable" ? "Actionable" : it.kind === "blocking" ? "Info · blocking" : "Info"}
                         </span>
                         <div style={{ fontSize: "13px", color: "#1a1a1a", paddingTop: "1px", flex: 1 }}>{it.name}</div>
-                        <select
-                          value={flagRules[it.key] ?? ""}
-                          disabled={flagRulesLoading}
-                          onChange={(e) => saveFlagRule(it.key, e.target.value)}
-                          style={{ fontSize: "12px", padding: "3px 6px", borderRadius: "6px", border: "1px solid #ddd", color: "#333", background: "#fff", opacity: flagRuleSaving === it.key ? 0.5 : 1 }}
-                        >
-                          <option value="">— none —</option>
-                          <option value="increase">Increase</option>
-                          <option value="decrease">Decrease</option>
-                          <option value="if true">If true</option>
-                          <option value="if changed">If changed</option>
-                        </select>
                       </div>
                     ))}
                   </div>
@@ -8466,7 +8326,7 @@ export default function TriageSystem({ onBack }) {
         </div>
 
         <div style={styles.card}>
-          <h2 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>Automation Alerts</h2>
+          <h2 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>Alerts</h2>
           {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
 
           {isLoading ? (
@@ -8481,7 +8341,27 @@ export default function TriageSystem({ onBack }) {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {clientsWithFlags.filter(client => {
+              {(() => {
+                // Merged single alert list per Paul's direction (23 Aug
+                // 2026) — a client whose only open item is a proactive
+                // alert (from the 11 overnight checks) may not have any
+                // clientsWithFlags entry at all, since that list is
+                // populated from AutoUpdates/AlertMemory-derived flags,
+                // not from the separate ProactiveAlerts-sourced fetch.
+                // allClientsMap is the same fallback lookup already used
+                // elsewhere in this file for exactly this situation.
+                const proactiveOnlyNames = Object.keys(proactiveCountsByClient).filter(
+                  name => proactiveCountsByClient[name] > 0 && !clientsWithFlags.some(c => c.clientName === name)
+                );
+                const combinedClientList = [
+                  ...clientsWithFlags,
+                  ...proactiveOnlyNames.map(name => {
+                    const info = allClientsMap[name] || {};
+                    return { clientName: name, masterSheetId: info.masterSheetId, clientSheetId: info.clientSheetId, flags: {}, alertCounts: {} };
+                  }),
+                ];
+                return combinedClientList;
+              })().filter(client => {
                 // Check if client has any visible alerts after applying assignedByClient suppression
                 const clientAssigned = assignedByClient[client.clientName]?.size || 0;
                 const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
@@ -8494,7 +8374,7 @@ export default function TriageSystem({ onBack }) {
                 });
                 const hasInfoFlags = Object.entries(client.flags || {})
                   .some(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key));
-                return hasVisibleActionable || hasInfoFlags;
+                return hasVisibleActionable || hasInfoFlags || proactiveCountsByClient[client.clientName] > 0;
               }).map((client, idx) => {
                 const clientAssigned = assignedByClient[client.clientName]?.size || 0;
                 const actionableLines = ACTIONABLE_FLAG_KEYS
@@ -8514,6 +8394,17 @@ export default function TriageSystem({ onBack }) {
                 const infoLines = Object.entries(client.flags || {})
                   .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key))
                   .map(([key]) => getFlagName(key));
+
+                // Actual type lines rather than just a count badge — matches
+                // actionableLines/infoLines' style, merging what used to be
+                // the separate "Proactive Alerts" card's content in here.
+                const proactiveLines = Object.entries(
+                  (proactiveAlerts || []).filter(a => a.clientName === client.clientName).reduce((acc, a) => {
+                    const label = PROACTIVE_TYPE_LABELS[a.alertType] || a.alertType || "Alert";
+                    acc[label] = (acc[label] || 0) + 1;
+                    return acc;
+                  }, {})
+                ).map(([label, count]) => `${label} (${count} alert${count !== 1 ? "s" : ""})`);
 
                 return (
                   <button
@@ -8536,11 +8427,6 @@ export default function TriageSystem({ onBack }) {
                     <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px", display: "flex", alignItems: "center", gap: "8px" }}>
                       {selectingClient === client.clientName && <Spinner size={13} />}
                       {client.clientName}
-                      {proactiveCountsByClient[client.clientName] > 0 && (
-                        <span style={{ fontSize: "11px", background: "#f59e0b", color: "#fff", borderRadius: "10px", padding: "1px 7px", fontWeight: "600" }}>
-                          {proactiveCountsByClient[client.clientName]} proactive
-                        </span>
-                      )}
                     </div>
                     {actionableLines.map((line, i) => (
                       <div key={i} style={{ fontSize: "13px", color: "#1976d2", marginBottom: "2px" }}>
@@ -8549,6 +8435,11 @@ export default function TriageSystem({ onBack }) {
                     ))}
                     {infoLines.map((line, i) => (
                       <div key={i} style={{ fontSize: "13px", color: "#888", marginBottom: "2px" }}>
+                        • {line}
+                      </div>
+                    ))}
+                    {proactiveLines.map((line, i) => (
+                      <div key={i} style={{ fontSize: "13px", color: "#d97706", marginBottom: "2px" }}>
                         • {line}
                       </div>
                     ))}
@@ -8626,88 +8517,6 @@ export default function TriageSystem({ onBack }) {
               )}
             </div>
           )}
-        </div>
-
-        {/* Proactive Alerts — separate card below */}
-        <div style={{ ...styles.card, marginTop: "16px" }}>
-          <h2 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
-            Proactive Alerts {!proactiveLoading && proactiveAlerts.length > 0 && `(${proactiveAlerts.length})`}
-          </h2>
-          {proactiveLoading ? (
-            <div style={{ textAlign: "center", padding: "20px", color: "#666", fontSize: "13px" }}>
-              <Spinner size={20} color="#0066cc" />
-              <div style={{ marginTop: "8px" }}>Loading proactive alerts...</div>
-            </div>
-          ) : proactiveAlerts.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
-              ✓ No proactive alerts
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {(() => {
-                // Group by clientName
-                const grouped = {};
-                proactiveAlerts.forEach(a => {
-                  if (!grouped[a.clientName]) grouped[a.clientName] = [];
-                  grouped[a.clientName].push(a);
-                });
-                return Object.entries(grouped).map(([clientName, alerts], idx) => {
-                  const typeLabels = {
-                    retainer_invoice:           "Retainer invoice",
-                    crm_wipe:                   "CRM data wipe",
-                    revenue_mismatch:           "Revenue / invoiced mismatch",
-                    direct_costs_mismatch:      "Direct costs / expenses mismatch",
-                    pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
-                    retainer_shrink_blocked:    "Retainer row blocked from trimming",
-                    uninvoiced_revenue:         "Uninvoiced revenue",
-                    deleted_invoice:            "Deleted invoice",
-                    job_structure_error:        "Job structure error",
-                    deleted_expense:            "Deleted expense",
-                    unreceived_expenses:        "Unreceived expenses",
-                  };
-                  const typeCounts = {};
-                  alerts.forEach(a => {
-                    const label = typeLabels[a.alertType] || a.alertType || "Alert";
-                    typeCounts[label] = (typeCounts[label] || 0) + 1;
-                  });
-                  return (
-                    <button
-                      key={idx}
-                      className="triage-client-card"
-                      onClick={() => {
-                        const clientObj = clientsWithFlags.find(c => c.clientName === clientName) || allClientsMap[clientName];
-                        if (clientObj) selectClient(clientObj);
-                      }}
-                      style={{
-                        ...styles.optionButton,
-                        textAlign: "left",
-                        padding: "16px",
-                        border: "1px solid #ddd",
-                        borderRadius: "6px",
-                        backgroundColor: "#f9f9f9",
-                        width: "100%",
-                      }}
-                    >
-                      <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px" }}>
-                        {clientName}
-                      </div>
-                      {Object.entries(typeCounts).map(([type, count], i) => (
-                        <div key={i} style={{ fontSize: "13px", color: "#d97706", marginBottom: "2px" }}>
-                          • {type} ({count} alert{count !== 1 ? "s" : ""})
-                        </div>
-                      ))}
-                    </button>
-                  );
-                });
-              })()}
-            </div>
-          )}
-          <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid #eee", display: "flex", justifyContent: "flex-end" }}>
-            <button className="triage-btn" onClick={loadProactiveAlerts} disabled={proactiveLoading}
-              style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: proactiveLoading ? 0.5 : 1 }}>
-              {proactiveLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
-            </button>
-          </div>
         </div>
 
         </div>
@@ -9467,14 +9276,14 @@ export default function TriageSystem({ onBack }) {
                               <>
                                 <button className="triage-btn" onClick={() => {
                                   const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                  setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                  setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
                                 }}
                                   style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                                   Change retainer amount
                                 </button>
                                 <button className="triage-btn" onClick={() => {
                                   const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                  setRetainerSplitInvoice({ alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                  setRetainerSplitInvoice({ alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
                                 }}
                                   style={{ padding: "6px 12px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                                   Split invoice
@@ -9483,7 +9292,7 @@ export default function TriageSystem({ onBack }) {
                             ) : (
                               <button className="triage-btn" onClick={() => {
                                 const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, alertRowIndex: alert.rowIndex, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
                               }}
                                 style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                                 End retainer
@@ -9722,11 +9531,6 @@ export default function TriageSystem({ onBack }) {
                   </div>
                 );
               })}
-              {clientProactiveAlertsList.length === 0 && (
-                <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
-                  All alerts acknowledged
-                </div>
-              )}
             </div>
 
             {proactiveBulkMode && proactiveBulkSelected.size > 0 && (
@@ -9748,281 +9552,8 @@ export default function TriageSystem({ onBack }) {
           </div>
             )}
 
-          {/* Bottom button row — always visible */}
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: "20px" }}>
-            <button className="triage-btn"
-              onClick={() => {
-                setFlagsToClear(computeFlagGroups(selectedClient, clientAlerts));
-                setScreen("clearFlags");
-              }}
-              style={styles.buttonSecondary}
-            >
-              Clear Flags →
-            </button>
-          </div>
         </div>
         </div>
-      </NavShell>
-    );
-  }
-
-  // Screen 1d: Clear Flags Screen
-  if (screen === "clearFlags" && selectedClient && activeNav !== "tasks") {
-    const allChecked = flagsToClear.invoice && flagsToClear.crm && flagsToClear.expense;
-    const noneChecked = !flagsToClear.invoice && !flagsToClear.crm && !flagsToClear.expense;
-    const anyActive = flagsToClear.invoice || flagsToClear.crm || flagsToClear.expense;
-
-    const FLAG_GROUPS = [
-      {
-        key: "invoice",
-        label: "Invoice flags",
-        sub: "Clears AS2 in DataChgAlert",
-        flags: ["invoiceDashboardDiscr", "invoiceStaleUnsentChanges", "retainerInvoicesCreated", "retainerInvoicesDeleted"],
-      },
-      {
-        key: "crm",
-        label: "CRM flags",
-        sub: "Clears AT2 and AU2 in DataChgAlert",
-        flags: ["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
-                "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete"],
-      },
-      {
-        key: "expense",
-        label: "Expense flags",
-        sub: "Clears AV2 in DataChgAlert",
-        flags: ["expenseDashboardDiscr", "expenseAdded", "expenseUnreconGaps"],
-      },
-    ];
-
-    return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
-        <div style={styles.container}>
-          <div style={styles.header}>
-            <h1 style={styles.title}>Clear Flags</h1>
-            <p style={styles.subtitle}>{selectedClient.clientName} — select which flags to clear</p>
-          </div>
-
-          <div style={styles.card}>
-            {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
-
-            <div style={{ ...styles.successBanner, marginBottom: "20px" }}>
-              Select which flag groups to clear in the client's DataChgAlert sheet. Groups with unresolved alerts are unchecked by default.
-            </div>
-
-            {/* Select All / None toggle */}
-            <div style={{ display: "flex", gap: "10px", marginBottom: "14px" }}>
-              <button className="triage-btn"
-                onClick={() => setFlagsToClear({ invoice: true, crm: true, expense: true })}
-                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
-              >
-                Select All
-              </button>
-              <button className="triage-btn"
-                onClick={() => setFlagsToClear({ invoice: false, crm: false, expense: false })}
-                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px" }}
-              >
-                Select None
-              </button>
-            </div>
-
-            {/* Per-group toggles */}
-            {FLAG_GROUPS.map(group => {
-              const isChecked = flagsToClear[group.key];
-              const hasActiveFlags = group.flags.some(f => selectedClient.flags?.[f]);
-              return (
-                <div
-                  key={group.key}
-                  style={{
-                    ...styles.flagToggleRow,
-                    ...(isChecked ? styles.flagToggleRowActive : {}),
-                  }}
-                  onClick={() => setFlagsToClear(prev => ({ ...prev, [group.key]: !prev[group.key] }))}
-                >
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    onChange={() => {}}
-                    style={styles.flagCheckbox}
-                  />
-                  <div style={{ flex: 1 }}>
-                    <div style={styles.flagToggleLabel}>
-                      {group.label}
-                      {hasActiveFlags && (
-                        <span style={{ marginLeft: "8px", fontSize: "11px", color: "#e65100", fontWeight: "700" }}>
-                          ● active
-                        </span>
-                      )}
-                    </div>
-                    <div style={styles.flagToggleSub}>{group.sub}</div>
-                  </div>
-                </div>
-              );
-            })}
-
-            <div style={{ display: "flex", gap: "12px", flexDirection: "column", marginTop: "20px" }}>
-              <button className="triage-btn triage-btn-primary"
-                onClick={clearSelectedFlags}
-                disabled={isLoading || noneChecked}
-                style={{
-                  ...styles.button,
-                  opacity: isLoading || noneChecked ? 0.5 : 1,
-                }}
-              >
-                {isLoading
-                  ? <><Spinner color="white" />Clearing...</>
-                  : allChecked
-                  ? "✓ Clear All Flags"
-                  : anyActive
-                  ? "✓ Clear Selected Flags"
-                  : "Select flags to clear"}
-              </button>
-            </div>
-          </div>
-        </div>
-      </NavShell>
-    );
-  }
-
-  // Screen 1: Loading state (shown while startTriage runs on mount)
-  if (!sessionId && !triageComplete && activeNav !== "tasks" && activeNav !== "overview") {
-    return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
-        <div style={styles.container}>
-          <div style={styles.header}>
-            <h1 style={styles.title}>Automation Alerts</h1>
-            <p style={styles.subtitle}>Review and resolve financial automation alerts</p>
-          </div>
-          <div style={styles.card}>
-            {error ? (
-              <>
-                <div style={styles.errorBanner}>{error}</div>
-                <button className="triage-btn"
-                  onClick={startTriage}
-                  disabled={isLoading}
-                  style={{ ...styles.button, marginTop: "12px", opacity: isLoading ? 0.5 : 1 }}
-                >
-                  {isLoading ? <><Spinner color="white" />Loading...</> : "Retry →"}
-                </button>
-              </>
-            ) : (
-              <p style={styles.loadingText}>
-                {isLoading ? <><Spinner color="white" />Loading alerts...</> : "Initialising..."}
-              </p>
-            )}
-          </div>
-        </div>
-      </NavShell>
-    );
-  }
-
-  // Screen 2: Triage complete with no alerts
-  if (triageComplete && totalAlerts === 0 && noActionCount === 0 && activeNav !== "tasks" && activeNav !== "overview") {
-    return withModal(
-      <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
-      <div style={styles.container}>
-        <div style={styles.header}>
-          <h1 style={styles.title}>✓ All Clear</h1>
-          <p style={styles.subtitle}>No alerts to triage</p>
-        </div>
-
-        <div style={styles.card}>
-          {isLoading ? (
-            <div style={{ textAlign: "center", padding: "32px 16px" }}>
-              <Spinner size={32} color="#0066cc" />
-              <div style={{ fontSize: "15px", fontWeight: "600", color: "#333", marginTop: "12px", marginBottom: "6px" }}>
-                Checking for new alerts...
-              </div>
-              <div style={{ fontSize: "13px", color: "#888" }}>
-                Reading latest flags from your sheets
-              </div>
-            </div>
-          ) : (
-            <>
-              <div style={styles.successBanner}>
-                No discrepancies detected. Your financial automation system is running smoothly!
-              </div>
-              <div style={styles.buttonGroup}>
-                <button className="triage-btn triage-btn-primary" onClick={refreshTriage} style={styles.button}>
-                  ↻ Refresh
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Proactive alerts — shown even when no automation alerts */}
-        <div style={{ ...styles.card, marginTop: "16px" }}>
-          <h2 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
-            Proactive Alerts {!proactiveLoading && proactiveAlerts.length > 0 && `(${proactiveAlerts.length})`}
-          </h2>
-          {proactiveLoading ? (
-            <div style={{ textAlign: "center", padding: "20px", color: "#666", fontSize: "13px" }}>
-              <Spinner size={20} color="#0066cc" />
-              <div style={{ marginTop: "8px" }}>Loading proactive alerts...</div>
-            </div>
-          ) : proactiveAlerts.length === 0 && proactiveLoadedAt > 0 ? (
-            <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
-              ✓ No proactive alerts
-            </div>
-          ) : proactiveAlerts.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "20px", color: "#888", fontSize: "13px" }}>
-              Checking for proactive alerts...
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {(() => {
-                const typeLabels = {
-                  retainer_invoice:           "Retainer invoice",
-                  crm_wipe:                   "CRM data wipe",
-                  revenue_mismatch:           "Revenue / invoiced mismatch",
-                  direct_costs_mismatch:      "Direct costs / expenses mismatch",
-                  pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
-                  retainer_shrink_blocked:    "Retainer row blocked from trimming",
-                    uninvoiced_revenue:         "Uninvoiced revenue",
-                    deleted_invoice:            "Deleted invoice",
-                    job_structure_error:        "Job structure error",
-                    deleted_expense:            "Deleted expense",
-                    unreceived_expenses:        "Unreceived expenses",
-                };
-                const grouped = {};
-                proactiveAlerts.forEach(a => {
-                  if (!grouped[a.clientName]) grouped[a.clientName] = [];
-                  grouped[a.clientName].push(a);
-                });
-                return Object.entries(grouped).map(([clientName, alerts], idx) => {
-                  const typeCounts = {};
-                  alerts.forEach(a => {
-                    const label = typeLabels[a.alertType] || a.alertType || "Alert";
-                    typeCounts[label] = (typeCounts[label] || 0) + 1;
-                  });
-                  return (
-                    <button key={idx} className="triage-client-card"
-                      onClick={() => {
-                        const clientObj = clientsWithFlags.find(c => c.clientName === clientName) || allClientsMap[clientName];
-                        if (clientObj) selectClient(clientObj);
-                      }}
-                      style={{ ...styles.optionButton, textAlign: "left", padding: "16px", border: "1px solid #ddd", borderRadius: "6px", backgroundColor: "#f9f9f9", width: "100%" }}>
-                      <div style={{ fontWeight: "bold", fontSize: "16px", marginBottom: "6px" }}>{clientName}</div>
-                      {Object.entries(typeCounts).map(([type, count], i) => (
-                        <div key={i} style={{ fontSize: "13px", color: "#d97706", marginBottom: "2px" }}>
-                          • {type} ({count} alert{count !== 1 ? "s" : ""})
-                        </div>
-                      ))}
-                    </button>
-                  );
-                });
-              })()}
-            </div>
-          )}
-          <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid #eee", display: "flex", justifyContent: "flex-end" }}>
-            <button className="triage-btn" onClick={loadProactiveAlerts} disabled={proactiveLoading}
-              style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: proactiveLoading ? 0.5 : 1 }}>
-              {proactiveLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
-            </button>
-          </div>
-        </div>
-
-      </div>
       </NavShell>
     );
   }

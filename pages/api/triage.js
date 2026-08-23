@@ -6992,8 +6992,8 @@ export default async function handler(req, res) {
 
               if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
                 newClientMeta.set(row.clientName, {
-                  clientSheetId: clientMeta.clientSheetId,
-                  masterSheetId: clientMeta.masterSheetId,
+                  clientSheetId: alertObj.clientId || alertObj.clientSheetId || "",
+                  masterSheetId: alertObj.masterSheetId || "",
                 });
               }
             } else if (row.category === "proactive") {
@@ -7248,7 +7248,7 @@ export default async function handler(req, res) {
 
           // Increased delay between clients — pacing limits to avoid tripping 
           // the 60-reads-per-minute per-user quota from Google Sheets API.
-          await new Promise(r => setTimeout(r, 1000));
+          await new Promise(r => setTimeout(r, 1500));
         }
 
         // Resolve fingerprint-based sweepItems against AlertMemory — one
@@ -7467,7 +7467,7 @@ export default async function handler(req, res) {
               }
 
               // Generous delay to prevent 429 quota errors during intensive analysis phase
-              await new Promise(r => setTimeout(r, 1000));
+              await new Promise(r => setTimeout(r, 1500));
             }
           } catch (groupErr) {
             errors += rows.length;

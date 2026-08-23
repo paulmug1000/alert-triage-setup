@@ -2702,17 +2702,13 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
     
     await setMasterSwitch(sheets, spreadsheetId, "InvComp", true);
 
-    const headerResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: "InvComp!A5:Y5",
-    });
-    const headers = (headerResponse.data.values || [[]])[0] || [];
-
     const dataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "InvComp!A6:Y1000",
+      range: "InvComp!A5:Y1000",
     });
-    const rows = dataResponse.data.values || [];
+    const allRows = dataResponse.data.values || [];
+    const headers = allRows[0] || [];
+    const rows = allRows.slice(1);
     console.log(`  InvComp: ${rows.length} rows read`);
 
     const alerts = [];
@@ -2747,7 +2743,7 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
   } catch (error) {
     console.error(`❌ Error reading InvComp alerts:`, error);
     try { await setMasterSwitch(sheets, spreadsheetId, "InvComp", false); } catch (e) {}
-    return [];
+    throw error;
   }
 }
 
@@ -2757,17 +2753,13 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
     
     await setMasterSwitch(sheets, spreadsheetId, "DirComp", true);
 
-    const headerResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: "DirComp!A5:AV5",
-    });
-    const headers = (headerResponse.data.values || [[]])[0] || [];
-
     const dataResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "DirComp!A6:AV1000",
+      range: "DirComp!A5:AV1000",
     });
-    const rows = dataResponse.data.values || [];
+    const allRows = dataResponse.data.values || [];
+    const headers = allRows[0] || [];
+    const rows = allRows.slice(1);
     console.log(`  DirComp: ${rows.length} rows read`);
 
     const alerts = [];
@@ -2802,7 +2794,7 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
   } catch (error) {
     console.error(`❌ Error reading DirComp alerts:`, error);
     try { await setMasterSwitch(sheets, spreadsheetId, "DirComp", false); } catch (e) {}
-    return [];
+    throw error;
   }
 }
 
@@ -2816,16 +2808,19 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
     let triageSettings = null;
     const dcaSheetId = masterSheetId || spreadsheetId;
     try {
-      const [dashPipeResp, dashConfResp, crmPipeResp, crmConfResp] = await Promise.all([
-        sheets.spreadsheets.values.get({ spreadsheetId: dcaSheetId, range: "DataChgAlert!C59:C66" }),
-        sheets.spreadsheets.values.get({ spreadsheetId: dcaSheetId, range: "DataChgAlert!F59:F66" }),
-        sheets.spreadsheets.values.get({ spreadsheetId: dcaSheetId, range: "DataChgAlert!C72:C79" }),
-        sheets.spreadsheets.values.get({ spreadsheetId: dcaSheetId, range: "DataChgAlert!F72:F79" }),
-      ]);
+      const batchResp = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId: dcaSheetId,
+        ranges: [
+          "DataChgAlert!C59:C66",
+          "DataChgAlert!F59:F66",
+          "DataChgAlert!C72:C79",
+          "DataChgAlert!F72:F79"
+        ]
+      });
+      const ranges = batchResp.data.valueRanges || [];
       const SETTING_ROWS = ["missing_job","client_mismatch","job_name_mismatch","revenue_mismatch",
                             "direct_costs_mismatch","start_date_mismatch","end_date_mismatch","likelihood_mismatch"];
-      const parseSettings = (resp) => {
-        const vals = resp.data.values || [];
+      const parseSettings = (vals) => {
         const s = {};
         SETTING_ROWS.forEach((k, i) => {
           const v = String((vals[i] || [])[0] || "").trim().toLowerCase();
@@ -2834,10 +2829,10 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
         return s;
       };
       triageSettings = {
-        dashPipe: parseSettings(dashPipeResp),
-        dashConf: parseSettings(dashConfResp),
-        crmPipe:  parseSettings(crmPipeResp),
-        crmConf:  parseSettings(crmConfResp),
+        dashPipe: parseSettings(ranges[0]?.values || []),
+        dashConf: parseSettings(ranges[1]?.values || []),
+        crmPipe:  parseSettings(ranges[2]?.values || []),
+        crmConf:  parseSettings(ranges[3]?.values || []),
       };
       console.log(`  ✓ DataChgAlert settings loaded`);
     } catch(e) {
@@ -2974,7 +2969,7 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
   } catch (error) {
     console.error(`❌ Error reading CRMComp alerts:`, error);
     try { await setMasterSwitch(sheets, spreadsheetId, "CRMComp", false); } catch (e) {}
-    return [];
+    throw error;
   }
 }
 
@@ -6960,77 +6955,59 @@ export default async function handler(req, res) {
           const newAlertsFromMemory = [];
           const newNoActionFromMemory = [];
           const extraFlagsByClient = new Map(); // clientName -> { flagKey: true, ... }
-          const newClientMeta = new Map(); // clientName -> { clientId, masterSheetId } for clients not already in finalClientsWithFlags
+          const newClientMeta = new Map(); 
 
-          // Looked up lazily, once, only if there are actually proactive
-          // rows to resolve — proactive AlertMemory rows only store
-          // clientName, not masterSheetId (unlike discrepancy rows, which
-          // get clientId/masterSheetId set on their dataSnapshot before
-          // analyze_alert runs — proactive rows skip that stage entirely
-          // since they need no options built).
-          let clientNameToMeta = null;
+          // Authoritative lookup for ALL clients directly from AutoUpdates
+          // This bypasses broken or old dataSnapshots in AlertMemory.
+          const { clientRows } = await readAutoUpdatesClientRows_(sheetsForMerge, acIdForMerge);
+          const clientNameToMeta = new Map(clientRows.map(c => [c.clientName, c]));
 
           for (const row of memoryRowsForMerge) {
             if (row.status !== "cached") continue;
 
             if (row.category === "discrepancy") {
               if (!row.cachedOptionsJSON) continue;
-              if (oldPathFingerprints.has(row.fingerprintHash)) continue; // already present via the old path
+              if (oldPathFingerprints.has(row.fingerprintHash)) continue; 
 
               let alertObj = null;
-              try { alertObj = JSON.parse(row.dataSnapshot); } catch (e) { continue; } // malformed snapshot — skip
+              try { alertObj = JSON.parse(row.dataSnapshot); } catch (e) { continue; } 
               let options = [];
-              try { options = JSON.parse(row.cachedOptionsJSON); } catch (e) { continue; } // malformed options — skip
+              try { options = JSON.parse(row.cachedOptionsJSON); } catch (e) { continue; } 
 
-              newAlertsFromMemory.push({ ...alertObj, fingerprintHash: row.fingerprintHash, options });
+              const liveMeta = clientNameToMeta.get(row.clientName) || {};
+
+              // Crucial Fix: Force inject the correct clientName and IDs 
+              // overriding whatever broken data was trapped in the old snapshot
+              newAlertsFromMemory.push({ 
+                ...alertObj, 
+                fingerprintHash: row.fingerprintHash, 
+                clientName: row.clientName,
+                clientId: liveMeta.clientSheetId || alertObj.clientId || alertObj.clientSheetId || "",
+                masterSheetId: liveMeta.masterSheetId || alertObj.masterSheetId || "",
+                options 
+              });
 
               if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
               extraFlagsByClient.get(row.clientName)[row.alertType] = true;
 
               if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
                 newClientMeta.set(row.clientName, {
-                  clientSheetId: alertObj.clientId || alertObj.clientSheetId || "",
-                  masterSheetId: alertObj.masterSheetId || "",
+                  clientSheetId: clientMeta.clientSheetId,
+                  masterSheetId: clientMeta.masterSheetId,
                 });
               }
             } else if (row.category === "proactive") {
-              // Restricted to the 8 AutoLog-derived types only (23 Aug 2026,
-              // fixing a real duplicate-display bug Paul found). The 11
-              // ProactiveAlerts-sourced types already have their own
-              // dedicated, unified display — the separate proactiveAlerts/
-              // get_proactive_alerts path, already shown alongside
-              // actionable/informational alerts on both the home screen and
-              // the alert screen. Also merging them into noActionAlerts/
-              // client.flags here double-counted the same underlying event
-              // through two different paths at once, not achieving any
-              // separation — this fix removes the duplicate, it doesn't
-              // reintroduce a separate section.
               if (!Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) continue;
 
-              if (clientNameToMeta === null) {
-                const { clientRows } = await readAutoUpdatesClientRows_(sheetsForMerge, acIdForMerge);
-                clientNameToMeta = new Map(clientRows.map(c => [c.clientName, c]));
-              }
               const clientMeta = clientNameToMeta.get(row.clientName);
-              if (!clientMeta) continue; // client no longer in AutoUpdates — skip rather than guess
+              if (!clientMeta) continue; 
 
-              if (oldPathNoActionKeys.has(`${clientMeta.masterSheetId}|||${row.alertType}`)) continue; // already covered by the old path
+              if (oldPathNoActionKeys.has(`${clientMeta.masterSheetId}|||${row.alertType}`)) continue; 
 
               newNoActionFromMemory.push({
                 clientId: clientMeta.masterSheetId,
                 flagType: row.alertType,
-                // alertSummary is specific per-instance text (the exact log
-                // line, or the proactive alert's own heading/detail) —
-                // preferred over a generic type label, and necessary for
-                // the 11 snake_case proactive types since FLAG_NAMES only
-                // covers the 18 camelCase AutoUpdates types.
                 flagName: row.alertSummary || FLAG_NAMES[row.alertType] || row.alertType,
-                // Needed so multiple distinct alerts of the same type for
-                // the same client (e.g. several jobs each with their own
-                // revenue_mismatch) don't collapse into one — the old
-                // AutoUpdates-based flags were booleans (at most one per
-                // type per client), an assumption that doesn't hold for
-                // the 11 proactive types.
                 fingerprintHash: row.fingerprintHash,
               });
 
@@ -7050,9 +7027,6 @@ export default async function handler(req, res) {
             finalAlerts = [...mergedAlerts, ...newAlertsFromMemory];
             finalNoActionAlerts = [...mergedNoActionAlerts, ...newNoActionFromMemory];
 
-            // Rebuild rather than mutate — reconciledClients' objects are
-            // shared references even after the array spread above, so
-            // mutating them in place would be a real aliasing risk.
             finalClientsWithFlags = reconciledClients.map(c => {
               const extra = extraFlagsByClient.get(c.clientName);
               return extra ? { ...c, flags: { ...c.flags, ...extra } } : c;
@@ -7272,10 +7246,9 @@ export default async function handler(req, res) {
             console.error(`  run_flag_sweep: error for ${client.clientName}: ${clientErr.message}`);
           }
 
-          // Small delay between clients — 99 sequential Sheets API calls without
-          // pacing risks tripping per-minute quota, same caution as the GAS
-          // sweep's own Utilities.sleep(200) between clients.
-          await new Promise(r => setTimeout(r, 150));
+          // Increased delay between clients — pacing limits to avoid tripping 
+          // the 60-reads-per-minute per-user quota from Google Sheets API.
+          await new Promise(r => setTimeout(r, 1000));
         }
 
         // Resolve fingerprint-based sweepItems against AlertMemory — one
@@ -7493,7 +7466,8 @@ export default async function handler(req, res) {
                 console.log(`  ❌ ${clientName}/${alertType}: analyze_alert call failed — ${fetchErr.message}`);
               }
 
-              await new Promise(r => setTimeout(r, 150));
+              // Generous delay to prevent 429 quota errors during intensive analysis phase
+              await new Promise(r => setTimeout(r, 1000));
             }
           } catch (groupErr) {
             errors += rows.length;

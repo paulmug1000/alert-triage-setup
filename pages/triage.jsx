@@ -6318,7 +6318,8 @@ export default function TriageSystem({ onBack }) {
                               );
                             })}
                           </tr>
-                        )))}
+                        ));
+                        })}
                       </tbody>
                     </table>
                   </div>

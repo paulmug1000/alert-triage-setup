@@ -44,7 +44,7 @@ let eomTabsVerified = false;
 
 // Precomputed triage data — stored by cron job, consumed by frontend on Start
 const PRECOMPUTED_KEY = "triage_precomputed";
-const PRECOMPUTED_MAX_AGE_MS = 90 * 60 * 1000; // 90 minutes (GAS precompute runs every 60 min)
+const PRECOMPUTED_MAX_AGE_MS = 240 * 60 * 1000; // 4 hours - prevents frontend from auto-triggering timeouts
 
 const FLAG_NAMES = {
   invoiceDashboardDiscr: "Invoice dashboard discr",
@@ -2373,58 +2373,47 @@ async function readRecentAutoLogEntries_(sheets, masterSheetId, limit = 30) {
 // Flags older than 30 minutes are treated as stale and ignored.
 const GAS_LOCK_STALE_MS = 30 * 60 * 1000; // 30 minutes
 
-async function checkGASLock(sheets, masterSheetId, sequenceType) {
-  const cellMap = {
-    invoice: { flag: "B4", timestamp: "C4" },
-    expense: { flag: "F4", timestamp: "G4" },
-    crm:     { flag: "H4", timestamp: "I4" },
-  };
-  const cells = cellMap[sequenceType];
-  if (!cells || !masterSheetId) return { locked: false };
-
+async function checkAllGASLocks(sheets, masterSheetId) {
+  const result = { invoice: { locked: false }, expense: { locked: false }, crm: { locked: false } };
+  if (!masterSheetId) return result;
   try {
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: masterSheetId,
-      range: `DataChgAlert!${cells.flag}:${cells.timestamp}`,
+      range: "DataChgAlert!B4:I4",
     });
     const row = (resp.data.values || [[]])[0] || [];
-    const flagValue = String(row[0] || "").trim().toUpperCase();
-    const tsRaw = row[1];
-
-    if (flagValue !== "YES") return { locked: false };
-
-    // Check for stale flag
-    if (tsRaw) {
-      const tsDate = new Date(tsRaw);
-      if (!isNaN(tsDate) && (Date.now() - tsDate.getTime()) > GAS_LOCK_STALE_MS) {
-        console.log(`  ⚠️ GAS lock for ${sequenceType} is stale (set at ${tsDate.toISOString()}) — clearing and proceeding`);
-        try {
-          await sheets.spreadsheets.values.batchUpdate({
-            spreadsheetId: masterSheetId,
-            requestBody: {
-              data: [
-                { range: `DataChgAlert!${cells.flag}`, values: [["NO"]] },
-                { range: `DataChgAlert!${cells.timestamp}`, values: [[""]] },
-              ],
-              valueInputOption: "RAW",
-            },
-          });
-        } catch (clearErr) {
-          console.log(`  ⚠️ Could not clear stale GAS lock: ${clearErr.message}`);
+    const check = async (fIdx, tIdx, name, fCell, tCell) => {
+      const flag = String(row[fIdx] || "").trim().toUpperCase();
+      const tsRaw = row[tIdx];
+      if (flag !== "YES") return { locked: false };
+      if (tsRaw) {
+        const tsDate = new Date(tsRaw);
+        if (!isNaN(tsDate) && (Date.now() - tsDate.getTime()) > GAS_LOCK_STALE_MS) {
+          console.log(`  ⚠️ GAS lock for ${name} is stale — clearing`);
+          try {
+            await sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: masterSheetId,
+              requestBody: {
+                data: [
+                  { range: `DataChgAlert!${fCell}`, values: [["NO"]] },
+                  { range: `DataChgAlert!${tCell}`, values: [[""]] },
+                ],
+                valueInputOption: "RAW"
+              }
+            });
+          } catch (e) {}
+          return { locked: false };
         }
-        return { locked: false };
       }
-    }
-
-    const since = tsRaw ? ` (started ${new Date(tsRaw).toLocaleTimeString("en-GB")})` : "";
-    return {
-      locked: true,
-      message: `The ${sequenceType} automation sequence is currently running for this client${since}. Please try again in a few minutes.`,
+      return { locked: true, message: `The ${name} automation sequence is currently running for this client.` };
     };
+    result.invoice = await check(0, 1, "invoice", "B4", "C4");
+    result.expense = await check(4, 5, "expense", "F4", "G4");
+    result.crm = await check(6, 7, "crm", "H4", "I4");
   } catch (e) {
-    console.log(`  ⚠️ Could not read GAS lock for ${sequenceType}: ${e.message} — proceeding anyway`);
-    return { locked: false };
+    console.log(`  ⚠️ Could not read GAS locks: ${e.message} — proceeding anyway`);
   }
+  return result;
 }
 
 // ============================================================================
@@ -7172,8 +7161,10 @@ export default async function handler(req, res) {
             const hasCRM     = !!freqRow[1];
             const hasExpense = !!freqRow[2];
 
+            const gasLocks = await checkAllGASLocks(sheets, client.masterSheetId);
+
             if (hasInvoice) {
-              const invLock = await checkGASLock(sheets, client.masterSheetId, "invoice");
+              const invLock = gasLocks.invoice;
               if (!invLock.locked) {
                 const invAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
                 invAlerts.forEach(a => { 
@@ -7193,7 +7184,7 @@ export default async function handler(req, res) {
             }
 
             if (hasExpense) {
-              const expLock = await checkGASLock(sheets, client.masterSheetId, "expense");
+              const expLock = gasLocks.expense;
               if (!expLock.locked) {
                 const expAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
                 expAlerts.forEach(a => { 
@@ -7213,7 +7204,7 @@ export default async function handler(req, res) {
             }
 
             if (hasCRM) {
-              const crmLock = await checkGASLock(sheets, client.masterSheetId, "crm");
+              const crmLock = gasLocks.crm;
               if (!crmLock.locked) {
                 for (const [mode, dashKey, appKey] of [["Pipeline", "crmPipeDashDiscr", "crmPipeAppDiscr"], ["Confirmed", "crmConfDashDiscr", "crmConfAppDiscr"]]) {
                   const crmAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, [dashKey, appKey], client.masterSheetId);
@@ -7273,7 +7264,8 @@ export default async function handler(req, res) {
 
           // Increased delay between clients — pacing limits to avoid tripping 
           // the 60-reads-per-minute per-user quota from Google Sheets API.
-          await new Promise(r => setTimeout(r, 1500));
+
+        await new Promise(r => setTimeout(r, 500)); // Optimized pacing to prevent 300s Vercel timeout
         }
 
         // Resolve fingerprint-based sweepItems against AlertMemory — one
@@ -7506,7 +7498,7 @@ export default async function handler(req, res) {
               }
 
               // Generous delay to prevent 429 quota errors during intensive analysis phase
-              await new Promise(r => setTimeout(r, 1500));
+              await new Promise(r => setTimeout(r, 500)); // Optimized pacing to prevent 300s Vercel timeout
             }
           } catch (groupErr) {
             errors += rows.length;

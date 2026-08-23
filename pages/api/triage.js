@@ -66,9 +66,27 @@ const FLAG_NAMES = {
 // Column offsets within a DataChgAlert!AF2:BG2 read (0 = column AF), per
 // Paul's exact cell list (21 Aug 2026) — computed programmatically, not
 // ============================================================================
+// API RETRY WRAPPER
+// ============================================================================
+async function withRetry(operation, maxRetries = 5) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error.code === 429 && i < maxRetries - 1) {
+        const delay = Math.pow(2, i) * 2000 + Math.random() * 1000;
+        console.log(`  ⏳ 429 Quota Exceeded. Retrying in ${Math.round(delay/1000)}s...`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
+// ============================================================================
 // ALERT MEMORY — fingerprinting, caching, ignore management
 // ============================================================================
-
 const ALERT_MEMORY_TAB = "AlertMemory";
 const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:L`;
 const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
@@ -977,16 +995,23 @@ const RET_INV_SLOTS = [
 // display in the UI. Returns raw sheet values (no currency formatting) so the
 // frontend can render them exactly as they appear in the sheet.
 // tabName: "Pipeline" or "Confirmed". highlightSlot: { type: "invoice"|"expense", slotNum } | null
-async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowNum, highlightSlot) {
+async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowNum, highlightSlot, sharedData = null) {
   if (!spreadsheetId || !parentRowNum) return null;
   try {
-    // A:CR covers client through expense slot 3 (col CR = 96)
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${tabName}!A1:CR${parentRowNum + 30}`,
-      valueRenderOption: "FORMATTED_VALUE",
-    });
-    const rows = resp.data.values || [];
+    let rows = [];
+    if (sharedData && tabName === "Confirmed" && sharedData.confirmedDataWide) {
+      rows = sharedData.confirmedDataWide;
+    } else if (sharedData && tabName === "Pipeline" && sharedData.pipelineData) {
+      rows = sharedData.pipelineData;
+    } else {
+      // A:CR covers client through expense slot 3 (col CR = 96)
+      const resp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `${tabName}!A1:CR${parentRowNum + 30}`,
+        valueRenderOption: "FORMATTED_VALUE",
+      }));
+      rows = resp.data.values || [];
+    }
     const parentRow = rows[parentRowNum - 1] || [];
     const parentClient = String(parentRow[0] || "").trim();
     const parentJob    = String(parentRow[1] || "").trim();
@@ -7398,16 +7423,30 @@ export default async function handler(req, res) {
         let built = 0, notFound = 0, errors = 0;
 
         for (const [key, rows] of groups.entries()) {
-          const [clientName, alertType] = key.split("::");
-          const client = clientByName.get(clientName);
-          if (!client) {
-            console.log(`  ⚠️ ${clientName}: not found in current client list — skipping ${rows.length} row(s)`);
-            notFound += rows.length;
-            continue;
-          }
+            const [clientName, alertType] = key.split("::");
+            const client = clientByName.get(clientName);
+            if (!client) {
+              console.log(`  ⚠️ ${clientName}: not found in current client list — skipping ${rows.length} row(s)`);
+              notFound += rows.length;
+              continue;
+            }
 
-          try {
-            let currentAlerts = [];
+            try {
+              console.log(`  📊 Fetching shared sheet data for ${clientName} to prevent 429 errors...`);
+              let sharedData = {};
+              try {
+                const [confResp, pipeResp] = await Promise.all([
+                  withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: client.clientSheetId, range: "Confirmed!A1:CR5000", valueRenderOption: "UNFORMATTED_VALUE" })).catch(() => null),
+                  withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: client.clientSheetId, range: "Pipeline!A1:DD5000", valueRenderOption: "UNFORMATTED_VALUE" })).catch(() => null)
+                ]);
+                if (confResp) sharedData.confirmedDataWide = confResp.data.values || [];
+                if (pipeResp) sharedData.pipelineData = pipeResp.data.values || [];
+                console.log(`  ✓ Shared data loaded for ${clientName}`);
+              } catch(e) {
+                console.log(`  ⚠️ Failed to fetch shared data for ${clientName}: ${e.message}`);
+              }
+
+              let currentAlerts = [];
             if (alertType === "invoiceDashboardDiscr") {
               currentAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
               currentAlerts.forEach(a => { a.flagType = "invoiceDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
@@ -7451,7 +7490,7 @@ export default async function handler(req, res) {
                 const analyzeRes = await fetch(`${baseUrl}/api/triage`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ action: "analyze_alert", alert: match, automationCommanderSheetId: acIdBuild }),
+                  body: JSON.stringify({ action: "analyze_alert", alert: match, automationCommanderSheetId: acIdBuild, sharedData }),
                 });
                 const analyzeData = await analyzeRes.json();
                 if (analyzeData.success) {
@@ -7520,7 +7559,7 @@ export default async function handler(req, res) {
       // The forceAI flag is checked within the handler.
     } else if (action === "analyze_alert") {
       // Generate matching options for an alert
-      const { alert } = req.body;
+      const { alert, sharedData } = req.body;
       
       if (!alert) {
         res.status(400).json({ success: false, error: "Missing alert data" });
@@ -7622,7 +7661,7 @@ export default async function handler(req, res) {
                   }
                   const cacheKey = `${opt.jobRow}-${highlightSlot?.slotNum ?? "none"}`;
                   if (!jrdCache.has(cacheKey)) {
-                    jrdCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, jrdSheetId, jrdTabName, opt.jobRow, highlightSlot));
+                    jrdCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, jrdSheetId, jrdTabName, opt.jobRow, highlightSlot, sharedData));
                   }
                   return { ...opt, jobRowsData: jrdCache.get(cacheKey) };
                 }));
@@ -7985,20 +8024,16 @@ export default async function handler(req, res) {
           
           // ALSO fetch Confirmed tab for job-based expense matching
           console.log(`  📊 Fetching Confirmed tab for job-based expense matching...`);
-          const confirmedResponse = await sheets.spreadsheets.values.get({
-            spreadsheetId: alert.clientId,
-            range: "Confirmed!A1:CR300",
-          });
-          
-          let confirmedData = confirmedResponse.data.values || [];
-          
-          if (confirmedData.length === 300) {
-            console.log(`  Hit 300-row limit, fetching full range...`);
-            const fullResponse = await sheets.spreadsheets.values.get({
+          let confirmedData = [];
+          if (sharedData && sharedData.confirmedDataWide) {
+            confirmedData = sharedData.confirmedDataWide;
+            console.log(`  ✓ Used cached Confirmed data (${confirmedData.length} rows)`);
+          } else {
+            const confirmedResponse = await withRetry(() => sheets.spreadsheets.values.get({
               spreadsheetId: alert.clientId,
-              range: "Confirmed!A1:CR1000",
-            });
-            confirmedData = fullResponse.data.values || [];
+              range: "Confirmed!A1:CR5000",
+            }));
+            confirmedData = confirmedResponse.data.values || [];
           }
           
           console.log(`  ✓ Loaded ${confirmedData.length} rows from Confirmed`);
@@ -8564,7 +8599,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               const highlightSlot = (opt.targetSlotType && opt.targetSlotNum)
                 ? { type: opt.targetSlotType, rowNum: opt.targetRowNum || opt.jobRow, slotNum: opt.targetSlotNum }
                 : null;
-              expJobRowCache.set(opt.jobRow, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
+              expJobRowCache.set(opt.jobRow, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot, sharedData));
             }
             opt.jobRowsData = expJobRowCache.get(opt.jobRow);
           }
@@ -8775,7 +8810,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
             // Attach jobRowsData for spreadsheet-style display
             if (jobRow) {
-              const notFoundJobRows = await fetchJobRowsForDisplay(sheets, alert.clientId, tabName, jobRow, null);
+              const notFoundJobRows = await fetchJobRowsForDisplay(sheets, alert.clientId, tabName, jobRow, null, sharedData);
               options = options.map(o => ({ ...o, jobRowsData: notFoundJobRows }));
             }
 
@@ -8964,7 +8999,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
             // Attach jobRowsData for spreadsheet-style display
             if (jobRow) {
-              const mismatchJobRows = await fetchJobRowsForDisplay(sheets, alert.clientId, tabName, jobRow, null);
+              const mismatchJobRows = await fetchJobRowsForDisplay(sheets, alert.clientId, tabName, jobRow, null, sharedData);
               options = options.map(o => ({ ...o, jobRowsData: mismatchJobRows }));
             }
 
@@ -9582,22 +9617,16 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         // ── Missing invoice — existing Claude path ─────────────────────────
         console.log(`  Fetching Confirmed tab from CLIENT sheet ${alert.clientId.substring(0, 16)}...`);
         
-        // OPTIMIZATION: Only fetch up to column CR (79) instead of DC
-        const confirmedResponse = await sheets.spreadsheets.values.get({
-          spreadsheetId: alert.clientId,
-          range: "Confirmed!A1:CR500",
-        });
-        
-        let confirmedData = confirmedResponse.data.values || [];
-        
-        // If we hit the 500 row limit, fetch more
-        if (confirmedData.length === 500) {
-          console.log(`  Detected 500 rows (likely more data), fetching full range...`);
-          const fullResponse = await sheets.spreadsheets.values.get({
+        let confirmedData = [];
+        if (sharedData && sharedData.confirmedDataWide) {
+          confirmedData = sharedData.confirmedDataWide;
+          console.log(`  ✓ Used cached Confirmed data (${confirmedData.length} rows)`);
+        } else {
+          const confirmedResponse = await withRetry(() => sheets.spreadsheets.values.get({
             spreadsheetId: alert.clientId,
             range: "Confirmed!A1:CR5000",
-          });
-          confirmedData = fullResponse.data.values || [];
+          }));
+          confirmedData = confirmedResponse.data.values || [];
         }
         
         console.log(`  📊 Loaded ${confirmedData.length} rows of job data`);
@@ -10087,7 +10116,8 @@ INSTRUCTIONS FOR USING THESE MATCHES:
 
           tier1Option.jobRowsData = await fetchJobRowsForDisplay(
             sheets, alert.clientId, "Confirmed", rowNum,
-            { type: "invoice", rowNum, slotNum }
+            { type: "invoice", rowNum, slotNum },
+            sharedData
           );
 
           const tier1Summary = `Invoice ${invoiceRef} ${m.client} — ${m.jobName}`;
@@ -10503,7 +10533,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             : null;
           const cacheKey = `${opt.jobRow}-${highlightSlot?.slotNum ?? "none"}`;
           if (!invJobRowCache.has(cacheKey)) {
-            invJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot));
+            invJobRowCache.set(cacheKey, await fetchJobRowsForDisplay(sheets, alert.clientId, "Confirmed", opt.jobRow, highlightSlot, sharedData));
           }
           opt.jobRowsData = invJobRowCache.get(cacheKey);
         }

@@ -37,38 +37,14 @@ let eomTabsVerified = false;
 // ============================================================================
 // CONSTANTS & CONFIGURATION
 // ============================================================================
-
-const FLAG_COLUMNS = {
-  invoiceDashboardDiscr: "CW",
-  crmPipeDashDiscr: "DK",
-  crmPipeAppDiscr: "DR",
-  crmConfDashDiscr: "DY",
-  crmConfAppDiscr: "EF",
-  crmCopiedConfChecked: "FA",
-  crmCopiedConfUnchecked: "FH",
-  crmCopiedConfDelete: "FO",
-  retainerInvoicesCreated: "FV",
-  retainerInvoicesDeleted: "HL",
-  expenseDashboardDiscr: "GC",
-  expenseAdded: "GQ",
-  expenseUnreconGaps: "GX",
-  invoiceStaleUnsentChanges: "HE",
-};
+// FLAG_COLUMNS/NO_ACTION_FLAGS retired 24 Aug 2026 — both were only used by
+// the old start_triage implementation (AutoUpdates sticky-column-based),
+// which has been fully replaced by a thin orchestrator that reuses
+// run_flag_sweep/build_cached_alert_options/store_precomputed instead.
 
 // Precomputed triage data — stored by cron job, consumed by frontend on Start
 const PRECOMPUTED_KEY = "triage_precomputed";
 const PRECOMPUTED_MAX_AGE_MS = 90 * 60 * 1000; // 90 minutes (GAS precompute runs every 60 min)
-
-const NO_ACTION_FLAGS = [
-  "crmCopiedConfChecked",
-  "crmCopiedConfUnchecked",
-  "crmCopiedConfDelete",
-  "retainerInvoicesCreated",
-  "retainerInvoicesDeleted",
-  "expenseAdded",
-  "expenseUnreconGaps",
-  "invoiceStaleUnsentChanges",
-];
 
 const FLAG_NAMES = {
   invoiceDashboardDiscr: "Invoice dashboard discr",
@@ -2166,135 +2142,6 @@ async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
     });
   }
   return { rows, clientRows };
-}
-
-async function getClientFlags(sheets, automationCommanderSheetId) {
-  try {
-    console.log("🔍 Reading AutoUpdates: Clients from A, URLs from L:M, flags from CW:HE...");
-
-    const { rows, clientRows } = await readAutoUpdatesClientRows_(sheets, automationCommanderSheetId);
-    if (rows.length === 0) {
-      console.error("❌ No data in AutoUpdates!");
-      throw new Error("AutoUpdates sheet appears empty");
-    }
-
-    // OPTIMIZATION: Fetch ALL flag columns at once (CW2:HE1000) instead of per-row
-    // This reduces 99 API calls to just 1!
-    console.log(`⏱️ Fetching all flags at once (CW:HE)...`);
-    const flagsResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!CW2:HL1000",
-    });
-    const flagRows = flagsResponse.data.values || [];
-    console.log(`  ✓ Got ${flagRows.length} flag rows`);
-
-    // Also fetch clear-command columns (BI:BN) to suppress flags that are pending clearance.
-    // If a clear command has been sent, the flag is in-progress of being cleared — don't show it.
-    // BI(0)=Clear invoice, BJ(1)=Clear CRM, BK(2)=Clear copied-to-conf, BL(3)=Clear expense, BN(5)=Clear all
-    const clearResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!BI2:BN1000",
-    });
-    const clearRows = clearResponse.data.values || [];
-    console.log(`  ✓ Got ${clearRows.length} clear-command rows`);
-
-    const clients = [];
-
-    for (const cr of clientRows) {
-      const i = cr.rowIndex;
-      console.log(`  Row ${cr.sheetRowNum}: ${cr.clientName}`);
-
-      const clientName = cr.clientName;
-      const clientId = cr.clientSheetId;
-      const masterId = cr.masterSheetId;
-      const clientSheetUrl = cr.clientSheetUrl;
-      const masterSheetUrl = cr.masterSheetUrl;
-      const scriptId = cr.scriptId;
-
-      // Get flags for this row from the pre-fetched data
-      // flagRows array index = i (because we fetched starting from row 2)
-      const flagRow = flagRows[i] || [];
-      
-      const flags = {
-        invoiceDashboardDiscr: String(flagRow[0] || "").toUpperCase() === "TRUE", // CW
-        crmPipeDashDiscr: String(flagRow[14] || "").toUpperCase() === "TRUE", // DK
-        crmPipeAppDiscr: String(flagRow[21] || "").toUpperCase() === "TRUE", // DR
-        crmConfDashDiscr: String(flagRow[28] || "").toUpperCase() === "TRUE", // DY
-        crmConfAppDiscr: String(flagRow[35] || "").toUpperCase() === "TRUE", // EF
-        crmCopiedConfChecked: String(flagRow[56] || "").toUpperCase() === "TRUE", // FA
-        crmCopiedConfUnchecked: String(flagRow[63] || "").toUpperCase() === "TRUE", // FH
-        crmCopiedConfDelete: String(flagRow[70] || "").toUpperCase() === "TRUE", // FO
-        retainerInvoicesCreated: String(flagRow[77] || "").toUpperCase() === "TRUE", // FV
-        retainerInvoicesDeleted: String(flagRow[119] || "").toUpperCase() === "TRUE", // HL
-        expenseDashboardDiscr: String(flagRow[84] || "").toUpperCase() === "TRUE", // GC
-        expenseAdded: String(flagRow[98] || "").toUpperCase() === "TRUE", // GQ
-        expenseUnreconGaps: String(flagRow[105] || "").toUpperCase() === "TRUE", // GX
-        invoiceStaleUnsentChanges: String(flagRow[112] || "").toUpperCase() === "TRUE", // HE
-      };
-
-      // Suppress flags that have a pending clear command (BI:BN)
-      // Clear command = TRUE means the user already sent a clear — flag is being processed
-      const clearRow = clearRows[i] || [];
-      const isTrue = (v) => String(v || "").toUpperCase() === "TRUE";
-      const clearInvoice  = isTrue(clearRow[0]); // BI
-      const clearCRM      = isTrue(clearRow[1]); // BJ
-      const clearCopied   = isTrue(clearRow[2]); // BK
-      const clearExpense  = isTrue(clearRow[3]); // BL
-      const clearAll      = isTrue(clearRow[5]); // BN
-
-      if (clearAll || clearInvoice) {
-        flags.invoiceDashboardDiscr = false;
-        flags.invoiceStaleUnsentChanges = false;
-        flags.retainerInvoicesCreated = false;
-        flags.retainerInvoicesDeleted = false;
-      }
-      if (clearAll || clearCRM) {
-        flags.crmPipeDashDiscr = false;
-        flags.crmPipeAppDiscr = false;
-        flags.crmConfDashDiscr = false;
-        flags.crmConfAppDiscr = false;
-      }
-      if (clearAll || clearCopied) {
-        flags.crmCopiedConfChecked = false;
-        flags.crmCopiedConfUnchecked = false;
-        flags.crmCopiedConfDelete = false;
-      }
-      if (clearAll || clearExpense) {
-        flags.expenseDashboardDiscr = false;
-        flags.expenseAdded = false;
-        flags.expenseUnreconGaps = false;
-      }
-
-      if (clearInvoice || clearCRM || clearCopied || clearExpense || clearAll) {
-        console.log(`    ⏭ Clear pending for ${clientName}: inv=${clearInvoice} crm=${clearCRM} copied=${clearCopied} exp=${clearExpense} all=${clearAll} — suppressing affected flags`);
-      }
-
-      const hasFlags = Object.values(flags).some(v => v);
-
-      if (hasFlags) {
-        const flagsFound = Object.entries(flags)
-          .filter(([_, value]) => value)
-          .map(([key, _]) => key);
-        
-        console.log(`    ✅ ${flagsFound.join(", ")}`);
-        clients.push({
-          clientName,
-          clientSheetId: clientId,
-          masterSheetId: masterId,
-          clientSheetUrl,
-          masterSheetUrl,
-          scriptId,
-          flags,
-        });
-      }
-    }
-
-    console.log(`✅ Found ${clients.length} clients with flags`);
-    return clients;
-  } catch (error) {
-    console.error("❌ Error getting client flags:", error);
-    throw error;
-  }
 }
 
 // ============================================================================
@@ -6309,279 +6156,108 @@ export default async function handler(req, res) {
       }
 
     } else if (action === "start_triage") {
-      // Get all clients with flags
-      let clientsWithFlags;
+      // Redesigned 24 Aug 2026 (fixing a real bug Paul found) — the old
+      // implementation depended entirely on getClientFlags reading
+      // AutoUpdates' sticky flag columns to decide what to check. Those
+      // columns are now permanently FALSE (nothing has written them since
+      // compareAutoResults/runFullSweep were disabled), so this always
+      // returned "0 alerts" regardless of AlertMemory's actual state. It
+      // also directly overwrote the shared PRECOMPUTED_KEY cache with an
+      // old-path-only shape carrying none of the AlertMemory merge logic —
+      // harmless while broken, but would have corrupted the live cache had
+      // it ever actually run with real clientsWithFlags data.
+      //
+      // Now a thin orchestrator rather than a parallel implementation:
+      // triggers a fresh detection pass, ensures options are built for
+      // anything newly cached, then reuses store_precomputed's own
+      // (already-correct, already-merged) logic instead of duplicating it —
+      // and stores a fresh session for the frontend under the same
+      // triage_alerts:{sessionId} contract it's always used.
       try {
-        clientsWithFlags = await getClientFlags(
-          sheets,
-          automationCommanderSheetId
-        );
-      } catch (err) {
-        console.error("Fatal error reading client flags:", err);
-        return res.status(500).json({
-          success: false,
-          error: `Failed to read automation commander: ${err.message}. Check credentials and sheet access.`,
+        const baseUrl = `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+        const cronSecret = process.env.CRON_SECRET;
+
+        console.log(`🔄 start_triage: running fresh detection pass...`);
+        const sweepResp = await fetch(`${baseUrl}/api/triage`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "run_flag_sweep", secret: cronSecret, automationCommanderSheetId }),
         });
-      }
+        if (!sweepResp.ok) console.error(`  ⚠ run_flag_sweep step returned ${sweepResp.status} (continuing anyway)`);
 
-      if (clientsWithFlags.length === 0) {
-        return res.status(200).json({
-          success: true,
-          sessionId: "no-alerts",
-          totalAlerts: 0,
-          noActionAlerts: [],
-          actionableAlerts: [],
+        console.log(`🔄 start_triage: building options for any newly-cached discrepancies...`);
+        const buildResp = await fetch(`${baseUrl}/api/triage`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "build_cached_alert_options", secret: cronSecret, automationCommanderSheetId }),
         });
-      }
+        if (!buildResp.ok) console.error(`  ⚠ build_cached_alert_options step returned ${buildResp.status} (continuing anyway)`);
 
-      const allAlerts = [];
-      const noActionAlerts = [];
+        // Preserve any existing noActionAnalysisResults, matching the old
+        // implementation's own behaviour — store_precomputed defaults this
+        // to {} if not passed, which would silently wipe out cached
+        // "Analyse" results if we didn't carry them forward explicitly.
+        let existingNoActionAnalysis = {};
+        try {
+          const existingRaw = await redisClient.get(PRECOMPUTED_KEY);
+          if (existingRaw) existingNoActionAnalysis = JSON.parse(existingRaw).noActionAnalysisResults || {};
+        } catch (e) { /* fine to proceed with {} */ }
 
-      // Process each client
-      for (const client of clientsWithFlags) {
-        console.log(`\n🔹 Processing client: ${client.masterSheetId}`);
-        
-        // Check which actionable flags exist
-        const actionableFlags = Object.entries(client.flags)
-          .filter(([key, value]) => value && !NO_ACTION_FLAGS.includes(key))
-          .map(([key]) => key);
-
-        const noActionFlags = Object.entries(client.flags)
-          .filter(([key, value]) => value && NO_ACTION_FLAGS.includes(key))
-          .map(([key]) => key);
-
-        console.log(`  Actionable flags: ${actionableFlags.join(", ") || "none"}`);
-        console.log(`  No-action flags: ${noActionFlags.join(", ") || "none"}`);
-
-        // Read actionable alerts
-        if (actionableFlags.includes("invoiceDashboardDiscr")) {
-          const invLock = await checkGASLock(sheets, client.masterSheetId, "invoice");
-          if (invLock.locked) {
-            console.log(`  🔒 Invoice GAS lock active for ${client.clientName} — skipping InvComp`);
-            // Add a synthetic locked alert so the user is informed
-            allAlerts.push({
-              type: "locked", sheetName: "InvComp", clientName: client.clientName,
-              clientId: client.clientSheetId, masterSheetId: client.masterSheetId,
-              flagType: "invoiceDashboardDiscr",
-              summary: { lockedMessage: invLock.message },
-            });
-          } else {
-            console.log(`  Reading InvComp...`);
-            // IMPORTANT: readInvCompAlerts uses masterSheetId (Master Sheet with InvComp tab)
-            const invoiceAlerts = await readInvCompAlerts(
-              sheets,
-              client.masterSheetId  // Master Sheet - Column M
-            );
-            console.log(`  ✓ InvComp done, found ${invoiceAlerts.length} alerts`);
-            // CRITICAL: Set clientId to client.clientSheetId for later analysis
-            // This is the Client Sheet (Confirmed tab) where we'll look for job matches
-            invoiceAlerts.forEach((alert) => {
-              alert.clientId = client.clientSheetId;  // Client Sheet - Column L
-              alert.masterSheetId = client.masterSheetId; // Master Sheet - Column M
-              alert.clientName = client.clientName;   // Client name for display
-              alert.flagType = "invoiceDashboardDiscr";
-            });
-            allAlerts.push(...invoiceAlerts);
-          }
-        }
-
-        if (actionableFlags.includes("expenseDashboardDiscr")) {
-          const expLock = await checkGASLock(sheets, client.masterSheetId, "expense");
-          if (expLock.locked) {
-            console.log(`  🔒 Expense GAS lock active for ${client.clientName} — skipping DirComp`);
-            allAlerts.push({
-              type: "locked", sheetName: "DirComp", clientName: client.clientName,
-              clientId: client.clientSheetId, masterSheetId: client.masterSheetId,
-              flagType: "expenseDashboardDiscr",
-              summary: { lockedMessage: expLock.message },
-            });
-          } else {
-            console.log(`  Reading DirComp...`);
-            const expenseAlerts = await readDirCompAlerts(
-              sheets,
-              client.masterSheetId
-            );
-            console.log(`  ✓ DirComp done, found ${expenseAlerts.length} alerts`);
-            expenseAlerts.forEach((alert) => {
-              alert.clientId = client.clientSheetId;
-              alert.masterSheetId = client.masterSheetId;
-              alert.clientName = client.clientName;
-              alert.flagType = "expenseDashboardDiscr";
-            });
-            allAlerts.push(...expenseAlerts);
-          }
-        }
-
-        // Handle CRM alerts based on which modes are needed
-        const pipelineAlerts = actionableFlags.filter((f) =>
-          ["crmPipeDashDiscr", "crmPipeAppDiscr"].includes(f)
-        );
-        const confirmedAlerts = actionableFlags.filter((f) =>
-          ["crmConfDashDiscr", "crmConfAppDiscr"].includes(f)
-        );
-
-        // Single CRM lock check covers both Pipeline and Confirmed reads
-        const crmLock = (pipelineAlerts.length > 0 || confirmedAlerts.length > 0)
-          ? await checkGASLock(sheets, client.masterSheetId, "crm")
-          : { locked: false };
-
-        if (crmLock.locked) {
-          console.log(`  🔒 CRM GAS lock active for ${client.clientName} — skipping CRMComp`);
-          allAlerts.push({
-            type: "locked", sheetName: "CRMComp", clientName: client.clientName,
-            clientId: client.clientSheetId, masterSheetId: client.masterSheetId,
-            flagType: "crmPipeDashDiscr",
-            summary: { lockedMessage: crmLock.message },
-          });
-        } else {
-          if (pipelineAlerts.length > 0) {
-            const crmAlerts = await readCRMCompAlerts(
-              sheets,
-              client.masterSheetId,
-              "Pipeline",
-              pipelineAlerts,
-              client.masterSheetId
-            );
-            crmAlerts.forEach((alert) => {
-              alert.clientId = client.clientSheetId;
-              alert.masterSheetId = client.masterSheetId;
-              alert.clientName = client.clientName;
-              if (!alert.flagType) alert.flagType = alert.alertType || pipelineAlerts[0];
-            });
-            allAlerts.push(...crmAlerts);
-          }
-
-          if (confirmedAlerts.length > 0) {
-            const crmAlerts = await readCRMCompAlerts(
-              sheets,
-              client.masterSheetId,
-              "Confirmed",
-              confirmedAlerts,
-              client.masterSheetId
-            );
-            crmAlerts.forEach((alert) => {
-              alert.clientId = client.clientSheetId;
-              alert.masterSheetId = client.masterSheetId;
-              alert.clientName = client.clientName;
-              if (!alert.flagType) alert.flagType = alert.alertType || confirmedAlerts[0];
-            });
-            allAlerts.push(...crmAlerts);
-          }
-        }
-
-        // Collect "no action" alerts for acknowledgement
-        for (const flagKey of noActionFlags) {
-          noActionAlerts.push({
-            clientId: client.masterSheetId,
-            flagType: flagKey,
-            flagName: FLAG_NAMES[flagKey],
-            flagColumn: FLAG_COLUMNS[flagKey],
-          });
-        }
-        
-        console.log(`  ✓ Client processing complete\n`);
-      }
-
-      console.log(`📊 All clients processed. Total alerts: ${allAlerts.length}, No-action alerts: ${noActionAlerts.length}`);
-
-      // Read AlertMemory once — purge stale rows, then filter out ignored alerts
-      console.log(`📚 Reading AlertMemory...`);
-      await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-      const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-      console.log(`  ✓ Found ${memoryRows.length} AlertMemory records`);
-
-      // Purge rows older than 12 months
-      await purgeOldAlertMemoryRows(sheets, automationCommanderSheetId, memoryRows);
-
-      // Build set of ignored fingerprints for fast lookup.
-      const ignoredHashes = new Set(
-        memoryRows
-          .filter(r => r.status === "ignored" || r.status === "task" ||
-                       r.status === "superseded" || r.status === "accepted")
-          .map(r => r.fingerprintHash)
-          .filter(Boolean)
-      );
-
-      // Attach fingerprint to every alert and filter out ignored ones
-      const filteredAlerts = [];
-      let ignoredCount = 0;
-      for (const alert of allAlerts) {
-        alert.fingerprintHash = buildAlertFingerprint(alert);
-        if (ignoredHashes.has(alert.fingerprintHash)) {
-          ignoredCount++;
-        } else {
-          filteredAlerts.push(alert);
-        }
-      }
-      console.log(`  ✓ ${filteredAlerts.length} active alerts, ${ignoredCount} ignored alerts filtered out`);
-
-      // Store session data in Redis
-      const sessionId = Math.random().toString(36).substring(2, 15);
-      console.log(`  Storing ${filteredAlerts.length} alerts in Redis (session: ${sessionId})...`);
-      await redisClient.set(
-        `triage_alerts:${sessionId}`,
-        JSON.stringify({
-          alerts: filteredAlerts,
-          noActionAlerts,
-          clientsWithFlags,
-        }),
-        { EX: 86400 }
-      );
-      console.log(`  ✓ Redis store complete`);
-
-      console.log(`\n✅ Sending response to frontend...`);
-
-      // Build per-flag alert counts per client for the UI
-      const alertCountsByClientAndFlag = {};
-      for (const alert of filteredAlerts) {
-        const key = alert.clientName;
-        const flagKey = alert.flagType || alert.alertType || alert.type;
-        if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
-        alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
-      }
-
-      const clientsWithFlagsSlim = clientsWithFlags.map(client => ({
-        clientName: client.clientName,
-        clientSheetId: client.clientSheetId,
-        masterSheetId: client.masterSheetId,
-        scriptId: client.scriptId,
-        flags: client.flags,
-        alertCounts: alertCountsByClientAndFlag[client.clientName] || {},
-      }));
-
-      // Also update the precomputed cache so a full page reload shows fresh data.
-      // Preserve any existing noActionAnalysisResults from the previous precompute run.
-      try {
-        const existingRaw = await redisClient.get(PRECOMPUTED_KEY);
-        const existingNoActionAnalysis = existingRaw
-          ? (JSON.parse(existingRaw).noActionAnalysisResults || {})
-          : {};
-        await redisClient.set(
-          PRECOMPUTED_KEY,
-          JSON.stringify({
-            computedAt: Date.now(),
-            totalAlerts: filteredAlerts.length,
-            noActionCount: noActionAlerts.length,
-            alerts: filteredAlerts,
-            noActionAlerts,
-            clientsWithFlags: clientsWithFlagsSlim,
+        console.log(`🔄 start_triage: rebuilding precomputed cache...`);
+        const storeResp = await fetch(`${baseUrl}/api/triage`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "store_precomputed", secret: cronSecret, automationCommanderSheetId,
             noActionAnalysisResults: existingNoActionAnalysis,
           }),
-          { EX: 3600 }
+        });
+        if (!storeResp.ok) {
+          const errText = await storeResp.text().catch(() => "");
+          throw new Error(`store_precomputed step failed (${storeResp.status}): ${errText}`);
+        }
+
+        const freshRaw = await redisClient.get(PRECOMPUTED_KEY);
+        if (!freshRaw) {
+          return res.status(500).json({ success: false, error: "Refresh completed but no precomputed data was found afterwards" });
+        }
+        const fresh = JSON.parse(freshRaw);
+
+        // Rebuild alertCounts dynamically so the frontend renders the alerts correctly
+        const alertCountsByClientAndFlag = {};
+        for (const alert of (fresh.alerts || [])) {
+          const key = alert.clientName;
+          const flagKey = alert.flagType || alert.alertType || alert.type;
+          if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+          alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+        }
+
+        const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
+          ...c,
+          alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
+        }));
+
+        const sessionId = Math.random().toString(36).substring(2, 15);
+        await redisClient.set(
+          `triage_alerts:${sessionId}`,
+          JSON.stringify({
+            alerts: fresh.alerts || [],
+            noActionAlerts: fresh.noActionAlerts || [],
+            clientsWithFlags: clientsWithUpdatedCounts,
+          }),
+          { EX: 86400 }
         );
-        console.log(`  ✓ Precomputed cache updated (${filteredAlerts.length} alerts)`);
-      } catch (cacheErr) {
-        console.error(`  ⚠ Failed to update precomputed cache: ${cacheErr.message}`);
-        // Non-fatal — session still works
+
+        console.log(`✅ start_triage: refresh complete — ${(fresh.alerts || []).length} alerts, ${(fresh.noActionAlerts || []).length} no-action alerts`);
+        return res.status(200).json({
+          success: true,
+          sessionId,
+          totalAlerts: (fresh.alerts || []).length,
+          noActionCount: (fresh.noActionAlerts || []).length,
+          clientsWithFlags: clientsWithUpdatedCounts,
+        });
+      } catch (err) {
+        console.error("❌ start_triage error:", err);
+        return res.status(500).json({ success: false, error: err.message });
       }
 
-      res.status(200).json({
-        success: true,
-        sessionId,
-        totalAlerts: filteredAlerts.length,
-        noActionCount: noActionAlerts.length,
-        clientsWithFlags: clientsWithFlagsSlim,
-      });
     } else if (action === "fire_outgoings_pull") {
       // Deferred GAS outgoings notes pull — fired when the user navigates away from
       // the Outgoings tab after making one or more assignments. Fire-and-forget from
@@ -6933,56 +6609,15 @@ export default async function handler(req, res) {
           };
         }
 
-        // 3. Read AutoUpdates flag columns for this client
-        const acIdClean = extractSheetIdFromUrl(acId) || acId;
-        const namesResp = await sheets.spreadsheets.values.get({
-          spreadsheetId: acIdClean,
-          range: "AutoUpdates!A2:A1000",
-        });
-        const nameRows = namesResp.data.values || [];
-        let autoUpdatesRow = -1;
-        for (let i = 0; i < nameRows.length; i++) {
-          if (!clientName || String(nameRows[i]?.[0] || "").trim() === clientName.trim()) {
-            autoUpdatesRow = i + 2;
-            break;
-          }
-        }
+        // AutoUpdates sticky-flag comparison retired 24 Aug 2026 — those
+        // columns (CW:HL) are permanently empty now (nothing has written
+        // them since compareAutoResults/runFullSweep were disabled), so
+        // comparing against them no longer has any diagnostic value.
+        // Removing this read also fully clears the way for Paul to safely
+        // delete AutoUpdates columns CR:HM, since this was the last
+        // remaining reader of that range in triage.js.
 
-        let autoUpdatesFlags = null;
-        if (autoUpdatesRow !== -1) {
-          // Read CW:HL (cols 101-220 = 120 cols) — the flag columns
-          const flagResp = await sheets.spreadsheets.values.get({
-            spreadsheetId: acIdClean,
-            range: `AutoUpdates!CW${autoUpdatesRow}:HL${autoUpdatesRow}`,
-          });
-          const flagRow = flagResp.data.values?.[0] || [];
-          const FLAG_COL_NAMES = {
-            0:  "invoiceDashboardDiscr (CW)",
-            14: "crmPipeDashDiscr (DK)",
-            21: "crmPipeAppDiscr (DR)",
-            28: "crmConfDashDiscr (DY)",
-            35: "crmConfAppDiscr (EF)",
-            56: "crmCopiedConfChecked (FA)",
-            63: "crmCopiedConfUnchecked (FH)",
-            70: "crmCopiedConfDelete (FO)",
-            77: "retainerInvoicesCreated (FV)",
-            84: "expenseDashboardDiscr (GC)",
-            98: "expenseAdded (GQ)",
-            105:"expenseUnreconGaps (GX)",
-            112:"invoiceStaleUnsentChanges (HE)",
-            119:"retainerInvoicesDeleted (HL)",
-          };
-          autoUpdatesFlags = {};
-          Object.entries(FLAG_COL_NAMES).forEach(([idx, name]) => {
-            const val = String(flagRow[parseInt(idx)] || "").trim().toUpperCase();
-            autoUpdatesFlags[name] = val === "TRUE" || val === "1";
-          });
-        }
-
-        // 4. Read DataChgAlert clear cells for this client (if masterSheetId provided)
-        // (skip — requires masterSheetId which we don't have here)
-
-        console.log(`debug_triage_state: ${clientMemory.length} AlertMemory rows, precomp=${!!preRaw}, autoUpdatesRow=${autoUpdatesRow}`);
+        console.log(`debug_triage_state: ${clientMemory.length} AlertMemory rows, precomp=${!!preRaw}`);
         return res.status(200).json({
           success: true,
           clientName,
@@ -6993,7 +6628,6 @@ export default async function handler(req, res) {
             statusCounts: allMemoryRows.reduce((acc, r) => { acc[r.status] = (acc[r.status]||0)+1; return acc; }, {}),
           },
           precomputed: precompSummary,
-          autoUpdates: { row: autoUpdatesRow, flags: autoUpdatesFlags },
         });
       } catch (err) {
         console.error("❌ debug_triage_state error:", err);
@@ -7297,6 +6931,19 @@ export default async function handler(req, res) {
           const sheetsForMerge = await getSheetsClient();
           const acIdForMerge = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
           await ensureAlertMemoryTab(sheetsForMerge, acIdForMerge);
+
+          // Relocated here 24 Aug 2026 — this only ran via start_triage
+          // before, which has been silently broken (returning early, before
+          // ever reaching this step) since the old compareAutoResults/
+          // runFullSweep GAS triggers were disabled. store_precomputed's
+          // hourly cron run is a far more reliable home for this recurring
+          // maintenance than a manual refresh button. Purge first, then
+          // re-read fresh — deleting rows shifts every subsequent row
+          // index, so using the pre-purge read's rowIndex values for the
+          // merge logic below would target the wrong rows.
+          const rowsBeforePurge = await readAlertMemory(sheetsForMerge, acIdForMerge);
+          await purgeOldAlertMemoryRows(sheetsForMerge, acIdForMerge, rowsBeforePurge);
+
           const memoryRowsForMerge = await readAlertMemory(sheetsForMerge, acIdForMerge);
 
           // Recomputed rather than trusted from a possible existing field —
@@ -7342,7 +6989,7 @@ export default async function handler(req, res) {
 
               if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
                 newClientMeta.set(row.clientName, {
-                  clientId: alertObj.clientId || "",
+                  clientSheetId: alertObj.clientId || alertObj.clientSheetId || "",
                   masterSheetId: alertObj.masterSheetId || "",
                 });
               }
@@ -7392,7 +7039,7 @@ export default async function handler(req, res) {
 
               if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
                 newClientMeta.set(row.clientName, {
-                  clientId: clientMeta.clientSheetId,
+                  clientSheetId: clientMeta.clientSheetId,
                   masterSheetId: clientMeta.masterSheetId,
                 });
               }
@@ -7413,7 +7060,7 @@ export default async function handler(req, res) {
             for (const [clientName, meta] of newClientMeta.entries()) {
               finalClientsWithFlags.push({
                 clientName,
-                clientId: meta.clientId,
+                clientSheetId: meta.clientSheetId,
                 masterSheetId: meta.masterSheetId,
                 flags: extraFlagsByClient.get(clientName) || {},
               });
@@ -7530,7 +7177,13 @@ export default async function handler(req, res) {
               const invLock = await checkGASLock(sheets, client.masterSheetId, "invoice");
               if (!invLock.locked) {
                 const invAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
-                invAlerts.forEach(a => { a.flagType = "invoiceDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
+                invAlerts.forEach(a => { 
+                  a.clientName = client.clientName;
+                  a.clientId = client.clientSheetId;
+                  a.masterSheetId = client.masterSheetId;
+                  a.flagType = "invoiceDashboardDiscr"; 
+                  a._fingerprint = buildAlertFingerprint(a); 
+                });
                 sweepItems.push({
                   clientName: client.clientName, alertType: "invoiceDashboardDiscr",
                   alerts: invAlerts,
@@ -7544,7 +7197,13 @@ export default async function handler(req, res) {
               const expLock = await checkGASLock(sheets, client.masterSheetId, "expense");
               if (!expLock.locked) {
                 const expAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
-                expAlerts.forEach(a => { a.flagType = "expenseDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
+                expAlerts.forEach(a => { 
+                  a.clientName = client.clientName;
+                  a.clientId = client.clientSheetId;
+                  a.masterSheetId = client.masterSheetId;
+                  a.flagType = "expenseDashboardDiscr"; 
+                  a._fingerprint = buildAlertFingerprint(a); 
+                });
                 sweepItems.push({
                   clientName: client.clientName, alertType: "expenseDashboardDiscr",
                   alerts: expAlerts,
@@ -7559,7 +7218,12 @@ export default async function handler(req, res) {
               if (!crmLock.locked) {
                 for (const [mode, dashKey, appKey] of [["Pipeline", "crmPipeDashDiscr", "crmPipeAppDiscr"], ["Confirmed", "crmConfDashDiscr", "crmConfAppDiscr"]]) {
                   const crmAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, [dashKey, appKey], client.masterSheetId);
-                  crmAlerts.forEach(a => { a._fingerprint = buildAlertFingerprint(a); });
+                  crmAlerts.forEach(a => { 
+                    a.clientName = client.clientName;
+                    a.clientId = client.clientSheetId;
+                    a.masterSheetId = client.masterSheetId;
+                    a._fingerprint = buildAlertFingerprint(a); 
+                  });
                   const dashAlerts = crmAlerts.filter(a => (a.flagType || a.alertType) === dashKey);
                   const appAlerts  = crmAlerts.filter(a => (a.flagType || a.alertType) === appKey);
                   if (dashAlerts.length > 0) {

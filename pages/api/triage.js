@@ -93,6 +93,7 @@ const ALERT_MEMORY_MAX_AGE_MONTHS = 12;
 const PROACTIVE_CHECK_LOG_TAB = "ProactiveCheckLog";
 const FLAG_SWEEP_LOG_TAB = "FlagSweepLog";
 const PRECOMPUTE_LOG_TAB = "PrecomputeLog";
+const BUILD_OPTIONS_LOG_TAB = "BuildOptionsLog";
 
 /**
 /**
@@ -2710,6 +2711,91 @@ async function readPrecomputeLog(sheets, automationCommanderSheetId, limit = 20)
   }
 }
 
+async function ensureBuildOptionsLogTab(sheets, automationCommanderSheetId) {
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${BUILD_OPTIONS_LOG_TAB}!A1`,
+    });
+  } catch (err) {
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: { requests: [{ addSheet: { properties: { title: BUILD_OPTIONS_LOG_TAB } } }] },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${BUILD_OPTIONS_LOG_TAB}!A1:F1`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[
+          "runAt", "processed", "built", "notFound", "errors", "elapsedSeconds",
+        ]] },
+      });
+      console.log(`✅ Created ${BUILD_OPTIONS_LOG_TAB} tab`);
+    } catch (createErr) {
+      console.log(`⚠️ Could not create ${BUILD_OPTIONS_LOG_TAB} tab: ${createErr.message}`);
+    }
+  }
+}
+
+async function logBuildOptionsRun(sheets, automationCommanderSheetId, { processed, built, notFound, errors, elapsedSeconds }) {
+  try {
+    await ensureBuildOptionsLogTab(sheets, automationCommanderSheetId);
+    const nowISO = new Date().toISOString();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${BUILD_OPTIONS_LOG_TAB}!A:F`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[
+        nowISO, processed || 0, built || 0, notFound || 0, errors || 0, elapsedSeconds || 0,
+      ]] },
+    });
+    // Trim to most recent 200 rows (plus header)
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${BUILD_OPTIONS_LOG_TAB}!A:A`,
+    });
+    const rowCount = (resp.data.values || []).length;
+    if (rowCount > 201) {
+      const deleteCount = rowCount - 201;
+      const meta = await sheets.spreadsheets.get({ spreadsheetId: automationCommanderSheetId, fields: "sheets.properties" });
+      const sheetMeta = meta.data.sheets.find(s => s.properties.title === BUILD_OPTIONS_LOG_TAB);
+      if (sheetMeta) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: automationCommanderSheetId,
+          requestBody: { requests: [{
+            deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },
+          }] },
+        });
+      }
+    }
+  } catch (err) {
+    console.log(`⚠️ Could not log build options run: ${err.message}`);
+  }
+}
+
+async function readBuildOptionsLog(sheets, automationCommanderSheetId, limit = 20) {
+  try {
+    await ensureBuildOptionsLogTab(sheets, automationCommanderSheetId);
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${BUILD_OPTIONS_LOG_TAB}!A:F`,
+    });
+    const rows = resp.data.values || [];
+    if (rows.length < 2) return [];
+    return rows.slice(1).map(row => ({
+      runAt: row[0] || "",
+      processed: parseInt(row[1]) || 0,
+      built: parseInt(row[2]) || 0,
+      notFound: parseInt(row[3]) || 0,
+      errors: parseInt(row[4]) || 0,
+      elapsedSeconds: parseInt(row[5]) || 0,
+    })).reverse().slice(0, limit); // most recent first
+  } catch (err) {
+    console.log(`⚠️ Could not read ${BUILD_OPTIONS_LOG_TAB}: ${err.message}`);
+    return [];
+  }
+}
 async function readInvCompAlerts(sheets, spreadsheetId) {
   try {
     console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
@@ -7496,6 +7582,11 @@ export default async function handler(req, res) {
 
         const elapsedS = Math.round((Date.now() - buildStart) / 1000);
         console.log(`build_cached_alert_options complete in ${elapsedS}s: ${built} built, ${notFound} not found, ${errors} errors, hasMore: ${hasMore}`);
+        
+        await logBuildOptionsRun(sheets, acIdBuild, { 
+          processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS 
+        });
+
         return res.status(200).json({ success: true, processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, hasMore });
       } catch (err) {
         console.error("❌ build_cached_alert_options error:", err);
@@ -13759,6 +13850,20 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(200).json({ success: true, runs });
       } catch (err) {
         console.error(`❌ Error in get_precompute_log:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_build_options_log") {
+      // Returns the most recent build-options-stage run summaries — the middle
+      // of the pipeline, sitting between Flag Sweep and Precompute.
+      const acIdBuildLog = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+      if (!acIdBuildLog) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        const runs = await readBuildOptionsLog(sheets, acIdBuildLog, 20);
+        return res.status(200).json({ success: true, runs });
+      } catch (err) {
+        console.error(`❌ Error in get_build_options_log:`, err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

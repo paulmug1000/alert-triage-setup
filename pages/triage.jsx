@@ -1184,6 +1184,9 @@ export default function TriageSystem({ onBack }) {
   const [precomputeLogLoading, setPrecomputeLogLoading] = useState(false);
   const [precomputeLogLoaded, setPrecomputeLogLoaded] = useState(false);
   const [precomputeLogExpanded, setPrecomputeLogExpanded] = useState(new Set());
+  const [buildOptionsLog, setBuildOptionsLog] = useState(null);
+  const [buildOptionsLogLoading, setBuildOptionsLogLoading] = useState(false);
+  const [buildOptionsLogLoaded, setBuildOptionsLogLoaded] = useState(false);
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagResult, setDiagResult] = useState(null);
   const [diagError, setDiagError] = useState("");
@@ -1283,6 +1286,7 @@ export default function TriageSystem({ onBack }) {
     setSettingsLoading(true);
     if (!proactiveCheckLogLoaded) loadProactiveCheckLog();
     if (!flagSweepLogLoaded) loadFlagSweepLog();
+    if (!buildOptionsLogLoaded) loadBuildOptionsLog();
     if (!precomputeLogLoaded) loadPrecomputeLog();
     if (!allClientsLoaded) {
       fetch("/api/triage", {
@@ -3772,6 +3776,19 @@ export default function TriageSystem({ onBack }) {
       if (data.success) setPrecomputeLog(data.runs || []);
     } catch(e) { console.error("loadPrecomputeLog error:", e); }
     finally { setPrecomputeLogLoading(false); setPrecomputeLogLoaded(true); }
+  };
+
+  const loadBuildOptionsLog = async () => {
+    try {
+      setBuildOptionsLogLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_build_options_log", automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) setBuildOptionsLog(data.runs || []);
+    } catch(e) { console.error("loadBuildOptionsLog error:", e); }
+    finally { setBuildOptionsLogLoading(false); setBuildOptionsLogLoaded(true); }
   };
 
   const togglePrecomputeLogDetail = (i) => {
@@ -7602,63 +7619,116 @@ export default function TriageSystem({ onBack }) {
                 )}
               </div>
 
-              {/* Proactive Checks */}
+             
+              {/* Alert Pipeline Activity */}
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Proactive Checks</h3>
-                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-                  These checks run automatically every night at 3am, across every client, and surface as alerts on the Home screen when something needs attention.
-                </p>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                  <div>
+                    <h3 style={{ margin: "0 0 4px", fontSize: "15px", fontWeight: "700" }}>Alert Pipeline Activity</h3>
+                    <p style={{ margin: 0, fontSize: "12px", color: "#666" }}>
+                      The end-to-end flow of alerts: Detection (Sweep) → AI & Logic (Build) → App Cache (Precompute).
+                    </p>
+                  </div>
+                  <button className="triage-btn" onClick={() => { loadFlagSweepLog(); loadBuildOptionsLog(); loadPrecomputeLog(); }}
+                    style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", cursor: "pointer" }}>
+                    ↻ Refresh Logs
+                  </button>
+                </div>
 
-                {[
-                  { name: "Retainer invoice monitoring", detail: "Flags retainer jobs where an invoice was scheduled to be sent but no invoice reference has been recorded." },
-                  { name: "CRM data wipe detection", detail: "Watches for AutoLog entries warning that the CRM wiped a job's data blank." },
-                  { name: "Revenue / total invoiced mismatch", detail: "Compares each job's revenue against the total invoiced amount, flagging zero-revenue jobs with invoices and material mismatches." },
-                  { name: "Direct costs / total expenses mismatch", detail: "Compares each job's direct cost budget against total recorded expenses, across both Pipeline and Confirmed." },
-                  { name: "Pipeline / Confirmed overlap", detail: "Finds jobs present in both tabs where the Pipeline entry hasn't been properly closed out (likelihood not 0%, not marked copied to Confirmed)." },
-                  { name: "Retainer shrink blocked", detail: "Flags retainer child rows that couldn't be automatically trimmed after a contract shrank, because the row already has actuals recorded." },
-                  { name: "Uninvoiced revenue on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have uninvoiced revenue, excluding placeholder invoices and Draft invoices that haven't been sent." },
-                  { name: "Unreceived expenses on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have unreceived expenses against their direct cost budget, excluding manual estimates and unreconciled-gap placeholders." },
-                  { name: "Deleted invoice detection", detail: "Flags invoices with a real reference on the Confirmed tab that no longer appear in the accounting system — a likely sign the invoice was deleted or voided." },
-                  { name: "Job structure errors", detail: "Flags jobs whose invoice/expense slots don't match the expected layout — e.g. a multi-row retainer with an invoice on the parent row, or slots filled out of sequence." },
-                  { name: "Deleted expense detection", detail: "Flags expenses with a real reference that no longer appear in the accounting system — the expense equivalent of deleted invoice detection." },
-                ].map((c, i) => (
-                  <div key={c.name} style={{ display: "flex", gap: "10px", padding: "8px 0", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
-                    <span style={{ color: "#16a34a", fontSize: "14px", lineHeight: "20px" }}>✓</span>
-                    <div>
-                      <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{c.name}</div>
-                      <div style={{ fontSize: "12px", color: "#777", marginTop: "2px" }}>{c.detail}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "12px" }}>
+                  {/* Column 1: Sweep */}
+                  <div style={{ background: "#f8f9ff", border: "1px solid #e8eaf0", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px" }}>
+                    <div style={{ padding: "10px 12px", background: "#eef2ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0" }}>
+                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#1d4ed8", marginBottom: "2px" }}>🔍 1. Flag Sweep</div>
+                      <div style={{ fontSize: "11px", color: "#666" }}>Searches sheets for new discrepancies</div>
+                    </div>
+                    <div style={{ padding: "10px", overflowY: "auto", flex: 1 }}>
+                      {flagSweepLogLoading && <div style={{ fontSize: "12px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
+                      {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length === 0 && <div style={{ fontSize: "12px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
+                      {flagSweepLog?.map((run, i) => (
+                        <div key={i} style={{ fontSize: "11px", color: "#555", marginBottom: "8px", padding: "8px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
+                          <div onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(i)} style={{ display: "flex", justifyContent: "space-between", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                            <span>{run.raisedDetail?.length > 0 ? (flagSweepLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
+                            <span style={{ color: run.flagsRaised > 0 ? "#b45309" : "#166534" }}>{run.flagsRaised} raised</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#888" }}>
+                            <span>{run.clientsChecked} checked</span>
+                            <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}</span>
+                          </div>
+                          {flagSweepLogExpanded.has(i) && run.raisedDetail?.length > 0 && (
+                            <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
+                              {run.raisedDetail.map((d, di) => (
+                                <div key={di} style={{ fontSize: "10px", color: "#555" }}>
+                                  <strong>{d.clientName}</strong>: {getFlagName(d.flagKey)}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
 
-                <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e8e8e8" }}>
-                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "8px" }}>Recent run history</div>
-                  {proactiveCheckLogLoading && <div style={{ fontSize: "12px", color: "#999" }}>Loading...</div>}
-                  {!proactiveCheckLogLoading && proactiveCheckLog && proactiveCheckLog.length === 0 && (
-                    <div style={{ fontSize: "12px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
-                      No runs logged yet — the checks may not have run since this feature was added, or the nightly trigger may need checking.
+                  {/* Column 2: Build */}
+                  <div style={{ background: "#fdf8ff", border: "1px solid #f3e8ff", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px" }}>
+                    <div style={{ padding: "10px 12px", background: "#f3e8ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0" }}>
+                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#7c3aed", marginBottom: "2px" }}>⚙️ 2. Build Options</div>
+                      <div style={{ fontSize: "11px", color: "#666" }}>Generates resolutions for new alerts</div>
                     </div>
-                  )}
-                  {!proactiveCheckLogLoading && proactiveCheckLog && proactiveCheckLog.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: "12px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
-                        ✓ Last ran {new Date(proactiveCheckLog[0].runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
-                        {proactiveCheckLog[0].clientsChecked > 0 ? ` — ${proactiveCheckLog[0].clientsChecked} clients checked` : ""}
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                        {proactiveCheckLog.map((run, i) => (
-                          <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#888", padding: "3px 0" }}>
-                            <span>{new Date(run.runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</span>
-                            <span>{run.newAlerts > 0 || run.updatedAlerts > 0 || run.dismissedAlerts > 0
-                              ? `${run.newAlerts} new · ${run.updatedAlerts} updated · ${run.dismissedAlerts} cleared`
-                              : "No issues found"}</span>
+                    <div style={{ padding: "10px", overflowY: "auto", flex: 1 }}>
+                      {buildOptionsLogLoading && <div style={{ fontSize: "12px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
+                      {!buildOptionsLogLoading && buildOptionsLog && buildOptionsLog.length === 0 && <div style={{ fontSize: "12px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
+                      {buildOptionsLog?.map((run, i) => (
+                        <div key={i} style={{ fontSize: "11px", color: "#555", marginBottom: "8px", padding: "8px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                            <span>{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
+                            <span style={{ color: run.built > 0 ? "#7c3aed" : "#666" }}>{run.built} built</span>
                           </div>
-                        ))}
-                      </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#888" }}>
+                            <span>{run.processed} processed</span>
+                            <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}{run.notFound > 0 ? ` · ${run.notFound} skip` : ""}</span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  )}
+                  </div>
+
+                  {/* Column 3: Precompute */}
+                  <div style={{ background: "#f0fdf4", border: "1px solid #dcfce7", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px" }}>
+                    <div style={{ padding: "10px 12px", background: "#dcfce7", borderBottom: "1px solid #bbf7d0", borderRadius: "8px 8px 0 0" }}>
+                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#15803d", marginBottom: "2px" }}>📦 3. Precompute</div>
+                      <div style={{ fontSize: "11px", color: "#666" }}>Compiles final data for the app</div>
+                    </div>
+                    <div style={{ padding: "10px", overflowY: "auto", flex: 1 }}>
+                      {precomputeLogLoading && <div style={{ fontSize: "12px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
+                      {!precomputeLogLoading && precomputeLog && precomputeLog.length === 0 && <div style={{ fontSize: "12px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
+                      {precomputeLog?.map((run, i) => (
+                        <div key={i} style={{ fontSize: "11px", color: "#555", marginBottom: "8px", padding: "8px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
+                          <div onClick={() => run.clientDetail?.length > 0 && togglePrecomputeLogDetail(i)} style={{ display: "flex", justifyContent: "space-between", cursor: run.clientDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                            <span>{run.clientDetail?.length > 0 ? (precomputeLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
+                            <span style={{ color: run.totalAlerts > 0 ? "#15803d" : "#666" }}>{run.totalAlerts} alerts</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#888" }}>
+                            <span>{run.clientsWithFlags} clients</span>
+                            <span>{run.noActionCount} info</span>
+                          </div>
+                          {precomputeLogExpanded.has(i) && run.clientDetail?.length > 0 && (
+                            <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "2px" }}>
+                              {run.clientDetail.map((c, ci) => (
+                                <div key={ci} style={{ fontSize: "10px", color: "#555", display: "flex", justifyContent: "space-between" }}>
+                                  <strong>{c.clientName}</strong>
+                                  <span>{c.alertCount} ({c.noActionCount} i)</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
+
 
               {/* Alert Types & Auto-Clearing */}
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
@@ -7730,120 +7800,65 @@ export default function TriageSystem({ onBack }) {
                 </div>
               </div>
 
-              {/* Flag Sweep Activity */}
+              {/* Proactive Checks */}
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Flag Sweep Activity</h3>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Proactive Checks</h3>
                 <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-                  run_flag_sweep replaces compareAutoResults and runFullSweep — this is its run history, so you can see it's actually running and what it's finding. Runs every 30 minutes via the GAS trigger.
+                  These checks run automatically every night at 3am, across every client, and surface as alerts on the Home screen when something needs attention.
                 </p>
-                {flagSweepLogLoading && <div style={{ fontSize: "12px", color: "#999" }}>Loading...</div>}
-                {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length === 0 && (
-                  <div style={{ fontSize: "12px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
-                    No runs logged yet — either the new GAS trigger hasn't been installed yet, or it hasn't fired since.
-                  </div>
-                )}
-                {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: "12px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
-                      ✓ Last ran {new Date(flagSweepLog[0].runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
-                      {` — ${flagSweepLog[0].clientsChecked} clients checked, ${flagSweepLog[0].flagsRaised} flag${flagSweepLog[0].flagsRaised === 1 ? "" : "s"} raised`}
-                      {flagSweepLog[0].errors > 0 ? `, ${flagSweepLog[0].errors} error${flagSweepLog[0].errors === 1 ? "" : "s"}` : ""}
-                      {` (${flagSweepLog[0].elapsedSeconds}s)`}
+
+                {[
+                  { name: "Retainer invoice monitoring", detail: "Flags retainer jobs where an invoice was scheduled to be sent but no invoice reference has been recorded." },
+                  { name: "CRM data wipe detection", detail: "Watches for AutoLog entries warning that the CRM wiped a job's data blank." },
+                  { name: "Revenue / total invoiced mismatch", detail: "Compares each job's revenue against the total invoiced amount, flagging zero-revenue jobs with invoices and material mismatches." },
+                  { name: "Direct costs / total expenses mismatch", detail: "Compares each job's direct cost budget against total recorded expenses, across both Pipeline and Confirmed." },
+                  { name: "Pipeline / Confirmed overlap", detail: "Finds jobs present in both tabs where the Pipeline entry hasn't been properly closed out (likelihood not 0%, not marked copied to Confirmed)." },
+                  { name: "Retainer shrink blocked", detail: "Flags retainer child rows that couldn't be automatically trimmed after a contract shrank, because the row already has actuals recorded." },
+                  { name: "Uninvoiced revenue on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have uninvoiced revenue, excluding placeholder invoices and Draft invoices that haven't been sent." },
+                  { name: "Unreceived expenses on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have unreceived expenses against their direct cost budget, excluding manual estimates and unreconciled-gap placeholders." },
+                  { name: "Deleted invoice detection", detail: "Flags invoices with a real reference on the Confirmed tab that no longer appear in the accounting system — a likely sign the invoice was deleted or voided." },
+                  { name: "Job structure errors", detail: "Flags jobs whose invoice/expense slots don't match the expected layout — e.g. a multi-row retainer with an invoice on the parent row, or slots filled out of sequence." },
+                  { name: "Deleted expense detection", detail: "Flags expenses with a real reference that no longer appear in the accounting system — the expense equivalent of deleted invoice detection." },
+                ].map((c, i) => (
+                  <div key={c.name} style={{ display: "flex", gap: "10px", padding: "8px 0", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
+                    <span style={{ color: "#16a34a", fontSize: "14px", lineHeight: "20px" }}>✓</span>
+                    <div>
+                      <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{c.name}</div>
+                      <div style={{ fontSize: "12px", color: "#777", marginTop: "2px" }}>{c.detail}</div>
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                      {flagSweepLog.map((run, i) => (
-                        <div key={i} style={{ fontSize: "11px", color: "#888" }}>
-                          <div
-                            onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(i)}
-                            style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default" }}
-                          >
-                            <span>
-                              {run.raisedDetail?.length > 0 ? (flagSweepLogExpanded.has(i) ? "▾ " : "▸ ") : ""}
-                              {new Date(run.runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
-                            </span>
-                            <span>
-                              {run.flagsRaised > 0 ? `${run.flagsRaised} raised` : "No flags raised"}
-                              {run.errors > 0 ? ` · ${run.errors} error${run.errors === 1 ? "" : "s"}` : ""}
-                              {` · ${run.clientsChecked} checked`}
-                            </span>
+                  </div>
+                ))}
+
+                <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e8e8e8" }}>
+                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "8px" }}>Recent run history</div>
+                  {proactiveCheckLogLoading && <div style={{ fontSize: "12px", color: "#999" }}>Loading...</div>}
+                  {!proactiveCheckLogLoading && proactiveCheckLog && proactiveCheckLog.length === 0 && (
+                    <div style={{ fontSize: "12px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
+                      No runs logged yet — the checks may not have run since this feature was added, or the nightly trigger may need checking.
+                    </div>
+                  )}
+                  {!proactiveCheckLogLoading && proactiveCheckLog && proactiveCheckLog.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: "12px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
+                        ✓ Last ran {new Date(proactiveCheckLog[0].runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
+                        {proactiveCheckLog[0].clientsChecked > 0 ? ` — ${proactiveCheckLog[0].clientsChecked} clients checked` : ""}
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                        {proactiveCheckLog.map((run, i) => (
+                          <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#888", padding: "3px 0" }}>
+                            <span>{new Date(run.runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</span>
+                            <span>{run.newAlerts > 0 || run.updatedAlerts > 0 || run.dismissedAlerts > 0
+                              ? `${run.newAlerts} new · ${run.updatedAlerts} updated · ${run.dismissedAlerts} cleared`
+                              : "No issues found"}</span>
                           </div>
-                          {flagSweepLogExpanded.has(i) && run.raisedDetail?.length > 0 && (
-                            <div style={{ margin: "2px 0 6px 16px", padding: "6px 10px", background: "#fafafa", borderRadius: "6px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                              {run.raisedDetail.map((d, di) => (
-                                <div key={di} style={{ fontSize: "11px", color: "#555" }}>
-                                  <div><strong>{d.clientName}</strong> — {getFlagName(d.flagKey)}</div>
-                                  <div style={{ color: "#999", marginTop: "1px" }}>
-                                    {d.method === "fingerprint"
-                                      ? `${d.newFingerprints} of ${d.totalFingerprints} discrepancy row${d.totalFingerprints === 1 ? "" : "s"} new (not previously ignored/handled)`
-                                      : d.method === "count"
-                                        ? `rule "${d.rule || "—"}" · was ${d.prevVal === "" ? "(none)" : JSON.stringify(d.prevVal)} → now ${d.pullVal === "" ? "(none)" : JSON.stringify(d.pullVal)}`
-                                        : "(logged before this level of detail was added — re-run to see the reasoning for future runs)"}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
 
-              {/* Precompute Activity */}
-              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Precompute Activity</h3>
-                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-                  The other end of the pipeline from Flag Sweep Activity above — once flags are raised, this stage builds the full alert detail and options and caches it, so the app loads instantly. Runs on its own schedule via the existing GAS trigger.
-                </p>
-                {precomputeLogLoading && <div style={{ fontSize: "12px", color: "#999" }}>Loading...</div>}
-                {!precomputeLogLoading && precomputeLog && precomputeLog.length === 0 && (
-                  <div style={{ fontSize: "12px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
-                    No runs logged yet — either the precompute trigger hasn't fired since this logging was added, or it needs checking.
-                  </div>
-                )}
-                {!precomputeLogLoading && precomputeLog && precomputeLog.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: "12px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
-                      ✓ Last ran {new Date(precomputeLog[0].runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
-                      {` — ${precomputeLog[0].clientsWithFlags} client${precomputeLog[0].clientsWithFlags === 1 ? "" : "s"} with flags, ${precomputeLog[0].totalAlerts} alert${precomputeLog[0].totalAlerts === 1 ? "" : "s"} built, ${precomputeLog[0].noActionCount} informational`}
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                      {precomputeLog.map((run, i) => (
-                        <div key={i} style={{ fontSize: "11px", color: "#888" }}>
-                          <div
-                            onClick={() => run.clientDetail?.length > 0 && togglePrecomputeLogDetail(i)}
-                            style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", cursor: run.clientDetail?.length > 0 ? "pointer" : "default" }}
-                          >
-                            <span>
-                              {run.clientDetail?.length > 0 ? (precomputeLogExpanded.has(i) ? "▾ " : "▸ ") : ""}
-                              {new Date(run.runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
-                            </span>
-                            <span>
-                              {run.totalAlerts > 0 || run.noActionCount > 0
-                                ? `${run.totalAlerts} alerts · ${run.noActionCount} informational`
-                                : "Nothing to build"}
-                              {` · ${run.clientsWithFlags} client${run.clientsWithFlags === 1 ? "" : "s"}`}
-                            </span>
-                          </div>
-                          {precomputeLogExpanded.has(i) && run.clientDetail?.length > 0 && (
-                            <div style={{ margin: "2px 0 6px 16px", padding: "6px 10px", background: "#fafafa", borderRadius: "6px", display: "flex", flexDirection: "column", gap: "2px" }}>
-                              {run.clientDetail.map((c, ci) => (
-                                <div key={ci} style={{ fontSize: "11px", color: "#555" }}>
-                                  <strong>{c.clientName}</strong> — {c.alertCount} alert{c.alertCount === 1 ? "" : "s"}
-                                  {c.noActionCount > 0 ? `, ${c.noActionCount} informational` : ""}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-
+              {/* Claude API Usage */}
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
                 <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Claude API Usage</h3>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>

@@ -5118,8 +5118,9 @@ export default function TriageSystem({ onBack }) {
       const { exp } = outgoingsNewVendor;
       const [vendorName, setVendorName] = React.useState(exp.description || exp.accountName || "");
       const [vatFlag, setVatFlag] = React.useState("Yes");
-      const [invTiming, setInvTiming] = React.useState("Curr");
-      const [payTiming, setPayTiming] = React.useState("Curr");
+      const [invTiming, setInvTiming] = React.useState("Next");
+      const [payTiming, setPayTiming] = React.useState("Next");
+      const [deliveryPct, setDeliveryPct] = React.useState("100");
       const [saving, setSaving] = React.useState(false);
       const [error, setError] = React.useState("");
 
@@ -5133,7 +5134,7 @@ export default function TriageSystem({ onBack }) {
               action: "create_outgoings_vendor",
               clientSheetId: outgoingsClient?.clientSheetId,
               vendorName: vendorName.trim(),
-              vatFlag, invTiming, payTiming,
+              vatFlag, invTiming, payTiming, deliveryPct: parseFloat(deliveryPct) || 100,
             }),
           });
           const data = await res.json();
@@ -5164,7 +5165,7 @@ export default function TriageSystem({ onBack }) {
                 <input type="text" value={vendorName} onChange={e => setVendorName(e.target.value)} autoFocus
                   style={{ width: "100%", padding: "9px 11px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "14px", boxSizing: "border-box" }} />
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "8px" }}>
                 <div>
                   <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>VAT?</label>
                   <select value={vatFlag} onChange={e => setVatFlag(e.target.value)}
@@ -5176,15 +5177,20 @@ export default function TriageSystem({ onBack }) {
                   <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Inv timing</label>
                   <select value={invTiming} onChange={e => setInvTiming(e.target.value)}
                     style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px" }}>
-                    <option>Curr</option><option>Next</option>
+                    <option>Next</option><option>Curr</option>
                   </select>
                 </div>
                 <div>
                   <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Pay timing</label>
                   <select value={payTiming} onChange={e => setPayTiming(e.target.value)}
                     style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px" }}>
-                    <option>Curr</option><option>Next</option>
+                    <option>Next</option><option>Curr</option>
                   </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Delivery %</label>
+                  <input type="number" value={deliveryPct} onChange={e => setDeliveryPct(e.target.value)}
+                    style={{ width: "100%", padding: "7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
                 </div>
               </div>
               {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px" }}>{error}</div>}
@@ -5444,15 +5450,15 @@ export default function TriageSystem({ onBack }) {
                 </button>
               </div>
 
-              <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+              <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "70vh", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
                 <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", minWidth: `${190 + OUTGOINGS_WINDOW * 160}px` }}>
                   <colgroup>
                     <col style={{ width: "190px" }} />
                     {visibleMonths.map(m => <col key={m.colLetter} style={{ width: "160px" }} />)}
                   </colgroup>
-                  <thead>
+                  <thead style={{ position: "sticky", top: 0, zIndex: 10 }}>
                     <tr>
-                      <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", left: 0, zIndex: 2 }}>Contractor</th>
+                      <th style={{ padding: "9px 12px", background: "#f5f6fa", borderBottom: "2px solid #ddd", borderRight: "1px solid #e0e0e0", fontSize: "12px", fontWeight: "700", textAlign: "left", position: "sticky", left: 0, zIndex: 11 }}>Contractor</th>
                       {visibleMonths.map(m => {
                         const isCurr = isCurrentMonth(m.isoMonth || m.label);
                         return (
@@ -5600,16 +5606,29 @@ export default function TriageSystem({ onBack }) {
                           const jobHasEmptySlot = job.rows.some(jr => jr.expenseSlots.some(s => !s.description && !s.amount));
                           const jobLastRow = job.rows[job.rows.length - 1].rowNum;
                           const isPlacing = !!outgoingsPlacing;
+                          
+                          // Calculate unreceived direct costs for the whole job
+                          const jobTotalExpenses = job.rows.reduce((sum, r) => sum + r.expenseSlots.reduce((s, slot) => s + (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0), 0), 0);
+                          const jobBudget = parseFloat(String(job.rows[0].directCosts).replace(/[£$€,\s]/g, "")) || 0;
+                          const unreceived = jobBudget - jobTotalExpenses;
+
                           return job.rows.map((jr, rIdx) => {
                           const isLastRowOfJob = rIdx === job.rows.length - 1;
                           return (
                           <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.client : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.jobName : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.revenue}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.directCosts}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.client : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.jobName : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.revenue : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                              {rIdx === 0 ? (
+                                <>
+                                  <div>{jr.directCosts}</div>
+                                  {unreceived > 0 && <div style={{ fontSize: "11px", color: "#ef4444", marginTop: "4px" }}>£{unreceived.toLocaleString("en-GB", {minimumFractionDigits: 2})} rem.</div>}
+                                </>
+                              ) : ""}
+                            </td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.projectRetainer}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
@@ -6192,21 +6211,36 @@ export default function TriageSystem({ onBack }) {
                         </tr>
                       </thead>
                       <tbody>
-                        {invoicesJobs.flatMap((job, jobIdx) => job.rows.map((jr, rIdx) => (
+                        {invoicesJobs.flatMap((job, jobIdx) => {
+                          // Calculate uninvoiced revenue for the whole job
+                          const jobTotalInvoiced = job.rows.reduce((sum, r) => sum + r.invoiceSlots.reduce((s, slot) => s + (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0), 0), 0);
+                          const jobRevenue = parseFloat(String(job.rows[0].revenue).replace(/[£$€,\s]/g, "")) || 0;
+                          const uninvoiced = jobRevenue - jobTotalInvoiced;
+                          
+                          return job.rows.map((jr, rIdx) => (
                           <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.client : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.jobName : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.revenue}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.directCosts}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.client : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.jobName : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.projectCode : ""}</td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                              {rIdx === 0 ? (
+                                <>
+                                  <div>{jr.revenue}</div>
+                                  {uninvoiced > 0 && <div style={{ fontSize: "11px", color: "#ef4444", marginTop: "4px" }}>£{uninvoiced.toLocaleString("en-GB", {minimumFractionDigits: 2})} rem.</div>}
+                                </>
+                              ) : ""}
+                            </td>
+                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.directCosts : ""}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>{jr.projectRetainer}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
                             {jr.invoiceSlots.map(s => {
                               const isManualEntry = String(s.ref || "").toUpperCase().includes("MANUAL-INV");
-                              const isGenuinelyBlank = !s.ref && !s.amount;
-                              const isEmpty = isGenuinelyBlank || isManualEntry;
+                              const isBlankRef = !s.ref || String(s.ref).trim() === "";
+                              const isGenuinelyBlank = isBlankRef && !s.amount;
+                              const isPlaceholder = isBlankRef && !!s.amount;
+                              const isEmpty = isBlankRef || isManualEntry;
                               const isPlacing = !!invoicesPlacing;
                               const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
                               const isSaving = invoicesSavingCell === cellSavingKey;
@@ -6269,10 +6303,10 @@ export default function TriageSystem({ onBack }) {
                                   ) : (
                                     <div>
                                       <div style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit" }}>
-                                        {isManualEntry && "(placeholder) "}{s.ref}
+                                        {(isManualEntry || isPlaceholder) && "(placeholder) "}{s.ref}
                                       </div>
                                       <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.sentDate}{s.status ? ` · ${s.status}` : ""}</div>
-                                      {isManualEntry && isPlacing && (
+                                      {(isManualEntry || isPlaceholder) && isPlacing && (
                                         <div style={{ color: "#1a56db", fontWeight: "700", marginTop: "2px" }}>Click to overwrite</div>
                                       )}
                                       {!isPlacing && (

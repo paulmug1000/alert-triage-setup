@@ -3578,8 +3578,8 @@ export default async function handler(req, res) {
 
     } else if (action === "create_outgoings_vendor") {
       // Inserts a new vendor row at the end of the Contractors section (row 110) in the Outgoings tab.
-      // Cols: A=vendorName, B=vatFlag, C=invTiming, D=payTiming
-      const { clientSheetId, vendorName, vatFlag, invTiming, payTiming } = req.body;
+      // Cols: A=vendorName, B=vatFlag, C=invTiming, D=payTiming, E=deliveryPct
+      const { clientSheetId, vendorName, vatFlag, invTiming, payTiming, deliveryPct } = req.body;
       if (!clientSheetId || !vendorName) return res.status(400).json({ success: false, error: "Missing clientSheetId or vendorName" });
       try {
         const sheets = await getSheetsClient();
@@ -3601,12 +3601,12 @@ export default async function handler(req, res) {
 
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean,
-          range: `Outgoings!A${newRow}:D${newRow}`,
+          range: `Outgoings!A${newRow}:E${newRow}`,
           valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[vendorName, vatFlag || "Yes", invTiming || "Curr", payTiming || "Curr"]] },
+          requestBody: { values: [[vendorName, vatFlag || "Yes", invTiming || "Next", payTiming || "Next", deliveryPct || 100]] },
         });
 
-        console.log(`  ✅ Created new Outgoings vendor "${vendorName}" at row ${newRow}`);
+        console.log(`  ✅ Created new Outgoings vendor "${vendorName}" at row ${newRow} with Delivery ${deliveryPct || 100}%`);
         return res.status(200).json({ success: true, sheetRow: newRow });
       } catch (err) {
         console.error("❌ create_outgoings_vendor error:", err);

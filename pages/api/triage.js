@@ -3385,7 +3385,12 @@ export default async function handler(req, res) {
 
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 
-    if (action === "get_all_clients") {
+    if (action === "emergency_flush_redis") {
+      // Temporary endpoint to clear OOM errors
+      await redisClient.flushDb();
+      return res.status(200).json({ success: true, message: "Redis database flushed successfully. You can now use the app normally." });
+      
+    } else if (action === "get_all_clients") {
       // Returns all clients from AutoUpdates as an array.
       // Used by the frontend for the Outgoings client selector, the Settings
       // "Run Client Automation" panel, and when clientsWithFlags is empty.
@@ -6375,7 +6380,7 @@ export default async function handler(req, res) {
           await redisClient.set(
             `triage_alerts:${sessionId}`,
             JSON.stringify({ alerts: fresh.alerts || [], noActionAlerts: fresh.noActionAlerts || [], clientsWithFlags: clientsWithUpdatedCounts }),
-            { EX: 86400 }
+            { EX: 3600 } // Reduced from 24h to 1h to prevent Redis OOM
           );
 
           console.log(`✅ start_triage: refresh complete`);
@@ -7004,7 +7009,7 @@ export default async function handler(req, res) {
             noActionAlerts: data.noActionAlerts,
             clientsWithFlags: clientsWithUpdatedCounts,
           }),
-          { EX: 86400 }
+          { EX: 3600 } // Reduced from 24h to 1h to prevent Redis OOM
         );
 
         return res.status(200).json({
@@ -12870,7 +12875,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         const before = parsed.alerts.length;
         parsed.alerts = parsed.alerts.filter(a => `${a.sheetName}-${a.rowNumber}` !== alertId);
         const removed = before - parsed.alerts.length;
-        await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 });
+        await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
         console.log(`  remove_alert: removed ${removed} alert(s) matching "${alertId}" from session`);
         return res.status(200).json({ success: true, removed });
       } catch (err) {
@@ -12925,7 +12930,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               return { ...c, flags: updatedFlags };
             });
           }
-          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 });
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
           console.log(`  update_session_flags: session updated for ${clientName}`);
         }
 
@@ -13002,7 +13007,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         if (!parsed.resolvedNoActionFlags.includes(key)) {
           parsed.resolvedNoActionFlags.push(key);
         }
-        await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 });
+        await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
         console.log(`  resolve_noaction_flag: marked "${key}" as resolved`);
 
         if (acIdResolve) {

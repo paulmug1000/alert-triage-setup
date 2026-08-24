@@ -7391,13 +7391,10 @@ export default async function handler(req, res) {
                     a._fingerprint = buildAlertFingerprint(a); 
                   });
                   const dashAlerts = crmAlerts.filter(a => (a.flagType || a.alertType) === dashKey);
-                  const appAlerts  = crmAlerts.filter(a => (a.flagType || a.alertType) === appKey);
-                  if (dashAlerts.length > 0) {
-                    sweepItems.push({ clientName: client.clientName, alertType: dashKey, alerts: dashAlerts, autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
-                  }
-                  if (appAlerts.length > 0) {
-                    sweepItems.push({ clientName: client.clientName, alertType: appKey, alerts: appAlerts, autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
-                  }
+              const appAlerts  = crmAlerts.filter(a => (a.flagType || a.alertType) === appKey);
+              // Push unconditionally so the auto-resolve logic knows we checked and found 0 if fixed
+              sweepItems.push({ clientName: client.clientName, alertType: dashKey, alerts: dashAlerts, autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
+              sweepItems.push({ clientName: client.clientName, alertType: appKey, alerts: appAlerts, autoUpdatesRow: client.sheetRowNum, category: "discrepancy" });
                 }
               }
             }
@@ -7466,6 +7463,32 @@ export default async function handler(req, res) {
           console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes, ${existingHashes.size} existing hashes`);
 
           for (const item of sweepItems) {
+            // AUTO-RESOLVE STALE DISCREPANCIES
+            // If a discrepancy was previously found and cached, but is no longer present
+            // in the fresh sweep (e.g. fixed in accounting system), mark it auto_resolved.
+            if (item.category === "discrepancy") {
+              const freshHashes = new Set((item.alerts || []).map(a => a._fingerprint).filter(Boolean));
+              const staleRows = memoryRows.filter(r => 
+                r.clientName === item.clientName && 
+                r.alertType === item.alertType && 
+                r.status === "cached" && 
+                r.category === "discrepancy" &&
+                !freshHashes.has(r.fingerprintHash)
+              );
+
+              for (const stale of staleRows) {
+                try {
+                  await updateAlertMemoryRow(sheets, acIdSweep, stale.rowIndex, { ...stale, status: "auto_resolved" });
+                  console.log(`  🩹 AUTO-RESOLVED stale ${item.alertType} alert for ${item.clientName}: ${stale.fingerprintHash} (no longer in sheet)`);
+                  // Update local state so it doesn't get processed incorrectly
+                  stale.status = "auto_resolved";
+                  existingHashes.add(stale.fingerprintHash);
+                } catch(e) {
+                  console.log(`  ⚠️ Failed to auto-resolve stale alert: ${e.message}`);
+                }
+              }
+            }
+
             if (!item.alerts || item.alerts.length === 0) continue;
             const newAlerts = item.alerts.filter(a => a._fingerprint && !existingHashes.has(a._fingerprint));
             if (newAlerts.length === 0) continue;

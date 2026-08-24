@@ -1187,7 +1187,16 @@ export default function TriageSystem({ onBack }) {
   const [buildOptionsLog, setBuildOptionsLog] = useState(null);
   const [buildOptionsLogLoading, setBuildOptionsLogLoading] = useState(false);
   const [buildOptionsLogLoaded, setBuildOptionsLogLoaded] = useState(false);
+  const [buildOptionsLogExpanded, setBuildOptionsLogExpanded] = useState(new Set());
   const [diagLoading, setDiagLoading] = useState(false);
+
+  const toggleBuildOptionsLogDetail = (i) => {
+    setBuildOptionsLogExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
   const [diagResult, setDiagResult] = useState(null);
   const [diagError, setDiagError] = useState("");
   const OUTGOINGS_WINDOW = 7; // months visible at once
@@ -7733,14 +7742,24 @@ export default function TriageSystem({ onBack }) {
                       {!buildOptionsLogLoading && buildOptionsLog && buildOptionsLog.length === 0 && <div style={{ fontSize: "12px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
                       {buildOptionsLog?.map((run, i) => (
                         <div key={i} style={{ fontSize: "11px", color: "#555", marginBottom: "8px", padding: "8px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
-                            <span>{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
+                          <div onClick={() => run.builtDetail?.length > 0 && toggleBuildOptionsLogDetail(i)} style={{ display: "flex", justifyContent: "space-between", cursor: run.builtDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                            <span>{run.builtDetail?.length > 0 ? (buildOptionsLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
                             <span style={{ color: run.built > 0 ? "#7c3aed" : "#666" }}>{run.built} built</span>
                           </div>
                           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#888" }}>
                             <span>{run.processed} processed</span>
                             <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}{run.notFound > 0 ? ` · ${run.notFound} skip` : ""}</span>
                           </div>
+                          {buildOptionsLogExpanded.has(i) && run.builtDetail?.length > 0 && (
+                            <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
+                              {run.builtDetail.map((d, di) => (
+                                <div key={di} style={{ fontSize: "10px", color: "#555", display: "flex", justifyContent: "space-between" }}>
+                                  <strong>{d.clientName}</strong>
+                                  <span>{getFlagName(d.flagKey)}{d.fromCache ? " (cached)" : ""}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

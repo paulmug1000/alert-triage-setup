@@ -2717,6 +2717,14 @@ async function ensureBuildOptionsLogTab(sheets, automationCommanderSheetId) {
       spreadsheetId: automationCommanderSheetId,
       range: `${BUILD_OPTIONS_LOG_TAB}!A1`,
     });
+    // Ensure header G exists for the new detail JSON
+    const g1 = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: `${BUILD_OPTIONS_LOG_TAB}!G1` });
+    if (!g1.data.values || !g1.data.values[0] || !g1.data.values[0][0]) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId, range: `${BUILD_OPTIONS_LOG_TAB}!G1`,
+        valueInputOption: "RAW", requestBody: { values: [["builtDetailJSON"]] },
+      });
+    }
   } catch (err) {
     try {
       await sheets.spreadsheets.batchUpdate({
@@ -2725,10 +2733,10 @@ async function ensureBuildOptionsLogTab(sheets, automationCommanderSheetId) {
       });
       await sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId,
-        range: `${BUILD_OPTIONS_LOG_TAB}!A1:F1`,
+        range: `${BUILD_OPTIONS_LOG_TAB}!A1:G1`,
         valueInputOption: "RAW",
         requestBody: { values: [[
-          "runAt", "processed", "built", "notFound", "errors", "elapsedSeconds",
+          "runAt", "processed", "built", "notFound", "errors", "elapsedSeconds", "builtDetailJSON"
         ]] },
       });
       console.log(`✅ Created ${BUILD_OPTIONS_LOG_TAB} tab`);
@@ -2738,16 +2746,16 @@ async function ensureBuildOptionsLogTab(sheets, automationCommanderSheetId) {
   }
 }
 
-async function logBuildOptionsRun(sheets, automationCommanderSheetId, { processed, built, notFound, errors, elapsedSeconds }) {
+async function logBuildOptionsRun(sheets, automationCommanderSheetId, { processed, built, notFound, errors, elapsedSeconds, builtDetail }) {
   try {
     await ensureBuildOptionsLogTab(sheets, automationCommanderSheetId);
     const nowISO = new Date().toISOString();
     await sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
-      range: `${BUILD_OPTIONS_LOG_TAB}!A:F`,
+      range: `${BUILD_OPTIONS_LOG_TAB}!A:G`,
       valueInputOption: "RAW",
       requestBody: { values: [[
-        nowISO, processed || 0, built || 0, notFound || 0, errors || 0, elapsedSeconds || 0,
+        nowISO, processed || 0, built || 0, notFound || 0, errors || 0, elapsedSeconds || 0, JSON.stringify(builtDetail || [])
       ]] },
     });
     // Trim to most recent 200 rows (plus header)
@@ -2779,18 +2787,23 @@ async function readBuildOptionsLog(sheets, automationCommanderSheetId, limit = 2
     await ensureBuildOptionsLogTab(sheets, automationCommanderSheetId);
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
-      range: `${BUILD_OPTIONS_LOG_TAB}!A:F`,
+      range: `${BUILD_OPTIONS_LOG_TAB}!A:G`,
     });
     const rows = resp.data.values || [];
     if (rows.length < 2) return [];
-    return rows.slice(1).map(row => ({
-      runAt: row[0] || "",
-      processed: parseInt(row[1]) || 0,
-      built: parseInt(row[2]) || 0,
-      notFound: parseInt(row[3]) || 0,
-      errors: parseInt(row[4]) || 0,
-      elapsedSeconds: parseInt(row[5]) || 0,
-    })).reverse().slice(0, limit); // most recent first
+    return rows.slice(1).map(row => {
+      let builtDetail = [];
+      try { builtDetail = JSON.parse(row[6] || "[]"); } catch (e) { }
+      return {
+        runAt: row[0] || "",
+        processed: parseInt(row[1]) || 0,
+        built: parseInt(row[2]) || 0,
+        notFound: parseInt(row[3]) || 0,
+        errors: parseInt(row[4]) || 0,
+        elapsedSeconds: parseInt(row[5]) || 0,
+        builtDetail,
+      };
+    }).reverse().slice(0, limit); // most recent first
   } catch (err) {
     console.log(`⚠️ Could not read ${BUILD_OPTIONS_LOG_TAB}: ${err.message}`);
     return [];
@@ -7479,6 +7492,7 @@ export default async function handler(req, res) {
 
         let built = 0, notFound = 0, errors = 0;
         let hasMore = false;
+        let builtDetail = [];
         const TIME_LIMIT_MS = 220000; // 3.6 minutes (leaves a safe buffer before Vercel's 300s kill)
 
         for (const [key, rows] of groups.entries()) {
@@ -7562,7 +7576,15 @@ export default async function handler(req, res) {
                 });
                 const analyzeData = await analyzeRes.json();
                 if (analyzeData.success) {
+                  // Catch-All Fix: Guarantee the options are saved to the database, even if a fast-path forgot to save them.
+                  if (analyzeData.options) {
+                    await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
+                      ...row,
+                      cachedOptionsJSON: JSON.stringify(analyzeData.options)
+                    });
+                  }
                   built++;
+                  builtDetail.push({ clientName, flagKey: alertType, fromCache: !!analyzeData.fromCache });
                   console.log(`  ✅ ${clientName}/${alertType}: options built`);
                 } else {
                   errors++;
@@ -7586,7 +7608,7 @@ export default async function handler(req, res) {
         console.log(`build_cached_alert_options complete in ${elapsedS}s: ${built} built, ${notFound} not found, ${errors} errors, hasMore: ${hasMore}`);
         
         await logBuildOptionsRun(sheets, acIdBuild, { 
-          processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS 
+          processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, builtDetail
         });
 
         return res.status(200).json({ success: true, processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, hasMore });

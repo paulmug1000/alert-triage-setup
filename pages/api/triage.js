@@ -529,23 +529,10 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload)
     cachedOptionsJSON, status, ignoreReason, dataSnapshot, category,
   } = payload;
 
-  // CRITICAL DATA INTEGRITY GUARD
-  // Intercept any legacy code trying to inject old formats
+  // Intercept any legacy code attempting to write old alertType taxonomy
   if (alertType === "invoice") alertType = "invoiceDashboardDiscr";
   if (alertType === "expense") alertType = "expenseDashboardDiscr";
-  if (alertType === "crm") alertType = "crmPipeAppDiscr"; // Safe fallback
-
-  // If dataSnapshot is completely missing (legacy fallback execution), construct a basic valid JSON 
-  // object so the frontend UI doesn't crash while trying to render the alert card.
-  if (!dataSnapshot) {
-    dataSnapshot = JSON.stringify({
-      type: alertType,
-      summary: { summary: alertSummary || "Alert", amount: 0, invoiceNo: "N/A" },
-      clientName: clientName,
-      sheetName: "LegacyData",
-      rowNumber: Math.floor(Math.random() * 10000)
-    });
-  }
+  if (alertType === "crm") alertType = "crmPipeAppDiscr";
 
   const now = new Date().toISOString().split("T")[0];
   await sheets.spreadsheets.values.append({
@@ -557,7 +544,7 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload)
         fingerprintHash, alertType, clientName, alertSummary,
         cachedOptionsJSON, status, ignoreReason || "", now, now,
         now, // lastRechecked = now on creation
-        dataSnapshot,
+        dataSnapshot || "",
         category || "discrepancy",
       ]],
     },

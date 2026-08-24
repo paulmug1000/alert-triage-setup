@@ -12875,6 +12875,23 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         if (!sessionData) return res.status(200).json({ success: true, notFound: true });
         const parsed = JSON.parse(sessionData);
         const before = parsed.alerts.length;
+        
+        // Sync the Home Screen counts before removing the alert
+        const alertToRemove = parsed.alerts.find(a => `${a.sheetName}-${a.rowNumber}` === alertId);
+        if (alertToRemove && parsed.clientsWithFlags) {
+          let flagKey = alertToRemove.flagType || alertToRemove.alertType || alertToRemove.type;
+          if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
+          if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
+          if (flagKey === "crm") flagKey = alertToRemove.alertType || "crmPipeAppDiscr";
+
+          parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
+            if (c.clientName === alertToRemove.clientName && c.alertCounts && c.alertCounts[flagKey]) {
+              c.alertCounts[flagKey] = Math.max(0, c.alertCounts[flagKey] - 1);
+            }
+            return c;
+          });
+        }
+
         parsed.alerts = parsed.alerts.filter(a => `${a.sheetName}-${a.rowNumber}` !== alertId);
         const removed = before - parsed.alerts.length;
         await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });

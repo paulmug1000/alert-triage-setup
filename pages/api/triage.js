@@ -7502,8 +7502,8 @@ export default async function handler(req, res) {
               let sharedData = {};
               try {
                 const [confResp, pipeResp] = await Promise.all([
-                  withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: client.clientSheetId, range: "Confirmed!A1:CR5000", valueRenderOption: "UNFORMATTED_VALUE" })).catch(() => null),
-                  withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: client.clientSheetId, range: "Pipeline!A1:DD5000", valueRenderOption: "UNFORMATTED_VALUE" })).catch(() => null)
+                  withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: client.clientSheetId, range: "Confirmed!A1:CR5000", valueRenderOption: "FORMATTED_VALUE" })).catch(() => null),
+                  withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: client.clientSheetId, range: "Pipeline!A1:DD5000", valueRenderOption: "FORMATTED_VALUE" })).catch(() => null)
                 ]);
                 if (confResp) sharedData.confirmedDataWide = confResp.data.values || [];
                 if (pipeResp) sharedData.pipelineData = pipeResp.data.values || [];

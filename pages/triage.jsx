@@ -944,6 +944,7 @@ export default function TriageSystem({ onBack }) {
   const [triageComplete, setTriageComplete] = useState(false);
   const [claudeAnalysis, setClaudeAnalysis] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [refreshStatus, setRefreshStatus] = useState("");
   
   // NEW: Client selection states
   const [screen, setScreen] = useState("initial"); // initial | clientSelection | alertSelection | triageAnalysis | ignoredAlerts
@@ -2319,20 +2320,32 @@ export default function TriageSystem({ onBack }) {
   const refreshTriage = async () => {
     try {
       setIsLoading(true);
+      setRefreshStatus("Initializing...");
       setError("");
       setAcceptError("");
       setProactiveLoadedAt(0);
       setProactiveAlerts([]);
 
       // Step 1: Sweep for flags
-      await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start_triage", step: "sweep", automationCommanderSheetId }),
-      });
+      let sweepHasMore = true;
+      let sweepIdx = 0;
+      while (sweepHasMore) {
+        setRefreshStatus(`Scanning clients (batch ${Math.floor(sweepIdx / 3) + 1})...`);
+        const sweepResp = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "start_triage", step: "sweep", startIdx: sweepIdx, automationCommanderSheetId }),
+        });
+        const sweepData = await sweepResp.json();
+        if (!sweepResp.ok || !sweepData.success) throw new Error(sweepData.error || "Failed to sweep flags");
+        sweepHasMore = sweepData.hasMore;
+        sweepIdx = sweepData.nextIdx;
+      }
 
       // Step 2: Build options (loop safely until all are processed)
       let hasMore = true;
+      let buildCount = 1;
       while (hasMore) {
+        setRefreshStatus(`Generating options (batch ${buildCount})...`);
         const buildResp = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "start_triage", step: "build", automationCommanderSheetId }),
@@ -2343,6 +2356,7 @@ export default function TriageSystem({ onBack }) {
       }
 
       // Step 3: Store and get session
+      setRefreshStatus("Finalizing data...");
       const storeResp = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "start_triage", step: "store", automationCommanderSheetId }),
@@ -2371,6 +2385,7 @@ export default function TriageSystem({ onBack }) {
       setError(err.message);
     } finally {
       setIsLoading(false);
+      setRefreshStatus("");
     }
   };
 
@@ -3932,10 +3947,18 @@ export default function TriageSystem({ onBack }) {
         clientsData = preData.clientsWithFlags || [];
       } else {
         // Fall back to 3-step pipeline
-        await fetch("/api/triage", { 
-          method: "POST", headers: { "Content-Type": "application/json" }, 
-          body: JSON.stringify({ action: "start_triage", step: "sweep", automationCommanderSheetId }) 
-        });
+        let sweepHasMore = true;
+        let sweepIdx = 0;
+        while (sweepHasMore) {
+          const sweepResp = await fetch("/api/triage", { 
+            method: "POST", headers: { "Content-Type": "application/json" }, 
+            body: JSON.stringify({ action: "start_triage", step: "sweep", startIdx: sweepIdx, automationCommanderSheetId }) 
+          });
+          const sweepData = await sweepResp.json();
+          if (!sweepResp.ok || !sweepData.success) throw new Error(sweepData.error || "Failed to sweep flags");
+          sweepHasMore = sweepData.hasMore;
+          sweepIdx = sweepData.nextIdx;
+        }
         
         let hasMore = true;
         while (hasMore) {
@@ -8381,7 +8404,7 @@ export default function TriageSystem({ onBack }) {
             <div style={styles.card}>
               <div style={styles.successBanner}>✓ No outstanding alerts or flags</div>
               <button className="triage-btn" onClick={refreshTriage} disabled={isLoading} style={{ ...styles.buttonSecondary, marginTop: "16px", opacity: isLoading ? 0.5 : 1 }}>
-                {isLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
+                {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
               </button>
             </div>
           </div>
@@ -8421,7 +8444,7 @@ export default function TriageSystem({ onBack }) {
                 Refreshing data...
               </div>
               <div style={{ fontSize: "13px", color: "#888" }}>
-                Reading latest flags and alerts from your sheets
+                {refreshStatus || "Reading latest flags and alerts from your sheets"}
               </div>
             </div>
           ) : (
@@ -8553,7 +8576,7 @@ export default function TriageSystem({ onBack }) {
                 disabled={isLoading}
                 style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1 }}
               >
-                {isLoading ? <><Spinner />Refreshing...</> : "↻ Refresh"}
+                {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
               </button>
             </div>
           </div>

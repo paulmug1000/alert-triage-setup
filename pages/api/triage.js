@@ -6307,12 +6307,13 @@ export default async function handler(req, res) {
 
         // Step 1: Sweep
         if (step === "sweep") {
-          console.log(`🔄 start_triage (sweep): running fresh detection pass...`);
-          await fetch(`${baseUrl}/api/triage`, {
+          console.log(`🔄 start_triage (sweep): running fresh detection pass from index ${req.body.startIdx || 0}...`);
+          const sweepResp = await fetch(`${baseUrl}/api/triage`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "run_flag_sweep", secret: cronSecret, automationCommanderSheetId }),
+            body: JSON.stringify({ action: "run_flag_sweep", secret: cronSecret, automationCommanderSheetId, startIdx: req.body.startIdx || 0 }),
           });
-          return res.status(200).json({ success: true });
+          const sweepData = await sweepResp.json();
+          return res.status(200).json({ success: true, hasMore: sweepData.hasMore, nextIdx: sweepData.nextIdx });
         }
 
         // Step 2: Build Options (Can be looped by frontend)
@@ -7260,7 +7261,7 @@ export default async function handler(req, res) {
       // detection (confirmed programmatically, 23 Aug 2026) — no type is
       // left relying on it. Writes directly to AlertMemory now, not
       // AutoUpdates (unified alert-system redesign).
-      const { secret: sweepSecret, automationCommanderSheetId: acIdSweep } = req.body;
+      const { secret: sweepSecret, automationCommanderSheetId: acIdSweep, startIdx = 0 } = req.body;
       if (sweepSecret !== process.env.CRON_SECRET) {
         return res.status(401).json({ success: false, error: "Unauthorised" });
       }
@@ -7271,7 +7272,14 @@ export default async function handler(req, res) {
         const sheets = await getSheetsClient();
 
         const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdSweep);
-        console.log(`run_flag_sweep: ${clientRows.length} clients to check`);
+        
+        // Chunking architecture: process a strict subset of clients to avoid Vercel timeouts
+        const CHUNK_SIZE = 3;
+        const clientChunk = clientRows.slice(startIdx, startIdx + CHUNK_SIZE);
+        const hasMore = startIdx + CHUNK_SIZE < clientRows.length;
+        const nextIdx = startIdx + CHUNK_SIZE;
+
+        console.log(`run_flag_sweep: processing clients ${startIdx + 1} to ${Math.min(startIdx + CHUNK_SIZE, clientRows.length)} of ${clientRows.length}`);
 
         // Invoice/CRM/expense automation frequency (columns O/P/Q) — needed
         // to know which of the 6 fingerprint-based checks actually apply to
@@ -7288,7 +7296,7 @@ export default async function handler(req, res) {
         const raisedDetail = []; // { clientName, flagKey } — for the FlagSweepLog, so Paul can see exactly what was raised, not just a count
         let clientsChecked = 0, flagsRaised = 0, errors = 0;
 
-        for (const client of clientRows) {
+        for (const client of clientChunk) {
           try {
             const freqRow = freqRows[client.rowIndex] || [];
             const hasInvoice = !!freqRow[0];
@@ -7505,9 +7513,9 @@ export default async function handler(req, res) {
         }
 
         const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
-        console.log(`run_flag_sweep complete in ${elapsedS}s: ${clientsChecked} clients checked, ${flagsRaised} flags raised, ${errors} errors`);
+        console.log(`run_flag_sweep chunk complete in ${elapsedS}s: ${clientsChecked} clients checked, ${flagsRaised} flags raised, ${errors} errors, hasMore: ${hasMore}`);
         await logFlagSweepRun(sheets, acIdSweep, { clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail });
-        return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail });
+        return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail, hasMore, nextIdx });
       } catch (err) {
         console.error("❌ run_flag_sweep error:", err);
         const elapsedS = Math.round((Date.now() - sweepStart) / 1000);

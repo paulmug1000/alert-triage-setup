@@ -2623,8 +2623,11 @@ export default function TriageSystem({ onBack }) {
     try {
       console.log(`\n📍 selectAlert called for: ${alert.sheetName}-${alert.rowNumber}`);
       
-      const alertIndex = clientAlerts.indexOf(alert);
-      setCurrentClientAlertIndex(alertIndex);
+      // Use findIndex instead of indexOf to prevent identity reference bugs during cache busts
+      const alertIndex = clientAlerts.findIndex(a => a.sheetName === alert.sheetName && a.rowNumber === alert.rowNumber);
+      if (alertIndex !== -1) {
+        setCurrentClientAlertIndex(alertIndex);
+      }
       setAcceptError("");
       setIsAnalyzing(true);
       setClaudeAnalysis(""); setPreviousIgnoreReason("");

@@ -6314,12 +6314,18 @@ export default async function handler(req, res) {
           const fresh = JSON.parse(freshRaw);
 
           const alertCountsByClientAndFlag = {};
-          for (const alert of (fresh.alerts || [])) {
-            const key = alert.clientName;
-            const flagKey = alert.flagType || alert.alertType || alert.type;
-            if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
-            alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
-          }
+        for (const alert of filteredAlerts) {
+          const key = alert.clientName;
+          let flagKey = alert.flagType || alert.alertType || alert.type;
+          
+          // Upgrade legacy database labels
+          if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
+          if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
+          if (flagKey === "crm") flagKey = alert.flagType || alert.alertType || "crmPipeAppDiscr";
+
+          if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+          alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+        }
 
           const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
             ...c, alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
@@ -6927,12 +6933,18 @@ export default async function handler(req, res) {
 
         // Rebuild alertCounts after filtering
         const alertCountsByClientAndFlag = {};
-        for (const alert of filteredAlerts) {
-          const key = alert.clientName;
-          const flagKey = alert.flagType || alert.alertType || alert.type;
-          if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
-          alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
-        }
+          for (const alert of (fresh.alerts || [])) {
+            const key = alert.clientName;
+            let flagKey = alert.flagType || alert.alertType || alert.type;
+            
+            // Upgrade legacy database labels
+            if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
+            if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
+            if (flagKey === "crm") flagKey = alert.flagType || alert.alertType || "crmPipeAppDiscr";
+
+            if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+            alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+          }
 
         const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => ({
           ...c,
@@ -7080,7 +7092,14 @@ export default async function handler(req, res) {
               });
 
               if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
-              extraFlagsByClient.get(row.clientName)[row.alertType] = true;
+              
+              // Upgrade legacy database labels to the new strict taxonomy
+              let mappedFlagType = row.alertType;
+              if (mappedFlagType === "invoice") mappedFlagType = alertObj.flagType || "invoiceDashboardDiscr";
+              if (mappedFlagType === "expense") mappedFlagType = alertObj.flagType || "expenseDashboardDiscr";
+              if (mappedFlagType === "crm") mappedFlagType = alertObj.flagType || alertObj.alertType || "crmPipeAppDiscr";
+              
+              extraFlagsByClient.get(row.clientName)[mappedFlagType] = true;
 
               if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
                 newClientMeta.set(row.clientName, {
@@ -7433,6 +7452,8 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail });
       } catch (err) {
         console.error("❌ run_flag_sweep error:", err);
+        const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
+        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked: clientsChecked || 0, flagsRaised: flagsRaised || 0, errors: (errors || 0) + 1, elapsedSeconds: elapsedS, raisedDetail: raisedDetail || [] }).catch(() => {});
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "build_cached_alert_options") {

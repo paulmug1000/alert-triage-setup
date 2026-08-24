@@ -2087,7 +2087,7 @@ export default function TriageSystem({ onBack }) {
         }
         const updatedAlerts = clientAlerts.filter(a => `${a.sheetName}-${a.rowNumber}` !== alertId);
         setClientAlerts(updatedAlerts);
-        const taskFlagType = alert.flagType || alert.type || "";
+        const taskFlagType = alert.flagType || alert.alertType || alert.type || "";
         setClientsWithFlags(prev => prev.map(c => {
           if (c.clientName !== selectedClient?.clientName) return c;
           const updatedCounts = { ...c.alertCounts };
@@ -2634,6 +2634,16 @@ export default function TriageSystem({ onBack }) {
       
       setScreen("triageAnalysis");
       
+      // CRITICAL FIX: Use the background-cached options instantly if they exist!
+      if (alert.options && alert.options.length > 0) {
+        console.log(`✅ Using cached options instantly`);
+        setFromCache(true);
+        setClaudeAnalysis(JSON.stringify(alert.options, null, 2));
+        setIsAnalyzing(false);
+        checkExistingTask(alert);
+        return;
+      }
+
       const response = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2722,7 +2732,7 @@ export default function TriageSystem({ onBack }) {
       setClientAlerts(updatedAlerts);
 
       // Decrement the alert count for this client/flagType in clientsWithFlags
-      const acceptedFlagType = alert.flagType || alert.type || "";
+      const acceptedFlagType = alert.flagType || alert.alertType || alert.type || "";
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient?.clientName) return c;
         const updatedCounts = { ...c.alertCounts };
@@ -3202,7 +3212,7 @@ export default function TriageSystem({ onBack }) {
       setCurrentClientAlertIndex(0);
 
       // Decrement the alert count for this client/flagType in clientsWithFlags
-      const ignoredFlagType = alert.flagType || alert.type || "";
+      const ignoredFlagType = alert.flagType || alert.alertType || alert.type || "";
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient.clientName) return c;
         const updatedCounts = { ...c.alertCounts };
@@ -9684,18 +9694,11 @@ export default function TriageSystem({ onBack }) {
             <span style={styles.alertCounter}>{progress}/{clientAlerts.length}</span>
           </div>
 
-          {alert.flagType && (() => {
-            const ALERT_TYPE_FULL_NAMES = {
-              invoiceDashboardDiscr: "Invoice Dashboard Discrepancy",
-              expenseDashboardDiscr: "Expense Dashboard Discrepancy",
-              crmPipeDashDiscr: "CRM Pipeline Dashboard Discrepancy",
-              crmPipeAppDiscr: "CRM Pipeline App Discrepancy",
-              crmConfDashDiscr: "CRM Confirmed Dashboard Discrepancy",
-              crmConfAppDiscr: "CRM Confirmed App Discrepancy",
-            };
-            const fullName = ALERT_TYPE_FULL_NAMES[alert.flagType] || alert.flagType;
+          {(alert.flagType || alert.alertType || alert.type) && (() => {
+            const key = alert.flagType || alert.alertType || alert.type;
+            const fullName = getFlagName(key);
             return (
-              <div style={{ ...styles.alertMetadata, fontSize: "15px", fontWeight: "600", padding: "14px", marginBottom: "16px" }}>
+              <div style={{ ...styles.alertMetadata, fontSize: "15px", fontWeight: "600", padding: "14px", marginBottom: "16px", color: "#1d4ed8", backgroundColor: "#eff6ff", borderLeft: "4px solid #3b82f6" }}>
                 {fullName}
               </div>
             );

@@ -9681,9 +9681,20 @@ export default function TriageSystem({ onBack }) {
                         return;
                       }
                       setFromCache(false);
+
+                      // CRITICAL FIX: Delete the old options from local React memory so selectAlert is forced to fetch fresh data
+                      const freshAlert = { ...clientAlerts[currentClientAlertIndex] };
+                      delete freshAlert.options;
+                      
+                      setClientAlerts(prev => {
+                        const newAlerts = [...prev];
+                        newAlerts[currentClientAlertIndex] = freshAlert;
+                        return newAlerts;
+                      });
+
                       // Small delay to ensure Sheets write has committed before re-fetching
                       await new Promise(r => setTimeout(r, 1000));
-                      await selectAlert(clientAlerts[currentClientAlertIndex]);
+                      await selectAlert(freshAlert);
                     } catch(e) { console.error("Cache bust failed:", e); }
                   }} style={{ fontSize: "11px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555" }}>
                     ↻ Refresh

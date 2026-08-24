@@ -2348,13 +2348,18 @@ const AUTOLOG_TYPE_PATTERNS = {
  * split and match against known patterns — matching isn't this function's
  * job, since different callers may want different patterns.
  */
-async function readRecentAutoLogEntries_(sheets, masterSheetId, limit = 30) {
+async function readRecentAutoLogEntries_(sheets, masterSheetId, limit = 30, cachedData = null) {
   try {
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: masterSheetId,
-      range: `AutoLog!A2:D${limit + 1}`,
-    });
-    const rows = resp.data.values || [];
+    let rows = [];
+    if (cachedData) {
+      rows = cachedData.slice(0, limit);
+    } else {
+      const resp = await sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: `AutoLog!A2:D${limit + 1}`,
+      });
+      rows = resp.data.values || [];
+    }
     return rows.map(row => ({
       timestamp: row[0] || "",
       category: row[1] || "",
@@ -2376,15 +2381,20 @@ async function readRecentAutoLogEntries_(sheets, masterSheetId, limit = 30) {
 // Flags older than 30 minutes are treated as stale and ignored.
 const GAS_LOCK_STALE_MS = 30 * 60 * 1000; // 30 minutes
 
-async function checkAllGASLocks(sheets, masterSheetId) {
+async function checkAllGASLocks(sheets, masterSheetId, cachedData = null) {
   const result = { invoice: { locked: false }, expense: { locked: false }, crm: { locked: false } };
   if (!masterSheetId) return result;
   try {
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: masterSheetId,
-      range: "DataChgAlert!B4:I4",
-    });
-    const row = (resp.data.values || [[]])[0] || [];
+    let row = [];
+    if (cachedData) {
+      row = cachedData[0] || [];
+    } else {
+      const resp = await sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "DataChgAlert!B4:I4",
+      });
+      row = (resp.data.values || [[]])[0] || [];
+    }
     const check = async (fIdx, tIdx, name, fCell, tCell) => {
       const flag = String(row[fIdx] || "").trim().toUpperCase();
       const tsRaw = row[tIdx];
@@ -2811,17 +2821,22 @@ async function readBuildOptionsLog(sheets, automationCommanderSheetId, limit = 2
     return [];
   }
 }
-async function readInvCompAlerts(sheets, spreadsheetId) {
+async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null) {
   try {
     console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
     
-    await setMasterSwitch(sheets, spreadsheetId, "InvComp", true);
-
-    const dataResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: "InvComp!A5:Y1000",
-    });
-    const allRows = dataResponse.data.values || [];
+    let allRows = [];
+    if (cachedData) {
+      allRows = cachedData;
+      console.log(`  ✓ Used batched InvComp data`);
+    } else {
+      // Switch is permanent; removed setMasterSwitch to save quota
+      const dataResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: "InvComp!A5:Y1000",
+      });
+      allRows = dataResponse.data.values || [];
+    }
     const headers = allRows[0] || [];
     const rows = allRows.slice(1);
     console.log(`  InvComp: ${rows.length} rows read`);
@@ -2853,26 +2868,29 @@ async function readInvCompAlerts(sheets, spreadsheetId) {
     }
 
     console.log(`  ✓ InvComp: ${alerts.length} alerts`);
-    await setMasterSwitch(sheets, spreadsheetId, "InvComp", false);
     return alerts;
   } catch (error) {
     console.error(`❌ Error reading InvComp alerts:`, error);
-    try { await setMasterSwitch(sheets, spreadsheetId, "InvComp", false); } catch (e) {}
     throw error;
   }
 }
 
-async function readDirCompAlerts(sheets, spreadsheetId) {
+async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null) {
   try {
     console.log(`\n📖 Reading DirComp alerts from ${spreadsheetId}...`);
     
-    await setMasterSwitch(sheets, spreadsheetId, "DirComp", true);
-
-    const dataResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: "DirComp!A5:AV1000",
-    });
-    const allRows = dataResponse.data.values || [];
+    let allRows = [];
+    if (cachedData) {
+      allRows = cachedData;
+      console.log(`  ✓ Used batched DirComp data`);
+    } else {
+      // Switch is permanent; removed setMasterSwitch to save quota
+      const dataResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: "DirComp!A5:AV1000",
+      });
+      allRows = dataResponse.data.values || [];
+    }
     const headers = allRows[0] || [];
     const rows = allRows.slice(1);
     console.log(`  DirComp: ${rows.length} rows read`);
@@ -2904,11 +2922,9 @@ async function readDirCompAlerts(sheets, spreadsheetId) {
     }
 
     console.log(`  ✓ DirComp: ${alerts.length} alerts`);
-    await setMasterSwitch(sheets, spreadsheetId, "DirComp", false);
     return alerts;
   } catch (error) {
     console.error(`❌ Error reading DirComp alerts:`, error);
-    try { await setMasterSwitch(sheets, spreadsheetId, "DirComp", false); } catch (e) {}
     throw error;
   }
 }
@@ -2959,12 +2975,24 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
     await setCRMMode(sheets, spreadsheetId, mode);
     console.log(`  ✓ Mode set`);
 
-    // Activate master switch
-    console.log(`  Setting E2 = TRUE in CRMComp...`);
-    await setMasterSwitch(sheets, spreadsheetId, "CRMComp", true);
-    console.log(`  ✓ Master switch set`);
+    // Switch is permanently on; removed setMasterSwitch to save quota
 
     const alerts = [];
+    
+    // Batch read both Dash and App ranges to save quota
+    let dashData = [];
+    let appData = [];
+    try {
+      const batchResp = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId,
+        ranges: ["CRMComp!X6:BF1000", "CRMComp!EF6:FL1000"],
+        valueRenderOption: "FORMATTED_VALUE"
+      });
+      dashData = batchResp.data.valueRanges[0].values || [];
+      appData = batchResp.data.valueRanges[1].values || [];
+    } catch(e) {
+      console.log(`  ⚠️ Failed to batchGet CRMComp: ${e.message}`);
+    }
 
     for (const alertType of alertTypes) {
       console.log(`  Processing ${alertType}...`);
@@ -3016,12 +3044,19 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
 
       if (!dataRange) continue;
 
-      const dataResponse = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: dataRange,
-        valueRenderOption: "FORMATTED_VALUE",
-      });
-      const rows = dataResponse.data.values || [];
+      let rows = [];
+      if (dataRange.includes("X6:BF")) rows = dashData;
+      else if (dataRange.includes("EF6:FL")) rows = appData;
+
+      // Fallback if batchGet failed
+      if (rows.length === 0) {
+        try {
+          const dataResponse = await sheets.spreadsheets.values.get({
+            spreadsheetId, range: dataRange, valueRenderOption: "FORMATTED_VALUE",
+          });
+          rows = dataResponse.data.values || [];
+        } catch(e) { continue; }
+      }
 
       for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
         const row = rows[rowIdx];
@@ -3079,11 +3114,9 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
     }
 
     console.log(`  ✓ CRMComp (${mode}): ${alerts.length} alerts`);
-    await setMasterSwitch(sheets, spreadsheetId, "CRMComp", false);
     return alerts;
   } catch (error) {
     console.error(`❌ Error reading CRMComp alerts:`, error);
-    try { await setMasterSwitch(sheets, spreadsheetId, "CRMComp", false); } catch (e) {}
     throw error;
   }
 }
@@ -7257,24 +7290,39 @@ export default async function handler(req, res) {
 
         for (const client of clientRows) {
           try {
-            // Fingerprint-based check for the 6 dashboard-style flags — same
-            // approach runFullSweep used (GAS), now here instead. Only reads
-            // a tab if that automation is actually active for this client,
-            // and skips it entirely if that automation's GAS sequence is
-            // currently mid-run (checkGASLock — restores the safety check
-            // runFullSweep had that this sweep didn't originally replicate).
             const freqRow = freqRows[client.rowIndex] || [];
             const hasInvoice = !!freqRow[0];
             const hasCRM     = !!freqRow[1];
             const hasExpense = !!freqRow[2];
 
-            const gasLocks = await checkAllGASLocks(sheets, client.masterSheetId);
+            console.log(`  📦 Batch fetching static data for ${client.clientName}...`);
+            let batchData = {};
+            try {
+              const batchResp = await sheets.spreadsheets.values.batchGet({
+                spreadsheetId: client.masterSheetId,
+                ranges: [
+                  "DataChgAlert!B4:I4",
+                  hasInvoice ? "InvComp!A5:Y1000" : "DataChgAlert!A1",
+                  hasExpense ? "DirComp!A5:AV1000" : "DataChgAlert!A1",
+                  "AutoLog!A2:D200"
+                ]
+              });
+              const ranges = batchResp.data.valueRanges || [];
+              batchData.gasLocks = ranges[0]?.values || [];
+              batchData.invComp = ranges[1]?.values || [];
+              batchData.dirComp = ranges[2]?.values || [];
+              batchData.autoLog = ranges[3]?.values || [];
+            } catch(e) {
+              console.log(`  ⚠️ Batch fetch failed for ${client.clientName}: ${e.message}`);
+            }
+
+            const gasLocks = await checkAllGASLocks(sheets, client.masterSheetId, batchData.gasLocks);
 
             if (hasInvoice) {
               const invLock = gasLocks.invoice;
               if (!invLock.locked) {
-                const invAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
-                invAlerts.forEach(a => { 
+                const invAlerts = await readInvCompAlerts(sheets, client.masterSheetId, batchData.invComp);
+                invAlerts.forEach(a => {
                   a.clientName = client.clientName;
                   a.clientId = client.clientSheetId;
                   a.masterSheetId = client.masterSheetId;
@@ -7341,7 +7389,7 @@ export default async function handler(req, res) {
             // no field-by-field parsing is needed, just matching which
             // pattern a line contains and hashing the whole line.
             {
-              const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId);
+              const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId, 30, batchData.autoLog);
               for (const [autoLogType, patterns] of Object.entries(AUTOLOG_TYPE_PATTERNS)) {
                 const matchedAlerts = [];
                 for (const entry of logEntries) {
@@ -7372,7 +7420,7 @@ export default async function handler(req, res) {
           // Increased delay between clients — pacing limits to avoid tripping 
           // the 60-reads-per-minute per-user quota from Google Sheets API.
 
-        await new Promise(r => setTimeout(r, 500)); // Optimized pacing to prevent 300s Vercel timeout
+        await new Promise(r => setTimeout(r, 1200)); // 1.2s delay mathematically guarantees < 60 requests/min
         }
 
         // Resolve fingerprint-based sweepItems against AlertMemory — one
@@ -7634,7 +7682,7 @@ export default async function handler(req, res) {
               }
 
               // Generous delay to prevent 429 quota errors during intensive analysis phase
-              await new Promise(r => setTimeout(r, 500)); // Optimized pacing to prevent 300s Vercel timeout
+              await new Promise(r => setTimeout(r, 1200)); // 1.2s delay mathematically guarantees < 60 requests/min
             }
           } catch (groupErr) {
             errors += rows.length;
@@ -8807,11 +8855,18 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
               // Look up job row in tab for precise cell writes
               const tabStartRow = tabName === "Pipeline" ? 6 : 1;
-              const tabResp = await sheets.spreadsheets.values.get({
-                spreadsheetId: alert.clientId,
-                range: `${tabName}!A1:AM5000`,
-              });
-              const tabRows = tabResp.data.values || [];
+              let tabRows = [];
+              if (sharedData && tabName === "Confirmed" && sharedData.confirmedDataWide) {
+                tabRows = sharedData.confirmedDataWide;
+              } else if (sharedData && tabName === "Pipeline" && sharedData.pipelineData) {
+                tabRows = sharedData.pipelineData;
+              } else {
+                const tabResp = await sheets.spreadsheets.values.get({
+                  spreadsheetId: alert.clientId,
+                  range: `${tabName}!A1:AM5000`,
+                });
+                tabRows = tabResp.data.values || [];
+              }
               const codeToFind   = (projectCode || crmCode).toLowerCase();
               const clientToFind = (client || crmClient).toLowerCase();
               const jobToFind    = (jobName || crmJob).toLowerCase();
@@ -8879,11 +8934,18 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               // Search the tab to find the actual Pipeline/Confirmed row number
               if (client || jobName || projectCode) {
                 try {
-                  const tabSearchResp = await sheets.spreadsheets.values.get({
-                    spreadsheetId: alert.clientId,
-                    range: `${tabName}!A1:C5000`,
-                  });
-                  const tabSearchRows = tabSearchResp.data.values || [];
+                  let tabSearchRows = [];
+                  if (sharedData && tabName === "Confirmed" && sharedData.confirmedDataWide) {
+                    tabSearchRows = sharedData.confirmedDataWide;
+                  } else if (sharedData && tabName === "Pipeline" && sharedData.pipelineData) {
+                    tabSearchRows = sharedData.pipelineData;
+                  } else {
+                    const tabSearchResp = await sheets.spreadsheets.values.get({
+                      spreadsheetId: alert.clientId,
+                      range: `${tabName}!A1:C5000`,
+                    });
+                    tabSearchRows = tabSearchResp.data.values || [];
+                  }
                   const codeToFind2   = (projectCode || "").toLowerCase();
                   const clientToFind2 = (client || "").toLowerCase();
                   const jobToFind2    = (jobName || "").toLowerCase();
@@ -9000,11 +9062,18 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
             // Find the job row in Pipeline/Confirmed by project code (or client+job fallback)
             const tabStartRow = tabName === "Pipeline" ? 6 : 1;
-            const tabResp = await sheets.spreadsheets.values.get({
-              spreadsheetId: alert.clientId,
-              range: `${tabName}!A1:AM5000`,
-            });
-            const tabRows = tabResp.data.values || [];
+            let tabRows = [];
+            if (sharedData && tabName === "Confirmed" && sharedData.confirmedDataWide) {
+              tabRows = sharedData.confirmedDataWide;
+            } else if (sharedData && tabName === "Pipeline" && sharedData.pipelineData) {
+              tabRows = sharedData.pipelineData;
+            } else {
+              const tabResp = await sheets.spreadsheets.values.get({
+                spreadsheetId: alert.clientId,
+                range: `${tabName}!A1:AM5000`,
+              });
+              tabRows = tabResp.data.values || [];
+            }
             let jobRow = null;
             let copiedToConf = "";
             const codeToFind = (shtCode || crmCode).toLowerCase();
@@ -9322,12 +9391,18 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
           // Step 1: Find the job in Confirmed tab by invoice number
           // Search AQ(42), AX(49), BE(56) for the invoice number
-          console.log(`  Fetching Confirmed tab to find invoice #${invoiceNo}...`);
-          const invConfirmedResp = await sheets.spreadsheets.values.get({
-            spreadsheetId: alert.clientId,
-            range: "Confirmed!A1:BH5000",
-          });
-          const invConfirmedRows = invConfirmedResp.data.values || [];
+          let invConfirmedRows = [];
+          if (sharedData && sharedData.confirmedDataWide) {
+            invConfirmedRows = sharedData.confirmedDataWide;
+            console.log(`  ✓ Used cached Confirmed data to find invoice #${invoiceNo}`);
+          } else {
+            console.log(`  Fetching Confirmed tab to find invoice #${invoiceNo}...`);
+            const invConfirmedResp = await sheets.spreadsheets.values.get({
+              spreadsheetId: alert.clientId,
+              range: "Confirmed!A1:BH5000",
+            });
+            invConfirmedRows = invConfirmedResp.data.values || [];
+          }
 
           let matchedJob = null;
           let matchedSlot = null;

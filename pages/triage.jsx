@@ -2439,45 +2439,13 @@ export default function TriageSystem({ onBack }) {
       if (precomputedUsed) return;
 
       // ── Step 2: Fall back to live start_triage ───────────────────────────
-      const response = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "start_triage",
-          automationCommanderSheetId,
-        }),
-      });
+      console.log(`No fresh precomputed data available — triggering full refresh pipeline`);
+      
+      // Execute the 3-step pipeline natively
+      await refreshTriage();
 
-      const data = await response.json();
-
-      console.log("📥 Response from /api/triage:", JSON.stringify(data, null, 2));
-
-      if (!response.ok || !data.success) {
-        const errorMsg = data.error || "Failed to start triage";
-        console.error("Triage API error:", errorMsg);
-        setError(errorMsg);
-        setIsLoading(false);
-        return;
-      }
-
-      console.log(`Setting state: totalAlerts=${data.totalAlerts}, clientsWithFlags=${data.clientsWithFlags?.length}`);
-      setSessionId(data.sessionId);
-      setTotalAlerts(data.totalAlerts || 0);
-      setNoActionCount(data.noActionCount || 0);
-      setClientsWithFlags(data.clientsWithFlags || []);
-      setAcknowledgedNoAction(new Set());
-      setProcessedAlerts(new Set());
-
-      if ((data.clientsWithFlags || []).length > 0) {
-        console.log(`${(data.clientsWithFlags || []).length} client(s) with flags, showing client selection...`);
-        setScreen("clientSelection");
-      } else {
-        console.log("No clients with flags, showing complete screen");
-        setTriageComplete(true);
-      }
     } catch (err) {
       setError(err.message);
-    } finally {
       setIsLoading(false);
     }
   };
@@ -3962,12 +3930,29 @@ export default function TriageSystem({ onBack }) {
         }
         clientsData = preData.clientsWithFlags || [];
       } else {
-        const response = await fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "start_triage", automationCommanderSheetId }),
+        // Fall back to 3-step pipeline
+        await fetch("/api/triage", { 
+          method: "POST", headers: { "Content-Type": "application/json" }, 
+          body: JSON.stringify({ action: "start_triage", step: "sweep", automationCommanderSheetId }) 
         });
-        const data = await response.json();
+        
+        let hasMore = true;
+        while (hasMore) {
+          const buildResp = await fetch("/api/triage", { 
+            method: "POST", headers: { "Content-Type": "application/json" }, 
+            body: JSON.stringify({ action: "start_triage", step: "build", automationCommanderSheetId }) 
+          });
+          const buildData = await buildResp.json();
+          if (!buildResp.ok || !buildData.success) throw new Error(buildData.error || "Failed to build options");
+          hasMore = buildData.hasMore;
+        }
+        
+        const storeResp = await fetch("/api/triage", { 
+          method: "POST", headers: { "Content-Type": "application/json" }, 
+          body: JSON.stringify({ action: "start_triage", step: "store", automationCommanderSheetId }) 
+        });
+        const data = await storeResp.json();
+        
         if (data.success) {
           setSessionId(data.sessionId);
           setTotalAlerts(data.totalAlerts || 0);

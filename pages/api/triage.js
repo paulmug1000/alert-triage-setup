@@ -3518,7 +3518,8 @@ export default async function handler(req, res) {
         console.log(`  🔍 get_outgoings_inbox: sheetId=${sheetIdClean.slice(0,20)}...`);
 
         // Check GAS expense lock first — if GAS is writing to DirComp, wait or abort
-        const expLock = await checkGASLock(sheets, sheetIdClean, "expense");
+        const allLocks = await checkAllGASLocks(sheets, sheetIdClean);
+        const expLock = allLocks.expense;
         if (expLock.locked) {
           console.log(`  ⚠ get_outgoings_inbox: GAS expense lock active — returning empty inbox to avoid stale data`);
           return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Expense automation is currently running — try again in a moment" });
@@ -3579,7 +3580,8 @@ export default async function handler(req, res) {
         const sheets = await getSheetsClient();
         const sheetIdClean = extractSheetIdFromUrl(sheetId) || sheetId;
 
-        const invLock = await checkGASLock(sheets, sheetIdClean, "invoice");
+        const allLocks = await checkAllGASLocks(sheets, sheetIdClean);
+        const invLock = allLocks.invoice;
         if (invLock.locked) {
           return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Invoice automation is currently running — try again in a moment" });
         }

@@ -6323,6 +6323,10 @@ export default async function handler(req, res) {
             if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
             if (flagKey === "crm") flagKey = alert.flagType || alert.alertType || "crmPipeAppDiscr";
 
+            // CRITICAL FIX: Actually apply the upgraded label to the alert object!
+            alert.flagType = flagKey;
+            alert.alertType = flagKey;
+
             if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
             alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
           }
@@ -6933,18 +6937,22 @@ export default async function handler(req, res) {
 
         // Rebuild alertCounts after filtering
         const alertCountsByClientAndFlag = {};
-          for (const alert of filteredAlerts) {
-            const key = alert.clientName;
-            let flagKey = alert.flagType || alert.alertType || alert.type;
-            
-            // Upgrade legacy database labels
-            if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
-            if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
-            if (flagKey === "crm") flagKey = alert.flagType || alert.alertType || "crmPipeAppDiscr";
+        for (const alert of filteredAlerts) {
+          const key = alert.clientName;
+          let flagKey = alert.flagType || alert.alertType || alert.type;
+          
+          // Upgrade legacy database labels
+          if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
+          if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
+          if (flagKey === "crm") flagKey = alert.flagType || alert.alertType || "crmPipeAppDiscr";
 
-            if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
-            alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
-          }
+          // CRITICAL FIX: Actually apply the upgraded label to the alert object!
+          alert.flagType = flagKey;
+          alert.alertType = flagKey;
+
+          if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+          alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+        }
 
         const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => ({
           ...c,

@@ -2446,6 +2446,7 @@ export default function TriageSystem({ onBack }) {
 
     } catch (err) {
       setError(err.message);
+    } finally {
       setIsLoading(false);
     }
   };

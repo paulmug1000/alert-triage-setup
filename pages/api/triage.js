@@ -523,10 +523,30 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
 /**
  * Write a new row to AlertMemory (append).
  */
-async function appendAlertMemoryRow(sheets, automationCommanderSheetId, {
-  fingerprintHash, alertType, clientName, alertSummary,
-  cachedOptionsJSON, status, ignoreReason, dataSnapshot, category,
-}) {
+async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload) {
+  let {
+    fingerprintHash, alertType, clientName, alertSummary,
+    cachedOptionsJSON, status, ignoreReason, dataSnapshot, category,
+  } = payload;
+
+  // CRITICAL DATA INTEGRITY GUARD
+  // Intercept any legacy code trying to inject old formats
+  if (alertType === "invoice") alertType = "invoiceDashboardDiscr";
+  if (alertType === "expense") alertType = "expenseDashboardDiscr";
+  if (alertType === "crm") alertType = "crmPipeAppDiscr"; // Safe fallback
+
+  // If dataSnapshot is completely missing (legacy fallback execution), construct a basic valid JSON 
+  // object so the frontend UI doesn't crash while trying to render the alert card.
+  if (!dataSnapshot) {
+    dataSnapshot = JSON.stringify({
+      type: alertType,
+      summary: { summary: alertSummary || "Alert", amount: 0, invoiceNo: "N/A" },
+      clientName: clientName,
+      sheetName: "LegacyData",
+      rowNumber: Math.floor(Math.random() * 10000)
+    });
+  }
+
   const now = new Date().toISOString().split("T")[0];
   await sheets.spreadsheets.values.append({
     spreadsheetId: automationCommanderSheetId,
@@ -537,17 +557,12 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, {
         fingerprintHash, alertType, clientName, alertSummary,
         cachedOptionsJSON, status, ignoreReason || "", now, now,
         now, // lastRechecked = now on creation
-        dataSnapshot || "",
-        // Added 22 Aug 2026 for the unified alert-system redesign. Existing
-        // callers don't pass this and keep getting "discrepancy" — the
-        // correct value for every one of them, since none of today's
-        // callers are anything else yet.
+        dataSnapshot,
         category || "discrepancy",
       ]],
     },
   });
 }
-
 /**
  * Update an existing AlertMemory row by its 1-indexed sheet row number.
  */
@@ -7556,20 +7571,27 @@ export default async function handler(req, res) {
               }
 
               let currentAlerts = [];
-            if (alertType === "invoiceDashboardDiscr") {
+            if (alertType === "invoiceDashboardDiscr" || alertType === "invoice") {
               currentAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
               currentAlerts.forEach(a => { a.flagType = "invoiceDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
-            } else if (alertType === "expenseDashboardDiscr") {
+            } else if (alertType === "expenseDashboardDiscr" || alertType === "expense") {
               currentAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
               currentAlerts.forEach(a => { a.flagType = "expenseDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
-            } else if (["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr"].includes(alertType)) {
-              const mode = alertType.startsWith("crmPipe") ? "Pipeline" : "Confirmed";
-              const pairKey = alertType.endsWith("DashDiscr")
-                ? [alertType, alertType.replace("DashDiscr", "AppDiscr")]
-                : [alertType.replace("AppDiscr", "DashDiscr"), alertType];
-              currentAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, pairKey, client.masterSheetId);
-              currentAlerts.forEach(a => { a._fingerprint = buildAlertFingerprint(a); });
-              currentAlerts = currentAlerts.filter(a => (a.flagType || a.alertType) === alertType);
+            } else if (["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr", "crm"].includes(alertType)) {
+              if (alertType === "crm") {
+                const pipeAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, "Pipeline", ["crmPipeDashDiscr", "crmPipeAppDiscr"], client.masterSheetId);
+                const confAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, "Confirmed", ["crmConfDashDiscr", "crmConfAppDiscr"], client.masterSheetId);
+                currentAlerts = [...pipeAlerts, ...confAlerts];
+                currentAlerts.forEach(a => { a._fingerprint = buildAlertFingerprint(a); });
+              } else {
+                const mode = alertType.startsWith("crmPipe") ? "Pipeline" : "Confirmed";
+                const pairKey = alertType.endsWith("DashDiscr")
+                  ? [alertType, alertType.replace("DashDiscr", "AppDiscr")]
+                  : [alertType.replace("AppDiscr", "DashDiscr"), alertType];
+                currentAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, pairKey, client.masterSheetId);
+                currentAlerts.forEach(a => { a._fingerprint = buildAlertFingerprint(a); });
+                currentAlerts = currentAlerts.filter(a => (a.flagType || a.alertType) === alertType);
+              }
             } else {
               console.log(`  ⚠️ Unknown alertType "${alertType}" for ${clientName} — skipping`);
               notFound += rows.length;
@@ -7594,14 +7616,14 @@ export default async function handler(req, res) {
               match.clientId = client.clientSheetId;
               match.masterSheetId = client.masterSheetId;
               match.clientName = client.clientName;
-              match.flagType = alertType;
+              match.flagType = match.flagType || alertType;
               match.fingerprintHash = row.fingerprintHash;
 
               try {
                 const analyzeRes = await fetch(`${baseUrl}/api/triage`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ action: "analyze_alert", alert: match, automationCommanderSheetId: acIdBuild, sharedData }),
+                  body: JSON.stringify({ action: "analyze_alert", alert: match, memoryRow: row, automationCommanderSheetId: acIdBuild, sharedData }),
                 });
                 const analyzeData = await analyzeRes.json();
                 if (analyzeData.success) {
@@ -7708,7 +7730,9 @@ export default async function handler(req, res) {
         const fingerprintHash = alert.fingerprintHash || buildAlertFingerprint(alert);
         await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
         const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+        
+        // CRITICAL FIX: Use the row passed directly from the builder to bypass Google Sheets read-after-write latency
+        const memoryRow = req.body.memoryRow || findMemoryRow(memoryRows, fingerprintHash);
 
         if (memoryRow) {
           if (memoryRow.status === "ignored") {

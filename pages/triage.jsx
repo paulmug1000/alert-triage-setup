@@ -2097,7 +2097,11 @@ export default function TriageSystem({ onBack }) {
         }
         const updatedAlerts = clientAlerts.filter(a => `${a.sheetName}-${a.rowNumber}` !== alertId);
         setClientAlerts(updatedAlerts);
-        const taskFlagType = alert.flagType || alert.alertType || alert.type || "";
+        let taskFlagType = alert.flagType || alert.alertType || alert.type || "";
+        if (taskFlagType === "invoice") taskFlagType = "invoiceDashboardDiscr";
+        if (taskFlagType === "expense") taskFlagType = "expenseDashboardDiscr";
+        if (taskFlagType === "crm") taskFlagType = "crmPipeAppDiscr";
+        
         setClientsWithFlags(prev => prev.map(c => {
           if (c.clientName !== selectedClient?.clientName) return c;
           const updatedCounts = { ...c.alertCounts };
@@ -2728,7 +2732,11 @@ export default function TriageSystem({ onBack }) {
       setClientAlerts(updatedAlerts);
 
       // Decrement the alert count for this client/flagType in clientsWithFlags
-      const acceptedFlagType = alert.flagType || alert.alertType || alert.type || "";
+      let acceptedFlagType = alert.flagType || alert.alertType || alert.type || "";
+      if (acceptedFlagType === "invoice") acceptedFlagType = "invoiceDashboardDiscr";
+      if (acceptedFlagType === "expense") acceptedFlagType = "expenseDashboardDiscr";
+      if (acceptedFlagType === "crm") acceptedFlagType = "crmPipeAppDiscr";
+      
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient?.clientName) return c;
         const updatedCounts = { ...c.alertCounts };
@@ -2984,13 +2992,13 @@ export default function TriageSystem({ onBack }) {
       const data = await res.json();
       if (!data.success) { setAcceptError(data.error || "Bulk ignore failed"); return; }
 
-      const alertSet = new Set(alerts);
-      const updatedAlerts = clientAlerts.filter(a => !alertSet.has(a));
+      const alertIdsToRemove = new Set(alerts.map(a => `${a.sheetName}-${a.rowNumber}`));
+      const updatedAlerts = clientAlerts.filter(a => !alertIdsToRemove.has(`${a.sheetName}-${a.rowNumber}`));
 
       if (sessionId) {
+        setProcessedAlerts(prev => new Set([...prev, ...alertIdsToRemove]));
         for (const alert of alerts) {
           const alertId = `${alert.sheetName}-${alert.rowNumber}`;
-          setProcessedAlerts(prev => new Set([...prev, alertId]));
           fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action: "remove_alert", sessionId, alertId }) }).catch(() => {});
         }
@@ -2998,7 +3006,10 @@ export default function TriageSystem({ onBack }) {
 
       const countDeltas = {};
       for (const a of alerts) {
-        const ft = a.flagType || a.type || "";
+        let ft = a.flagType || a.alertType || a.type || "";
+        if (ft === "invoice") ft = "invoiceDashboardDiscr";
+        if (ft === "expense") ft = "expenseDashboardDiscr";
+        if (ft === "crm") ft = "crmPipeAppDiscr";
         countDeltas[ft] = (countDeltas[ft] || 0) + 1;
       }
       setClientsWithFlags(prev => prev.map(c => {
@@ -3042,13 +3053,13 @@ export default function TriageSystem({ onBack }) {
       const data = await res.json();
       if (!data.success) { setAcceptError(data.error || "Bulk task creation failed"); return; }
 
-      const alertSet = new Set(alerts);
-      const updatedAlerts = clientAlerts.filter(a => !alertSet.has(a));
+      const alertIdsToRemove = new Set(alerts.map(a => `${a.sheetName}-${a.rowNumber}`));
+      const updatedAlerts = clientAlerts.filter(a => !alertIdsToRemove.has(`${a.sheetName}-${a.rowNumber}`));
 
       if (sessionId) {
+        setProcessedAlerts(prev => new Set([...prev, ...alertIdsToRemove]));
         for (const alert of alerts) {
           const alertId = `${alert.sheetName}-${alert.rowNumber}`;
-          setProcessedAlerts(prev => new Set([...prev, alertId]));
           fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action: "remove_alert", sessionId, alertId }) }).catch(() => {});
         }
@@ -3056,7 +3067,10 @@ export default function TriageSystem({ onBack }) {
 
       const countDeltas = {};
       for (const a of alerts) {
-        const ft = a.flagType || a.type || "";
+        let ft = a.flagType || a.alertType || a.type || "";
+        if (ft === "invoice") ft = "invoiceDashboardDiscr";
+        if (ft === "expense") ft = "expenseDashboardDiscr";
+        if (ft === "crm") ft = "crmPipeAppDiscr";
         countDeltas[ft] = (countDeltas[ft] || 0) + 1;
       }
       setClientsWithFlags(prev => prev.map(c => {
@@ -3208,7 +3222,11 @@ export default function TriageSystem({ onBack }) {
       setCurrentClientAlertIndex(0);
 
       // Decrement the alert count for this client/flagType in clientsWithFlags
-      const ignoredFlagType = alert.flagType || alert.alertType || alert.type || "";
+      let ignoredFlagType = alert.flagType || alert.alertType || alert.type || "";
+      if (ignoredFlagType === "invoice") ignoredFlagType = "invoiceDashboardDiscr";
+      if (ignoredFlagType === "expense") ignoredFlagType = "expenseDashboardDiscr";
+      if (ignoredFlagType === "crm") ignoredFlagType = "crmPipeAppDiscr";
+      
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient.clientName) return c;
         const updatedCounts = { ...c.alertCounts };

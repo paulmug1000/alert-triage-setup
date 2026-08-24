@@ -7081,14 +7081,8 @@ export default async function handler(req, res) {
               if (!row.cachedOptionsJSON) continue;
               if (oldPathFingerprints.has(row.fingerprintHash)) continue; 
 
-              let alertObj = {};
-              if (row.dataSnapshot) {
-                try { alertObj = JSON.parse(row.dataSnapshot); } catch (e) { } 
-              }
-              // Fallback for legacy rows missing a dataSnapshot so they don't get dropped
-              if (!alertObj.summary) alertObj.summary = { summary: row.alertSummary };
-              if (!alertObj.type) alertObj.type = row.alertType;
-
+              let alertObj = null;
+              try { alertObj = JSON.parse(row.dataSnapshot); } catch (e) { continue; } 
               let options = [];
               try { options = JSON.parse(row.cachedOptionsJSON); } catch (e) { continue; } 
 

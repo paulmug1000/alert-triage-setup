@@ -7466,17 +7466,12 @@ export default async function handler(req, res) {
             // fully retired now that nothing reads it any more.
             for (const alert of newAlerts) {
               try {
-                // alert.summary is already correctly built by
-                // buildInvCompSummary/buildDirCompSummary for invoice/
-                // expense — confirmed by reading those functions directly.
-                // CRM has no equivalent internal summary builder, so this
-                // replicates the exact logic the live analyze_alert path
-                // uses for CRM alerts (traced directly from that working
-                // code, 23 Aug 2026, after an earlier row-number-only
-                // fallback here was flagged by Paul as a real regression —
-                // row numbers shift whenever the sheet changes, and the
-                // job name/project code carry the actual identity).
+                // Extract the text string if the summary is an object (applies to invoices and expenses)
                 let summary = alert.summary;
+                if (typeof summary === "object" && summary !== null) {
+                  summary = summary.summary;
+                }
+
                 if (!summary && (item.alertType.startsWith("crmPipe") || item.alertType.startsWith("crmConf"))) {
                   const crmArr = alert.data?.crmData || [];
                   const shtArr = alert.data?.sheetData || [];

@@ -1,5 +1,5 @@
 import Head from "next/head";
-import MainMenu from "./menu";
+import TriageSystem from "./triage";
 
 export default function Index() {
   return (
@@ -12,7 +12,7 @@ export default function Index() {
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
         <meta name="apple-mobile-web-app-title" content="Pulse Triage" />
       </Head>
-      <MainMenu />
+      <TriageSystem onBack={() => {}} />
     </>
   );
 }

@@ -3654,14 +3654,20 @@ export default async function handler(req, res) {
         const newRow = lastRow + 2; // one row after last, 1-indexed
         if (newRow > 110) return res.status(400).json({ success: false, error: "Contractors section is full (max row 110)" });
 
+        // Ensure deliveryPct is formatted correctly as a percentage string (e.g. "100%")
+        // This ensures Sheets interprets it as a percentage and avoids inheriting a currency format.
+        // It also handles "0" correctly, which the previous || operator broke.
+        const pctValue = deliveryPct !== undefined && deliveryPct !== "" ? String(deliveryPct).replace(/%/g, "") : "100";
+        const pctString = `${pctValue}%`;
+
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean,
           range: `Outgoings!A${newRow}:E${newRow}`,
           valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[vendorName, vatFlag || "Yes", invTiming || "Next", payTiming || "Next", deliveryPct || 100]] },
+          requestBody: { values: [[vendorName, vatFlag || "Yes", invTiming || "Next", payTiming || "Next", pctString]] },
         });
 
-        console.log(`  ✅ Created new Outgoings vendor "${vendorName}" at row ${newRow} with Delivery ${deliveryPct || 100}%`);
+        console.log(`  ✅ Created new Outgoings vendor "${vendorName}" at row ${newRow} with Delivery ${pctString}`);
         return res.status(200).json({ success: true, sheetRow: newRow });
       } catch (err) {
         console.error("❌ create_outgoings_vendor error:", err);

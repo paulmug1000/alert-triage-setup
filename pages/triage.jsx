@@ -1249,6 +1249,9 @@ export default function TriageSystem({ onBack }) {
   const [debugClientName, setDebugClientName] = useState("");
   const [debugResult, setDebugResult] = useState(null);
   const [debugLoading, setDebugLoading] = useState(false);
+  
+  const [triggeringProactive, setTriggeringProactive] = useState(false);
+  const [triggerProactiveMsg, setTriggerProactiveMsg] = useState("");
 
   const runDebug = async () => {
     try {
@@ -7921,10 +7924,29 @@ export default function TriageSystem({ onBack }) {
 
               {/* Proactive Checks */}
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Proactive Checks</h3>
-                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-                  These checks run automatically every night at 3am, across every client, and surface as alerts on the Home screen when something needs attention.
-                </p>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
+                  <div style={{ paddingRight: "16px" }}>
+                    <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Proactive Checks</h3>
+                    <p style={{ margin: 0, fontSize: "12px", color: "#666" }}>
+                      These checks run automatically every night at 3am, across every client, and surface as alerts on the Home screen when something needs attention.
+                    </p>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px", flexShrink: 0 }}>
+                    <button className="triage-btn" disabled={triggeringProactive} onClick={async () => {
+                      setTriggeringProactive(true); setTriggerProactiveMsg("");
+                      try {
+                        const r = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "trigger_proactive_checks" }) });
+                        const d = await r.json();
+                        if (d.success) setTriggerProactiveMsg("✓ Triggered! Check history below in a few minutes.");
+                        else setTriggerProactiveMsg("Error: " + d.error);
+                      } catch(e) { setTriggerProactiveMsg("Error: " + e.message); }
+                      finally { setTriggeringProactive(false); }
+                    }} style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", cursor: triggeringProactive ? "default" : "pointer", whiteSpace: "nowrap" }}>
+                      {triggeringProactive ? <><Spinner size={12}/>Triggering...</> : "▶ Run Checks Now"}
+                    </button>
+                    {triggerProactiveMsg && <span style={{ fontSize: "11px", color: triggerProactiveMsg.startsWith("✓") ? "#16a34a" : "#dc2626" }}>{triggerProactiveMsg}</span>}
+                  </div>
+                </div>
 
                 {[
                   { name: "Retainer invoice monitoring", detail: "Flags retainer jobs where an invoice was scheduled to be sent but no invoice reference has been recorded." },

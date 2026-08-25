@@ -6428,6 +6428,23 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: false, error: err.message });
       }
 
+    } else if (action === "trigger_proactive_checks") {
+      // Triggers the overnight checks manually on demand
+      try {
+        const gasUrl = "https://script.google.com/macros/s/AKfycbzVvLSDtqWj3aHcn0UV9VPCybNm82sBNWynMo1-bMpvs3NzerPZXWkrpPJvVHaqDwwy/exec";
+        const gasResp = await fetch(gasUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "run_proactive_checks" }),
+        });
+        const gasData = await gasResp.json().catch(() => ({}));
+        if (!gasData.success) throw new Error(gasData.error || "Failed to trigger Apps Script");
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ trigger_proactive_checks error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "trigger_agent_run") {
       // Calls a client's own Web App deployment (5_Agent_Receiver.gs doPost) to run
       // its invoice/CRM/expense automation on demand, instead of the 30-min poll or

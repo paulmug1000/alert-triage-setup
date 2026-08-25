@@ -6024,6 +6024,15 @@ export default function TriageSystem({ onBack }) {
           return next;
         });
         setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
+        
+        // Decrement the Home Screen alert tally
+        setClientsWithFlags(prev => prev.map(c => {
+          if (c.clientName !== invoicesClient?.clientName) return c;
+          const updatedCounts = { ...c.alertCounts };
+          if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
+          return { ...c, alertCounts: updatedCounts };
+        }));
+
         const clientToReload = invoicesClient;
         close();
         await loadInvoicesJobs(clientToReload, invoicesShowAll);
@@ -6308,6 +6317,15 @@ export default function TriageSystem({ onBack }) {
                                         return next;
                                       });
                                       setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
+                                      
+                                      // Decrement the Home Screen alert tally
+                                      setClientsWithFlags(prev => prev.map(c => {
+                                        if (c.clientName !== invoicesClient?.clientName) return c;
+                                        const updatedCounts = { ...c.alertCounts };
+                                        if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
+                                        return { ...c, alertCounts: updatedCounts };
+                                      }));
+
                                       try {
                                         await fetch("/api/triage", {
                                           method: "POST", headers: { "Content-Type": "application/json" },

@@ -13827,10 +13827,19 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             // drift — a row number shifts, an amount changes), keeping
             // status as-is so a task-linked alert doesn't revert to
             // "cached" just because its condition is still true.
+            let updatedSnapshot = JSON.stringify(alert);
+            if (ex.status === "task") {
+              try {
+                const oldSnap = JSON.parse(ex.dataSnapshot || "{}");
+                // Keep the task metadata intact, overwrite the raw alert fields
+                updatedSnapshot = JSON.stringify({ ...oldSnap, ...alert });
+              } catch (e) {}
+            }
+
             await updateAlertMemoryRow(sheets, acId, ex.rowIndex, {
               fingerprintHash: fp, alertType: alert.alertType, clientName: alert.clientName,
               alertSummary: summary, cachedOptionsJSON: ex.cachedOptionsJSON, status: ex.status,
-              firstSeen: ex.firstSeen, dataSnapshot: JSON.stringify(alert),
+              firstSeen: ex.firstSeen, dataSnapshot: updatedSnapshot,
             });
             updated++;
           } else {
@@ -14221,6 +14230,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             cachedOptionsJSON,
             status: "task",
             ignoreReason: "",
+            category: isProactive ? "proactive" : "discrepancy",
             dataSnapshot: JSON.stringify({ ...alertFieldsSnapshot, ...taskMeta }),
           });
         }

@@ -7192,7 +7192,8 @@ export default async function handler(req, res) {
               newNoActionFromMemory.push({
                 clientId: clientMeta.masterSheetId,
                 flagType: row.alertType,
-                flagName: row.alertSummary || FLAG_NAMES[row.alertType] || row.alertType,
+                flagName: FLAG_NAMES[row.alertType] || row.alertType,
+                flagDetail: row.alertSummary, // Pass the raw text so the UI can display it
                 fingerprintHash: row.fingerprintHash,
               });
 
@@ -14005,8 +14006,12 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
           "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
           "directCosts","unreceivedAmount","placeholderCount","placeholderTotal"];
+          
+        // AutoLog informational flags share the "proactive" category in the database
+        // but belong exclusively in the "Informational Flags" UI. We filter them out 
+        // here so they don't double-render as broken cards in the "Proactive Alerts" UI.
         const active = all
-          .filter(r => r.category === "proactive" && r.status === "cached")
+          .filter(r => r.category === "proactive" && r.status === "cached" && !Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, r.alertType))
           .map(r => {
             let alert = {};
             try { alert = JSON.parse(r.dataSnapshot || "{}"); } catch (e) { alert = {}; }

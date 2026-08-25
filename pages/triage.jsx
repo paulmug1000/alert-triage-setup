@@ -9102,9 +9102,16 @@ export default function TriageSystem({ onBack }) {
                       <div key={na.flagType} style={{ border: `1px solid ${borderColor}`, borderRadius: "6px", background: bgColor, padding: "12px" }}>
                         {/* Header row */}
                         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
-                          <span style={{ fontSize: "13px", fontWeight: "600", color: "#444", flexShrink: 1, minWidth: 0 }}>
-                            {na.flagName || getFlagName(na.flagType)}
-                          </span>
+                          <div style={{ flexShrink: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: "13px", fontWeight: "600", color: "#444" }}>
+                              {na.flagName || getFlagName(na.flagType)}
+                            </div>
+                            {na.flagDetail && (
+                              <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", lineHeight: "1.4" }}>
+                                {na.flagDetail}
+                              </div>
+                            )}
+                          </div>
                           <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
                             {selectedClient?.clientSheetId && (
                               <button className="triage-btn"
@@ -9280,13 +9287,21 @@ export default function TriageSystem({ onBack }) {
                         gap: "12px",
                       }}
                     >
-                      <span style={{
-                        fontSize: "13px",
-                        color: isResolved ? "#2e7d32" : "#555",
-                        textDecoration: isResolved ? "line-through" : "none",
-                      }}>
-                        {na.flagName || getFlagName(na.flagType)}
-                      </span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: "13px",
+                          fontWeight: "600",
+                          color: isResolved ? "#2e7d32" : "#555",
+                          textDecoration: isResolved ? "line-through" : "none",
+                        }}>
+                          {na.flagName || getFlagName(na.flagType)}
+                        </div>
+                        {na.flagDetail && (
+                          <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#888", marginTop: "4px", textDecoration: isResolved ? "line-through" : "none", lineHeight: "1.4" }}>
+                            {na.flagDetail}
+                          </div>
+                        )}
+                      </div>
                       {isResolved ? (
                         <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>
                           ✓ Resolved

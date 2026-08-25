@@ -7181,7 +7181,8 @@ export default async function handler(req, res) {
                   masterSheetId: alertObj.masterSheetId || "",
                 });
               }
-            } else if (row.category === "proactive") {
+            } else if (String(row.category).toLowerCase() === "info" || row.category === "proactive") {
+              // Process info flags (or legacy proactive-tagged info flags during transition)
               if (!Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) continue;
 
               const clientMeta = clientNameToMeta.get(row.clientName);
@@ -7442,7 +7443,7 @@ export default async function handler(req, res) {
                   }
                 }
                 if (matchedAlerts.length > 0) {
-                  sweepItems.push({ clientName: client.clientName, alertType: autoLogType, alerts: matchedAlerts, autoUpdatesRow: client.sheetRowNum, category: "proactive" });
+                  sweepItems.push({ clientName: client.clientName, alertType: autoLogType, alerts: matchedAlerts, autoUpdatesRow: client.sheetRowNum, category: "info" });
                 }
               }
             }
@@ -14007,11 +14008,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
           "directCosts","unreceivedAmount","placeholderCount","placeholderTotal"];
           
-        // AutoLog informational flags share the "proactive" category in the database
-        // but belong exclusively in the "Informational Flags" UI. We filter them out 
-        // here so they don't double-render as broken cards in the "Proactive Alerts" UI.
         const active = all
-          .filter(r => r.category === "proactive" && r.status === "cached" && !Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, r.alertType))
+          .filter(r => r.category === "proactive" && r.status === "cached")
           .map(r => {
             let alert = {};
             try { alert = JSON.parse(r.dataSnapshot || "{}"); } catch (e) { alert = {}; }

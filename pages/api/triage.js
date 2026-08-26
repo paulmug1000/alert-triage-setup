@@ -1071,7 +1071,34 @@ async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowN
       ],
     });
 
-    return allRows.map(buildRowData);
+    let resultData = allRows.map(buildRowData);
+    
+    // Truncate massive jobs (like multi-year retainers) to stay well under the 50,000 char Google Sheets cell limit
+    if (resultData.length > 8) {
+      // Always keep the parent row
+      const parent = resultData[0];
+      
+      // Find the row being highlighted/targeted by the option
+      const targetIdx = resultData.findIndex(r => 
+        r.invoiceSlots.some(s => s.highlighted) || r.expenseSlots.some(s => s.highlighted)
+      );
+      
+      if (targetIdx > 0) {
+        // Keep up to 2 rows before and 2 rows after the target
+        const start = Math.max(1, targetIdx - 2);
+        const end = Math.min(resultData.length, targetIdx + 3);
+        const subset = resultData.slice(start, end);
+        
+        // Recombine, ensuring no duplicates if the subset overlaps the parent
+        const combined = [parent, ...subset];
+        resultData = [...new Map(combined.map(item => [item.rowNum, item])).values()];
+      } else {
+        // If no specific target, just keep the first 8 rows
+        resultData = resultData.slice(0, 8);
+      }
+    }
+
+    return resultData;
   } catch (e) {
     console.log(`  ⚠ fetchJobRowsForDisplay error: ${e.message}`);
     return null;

@@ -2354,11 +2354,12 @@ export default function TriageSystem({ onBack }) {
         setRefreshStatus(`Generating options (batch ${buildCount})...`);
         const buildResp = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "start_triage", step: "build", automationCommanderSheetId }),
+          body: JSON.stringify({ action: "start_triage", step: "build", automationCommanderSheetId, isContinuation: buildCount > 1 }),
         });
         const buildData = await buildResp.json();
         if (!buildResp.ok || !buildData.success) throw new Error(buildData.error || "Failed to build options");
         hasMore = buildData.hasMore;
+        buildCount++;
       }
 
       // Step 3: Store and get session
@@ -3978,14 +3979,16 @@ export default function TriageSystem({ onBack }) {
         }
         
         let hasMore = true;
+        let buildCount = 1;
         while (hasMore) {
           const buildResp = await fetch("/api/triage", { 
             method: "POST", headers: { "Content-Type": "application/json" }, 
-            body: JSON.stringify({ action: "start_triage", step: "build", automationCommanderSheetId }) 
+            body: JSON.stringify({ action: "start_triage", step: "build", automationCommanderSheetId, isContinuation: buildCount > 1 }) 
           });
           const buildData = await buildResp.json();
           if (!buildResp.ok || !buildData.success) throw new Error(buildData.error || "Failed to build options");
           hasMore = buildData.hasMore;
+          buildCount++;
         }
         
         const storeResp = await fetch("/api/triage", { 

@@ -7729,13 +7729,13 @@ export default async function handler(req, res) {
           console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes, ${existingHashes.size} existing hashes`);
 
           for (const item of sweepItems) {
-            // AUTO-RESOLVE STALE DISCREPANCIES & PROACTIVE ALERTS
+            // AUTO-RESOLVE STALE DISCREPANCIES, PROACTIVE ALERTS & IGNORED ALERTS
             if (item.category === "discrepancy" || item.category === "proactive") {
               const freshHashes = new Set((item.alerts || []).map(a => a._fingerprint).filter(Boolean));
               const staleRows = memoryRows.filter(r => 
                 r.clientName === item.clientName && 
                 r.alertType === item.alertType && 
-                (r.status === "cached" || (item.category === "proactive" && r.status === "task")) && 
+                (r.status === "cached" || r.status === "ignored" || (item.category === "proactive" && r.status === "task")) && 
                 r.category === item.category &&
                 !freshHashes.has(r.fingerprintHash)
               );
@@ -7752,13 +7752,18 @@ export default async function handler(req, res) {
                     } catch(e) {}
                   }
 
-                  const newStatus = stale.status === "task" ? "task_resolved" : "auto_resolved";
+                  let newStatus;
+                  if (stale.status === "task") newStatus = "task_resolved";
+                  else if (stale.status === "ignored") newStatus = "superseded";
+                  else newStatus = "auto_resolved";
+
                   await updateAlertMemoryRow(sheets, acIdSweep, stale.rowIndex, { 
                     ...stale, 
                     status: newStatus,
+                    lastRechecked: new Date().toISOString(),
                     dataSnapshot: updatedSnapshot
                   });
-                  console.log(`  🩹 AUTO-RESOLVED stale ${item.alertType} ${stale.status} for ${item.clientName}: ${stale.fingerprintHash}`);
+                  console.log(`  🩹 AUTO-RESOLVED stale ${item.alertType} ${stale.status} for ${item.clientName}: ${stale.fingerprintHash} -> ${newStatus}`);
                   stale.status = newStatus;
                   existingHashes.add(stale.fingerprintHash);
                 } catch(e) {
@@ -13743,196 +13748,6 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(200).json({ success: true, message: "Alert un-ignored" });
       } catch (err) {
         console.error(`❌ Error un-ignoring alert:`, err);
-        return res.status(500).json({ success: false, error: err.message });
-      }
-
-    } else if (action === "get_ignored_for_recheck") {
-      // Reads all "ignored" AlertMemory rows older than 4 hours, re-reads the live comparison
-      // tabs for each client, builds fresh fingerprints using the same Node.js logic that
-      // created the original fingerprints, and returns which rows have changed vs unchanged.
-      // GAS uses this to mark superseded rows and raise flags — no fingerprint logic in GAS.
-      const automationCommanderSheetId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
-      // masterSheetIds map: clientName → masterSheetId, passed by GAS from AutoUpdates
-      const clientMasterSheetIds = req.body.clientMasterSheetIds || {};
-
-      if (!automationCommanderSheetId) {
-        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
-      }
-      try {
-        const sheets = await getSheetsClient();
-        await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-        const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
-        const cutoff = Date.now() - FOUR_HOURS_MS;
-
-        const dueRows = memoryRows.filter(r => {
-          if (r.status !== "ignored") return false;
-          const ts = r.lastRechecked ? new Date(r.lastRechecked).getTime() : 0;
-          return isNaN(ts) || ts < cutoff;
-        });
-
-        console.log(`  ${dueRows.length} ignored alerts due for recheck`);
-        if (dueRows.length === 0) {
-          return res.status(200).json({ success: true, changed: [], unchanged: [] });
-        }
-
-        const changed = [];
-        const unchanged = [];
-
-        // Group by clientName + alertType to minimise tab reads
-        const groups = {};
-        for (const row of dueRows) {
-          const snap = row.dataSnapshot ? (() => { try { return JSON.parse(row.dataSnapshot); } catch(e) { return {}; } })() : {};
-          const masterSheetId = snap.masterSheetId || clientMasterSheetIds[row.clientName] || null;
-          // If no dataSnapshot at all, we have nothing to compare against — treat as unchanged
-          // (these are rows promoted by rehash that never had a snapshot set)
-          if (!row.dataSnapshot) {
-            unchanged.push(row.rowIndex);
-            continue;
-          }
-          const key = `${row.clientName}|||${row.alertType}|||${masterSheetId || ""}`;
-          if (!groups[key]) groups[key] = { masterSheetId, alertType: row.alertType, rows: [] };
-          groups[key].rows.push(row);
-        }
-
-        for (const [key, group] of Object.entries(groups)) {
-          const { masterSheetId, alertType, rows } = group;
-          if (!masterSheetId) {
-            console.log(`  No masterSheetId for group ${key} — treating as unchanged`);
-            unchanged.push(...rows.map(r => r.rowIndex));
-            continue;
-          }
-
-          // Read fresh alerts from the comparison tab
-          let freshAlerts = [];
-          try {
-            if (alertType === "invoice") {
-              freshAlerts = await readInvCompAlerts(sheets, masterSheetId);
-            } else if (alertType === "expense") {
-              freshAlerts = await readDirCompAlerts(sheets, masterSheetId);
-            } else if (alertType === "crm") {
-              const pipe = await readCRMCompAlerts(sheets, masterSheetId, "Pipeline", ["crmPipeDashDiscr"], masterSheetId);
-              const conf = await readCRMCompAlerts(sheets, masterSheetId, "Confirmed", ["crmConfDashDiscr"], masterSheetId);
-              freshAlerts = [...pipe, ...conf];
-            }
-          } catch (e) {
-            console.log(`  Error reading fresh data for ${key}: ${e.message} — treating as unchanged`);
-            unchanged.push(...rows.map(r => r.rowIndex));
-            continue;
-          }
-
-          // Build map of current fingerprints → alert from fresh data
-          const freshHashToAlert = new Map(freshAlerts.map(a => [buildAlertFingerprint(a), a]));
-          const freshHashes = new Set(freshHashToAlert.keys());
-
-          // Also build a summary-based lookup for migration: if the stored hash doesn't
-          // match any fresh hash but a fresh alert has the same summary prefix, it means
-          // the hash format changed (normalisation migration) rather than the data changing.
-          // In that case, update the stored fingerprint rather than superseding the row.
-          const freshBySummaryPrefix = new Map();
-          for (const [hash, alert] of freshHashToAlert) {
-            const summaryKey = (alert.summary?.summary || JSON.stringify(alert.data || {}).slice(0, 60));
-            freshBySummaryPrefix.set(summaryKey, hash);
-          }
-
-          const rowsToUpdateHash = []; // { rowIndex, newHash } — hash migration
-          for (const row of rows) {
-            if (freshHashes.has(row.fingerprintHash)) {
-              unchanged.push(row.rowIndex);
-            } else {
-              // Check if a fresh alert matches by alertSummary prefix (normalisation migration)
-              const summaryKey = (row.alertSummary || "").slice(0, 60);
-              const matchingFreshHash = freshBySummaryPrefix.get(summaryKey);
-              if (matchingFreshHash) {
-                // Same alert, hash format changed — update stored hash, treat as unchanged
-                console.log(`  HASH MIGRATION: ${row.fingerprintHash} → ${matchingFreshHash} (${row.clientName})`);
-                rowsToUpdateHash.push({ rowIndex: row.rowIndex, newHash: matchingFreshHash });
-                unchanged.push(row.rowIndex);
-              } else {
-                console.log(`  CHANGED: ${row.fingerprintHash} (${row.clientName} / ${alertType})`);
-                changed.push({ rowIndex: row.rowIndex, fingerprintHash: row.fingerprintHash, clientName: row.clientName, alertType });
-              }
-            }
-          }
-
-          // Batch update migrated hashes
-          if (rowsToUpdateHash.length > 0) {
-            const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
-            await sheets.spreadsheets.values.batchUpdate({
-              spreadsheetId: acIdClean,
-              requestBody: {
-                valueInputOption: "RAW",
-                data: rowsToUpdateHash.map(({ rowIndex, newHash }) => ({
-                  range: `${ALERT_MEMORY_TAB}!A${rowIndex}`,
-                  values: [[newHash]],
-                })),
-              },
-            }).catch(e => console.log(`  ⚠ Hash migration write failed: ${e.message}`));
-          }
-        }
-
-        console.log(`  ✅ Recheck complete: ${changed.length} changed, ${unchanged.length} unchanged`);
-        return res.status(200).json({ success: true, changed, unchanged });
-      } catch (err) {
-        console.error(`❌ Error in get_ignored_for_recheck:`, err);
-        return res.status(500).json({ success: false, error: err.message });
-      }
-
-    } else if (action === "mark_superseded") {
-      // Marks an AlertMemory row as "superseded" (data has changed since it was ignored).
-      // Accepts either rowIndex (legacy) or fingerprintHash (preferred — robust to row shifts).
-      const { rowIndex, fingerprintHash: fpHash, automationCommanderSheetId } = req.body;
-      if (!automationCommanderSheetId) {
-        return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
-      }
-      try {
-        const sheets = await getSheetsClient();
-        const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-        // Prefer hash lookup (stable), fall back to rowIndex
-        const memoryRow = fpHash
-          ? findMemoryRow(memoryRows, fpHash)
-          : memoryRows.find(r => r.rowIndex === rowIndex);
-        if (!memoryRow) {
-          // Row may have been deleted by dedupe — treat as non-fatal
-          console.log(`  ⚠ mark_superseded: row not found (hash=${fpHash}, idx=${rowIndex}) — skipping`);
-          return res.status(200).json({ success: true, skipped: true });
-        }
-        const nowISO = new Date().toISOString();
-        await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
-          ...memoryRow,
-          status: "superseded",
-          lastRechecked: nowISO,
-        });
-        console.log(`  ✅ Marked row ${memoryRow.rowIndex} as superseded (${memoryRow.fingerprintHash})`);
-        return res.status(200).json({ success: true });
-      } catch (err) {
-        console.error(`❌ Error in mark_superseded:`, err);
-        return res.status(500).json({ success: false, error: err.message });
-      }
-
-    } else if (action === "update_recheck_timestamp") {
-      // Updates lastRechecked on a batch of AlertMemory rows without changing their status.
-      // Called by GAS precompute after re-checking alerts that have NOT changed.
-      const { rowIndexes, automationCommanderSheetId } = req.body;
-      if (!rowIndexes?.length || !automationCommanderSheetId) {
-        return res.status(400).json({ success: false, error: "Missing rowIndexes or automationCommanderSheetId" });
-      }
-      try {
-        const sheets = await getSheetsClient();
-        const nowISO = new Date().toISOString();
-        // Batch update just col J (lastRechecked = col 10, index 9) for each row
-        const data = rowIndexes.map(ri => ({
-          range: `${ALERT_MEMORY_TAB}!J${ri}`,
-          values: [[nowISO]],
-        }));
-        await sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: automationCommanderSheetId,
-          requestBody: { data, valueInputOption: "RAW" },
-        });
-        console.log(`  ✅ Updated lastRechecked for ${rowIndexes.length} rows`);
-        return res.status(200).json({ success: true });
-      } catch (err) {
-        console.error(`❌ Error in update_recheck_timestamp:`, err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

@@ -2328,7 +2328,7 @@ export default function TriageSystem({ onBack }) {
 
 
   // Manual refresh — orchestrated from the frontend to bypass 300s timeout limits
-  const refreshTriage = async () => {
+  const refreshTriage = async (forceProactive = false) => {
     try {
       setIsLoading(true);
       setRefreshStatus("Initializing...");
@@ -2344,7 +2344,7 @@ export default function TriageSystem({ onBack }) {
         setRefreshStatus(`Scanning clients (batch ${Math.floor(sweepIdx / 3) + 1})...`);
         const sweepResp = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "start_triage", step: "sweep", startIdx: sweepIdx, automationCommanderSheetId }),
+          body: JSON.stringify({ action: "start_triage", step: "sweep", startIdx: sweepIdx, automationCommanderSheetId, forceProactive }),
         });
         const sweepData = await sweepResp.json();
         if (!sweepResp.ok || !sweepData.success) throw new Error(sweepData.error || "Failed to sweep flags");
@@ -8039,17 +8039,15 @@ export default function TriageSystem({ onBack }) {
                     </p>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px", flexShrink: 0 }}>
-                    <button className="triage-btn" disabled={triggeringProactive} onClick={async () => {
+                    <button className="triage-btn" disabled={isLoading} onClick={async () => {
                       setTriggeringProactive(true); setTriggerProactiveMsg("");
                       try {
-                        const r = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "trigger_proactive_checks" }) });
-                        const d = await r.json();
-                        if (d.success) setTriggerProactiveMsg("✓ Triggered! Check history below in a few minutes.");
-                        else setTriggerProactiveMsg("Error: " + d.error);
+                        await refreshTriage(true);
+                        setTriggerProactiveMsg("✓ Checks complete! Alerts updated.");
                       } catch(e) { setTriggerProactiveMsg("Error: " + e.message); }
                       finally { setTriggeringProactive(false); }
-                    }} style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", cursor: triggeringProactive ? "default" : "pointer", whiteSpace: "nowrap" }}>
-                      {triggeringProactive ? <><Spinner size={12}/>Triggering...</> : "▶ Run Checks Now"}
+                    }} style={{ background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", cursor: isLoading ? "default" : "pointer", whiteSpace: "nowrap" }}>
+                      {isLoading ? <><Spinner size={12}/>Running...</> : "▶ Run Checks Now"}
                     </button>
                     {triggerProactiveMsg && <span style={{ fontSize: "11px", color: triggerProactiveMsg.startsWith("✓") ? "#16a34a" : "#dc2626" }}>{triggerProactiveMsg}</span>}
                   </div>

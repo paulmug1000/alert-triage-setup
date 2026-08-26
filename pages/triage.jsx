@@ -3158,28 +3158,39 @@ export default function TriageSystem({ onBack }) {
   };
 
   // Analyze a rich non-actionable flag (CRM copied / retainer invoices)
-  const analyzeNoActionFlag = async (flagType) => {
-    if (!selectedClient || noActionAnalysisLoading[flagType]) return;
-    setNoActionAnalysisLoading(prev => ({ ...prev, [flagType]: true }));
+  const analyzeNoActionFlag = async (na) => {
+    // Accepts the full noActionAlert object (not just flagType) — needed for
+    // two fixes together (26 Aug 2026): keying by na.fingerprintHash rather
+    // than na.flagType, since multiple distinct alerts of the same rich type
+    // can exist for one client and a shared flagType key would make a
+    // manual re-run on one incorrectly override the display for all of
+    // them; and passing na.flagDetail through as targetLine, so a manual
+    // re-run is targeted at this one specific AutoLog line too, the same as
+    // the automatic analysis already is — without this, "Re-run" would
+    // silently go back to scanning the whole window.
+    const key = na.fingerprintHash || na.flagType; // fall back for any older cached data without a fingerprintHash
+    if (!selectedClient || noActionAnalysisLoading[key]) return;
+    setNoActionAnalysisLoading(prev => ({ ...prev, [key]: true }));
     try {
       const resp = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "analyze_noaction_flag",
-          flagType,
+          flagType: na.flagType,
           clientSheetId: selectedClient.clientSheetId,
           masterSheetId: selectedClient.masterSheetId,
           automationCommanderSheetId,
           clientName: selectedClient.clientName,
+          targetLine: na.flagDetail,
         }),
       });
       const data = await resp.json();
-      setNoActionAnalysis(prev => ({ ...prev, [flagType]: data }));
+      setNoActionAnalysis(prev => ({ ...prev, [key]: data }));
     } catch (e) {
-      setNoActionAnalysis(prev => ({ ...prev, [flagType]: { success: false, error: e.message } }));
+      setNoActionAnalysis(prev => ({ ...prev, [key]: { success: false, error: e.message } }));
     } finally {
-      setNoActionAnalysisLoading(prev => ({ ...prev, [flagType]: false }));
+      setNoActionAnalysisLoading(prev => ({ ...prev, [key]: false }));
     }
   };
 
@@ -9057,8 +9068,14 @@ export default function TriageSystem({ onBack }) {
                 {clientNoActionAlerts.map((na) => {
                   const isResolved = resolvedNoActionFlags.has(na.flagType);
                   const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges"].includes(na.flagType);
-                  const analysis = noActionAnalysis[na.flagType];
-                  const isLoading = noActionAnalysisLoading[na.flagType];
+                  // A manual re-run (noActionAnalysis) takes precedence once
+                  // triggered, since it's more recent than whatever was
+                  // computed automatically at build time — but by default,
+                  // na.analysisResult is already there the moment this card
+                  // renders (26 Aug 2026, proposal 2) with no click needed.
+                  const naKey = na.fingerprintHash || na.flagType; // matches analyzeNoActionFlag's key fallback
+                  const analysis = noActionAnalysis[naKey] || na.analysisResult;
+                  const isLoading = noActionAnalysisLoading[naKey];
 
                   if (isRichFlag && !isResolved) {
                     // Rich analysis card
@@ -9094,7 +9111,7 @@ export default function TriageSystem({ onBack }) {
                             )}
                             {!analysis && !isLoading && (
                               <button className="triage-btn"
-                                onClick={() => analyzeNoActionFlag(na.flagType)}
+                                onClick={() => analyzeNoActionFlag(na)}
                                 style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
                               >
                                 🔍 Analyse
@@ -9105,7 +9122,7 @@ export default function TriageSystem({ onBack }) {
                             )}
                             {analysis && !isLoading && (
                               <button className="triage-btn"
-                                onClick={() => analyzeNoActionFlag(na.flagType)}
+                                onClick={() => analyzeNoActionFlag(na)}
                                 style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
                               >
                                 ↻ Re-run

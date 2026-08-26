@@ -7333,12 +7333,23 @@ export default async function handler(req, res) {
 
               if (oldPathNoActionKeys.has(`${clientMeta.masterSheetId}|||${row.alertType}`)) continue; 
 
+              let analysisResult = null;
+              if (row.cachedOptionsJSON) {
+                try { analysisResult = JSON.parse(row.cachedOptionsJSON); } catch (e) { analysisResult = null; }
+              }
               newNoActionFromMemory.push({
                 clientId: clientMeta.masterSheetId,
                 flagType: row.alertType,
                 flagName: FLAG_NAMES[row.alertType] || row.alertType,
                 flagDetail: row.alertSummary, // Pass the raw text so the UI can display it
                 fingerprintHash: row.fingerprintHash,
+                // Pre-computed at build_cached_alert_options time (26 Aug
+                // 2026, proposal 2) for the 6 rich informational types —
+                // the exact {success, flagType, results, overallOk} shape
+                // analyzeNoActionFlag has always returned on manual re-run,
+                // just already sitting here rather than requiring a live,
+                // on-demand call.
+                analysisResult,
               });
 
               if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
@@ -7926,12 +7937,68 @@ export default async function handler(req, res) {
 
         const elapsedS = Math.round((Date.now() - buildStart) / 1000);
         console.log(`build_cached_alert_options complete in ${elapsedS}s: ${built} built, ${notFound} not found, ${errors} errors, hasMore: ${hasMore}`);
-        
+
+        // Second pass: the 6 rich informational types (26 Aug 2026, proposal
+        // 2, Paul's direction) — runs the newly-targeted analyze_noaction_flag
+        // once here, at build time, rather than within run_flag_sweep itself,
+        // for the same reason this whole action already exists separately
+        // from detection: keeps detection fast, and an occasional slow
+        // Pipeline/Confirmed read here can't block the next sweep. Reuses
+        // cachedOptionsJSON to store the result — same "pre-computed result
+        // for this row" role it already plays for discrepancy-type rows,
+        // just holding an analysis result instead of Tier1/2 options here.
+        const RICH_INFO_TYPES = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
+          "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
+        const pendingRich = memoryRows.filter(r =>
+          r.status === "cached" && r.category === "info" && RICH_INFO_TYPES.includes(r.alertType) && !r.cachedOptionsJSON
+        );
+        let richAnalyzed = 0, richErrors = 0;
+        if (pendingRich.length > 0 && !hasMore) {
+          console.log(`build_cached_alert_options: ${pendingRich.length} rich informational row(s) pending analysis`);
+          for (const row of pendingRich) {
+            if (Date.now() - buildStart > TIME_LIMIT_MS) {
+              console.log(`  ⏳ Time limit reached during rich-type analysis — remaining rows will be picked up next run.`);
+              hasMore = true;
+              break;
+            }
+            const client = clientByName.get(row.clientName);
+            if (!client) { richErrors++; continue; }
+            try {
+              const analyzeRes = await fetch(`${baseUrl}/api/triage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  action: "analyze_noaction_flag",
+                  clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId,
+                  automationCommanderSheetId: acIdBuild, flagType: row.alertType, clientName: row.clientName,
+                  targetLine: row.alertSummary,
+                }),
+              });
+              const analyzeData = await analyzeRes.json();
+              if (analyzeData.success) {
+                await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
+                  ...row, cachedOptionsJSON: JSON.stringify(analyzeData),
+                });
+                richAnalyzed++;
+                console.log(`  ✅ ${row.clientName}/${row.alertType}: targeted analysis stored`);
+              } else {
+                richErrors++;
+                console.log(`  ❌ ${row.clientName}/${row.alertType}: analyze_noaction_flag failed — ${analyzeData.error || "unknown"}`);
+              }
+            } catch (richErr) {
+              richErrors++;
+              console.log(`  ❌ ${row.clientName}/${row.alertType}: analyze_noaction_flag call failed — ${richErr.message}`);
+            }
+            await new Promise(r => setTimeout(r, 1200)); // same 429-avoidance delay as the discrepancy loop above
+          }
+          console.log(`build_cached_alert_options: rich informational analysis — ${richAnalyzed} analyzed, ${richErrors} errors`);
+        }
+
         await logBuildOptionsRun(sheets, acIdBuild, { 
           processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, builtDetail, isContinuation: req.body.isContinuation
         });
 
-        return res.status(200).json({ success: true, processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, hasMore });
+        return res.status(200).json({ success: true, processed: pending.length, built, notFound, errors, elapsedSeconds: elapsedS, hasMore, richAnalyzed, richErrors });
       } catch (err) {
         console.error("❌ build_cached_alert_options error:", err);
         return res.status(500).json({ success: false, error: err.message });
@@ -11806,50 +11873,60 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       // Analyze a non-actionable flag by reading the client's AutoLog tab (master sheet)
       // to identify exactly which jobs were affected, then verify them.
       // Supported flagTypes: crmCopiedConfChecked, crmCopiedConfUnchecked, retainerInvoicesCreated
-      const { clientSheetId, masterSheetId, automationCommanderSheetId: acId, flagType, clientName } = req.body;
+      //
+      // targetLine (26 Aug 2026, Paul's direction — proposal 2): when provided
+      // (the exact AutoLog line text, already stored as the AlertMemory row's
+      // alertSummary since that's how detection fingerprinted it), restricts
+      // analysis to that one specific instance instead of scanning the whole
+      // window for every possibly-relevant entry. Every one of the 6 rich
+      // types' parsing/verification logic below is completely unchanged —
+      // each already naturally produces a single-job result when only one
+      // line is present to match, so narrowing the input alone is sufficient
+      // and carries none of the risk a rewrite of that logic would.
+      const { clientSheetId, masterSheetId, automationCommanderSheetId: acId, flagType, clientName, targetLine } = req.body;
 
       if (!clientSheetId || !masterSheetId || !acId || !flagType) {
         return res.status(400).json({ success: false, error: "Missing required fields" });
       }
 
       try {
-        console.log(`\n🔍 Analyzing non-actionable flag: ${flagType} for ${clientName}`);
+        console.log(`\n🔍 Analyzing non-actionable flag: ${flagType} for ${clientName}${targetLine ? " (targeted instance)" : ""}`);
         const sheets = await getSheetsClient();
         const masterSheetIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
         const clientSheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
         const acIdClean = extractSheetIdFromUrl(acId) || acId;
 
         // ── Step 1: Find when this flag type was last resolved for this client ────
-        // Replaced 23 Aug 2026 (clear_flags retirement) — previously looked for a
-        // group-level flag_cleared record written by clear_flags; now looks at
-        // this client+flagType's own AlertMemory rows directly, since
-        // resolve_noaction_flag marks them "accepted" the moment Paul resolves
-        // this flag. Using the most recent lastSeen among non-cached rows is the
-        // per-event equivalent of "when was this last cleared".
+        // Skipped entirely when targetLine is provided — a lookback window is
+        // meaningless once we're targeting one already-known, specific line;
+        // it either exists in AutoLog or it doesn't. Saves the extra
+        // AlertMemory read too.
+        let windowStart = new Date(0); // epoch — no-op filter, overridden below when not targeted
 
-        const now = new Date();
-        let windowStart = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000); // default: 90 days ago
-        let foundClear = false;
+        if (!targetLine) {
+          windowStart = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // default: 90 days ago
+          let foundClear = false;
 
-        try {
-          const memoryRows = await readAlertMemory(sheets, acIdClean);
-          const resolvedRows = memoryRows
-            .filter(r => r.clientName === clientName && r.alertType === flagType && r.status !== "cached")
-            .sort((a, b) => new Date(b.lastSeen || 0).getTime() - new Date(a.lastSeen || 0).getTime());
-          if (resolvedRows.length > 0) {
-            const resolvedAt = new Date(resolvedRows[0].lastSeen || resolvedRows[0].firstSeen);
-            if (!isNaN(resolvedAt.getTime())) {
-              windowStart = resolvedAt;
-              foundClear = true;
-              console.log(`  ✓ ${flagType} last resolved for ${clientName} at ${resolvedAt.toISOString()} (AlertMemory)`);
+          try {
+            const memoryRows = await readAlertMemory(sheets, acIdClean);
+            const resolvedRows = memoryRows
+              .filter(r => r.clientName === clientName && r.alertType === flagType && r.status !== "cached")
+              .sort((a, b) => new Date(b.lastSeen || 0).getTime() - new Date(a.lastSeen || 0).getTime());
+            if (resolvedRows.length > 0) {
+              const resolvedAt = new Date(resolvedRows[0].lastSeen || resolvedRows[0].firstSeen);
+              if (!isNaN(resolvedAt.getTime())) {
+                windowStart = resolvedAt;
+                foundClear = true;
+                console.log(`  ✓ ${flagType} last resolved for ${clientName} at ${resolvedAt.toISOString()} (AlertMemory)`);
+              }
             }
+          } catch (e) {
+            console.log(`  ⚠ Could not read AlertMemory for last-resolved timestamp: ${e.message}`);
           }
-        } catch (e) {
-          console.log(`  ⚠ Could not read AlertMemory for last-resolved timestamp: ${e.message}`);
-        }
 
-        if (!foundClear) {
-          console.log(`  ℹ No prior resolution found in AlertMemory — using 90-day window from ${windowStart.toISOString()}`);
+          if (!foundClear) {
+            console.log(`  ℹ No prior resolution found in AlertMemory — using 90-day window from ${windowStart.toISOString()}`);
+          }
         }
 
         // ── Step 2: Read AutoLog and filter to entries after windowStart ──────────
@@ -11870,11 +11947,37 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           return isNaN(d.getTime()) ? null : d;
         };
         // Filter to entries after windowStart
-        const autoLogRows = allAutoLogRows.filter(row => {
+        let autoLogRows = allAutoLogRows.filter(row => {
           const ts = autoLogSerialToDate(row[0]);
           return ts && ts > windowStart;
         });
         console.log(`  ✓ ${autoLogRows.length} AutoLog entries after window start (${allAutoLogRows.length} total)`);
+
+        // Narrow to the one specific instance (26 Aug 2026, proposal 2) — every
+        // branch below still scans/matches within autoLogRows exactly as
+        // before, but now only one row (at most) is ever present to match,
+        // since only rows whose Details genuinely contain this exact line
+        // survive this filter. This is the entire mechanism that turns a
+        // whole-window scan into a single-instance check, without touching
+        // any of that per-type logic itself.
+        if (targetLine) {
+          autoLogRows = allAutoLogRows
+            .filter(row => String(row[3] || "").includes(targetLine))
+            .map(row => {
+              // Replace Details with just the target line — a row's Details
+              // can bundle several distinct lines from one automation run
+              // (joined with "\n\n"), so filtering by row alone isn't
+              // precise enough if the same row happens to contain more than
+              // one line matching a given type's pattern (e.g. two jobs
+              // copied in the same run). This guarantees every branch's
+              // internal line-splitting logic below sees exactly this one
+              // line, whatever else was originally bundled alongside it.
+              const copy = row.slice();
+              copy[3] = targetLine;
+              return copy;
+            });
+          console.log(`  ✓ Narrowed to ${autoLogRows.length} AutoLog row(s) containing the target line`);
+        }
 
         const results = [];
 

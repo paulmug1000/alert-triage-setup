@@ -1173,6 +1173,10 @@ export default function TriageSystem({ onBack }) {
   const [toolsFiles, setToolsFiles] = useState([]);
   const [toolsBatchRunning, setToolsBatchRunning] = useState(false);
   const [diagClientName, setDiagClientName] = useState("");
+  const [sweepSchedule, setSweepSchedule] = useState(null); // { actionable: {frequencyMinutes, lastCheckedAt}, info: {...}, proactive: {...} }
+  const [sweepScheduleLoading, setSweepScheduleLoading] = useState(false);
+  const [sweepScheduleLoaded, setSweepScheduleLoaded] = useState(false);
+  const [sweepFrequencySaving, setSweepFrequencySaving] = useState(""); // category currently being saved, "" = none
   const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
   const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
   const [proactiveCheckLogLoaded, setProactiveCheckLogLoaded] = useState(false);
@@ -1296,6 +1300,7 @@ export default function TriageSystem({ onBack }) {
     fireOutgoingsPullIfPending();
     setActiveNav("settings");
     setSettingsLoading(true);
+    if (!sweepScheduleLoaded) loadSweepSchedule();
     if (!proactiveCheckLogLoaded) loadProactiveCheckLog();
     if (!flagSweepLogLoaded) loadFlagSweepLog();
     if (!buildOptionsLogLoaded) loadBuildOptionsLog();
@@ -3757,6 +3762,46 @@ export default function TriageSystem({ onBack }) {
       console.error("Failed to load overview:", err);
     } finally {
       setOverviewLoading(false);
+    }
+  };
+
+  const loadSweepSchedule = async () => {
+    try {
+      setSweepScheduleLoading(true);
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_sweep_schedule", automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) setSweepSchedule(data.schedule || {});
+    } catch(e) { console.error("loadSweepSchedule error:", e); }
+    finally { setSweepScheduleLoading(false); setSweepScheduleLoaded(true); }
+  };
+
+  // Immediate-save, matching the pattern the old FlagRules dropdown used —
+  // optimistic update so the input reflects the change instantly, with a
+  // per-category "saving" indicator and revert-on-failure so a failed save
+  // is visible rather than silently leaving the UI showing something that
+  // isn't actually saved.
+  const saveSweepFrequency = async (category, newFrequencyMinutes) => {
+    const previous = sweepSchedule?.[category];
+    setSweepSchedule(prev => ({ ...prev, [category]: { ...prev[category], frequencyMinutes: newFrequencyMinutes } }));
+    setSweepFrequencySaving(category);
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save_sweep_frequency", automationCommanderSheetId, category, frequencyMinutes: newFrequencyMinutes }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setSweepSchedule(prev => ({ ...prev, [category]: previous }));
+        console.error("save_sweep_frequency failed:", data.error);
+      }
+    } catch (e) {
+      setSweepSchedule(prev => ({ ...prev, [category]: previous }));
+      console.error("saveSweepFrequency error:", e);
+    } finally {
+      setSweepFrequencySaving("");
     }
   };
 
@@ -7731,8 +7776,66 @@ export default function TriageSystem({ onBack }) {
               </div>
 
              
-              {/* Alert Pipeline Activity */}
+              {/* Alert System — consolidates what used to be three separate
+                  cards (Alert Pipeline Activity / Alert Types & Auto-
+                  Clearing / Proactive Checks) into one, per Paul's
+                  direction (26 Aug 2026). Each alert now resolves
+                  independently — there's no more "group clearing" concept,
+                  and no "info · blocking" flag type; a discrepancy either
+                  is or isn't cleared, an informational alert either is or
+                  isn't acknowledged, and nothing about one alert holds up
+                  another. */}
               <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700" }}>Alert System</h3>
+                <p style={{ margin: "0 0 18px", fontSize: "12px", color: "#666" }}>
+                  Every alert — actionable, informational, or proactive — is detected, resolved, and cleared independently of every other. The three categories below each run on their own schedule.
+                </p>
+
+                {/* Check frequency */}
+                <div style={{ marginBottom: "20px", paddingBottom: "18px", borderBottom: "1px solid #f0f0f0" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "700", color: "#1a1a1a", marginBottom: "4px" }}>Check frequency</div>
+                  <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#888" }}>
+                    How often each category is checked for. A single 30-minute Google Apps Script trigger drives all three — each just decides independently whether it's actually due yet.
+                  </p>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "12px" }}>
+                    {[
+                      { key: "actionable", label: "Actionable", hint: "Discrepancies needing review — invoice, CRM, expense" },
+                      { key: "info", label: "Informational", hint: "Acknowledge-only events from AutoLog" },
+                      { key: "proactive", label: "Proactive", hint: "The 11 overnight checks" },
+                    ].map(cat => {
+                      const entry = sweepSchedule?.[cat.key];
+                      return (
+                        <div key={cat.key} style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: "8px", padding: "10px 12px" }}>
+                          <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a", marginBottom: "2px" }}>{cat.label}</div>
+                          <div style={{ fontSize: "11px", color: "#888", marginBottom: "8px" }}>{cat.hint}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            <input
+                              type="number"
+                              min="1"
+                              disabled={sweepScheduleLoading}
+                              value={entry?.frequencyMinutes ?? ""}
+                              onChange={(e) => setSweepSchedule(prev => ({ ...prev, [cat.key]: { ...prev?.[cat.key], frequencyMinutes: e.target.value } }))}
+                              onBlur={(e) => {
+                                const val = parseInt(e.target.value, 10);
+                                if (val > 0) saveSweepFrequency(cat.key, val);
+                              }}
+                              style={{ width: "70px", fontSize: "13px", padding: "4px 6px", borderRadius: "6px", border: "1px solid #ddd", opacity: sweepFrequencySaving === cat.key ? 0.5 : 1 }}
+                            />
+                            <span style={{ fontSize: "12px", color: "#666" }}>minutes</span>
+                          </div>
+                          {entry?.lastCheckedAt && (
+                            <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
+                              Last checked: {new Date(entry.lastCheckedAt).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+              {/* Alert Pipeline Activity */}
+              <div style={{ marginBottom: "20px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
                   <div>
                     <h3 style={{ margin: "0 0 4px", fontSize: "15px", fontWeight: "700" }}>Alert Pipeline Activity</h3>
@@ -7753,6 +7856,7 @@ export default function TriageSystem({ onBack }) {
                       <div style={{ fontSize: "13px", fontWeight: "700", color: "#1d4ed8", marginBottom: "2px" }}>🔍 1. Flag Sweep</div>
                       <div style={{ fontSize: "11px", color: "#666" }}>Searches sheets for new discrepancies</div>
                     </div>
+
                     <div style={{ padding: "10px", overflowY: "auto", flex: 1 }}>
                       {flagSweepLogLoading && <div style={{ fontSize: "12px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
                       {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length === 0 && <div style={{ fontSize: "12px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
@@ -7851,40 +7955,37 @@ export default function TriageSystem({ onBack }) {
               </div>
 
 
-              {/* Alert Types & Auto-Clearing */}
-              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Alert Types & Auto-Clearing</h3>
+              {/* Alert Types */}
+              <div style={{ marginBottom: "20px", paddingTop: "18px", borderTop: "1px solid #f0f0f0" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Alert Types</h3>
                 <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-                  Every alert type the system can raise, and what actually clears it in the sheet. Alerts fall into three groups (invoice, CRM, expense) — each group's flags only clear together, once every alert in that group for the client has been handled. The rule dropdown controls what triggers each flag — changes save immediately.
+                  Every alert type the system can raise. Each one is detected, resolved, and cleared entirely on its own — nothing here is grouped, and resolving one alert never depends on or affects any other.
                 </p>
 
                 {[
                   {
                     group: "Invoice",
-                    rule: "Clears once every invoice alert for the client is resolved, and \"Invoice stale/unsent changes\" (if present) has also been acknowledged.",
                     items: [
                       { key: "invoiceDashboardDiscr", name: "Invoice dashboard discrepancy", kind: "actionable" },
-                      { key: "invoiceStaleUnsentChanges", name: "Invoice stale/unsent changes", kind: "blocking" },
+                      { key: "invoiceStaleUnsentChanges", name: "Invoice stale/unsent changes", kind: "info" },
                       { key: "retainerInvoicesCreated", name: "Retainer invoices created", kind: "info" },
                       { key: "retainerInvoicesDeleted", name: "Retainer invoices deleted", kind: "info" },
                     ],
                   },
                   {
                     group: "CRM",
-                    rule: "Clears once every CRM alert for the client is resolved, and the three \"copied to Confirmed\" flags (if present) have also been acknowledged.",
                     items: [
                       { key: "crmPipeDashDiscr", name: "CRM pipeline dashboard discrepancy", kind: "actionable" },
                       { key: "crmPipeAppDiscr", name: "CRM pipeline app discrepancy", kind: "actionable" },
                       { key: "crmConfDashDiscr", name: "CRM confirmed dashboard discrepancy", kind: "actionable" },
                       { key: "crmConfAppDiscr", name: "CRM confirmed app discrepancy", kind: "actionable" },
-                      { key: "crmCopiedConfChecked", name: "CRM copied to Confirmed — checked", kind: "blocking" },
-                      { key: "crmCopiedConfUnchecked", name: "CRM copied to Confirmed — unchecked", kind: "blocking" },
-                      { key: "crmCopiedConfDelete", name: "CRM copied to Confirmed — delete", kind: "blocking" },
+                      { key: "crmCopiedConfChecked", name: "CRM copied to Confirmed — checked", kind: "info" },
+                      { key: "crmCopiedConfUnchecked", name: "CRM copied to Confirmed — unchecked", kind: "info" },
+                      { key: "crmCopiedConfDelete", name: "CRM copied to Confirmed — delete", kind: "info" },
                     ],
                   },
                   {
                     group: "Expense",
-                    rule: "Clears once every expense alert for the client is resolved. No informational flag blocks this group — there's no expense equivalent of the invoice/CRM \"blocking\" flags.",
                     items: [
                       { key: "expenseDashboardDiscr", name: "Expense dashboard discrepancy", kind: "actionable" },
                       { key: "expenseAdded", name: "Expense added", kind: "info" },
@@ -7892,9 +7993,8 @@ export default function TriageSystem({ onBack }) {
                     ],
                   },
                 ].map((g, gi) => (
-                  <div key={g.group} style={{ marginTop: gi > 0 ? "18px" : 0, paddingTop: gi > 0 ? "16px" : 0, borderTop: gi > 0 ? "1px solid #f0f0f0" : "none" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "700", color: "#1a56db", marginBottom: "4px" }}>{g.group} group</div>
-                    <div style={{ fontSize: "11px", color: "#888", marginBottom: "10px", lineHeight: "1.5" }}>{g.rule}</div>
+                  <div key={g.group} style={{ marginTop: gi > 0 ? "14px" : 0, paddingTop: gi > 0 ? "12px" : 0, borderTop: gi > 0 ? "1px solid #f5f5f5" : "none" }}>
+                    <div style={{ fontSize: "13px", fontWeight: "700", color: "#1a56db", marginBottom: "8px" }}>{g.group}</div>
                     {g.items.map((it, i) => (
                       <div key={it.key} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "6px 0", borderTop: i > 0 ? "1px solid #f5f5f5" : "none" }}>
                         <span style={{
@@ -7902,11 +8002,9 @@ export default function TriageSystem({ onBack }) {
                           padding: "2px 7px", borderRadius: "10px", height: "fit-content", whiteSpace: "nowrap",
                           ...(it.kind === "actionable"
                             ? { background: "#eef4ff", color: "#1d4ed8" }
-                            : it.kind === "blocking"
-                              ? { background: "#fff7ed", color: "#c2410c" }
-                              : { background: "#f4f4f5", color: "#71717a" }),
+                            : { background: "#f4f4f5", color: "#71717a" }),
                         }}>
-                          {it.kind === "actionable" ? "Actionable" : it.kind === "blocking" ? "Info · blocking" : "Info"}
+                          {it.kind === "actionable" ? "Actionable" : "Informational"}
                         </span>
                         <div style={{ fontSize: "13px", color: "#1a1a1a", paddingTop: "1px", flex: 1 }}>{it.name}</div>
                       </div>
@@ -7915,19 +8013,18 @@ export default function TriageSystem({ onBack }) {
                 ))}
 
                 <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e8e8e8", fontSize: "11px", color: "#888", lineHeight: "1.6" }}>
-                  <strong>Actionable</strong> — generates an individual alert you accept or ignore directly.{" "}
-                  <strong>Info</strong> — shown under Informational Flags on the client's alert screen; must be acknowledged there, but doesn't hold up the rest of its group from clearing.{" "}
-                  <strong>Info · blocking</strong> — same, but this specific flag must also be acknowledged before the rest of its group can clear, even once every actionable alert in the group is done.
+                  <strong>Actionable</strong> — generates an individual alert with options to accept or ignore, shown in the main alert list.{" "}
+                  <strong>Informational</strong> — an event worth knowing about; acknowledge it directly on the alert card, with no options to act on.
                 </div>
               </div>
 
               {/* Proactive Checks */}
-              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+              <div style={{ paddingTop: "18px", borderTop: "1px solid #f0f0f0" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
                   <div style={{ paddingRight: "16px" }}>
                     <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Proactive Checks</h3>
                     <p style={{ margin: 0, fontSize: "12px", color: "#666" }}>
-                      These checks run automatically every night at 3am, across every client, and surface as alerts on the Home screen when something needs attention.
+                      These checks run whenever the proactive category is due (see the frequency setting above), across every client, and surface as alerts on the Home screen when something needs attention.
                     </p>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px", flexShrink: 0 }}>
@@ -7996,6 +8093,7 @@ export default function TriageSystem({ onBack }) {
                     </div>
                   )}
                 </div>
+              </div>
               </div>
 
               {/* Claude API Usage */}

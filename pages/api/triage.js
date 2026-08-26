@@ -2439,6 +2439,110 @@ async function checkAllGASLocks(sheets, masterSheetId, cachedData = null) {
 // exclusively. The ProactiveAlerts tab itself is left untouched — this only
 // retires the code path, not the sheet data, which is Paul's own call.
 
+const SWEEP_SCHEDULE_TAB = "SweepSchedule";
+// Defaults preserve exactly today's behaviour until Paul changes them via
+// the Settings page — actionable/info both currently run every 30 minutes
+// (the same run_flag_sweep call), proactive currently runs once daily.
+const SWEEP_SCHEDULE_DEFAULTS = {
+  actionable: 30,
+  info: 30,
+  proactive: 1440,
+};
+
+async function ensureSweepScheduleTab(sheets, automationCommanderSheetId) {
+  try {
+    await sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${SWEEP_SCHEDULE_TAB}!A1`,
+    });
+  } catch (err) {
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: automationCommanderSheetId,
+        requestBody: { requests: [{ addSheet: { properties: { title: SWEEP_SCHEDULE_TAB } } }] },
+      });
+      // lastCheckedAt starts blank for all three default rows — no timestamp needed here.
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId,
+        range: `${SWEEP_SCHEDULE_TAB}!A1:C4`,
+        valueInputOption: "RAW",
+        requestBody: { values: [
+          ["category", "frequencyMinutes", "lastCheckedAt"],
+          ["actionable", SWEEP_SCHEDULE_DEFAULTS.actionable, ""],
+          ["info", SWEEP_SCHEDULE_DEFAULTS.info, ""],
+          ["proactive", SWEEP_SCHEDULE_DEFAULTS.proactive, ""],
+        ] },
+      });
+      console.log(`✅ Created ${SWEEP_SCHEDULE_TAB} tab with default frequencies`);
+    } catch (createErr) {
+      console.log(`⚠️ Could not create ${SWEEP_SCHEDULE_TAB} tab: ${createErr.message}`);
+    }
+  }
+}
+
+// Returns { actionable: { rowIndex, frequencyMinutes, lastCheckedAt }, info: {...}, proactive: {...} }
+// Missing categories (e.g. a row deleted by hand) fall back to defaults with
+// no rowIndex — isCategoryDue_ below treats that as "always due" rather than
+// throwing, and the caller can decide whether to also re-create the row.
+async function readSweepSchedule_(sheets, automationCommanderSheetId) {
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: automationCommanderSheetId,
+    range: `${SWEEP_SCHEDULE_TAB}!A2:C10`,
+  });
+  const rows = resp.data.values || [];
+  const schedule = {};
+  rows.forEach((row, i) => {
+    const category = String(row[0] || "").trim().toLowerCase();
+    if (!category) return;
+    schedule[category] = {
+      rowIndex: i + 2,
+      frequencyMinutes: parseInt(row[1], 10) || SWEEP_SCHEDULE_DEFAULTS[category] || 30,
+      lastCheckedAt: row[2] || "",
+    };
+  });
+  for (const category of Object.keys(SWEEP_SCHEDULE_DEFAULTS)) {
+    if (!schedule[category]) {
+      schedule[category] = { rowIndex: null, frequencyMinutes: SWEEP_SCHEDULE_DEFAULTS[category], lastCheckedAt: "" };
+    }
+  }
+  return schedule;
+}
+
+// True if this category's configured interval has elapsed since it was last
+// checked (or has never been checked at all). A missing/unparseable
+// lastCheckedAt is treated as "always due" — safer than silently never
+// running a category because of a malformed timestamp.
+function isCategoryDue_(categoryEntry) {
+  if (!categoryEntry.lastCheckedAt) return true;
+  const last = new Date(categoryEntry.lastCheckedAt);
+  if (isNaN(last.getTime())) return true;
+  const elapsedMinutes = (Date.now() - last.getTime()) / 60000;
+  return elapsedMinutes >= categoryEntry.frequencyMinutes;
+}
+
+// Updates lastCheckedAt for one category — creates the row if it doesn't
+// exist yet (e.g. schedule tab was just created, or a row was deleted by
+// hand), rather than silently failing to persist the timestamp.
+async function markCategoryChecked_(sheets, automationCommanderSheetId, category, schedule) {
+  const nowISO = new Date().toISOString();
+  const entry = schedule[category];
+  if (entry && entry.rowIndex) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${SWEEP_SCHEDULE_TAB}!C${entry.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[nowISO]] },
+    });
+  } else {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${SWEEP_SCHEDULE_TAB}!A:C`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[category, (entry && entry.frequencyMinutes) || SWEEP_SCHEDULE_DEFAULTS[category] || 30, nowISO]] },
+    });
+  }
+}
+
 async function ensureProactiveCheckLogTab(sheets, automationCommanderSheetId) {
   try {
     await sheets.spreadsheets.values.get({
@@ -2604,7 +2708,8 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
         JSON.stringify(raisedDetail || []),
       ]] },
     });
-    // Trim to most recent 200 rows (plus header)    const resp = await sheets.spreadsheets.values.get({
+    // Trim to most recent 200 rows (plus header)
+    const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
       range: `${FLAG_SWEEP_LOG_TAB}!A:A`,
     });
@@ -6425,6 +6530,64 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "get_sweep_schedule") {
+      // Returns the current per-category (actionable/info/proactive) sweep
+      // frequencies and last-checked timestamps, for the Settings page's
+      // frequency controls (26 Aug 2026, Paul's direction).
+      const { automationCommanderSheetId: acIdGetSchedule } = req.body;
+      if (!acIdGetSchedule) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      try {
+        const sheets = await getSheetsClient();
+        await ensureSweepScheduleTab(sheets, acIdGetSchedule);
+        const schedule = await readSweepSchedule_(sheets, acIdGetSchedule);
+        return res.status(200).json({ success: true, schedule });
+      } catch (err) {
+        console.error("❌ get_sweep_schedule error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "save_sweep_frequency") {
+      // Immediate-save from the Settings page — writes a single category's
+      // frequency back to SweepSchedule. Deliberately does not touch
+      // lastCheckedAt, so changing the frequency doesn't reset the "due"
+      // countdown already in progress.
+      const { automationCommanderSheetId: acIdSaveFreq, category, frequencyMinutes } = req.body;
+      if (!acIdSaveFreq) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+      const normalisedCategory = String(category || "").trim().toLowerCase();
+      if (!SWEEP_SCHEDULE_DEFAULTS[normalisedCategory]) {
+        return res.status(400).json({ success: false, error: `Unknown category: ${category}` });
+      }
+      const freqNum = parseInt(frequencyMinutes, 10);
+      if (!freqNum || freqNum < 1) {
+        return res.status(400).json({ success: false, error: `Invalid frequencyMinutes: ${frequencyMinutes}` });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureSweepScheduleTab(sheets, acIdSaveFreq);
+        const schedule = await readSweepSchedule_(sheets, acIdSaveFreq);
+        const entry = schedule[normalisedCategory];
+        if (entry && entry.rowIndex) {
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: acIdSaveFreq,
+            range: `${SWEEP_SCHEDULE_TAB}!B${entry.rowIndex}`,
+            valueInputOption: "RAW",
+            requestBody: { values: [[freqNum]] },
+          });
+        } else {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: acIdSaveFreq,
+            range: `${SWEEP_SCHEDULE_TAB}!A:C`,
+            valueInputOption: "RAW",
+            requestBody: { values: [[normalisedCategory, freqNum, ""]] },
+          });
+        }
+        console.log(`✅ save_sweep_frequency: ${normalisedCategory} → ${freqNum} min`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ save_sweep_frequency error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "trigger_agent_run") {
       // Calls a client's own Web App deployment (5_Agent_Receiver.gs doPost) to run
       // its invoice/CRM/expense automation on demand, instead of the 30-min poll or
@@ -7280,10 +7443,28 @@ export default async function handler(req, res) {
       if (!acIdSweep) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
 
       const sweepStart = Date.now();
+      // Declared here, before the try block, rather than inside it —
+      // needed in the catch block below too (for error logging), and
+      // let/const declared inside try are not visible in a sibling catch.
+      let clientsChecked = 0, flagsRaised = 0, errors = 0;
+      let raisedDetail = [];
       try {
         const sheets = await getSheetsClient();
 
         const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdSweep);
+
+        // Per-category scheduling (26 Aug 2026, Paul's direction) — actionable
+        // and info detection now each respect their own configurable
+        // frequency instead of both always running on every 30-min tick.
+        // Computed once per sweep call (not per client) since frequency is
+        // global, not per-client — every chunk within one full sweep cycle
+        // sees the same due/not-due decision, since lastCheckedAt is only
+        // updated once the whole cycle finishes (see the end of this action).
+        await ensureSweepScheduleTab(sheets, acIdSweep);
+        const schedule = await readSweepSchedule_(sheets, acIdSweep);
+        const actionableDue = isCategoryDue_(schedule.actionable);
+        const infoDue = isCategoryDue_(schedule.info);
+        console.log(`run_flag_sweep: actionableDue=${actionableDue}, infoDue=${infoDue}`);
         
         // Chunking architecture: process a strict subset of clients to avoid Vercel timeouts
         const CHUNK_SIZE = 3;
@@ -7305,8 +7486,8 @@ export default async function handler(req, res) {
         const freqRows = freqResponse.data.values || [];
 
         const sweepItems = []; // { clientName, alertType, fingerprints } — fingerprint-based flags, checked once against AlertMemory after the main loop
-        const raisedDetail = []; // { clientName, flagKey } — for the FlagSweepLog, so Paul can see exactly what was raised, not just a count
-        let clientsChecked = 0, flagsRaised = 0, errors = 0;
+        // raisedDetail: { clientName, flagKey } — for the FlagSweepLog, so Paul can see exactly what was raised, not just a count
+        // (clientsChecked/flagsRaised/errors/raisedDetail themselves are declared before the try block, above)
 
         for (const client of clientChunk) {
           try {
@@ -7322,9 +7503,9 @@ export default async function handler(req, res) {
                 spreadsheetId: client.masterSheetId,
                 ranges: [
                   "DataChgAlert!B4:I4",
-                  hasInvoice ? "InvComp!A5:Y1000" : "DataChgAlert!A1",
-                  hasExpense ? "DirComp!A5:AV1000" : "DataChgAlert!A1",
-                  "AutoLog!A2:D200"
+                  (hasInvoice && actionableDue) ? "InvComp!A5:Y1000" : "DataChgAlert!A1",
+                  (hasExpense && actionableDue) ? "DirComp!A5:AV1000" : "DataChgAlert!A1",
+                  infoDue ? "AutoLog!A2:D200" : "DataChgAlert!A1"
                 ]
               });
               const ranges = batchResp.data.valueRanges || [];
@@ -7338,7 +7519,7 @@ export default async function handler(req, res) {
 
             const gasLocks = await checkAllGASLocks(sheets, client.masterSheetId, batchData.gasLocks);
 
-            if (hasInvoice) {
+            if (hasInvoice && actionableDue) {
               const invLock = gasLocks.invoice;
               if (!invLock.locked) {
                 const invAlerts = await readInvCompAlerts(sheets, client.masterSheetId, batchData.invComp);
@@ -7358,7 +7539,7 @@ export default async function handler(req, res) {
               }
             }
 
-            if (hasExpense) {
+            if (hasExpense && actionableDue) {
               const expLock = gasLocks.expense;
               if (!expLock.locked) {
                 const expAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
@@ -7378,7 +7559,7 @@ export default async function handler(req, res) {
               }
             }
 
-            if (hasCRM) {
+            if (hasCRM && actionableDue) {
               const crmLock = gasLocks.crm;
               if (!crmLock.locked) {
                 for (const [mode, dashKey, appKey] of [["Pipeline", "crmPipeDashDiscr", "crmPipeAppDiscr"], ["Confirmed", "crmConfDashDiscr", "crmConfAppDiscr"]]) {
@@ -7404,8 +7585,10 @@ export default async function handler(req, res) {
             // text itself already contains everything (row/client/job/
             // amount) that makes it a discrete, fingerprintable event, so
             // no field-by-field parsing is needed, just matching which
-            // pattern a line contains and hashing the whole line.
-            {
+            // pattern a line contains and hashing the whole line. Gated on
+            // infoDue (26 Aug 2026) — this category now has its own
+            // configurable frequency, independent of actionable.
+            if (infoDue) {
               const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId, 30, batchData.autoLog);
               for (const [autoLogType, patterns] of Object.entries(AUTOLOG_TYPE_PATTERNS)) {
                 const matchedAlerts = [];
@@ -7539,6 +7722,19 @@ export default async function handler(req, res) {
                 console.log(`  ⚠️ Could not write AlertMemory row for ${item.clientName}/${item.alertType}: ${memErr.message}`);
               }
             }
+          }
+        }
+
+        // Only mark categories checked once the full sweep cycle completes
+        // (not per chunk) — updating lastCheckedAt mid-cycle would let later
+        // chunks in the same cycle see a different due/not-due decision
+        // than earlier ones did.
+        if (!hasMore) {
+          try {
+            if (actionableDue) await markCategoryChecked_(sheets, acIdSweep, "actionable", schedule);
+            if (infoDue) await markCategoryChecked_(sheets, acIdSweep, "info", schedule);
+          } catch (scheduleErr) {
+            console.log(`  ⚠️ Could not update SweepSchedule: ${scheduleErr.message}`);
           }
         }
 

@@ -3318,20 +3318,17 @@ export default function TriageSystem({ onBack }) {
     }
   }, [proactiveAlerts, proactiveLoadedAt]);
 
-  // Load proactive alerts when we arrive at a screen that needs them.
+// Load proactive alerts in parallel with main triage load when on the home screen.
   // Only fires when proactiveLoadedAt is 0 (never loaded or explicitly invalidated).
   // Using a useEffect (not render-time calls) to prevent cascading re-renders.
   useEffect(() => {
-    const needsProactive = (
-      screen === "clientSelection" ||
-      (triageComplete && totalAlerts === 0 && noActionCount === 0)
-    ) && activeNav !== "tasks" && activeNav !== "overview";
+    const needsProactive = activeNav === "home";
 
     if (!needsProactive) return;
     if (!proactiveLoading && proactiveLoadedAt === 0) {
       loadProactiveAlerts();
     }
-  }, [screen, triageComplete, totalAlerts, noActionCount, activeNav, proactiveLoadedAt]);
+  }, [activeNav, proactiveLoadedAt, proactiveLoading]);
 
   // Auto-refresh active tasks every 5 minutes while on the Tasks screen,
   // so snoozed tasks reappear promptly when their snooze expires.

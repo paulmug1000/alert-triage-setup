@@ -2382,6 +2382,11 @@ export default function TriageSystem({ onBack }) {
       setSessionId(data.sessionId);
       setTotalAlerts(data.totalAlerts || 0);
       setNoActionCount(data.noActionCount || 0);
+      setProactiveAlerts(data.proactiveAlerts || []);
+      const pCounts = {};
+      (data.proactiveAlerts || []).forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
+      setProactiveCountsByClient(pCounts);
+      setProactiveLoadedAt(Date.now());
       setClientsWithFlags(data.clientsWithFlags || []);
       setProcessedAlerts(new Set());
       setAcknowledgedNoAction(new Set());
@@ -2422,6 +2427,11 @@ export default function TriageSystem({ onBack }) {
           setSessionId(preData.sessionId);
           setTotalAlerts(preData.totalAlerts || 0);
           setNoActionCount(preData.noActionCount || 0);
+          setProactiveAlerts(preData.proactiveAlerts || []);
+          const pCounts = {};
+          (preData.proactiveAlerts || []).forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
+          setProactiveCountsByClient(pCounts);
+          setProactiveLoadedAt(Date.now());
           setClientsWithFlags(preData.clientsWithFlags || []);
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());
@@ -2554,6 +2564,14 @@ export default function TriageSystem({ onBack }) {
       const filteredNoAction = (data.noActionAlerts || []).filter(
         na => na.clientId === client.masterSheetId
       );
+      
+      if (data.proactiveAlerts) {
+        setProactiveAlerts(data.proactiveAlerts);
+        const pCounts = {};
+        data.proactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
+        setProactiveCountsByClient(pCounts);
+        setProactiveLoadedAt(Date.now());
+      }
 
       console.log(`  📊 Found ${filteredAlerts.length} unprocessed alerts for ${client.clientName}`);
       console.log(`  📋 Found ${filteredNoAction.length} non-actionable flags for ${client.clientName}`);
@@ -3334,18 +3352,7 @@ export default function TriageSystem({ onBack }) {
     }
   }, [proactiveAlerts, proactiveLoadedAt]);
 
-// Load proactive alerts in parallel with main triage load when on the home screen.
-  // Only fires when proactiveLoadedAt is 0 (never loaded or explicitly invalidated).
-  // Using a useEffect (not render-time calls) to prevent cascading re-renders.
-  useEffect(() => {
-    const needsProactive = activeNav === "home";
-
-    if (!needsProactive) return;
-    if (!proactiveLoading && proactiveLoadedAt === 0) {
-      loadProactiveAlerts();
-    }
-  }, [activeNav, proactiveLoadedAt, proactiveLoading]);
-
+// Proactive alerts now load instantly alongside main alerts via the Redis cache.
   // Auto-refresh active tasks every 5 minutes while on the Tasks screen,
   // so snoozed tasks reappear promptly when their snooze expires.
   useEffect(() => {

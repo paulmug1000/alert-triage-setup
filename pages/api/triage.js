@@ -6499,14 +6499,14 @@ export default async function handler(req, res) {
           const sessionId = Math.random().toString(36).substring(2, 15);
           await redisClient.set(
             `triage_alerts:${sessionId}`,
-            JSON.stringify({ alerts: fresh.alerts || [], noActionAlerts: fresh.noActionAlerts || [], clientsWithFlags: clientsWithUpdatedCounts }),
+            JSON.stringify({ alerts: fresh.alerts || [], noActionAlerts: fresh.noActionAlerts || [], proactiveAlerts: fresh.proactiveAlerts || [], clientsWithFlags: clientsWithUpdatedCounts }),
             { EX: 3600 } // Reduced from 24h to 1h to prevent Redis OOM
           );
 
           console.log(`✅ start_triage: refresh complete`);
           return res.status(200).json({
             success: true, sessionId, totalAlerts: (fresh.alerts || []).length,
-            noActionCount: (fresh.noActionAlerts || []).length, clientsWithFlags: clientsWithUpdatedCounts,
+            noActionCount: (fresh.noActionAlerts || []).length, proactiveAlerts: fresh.proactiveAlerts || [], clientsWithFlags: clientsWithUpdatedCounts,
           });
         }
 
@@ -6864,13 +6864,14 @@ export default async function handler(req, res) {
           return;
         }
 
-        const { alerts, noActionAlerts, clientsWithFlags, resolvedNoActionFlags } = JSON.parse(sessionData);
+        const { alerts, noActionAlerts, proactiveAlerts, clientsWithFlags, resolvedNoActionFlags } = JSON.parse(sessionData);
         console.log(`✅ Retrieved ${alerts.length} alerts from Redis for session ${sessionId}`);
         
         res.status(200).json({
           success: true,
           alerts,
           noActionAlerts,
+          proactiveAlerts: proactiveAlerts || [],
           clientsWithFlags,
           resolvedNoActionFlags: resolvedNoActionFlags || [],
         });
@@ -7202,6 +7203,7 @@ export default async function handler(req, res) {
           JSON.stringify({
             alerts: filteredAlerts,
             noActionAlerts: data.noActionAlerts,
+            proactiveAlerts: data.proactiveAlerts || [],
             clientsWithFlags: clientsWithUpdatedCounts,
           }),
           { EX: 3600 } // Reduced from 24h to 1h to prevent Redis OOM
@@ -7213,6 +7215,7 @@ export default async function handler(req, res) {
           sessionId,
           totalAlerts: filteredAlerts.length,
           noActionCount: data.noActionCount,
+          proactiveAlerts: data.proactiveAlerts || [],
           clientsWithFlags: clientsWithUpdatedCounts.map(c => ({
             clientName: c.clientName,
             clientSheetId: c.clientSheetId,
@@ -7301,9 +7304,10 @@ export default async function handler(req, res) {
           const oldPathNoActionKeys = new Set(mergedNoActionAlerts.map(na => `${na.clientId}|||${na.flagType}`));
 
           const newAlertsFromMemory = [];
-          const newNoActionFromMemory = [];
-          const extraFlagsByClient = new Map(); // clientName -> { flagKey: true, ... }
-          const newClientMeta = new Map(); 
+            const newNoActionFromMemory = [];
+            const newProactiveFromMemory = [];
+            const extraFlagsByClient = new Map(); // clientName -> { flagKey: true, ... }
+            const newClientMeta = new Map(); 
 
           // Authoritative lookup for ALL clients directly from AutoUpdates
           // This bypasses broken or old dataSnapshots in AlertMemory.
@@ -7353,7 +7357,30 @@ export default async function handler(req, res) {
               }
             } else if (String(row.category).toLowerCase() === "info" || row.category === "proactive") {
               // Process info flags (or legacy proactive-tagged info flags during transition)
-              if (!Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) continue;
+              if (!Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) {
+                if (row.category === "proactive") {
+                  let alertObj = {};
+                  try { alertObj = JSON.parse(row.dataSnapshot || "{}"); } catch (e) { alertObj = {}; }
+                  const metaFields = ["jobName","endClientName","confirmedRow","revenue","startDate","endDate",
+                    "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
+                    "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
+                    "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
+                    "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
+                    "directCosts","unreceivedAmount","placeholderCount","placeholderTotal"];
+                  const metadata = {};
+                  for (const f of metaFields) { if (alertObj[f] !== undefined) metadata[f] = alertObj[f]; }
+                  newProactiveFromMemory.push({
+                    ...alertObj, rowIndex: row.rowIndex, clientName: alertObj.clientName || row.clientName, alertType: alertObj.alertType || row.alertType, metadata
+                  });
+                  if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
+                    newClientMeta.set(row.clientName, {
+                      clientSheetId: alertObj.clientId || alertObj.clientSheetId || "",
+                      masterSheetId: alertObj.masterSheetId || "",
+                    });
+                  }
+                }
+                continue;
+              }
 
               const clientMeta = clientNameToMeta.get(row.clientName);
               if (!clientMeta) continue; 
@@ -7419,6 +7446,7 @@ export default async function handler(req, res) {
           noActionCount: finalNoActionAlerts.length,
           alerts: finalAlerts,
           noActionAlerts: finalNoActionAlerts,
+          proactiveAlerts: newProactiveFromMemory,
           clientsWithFlags: finalClientsWithFlags,
           noActionAnalysisResults: noActionAnalysisResults || {},
         };

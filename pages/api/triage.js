@@ -2686,6 +2686,14 @@ async function ensureFlagSweepLogTab(sheets, automationCommanderSheetId) {
       spreadsheetId: automationCommanderSheetId,
       range: `${FLAG_SWEEP_LOG_TAB}!A1`,
     });
+    // Ensure header G exists for the new categoriesRun
+    const g1 = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: `${FLAG_SWEEP_LOG_TAB}!G1` });
+    if (!g1.data.values || !g1.data.values[0] || !g1.data.values[0][0]) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId, range: `${FLAG_SWEEP_LOG_TAB}!G1`,
+        valueInputOption: "RAW", requestBody: { values: [["categoriesRun"]] },
+      });
+    }
   } catch (err) {
     try {
       await sheets.spreadsheets.batchUpdate({
@@ -2694,10 +2702,10 @@ async function ensureFlagSweepLogTab(sheets, automationCommanderSheetId) {
       });
       await sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId,
-        range: `${FLAG_SWEEP_LOG_TAB}!A1:F1`,
+        range: `${FLAG_SWEEP_LOG_TAB}!A1:G1`,
         valueInputOption: "RAW",
         requestBody: { values: [[
-          "runAt", "clientsChecked", "flagsRaised", "errors", "elapsedSeconds", "raisedDetailJSON",
+          "runAt", "clientsChecked", "flagsRaised", "errors", "elapsedSeconds", "raisedDetailJSON", "categoriesRun"
         ]] },
       });
       console.log(`✅ Created ${FLAG_SWEEP_LOG_TAB} tab`);
@@ -2713,14 +2721,14 @@ async function ensureFlagSweepLogTab(sheets, automationCommanderSheetId) {
 // comparable real-world coverage to the proactive log's 30 nightly runs.
 // raisedDetail is an array of { clientName, flagKey } — Paul specifically
 // asked to see which flags were raised, not just a count (21 Aug 2026).
-async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChecked, flagsRaised, errors, elapsedSeconds, raisedDetail, isContinuation }) {
+async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChecked, flagsRaised, errors, elapsedSeconds, raisedDetail, isContinuation, categoriesRun }) {
   try {
     await ensureFlagSweepLogTab(sheets, automationCommanderSheetId);
 
     if (isContinuation) {
       const resp = await sheets.spreadsheets.values.get({
         spreadsheetId: automationCommanderSheetId,
-        range: `${FLAG_SWEEP_LOG_TAB}!A:F`,
+        range: `${FLAG_SWEEP_LOG_TAB}!A:G`,
       });
       const rows = resp.data.values || [];
       if (rows.length > 1) {
@@ -2736,14 +2744,15 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
 
         await sheets.spreadsheets.values.update({
           spreadsheetId: automationCommanderSheetId,
-          range: `${FLAG_SWEEP_LOG_TAB}!B${lastRowIdx}:F${lastRowIdx}`,
+          range: `${FLAG_SWEEP_LOG_TAB}!B${lastRowIdx}:G${lastRowIdx}`,
           valueInputOption: "RAW",
           requestBody: { values: [[
             prevChecked + (clientsChecked || 0),
             prevRaised + (flagsRaised || 0),
             prevErrors + (errors || 0),
             prevElapsed + (elapsedSeconds || 0),
-            JSON.stringify(prevDetail.concat(raisedDetail || []))
+            JSON.stringify(prevDetail.concat(raisedDetail || [])),
+            categoriesRun || lastRow[6] || ""
           ]] },
         });
         return; // Exit here; we updated the existing log row
@@ -2753,11 +2762,11 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
     const nowISO = new Date().toISOString();
     await sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
-      range: `${FLAG_SWEEP_LOG_TAB}!A:F`,
+      range: `${FLAG_SWEEP_LOG_TAB}!A:G`,
       valueInputOption: "RAW",
       requestBody: { values: [[
         nowISO, clientsChecked || 0, flagsRaised || 0, errors || 0, elapsedSeconds || 0,
-        JSON.stringify(raisedDetail || []),
+        JSON.stringify(raisedDetail || []), categoriesRun || ""
       ]] },
     });
     // Trim to most recent 200 rows (plus header)
@@ -2789,7 +2798,7 @@ async function readFlagSweepLog(sheets, automationCommanderSheetId, limit = 20) 
     await ensureFlagSweepLogTab(sheets, automationCommanderSheetId);
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
-      range: `${FLAG_SWEEP_LOG_TAB}!A:F`,
+      range: `${FLAG_SWEEP_LOG_TAB}!A:G`,
     });
     const rows = resp.data.values || [];
     if (rows.length < 2) return [];
@@ -2803,6 +2812,7 @@ async function readFlagSweepLog(sheets, automationCommanderSheetId, limit = 20) 
         errors: parseInt(row[3]) || 0,
         elapsedSeconds: parseInt(row[4]) || 0,
         raisedDetail,
+        categoriesRun: row[6] || "",
       };
     }).reverse().slice(0, limit); // most recent first
   } catch (err) {
@@ -7586,6 +7596,7 @@ export default async function handler(req, res) {
       // let/const declared inside try are not visible in a sibling catch.
       let clientsChecked = 0, flagsRaised = 0, errors = 0;
       let raisedDetail = [];
+      let categoriesRunStr = "";
       try {
         const sheets = await getSheetsClient();
 
@@ -7603,6 +7614,7 @@ export default async function handler(req, res) {
         const actionableDue = isCategoryDue_(schedule.actionable);
         const infoDue = isCategoryDue_(schedule.info);
         const proactiveDue = req.body.forceProactive === true || isCategoryDue_(schedule.proactive);
+        categoriesRunStr = [actionableDue ? "act" : "", infoDue ? "info" : "", proactiveDue ? "pro" : ""].filter(Boolean).join(",");
         console.log(`run_flag_sweep: actionableDue=${actionableDue}, infoDue=${infoDue}, proactiveDue=${proactiveDue}`);
         
         // Chunking architecture: process a strict subset of clients to avoid Vercel timeouts
@@ -7973,12 +7985,12 @@ export default async function handler(req, res) {
 
         const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
         console.log(`run_flag_sweep chunk complete in ${elapsedS}s: ${clientsChecked} clients checked, ${flagsRaised} flags raised, ${errors} errors, hasMore: ${hasMore}`);
-        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail, isContinuation: startIdx > 0 });
+        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail, isContinuation: startIdx > 0, categoriesRun: categoriesRunStr });
         return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail, hasMore, nextIdx });
       } catch (err) {
         console.error("❌ run_flag_sweep error:", err);
         const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
-        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked: clientsChecked || 0, flagsRaised: flagsRaised || 0, errors: (errors || 0) + 1, elapsedSeconds: elapsedS, raisedDetail: raisedDetail || [], isContinuation: startIdx > 0 }).catch(() => {});
+        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked: clientsChecked || 0, flagsRaised: flagsRaised || 0, errors: (errors || 0) + 1, elapsedSeconds: elapsedS, raisedDetail: raisedDetail || [], isContinuation: startIdx > 0, categoriesRun: categoriesRunStr || "" }).catch(() => {});
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "build_cached_alert_options") {
@@ -8011,15 +8023,6 @@ export default async function handler(req, res) {
         const memoryRows = await readAlertMemory(sheets, acIdBuild);
 
         const pending = memoryRows.filter(r =>
-          r.status === "cached" && r.category === "discrepancy" && !r.cachedOptionsJSON
-        );
-        console.log(`build_cached_alert_options: ${pending.length} rows pending options`);
-
-        if (pending.length === 0) {
-          return res.status(200).json({ success: true, processed: 0, built: 0, notFound: 0, errors: 0 });
-        }
-
-        // Group by client+alertType so each client+type combination is
         // only re-read once, regardless of how many individual rows within
         // it need options.
         const groups = new Map(); // key: `${clientName}::${alertType}` -> AlertMemory rows
@@ -16997,12 +17000,12 @@ async function checkDeletedInvoices_(clientName, clientSheetId, masterSheetId, s
       }
       if (!found) continue;
 
-      const sentDateObj = found.sentDate instanceof Date ? found.sentDate : new Date(found.sentDate);
-      const sentDateValid = !isNaN(sentDateObj.getTime());
-      if (sentDateValid && (now.getTime() - sentDateObj.getTime() < bufferMs)) continue;
+        const sentDateObj = parseConfirmedDate_(found.sentDate);
+        const sentDateValid = sentDateObj !== null;
+        if (sentDateValid && (now.getTime() - sentDateObj.getTime() < bufferMs)) continue;
 
-      const amountNum = parseFloat(String(found.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
-      const sentDateStr = sentDateValid ? `${String(sentDateObj.getDate()).padStart(2,'0')}-${months[sentDateObj.getMonth()]}-${String(sentDateObj.getFullYear()).slice(-2)}` : String(found.sentDate || "(unknown)");
+        const amountNum = parseFloat(String(found.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+        const sentDateStr = sentDateValid ? `${String(sentDateObj.getDate()).padStart(2,'0')}-${months[sentDateObj.getMonth()]}-${String(sentDateObj.getFullYear()).slice(-2)}` : String(found.sentDate || "(unknown)");
 
       alerts.push({
         alertType: "deleted_invoice", alertKey: `deleted_invoice|${clientName}|${candidateRef}`,

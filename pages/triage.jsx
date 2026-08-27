@@ -1177,9 +1177,6 @@ export default function TriageSystem({ onBack }) {
   const [sweepScheduleLoading, setSweepScheduleLoading] = useState(false);
   const [sweepScheduleLoaded, setSweepScheduleLoaded] = useState(false);
   const [sweepFrequencySaving, setSweepFrequencySaving] = useState(""); // category currently being saved, "" = none
-  const [proactiveCheckLog, setProactiveCheckLog] = useState(null);
-  const [proactiveCheckLogLoading, setProactiveCheckLogLoading] = useState(false);
-  const [proactiveCheckLogLoaded, setProactiveCheckLogLoaded] = useState(false);
   const [flagSweepLog, setFlagSweepLog] = useState(null);
   const [flagSweepLogLoading, setFlagSweepLogLoading] = useState(false);
   const [flagSweepLogLoaded, setFlagSweepLogLoaded] = useState(false);
@@ -1301,7 +1298,6 @@ export default function TriageSystem({ onBack }) {
     setActiveNav("settings");
     setSettingsLoading(true);
     if (!sweepScheduleLoaded) loadSweepSchedule();
-    if (!proactiveCheckLogLoaded) loadProactiveCheckLog();
     if (!flagSweepLogLoaded) loadFlagSweepLog();
     if (!buildOptionsLogLoaded) loadBuildOptionsLog();
     if (!precomputeLogLoaded) loadPrecomputeLog();
@@ -3830,19 +3826,6 @@ export default function TriageSystem({ onBack }) {
     } finally {
       setSweepFrequencySaving("");
     }
-  };
-
-  const loadProactiveCheckLog = async () => {
-    try {
-      setProactiveCheckLogLoading(true);
-      const res = await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_proactive_check_log", automationCommanderSheetId }),
-      });
-      const data = await res.json();
-      if (data.success) setProactiveCheckLog(data.runs || []);
-    } catch(e) { console.error("loadProactiveCheckLog error:", e); }
-    finally { setProactiveCheckLogLoading(false); setProactiveCheckLogLoaded(true); }
   };
 
   const loadFlagSweepLog = async () => {
@@ -7894,7 +7877,7 @@ export default function TriageSystem({ onBack }) {
                             <span style={{ color: run.flagsRaised > 0 ? "#b45309" : "#166534" }}>{run.flagsRaised} raised</span>
                           </div>
                           <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
-                            <span>{run.clientsChecked} checked</span>
+                            <span>{run.clientsChecked} checked {run.categoriesRun ? `(${run.categoriesRun})` : ""}</span>
                             <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}</span>
                           </div>
                           {flagSweepLogExpanded.has(i) && run.raisedDetail?.length > 0 && (
@@ -8090,34 +8073,6 @@ export default function TriageSystem({ onBack }) {
                     </div>
                   </div>
                 ))}
-
-                <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e8e8e8" }}>
-                  <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "8px" }}>Recent run history</div>
-                  {proactiveCheckLogLoading && <div style={{ fontSize: "12px", color: "#999" }}>Loading...</div>}
-                  {!proactiveCheckLogLoading && proactiveCheckLog && proactiveCheckLog.length === 0 && (
-                    <div style={{ fontSize: "12px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
-                      No runs logged yet — the checks may not have run since this feature was added, or the nightly trigger may need checking.
-                    </div>
-                  )}
-                  {!proactiveCheckLogLoading && proactiveCheckLog && proactiveCheckLog.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: "12px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
-                        ✓ Last ran {new Date(proactiveCheckLog[0].runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
-                        {proactiveCheckLog[0].clientsChecked > 0 ? ` — ${proactiveCheckLog[0].clientsChecked} clients checked` : ""}
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                        {proactiveCheckLog.map((run, i) => (
-                          <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#888", padding: "3px 0" }}>
-                            <span>{new Date(run.runAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</span>
-                            <span>{run.newAlerts > 0 || run.updatedAlerts > 0 || run.dismissedAlerts > 0
-                              ? `${run.newAlerts} new · ${run.updatedAlerts} updated · ${run.dismissedAlerts} cleared`
-                              : "No issues found"}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
               </div>
               </div>
 

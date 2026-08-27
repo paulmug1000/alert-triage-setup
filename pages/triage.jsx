@@ -2245,9 +2245,19 @@ export default function TriageSystem({ onBack }) {
       });
       const data = await res.json();
       if (data.success) {
+        // Determine if the task being resolved was snoozed
+        const taskToResolve = tasks.find(t => t.fingerprintHash === fingerprintHash) || selectedTask;
+        const wasSnoozed = taskToResolve?.isSnoozed;
+
         setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
         if (selectedTask?.fingerprintHash === fingerprintHash) setSelectedTask(null);
-        setNavTaskCount(prev => Math.max(0, prev - 1));
+        
+        // Decrement the correct badge
+        if (wasSnoozed) {
+          setSnoozedTaskCount(prev => Math.max(0, prev - 1));
+        } else {
+          setNavTaskCount(prev => Math.max(0, prev - 1));
+        }
       } else setTaskActionError(data.error || "Failed to resolve task");
     } catch (e) { setTaskActionError(e.message); }
   };
@@ -7814,7 +7824,7 @@ export default function TriageSystem({ onBack }) {
                   <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#888" }}>
                     How often each category is checked for. A single 30-minute Google Apps Script trigger drives all three — each just decides independently whether it's actually due yet.
                   </p>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "12px" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "8px" }}>
                     {[
                       { key: "actionable", label: "Actionable", hint: "Discrepancies needing review — invoice, CRM, expense" },
                       { key: "info", label: "Informational", hint: "Acknowledge-only events from AutoLog" },
@@ -7822,10 +7832,10 @@ export default function TriageSystem({ onBack }) {
                     ].map(cat => {
                       const entry = sweepSchedule?.[cat.key];
                       return (
-                        <div key={cat.key} style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: "8px", padding: "10px 12px" }}>
-                          <div style={{ fontSize: "13px", fontWeight: "600", color: "#1a1a1a", marginBottom: "2px" }}>{cat.label}</div>
-                          <div style={{ fontSize: "11px", color: "#888", marginBottom: "8px" }}>{cat.hint}</div>
-                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <div key={cat.key} style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: "8px", padding: "8px", minWidth: 0, wordBreak: "break-word" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "600", color: "#1a1a1a", marginBottom: "2px", hyphens: "auto" }}>{cat.label}</div>
+                          <div style={{ fontSize: "10px", color: "#888", marginBottom: "8px", hyphens: "auto" }}>{cat.hint}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap" }}>
                             <input
                               type="number"
                               min="1"
@@ -7836,13 +7846,13 @@ export default function TriageSystem({ onBack }) {
                                 const val = parseInt(e.target.value, 10);
                                 if (val > 0) saveSweepFrequency(cat.key, val);
                               }}
-                              style={{ width: "70px", fontSize: "13px", padding: "4px 6px", borderRadius: "6px", border: "1px solid #ddd", opacity: sweepFrequencySaving === cat.key ? 0.5 : 1 }}
+                              style={{ width: "min(100%, 50px)", fontSize: "12px", padding: "4px 6px", borderRadius: "6px", border: "1px solid #ddd", opacity: sweepFrequencySaving === cat.key ? 0.5 : 1, boxSizing: "border-box" }}
                             />
-                            <span style={{ fontSize: "12px", color: "#666" }}>minutes</span>
+                            <span style={{ fontSize: "11px", color: "#666" }}>mins</span>
                           </div>
                           {entry?.lastCheckedAt && (
-                            <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
-                              Last checked: {new Date(entry.lastCheckedAt).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" })}
+                            <div style={{ fontSize: "9px", color: "#aaa", marginTop: "6px", lineHeight: "1.2" }}>
+                              Last checked:<br/>{new Date(entry.lastCheckedAt).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" })}
                             </div>
                           )}
                         </div>
@@ -7866,32 +7876,32 @@ export default function TriageSystem({ onBack }) {
                   </button>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "12px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "6px" }}>
                   {/* Column 1: Sweep */}
-                  <div style={{ background: "#f8f9ff", border: "1px solid #e8eaf0", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px" }}>
-                    <div style={{ padding: "10px 12px", background: "#eef2ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0" }}>
-                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#1d4ed8", marginBottom: "2px" }}>🔍 1. Flag Sweep</div>
-                      <div style={{ fontSize: "11px", color: "#666" }}>Searches sheets for new discrepancies</div>
+                  <div style={{ background: "#f8f9ff", border: "1px solid #e8eaf0", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px", minWidth: 0 }}>
+                    <div style={{ padding: "8px", background: "#eef2ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0", wordBreak: "break-word" }}>
+                      <div style={{ fontSize: "12px", fontWeight: "700", color: "#1d4ed8", marginBottom: "2px", hyphens: "auto" }}>🔍 1. Flag Sweep</div>
+                      <div style={{ fontSize: "10px", color: "#666", hyphens: "auto" }}>Searches sheets for new discrepancies</div>
                     </div>
 
-                    <div style={{ padding: "10px", overflowY: "auto", flex: 1 }}>
-                      {flagSweepLogLoading && <div style={{ fontSize: "12px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
-                      {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length === 0 && <div style={{ fontSize: "12px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
+                    <div style={{ padding: "6px", overflowY: "auto", flex: 1, minWidth: 0 }}>
+                      {flagSweepLogLoading && <div style={{ fontSize: "11px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
+                      {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
                       {flagSweepLog?.map((run, i) => (
-                        <div key={i} style={{ fontSize: "11px", color: "#555", marginBottom: "8px", padding: "8px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
-                          <div onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(i)} style={{ display: "flex", justifyContent: "space-between", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                        <div key={i} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
+                          <div onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
                             <span>{run.raisedDetail?.length > 0 ? (flagSweepLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
                             <span style={{ color: run.flagsRaised > 0 ? "#b45309" : "#166534" }}>{run.flagsRaised} raised</span>
                           </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#888" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
                             <span>{run.clientsChecked} checked</span>
                             <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}</span>
                           </div>
                           {flagSweepLogExpanded.has(i) && run.raisedDetail?.length > 0 && (
-                            <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
+                            <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
                               {run.raisedDetail.map((d, di) => (
-                                <div key={di} style={{ fontSize: "10px", color: "#555" }}>
-                                  <strong>{d.clientName}</strong>: {getFlagName(d.flagKey)}
+                                <div key={di} style={{ fontSize: "9px", color: "#555" }}>
+                                  <strong>{d.clientName}</strong>:<br/>{getFlagName(d.flagKey)}
                                 </div>
                               ))}
                             </div>
@@ -7902,28 +7912,28 @@ export default function TriageSystem({ onBack }) {
                   </div>
 
                   {/* Column 2: Build */}
-                  <div style={{ background: "#fdf8ff", border: "1px solid #f3e8ff", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px" }}>
-                    <div style={{ padding: "10px 12px", background: "#f3e8ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0" }}>
-                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#7c3aed", marginBottom: "2px" }}>⚙️ 2. Build Options</div>
-                      <div style={{ fontSize: "11px", color: "#666" }}>Generates resolutions for new alerts</div>
+                  <div style={{ background: "#fdf8ff", border: "1px solid #f3e8ff", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px", minWidth: 0 }}>
+                    <div style={{ padding: "8px", background: "#f3e8ff", borderBottom: "1px solid #e8eaf0", borderRadius: "8px 8px 0 0", wordBreak: "break-word" }}>
+                      <div style={{ fontSize: "12px", fontWeight: "700", color: "#7c3aed", marginBottom: "2px", hyphens: "auto" }}>⚙️ 2. Build Options</div>
+                      <div style={{ fontSize: "10px", color: "#666", hyphens: "auto" }}>Generates resolutions for new alerts</div>
                     </div>
-                    <div style={{ padding: "10px", overflowY: "auto", flex: 1 }}>
-                      {buildOptionsLogLoading && <div style={{ fontSize: "12px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
-                      {!buildOptionsLogLoading && buildOptionsLog && buildOptionsLog.length === 0 && <div style={{ fontSize: "12px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
+                    <div style={{ padding: "6px", overflowY: "auto", flex: 1, minWidth: 0 }}>
+                      {buildOptionsLogLoading && <div style={{ fontSize: "11px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
+                      {!buildOptionsLogLoading && buildOptionsLog && buildOptionsLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
                       {buildOptionsLog?.map((run, i) => (
-                        <div key={i} style={{ fontSize: "11px", color: "#555", marginBottom: "8px", padding: "8px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
-                          <div onClick={() => run.builtDetail?.length > 0 && toggleBuildOptionsLogDetail(i)} style={{ display: "flex", justifyContent: "space-between", cursor: run.builtDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                        <div key={i} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
+                          <div onClick={() => run.builtDetail?.length > 0 && toggleBuildOptionsLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.builtDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
                             <span>{run.builtDetail?.length > 0 ? (buildOptionsLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
                             <span style={{ color: run.built > 0 ? "#7c3aed" : "#666" }}>{run.built} built</span>
                           </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#888" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
                             <span>{run.processed} processed</span>
                             <span>{run.elapsedSeconds}s{run.errors > 0 ? ` · ${run.errors} err` : ""}{run.notFound > 0 ? ` · ${run.notFound} skip` : ""}</span>
                           </div>
                           {buildOptionsLogExpanded.has(i) && run.builtDetail?.length > 0 && (
-                            <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
+                            <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
                               {run.builtDetail.map((d, di) => (
-                                <div key={di} style={{ fontSize: "10px", color: "#555", display: "flex", justifyContent: "space-between" }}>
+                                <div key={di} style={{ fontSize: "9px", color: "#555", display: "flex", flexDirection: "column", gap: "1px" }}>
                                   <strong>{d.clientName}</strong>
                                   <span>{getFlagName(d.flagKey)}{d.fromCache ? " (cached)" : ""}</span>
                                 </div>
@@ -7936,28 +7946,28 @@ export default function TriageSystem({ onBack }) {
                   </div>
 
                   {/* Column 3: Precompute */}
-                  <div style={{ background: "#f0fdf4", border: "1px solid #dcfce7", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px" }}>
-                    <div style={{ padding: "10px 12px", background: "#dcfce7", borderBottom: "1px solid #bbf7d0", borderRadius: "8px 8px 0 0" }}>
-                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#15803d", marginBottom: "2px" }}>📦 3. Precompute</div>
-                      <div style={{ fontSize: "11px", color: "#666" }}>Compiles final data for the app</div>
+                  <div style={{ background: "#f0fdf4", border: "1px solid #dcfce7", borderRadius: "8px", display: "flex", flexDirection: "column", height: "400px", minWidth: 0 }}>
+                    <div style={{ padding: "8px", background: "#dcfce7", borderBottom: "1px solid #bbf7d0", borderRadius: "8px 8px 0 0", wordBreak: "break-word" }}>
+                      <div style={{ fontSize: "12px", fontWeight: "700", color: "#15803d", marginBottom: "2px", hyphens: "auto" }}>📦 3. Precompute</div>
+                      <div style={{ fontSize: "10px", color: "#666", hyphens: "auto" }}>Compiles final data for the app</div>
                     </div>
-                    <div style={{ padding: "10px", overflowY: "auto", flex: 1 }}>
-                      {precomputeLogLoading && <div style={{ fontSize: "12px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
-                      {!precomputeLogLoading && precomputeLog && precomputeLog.length === 0 && <div style={{ fontSize: "12px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
+                    <div style={{ padding: "6px", overflowY: "auto", flex: 1, minWidth: 0 }}>
+                      {precomputeLogLoading && <div style={{ fontSize: "11px", color: "#999", textAlign: "center", padding: "10px" }}>Loading...</div>}
+                      {!precomputeLogLoading && precomputeLog && precomputeLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
                       {precomputeLog?.map((run, i) => (
-                        <div key={i} style={{ fontSize: "11px", color: "#555", marginBottom: "8px", padding: "8px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
-                          <div onClick={() => run.clientDetail?.length > 0 && togglePrecomputeLogDetail(i)} style={{ display: "flex", justifyContent: "space-between", cursor: run.clientDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                        <div key={i} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
+                          <div onClick={() => run.clientDetail?.length > 0 && togglePrecomputeLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.clientDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
                             <span>{run.clientDetail?.length > 0 ? (precomputeLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
                             <span style={{ color: run.totalAlerts > 0 ? "#15803d" : "#666" }}>{run.totalAlerts} alerts</span>
                           </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#888" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
                             <span>{run.clientsWithFlags} clients</span>
                             <span>{run.noActionCount} info · {run.proactiveCount || 0} pro</span>
                           </div>
                           {precomputeLogExpanded.has(i) && run.clientDetail?.length > 0 && (
-                            <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "2px" }}>
+                            <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "2px" }}>
                               {run.clientDetail.map((c, ci) => (
-                                <div key={ci} style={{ fontSize: "10px", color: "#555", display: "flex", justifyContent: "space-between" }}>
+                                <div key={ci} style={{ fontSize: "9px", color: "#555", display: "flex", flexDirection: "column", gap: "1px" }}>
                                   <strong>{c.clientName}</strong>
                                   <span>{c.alertCount} ({c.noActionCount} i, {c.proactiveCount || 0} p)</span>
                                 </div>

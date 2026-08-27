@@ -521,6 +521,33 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
 }
 
 /**
+ * Helper to compress options JSON before saving to Sheets
+ * Bypasses the 50,000 character limit by deduplicating jobRowsData & stripping empty fields
+ */
+function compressOptionsJSON_(jsonStr) {
+  if (!jsonStr) return jsonStr;
+  try {
+    const options = JSON.parse(jsonStr);
+    if (!Array.isArray(options)) return jsonStr;
+    
+    const seenJobs = new Set();
+    const compressed = options.map(opt => {
+      if (!opt.jobRow || !opt.jobRowsData) return opt;
+      if (seenJobs.has(opt.jobRow)) {
+        const { jobRowsData, ...rest } = opt;
+        return rest;
+      }
+      seenJobs.add(opt.jobRow);
+      return opt;
+    });
+    
+    return JSON.stringify(compressed, (k, v) => (v === "" || v === null) ? undefined : v);
+  } catch (e) {
+    return jsonStr;
+  }
+}
+
+/**
  * Write a new row to AlertMemory (append).
  */
 async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload) {
@@ -529,8 +556,9 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload)
     cachedOptionsJSON, status, ignoreReason, dataSnapshot, category,
   } = payload;
 
-  // Intercept any legacy code attempting to write old alertType taxonomy
-  if (alertType === "invoice") alertType = "invoiceDashboardDiscr";
+  cachedOptionsJSON = compressOptionsJSON_(cachedOptionsJSON);
+
+  // Intercept any legacy code attempting to write old alertType taxonomy  if (alertType === "invoice") alertType = "invoiceDashboardDiscr";
   if (alertType === "expense") alertType = "expenseDashboardDiscr";
   if (alertType === "crm") alertType = "crmPipeAppDiscr";
 
@@ -554,15 +582,15 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload)
  * Update an existing AlertMemory row by its 1-indexed sheet row number.
  */
 async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex, updates) {
+  const compressedOptions = compressOptionsJSON_(updates.cachedOptionsJSON);
   const now = new Date().toISOString().split("T")[0];
   const values = [
     updates.fingerprintHash,
     updates.alertType,
     updates.clientName,
     updates.alertSummary,
-    updates.cachedOptionsJSON,
-    updates.status,
-    updates.ignoreReason || "",
+    compressedOptions,
+    updates.status,    updates.ignoreReason || "",
     updates.firstSeen,
     now, // lastSeen always updated
     updates.lastRechecked || now,
@@ -7338,9 +7366,32 @@ export default async function handler(req, res) {
               let options = [];
               try { options = JSON.parse(row.cachedOptionsJSON); } catch (e) { continue; } 
 
+              // --- DECOMPRESS JOB ROWS ---
+              const sharedRows = {};
+              for (const opt of options) {
+                if (opt.jobRowsData) sharedRows[opt.jobRow] = opt.jobRowsData;
+              }
+              for (const opt of options) {
+                if (!opt.jobRowsData && sharedRows[opt.jobRow]) {
+                  opt.jobRowsData = JSON.parse(JSON.stringify(sharedRows[opt.jobRow]));
+                  if (opt.targetSlotType && opt.targetSlotNum && opt.targetRowNum) {
+                    for (const r of opt.jobRowsData) {
+                      if (r.rowNum === opt.targetRowNum) {
+                         if (opt.targetSlotType === "invoice" && r.invoiceSlots) r.invoiceSlots.forEach(s => s.highlighted = (s.slotNum === opt.targetSlotNum));
+                         else if (opt.targetSlotType === "expense" && r.expenseSlots) r.expenseSlots.forEach(s => s.highlighted = (s.slotNum === opt.targetSlotNum));
+                      } else {
+                         if (r.invoiceSlots) r.invoiceSlots.forEach(s => s.highlighted = false);
+                         if (r.expenseSlots) r.expenseSlots.forEach(s => s.highlighted = false);
+                      }
+                    }
+                  }
+                }
+              }
+              // ---------------------------
+
               const liveMeta = clientNameToMeta.get(row.clientName) || {};
 
-              // Crucial Fix: Force inject the correct clientName and IDs 
+              // Crucial Fix: Force inject the correct clientName and IDs
               // overriding whatever broken data was trapped in the old snapshot
               newAlertsFromMemory.push({
                 ...alertObj, 

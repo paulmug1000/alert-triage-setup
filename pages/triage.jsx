@@ -2396,11 +2396,10 @@ export default function TriageSystem({ onBack }) {
       setSelectedClient(null);
       setClientAlerts([]);
 
-      if ((data.clientsWithFlags || []).length > 0) {
-        setScreen("clientSelection");
-      } else {
-        setTriageComplete(true);
-      }
+      // Always proceed to clientSelection. The screen natively handles
+      // rendering the "All Done" UI if there are zero alerts.
+      setScreen("clientSelection");
+      setTriageComplete(true);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -2461,13 +2460,10 @@ export default function TriageSystem({ onBack }) {
             console.log(`  ✅ Pre-populated ${Object.keys(flat).length} noAction analysis results`);
           }
 
-          // Go to clientSelection if any clients have flags (actionable or noAction-only).
-          // The old showNoAction path is bypassed — noAction flags are handled within clientSelection.
-          if ((preData.clientsWithFlags || []).length > 0) {
-            setScreen("clientSelection");
-          } else {
-            setTriageComplete(true);
-          }
+          // Always proceed to clientSelection. The screen natively handles
+          // rendering the "All Done" UI if there are zero alerts.
+          setScreen("clientSelection");
+          setTriageComplete(true);
           precomputedUsed = true;
         } else {
           console.log(`No fresh precomputed data available — running live triage`);

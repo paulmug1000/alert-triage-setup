@@ -2899,7 +2899,7 @@ async function readPrecomputeLog(sheets, automationCommanderSheetId, limit = 20)
     await ensurePrecomputeLogTab(sheets, automationCommanderSheetId);
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
-      range: `${PRECOMPUTE_LOG_TAB}!A:F`,
+      range: `${PRECOMPUTE_LOG_TAB}!A:G`,
     });
     const rows = resp.data.values || [];
     if (rows.length < 2) return [];

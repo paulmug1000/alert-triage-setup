@@ -2747,12 +2747,12 @@ async function ensureFlagSweepLogTab(sheets, automationCommanderSheetId) {
       spreadsheetId: automationCommanderSheetId,
       range: `${FLAG_SWEEP_LOG_TAB}!A1`,
     });
-    // Ensure header G exists for the new categoriesRun
-    const g1 = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: `${FLAG_SWEEP_LOG_TAB}!G1` });
-    if (!g1.data.values || !g1.data.values[0] || !g1.data.values[0][0]) {
+    // Ensure headers H and I exist for alertsDelayed and alertsWoken
+    const i1 = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: `${FLAG_SWEEP_LOG_TAB}!I1` });
+    if (!i1.data.values || !i1.data.values[0] || !i1.data.values[0][0]) {
       await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId, range: `${FLAG_SWEEP_LOG_TAB}!G1`,
-        valueInputOption: "RAW", requestBody: { values: [["categoriesRun"]] },
+        spreadsheetId: automationCommanderSheetId, range: `${FLAG_SWEEP_LOG_TAB}!G1:I1`,
+        valueInputOption: "RAW", requestBody: { values: [["categoriesRun", "alertsDelayed", "alertsWoken"]] },
       });
     }
   } catch (err) {
@@ -2763,10 +2763,10 @@ async function ensureFlagSweepLogTab(sheets, automationCommanderSheetId) {
       });
       await sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId,
-        range: `${FLAG_SWEEP_LOG_TAB}!A1:G1`,
+        range: `${FLAG_SWEEP_LOG_TAB}!A1:I1`,
         valueInputOption: "RAW",
         requestBody: { values: [[
-          "runAt", "clientsChecked", "flagsRaised", "errors", "elapsedSeconds", "raisedDetailJSON", "categoriesRun"
+          "runAt", "clientsChecked", "flagsRaised", "errors", "elapsedSeconds", "raisedDetailJSON", "categoriesRun", "alertsDelayed", "alertsWoken"
         ]] },
       });
       console.log(`✅ Created ${FLAG_SWEEP_LOG_TAB} tab`);
@@ -2782,14 +2782,14 @@ async function ensureFlagSweepLogTab(sheets, automationCommanderSheetId) {
 // comparable real-world coverage to the proactive log's 30 nightly runs.
 // raisedDetail is an array of { clientName, flagKey } — Paul specifically
 // asked to see which flags were raised, not just a count (21 Aug 2026).
-async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChecked, flagsRaised, errors, elapsedSeconds, raisedDetail, isContinuation, categoriesRun }) {
+async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChecked, flagsRaised, errors, alertsDelayed, alertsWoken, elapsedSeconds, raisedDetail, isContinuation, categoriesRun }) {
   try {
     await ensureFlagSweepLogTab(sheets, automationCommanderSheetId);
 
     if (isContinuation) {
       const resp = await sheets.spreadsheets.values.get({
         spreadsheetId: automationCommanderSheetId,
-        range: `${FLAG_SWEEP_LOG_TAB}!A:G`,
+        range: `${FLAG_SWEEP_LOG_TAB}!A:I`,
       });
       const rows = resp.data.values || [];
       if (rows.length > 1) {
@@ -2802,10 +2802,13 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
         const prevElapsed = parseInt(lastRow[4], 10) || 0;
         let prevDetail = [];
         try { prevDetail = JSON.parse(lastRow[5] || "[]"); } catch (e) {}
+        
+        const prevDelayed = parseInt(lastRow[7], 10) || 0;
+        const prevWoken = parseInt(lastRow[8], 10) || 0;
 
         await sheets.spreadsheets.values.update({
           spreadsheetId: automationCommanderSheetId,
-          range: `${FLAG_SWEEP_LOG_TAB}!B${lastRowIdx}:G${lastRowIdx}`,
+          range: `${FLAG_SWEEP_LOG_TAB}!B${lastRowIdx}:I${lastRowIdx}`,
           valueInputOption: "RAW",
           requestBody: { values: [[
             prevChecked + (clientsChecked || 0),
@@ -2813,7 +2816,9 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
             prevErrors + (errors || 0),
             prevElapsed + (elapsedSeconds || 0),
             JSON.stringify(prevDetail.concat(raisedDetail || [])),
-            categoriesRun || lastRow[6] || ""
+            categoriesRun || lastRow[6] || "",
+            prevDelayed + (alertsDelayed || 0),
+            prevWoken + (alertsWoken || 0)
           ]] },
         });
         return; // Exit here; we updated the existing log row
@@ -2823,11 +2828,11 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
     const nowISO = new Date().toISOString();
     await sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
-      range: `${FLAG_SWEEP_LOG_TAB}!A:G`,
+      range: `${FLAG_SWEEP_LOG_TAB}!A:I`,
       valueInputOption: "RAW",
       requestBody: { values: [[
         nowISO, clientsChecked || 0, flagsRaised || 0, errors || 0, elapsedSeconds || 0,
-        JSON.stringify(raisedDetail || []), categoriesRun || ""
+        JSON.stringify(raisedDetail || []), categoriesRun || "", alertsDelayed || 0, alertsWoken || 0
       ]] },
     });
     // Trim to most recent 200 rows (plus header)
@@ -2859,7 +2864,7 @@ async function readFlagSweepLog(sheets, automationCommanderSheetId, limit = 20) 
     await ensureFlagSweepLogTab(sheets, automationCommanderSheetId);
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
-      range: `${FLAG_SWEEP_LOG_TAB}!A:G`,
+      range: `${FLAG_SWEEP_LOG_TAB}!A:I`,
     });
     const rows = resp.data.values || [];
     if (rows.length < 2) return [];
@@ -2874,6 +2879,8 @@ async function readFlagSweepLog(sheets, automationCommanderSheetId, limit = 20) 
         elapsedSeconds: parseInt(row[4]) || 0,
         raisedDetail,
         categoriesRun: row[6] || "",
+        alertsDelayed: parseInt(row[7]) || 0,
+        alertsWoken: parseInt(row[8]) || 0,
       };
     }).reverse().slice(0, limit); // most recent first
   } catch (err) {
@@ -7656,6 +7663,7 @@ export default async function handler(req, res) {
       // needed in the catch block below too (for error logging), and
       // let/const declared inside try are not visible in a sibling catch.
       let clientsChecked = 0, flagsRaised = 0, errors = 0;
+      let alertsDelayed = 0, alertsWoken = 0;
       let raisedDetail = [];
       let categoriesRunStr = "";
       try {
@@ -8001,6 +8009,7 @@ export default async function handler(req, res) {
                     });
                     console.log(`  ⏰ Woke up pending_automation alert for ${item.clientName}: ${pRow.fingerprintHash}`);
                     pRow.status = "cached";
+                    alertsWoken++;
                   } catch(e) {
                     console.log(`  ⚠️ Failed to wake up alert: ${e.message}`);
                   }
@@ -8067,6 +8076,7 @@ export default async function handler(req, res) {
                 
                 if (status === "pending_automation") {
                   console.log(`  💤 Alert ${alert._fingerprint} is pending automation run`);
+                  alertsDelayed++;
                 }
               } catch (memErr) {
                 console.log(`  ⚠️ Could not write AlertMemory row for ${item.clientName}/${item.alertType}: ${memErr.message}`);
@@ -8091,13 +8101,13 @@ export default async function handler(req, res) {
         }
 
         const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
-        console.log(`run_flag_sweep chunk complete in ${elapsedS}s: ${clientsChecked} clients checked, ${flagsRaised} flags raised, ${errors} errors, hasMore: ${hasMore}`);
-        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail, isContinuation: startIdx > 0, categoriesRun: categoriesRunStr });
-        return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, elapsedSeconds: elapsedS, raisedDetail, hasMore, nextIdx });
+        console.log(`run_flag_sweep chunk complete in ${elapsedS}s: ${clientsChecked} clients checked, ${flagsRaised} flags raised, ${errors} errors, delayed: ${alertsDelayed}, woken: ${alertsWoken}, hasMore: ${hasMore}`);
+        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked, flagsRaised, errors, alertsDelayed, alertsWoken, elapsedSeconds: elapsedS, raisedDetail, isContinuation: startIdx > 0, categoriesRun: categoriesRunStr });
+        return res.status(200).json({ success: true, clientsChecked, flagsRaised, errors, alertsDelayed, alertsWoken, elapsedSeconds: elapsedS, raisedDetail, hasMore, nextIdx });
       } catch (err) {
         console.error("❌ run_flag_sweep error:", err);
         const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
-        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked: clientsChecked || 0, flagsRaised: flagsRaised || 0, errors: (errors || 0) + 1, elapsedSeconds: elapsedS, raisedDetail: raisedDetail || [], isContinuation: startIdx > 0, categoriesRun: categoriesRunStr || "" }).catch(() => {});
+        await logFlagSweepRun(sheets, acIdSweep, { clientsChecked: clientsChecked || 0, flagsRaised: flagsRaised || 0, errors: (errors || 0) + 1, alertsDelayed: alertsDelayed || 0, alertsWoken: alertsWoken || 0, elapsedSeconds: elapsedS, raisedDetail: raisedDetail || [], isContinuation: startIdx > 0, categoriesRun: categoriesRunStr || "" }).catch(() => {});
         return res.status(500).json({ success: false, error: err.message });
       }
     } else if (action === "build_cached_alert_options") {

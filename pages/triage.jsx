@@ -7875,9 +7875,11 @@ export default function TriageSystem({ onBack }) {
                       {!flagSweepLogLoading && flagSweepLog && flagSweepLog.length === 0 && <div style={{ fontSize: "11px", color: "#888", textAlign: "center", padding: "10px" }}>No runs logged yet</div>}
                       {flagSweepLog?.map((run, i) => (
                         <div key={i} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
-                          <div onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                         <div onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
                             <span>{run.raisedDetail?.length > 0 ? (flagSweepLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
-                            <span style={{ color: run.flagsRaised > 0 ? "#b45309" : "#166534" }}>{run.flagsRaised} raised</span>
+                            <span style={{ color: (run.flagsRaised > 0 || run.alertsWoken > 0) ? "#b45309" : "#166534" }}>
+                              {run.flagsRaised} raised{run.alertsDelayed > 0 ? ` (${run.alertsDelayed} delayed)` : ""}{run.alertsWoken > 0 ? ` · ${run.alertsWoken} woken up` : ""}
+                            </span>
                           </div>
                           <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
                             <span>{run.clientsChecked} checked {run.categoriesRun ? `(${run.categoriesRun})` : ""}</span>

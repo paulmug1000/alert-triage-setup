@@ -860,7 +860,7 @@ function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoing
   return (
     <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
       <div style={{ background: "#1a1a2e", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Triage System</span>
+        <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Management System</span>
       </div>
       <div style={{ background: "#fff", borderBottom: "1px solid #e0e0e0", padding: "0 8px", display: "flex", alignItems: "stretch", position: "relative" }}>
         <button className="triage-btn pulse-nav-item" onClick={onHome} style={navBtnStyle("home")}>Home<Badge count={homeAlertCount} /></button>
@@ -8482,7 +8482,7 @@ export default function TriageSystem({ onBack }) {
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.title}>Select Client</h1>
+          <h1 style={styles.title}>Alerts</h1>
           <p style={styles.subtitle}>Choose a client to review their alerts ({totalAlerts} total)</p>
         </div>
 

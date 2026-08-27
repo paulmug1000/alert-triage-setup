@@ -16148,6 +16148,12 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
 function parseConfirmedDate_(val) {
   if (!val) return null;
   if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  
+  // Handle Google Sheets serial dates (from UNFORMATTED_VALUE)
+  if (typeof val === "number") {
+    return new Date((val - 25569) * 86400 * 1000);
+  }
+  
   const s = String(val).trim();
   const months = { Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11 };
   const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
@@ -16246,13 +16252,13 @@ function collectSentInvoices_(row, sentInvoices) {
   const slots = [{ statusIdx: 45, sentIdx: 43 }, { statusIdx: 52, sentIdx: 50 }, { statusIdx: 59, sentIdx: 57 }];
   for (let s = 0; s < slots.length; s++) {
     const status = String(row[slots[s].statusIdx] || "").trim().toLowerCase();
-    if (status !== "sent" && status !== "paid") continue;
-    const sentVal = row[slots[s].sentIdx];
-    if (!sentVal) continue;
-    const sentDate = sentVal instanceof Date ? sentVal : new Date(sentVal);
-    if (!isNaN(sentDate.getTime())) sentInvoices.push(sentDate);
-  }
-}
+        if (status !== "sent" && status !== "paid") continue;
+        const sentVal = row[slots[s].sentIdx];
+        if (!sentVal) continue;
+        const sentDate = parseConfirmedDate_(sentVal);
+        if (sentDate) sentInvoices.push(sentDate);
+      }
+    }
 
 function inferFrequency_(sortedDates) {
   if (sortedDates.length < 2) return 30;
@@ -16402,8 +16408,9 @@ async function checkRetainerInvoices_(clientName, clientSheetId, masterSheetId, 
       const jobName       = String(row[1] || "").trim();
       if (!jobName) continue;
 
-      const endDate = endVal instanceof Date ? endVal : new Date(endVal);
-      if (isNaN(endDate.getTime())) continue;
+      const endDate = parseConfirmedDate_(endVal);
+      if (!endDate) continue;
+      const startDate = parseConfirmedDate_(startVal);
 
       const sentInvoices = [];
       collectSentInvoices_(row, sentInvoices);
@@ -16431,8 +16438,8 @@ async function checkRetainerInvoices_(clientName, clientSheetId, masterSheetId, 
             const sentVal2 = cr2[slots2[s2].sentIdx];
             const refVal2  = String(cr2[slots2[s2].refIdx] || "").trim();
             if (!sentVal2) continue;
-            const sentDate2 = sentVal2 instanceof Date ? sentVal2 : new Date(sentVal2);
-            if (isNaN(sentDate2.getTime())) continue;
+            const sentDate2 = parseConfirmedDate_(sentVal2);
+            if (!sentDate2) continue;
             if (sentDate2 < today && !refVal2) { hasUnsentScheduled = true; unsentSendDate = sentDate2; }
           }
         }
@@ -16448,7 +16455,7 @@ async function checkRetainerInvoices_(clientName, clientSheetId, masterSheetId, 
           heading: "Retainer invoice not sent",
           detail: detail1, jobName, endClientName: clientNameRow, confirmedRow: r + 1,
           stableJobKey: `${clientNameRow}|${jobName}`, revenue: String(revenue || ""),
-          startDate: startVal instanceof Date ? fmtDate(startVal) : String(startVal || ""),
+          startDate: startDate ? fmtDate(startDate) : "",
           endDate: fmtDate(endDate), lastInvoiceDate: fmtDate(unsentSendDate), expectedByDate: fmtDate(unsentSendDate),
           possibleMatchInvoiceNo: possibleMatch1?.invoiceNo || "", possibleMatchAmount: String(possibleMatch1?.amount || ""),
           possibleMatchSentDate: possibleMatch1?.sentDate || "", possibleMatchVatAmount: String(possibleMatch1?.vatAmount || 0),
@@ -16460,8 +16467,7 @@ async function checkRetainerInvoices_(clientName, clientSheetId, masterSheetId, 
 
       sentInvoices.sort((a, b) => a.getTime() - b.getTime());
       const lastInvoice = sentInvoices[sentInvoices.length - 1];
-      const startDate = startVal instanceof Date ? startVal : new Date(startVal);
-      const contractMonths = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / (30.4375 * 24 * 60 * 60 * 1000)));
+      const contractMonths = Math.max(1, Math.round((endDate.getTime() - (startDate ? startDate.getTime() : endDate.getTime())) / (30.4375 * 24 * 60 * 60 * 1000)));
       const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
       const totalContractValue = monthlyRevenue * contractMonths;
 
@@ -16531,7 +16537,7 @@ async function checkRetainerInvoices_(clientName, clientSheetId, masterSheetId, 
           heading: "Retainer job expected invoice not sent",
           detail: detail2, jobName, endClientName: clientNameRow, confirmedRow: r + 1,
           stableJobKey: `${clientNameRow}|${jobName}`, revenue: String(revenue || ""),
-          startDate: startVal instanceof Date ? fmtDate(startVal) : String(startVal || ""),
+          startDate: startDate ? fmtDate(startDate) : "",
           endDate: fmtDate(endDate), frequencyDays, lastInvoiceDate: fmtDate(lastInvoice), expectedByDate: fmtDate(expectedBy),
           possibleMatchInvoiceNo: possibleMatch2?.invoiceNo || "", possibleMatchAmount: String(possibleMatch2?.amount || ""),
           possibleMatchSentDate: possibleMatch2?.sentDate || "", possibleMatchVatAmount: String(possibleMatch2?.vatAmount || 0),

@@ -7953,14 +7953,14 @@ export default function TriageSystem({ onBack }) {
                           </div>
                           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#888" }}>
                             <span>{run.clientsWithFlags} clients</span>
-                            <span>{run.noActionCount} info</span>
+                            <span>{run.noActionCount} info · {run.proactiveCount || 0} pro</span>
                           </div>
                           {precomputeLogExpanded.has(i) && run.clientDetail?.length > 0 && (
                             <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "2px" }}>
                               {run.clientDetail.map((c, ci) => (
                                 <div key={ci} style={{ fontSize: "10px", color: "#555", display: "flex", justifyContent: "space-between" }}>
                                   <strong>{c.clientName}</strong>
-                                  <span>{c.alertCount} ({c.noActionCount} i)</span>
+                                  <span>{c.alertCount} ({c.noActionCount} i, {c.proactiveCount || 0} p)</span>
                                 </div>
                               ))}
                             </div>

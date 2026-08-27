@@ -2792,6 +2792,14 @@ async function ensurePrecomputeLogTab(sheets, automationCommanderSheetId) {
       spreadsheetId: automationCommanderSheetId,
       range: `${PRECOMPUTE_LOG_TAB}!A1`,
     });
+    // Ensure header F and G exist for the new proactiveCount
+    const f1 = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: `${PRECOMPUTE_LOG_TAB}!F1` });
+    if (!f1.data.values || !f1.data.values[0] || f1.data.values[0][0] !== "proactiveCount") {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId, range: `${PRECOMPUTE_LOG_TAB}!F1:G1`,
+        valueInputOption: "RAW", requestBody: { values: [["proactiveCount", "clientDetailJSON"]] },
+      });
+    }
   } catch (err) {
     try {
       await sheets.spreadsheets.batchUpdate({
@@ -2800,10 +2808,10 @@ async function ensurePrecomputeLogTab(sheets, automationCommanderSheetId) {
       });
       await sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId,
-        range: `${PRECOMPUTE_LOG_TAB}!A1:F1`,
+        range: `${PRECOMPUTE_LOG_TAB}!A1:G1`,
         valueInputOption: "RAW",
         requestBody: { values: [[
-          "runAt", "clientsWithFlags", "totalAlerts", "noActionCount", "analysisCount", "clientDetailJSON",
+          "runAt", "clientsWithFlags", "totalAlerts", "noActionCount", "analysisCount", "proactiveCount", "clientDetailJSON",
         ]] },
       });
       console.log(`✅ Created ${PRECOMPUTE_LOG_TAB} tab`);
@@ -2822,16 +2830,16 @@ async function ensurePrecomputeLogTab(sheets, automationCommanderSheetId) {
 // logged post-merge (after the clientId/clientName reconciliation this
 // action already does), so this reflects what actually got cached, not the
 // raw input from the GAS side.
-async function logPrecomputeRun(sheets, automationCommanderSheetId, { clientsWithFlags, totalAlerts, noActionCount, analysisCount, clientDetail }) {
+async function logPrecomputeRun(sheets, automationCommanderSheetId, { clientsWithFlags, totalAlerts, noActionCount, analysisCount, proactiveCount, clientDetail }) {
   try {
     await ensurePrecomputeLogTab(sheets, automationCommanderSheetId);
     const nowISO = new Date().toISOString();
     await sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
-      range: `${PRECOMPUTE_LOG_TAB}!A:F`,
+      range: `${PRECOMPUTE_LOG_TAB}!A:G`,
       valueInputOption: "RAW",
       requestBody: { values: [[
-        nowISO, clientsWithFlags || 0, totalAlerts || 0, noActionCount || 0, analysisCount || 0,
+        nowISO, clientsWithFlags || 0, totalAlerts || 0, noActionCount || 0, analysisCount || 0, proactiveCount || 0,
         JSON.stringify(clientDetail || []),
       ]] },
     });
@@ -2871,14 +2879,20 @@ async function readPrecomputeLog(sheets, automationCommanderSheetId, limit = 20)
     const rows = resp.data.values || [];
     if (rows.length < 2) return [];
     return rows.slice(1).map(row => {
+      // Backward compatibility: if row[5] is JSON, it's the old format without proactiveCount
+      let isOldFormat = false;
+      try { if (row[5] && (row[5].startsWith("[") || row[5].startsWith("{"))) isOldFormat = true; } catch(e){}
+      
       let clientDetail = [];
-      try { clientDetail = JSON.parse(row[5] || "[]"); } catch (e) { /* malformed row, treat as empty */ }
+      try { clientDetail = JSON.parse(isOldFormat ? (row[5] || "[]") : (row[6] || "[]")); } catch (e) { /* malformed */ }
+      
       return {
         runAt: row[0] || "",
         clientsWithFlags: parseInt(row[1]) || 0,
         totalAlerts: parseInt(row[2]) || 0,
         noActionCount: parseInt(row[3]) || 0,
         analysisCount: parseInt(row[4]) || 0,
+        proactiveCount: isOldFormat ? 0 : (parseInt(row[5]) || 0),
         clientDetail,
       };
     }).reverse().slice(0, limit); // most recent first
@@ -7474,12 +7488,15 @@ export default async function handler(req, res) {
               const naClient = (finalClientsWithFlags || []).find(rc => rc.masterSheetId === na.clientId);
               return naClient && naClient.clientName === c.clientName;
             }).length,
-          })).filter(c => c.alertCount > 0 || c.noActionCount > 0);
+            proactiveCount: (precomputedData.proactiveAlerts || []).filter(pa => pa.clientName === c.clientName).length,
+          })).filter(c => c.alertCount > 0 || c.noActionCount > 0 || c.proactiveCount > 0);
+          
           await logPrecomputeRun(sheetsForLog, extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId, {
             clientsWithFlags: (finalClientsWithFlags || []).length,
             totalAlerts: precomputedData.totalAlerts,
             noActionCount: precomputedData.noActionCount,
             analysisCount,
+            proactiveCount: (precomputedData.proactiveAlerts || []).length,
             clientDetail,
           });
         } catch (logErr) {

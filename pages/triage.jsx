@@ -2329,6 +2329,9 @@ export default function TriageSystem({ onBack }) {
 
   // Manual refresh — orchestrated from the frontend to bypass 300s timeout limits
   const refreshTriage = async (forceProactive = false) => {
+    // Strictly check for boolean true, ignoring React Synthetic Event objects
+    const isForced = forceProactive === true;
+    
     try {
       setIsLoading(true);
       setRefreshStatus("Initializing...");
@@ -2344,7 +2347,7 @@ export default function TriageSystem({ onBack }) {
         setRefreshStatus(`Scanning clients (batch ${Math.floor(sweepIdx / 3) + 1})...`);
         const sweepResp = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "start_triage", step: "sweep", startIdx: sweepIdx, automationCommanderSheetId, forceProactive }),
+          body: JSON.stringify({ action: "start_triage", step: "sweep", startIdx: sweepIdx, automationCommanderSheetId, forceProactive: isForced }),
         });
         const sweepData = await sweepResp.json();
         if (!sweepResp.ok || !sweepData.success) throw new Error(sweepData.error || "Failed to sweep flags");

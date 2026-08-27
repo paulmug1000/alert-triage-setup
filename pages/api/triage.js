@@ -2183,10 +2183,110 @@ async function getSheetGid(sheets, spreadsheetId, sheetName) {
  * also bulk-read a parallel range (like flagRows in getClientFlags) and
  * must index into it the same way.
  */
+function parseAutomationTime_(str) {
+  if (!str) return 0;
+  // Parses "Thu 27-Aug 13:49" and infers the missing year
+  const m = String(str).match(/([A-Za-z]{3})\s+(\d{1,2})-([A-Za-z]{3})\s+(\d{2}):(\d{2})/);
+  if (!m) return 0;
+  const day = parseInt(m[2], 10);
+  const monthStr = m[3].toLowerCase();
+  const hrs = parseInt(m[4], 10);
+  const mins = parseInt(m[5], 10);
+  const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+  const month = months[monthStr];
+  if (month === undefined) return 0;
+  
+  const now = new Date();
+  let year = now.getFullYear();
+  // If the parsed month is December and we are currently in January, it ran late last year
+  if (month === 11 && now.getMonth() === 0) year--;
+  else if (month === 0 && now.getMonth() === 11) year++;
+  
+  return new Date(year, month, day, hrs, mins, 0, 0).getTime();
+}
+
+function evaluateAutomationStatus_(alertType, category, clientMeta, detectedAtMs) {
+  if (category !== "discrepancy") return "cached"; // Only delay actionable discrepancies
+  if (!clientMeta) return "cached";
+  
+  const nowMs = Date.now();
+  if ((nowMs - detectedAtMs) > 16 * 60 * 60 * 1000) return "cached"; // 16 hour failsafe
+
+  let autoLastRun = 0;
+  if (alertType.startsWith("invoice")) autoLastRun = clientMeta.invAutoLastRunMs;
+  else if (alertType.startsWith("crm")) autoLastRun = clientMeta.crmAutoLastRunMs;
+  else if (alertType.startsWith("expense")) autoLastRun = clientMeta.expAutoLastRunMs;
+  else return "cached"; // Not tied to these automations
+
+  if (autoLastRun === 0) return "cached"; // No run history recorded, show immediately
+  
+  // If the automation finished AFTER the alert was detected, it failed to fix it, so show it
+  if (autoLastRun >= detectedAtMs) return "cached";
+
+  return "pending_automation";
+}
+
+function parseAutomationTime_(str) {
+  if (!str) return 0;
+  const m = String(str).trim().match(/([A-Za-z]{3})\s+(\d{1,2})-([A-Za-z]{3})\s+(\d{2}):(\d{2})/);
+  if (!m) return 0;
+  const day = parseInt(m[2], 10);
+  const monthStr = m[3].toLowerCase();
+  const hrs = parseInt(m[4], 10);
+  const mins = parseInt(m[5], 10);
+  const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+  const month = months[monthStr];
+  if (month === undefined) return 0;
+  
+  const now = new Date();
+  let year = now.getFullYear();
+  if (month === 11 && now.getMonth() === 0) year--;
+  else if (month === 0 && now.getMonth() === 11) year++;
+  
+  // Calculate exact UTC time by neutralizing Vercel's UTC assumption vs the sheet's London time
+  const guessedUtc = new Date(Date.UTC(year, month, day, hrs, mins, 0));
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/London',
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false
+  }).formatToParts(guessedUtc);
+  
+  const p = {};
+  parts.forEach(part => { if (part.type !== 'literal') p[part.type] = parseInt(part.value, 10); });
+  const londonTimeMs = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0);
+  const offsetMs = londonTimeMs - guessedUtc.getTime();
+  
+  return guessedUtc.getTime() - offsetMs;
+}
+
+function evaluateAutomationStatus_(alertType, category, clientMeta, detectedAtMs, firstSeenMs) {
+  if (category !== "discrepancy") return "cached";
+  if (!clientMeta) return "cached";
+  
+  // Failsafe: Use firstSeen if available to prevent an infinite 16-hour lock
+  const baseTimeMs = firstSeenMs || detectedAtMs;
+  
+  const nowMs = Date.now();
+  if ((nowMs - baseTimeMs) > 16 * 60 * 60 * 1000) return "cached"; // 16 hour failsafe
+
+  let autoLastRun = 0;
+  if (alertType.startsWith("invoice")) autoLastRun = clientMeta.invAutoLastRunMs;
+  else if (alertType.startsWith("crm")) autoLastRun = clientMeta.crmAutoLastRunMs;
+  else if (alertType.startsWith("expense")) autoLastRun = clientMeta.expAutoLastRunMs;
+  else return "cached"; 
+
+  if (autoLastRun === 0) return "cached"; // No run history recorded
+  
+  // Allow 60s leeway for exact matching
+  if (autoLastRun >= (baseTimeMs - 60000)) return "cached";
+
+  return "pending_automation";
+}
+
 async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
   const mainResponse = await withRetry(() => sheets.spreadsheets.values.get({
     spreadsheetId: automationCommanderSheetId,
-    range: "AutoUpdates!A2:M1000",
+    range: "AutoUpdates!A2:AH1000",
   }));
   const rows = mainResponse.data.values || [];
   console.log(`📊 Total rows: ${rows.length}`);
@@ -2202,6 +2302,7 @@ async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
     const scriptId    = String(row[10] || "").trim();
     const clientSheetUrl = row[11];
     const masterSheetUrl = row[12];
+    const hasWebAppUrl = !!String(row[13] || "").trim(); // col N = Agent Web App URL
 
     if (!clientName || !clientSheetUrl || !masterSheetUrl) continue;
     if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
@@ -2219,6 +2320,10 @@ async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
       clientSheetUrl: String(clientSheetUrl),
       masterSheetUrl: String(masterSheetUrl),
       scriptId,
+      hasWebAppUrl,
+      invAutoLastRunMs: parseAutomationTime_(row[24]), // Col Y (Index 24)
+      crmAutoLastRunMs: parseAutomationTime_(row[28]), // Col AC (Index 28)
+      expAutoLastRunMs: parseAutomationTime_(row[32]), // Col AG (Index 32)
     });
   }
   return { rows, clientRows };
@@ -7870,6 +7975,8 @@ export default async function handler(req, res) {
           const existingHashes = new Set(memoryRows.map(r => r.fingerprintHash).filter(Boolean));
           console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes, ${existingHashes.size} existing hashes`);
 
+          const clientMetaMap = new Map(clientChunk.map(c => [c.clientName, c]));
+
           for (const item of sweepItems) {
             // AUTO-RESOLVE STALE DISCREPANCIES, PROACTIVE ALERTS & IGNORED ALERTS
             if (item.category === "discrepancy" || item.category === "proactive") {
@@ -7877,7 +7984,7 @@ export default async function handler(req, res) {
               const staleRows = memoryRows.filter(r => 
                 r.clientName === item.clientName && 
                 r.alertType === item.alertType && 
-                (r.status === "cached" || r.status === "ignored" || (item.category === "proactive" && r.status === "task")) && 
+                (r.status === "cached" || r.status === "pending_automation" || r.status === "ignored" || (item.category === "proactive" && r.status === "task")) && 
                 r.category === item.category &&
                 !freshHashes.has(r.fingerprintHash)
               );
@@ -7912,6 +8019,37 @@ export default async function handler(req, res) {
                   console.log(`  ⚠️ Failed to auto-resolve stale alert: ${e.message}`);
                 }
               }
+
+              // WAKE UP PENDING AUTOMATION ALERTS
+              const clientMeta = clientMetaMap.get(item.clientName);
+              const pendingAutoRows = memoryRows.filter(r => 
+                r.clientName === item.clientName && 
+                r.alertType === item.alertType && 
+                r.status === "pending_automation" &&
+                freshHashes.has(r.fingerprintHash)
+              );
+
+              for (const pRow of pendingAutoRows) {
+                let snap = {};
+                try { snap = JSON.parse(pRow.dataSnapshot || "{}"); } catch(e){}
+                const detectedAt = snap.detectedAt ? new Date(snap.detectedAt).getTime() : Date.now();
+                const firstSeen = pRow.firstSeen ? new Date(pRow.firstSeen).getTime() : null;
+                const newStatus = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, detectedAt, firstSeen);
+                
+                if (newStatus === "cached") {
+                  try {
+                    await updateAlertMemoryRow(sheets, acIdSweep, pRow.rowIndex, { 
+                      ...pRow, 
+                      status: "cached",
+                      lastRechecked: new Date().toISOString()
+                    });
+                    console.log(`  ⏰ Woke up pending_automation alert for ${item.clientName}: ${pRow.fingerprintHash}`);
+                    pRow.status = "cached";
+                  } catch(e) {
+                    console.log(`  ⚠️ Failed to wake up alert: ${e.message}`);
+                  }
+                }
+              }
             }
 
             if (!item.alerts || item.alerts.length === 0) continue;
@@ -7925,6 +8063,8 @@ export default async function handler(req, res) {
             // recorded (unified alert-system redesign) — the AutoUpdates
             // write this action used to also make alongside this has been
             // fully retired now that nothing reads it any more.
+            const clientMeta = clientMetaMap.get(item.clientName);
+
             for (const alert of newAlerts) {
               try {
                 // Extract the text string if the summary is an object (applies to invoices and expenses)
@@ -7951,16 +8091,26 @@ export default async function handler(req, res) {
                 // (options-building benefits from the most current data) —
                 // this snapshot is for display only, not re-analysis.
                 const { _fingerprint, ...alertForSnapshot } = alert;
+                
+                const detectedAtIso = new Date().toISOString();
+                alertForSnapshot.detectedAt = detectedAtIso;
+                
+                const status = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, new Date(detectedAtIso).getTime(), null);
+
                 await appendAlertMemoryRow(sheets, acIdSweep, {
                   fingerprintHash: alert._fingerprint,
                   alertType: item.alertType,
                   clientName: item.clientName,
                   alertSummary: summary,
                   cachedOptionsJSON: "",
-                  status: "cached",
+                  status: status,
                   category: item.category || "discrepancy",
                   dataSnapshot: JSON.stringify(alertForSnapshot),
                 });
+                
+                if (status === "pending_automation") {
+                  console.log(`  💤 Alert ${alert._fingerprint} is pending automation run`);
+                }
               } catch (memErr) {
                 console.log(`  ⚠️ Could not write AlertMemory row for ${item.clientName}/${item.alertType}: ${memErr.message}`);
               }

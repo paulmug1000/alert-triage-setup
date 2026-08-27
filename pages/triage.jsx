@@ -778,6 +778,15 @@ const GLOBAL_STYLES = `
   .pulse-nav-item:hover { color: #0066cc !important; }
 `;
 
+if (typeof document !== "undefined") {
+  const id = "triage-global-styles";
+  if (!document.getElementById(id)) {
+    const el = document.createElement("style");
+    el.id = id;
+    el.textContent = GLOBAL_STYLES;
+    document.head.appendChild(el);
+  }
+}
 // ============================================================================
 // EoM WORK MONTH vs TARGET MONTH — mirrors the identical block in triage.js;
 // keep both in sync if this model ever changes.
@@ -2293,7 +2302,7 @@ export default function TriageSystem({ onBack }) {
     } catch (e) { /* silent */ }
   };
 
-  // Inject global button/interaction styles once on mount, and set page title/favicon
+  // Set page title and favicon once on mount
   useEffect(() => {
     window.scrollTo(0, 0);
     // Set title and favicon directly — reliable across all screen transitions
@@ -2305,15 +2314,8 @@ export default function TriageSystem({ onBack }) {
       document.head.appendChild(favicon);
     }
     favicon.href = "https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png";
-
-    const id = "triage-global-styles";
-    if (!document.getElementById(id)) {
-      const el = document.createElement("style");
-      el.id = id;
-      el.textContent = GLOBAL_STYLES;
-      document.head.appendChild(el);
-    }
   }, []);
+
   const [ignoredAlerts, setIgnoredAlerts] = useState([]);
   const [isLoadingIgnored, setIsLoadingIgnored] = useState(false);
   const [isUnignoring, setIsUnignoring] = useState(null);

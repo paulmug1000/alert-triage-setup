@@ -8023,6 +8023,11 @@ export default async function handler(req, res) {
         const memoryRows = await readAlertMemory(sheets, acIdBuild);
 
         const pending = memoryRows.filter(r =>
+          r.status === "cached" && r.category === "discrepancy" && !r.cachedOptionsJSON
+        );
+        console.log(`build_cached_alert_options: ${pending.length} rows pending options`);
+
+        // Group by client+alertType so each client+type combination is
         // only re-read once, regardless of how many individual rows within
         // it need options.
         const groups = new Map(); // key: `${clientName}::${alertType}` -> AlertMemory rows

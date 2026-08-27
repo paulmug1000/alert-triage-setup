@@ -1075,10 +1075,7 @@ async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowN
     
     // Truncate massive jobs (like multi-year retainers) to stay well under the 50,000 char Google Sheets cell limit
     if (resultData.length > 8) {
-      // Always keep the parent row
-      const parent = resultData[0];
-      
-      // Find the row being highlighted/targeted by the option
+      const parent = resultData[0]; // Always keep the parent row
       const targetIdx = resultData.findIndex(r => 
         r.invoiceSlots.some(s => s.highlighted) || r.expenseSlots.some(s => s.highlighted)
       );
@@ -1089,9 +1086,9 @@ async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowN
         const end = Math.min(resultData.length, targetIdx + 3);
         const subset = resultData.slice(start, end);
         
-        // Recombine, ensuring no duplicates if the subset overlaps the parent
+        // Recombine and remove duplicates (if subset overlaps parent)
         const combined = [parent, ...subset];
-        resultData = [...new Map(combined.map(item => [item.rowNum, item])).values()];
+        resultData = Array.from(new Map(combined.map(item => [item.rowNum, item])).values());
       } else {
         // If no specific target, just keep the first 8 rows
         resultData = resultData.slice(0, 8);
@@ -7287,6 +7284,7 @@ export default async function handler(req, res) {
         let finalAlerts = mergedAlerts;
         let finalClientsWithFlags = reconciledClients;
         let finalNoActionAlerts = mergedNoActionAlerts;
+        let finalProactiveAlerts = [];
         try {
           const sheetsForMerge = await getSheetsClient();
           const acIdForMerge = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
@@ -7433,10 +7431,6 @@ export default async function handler(req, res) {
           }
 
           if (newAlertsFromMemory.length > 0 || newNoActionFromMemory.length > 0) {
-            finalAlerts = [...mergedAlerts, ...newAlertsFromMemory];
-            finalNoActionAlerts = [...mergedNoActionAlerts, ...newNoActionFromMemory];
-
-            finalClientsWithFlags = reconciledClients.map(c => {
               const extra = extraFlagsByClient.get(c.clientName);
               return extra ? { ...c, flags: { ...c.flags, ...extra } } : c;
             });
@@ -7460,7 +7454,7 @@ export default async function handler(req, res) {
           noActionCount: finalNoActionAlerts.length,
           alerts: finalAlerts,
           noActionAlerts: finalNoActionAlerts,
-          proactiveAlerts: newProactiveFromMemory,
+          proactiveAlerts: finalProactiveAlerts,
           clientsWithFlags: finalClientsWithFlags,
           noActionAnalysisResults: noActionAnalysisResults || {},
         };
@@ -7551,7 +7545,8 @@ export default async function handler(req, res) {
         console.log(`run_flag_sweep: actionableDue=${actionableDue}, infoDue=${infoDue}, proactiveDue=${proactiveDue}`);
         
         // Chunking architecture: process a strict subset of clients to avoid Vercel timeouts
-        const CHUNK_SIZE = 3;
+        // Proactive checks require reading entire sheets, so we drop chunk size to 1 to stay safely under the 10s limit
+        const CHUNK_SIZE = proactiveDue ? 1 : 3;
         const clientChunk = clientRows.slice(startIdx, startIdx + CHUNK_SIZE);
         const hasMore = startIdx + CHUNK_SIZE < clientRows.length;
         const nextIdx = startIdx + CHUNK_SIZE;
@@ -7589,7 +7584,7 @@ export default async function handler(req, res) {
                   "DataChgAlert!B4:I4",
                   (hasInvoice && actionableDue) ? "InvComp!A5:Y1000" : "DataChgAlert!A1",
                   (hasExpense && actionableDue) ? "DirComp!A5:AV1000" : "DataChgAlert!A1",
-                  infoDue ? "AutoLog!A2:D200" : "DataChgAlert!A1"
+                  (infoDue || proactiveDue) ? "AutoLog!A2:D200" : "DataChgAlert!A1"
                 ]
               });
               const ranges = batchResp.data.valueRanges || [];
@@ -7702,12 +7697,14 @@ export default async function handler(req, res) {
               
               try {
                 // Fetch Confirmed and Pipeline in one batch from the client sheet
+                // UNFORMATTED_VALUE drastically reduces payload size to prevent Vercel memory/timeout crashes
                 const clientBatchResp = await sheets.spreadsheets.values.batchGet({
                   spreadsheetId: client.clientSheetId,
                   ranges: [
                     "Confirmed!A1:CR5000",
                     "Pipeline!A1:DD5000"
-                  ]
+                  ],
+                  valueRenderOption: "UNFORMATTED_VALUE"
                 });
                 sharedData.confirmedData = clientBatchResp.data.valueRanges[0]?.values || [];
                 sharedData.pipelineData = clientBatchResp.data.valueRanges[1]?.values || [];

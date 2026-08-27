@@ -8483,6 +8483,7 @@ export default function TriageSystem({ onBack }) {
         <div style={styles.card}>
           <h2 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>Alerts</h2>
           {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
+          {error && <div style={styles.errorBanner}>{error}</div>}
 
           {isLoading ? (
             <div style={{ textAlign: "center", padding: "32px 16px", color: "#666" }}>

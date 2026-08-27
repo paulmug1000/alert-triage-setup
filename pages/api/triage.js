@@ -2156,10 +2156,10 @@ async function getSheetGid(sheets, spreadsheetId, sheetName) {
  * must index into it the same way.
  */
 async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
-  const mainResponse = await sheets.spreadsheets.values.get({
+  const mainResponse = await withRetry(() => sheets.spreadsheets.values.get({
     spreadsheetId: automationCommanderSheetId,
     range: "AutoUpdates!A2:M1000",
-  });
+  }));
   const rows = mainResponse.data.values || [];
   console.log(`📊 Total rows: ${rows.length}`);
 
@@ -3612,10 +3612,10 @@ export default async function handler(req, res) {
       }
       try {
         const sheets = await getSheetsClient();
-        const resp = await sheets.spreadsheets.values.get({
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: automationCommanderSheetId,
           range: "AutoUpdates!A2:N500",
-        });
+        }));
         const rows = resp.data.values || [];
         // Build both array (for outgoings selector) and object (for proactive alerts compat)
         const clientsArray = [];
@@ -3651,7 +3651,7 @@ export default async function handler(req, res) {
       try {
         const sheets = await getSheetsClient();
         await ensureAssignedExpensesTab_(sheets, aeAcId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: aeAcId, range: "AssignedExpenses!A2:C50000" });
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: aeAcId, range: "AssignedExpenses!A2:C50000" }));
         const assignedByClient = {};
         (resp.data.values || []).forEach(r => {
           if (!r[0] || !r[1]) return;

@@ -210,7 +210,7 @@ async function readAlertMemory(sheets, automationCommanderSheetId) {
 function getHandledFingerprintHashes_(memoryRows) {
   return new Set(
     memoryRows
-      .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded" || r.status === "accepted")
+      .filter(r => r.status === "ignored" || r.status === "task" || r.status === "superseded" || r.status === "accepted" || r.status === "pending_automation")
       .map(r => r.fingerprintHash)
       .filter(Boolean)
   );
@@ -2222,6 +2222,63 @@ function evaluateAutomationStatus_(alertType, category, clientMeta, detectedAtMs
   
   // If the automation finished AFTER the alert was detected, it failed to fix it, so show it
   if (autoLastRun >= detectedAtMs) return "cached";
+
+  return "pending_automation";
+}
+
+function parseAutomationTime_(str) {
+  if (!str) return 0;
+  const m = String(str).trim().match(/([A-Za-z]{3})\s+(\d{1,2})-([A-Za-z]{3})\s+(\d{2}):(\d{2})/);
+  if (!m) return 0;
+  const day = parseInt(m[2], 10);
+  const monthStr = m[3].toLowerCase();
+  const hrs = parseInt(m[4], 10);
+  const mins = parseInt(m[5], 10);
+  const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+  const month = months[monthStr];
+  if (month === undefined) return 0;
+  
+  const now = new Date();
+  let year = now.getFullYear();
+  if (month === 11 && now.getMonth() === 0) year--;
+  else if (month === 0 && now.getMonth() === 11) year++;
+  
+  // Calculate exact UTC time by neutralizing Vercel's UTC assumption vs the sheet's London time
+  const guessedUtc = new Date(Date.UTC(year, month, day, hrs, mins, 0));
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/London',
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false
+  }).formatToParts(guessedUtc);
+  
+  const p = {};
+  parts.forEach(part => { if (part.type !== 'literal') p[part.type] = parseInt(part.value, 10); });
+  const londonTimeMs = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0);
+  const offsetMs = londonTimeMs - guessedUtc.getTime();
+  
+  return guessedUtc.getTime() - offsetMs;
+}
+
+function evaluateAutomationStatus_(alertType, category, clientMeta, detectedAtMs, firstSeenMs) {
+  if (category !== "discrepancy") return "cached";
+  if (!clientMeta) return "cached";
+  
+  // Failsafe: Use firstSeen if available to prevent an infinite 16-hour lock
+  const baseTimeMs = firstSeenMs || detectedAtMs;
+  
+  const nowMs = Date.now();
+  if ((nowMs - baseTimeMs) > 16 * 60 * 60 * 1000) return "cached"; // 16 hour failsafe
+
+  let autoLastRun = 0;
+  if (alertType.startsWith("invoice")) autoLastRun = clientMeta.invAutoLastRunMs;
+  else if (alertType.startsWith("crm")) autoLastRun = clientMeta.crmAutoLastRunMs;
+  else if (alertType.startsWith("expense")) autoLastRun = clientMeta.expAutoLastRunMs;
+  else return "cached"; 
+
+  if (autoLastRun === 0) return "cached"; // No run history recorded
+  
+  // Allow 60s leeway for exact matching
+  if (autoLastRun >= (baseTimeMs - 60000)) return "cached";
 
   return "pending_automation";
 }
@@ -8095,6 +8152,7 @@ export default async function handler(req, res) {
                 const detectedAtIso = new Date().toISOString();
                 alertForSnapshot.detectedAt = detectedAtIso;
                 
+                const clientMeta = clientMetaMap.get(item.clientName);
                 const status = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, new Date(detectedAtIso).getTime(), null);
 
                 await appendAlertMemoryRow(sheets, acIdSweep, {

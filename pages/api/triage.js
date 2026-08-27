@@ -7431,10 +7431,6 @@ export default async function handler(req, res) {
           }
 
           if (newAlertsFromMemory.length > 0 || newNoActionFromMemory.length > 0) {
-              const extra = extraFlagsByClient.get(c.clientName);
-              return extra ? { ...c, flags: { ...c.flags, ...extra } } : c;
-            });
-            for (const [clientName, meta] of newClientMeta.entries()) {
               finalClientsWithFlags.push({
                 clientName,
                 clientSheetId: meta.clientSheetId,

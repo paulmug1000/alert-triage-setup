@@ -16636,42 +16636,48 @@ async function checkRevenueMismatch_(clientName, clientSheetId, sharedData) {
           detail = `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: revenue = £${revenueAmt.toFixed(2)}, total invoiced (incl. placeholders) = £${totalInvoiced.toFixed(2)} — difference of £${diff.toFixed(2)}`;
         }
       } else {
-        const childRows = jobRows.filter(jr => !jr.isParent);
-        if (childRows.length === 0) {
-          const parentTotal = sumInvSlotAmounts_(row);
-          if (parentTotal === 0) { r += jobRows.length; continue; }
-          const diffA = Math.abs(parentTotal - revenueAmt);
-          if (diffA > TOLERANCE) {
-            mismatch = true;
-            detail = `${jobClient} | ${jobName} (Row ${r + 1}) [retainer, single-row]: monthly revenue = £${revenueAmt.toFixed(2)}, total invoiced on parent = £${parentTotal.toFixed(2)} — difference of £${diffA.toFixed(2)}`;
-          }
-        } else {
-          const mismatches = [];
-          for (let ci = 0; ci < childRows.length; ci++) {
-            const cr = childRows[ci];
-            const childTotal = sumInvSlotAmounts_(cr.row);
-            if (childTotal === 0) continue;
-            const mult = detectPeriodMultiplier_(cr.row, revenueAmt);
-            const expectedForRow = revenueAmt * mult;
-            const diffC = Math.abs(childTotal - expectedForRow);
-            if (diffC > TOLERANCE) {
-              mismatches.push(`Row ${cr.sheetRow}: £${childTotal.toFixed(2)} invoiced, expected £${expectedForRow.toFixed(2)} (${mult}× monthly revenue) — diff £${diffC.toFixed(2)}`);
+          const childRows = jobRows.filter(jr => !jr.isParent);
+          if (childRows.length === 0) {
+            const parentTotal = sumInvSlotAmounts_(row);
+            if (parentTotal === 0) { r += jobRows.length; continue; }
+            const diffA = Math.abs(parentTotal - revenueAmt);
+            if (diffA > TOLERANCE) {
+              mismatch = true;
+              detail = `${jobClient} | ${jobName} (Row ${r + 1}) [retainer, single-row]: monthly revenue = £${revenueAmt.toFixed(2)}, total invoiced on parent = £${parentTotal.toFixed(2)} — difference of £${diffA.toFixed(2)}`;
+            }
+          } else {
+            for (let ci = 0; ci < childRows.length; ci++) {
+              const cr = childRows[ci];
+              const childTotal = sumInvSlotAmounts_(cr.row);
+              if (childTotal === 0) continue;
+              const mult = detectPeriodMultiplier_(cr.row, revenueAmt);
+              const expectedForRow = revenueAmt * mult;
+              const diffC = Math.abs(childTotal - expectedForRow);
+              if (diffC > TOLERANCE) {
+                // Build stable unique suffix for child row
+                const ref = String(cr.row[42] || "").trim();
+                const sentDate = String(cr.row[43] || "").trim();
+                const suffix = ref || sentDate || `child-${ci}`;
+                
+                alerts.push({
+                  alertType: "revenue_mismatch", 
+                  alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}|${suffix}${projectCode ? `|${projectCode}` : ""}`,
+                  heading: "Revenue / total invoiced mismatch", 
+                  detail: `${jobClient} | ${jobName} (Row ${cr.sheetRow}) [retainer, multi-row]: £${childTotal.toFixed(2)} invoiced, expected £${expectedForRow.toFixed(2)} (${mult}× monthly revenue of £${revenueAmt.toFixed(2)}) — diff £${diffC.toFixed(2)}`, 
+                  jobName, endClientName: jobClient, projectCode, confirmedRow: cr.sheetRow, isRetainer,
+                });
+              }
             }
           }
-          if (mismatches.length > 0) {
-            mismatch = true;
-            detail = `${jobClient} | ${jobName} (parent Row ${r + 1}) [retainer, multi-row]: monthly revenue = £${revenueAmt.toFixed(2)}. Mismatched rows: ${mismatches.join("; ")}`;
-          }
         }
-      }
 
-      if (mismatch) {
-        alerts.push({
-          alertType: "revenue_mismatch", alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}`,
-          heading: "Revenue / total invoiced mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,
-        });
-      }
-      r += jobRows.length;
+        if (mismatch) {
+          alerts.push({
+            alertType: "revenue_mismatch", alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}`,
+            heading: "Revenue / total invoiced mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,
+          });
+        }
+        r += jobRows.length;
     }
   } catch(e) {}
   return alerts;
@@ -16747,7 +16753,6 @@ async function checkDirectCostsMismatch_(clientName, clientSheetId, sharedData) 
               detail = `${jobClient} | ${jobName} (Row ${sheetRow}) [retainer, single-row] [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses on parent = £${parentExp.toFixed(2)} — difference of £${diffA.toFixed(2)}`;
             }
           } else {
-            const mismatches = [];
             for (let ci = 0; ci < childRows.length; ci++) {
               const cr = childRows[ci];
               const childExp = sumExpSlotAmounts_(cr.row);
@@ -16756,12 +16761,20 @@ async function checkDirectCostsMismatch_(clientName, clientSheetId, sharedData) 
               const expectedForRow = directCostsAmt * mult;
               const diffC = Math.abs(childExp - expectedForRow);
               if (diffC > TOLERANCE) {
-                mismatches.push(`Row ${cr.sheetRow + startRow - 1}: £${childExp.toFixed(2)} expenses, expected £${expectedForRow.toFixed(2)} (${mult}× monthly budget) — diff £${diffC.toFixed(2)}`);
+                // Build stable unique suffix for child row based on Expense Slot 1
+                const txId = String(cr.row[81] || "").trim();
+                const expDate = String(cr.row[78] || "").trim();
+                const suffix = txId || expDate || `child-${ci}`;
+                const childSheetRow = cr.sheetRow + startRow - 1;
+                
+                alerts.push({
+                  alertType: "direct_costs_mismatch", 
+                  alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}|${suffix}${projectCode ? `|${projectCode}` : ""}`,
+                  heading: "Direct costs / total expenses mismatch", 
+                  detail: `${jobClient} | ${jobName} (Row ${childSheetRow}) [retainer, multi-row] [${tabName} tab]: £${childExp.toFixed(2)} expenses, expected £${expectedForRow.toFixed(2)} (${mult}× monthly budget of £${directCostsAmt.toFixed(2)}) — diff £${diffC.toFixed(2)}`, 
+                  jobName, endClientName: jobClient, projectCode, confirmedRow: childSheetRow, isRetainer, tab: tabName,
+                });
               }
-            }
-            if (mismatches.length > 0) {
-              mismatch = true;
-              detail = `${jobClient} | ${jobName} (parent Row ${sheetRow}) [retainer, multi-row] [${tabName} tab]: monthly direct cost budget = £${directCostsAmt.toFixed(2)}. Mismatched rows: ${mismatches.join("; ")}`;
             }
           }
         }

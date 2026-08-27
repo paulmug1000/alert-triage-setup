@@ -7206,9 +7206,14 @@ export default async function handler(req, res) {
           const hash = alert.fingerprintHash || buildAlertFingerprint(alert);
           return !ignoredHashes.has(hash);
         });
+        
+        const filteredProactive = (data.proactiveAlerts || []).filter(alert => {
+          const hash = alert.fingerprintHash || createHash("sha256").update(alert.alertKey || "").digest("hex").substring(0, 16);
+          return !ignoredHashes.has(hash);
+        });
 
-        if (filteredAlerts.length < data.alerts.length) {
-          console.log(`  Filtered ${data.alerts.length - filteredAlerts.length} ignored alert(s) from precomputed data`);
+        if (filteredAlerts.length < data.alerts.length || filteredProactive.length < (data.proactiveAlerts || []).length) {
+          console.log(`  Filtered ignored alert(s) from precomputed data`);
         }
 
         // Rebuild alertCounts after filtering
@@ -7242,7 +7247,7 @@ export default async function handler(req, res) {
           JSON.stringify({
             alerts: filteredAlerts,
             noActionAlerts: data.noActionAlerts,
-            proactiveAlerts: data.proactiveAlerts || [],
+            proactiveAlerts: filteredProactive,
             clientsWithFlags: clientsWithUpdatedCounts,
           }),
           { EX: 3600 } // Reduced from 24h to 1h to prevent Redis OOM
@@ -7254,7 +7259,7 @@ export default async function handler(req, res) {
           sessionId,
           totalAlerts: filteredAlerts.length,
           noActionCount: data.noActionCount,
-          proactiveAlerts: data.proactiveAlerts || [],
+          proactiveAlerts: filteredProactive,
           clientsWithFlags: clientsWithUpdatedCounts.map(c => ({
             clientName: c.clientName,
             clientSheetId: c.clientSheetId,
@@ -13418,10 +13423,12 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
         if (!sessionData) return res.status(200).json({ success: true, notFound: true });
         const parsed = JSON.parse(sessionData);
-        const before = parsed.alerts.length;
+        const before = parsed.alerts.length + (parsed.proactiveAlerts?.length || 0);
         
         // Sync the Home Screen counts before removing the alert
-        const alertToRemove = parsed.alerts.find(a => `${a.sheetName}-${a.rowNumber}` === alertId);
+        const alertToRemove = parsed.alerts.find(a => `${a.sheetName}-${a.rowNumber}` === alertId) 
+                           || (parsed.proactiveAlerts || []).find(a => a.alertKey === alertId || a.fingerprintHash === alertId);
+                           
         if (alertToRemove && parsed.clientsWithFlags) {
           let flagKey = alertToRemove.flagType || alertToRemove.alertType || alertToRemove.type;
           if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
@@ -13437,7 +13444,11 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         }
 
         parsed.alerts = parsed.alerts.filter(a => `${a.sheetName}-${a.rowNumber}` !== alertId);
-        const removed = before - parsed.alerts.length;
+        if (parsed.proactiveAlerts) {
+          parsed.proactiveAlerts = parsed.proactiveAlerts.filter(a => a.alertKey !== alertId && a.fingerprintHash !== alertId);
+        }
+        
+        const removed = before - (parsed.alerts.length + (parsed.proactiveAlerts?.length || 0));
         await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
         console.log(`  remove_alert: removed ${removed} alert(s) matching "${alertId}" from session`);
         return res.status(200).json({ success: true, removed });
@@ -14430,7 +14441,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       // Same as acknowledge_proactive_alert, but for several alerts
       // (identified by their alertKey) in one pass. Migrated 23 Aug 2026
       // alongside the single-alert version above, same reasoning.
-      const { alertKeys, automationCommanderSheetId: bulkAckAcId } = req.body;
+      const { alertKeys, automationCommanderSheetId: bulkAckAcId, sessionId } = req.body;
       if (!Array.isArray(alertKeys) || alertKeys.length === 0 || !bulkAckAcId) {
         return res.status(400).json({ success: false, error: "Missing alertKeys or automationCommanderSheetId" });
       }
@@ -14447,6 +14458,53 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             status: "ignored", firstSeen: row.firstSeen, dataSnapshot: row.dataSnapshot,
           });
         }
+        
+        // Remove from the active Redis session and cache so they disappear from UI immediately
+        if (sessionId) {
+          try {
+            const keysToRemove = new Set(alertKeys);
+            const hashesToRemove = new Set(matchingRows.map(r => r.fingerprintHash));
+            
+            // 1. Session
+            const sessionRaw = await redisClient.get(`triage_alerts:${sessionId}`);
+            if (sessionRaw) {
+              const sessionParsed = JSON.parse(sessionRaw);
+              if (sessionParsed.proactiveAlerts) {
+                sessionParsed.proactiveAlerts = sessionParsed.proactiveAlerts.filter(a => 
+                  !keysToRemove.has(a.alertKey) && !hashesToRemove.has(a.fingerprintHash)
+                );
+              }
+              if (sessionParsed.clientsWithFlags) {
+                sessionParsed.clientsWithFlags = sessionParsed.clientsWithFlags.map(c => {
+                  const toDeduct = matchingRows.filter(r => r.clientName === c.clientName);
+                  if (toDeduct.length > 0 && c.alertCounts) {
+                    toDeduct.forEach(td => {
+                      const fk = td.alertType;
+                      if (c.alertCounts[fk]) c.alertCounts[fk] = Math.max(0, c.alertCounts[fk] - 1);
+                    });
+                  }
+                  return c;
+                });
+              }
+              await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(sessionParsed), { EX: 3600 });
+            }
+            
+            // 2. Precomputed Cache
+            const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+            if (preRaw) {
+              const preParsed = JSON.parse(preRaw);
+              if (preParsed.proactiveAlerts) {
+                preParsed.proactiveAlerts = preParsed.proactiveAlerts.filter(a => 
+                  !keysToRemove.has(a.alertKey) && !hashesToRemove.has(a.fingerprintHash)
+                );
+              }
+              await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(preParsed), { EX: 3600 });
+            }
+          } catch (redisErr) {
+            console.error("Failed to update Redis cache on bulk acknowledge:", redisErr.message);
+          }
+        }
+
         console.log(`  ✅ Bulk acknowledged ${matchingRows.length} row(s) across ${alertKeys.length} alertKey(s)`);
         return res.status(200).json({ success: true, count: matchingRows.length });
       } catch (err) {

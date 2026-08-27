@@ -7430,7 +7430,16 @@ export default async function handler(req, res) {
             }
           }
 
-          if (newAlertsFromMemory.length > 0 || newNoActionFromMemory.length > 0) {
+          if (newAlertsFromMemory.length > 0 || newNoActionFromMemory.length > 0 || newProactiveFromMemory.length > 0) {
+            finalAlerts = [...mergedAlerts, ...newAlertsFromMemory];
+            finalNoActionAlerts = [...mergedNoActionAlerts, ...newNoActionFromMemory];
+            finalProactiveAlerts = newProactiveFromMemory;
+
+            finalClientsWithFlags = reconciledClients.map(c => {
+              const extra = extraFlagsByClient.get(c.clientName);
+              return extra ? { ...c, flags: { ...c.flags, ...extra } } : c;
+            });
+            for (const [clientName, meta] of newClientMeta.entries()) {
               finalClientsWithFlags.push({
                 clientName,
                 clientSheetId: meta.clientSheetId,

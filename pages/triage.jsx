@@ -9752,7 +9752,7 @@ export default function TriageSystem({ onBack }) {
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.title}>Alert Triage System</h1>
+          <h1 style={styles.title}>Alerts</h1>
           <p style={styles.subtitle}>{selectedClient?.clientName} - Alert {progress} of {clientAlerts.length}</p>
         </div>
 
@@ -11001,7 +11001,7 @@ export default function TriageSystem({ onBack }) {
     <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
       <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.title}>Alert Triage System</h1>
+          <h1 style={styles.title}>Alerts</h1>
           <p style={styles.subtitle}>{isLoading ? "Loading..." : error ? error : "Initialising..."}</p>
         </div>
         {error && <div style={styles.errorBanner}>{error}</div>}

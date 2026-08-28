@@ -2240,9 +2240,10 @@ function evaluateAutomationStatus_(alertType, category, clientMeta, detectedAtMs
   return "pending_automation";
 }
 
-async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {  const mainResponse = await withRetry(() => sheets.spreadsheets.values.get({
+async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) {
+  const mainResponse = await withRetry(() => sheets.spreadsheets.values.get({
     spreadsheetId: automationCommanderSheetId,
-    range: "AutoUpdates!A2:AH1000",
+    range: "AutoUpdates!A2:AJ1000",
   }));
   const rows = mainResponse.data.values || [];
   console.log(`📊 Total rows: ${rows.length}`);
@@ -2278,8 +2279,8 @@ async function readAutoUpdatesClientRows_(sheets, automationCommanderSheetId) { 
       scriptId,
       hasWebAppUrl,
       invAutoLastRunMs: parseAutomationTime_(row[24]), // Col Y (Index 24)
-      crmAutoLastRunMs: parseAutomationTime_(row[28]), // Col AC (Index 28)
-      expAutoLastRunMs: parseAutomationTime_(row[32]), // Col AG (Index 32)
+      crmAutoLastRunMs: parseAutomationTime_(row[29]), // Col AD (Index 29)
+      expAutoLastRunMs: parseAutomationTime_(row[34]), // Col AI (Index 34)
     });
   }
   return { rows, clientRows };

@@ -7373,6 +7373,7 @@ export default async function handler(req, res) {
             masterSheetId: c.masterSheetId,
             flags: c.flags,
             alertCounts: c.alertCounts || {},
+            activeExpenseIds: c.activeExpenseIds || [],
           })),
           computedAt: data.computedAt,
           computedMinutesAgo: Math.round(ageMs / 60000),

@@ -2953,7 +2953,8 @@ export default function TriageSystem({ onBack }) {
     const EXPENSE_TYPES = new Set(["expenseDashboardDiscr"]);
     return clientsWithFlags.reduce((total, c) => {
       const assignedSet = assignedByClient[c.clientName] || new Set();
-      const validAssigned = (c.activeExpenseIds || []).filter(id => assignedSet.has(id)).length;
+      const expenseIds = c.activeExpenseIds || [];
+      const validAssigned = expenseIds.filter(id => assignedSet.has(id)).length;
       
       // Count actionable alerts from alertCounts, subtracting assigned expenses per client
       const actionable = COUNTED_ALERT_TYPES.reduce((sum, ft) => {
@@ -8498,10 +8499,11 @@ export default function TriageSystem({ onBack }) {
                   }),
                 ];
                 return combinedClientList;
-              }).filter(client => {
+              })().filter(client => {
                 // Check if client has any visible alerts after applying assignedByClient suppression
                 const assignedSet = assignedByClient[client.clientName] || new Set();
-                const validAssigned = (client.activeExpenseIds || []).filter(id => assignedSet.has(id)).length;
+                const expenseIds = client.activeExpenseIds || [];
+                const validAssigned = expenseIds.filter(id => assignedSet.has(id)).length;
                 
                 const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
                   if (!client.flags?.[key]) return false;
@@ -8516,7 +8518,8 @@ export default function TriageSystem({ onBack }) {
                 return hasVisibleActionable || hasInfoFlags || proactiveCountsByClient[client.clientName] > 0;
               }).map((client, idx) => {
                 const assignedSet = assignedByClient[client.clientName] || new Set();
-                const validAssigned = (client.activeExpenseIds || []).filter(id => assignedSet.has(id)).length;
+                const expenseIds = client.activeExpenseIds || [];
+                const validAssigned = expenseIds.filter(id => assignedSet.has(id)).length;
                 
                 const actionableLines = ACTIONABLE_FLAG_KEYS
                   .filter(key => client.flags?.[key])

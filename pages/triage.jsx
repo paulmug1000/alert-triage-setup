@@ -5361,7 +5361,7 @@ export default function TriageSystem({ onBack }) {
           };
           const doUseUp = async () => {
             setOutgoingsReplacePrompt(null);
-            const manualBlocksList = realBlocks.filter(b => b.appId && b.appId.startsWith("MANUAL-ENTRY"));
+            const manualBlocksList = realBlocks.filter(b => b.appId && (b.appId.startsWith("MANUAL-ENTRY") || b.appId.startsWith("MANUAL-GAP")));
             // Prefer an exact amount match — consumes that specific entry entirely,
             // leaving any other manual entries in the cell untouched. Only falls
             // back to reducing entries in order (cascading to the next if one
@@ -5630,13 +5630,13 @@ export default function TriageSystem({ onBack }) {
                                 if (!ok) return;
                               }
                               // Check for existing manual entry blocks
-                              const manualBlocks = realBlocks.filter(b => b.appId && b.appId.startsWith("MANUAL-ENTRY"));
+                              const manualBlocks = realBlocks.filter(b => b.appId && (b.appId.startsWith("MANUAL-ENTRY") || b.appId.startsWith("MANUAL-GAP")));
                               if (manualBlocks.length > 0) {
                                 const totalManual = manualBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
                                 // Show custom UI dialog instead of window.confirm
                                 setOutgoingsReplacePrompt({
                                   exp, contractor, colLetter: m.colLetter, realBlocks, totalManual,
-                                  blocksWithoutManual: realBlocks.filter(b => !b.appId || !b.appId.startsWith("MANUAL-ENTRY")),
+                                  blocksWithoutManual: realBlocks.filter(b => !b.appId || !(b.appId.startsWith("MANUAL-ENTRY") || b.appId.startsWith("MANUAL-GAP"))),
                                 });
                                 return; // wait for user choice in dialog
                               }

@@ -3429,6 +3429,15 @@ export default function TriageSystem({ onBack }) {
         return;
       }
       console.log(`✅ Acknowledged alert: ${alertKey} (rowIndex ${rowIndex})`);
+      
+      if (sessionId) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
+        }).catch(() => {});
+      }
+
       setProactiveAlerts(prev => {
         // Remove by rowIndex (unique) not alertKey — prevents removing duplicates at once
         const remaining = rowIndex
@@ -7878,7 +7887,7 @@ export default function TriageSystem({ onBack }) {
                          <div onClick={() => run.raisedDetail?.length > 0 && toggleFlagSweepLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.raisedDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
                             <span>{run.raisedDetail?.length > 0 ? (flagSweepLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
                             <span style={{ color: (run.flagsRaised > 0 || run.alertsWoken > 0) ? "#b45309" : "#166534" }}>
-                              {run.flagsRaised} raised{run.alertsDelayed > 0 ? ` (${run.alertsDelayed} delayed)` : ""}{run.alertsWoken > 0 ? ` · ${run.alertsWoken} woken up` : ""}
+                              {run.flagsRaised} raised{run.alertsDelayed > 0 ? ` (${run.alertsDelayed} delayed)` : ""}{run.alertsWoken > 0 ? ` · ${run.alertsWoken} woken` : ""}
                             </span>
                           </div>
                           <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
@@ -7889,7 +7898,8 @@ export default function TriageSystem({ onBack }) {
                             <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "4px" }}>
                               {run.raisedDetail.map((d, di) => (
                                 <div key={di} style={{ fontSize: "9px", color: "#555" }}>
-                                  <strong>{d.clientName}</strong>:<br/>{getFlagName(d.flagKey)}
+                                  <strong>{d.clientName}</strong>:<br/>{getFlagName(d.flagKey)} 
+                                  <span style={{ color: d.status === "delayed" ? "#d97706" : d.status === "woken" ? "#059669" : "#1d4ed8", fontWeight: "600" }}> ({d.status || "raised"})</span>
                                 </div>
                               ))}
                             </div>
@@ -7946,18 +7956,20 @@ export default function TriageSystem({ onBack }) {
                         <div key={i} style={{ fontSize: "10px", color: "#555", marginBottom: "6px", padding: "6px", background: "#fff", borderRadius: "6px", border: "1px solid #e0e0e0", wordBreak: "break-word" }}>
                           <div onClick={() => run.clientDetail?.length > 0 && togglePrecomputeLogDetail(i)} style={{ display: "flex", flexDirection: "column", gap: "2px", cursor: run.clientDetail?.length > 0 ? "pointer" : "default", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
                             <span>{run.clientDetail?.length > 0 ? (precomputeLogExpanded.has(i) ? "▾ " : "▸ ") : ""}{new Date(run.runAt).toLocaleString("en-GB", { timeStyle: "short", dateStyle: "short" })}</span>
-                            <span style={{ color: run.totalAlerts > 0 ? "#15803d" : "#666" }}>{run.totalAlerts} alerts</span>
+                            <span style={{ color: (run.totalAlerts + run.noActionCount + (run.proactiveCount || 0)) > 0 ? "#15803d" : "#666" }}>
+                              {(run.totalAlerts || 0) + (run.noActionCount || 0) + (run.proactiveCount || 0)} alerts
+                            </span>
                           </div>
                           <div style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "9px", color: "#888" }}>
                             <span>{run.clientsWithFlags} clients</span>
-                            <span>{run.noActionCount} info · {run.proactiveCount || 0} pro</span>
+                            <span>{run.totalAlerts} a · {run.noActionCount} i · {run.proactiveCount || 0} p</span>
                           </div>
                           {precomputeLogExpanded.has(i) && run.clientDetail?.length > 0 && (
                             <div style={{ marginTop: "4px", paddingTop: "4px", borderTop: "1px dashed #eee", display: "flex", flexDirection: "column", gap: "2px" }}>
                               {run.clientDetail.map((c, ci) => (
                                 <div key={ci} style={{ fontSize: "9px", color: "#555", display: "flex", flexDirection: "column", gap: "1px" }}>
                                   <strong>{c.clientName}</strong>
-                                  <span>{c.alertCount} ({c.noActionCount} i, {c.proactiveCount || 0} p)</span>
+                                  <span>{c.alertCount} a, {c.noActionCount} i, {c.proactiveCount || 0} p</span>
                                 </div>
                               ))}
                             </div>

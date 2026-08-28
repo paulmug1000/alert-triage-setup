@@ -7814,7 +7814,7 @@ export default async function handler(req, res) {
               for (const [autoLogType, patterns] of Object.entries(AUTOLOG_TYPE_PATTERNS)) {
                 const matchedAlerts = [];
                 for (const entry of logEntries) {
-                  const lines = (entry.details || "").split("\n\n");
+                  const lines = (entry.details || "").split("\n");
                   for (const line of lines) {
                     if (!patterns.some(p => line.includes(p))) continue;
                     const fingerprintInput = `${client.clientName}|${autoLogType}|${line}`;
@@ -8010,6 +8010,7 @@ export default async function handler(req, res) {
                     console.log(`  ⏰ Woke up pending_automation alert for ${item.clientName}: ${pRow.fingerprintHash}`);
                     pRow.status = "cached";
                     alertsWoken++;
+                    raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "woken" });
                   } catch(e) {
                     console.log(`  ⚠️ Failed to wake up alert: ${e.message}`);
                   }
@@ -8021,7 +8022,6 @@ export default async function handler(req, res) {
             const newAlerts = item.alerts.filter(a => a._fingerprint && !existingHashes.has(a._fingerprint));
             if (newAlerts.length === 0) continue;
             flagsRaised++;
-            raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, method: "fingerprint", totalFingerprints: item.alerts.length, newFingerprints: newAlerts.length });
             console.log(`  ✅ ${item.clientName} / ${item.alertType} → TRUE (fingerprint: ${newAlerts.length} of ${item.alerts.length} new)`);
 
             // AlertMemory is now the only place a detected item gets
@@ -8077,6 +8077,9 @@ export default async function handler(req, res) {
                 if (status === "pending_automation") {
                   console.log(`  💤 Alert ${alert._fingerprint} is pending automation run`);
                   alertsDelayed++;
+                  raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "delayed" });
+                } else {
+                  raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "raised" });
                 }
               } catch (memErr) {
                 console.log(`  ⚠️ Could not write AlertMemory row for ${item.clientName}/${item.alertType}: ${memErr.message}`);

@@ -7289,20 +7289,18 @@ export default async function handler(req, res) {
         // AlertMemory is the source of truth — read it fresh every time.
         await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
         const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-        const ignoredStatusesPC = new Set(
-          memoryRows.filter(r => r.status === "ignored").map(r => r.fingerprintHash)
-        );
-        const supersededIgnoredHashesPC = new Set(
-          memoryRows
-            .filter(r => r.status === "superseded" && r.ignoreReason)
-            .map(r => r.fingerprintHash)
-            .filter(hash => !ignoredStatusesPC.has(hash))
-        );
-        const ignoredHashes = new Set([...ignoredStatusesPC, ...supersededIgnoredHashesPC]);
-
         const filteredAlerts = data.alerts.filter(alert => {
           const hash = alert.fingerprintHash || buildAlertFingerprint(alert);
-          return !ignoredHashes.has(hash);
+          const memRow = findMemoryRow(memoryRows, hash);
+          if (!memRow) return true;
+          return memRow.status === "cached" || memRow.status === "pending_automation";
+        });
+        
+        const filteredProactive = (data.proactiveAlerts || []).filter(alert => {
+          const hash = alert.fingerprintHash || createHash("sha256").update(alert.alertKey || "").digest("hex").substring(0, 16);
+          const memRow = findMemoryRow(memoryRows, hash);
+          if (!memRow) return true;
+          return memRow.status === "cached" || memRow.status === "pending_automation";
         });
         
         const filteredProactive = (data.proactiveAlerts || []).filter(alert => {

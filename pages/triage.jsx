@@ -2952,11 +2952,14 @@ export default function TriageSystem({ onBack }) {
     ];
     const EXPENSE_TYPES = new Set(["expenseDashboardDiscr"]);
     return clientsWithFlags.reduce((total, c) => {
+      const assignedSet = assignedByClient[c.clientName] || new Set();
+      const validAssigned = (c.activeExpenseIds || []).filter(id => assignedSet.has(id)).length;
+      
       // Count actionable alerts from alertCounts, subtracting assigned expenses per client
       const actionable = COUNTED_ALERT_TYPES.reduce((sum, ft) => {
         let count = c.alertCounts?.[ft] || 0;
         if (EXPENSE_TYPES.has(ft)) {
-          count = Math.max(0, count - (assignedByClient[c.clientName]?.size || 0));
+          count = Math.max(0, count - validAssigned);
         }
         return sum + count;
       }, 0);
@@ -8495,14 +8498,16 @@ export default function TriageSystem({ onBack }) {
                   }),
                 ];
                 return combinedClientList;
-              })().filter(client => {
+              }).filter(client => {
                 // Check if client has any visible alerts after applying assignedByClient suppression
-                const clientAssigned = assignedByClient[client.clientName]?.size || 0;
+                const assignedSet = assignedByClient[client.clientName] || new Set();
+                const validAssigned = (client.activeExpenseIds || []).filter(id => assignedSet.has(id)).length;
+                
                 const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
                   if (!client.flags?.[key]) return false;
                   let count = client.alertCounts?.[key] || 0;
                   if (key === "expenseDashboardDiscr") {
-                    count = Math.max(0, count - clientAssigned);
+                    count = Math.max(0, count - validAssigned);
                   }
                   return count > 0;
                 });
@@ -8510,14 +8515,16 @@ export default function TriageSystem({ onBack }) {
                   .some(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key));
                 return hasVisibleActionable || hasInfoFlags || proactiveCountsByClient[client.clientName] > 0;
               }).map((client, idx) => {
-                const clientAssigned = assignedByClient[client.clientName]?.size || 0;
+                const assignedSet = assignedByClient[client.clientName] || new Set();
+                const validAssigned = (client.activeExpenseIds || []).filter(id => assignedSet.has(id)).length;
+                
                 const actionableLines = ACTIONABLE_FLAG_KEYS
                   .filter(key => client.flags?.[key])
                   .map(key => {
                     let count = client.alertCounts?.[key] || 0;
                     // For expense alert types, subtract assigned IDs for THIS client
                     if (key === "expenseDashboardDiscr") {
-                      count = Math.max(0, count - clientAssigned);
+                      count = Math.max(0, count - validAssigned);
                     }
                     if (count === 0) return null; // suppress fully-resolved alert types
                     const label = getFlagName(key);

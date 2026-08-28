@@ -3927,9 +3927,18 @@ export default async function handler(req, res) {
           const totalExclVAT = parseFloat(String(row[3] || "0").replace(/,/g, "")) || 0;
           const vatIncluded  = parseFloat(String(row[4] || "0").replace(/,/g, "")) || 0;
           const invoiceNo    = String(row[5] || "").trim();
-          const sentDate     = String(row[6] || "").trim();
-          const dueDate      = String(row[7] || "").trim();
-          const fullyPaidOn  = String(row[8] || "").trim();
+          
+          const fmtDate = (dStr) => {
+            if (!dStr) return "";
+            const d = parseSheetOrJsDate_(dStr);
+            if (!d) return String(dStr).trim();
+            const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+            return `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+          };
+          
+          const sentDate     = fmtDate(row[6]);
+          const dueDate      = fmtDate(row[7]);
+          const fullyPaidOn  = fmtDate(row[8]);
           const status       = String(row[9] || "").trim();
           const currency     = String(row[10] || "").trim() || "GBP";
 
@@ -4062,7 +4071,7 @@ export default async function handler(req, res) {
           while ((match = blockRegex.exec(note)) !== null) {
             blocks.push({
               appId:       match[1]?.trim() || "",
-              amount:      parseFloat(match[2]) || 0,
+              amount:      parseFloat(String(match[2] || "").replace(/[£$€,\s]/g, "")) || 0,
               status:      match[3]?.trim() || "",
               recDate:     match[4]?.trim() || "",
               payDate:     match[5]?.trim() || "",
@@ -6592,6 +6601,7 @@ export default async function handler(req, res) {
           const fresh = JSON.parse(freshRaw);
 
           const alertCountsByClientAndFlag = {};
+          const activeExpenseIdsByClient = {};
           for (const alert of (fresh.alerts || [])) {
             const key = alert.clientName;
             let flagKey = alert.flagType || alert.alertType || alert.type;
@@ -6607,10 +6617,19 @@ export default async function handler(req, res) {
 
             if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
             alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+            
+            if (flagKey === "expenseDashboardDiscr") {
+               const txId = alert.summary?.transactionId || alert.summary?.appId;
+               if (txId) {
+                  if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
+                  activeExpenseIdsByClient[key].push(txId);
+               }
+            }
           }
 
           const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
             ...c, alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
+            activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
           }));
 
           const sessionId = Math.random().toString(36).substring(2, 15);
@@ -7296,6 +7315,7 @@ export default async function handler(req, res) {
 
         // Rebuild alertCounts after filtering
         const alertCountsByClientAndFlag = {};
+        const activeExpenseIdsByClient = {};
         for (const alert of filteredAlerts) {
           const key = alert.clientName;
           let flagKey = alert.flagType || alert.alertType || alert.type;
@@ -7311,11 +7331,20 @@ export default async function handler(req, res) {
 
           if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
           alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+          
+          if (flagKey === "expenseDashboardDiscr") {
+             const txId = alert.summary?.transactionId || alert.summary?.appId;
+             if (txId) {
+                if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
+                activeExpenseIdsByClient[key].push(txId);
+             }
+          }
         }
 
         const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => ({
           ...c,
           alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
+          activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
         }));
 
         // Promote into a regular session so the existing get_alerts flow works unchanged
@@ -7814,7 +7843,7 @@ export default async function handler(req, res) {
               for (const [autoLogType, patterns] of Object.entries(AUTOLOG_TYPE_PATTERNS)) {
                 const matchedAlerts = [];
                 for (const entry of logEntries) {
-                  const lines = (entry.details || "").split("\n");
+                  const lines = (entry.details || "").split(/\n+/);
                   for (const line of lines) {
                     if (!patterns.some(p => line.includes(p))) continue;
                     const fingerprintInput = `${client.clientName}|${autoLogType}|${line}`;
@@ -14537,13 +14566,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       }
 
     } else if (action === "acknowledge_proactive_alert") {
-      // Marks a proactive alert as acknowledged (AlertMemory status
-      // "ignored" — the existing, equivalent concept for an explicit user
-      // dismissal) so it won't reappear. Updates ALL matching rows (handles
-      // any leftover duplicates). Migrated 23 Aug 2026 (ProactiveAlerts
-      // retirement) from matching on ProactiveAlerts' own alertKey column
-      // to matching on AlertMemory's fingerprintHash (a hash of alertKey).
-      const { alertKey, automationCommanderSheetId: acId } = req.body;
+      const { alertKey, automationCommanderSheetId: acId, sessionId } = req.body;
       if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
       try {
         const sheets = await getSheetsClient();
@@ -14558,6 +14581,20 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             status: "ignored", firstSeen: row.firstSeen, dataSnapshot: row.dataSnapshot,
           });
         }
+        
+        if (sessionId) {
+          try {
+            const sessionRaw = await redisClient.get(`triage_alerts:${sessionId}`);
+            if (sessionRaw) {
+              const sessionParsed = JSON.parse(sessionRaw);
+              if (sessionParsed.proactiveAlerts) {
+                sessionParsed.proactiveAlerts = sessionParsed.proactiveAlerts.filter(a => a.alertKey !== alertKey);
+              }
+              await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(sessionParsed), { EX: 3600 });
+            }
+          } catch (e) {}
+        }
+        
         console.log(`  ✅ Acknowledged ${matchingRows.length} row(s) for alertKey: ${alertKey}`);
         return res.status(200).json({ success: true });
       } catch (err) {

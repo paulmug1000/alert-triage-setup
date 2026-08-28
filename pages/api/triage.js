@@ -7289,6 +7289,7 @@ export default async function handler(req, res) {
         // AlertMemory is the source of truth — read it fresh every time.
         await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
         const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+
         const filteredAlerts = data.alerts.filter(alert => {
           const hash = alert.fingerprintHash || buildAlertFingerprint(alert);
           const memRow = findMemoryRow(memoryRows, hash);
@@ -7301,11 +7302,6 @@ export default async function handler(req, res) {
           const memRow = findMemoryRow(memoryRows, hash);
           if (!memRow) return true;
           return memRow.status === "cached" || memRow.status === "pending_automation";
-        });
-        
-        const filteredProactive = (data.proactiveAlerts || []).filter(alert => {
-          const hash = alert.fingerprintHash || createHash("sha256").update(alert.alertKey || "").digest("hex").substring(0, 16);
-          return !ignoredHashes.has(hash);
         });
 
         if (filteredAlerts.length < data.alerts.length || filteredProactive.length < (data.proactiveAlerts || []).length) {

@@ -7713,9 +7713,10 @@ export default async function handler(req, res) {
         // updated once the whole cycle finishes (see the end of this action).
         await ensureSweepScheduleTab(sheets, acIdSweep);
         const schedule = await readSweepSchedule_(sheets, acIdSweep);
-        const actionableDue = isCategoryDue_(schedule.actionable);
-        const infoDue = isCategoryDue_(schedule.info);
-        const proactiveDue = req.body.forceProactive === true || isCategoryDue_(schedule.proactive);
+        const isForced = req.body.forceProactive === true;
+        const actionableDue = isForced || isCategoryDue_(schedule.actionable);
+        const infoDue = isForced || isCategoryDue_(schedule.info);
+        const proactiveDue = isForced || isCategoryDue_(schedule.proactive);
         categoriesRunStr = [actionableDue ? "act" : "", infoDue ? "info" : "", proactiveDue ? "pro" : ""].filter(Boolean).join(",");
         console.log(`run_flag_sweep: actionableDue=${actionableDue}, infoDue=${infoDue}, proactiveDue=${proactiveDue}`);
         
@@ -8133,10 +8134,12 @@ export default async function handler(req, res) {
         // than earlier ones did.
         if (!hasMore) {
           try {
-            if (actionableDue) await markCategoryChecked_(sheets, acIdSweep, "actionable", schedule);
-            if (infoDue) await markCategoryChecked_(sheets, acIdSweep, "info", schedule);
-            // Only update the proactive timer if it wasn't a forced manual run
-            if (proactiveDue && !req.body.forceProactive) await markCategoryChecked_(sheets, acIdSweep, "proactive", schedule);
+            // Only update the schedule timers if it wasn't a forced manual run
+            if (!req.body.forceProactive) {
+              if (actionableDue) await markCategoryChecked_(sheets, acIdSweep, "actionable", schedule);
+              if (infoDue) await markCategoryChecked_(sheets, acIdSweep, "info", schedule);
+              if (proactiveDue) await markCategoryChecked_(sheets, acIdSweep, "proactive", schedule);
+            }
           } catch (scheduleErr) {
             console.log(`  ⚠️ Could not update SweepSchedule: ${scheduleErr.message}`);
           }

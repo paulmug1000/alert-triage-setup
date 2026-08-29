@@ -6570,7 +6570,7 @@ export default async function handler(req, res) {
           console.log(`🔄 start_triage (sweep): running fresh detection pass from index ${req.body.startIdx || 0}...`);
           const sweepResp = await fetch(`${baseUrl}/api/triage`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "run_flag_sweep", secret: cronSecret, automationCommanderSheetId, startIdx: req.body.startIdx || 0, forceProactive: req.body.forceProactive }),
+            body: JSON.stringify({ action: "run_flag_sweep", secret: cronSecret, automationCommanderSheetId, startIdx: req.body.startIdx || 0, forceProactive: req.body.forceProactive, forceAll: true }),
           });
           const sweepData = await sweepResp.json();
           return res.status(200).json({ success: true, hasMore: sweepData.hasMore, nextIdx: sweepData.nextIdx });
@@ -7713,7 +7713,7 @@ export default async function handler(req, res) {
         // updated once the whole cycle finishes (see the end of this action).
         await ensureSweepScheduleTab(sheets, acIdSweep);
         const schedule = await readSweepSchedule_(sheets, acIdSweep);
-        const isForced = req.body.forceProactive === true;
+        const isForced = req.body.forceProactive === true || req.body.forceAll === true;
         const actionableDue = isForced || isCategoryDue_(schedule.actionable);
         const infoDue = isForced || isCategoryDue_(schedule.info);
         const proactiveDue = isForced || isCategoryDue_(schedule.proactive);
@@ -8135,7 +8135,7 @@ export default async function handler(req, res) {
         if (!hasMore) {
           try {
             // Only update the schedule timers if it wasn't a forced manual run
-            if (!req.body.forceProactive) {
+            if (!isForced) {
               if (actionableDue) await markCategoryChecked_(sheets, acIdSweep, "actionable", schedule);
               if (infoDue) await markCategoryChecked_(sheets, acIdSweep, "info", schedule);
               if (proactiveDue) await markCategoryChecked_(sheets, acIdSweep, "proactive", schedule);

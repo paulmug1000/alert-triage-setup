@@ -3264,20 +3264,18 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
     // Rows 59-66 = dashboard (col C = pipeline, col F = confirmed)
     // Rows 72-79 = CRM compare (col C = pipeline, col F = confirmed)
     let triageSettings = null;
-    const dcaSheetId = masterSheetId || spreadsheetId;
-    try {
-              const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
-                spreadsheetId: client.masterSheetId,
-                ranges: [
-                  "DataChgAlert!B4:I4",
-                  (hasInvoice && actionableDue) ? "InvComp!A5:Y1000" : "DataChgAlert!A1",
-                  (hasExpense && actionableDue) ? "DirComp!A5:AV1000" : "DataChgAlert!A1",
-                  (infoDue || proactiveDue) ? "AutoLog!A2:D200" : "DataChgAlert!A1"
-                ]
-              }));
-              const ranges = batchResp.data.valueRanges || [];
-      const SETTING_ROWS = ["missing_job","client_mismatch","job_name_mismatch","revenue_mismatch",
-                            "direct_costs_mismatch","start_date_mismatch","end_date_mismatch","likelihood_mismatch"];
+        const dcaSheetId = masterSheetId || spreadsheetId;
+        try {
+          const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+            spreadsheetId: dcaSheetId,
+            ranges: [
+              "DataChgAlert!C59:C66", "DataChgAlert!F59:F66",
+              "DataChgAlert!C72:C79", "DataChgAlert!F72:F79"
+            ]
+          }));
+          const ranges = batchResp.data.valueRanges || [];
+          const SETTING_ROWS = ["missing_job","client_mismatch","job_name_mismatch","revenue_mismatch",
+                                "direct_costs_mismatch","start_date_mismatch","end_date_mismatch","likelihood_mismatch"];
       const parseSettings = (vals) => {
         const s = {};
         SETTING_ROWS.forEach((k, i) => {

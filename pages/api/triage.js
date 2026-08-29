@@ -7844,7 +7844,7 @@ export default async function handler(req, res) {
             // infoDue (26 Aug 2026) — this category now has its own
             // configurable frequency, independent of actionable.
             if (infoDue) {
-              const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId, 100, batchData.autoLog);
+              const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId, 200, batchData.autoLog);
               for (const [autoLogType, patterns] of Object.entries(AUTOLOG_TYPE_PATTERNS)) {
                 const matchedAlerts = [];
                 for (const entry of logEntries) {

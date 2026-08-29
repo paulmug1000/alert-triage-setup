@@ -7861,6 +7861,7 @@ export default async function handler(req, res) {
             if (proactiveDue) {
               console.log(`  🔍 Running proactive checks for ${client.clientName}...`);
               let sharedData = { confirmedData: null, pipelineData: null, autoLogData: batchData.autoLog || null };
+              let fetchSuccess = false;
               
               try {
                 // Fetch Confirmed and Pipeline in one batch from the client sheet
@@ -7875,58 +7876,63 @@ export default async function handler(req, res) {
                 });
                 sharedData.confirmedData = clientBatchResp.data.valueRanges[0]?.values || [];
                 sharedData.pipelineData = clientBatchResp.data.valueRanges[1]?.values || [];
+                fetchSuccess = true;
               } catch (e) {
                 console.log(`  ⚠️ Failed to fetch Confirmed/Pipeline for proactive checks: ${e.message}`);
               }
 
-              // Run all 11 checks
-              const proChecks = [
-                checkRetainerInvoices_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
-                checkCRMWipe_(client.clientName, client.masterSheetId, sharedData),
-                checkRevenueMismatch_(client.clientName, client.clientSheetId, sharedData),
-                checkDirectCostsMismatch_(client.clientName, client.clientSheetId, sharedData),
-                checkPipelineConfirmedOverlap_(client.clientName, client.clientSheetId, sharedData),
-                checkRetainerShrinkBlocked_(client.clientName, client.masterSheetId, sharedData),
-                checkUninvoicedRevenue_(client.clientName, client.clientSheetId, sharedData),
-                checkDeletedInvoices_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
-                checkJobStructureErrors_(client.clientName, client.clientSheetId, sharedData),
-                checkDeletedExpenses_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
-                checkUnreceivedExpenses_(client.clientName, client.clientSheetId, sharedData)
-              ];
+              if (fetchSuccess) {
+                // Run all 11 checks
+                const proChecks = [
+                  checkRetainerInvoices_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
+                  checkCRMWipe_(client.clientName, client.masterSheetId, sharedData),
+                  checkRevenueMismatch_(client.clientName, client.clientSheetId, sharedData),
+                  checkDirectCostsMismatch_(client.clientName, client.clientSheetId, sharedData),
+                  checkPipelineConfirmedOverlap_(client.clientName, client.clientSheetId, sharedData),
+                  checkRetainerShrinkBlocked_(client.clientName, client.masterSheetId, sharedData),
+                  checkUninvoicedRevenue_(client.clientName, client.clientSheetId, sharedData),
+                  checkDeletedInvoices_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
+                  checkJobStructureErrors_(client.clientName, client.clientSheetId, sharedData),
+                  checkDeletedExpenses_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
+                  checkUnreceivedExpenses_(client.clientName, client.clientSheetId, sharedData)
+                ];
 
-              const proResults = await Promise.all(proChecks);
-              const proAlerts = proResults.flat();
-              
-              // We must push an entry to sweepItems for EVERY proactive type, even if 0 were found,
-              // so the auto-resolve logic knows we checked them and can safely clear stale ones.
-              const proactiveTypes = [
-                "retainer_invoice", "crm_wipe", "revenue_mismatch", "direct_costs_mismatch",
-                "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_revenue",
-                "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses"
-              ];
-              
-              const groupedProactive = {};
-              proactiveTypes.forEach(t => groupedProactive[t] = []);
-              
-              proAlerts.forEach(a => {
-                const fpInput = a.alertKey;
-                a._fingerprint = createHash("sha256").update(fpInput).digest("hex").substring(0, 16);
-                a.summary = a.heading || a.detail || a.alertType;
-                if (groupedProactive[a.alertType]) groupedProactive[a.alertType].push(a);
-              });
-
-              proactiveTypes.forEach(type => {
-                sweepItems.push({
-                  clientName: client.clientName,
-                  alertType: type,
-                  alerts: groupedProactive[type],
-                  autoUpdatesRow: client.sheetRowNum,
-                  category: "proactive"
+                const proResults = await Promise.all(proChecks);
+                const proAlerts = proResults.flat();
+                
+                // We must push an entry to sweepItems for EVERY proactive type, even if 0 were found,
+                // so the auto-resolve logic knows we checked them and can safely clear stale ones.
+                const proactiveTypes = [
+                  "retainer_invoice", "crm_wipe", "revenue_mismatch", "direct_costs_mismatch",
+                  "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_revenue",
+                  "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses"
+                ];
+                
+                const groupedProactive = {};
+                proactiveTypes.forEach(t => groupedProactive[t] = []);
+                
+                proAlerts.forEach(a => {
+                  const fpInput = a.alertKey;
+                  a._fingerprint = createHash("sha256").update(fpInput).digest("hex").substring(0, 16);
+                  a.summary = a.heading || a.detail || a.alertType;
+                  if (groupedProactive[a.alertType]) groupedProactive[a.alertType].push(a);
                 });
-              });
-              
-              if (proAlerts.length > 0) {
-                console.log(`  ✓ Proactive checks found ${proAlerts.length} alerts for ${client.clientName}`);
+
+                proactiveTypes.forEach(type => {
+                  sweepItems.push({
+                    clientName: client.clientName,
+                    alertType: type,
+                    alerts: groupedProactive[type],
+                    autoUpdatesRow: client.sheetRowNum,
+                    category: "proactive"
+                  });
+                });
+                
+                if (proAlerts.length > 0) {
+                  console.log(`  ✓ Proactive checks found ${proAlerts.length} alerts for ${client.clientName}`);
+                }
+              } else {
+                console.log(`  ⏭ Skipping proactive checks for ${client.clientName} due to fetch failure to prevent false auto-resolves.`);
               }
             }
             // ──────────────────────────────────────────────────────────────────

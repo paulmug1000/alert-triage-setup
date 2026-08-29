@@ -2217,7 +2217,7 @@ function parseAutomationTime_(str) {
 }
 
 function evaluateAutomationStatus_(alertType, category, clientMeta, detectedAtMs, firstSeenMs) {
-  if (category !== "discrepancy") return "cached";
+  if (category !== "discrepancy" && category !== "proactive") return "cached";
   if (!clientMeta) return "cached";
   
   // Failsafe: Use firstSeen if available to prevent an infinite 16-hour lock
@@ -2226,11 +2226,19 @@ function evaluateAutomationStatus_(alertType, category, clientMeta, detectedAtMs
   const nowMs = Date.now();
   if ((nowMs - baseTimeMs) > 16 * 60 * 60 * 1000) return "cached"; // 16 hour failsafe
 
+  const invoiceDependent = ["revenue_mismatch", "retainer_invoice", "uninvoiced_revenue", "deleted_invoice"];
+  const expenseDependent = ["direct_costs_mismatch", "deleted_expense", "unreceived_expenses"];
+
   let autoLastRun = 0;
-  if (alertType.startsWith("invoice")) autoLastRun = clientMeta.invAutoLastRunMs;
-  else if (alertType.startsWith("crm")) autoLastRun = clientMeta.crmAutoLastRunMs;
-  else if (alertType.startsWith("expense")) autoLastRun = clientMeta.expAutoLastRunMs;
-  else return "cached"; 
+  if (alertType.startsWith("invoice") || invoiceDependent.includes(alertType)) {
+    autoLastRun = clientMeta.invAutoLastRunMs;
+  } else if (alertType.startsWith("crm")) {
+    autoLastRun = clientMeta.crmAutoLastRunMs;
+  } else if (alertType.startsWith("expense") || expenseDependent.includes(alertType)) {
+    autoLastRun = clientMeta.expAutoLastRunMs;
+  } else {
+    return "cached"; 
+  }
 
   if (autoLastRun === 0) return "cached"; // No run history recorded
   

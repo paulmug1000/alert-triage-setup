@@ -2507,16 +2507,16 @@ async function checkAllGASLocks(sheets, masterSheetId, cachedData = null) {
   const result = { invoice: { locked: false }, expense: { locked: false }, crm: { locked: false } };
   if (!masterSheetId) return result;
   try {
-    let row = [];
-    if (cachedData) {
-      row = cachedData[0] || [];
-    } else {
-      const resp = await sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "DataChgAlert!B4:I4",
-      });
-      row = (resp.data.values || [[]])[0] || [];
-    }
+        let row = [];
+        if (cachedData) {
+          row = cachedData[0] || [];
+        } else {
+          const resp = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId: masterSheetId,
+            range: "DataChgAlert!B4:I4",
+          }));
+          row = (resp.data.values || [[]])[0] || [];
+        }
     const check = async (fIdx, tIdx, name, fCell, tCell) => {
       const flag = String(row[fIdx] || "").trim().toUpperCase();
       const tsRaw = row[tIdx];
@@ -3154,16 +3154,16 @@ async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null) {
     
     let allRows = [];
     if (cachedData) {
-      allRows = cachedData;
-      console.log(`  ✓ Used batched InvComp data`);
-    } else {
-      // Switch is permanent; removed setMasterSwitch to save quota
-      const dataResponse = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: "InvComp!A5:Y1000",
-      });
-      allRows = dataResponse.data.values || [];
-    }
+          allRows = cachedData;
+          console.log(`  ✓ Used batched InvComp data`);
+        } else {
+          // Switch is permanent; removed setMasterSwitch to save quota
+          const dataResponse = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: "InvComp!A5:Y1000",
+          }));
+          allRows = dataResponse.data.values || [];
+        }
     const headers = allRows[0] || [];
     const rows = allRows.slice(1);
     console.log(`  InvComp: ${rows.length} rows read`);
@@ -3208,16 +3208,16 @@ async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null) {
     
     let allRows = [];
     if (cachedData) {
-      allRows = cachedData;
-      console.log(`  ✓ Used batched DirComp data`);
-    } else {
-      // Switch is permanent; removed setMasterSwitch to save quota
-      const dataResponse = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: "DirComp!A5:AV1000",
-      });
-      allRows = dataResponse.data.values || [];
-    }
+          allRows = cachedData;
+          console.log(`  ✓ Used batched DirComp data`);
+        } else {
+          // Switch is permanent; removed setMasterSwitch to save quota
+          const dataResponse = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: "DirComp!A5:AV1000",
+          }));
+          allRows = dataResponse.data.values || [];
+        }
     const headers = allRows[0] || [];
     const rows = allRows.slice(1);
     console.log(`  DirComp: ${rows.length} rows read`);
@@ -3266,16 +3266,16 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
     let triageSettings = null;
     const dcaSheetId = masterSheetId || spreadsheetId;
     try {
-      const batchResp = await sheets.spreadsheets.values.batchGet({
-        spreadsheetId: dcaSheetId,
-        ranges: [
-          "DataChgAlert!C59:C66",
-          "DataChgAlert!F59:F66",
-          "DataChgAlert!C72:C79",
-          "DataChgAlert!F72:F79"
-        ]
-      });
-      const ranges = batchResp.data.valueRanges || [];
+              const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
+                spreadsheetId: client.masterSheetId,
+                ranges: [
+                  "DataChgAlert!B4:I4",
+                  (hasInvoice && actionableDue) ? "InvComp!A5:Y1000" : "DataChgAlert!A1",
+                  (hasExpense && actionableDue) ? "DirComp!A5:AV1000" : "DataChgAlert!A1",
+                  (infoDue || proactiveDue) ? "AutoLog!A2:D200" : "DataChgAlert!A1"
+                ]
+              }));
+              const ranges = batchResp.data.valueRanges || [];
       const SETTING_ROWS = ["missing_job","client_mismatch","job_name_mismatch","revenue_mismatch",
                             "direct_costs_mismatch","start_date_mismatch","end_date_mismatch","likelihood_mismatch"];
       const parseSettings = (vals) => {
@@ -3310,11 +3310,11 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
     let dashData = [];
     let appData = [];
     try {
-      const batchResp = await sheets.spreadsheets.values.batchGet({
+      const batchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
         spreadsheetId,
         ranges: ["CRMComp!X6:BF1000", "CRMComp!EF6:FL1000"],
         valueRenderOption: "FORMATTED_VALUE"
-      });
+      }));
       dashData = batchResp.data.valueRanges[0].values || [];
       appData = batchResp.data.valueRanges[1].values || [];
     } catch(e) {
@@ -3378,9 +3378,9 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
       // Fallback if batchGet failed
       if (rows.length === 0) {
         try {
-          const dataResponse = await sheets.spreadsheets.values.get({
+          const dataResponse = await withRetry(() => sheets.spreadsheets.values.get({
             spreadsheetId, range: dataRange, valueRenderOption: "FORMATTED_VALUE",
-          });
+          }));
           rows = dataResponse.data.values || [];
         } catch(e) { continue; }
       }
@@ -7875,14 +7875,14 @@ export default async function handler(req, res) {
               try {
                 // Fetch Confirmed and Pipeline in one batch from the client sheet
                 // UNFORMATTED_VALUE drastically reduces payload size to prevent Vercel memory/timeout crashes
-                const clientBatchResp = await sheets.spreadsheets.values.batchGet({
+                const clientBatchResp = await withRetry(() => sheets.spreadsheets.values.batchGet({
                   spreadsheetId: client.clientSheetId,
                   ranges: [
                     "Confirmed!A1:CR5000",
                     "Pipeline!A1:DD5000"
                   ],
                   valueRenderOption: "UNFORMATTED_VALUE"
-                });
+                }));
                 sharedData.confirmedData = clientBatchResp.data.valueRanges[0]?.values || [];
                 sharedData.pipelineData = clientBatchResp.data.valueRanges[1]?.values || [];
                 fetchSuccess = true;

@@ -576,7 +576,7 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload)
         category || "discrepancy",
       ]],
     },
-  });
+  }));
 }
 /**
  * Update an existing AlertMemory row by its 1-indexed sheet row number.
@@ -601,7 +601,7 @@ async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex
     range: `${ALERT_MEMORY_TAB}!A${rowIndex}:K${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: { values: [values] },
-  });
+  }));
 }
 
 /**
@@ -2829,7 +2829,7 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
             prevDelayed + (alertsDelayed || 0),
             prevWoken + (alertsWoken || 0)
           ]] },
-        });
+        }));
         return; // Exit here; we updated the existing log row
       }
     }
@@ -2843,7 +2843,7 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
         nowISO, clientsChecked || 0, flagsRaised || 0, errors || 0, elapsedSeconds || 0,
         JSON.stringify(raisedDetail || []), categoriesRun || "", alertsDelayed || 0, alertsWoken || 0
       ]] },
-    });
+    }));
     // Trim to most recent 200 rows (plus header)
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
@@ -2860,7 +2860,7 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
           requestBody: { requests: [{
             deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },
           }] },
-        });
+        }));
       }
     }
   } catch (err) {
@@ -3795,7 +3795,7 @@ export default async function handler(req, res) {
         await sheets.spreadsheets.values.append({
           spreadsheetId: aeAcId, range: "AssignedExpenses!A:C", valueInputOption: "RAW",
           requestBody: { values: [[aeClientName, aeAppId, new Date().toISOString()]] },
-        });
+        }));
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error("❌ mark_expense_assigned error:", err);

@@ -1149,7 +1149,7 @@ async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, a
   const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
   await ensureClaudeUsageTab_(sheets, acIdClean);
   const costUsd = ((inputTokens || 0) / 1000000 * 3) + ((outputTokens || 0) / 1000000 * 15);
-  await sheets.spreadsheets.values.append({
+  await withRetry(() => sheets.spreadsheets.values.append({
     spreadsheetId: acIdClean,
     range: "ClaudeUsage!A:F",
     valueInputOption: "USER_ENTERED",
@@ -2526,7 +2526,7 @@ async function checkAllGASLocks(sheets, masterSheetId, cachedData = null) {
         if (!isNaN(tsDate) && (Date.now() - tsDate.getTime()) > GAS_LOCK_STALE_MS) {
           console.log(`  ⚠️ GAS lock for ${name} is stale — clearing`);
           try {
-            await sheets.spreadsheets.values.batchUpdate({
+            await withRetry(() => sheets.spreadsheets.values.batchUpdate({
               spreadsheetId: masterSheetId,
               requestBody: {
                 data: [
@@ -2535,7 +2535,7 @@ async function checkAllGASLocks(sheets, masterSheetId, cachedData = null) {
                 ],
                 valueInputOption: "RAW"
               }
-            });
+            }));
           } catch (e) {}
           return { locked: false };
         }
@@ -2649,19 +2649,19 @@ async function markCategoryChecked_(sheets, automationCommanderSheetId, category
   const nowISO = new Date().toISOString();
   const entry = schedule[category];
   if (entry && entry.rowIndex) {
-    await sheets.spreadsheets.values.update({
+    await withRetry(() => sheets.spreadsheets.values.update({
       spreadsheetId: automationCommanderSheetId,
       range: `${SWEEP_SCHEDULE_TAB}!C${entry.rowIndex}`,
       valueInputOption: "RAW",
       requestBody: { values: [[nowISO]] },
-    });
+    }));
   } else {
-    await sheets.spreadsheets.values.append({
+    await withRetry(() => sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
       range: `${SWEEP_SCHEDULE_TAB}!A:C`,
       valueInputOption: "RAW",
       requestBody: { values: [[category, (entry && entry.frequencyMinutes) || SWEEP_SCHEDULE_DEFAULTS[category] || 30, nowISO]] },
-    });
+    }));
   }
 }
 
@@ -2946,7 +2946,7 @@ async function logPrecomputeRun(sheets, automationCommanderSheetId, { clientsWit
   try {
     await ensurePrecomputeLogTab(sheets, automationCommanderSheetId);
     const nowISO = new Date().toISOString();
-    await sheets.spreadsheets.values.append({
+    await withRetry(() => sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
       range: `${PRECOMPUTE_LOG_TAB}!A:G`,
       valueInputOption: "RAW",
@@ -2954,26 +2954,26 @@ async function logPrecomputeRun(sheets, automationCommanderSheetId, { clientsWit
         nowISO, clientsWithFlags || 0, totalAlerts || 0, noActionCount || 0, analysisCount || 0, proactiveCount || 0,
         JSON.stringify(clientDetail || []),
       ]] },
-    });
+    }));
     // Trim to most recent 200 rows (plus header) — same cadence reasoning as
     // FlagSweepLog: this runs on the same schedule as run_flag_sweep once
     // the GAS side calls it that often, so a comparable cap.
-    const resp = await sheets.spreadsheets.values.get({
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
       range: `${PRECOMPUTE_LOG_TAB}!A:A`,
-    });
+    }));
     const rowCount = (resp.data.values || []).length;
     if (rowCount > 201) {
       const deleteCount = rowCount - 201;
       const meta = await sheets.spreadsheets.get({ spreadsheetId: automationCommanderSheetId, fields: "sheets.properties" });
       const sheetMeta = meta.data.sheets.find(s => s.properties.title === PRECOMPUTE_LOG_TAB);
       if (sheetMeta) {
-        await sheets.spreadsheets.batchUpdate({
+        await withRetry(() => sheets.spreadsheets.batchUpdate({
           spreadsheetId: automationCommanderSheetId,
           requestBody: { requests: [{
             deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },
           }] },
-        });
+        }));
       }
     }
   } catch (err) {
@@ -3071,7 +3071,7 @@ async function logBuildOptionsRun(sheets, automationCommanderSheetId, { processe
         let prevDetail = [];
         try { prevDetail = JSON.parse(lastRow[6] || "[]"); } catch (e) {}
 
-        await sheets.spreadsheets.values.update({
+        await withRetry(() => sheets.spreadsheets.values.update({
           spreadsheetId: automationCommanderSheetId,
           range: `${BUILD_OPTIONS_LOG_TAB}!B${lastRowIdx}:G${lastRowIdx}`,
           valueInputOption: "RAW",
@@ -3083,22 +3083,22 @@ async function logBuildOptionsRun(sheets, automationCommanderSheetId, { processe
             prevElapsed + (elapsedSeconds || 0),
             JSON.stringify(prevDetail.concat(builtDetail || []))
           ]] },
-        });
+        }));
         return; // Exit here; we updated the existing log row
       }
     }
 
     const nowISO = new Date().toISOString();
-    await sheets.spreadsheets.values.append({
+    await withRetry(() => sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
       range: `${BUILD_OPTIONS_LOG_TAB}!A:G`,
       valueInputOption: "RAW",
       requestBody: { values: [[
         nowISO, processed || 0, built || 0, notFound || 0, errors || 0, elapsedSeconds || 0, JSON.stringify(builtDetail || [])
       ]] },
-    });
+    }));
     // Trim to most recent 200 rows (plus header)
-    const resp = await sheets.spreadsheets.values.get({
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
       range: `${BUILD_OPTIONS_LOG_TAB}!A:A`,
     });
@@ -3108,12 +3108,12 @@ async function logBuildOptionsRun(sheets, automationCommanderSheetId, { processe
       const meta = await sheets.spreadsheets.get({ spreadsheetId: automationCommanderSheetId, fields: "sheets.properties" });
       const sheetMeta = meta.data.sheets.find(s => s.properties.title === BUILD_OPTIONS_LOG_TAB);
       if (sheetMeta) {
-        await sheets.spreadsheets.batchUpdate({
+        await withRetry(() => sheets.spreadsheets.batchUpdate({
           spreadsheetId: automationCommanderSheetId,
           requestBody: { requests: [{
             deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },
           }] },
-        });
+        }));
       }
     }
   } catch (err) {

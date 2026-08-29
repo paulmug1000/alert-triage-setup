@@ -3101,7 +3101,7 @@ async function logBuildOptionsRun(sheets, automationCommanderSheetId, { processe
     const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
       range: `${BUILD_OPTIONS_LOG_TAB}!A:A`,
-    });
+    }));
     const rowCount = (resp.data.values || []).length;
     if (rowCount > 201) {
       const deleteCount = rowCount - 201;

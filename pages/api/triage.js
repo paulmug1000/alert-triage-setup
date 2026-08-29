@@ -563,7 +563,7 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload)
   if (alertType === "crm") alertType = "crmPipeAppDiscr";
 
   const now = new Date().toISOString().split("T")[0];
-  await sheets.spreadsheets.values.append({
+  await withRetry(() => sheets.spreadsheets.values.append({
     spreadsheetId: automationCommanderSheetId,
     range: `${ALERT_MEMORY_TAB}!A:L`,
     valueInputOption: "RAW",
@@ -596,7 +596,7 @@ async function updateAlertMemoryRow(sheets, automationCommanderSheetId, rowIndex
     updates.lastRechecked || now,
     updates.dataSnapshot || "",
   ];
-  await sheets.spreadsheets.values.update({
+  await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: automationCommanderSheetId,
     range: `${ALERT_MEMORY_TAB}!A${rowIndex}:K${rowIndex}`,
     valueInputOption: "RAW",
@@ -635,10 +635,10 @@ async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, rowIndi
     },
   }));
 
-  await sheets.spreadsheets.batchUpdate({
+  await withRetry(() => sheets.spreadsheets.batchUpdate({
     spreadsheetId: automationCommanderSheetId,
     requestBody: { requests },
-  });
+  }));
   console.log(`  🗑️ Deleted ${rowIndices.length} stale AlertMemory row(s)`);
 }
 
@@ -2815,7 +2815,7 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
         const prevDelayed = parseInt(lastRow[7], 10) || 0;
         const prevWoken = parseInt(lastRow[8], 10) || 0;
 
-        await sheets.spreadsheets.values.update({
+        await withRetry(() => sheets.spreadsheets.values.update({
           spreadsheetId: automationCommanderSheetId,
           range: `${FLAG_SWEEP_LOG_TAB}!B${lastRowIdx}:I${lastRowIdx}`,
           valueInputOption: "RAW",
@@ -2835,7 +2835,7 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
     }
 
     const nowISO = new Date().toISOString();
-    await sheets.spreadsheets.values.append({
+    await withRetry(() => sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
       range: `${FLAG_SWEEP_LOG_TAB}!A:I`,
       valueInputOption: "RAW",
@@ -2855,7 +2855,7 @@ async function logFlagSweepRun(sheets, automationCommanderSheetId, { clientsChec
       const meta = await sheets.spreadsheets.get({ spreadsheetId: automationCommanderSheetId, fields: "sheets.properties" });
       const sheetMeta = meta.data.sheets.find(s => s.properties.title === FLAG_SWEEP_LOG_TAB);
       if (sheetMeta) {
-        await sheets.spreadsheets.batchUpdate({
+        await withRetry(() => sheets.spreadsheets.batchUpdate({
           spreadsheetId: automationCommanderSheetId,
           requestBody: { requests: [{
             deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },

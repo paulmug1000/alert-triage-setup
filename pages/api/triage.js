@@ -166,37 +166,35 @@ function buildAlertFingerprint(alert) {
  * Returns array of objects with all column fields.
  */
 async function readAlertMemory(sheets, automationCommanderSheetId) {
-  try {
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: ALERT_MEMORY_RANGE,
-    });
-    const rows = response.data.values || [];
-    if (rows.length < 2) return []; // header only or empty
+  // REMOVED try/catch: if reading the database fails due to quota limits, 
+  // we MUST throw an error to abort the sweep. Returning [] causes the 
+  // system to think memory is empty and blindly duplicate ignored alerts.
+  const response = await withRetry(() => sheets.spreadsheets.values.get({
+    spreadsheetId: automationCommanderSheetId,
+    range: ALERT_MEMORY_RANGE,
+  }));
+  const rows = response.data.values || [];
+  if (rows.length < 2) return []; // header only or empty
 
-    return rows.slice(1).map((row, i) => ({
-      rowIndex: i + 2, // 1-indexed sheet row (row 1 = header)
-      fingerprintHash:  row[0] || "",
-      alertType:        row[1] || "",
-      clientName:       row[2] || "",
-      alertSummary:     row[3] || "",
-      cachedOptionsJSON:row[4] || "",
-      status:           row[5] || "cached",
-      ignoreReason:     row[6] || "",
-      firstSeen:        row[7] || "",
-      lastSeen:         row[8] || "",
-      lastRechecked:    row[9] || "",
-      dataSnapshot:     row[10] || "",
-      // Added 22 Aug 2026 for the unified alert-system redesign — every row
-      // written before this column existed genuinely is a "discrepancy"
-      // type (invoice/expense/CRM), so that's the correct default rather
-      // than an empty/unknown value.
-      category:         row[11] || "discrepancy",
-    }));
-  } catch (err) {
-    console.log(`⚠️ Could not read AlertMemory tab: ${err.message}`);
-    return [];
-  }
+  return rows.slice(1).map((row, i) => ({
+    rowIndex: i + 2, // 1-indexed sheet row (row 1 = header)
+    fingerprintHash:  row[0] || "",
+    alertType:        row[1] || "",
+    clientName:       row[2] || "",
+    alertSummary:     row[3] || "",
+    cachedOptionsJSON:row[4] || "",
+    status:           row[5] || "cached",
+    ignoreReason:     row[6] || "",
+    firstSeen:        row[7] || "",
+    lastSeen:         row[8] || "",
+    lastRechecked:    row[9] || "",
+    dataSnapshot:     row[10] || "",
+    // Added 22 Aug 2026 for the unified alert-system redesign — every row
+    // written before this column existed genuinely is a "discrepancy"
+    // type (invoice/expense/CRM), so that's the correct default rather
+    // than an empty/unknown value.
+    category:         row[11] || "discrepancy",
+  }));
 }
 
 /**

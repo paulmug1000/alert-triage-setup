@@ -1163,7 +1163,7 @@ async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, a
         costUsd.toFixed(6),
       ]],
     },
-  });
+  }));
   console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} — ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
 }
 

@@ -2720,7 +2720,7 @@ async function logProactiveCheckRun(sheets, automationCommanderSheetId, { client
           requestBody: { requests: [{
             deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },
           }] },
-        });
+        }));
       }
     }
   } catch (err) {

@@ -2435,8 +2435,8 @@ const AUTOLOG_TYPE_PATTERNS = {
   // updated the GAS source (5_Agent_Receiver.gs) to genuinely distinguish
   // them via isRetainer/rowType checks — these patterns now match that
   // exact, new wording, not the old, ambiguous one.
-  retainerInvoicesCreated:   ["Created Retainer Invoice", "Adjusted Retainer Invoice"],
-  retainerInvoicesDeleted:   ["Removed Retainer Invoice"],
+  retainerInvoicesCreated:   ["[Retainers - Confirmed] Added"],
+  retainerInvoicesDeleted:   ["[Retainers - Confirmed] Trimmed"],
   expenseUnreconGaps:        ["Created Manual Gap:", "Changed Manual Gap:", "Removed Manual Gap"],
   expenseAdded:              ["Created New Row:"],
   invoiceStaleUnsentChanges: ["Stale Invoice - Row"],

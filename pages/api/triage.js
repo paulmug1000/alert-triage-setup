@@ -2698,24 +2698,24 @@ async function logProactiveCheckRun(sheets, automationCommanderSheetId, { client
   try {
     await ensureProactiveCheckLogTab(sheets, automationCommanderSheetId);
     const nowISO = new Date().toISOString();
-    await sheets.spreadsheets.values.append({
+    await withRetry(() => sheets.spreadsheets.values.append({
       spreadsheetId: automationCommanderSheetId,
       range: `${PROACTIVE_CHECK_LOG_TAB}!A:E`,
       valueInputOption: "RAW",
       requestBody: { values: [[nowISO, clientsChecked || 0, newAlerts || 0, updatedAlerts || 0, dismissedAlerts || 0]] },
-    });
+    }));
     // Trim to most recent 30 rows (plus header)
-    const resp = await sheets.spreadsheets.values.get({
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: automationCommanderSheetId,
       range: `${PROACTIVE_CHECK_LOG_TAB}!A:A`,
-    });
+    }));
     const rowCount = (resp.data.values || []).length;
     if (rowCount > 31) {
       const deleteCount = rowCount - 31;
       const meta = await sheets.spreadsheets.get({ spreadsheetId: automationCommanderSheetId, fields: "sheets.properties" });
       const sheetMeta = meta.data.sheets.find(s => s.properties.title === PROACTIVE_CHECK_LOG_TAB);
       if (sheetMeta) {
-        await sheets.spreadsheets.batchUpdate({
+        await withRetry(() => sheets.spreadsheets.batchUpdate({
           spreadsheetId: automationCommanderSheetId,
           requestBody: { requests: [{
             deleteDimension: { range: { sheetId: sheetMeta.properties.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 1 + deleteCount } },

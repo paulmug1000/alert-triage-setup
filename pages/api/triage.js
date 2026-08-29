@@ -3792,7 +3792,7 @@ export default async function handler(req, res) {
       try {
         const sheets = await getSheetsClient();
         await ensureAssignedExpensesTab_(sheets, aeAcId);
-        await sheets.spreadsheets.values.append({
+        await withRetry(() => sheets.spreadsheets.values.append({
           spreadsheetId: aeAcId, range: "AssignedExpenses!A:C", valueInputOption: "RAW",
           requestBody: { values: [[aeClientName, aeAppId, new Date().toISOString()]] },
         }));

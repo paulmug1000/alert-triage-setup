@@ -2476,10 +2476,10 @@ async function readRecentAutoLogEntries_(sheets, masterSheetId, limit = 30, cach
     if (cachedData) {
       rows = cachedData.slice(0, limit);
     } else {
-      const resp = await sheets.spreadsheets.values.get({
+      const resp = await withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: masterSheetId,
         range: `AutoLog!A2:D${limit + 1}`,
-      });
+      }));
       rows = resp.data.values || [];
     }
     return rows.map(row => ({
@@ -12324,11 +12324,11 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         // ── Step 2: Read AutoLog and filter to entries after windowStart ──────────
         // AutoLog col A=Timestamp, B=Category, C=Summary, D=Details
         console.log(`  📖 Reading AutoLog from master sheet...`);
-        const autoLogResp = await sheets.spreadsheets.values.get({
+        const autoLogResp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: masterSheetIdClean,
           range: "AutoLog!A2:D5000",
           valueRenderOption: "UNFORMATTED_VALUE",
-        });
+        }));
         const allAutoLogRows = autoLogResp.data.values || [];
         // Convert serial numbers to JS Dates (same approach as log tab reading)
         const autoLogSerialToDate = (val) => {
@@ -12502,16 +12502,16 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             });
           } else {
             // Read Pipeline and Confirmed tabs to verify
-            const pipelineResp = await sheets.spreadsheets.values.get({
+            const pipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
               spreadsheetId: clientSheetIdClean,
               range: "Pipeline!A6:DE5000",
-            });
+            }));
             const pipelineRows = pipelineResp.data.values || [];
 
-            const confirmedResp = await sheets.spreadsheets.values.get({
+            const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
               spreadsheetId: clientSheetIdClean,
               range: "Confirmed!A1:C5000",
-            });
+            }));
             const confirmedRows = confirmedResp.data.values || [];
 
             for (const job of affectedJobs) {
@@ -12822,16 +12822,16 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
 
             // Read Confirmed tab
-            const retConfirmedResp = await sheets.spreadsheets.values.get({
+            const retConfirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
               spreadsheetId: clientSheetIdClean,
               range: "Confirmed!A1:BH5000",
-            });
+            }));
             const retConfirmedRows = retConfirmedResp.data.values || [];
 
-            const retPipelineResp = await sheets.spreadsheets.values.get({
+            const retPipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
               spreadsheetId: clientSheetIdClean,
               range: "Pipeline!A6:BH5000",
-            });
+            }));
             const retPipelineRows = retPipelineResp.data.values || [];
 
             const retainerChecks = [];
@@ -13161,10 +13161,10 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
 
             // Read Confirmed tab
-            const delConfirmedResp = await sheets.spreadsheets.values.get({
+            const delConfirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
               spreadsheetId: clientSheetIdClean,
               range: "Confirmed!A1:BH5000",
-            });
+            }));
             const delConfirmedRows = delConfirmedResp.data.values || [];
             const retainerChecks = [];
 
@@ -13477,18 +13477,18 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               console.log(`  ✓ Parsed ${deletedJobs.length} deleted job(s): ${JSON.stringify(deletedJobs.map(j => j.projectCode))}`);
 
               // Read Confirmed tab (cols A:C = client, job, project code)
-              const confirmedResp = await sheets.spreadsheets.values.get({
+              const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
                 spreadsheetId: clientSheetIdClean,
                 range: "Confirmed!A1:C5000",
-              });
+              }));
               const confirmedRows = confirmedResp.data.values || [];
 
               // Read Pipeline tab (cols A:C for lookup, AN for % likelihood, DD for copied status)
               // DD = col 110 (0-indexed), AN = col 39 (0-indexed)
-              const pipelineResp = await sheets.spreadsheets.values.get({
+              const pipelineResp = await withRetry(() => sheets.spreadsheets.values.get({
                 spreadsheetId: clientSheetIdClean,
                 range: "Pipeline!A1:DD5000",
-              });
+              }));
               const pipelineRows = pipelineResp.data.values || [];
 
               for (const job of deletedJobs) {

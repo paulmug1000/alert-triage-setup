@@ -7843,7 +7843,7 @@ export default async function handler(req, res) {
             // infoDue (26 Aug 2026) — this category now has its own
             // configurable frequency, independent of actionable.
             if (infoDue) {
-              const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId, 30, batchData.autoLog);
+              const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId, 100, batchData.autoLog);
               for (const [autoLogType, patterns] of Object.entries(AUTOLOG_TYPE_PATTERNS)) {
                 const matchedAlerts = [];
                 for (const entry of logEntries) {
@@ -13135,8 +13135,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             const affectedRetainerJobs = [];
             for (const entry of deletedLogEntriesToUse) {
               const details = String(entry[3] || "");
-              // Format: "[Retainers] Trimmed N excess child row(s) for CLIENT | JOB"
-              const pattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\([^)]*\)\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
+              // Format: "[Retainers] Trimmed N excess child row(s) (Parent Row: N) for CLIENT | JOB"
+              const pattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\(s?\)(?:\s*\(Parent\s+Row:\s*\d+\))?\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
               let m;
               while ((m = pattern.exec(details)) !== null) {
                 affectedRetainerJobs.push({

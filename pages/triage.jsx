@@ -8678,10 +8678,6 @@ export default function TriageSystem({ onBack }) {
   // Screen 1c: Alert Selection Screen
   if (screen === "alertSelection" && selectedClient && activeNav !== "tasks") {
     // groupedAlerts is hoisted above as a useMemo
-    // Merged in here per Paul's direction (23 Aug 2026) — this screen now
-    // shows all three alert kinds (actionable, informational, proactive)
-    // together, rather than sending proactive alerts to a separate
-    // destination screen.
     const clientProactiveAlertsList = proactiveAlerts.filter(a => a.clientName === selectedClient.clientName);
     const freqLabel = (days) => {
       if (days <= 31) return "monthly";
@@ -8689,6 +8685,122 @@ export default function TriageSystem({ onBack }) {
       if (days <= 95) return "quarterly";
       if (days <= 190) return "semi-annual";
       return "annual";
+    };
+
+    // Group informational alerts
+    const groupedInfoAlerts = React.useMemo(() => {
+      const g = {};
+      clientNoActionAlerts.forEach(na => {
+        const type = na.flagType || "unknown";
+        if (!g[type]) g[type] = [];
+        g[type].push(na);
+      });
+      return g;
+    }, [clientNoActionAlerts]);
+
+    // Group proactive alerts
+    const groupedProactiveAlerts = React.useMemo(() => {
+      const g = {};
+      clientProactiveAlertsList.forEach(pa => {
+        const type = pa.alertType || "unknown";
+        if (!g[type]) g[type] = [];
+        g[type].push(pa);
+      });
+      return g;
+    }, [clientProactiveAlertsList]);
+
+    // Helper for actionable details (Invoice and Expense)
+    const getActionableDetail = (alert) => {
+      const type = alert.flagType || alert.alertType || alert.type || "";
+      if (type.startsWith("expense")) {
+        const flags = alert.data?.flags || [];
+        const isMissing = String(flags[0]||"").trim() === "1";
+        if (isMissing) return "Missing Cost";
+        const expFlagNames = [null,"Duplicate App ID","Description mismatch","Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
+        const active = flags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
+        return active.length > 0 ? `Mismatch: ${active.join(", ")}` : "";
+      }
+      if (type.startsWith("invoice")) {
+        const flags = alert.data?.flags || [];
+        const isMissing = String(flags[0]||"").trim() === "1";
+        if (isMissing) return "Missing Invoice";
+        const invFlagNames = [null,"Client mismatch","Amount mismatch","Sent date mismatch",null,"Pay date mismatch","Status mismatch"];
+        const active = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
+        return active.length > 0 ? `Mismatch: ${active.join(", ")}` : "";
+      }
+      return "";
+    };
+
+    // Centralized rendering helper to preserve rich data across both bulk and normal modes
+    const renderAlertContent = (alert) => {
+      const ft = alert.flagType || alert.alertType || "";
+      const isAppDiscr = ft === "crmConfAppDiscr" || ft === "crmPipeAppDiscr";
+      const isDashDiscr = ft === "crmPipeDashDiscr" || ft === "crmConfDashDiscr";
+      
+      if (isAppDiscr) {
+        const sd = alert.data?.sheetData || [];
+        const client = sd[0] || ""; const job = sd[1] || ""; const code = sd[2] || "";
+        const rev = sd[3] ? `£${parseFloat(String(sd[3]).replace(/[£$€,\s]/g,""))||0}` : "";
+        const start = sd[5] || ""; const end = sd[6] || "";
+        const likely = sd[7] || "";
+        const isPipeline = ft === "crmPipeAppDiscr";
+        const isMismatch = alert.subType === "field_mismatch";
+        return (
+          <div style={{ pointerEvents: "none" }}>
+            <div style={{ fontWeight: "600" }}>{client}{job ? ` — ${job}` : ""}</div>
+            {code    && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
+            {rev     && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
+            {start   && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
+            {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
+            {isMismatch ? (
+              <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>
+                ⚠ Field mismatch: {(alert.mismatchFields || []).join(", ")}
+              </div>
+            ) : (
+              <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
+                {isPipeline ? "In Pipeline — not in CRM" : "In Confirmed — not in CRM"}
+              </div>
+            )}
+          </div>
+        );
+      }
+      
+      if (isDashDiscr) {
+        const cd = alert.data?.crmData || [];
+        const client = cd[0] || ""; const job = cd[1] || ""; const code = cd[2] || "";
+        const rev = cd[3] ? `£${parseFloat(String(cd[3]).replace(/[£$€,\s]/g,""))||0}` : "";
+        const start = cd[5] || ""; const end = cd[6] || ""; const likely = cd[7] || "";
+        const isMismatch = alert.subType === "field_mismatch";
+        const isPipeline = ft === "crmPipeDashDiscr";
+        const mismatchFields = alert.mismatchFields || [];
+        return (
+          <div style={{ pointerEvents: "none" }}>
+            <div style={{ fontWeight: "600" }}>{client}{job ? ` — ${job}` : ""}</div>
+            {code    && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
+            {rev     && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
+            {start   && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
+            {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
+            {isMismatch ? (
+              <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>
+                ⚠ Field mismatch: {mismatchFields.join(", ")}
+              </div>
+            ) : (
+              <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
+                {isPipeline ? "In CRM — not in Pipeline" : "In CRM — not in Confirmed"}
+              </div>
+            )}
+          </div>
+        );
+      }
+      
+      // Invoice and Expense fallback with new detailed tags
+      const detailSub = getActionableDetail(alert);
+      return (
+        <div style={{ pointerEvents: "none" }}>
+          <div style={{ fontWeight: "600", color: "#333" }}>{getAlertSummary(alert)}</div>
+          {detailSub && <div style={{ fontSize: "11px", fontWeight: "600", color: "#d97706", marginTop: "4px" }}>⚠ {detailSub}</div>}
+        </div>
+      );
     };
 
     return withModal(
@@ -8700,295 +8812,686 @@ export default function TriageSystem({ onBack }) {
         </div>
 
         <div style={styles.card}>
-          <div style={{ marginBottom: "16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <button className="triage-btn" onClick={() => { setAcceptError(""); setScreen("clientSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
               ← Back to Clients
             </button>
-          </div>
-          {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
-
-          {/* Open Sheets + Bulk actions row */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-            {(selectedClient.clientSheetId || selectedClient.masterSheetId) ? (
+            {(selectedClient.clientSheetId || selectedClient.masterSheetId) && (
               <button className="triage-btn" onClick={() => {
                 if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
                 if (selectedClient.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`, "_blank");
               }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
                 📊 Open Sheets
               </button>
-            ) : <div />}
-            {clientAlerts.length > 1 && (
-              <button className="triage-btn" onClick={() => { setBulkMode(v => !v); setBulkSelected(new Set()); }}
-                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px",
-                  ...(bulkMode ? { background: "#ede9fe", borderColor: "#7c3aed", color: "#5b21b6" } : {}) }}>
-                {bulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
-              </button>
             )}
           </div>
-          
-          {/* Actionable alerts */}
-          {Object.keys(groupedAlerts).length === 0 ? (
-            <div style={{ textAlign: "center", padding: "20px", color: "#666", marginBottom: "8px" }}>
-              {clientNoActionAlerts.length > 0
-                ? "All actionable alerts resolved ✓"
-                : "No more alerts for this client"}
-            </div>
-          ) : (
-            <div>
-              {Object.keys(groupedAlerts).map((type) => {
-                const groupAlerts = groupedAlerts[type];
-                const groupKeys   = groupAlerts.map((alert) => `${type}|||${alert.sheetName}-${alert.rowNumber}`);
-                const allSelected = groupKeys.every(k => bulkSelected.has(k));
-                const anySelected = groupKeys.some(k => bulkSelected.has(k));
-                return (
-                <div key={type} style={{ marginBottom: "20px" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-                    <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#2196f3", margin: 0 }}>
-                      {(() => {
-                        const isDash = type === "crmPipeDashDiscr" || type === "crmConfDashDiscr";
-                        const isApp  = type === "crmPipeAppDiscr"  || type === "crmConfAppDiscr";
-                        const tab    = (type === "crmPipeDashDiscr" || type === "crmPipeAppDiscr") ? "Pipeline" : "Confirmed";
-                        const kind   = isDash ? "dashboard" : "app";
-                        if (isDash || isApp) {
-                          const hasNotFound = groupAlerts.some(a => !a.subType || a.subType === "not_found");
-                          const hasMismatch = groupAlerts.some(a => a.subType === "field_mismatch");
-                          if (hasMismatch && !hasNotFound) return `CRM ${kind} discrepancy — field mismatch (${tab})`;
-                          if (!hasMismatch && hasNotFound) return `CRM ${kind} discrepancy — missing job (${tab})`;
-                          if (hasMismatch && hasNotFound)  return `CRM ${kind} discrepancy (${tab})`;
-                        }
-                        return getFlagName(type);
-                      })()}
-                    </h3>
-                    {bulkMode && groupAlerts.length > 1 && (
-                      <button className="triage-btn" onClick={() => {
-                        const newSel = new Set(bulkSelected);
-                        if (allSelected) { groupKeys.forEach(k => newSel.delete(k)); }
-                        else             { groupKeys.forEach(k => newSel.add(k)); }
-                        setBulkSelected(newSel);
-                      }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "3px 8px",
-                        ...(anySelected && !allSelected ? { background: "#eef4ff", borderColor: "#93c5fd", color: "#1d4ed8" } : {}) }}>
-                        {allSelected ? "Deselect all" : anySelected ? `− Select remaining (${groupKeys.length - groupKeys.filter(k => bulkSelected.has(k)).length})` : "Select all"}
-                      </button>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {(() => {
-                      // For invoice alerts, sub-group by draft status
-                      const isInvoiceType = type === "invoiceDashboardDiscr";
-                      if (isInvoiceType) {
-                        const drafts = groupAlerts.filter(a => (a.summary?.status || "").toLowerCase() === "draft")
-                          .sort((a, b) => parseInt(a.summary?.invoiceNo || 0) - parseInt(b.summary?.invoiceNo || 0));
-                        const nonDrafts = groupAlerts.filter(a => (a.summary?.status || "").toLowerCase() !== "draft")
-                          .sort((a, b) => parseInt(a.summary?.invoiceNo || 0) - parseInt(b.summary?.invoiceNo || 0));
-                        const renderGroup = (alerts, label, globalOffset) => alerts.length === 0 ? null : (
-                          <div key={label}>
-                            <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>{label}</div>
-                            {alerts.map((alert, localIdx) => {
-                              const selKey = `${type}|||${alert.sheetName}-${alert.rowNumber}`;
-                              const isChecked = bulkSelected.has(selKey);
-                      return bulkMode ? (
-                        <div key={selKey}
-                          onClick={() => {
-                            const newSel = new Set(bulkSelected);
-                            if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
-                            setBulkSelected(newSel);
-                          }}
-                          style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "12px",
-                            border: `1px solid ${isChecked ? "#7c3aed" : "#e0e0e0"}`,
-                            borderRadius: "4px", cursor: "pointer",
-                            backgroundColor: isChecked ? "#ede9fe" : "#fff", fontSize: "13px" }}>
-                          <input type="checkbox" checked={isChecked} onChange={() => {}}
-                            style={{ marginTop: "2px", accentColor: "#7c3aed", flexShrink: 0 }} />
-                          <div style={{ flex: 1, pointerEvents: "none" }}>
-                            {(() => {
-                              const ft = alert.flagType || alert.alertType || "";
-                              const isAppDiscr  = ft === "crmConfAppDiscr" || ft === "crmPipeAppDiscr";
-                              const isDashDiscr = ft === "crmPipeDashDiscr" || ft === "crmConfDashDiscr";
-                              if (isAppDiscr) {
-                                const sd = alert.data?.sheetData || [];
-                                const client = sd[0] || ""; const job = sd[1] || ""; const code = sd[2] || "";
-                                const rev = sd[3] ? `£${parseFloat(String(sd[3]).replace(/[£$€,\s]/g,""))||0}` : "";
-                                const start = sd[5] || ""; const end = sd[6] || ""; const likely = sd[7] || "";
-                                const isPipeline = ft === "crmPipeAppDiscr";
-                                const isMismatch = alert.subType === "field_mismatch";
-                                return (
-                                  <div>
-                                    <div style={{ fontWeight: "600" }}>{client}{job ? ` — ${job}` : ""}</div>
-                                    {code && <div style={{ fontSize: "11px", color: "#888" }}>Code: {code}</div>}
-                                    {rev  && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
-                                    {start && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-                                    {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
-                                    {isMismatch
-                                      ? <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>⚠ {(alert.mismatchFields||[]).join(", ")}</div>
-                                      : <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>{isPipeline ? "In Pipeline — not in CRM" : "In Confirmed — not in CRM"}</div>
-                                    }
-                                  </div>
-                                );
-                              }
-                              if (isDashDiscr) {
-                                const cd = alert.data?.crmData || [];
-                                const isMismatch = alert.subType === "field_mismatch";
-                                return <div><div style={{ fontWeight: "600" }}>{cd[0]}{cd[1] ? ` — ${cd[1]}` : ""}</div>
-                                  <div style={{ fontSize: "11px", color: isMismatch ? "#d97706" : "#c62828" }}>
-                                    {isMismatch ? `⚠ ${(alert.mismatchFields || []).join(", ")}` : "In CRM — not in sheet"}
-                                  </div></div>;
-                              }
-                              return <div>{getAlertSummary(alert)}</div>;
-                            })()}
-                          </div>
-                        </div>
-                      ) : (
-                      <button className="triage-btn"
-                        key={selKey}
-                        onClick={() => selectAlert(alert)}
-                        style={{
-                          ...styles.optionButton,
-                          textAlign: "left",
-                          padding: "12px",
-                          border: "1px solid #e0e0e0",
-                          borderRadius: "4px",
-                          cursor: "pointer",
-                          backgroundColor: "#fff",
-                          fontSize: "13px",
-                          transition: "all 0.2s",
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.backgroundColor = "#f5f5f5";
-                          e.currentTarget.style.borderColor = "#2196f3";
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.backgroundColor = "#fff";
-                          e.currentTarget.style.borderColor = "#e0e0e0";
-                        }}
-                      >
+          {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
+
+          {/* Actionable Alerts Section */}
+          {Object.keys(groupedAlerts).length > 0 && (
+            <div style={{ marginBottom: "32px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", paddingBottom: "8px", borderBottom: "2px solid #e0e0e0" }}>
+                <h2 style={{ fontSize: "18px", fontWeight: "700", color: "#1a1a1a", margin: 0 }}>Actionable alerts</h2>
+                {clientAlerts.length > 1 && (
+                  <button className="triage-btn" onClick={() => { setBulkMode(v => !v); setBulkSelected(new Set()); }}
+                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px",
+                      ...(bulkMode ? { background: "#ede9fe", borderColor: "#7c3aed", color: "#5b21b6" } : {}) }}>
+                    {bulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
+                  </button>
+                )}
+              </div>
+              
+              <div>
+                {Object.keys(groupedAlerts).map((type) => {
+                  const groupAlerts = groupedAlerts[type];
+                  const groupKeys   = groupAlerts.map((alert) => `${type}|||${alert.sheetName}-${alert.rowNumber}`);
+                  const allSelected = groupKeys.every(k => bulkSelected.has(k));
+                  const anySelected = groupKeys.some(k => bulkSelected.has(k));
+                  return (
+                  <div key={type} style={{ marginBottom: "20px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+                      <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#2196f3", margin: 0 }}>
                         {(() => {
-                          const ft = alert.flagType || alert.alertType || "";
-                          const isAppDiscr = ft === "crmConfAppDiscr" || ft === "crmPipeAppDiscr";
-                          const isDashDiscr = ft === "crmPipeDashDiscr" || ft === "crmConfDashDiscr";
-                          if (isAppDiscr) {
-                            const sd = alert.data?.sheetData || [];
-                            const client = sd[0] || ""; const job = sd[1] || ""; const code = sd[2] || "";
-                            const rev = sd[3] ? `£${parseFloat(String(sd[3]).replace(/[£$€,\s]/g,""))||0}` : "";
-                            const start = sd[5] || ""; const end = sd[6] || "";
-                            const likely = sd[7] || "";
-                            const isPipeline = ft === "crmPipeAppDiscr";
-                            const isMismatch = alert.subType === "field_mismatch";
-                            return (
-                              <div>
-                                <div style={{ fontWeight: "600" }}>{client}{job ? ` — ${job}` : ""}</div>
-                                {code    && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
-                                {rev     && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
-                                {start   && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-                                {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
-                                {isMismatch ? (
-                                  <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>
-                                    ⚠ Field mismatch: {(alert.mismatchFields || []).join(", ")}
-                                  </div>
-                                ) : (
-                                  <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
-                                    {isPipeline ? "In Pipeline — not in CRM" : "In Confirmed — not in CRM"}
-                                  </div>
-                                )}
-                              </div>
-                            );
+                          const isDash = type === "crmPipeDashDiscr" || type === "crmConfDashDiscr";
+                          const isApp  = type === "crmPipeAppDiscr"  || type === "crmConfAppDiscr";
+                          const tab    = (type === "crmPipeDashDiscr" || type === "crmPipeAppDiscr") ? "Pipeline" : "Confirmed";
+                          const kind   = isDash ? "dashboard" : "app";
+                          if (isDash || isApp) {
+                            const hasNotFound = groupAlerts.some(a => !a.subType || a.subType === "not_found");
+                            const hasMismatch = groupAlerts.some(a => a.subType === "field_mismatch");
+                            if (hasMismatch && !hasNotFound) return `CRM ${kind} discrepancy — field mismatch (${tab})`;
+                            if (!hasMismatch && hasNotFound) return `CRM ${kind} discrepancy — missing job (${tab})`;
+                            if (hasMismatch && hasNotFound)  return `CRM ${kind} discrepancy (${tab})`;
                           }
-                          if (isDashDiscr) {
-                            const cd = alert.data?.crmData || [];
-                            const client = cd[0] || ""; const job = cd[1] || ""; const code = cd[2] || "";
-                            const rev = cd[3] ? `£${parseFloat(String(cd[3]).replace(/[£$€,\s]/g,""))||0}` : "";
-                            const start = cd[5] || ""; const end = cd[6] || ""; const likely = cd[7] || "";
-                            const isMismatch = alert.subType === "field_mismatch";
-                            const isPipeline = ft === "crmPipeDashDiscr";
-                            const mismatchFields = alert.mismatchFields || [];
-                            return (
-                              <div>
-                                <div style={{ fontWeight: "600" }}>{client}{job ? ` — ${job}` : ""}</div>
-                                {code    && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
-                                {rev     && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
-                                {start   && <div style={{ fontSize: "11px", color: "#888" }}>Dates: {start}{end ? ` → ${end}` : ""}</div>}
-                                {isPipeline && likely && <div style={{ fontSize: "11px", color: "#888" }}>Likelihood: {(parseFloat(likely) * 100).toFixed(0)}%</div>}
-                                {isMismatch ? (
-                                  <div style={{ fontSize: "11px", color: "#d97706", marginTop: "3px" }}>
-                                    ⚠ Field mismatch: {mismatchFields.join(", ")}
-                                  </div>
-                                ) : (
-                                  <div style={{ fontSize: "11px", color: "#c62828", marginTop: "3px" }}>
-                                    {isPipeline ? "In CRM — not in Pipeline" : "In CRM — not in Confirmed"}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          }
-                          return getAlertSummary(alert);
+                          return getFlagName(type);
                         })()}
-                      </button>
-                      );
-                    })}
-                          </div>
-                        );
-                        return (
-                          <div>
-                            {renderGroup(nonDrafts, "Sent / non-draft", 0)}
-                            {renderGroup(drafts, "Draft", nonDrafts.length)}
-                          </div>
-                        );
-                      }
-                      // Non-invoice types: render normally
-                      const isExpenseGroup = type === "expenseDashboardDiscr";
-                      const alertBtns = groupAlerts.map((alert, idx) => {
-                        const selKey = `${type}|||${alert.sheetName}-${alert.rowNumber}`;
-                        const isChecked = bulkSelected.has(selKey);
-                        return bulkMode ? (
-                          <div key={idx} style={{ padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", fontSize: "13px" }}>
-                            <input type="checkbox" checked={isChecked} onChange={() => {
-                              const newSel = new Set(bulkSelected);
-                              if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
-                              setBulkSelected(newSel);
-                            }} /> {getAlertSummary(alert)}
-                          </div>
-                        ) : (
-                          <button className="triage-btn" key={idx} onClick={() => selectAlert(alert)}
-                            style={{ ...styles.optionButton, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px" }}>
-                            {getAlertSummary(alert)}
-                          </button>
-                        );
-                      });
-                      return isExpenseGroup && selectedClient
-                        ? [...alertBtns, (
-                            <div key="assign-btn" style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
-                              <button className="triage-btn"
-                                onClick={() => { setActiveNav("outgoings"); loadOutgoings(selectedClient); }}
-                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#059669", borderColor: "#6ee7b7" }}>
-                                📤 Assign Outgoings
-                              </button>
+                      </h3>
+                      {bulkMode && groupAlerts.length > 1 && (
+                        <button className="triage-btn" onClick={() => {
+                          const newSel = new Set(bulkSelected);
+                          if (allSelected) { groupKeys.forEach(k => newSel.delete(k)); }
+                          else             { groupKeys.forEach(k => newSel.add(k)); }
+                          setBulkSelected(newSel);
+                        }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "3px 8px",
+                          ...(anySelected && !allSelected ? { background: "#eef4ff", borderColor: "#93c5fd", color: "#1d4ed8" } : {}) }}>
+                          {allSelected ? "Deselect all" : anySelected ? `− Select remaining (${groupKeys.length - groupKeys.filter(k => bulkSelected.has(k)).length})` : "Select all"}
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {(() => {
+                        // For invoice alerts, sub-group by draft status
+                        const isInvoiceType = type === "invoiceDashboardDiscr";
+                        if (isInvoiceType) {
+                          const drafts = groupAlerts.filter(a => (a.summary?.status || "").toLowerCase() === "draft")
+                            .sort((a, b) => parseInt(a.summary?.invoiceNo || 0) - parseInt(b.summary?.invoiceNo || 0));
+                          const nonDrafts = groupAlerts.filter(a => (a.summary?.status || "").toLowerCase() !== "draft")
+                            .sort((a, b) => parseInt(a.summary?.invoiceNo || 0) - parseInt(b.summary?.invoiceNo || 0));
+                          const renderGroup = (alerts, label, globalOffset) => alerts.length === 0 ? null : (
+                            <div key={label}>
+                              <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>{label}</div>
+                              {alerts.map((alert, localIdx) => {
+                                const selKey = `${type}|||${alert.sheetName}-${alert.rowNumber}`;
+                                const isChecked = bulkSelected.has(selKey);
+
+                                return bulkMode ? (
+                                  <div key={selKey} onClick={() => {
+                                      const newSel = new Set(bulkSelected);
+                                      if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
+                                      setBulkSelected(newSel);
+                                    }} style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "12px", border: `1px solid ${isChecked ? "#7c3aed" : "#e0e0e0"}`, borderRadius: "4px", cursor: "pointer", backgroundColor: isChecked ? "#ede9fe" : "#fff", fontSize: "13px" }}>
+                                    <input type="checkbox" checked={isChecked} onChange={() => {}} style={{ marginTop: "2px", accentColor: "#7c3aed", flexShrink: 0 }} />
+                                    <div style={{ flex: 1 }}>{renderAlertContent(alert)}</div>
+                                  </div>
+                                ) : (
+                                  <button className="triage-btn" key={selKey} onClick={() => selectAlert(alert)}
+                                    style={{ ...styles.optionButton, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px", transition: "all 0.2s" }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f5f5f5"; e.currentTarget.style.borderColor = "#2196f3"; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#e0e0e0"; }}>
+                                    {renderAlertContent(alert)}
+                                  </button>
+                                );
+                              })}
                             </div>
-                          )]
-                        : alertBtns;
-                    })()}
+                          );
+                          return (
+                            <div>
+                              {renderGroup(nonDrafts, "Sent / non-draft", 0)}
+                              {renderGroup(drafts, "Draft", nonDrafts.length)}
+                            </div>
+                          );
+                        }
+                        // Non-invoice types: render normally
+                        const isExpenseGroup = type === "expenseDashboardDiscr";
+                        const alertBtns = groupAlerts.map((alert, idx) => {
+                          const selKey = `${type}|||${alert.sheetName}-${alert.rowNumber}`;
+                          const isChecked = bulkSelected.has(selKey);
+
+                          return bulkMode ? (
+                            <div key={idx} onClick={() => {
+                                const newSel = new Set(bulkSelected);
+                                if (isChecked) newSel.delete(selKey); else newSel.add(selKey);
+                                setBulkSelected(newSel);
+                              }} style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "12px", border: `1px solid ${isChecked ? "#7c3aed" : "#e0e0e0"}`, borderRadius: "4px", cursor: "pointer", backgroundColor: isChecked ? "#ede9fe" : "#fff", fontSize: "13px" }}>
+                              <input type="checkbox" checked={isChecked} onChange={() => {}} style={{ marginTop: "2px", accentColor: "#7c3aed", flexShrink: 0 }} />
+                              <div style={{ flex: 1 }}>{renderAlertContent(alert)}</div>
+                            </div>
+                          ) : (
+                            <button className="triage-btn" key={idx} onClick={() => selectAlert(alert)}
+                              style={{ ...styles.optionButton, textAlign: "left", padding: "12px", border: "1px solid #e0e0e0", borderRadius: "4px", cursor: "pointer", backgroundColor: "#fff", fontSize: "13px", transition: "all 0.2s" }}
+                              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#f5f5f5"; e.currentTarget.style.borderColor = "#2196f3"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#fff"; e.currentTarget.style.borderColor = "#e0e0e0"; }}>
+                              {renderAlertContent(alert)}
+                            </button>
+                          );
+                        });
+                        return isExpenseGroup && selectedClient
+                          ? [...alertBtns, (
+                              <div key="assign-btn" style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
+                                <button className="triage-btn"
+                                  onClick={() => { setActiveNav("outgoings"); loadOutgoings(selectedClient); }}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#059669", borderColor: "#6ee7b7" }}>
+                                  📤 Assign Outgoings
+                                </button>
+                              </div>
+                            )]
+                          : alertBtns;
+                      })()}
+                    </div>
                   </div>
+                  );
+                })}
+              </div>
+
+              {/* Sticky bulk action bar for Actionable */}
+              {bulkMode && bulkSelected.size > 0 && (
+                <div style={{ position: "sticky", bottom: 0, background: "#fff", borderTop: "2px solid #7c3aed",
+                  padding: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
+                  boxShadow: "0 -2px 8px rgba(0,0,0,0.08)", zIndex: 10, marginTop: "12px" }}>
+                  <span style={{ fontSize: "13px", color: "#5b21b6", fontWeight: "600", flex: 1 }}>
+                    {bulkSelected.size} alert{bulkSelected.size !== 1 ? "s" : ""} selected
+                  </span>
+                  <button className="triage-btn" onClick={() => setShowBulkIgnoreModal(true)}
+                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#dc2626", borderColor: "#fca5a5" }}>
+                    🚫 Ignore selected
+                  </button>
+                  <button className="triage-btn" onClick={() => setShowBulkTaskModal(true)}
+                    style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
+                      padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer" }}>
+                      📋 Create tasks
+                  </button>
                 </div>
-                );
-              })}
+              )}
             </div>
           )}
 
-          {/* Sticky bulk action bar */}
-          {bulkMode && bulkSelected.size > 0 && (
-            <div style={{ position: "sticky", bottom: 0, background: "#fff", borderTop: "2px solid #7c3aed",
-              padding: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
-              boxShadow: "0 -2px 8px rgba(0,0,0,0.08)", zIndex: 10, marginTop: "12px" }}>
-              <span style={{ fontSize: "13px", color: "#5b21b6", fontWeight: "600", flex: 1 }}>
-                {bulkSelected.size} alert{bulkSelected.size !== 1 ? "s" : ""} selected
-              </span>
-              <button className="triage-btn" onClick={() => setShowBulkIgnoreModal(true)}
-                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 12px", color: "#dc2626", borderColor: "#fca5a5" }}>
-                🚫 Ignore selected
-              </button>
-              <button className="triage-btn" onClick={() => setShowBulkTaskModal(true)}
-                style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
-                  padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer" }}>
-                📋 Create tasks
-              </button>
+          {/* Informational Alerts Section */}
+          {clientNoActionAlerts.length > 0 && (
+            <div style={{ marginBottom: "32px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", paddingBottom: "8px", borderBottom: "2px solid #e0e0e0" }}>
+                <h2 style={{ fontSize: "18px", fontWeight: "700", color: "#1a1a1a", margin: 0 }}>
+                  Informational alerts
+                  <span style={{ fontWeight: "400", marginLeft: "8px", fontSize: "13px", color: "#666" }}>
+                    ({resolvedNoActionFlags.size}/{clientNoActionAlerts.length} resolved)
+                  </span>
+                </h2>
+              </div>
+              
+              <div>
+                {Object.keys(groupedInfoAlerts).map(type => {
+                  const groupAlerts = groupedInfoAlerts[type];
+                  return (
+                    <div key={type} style={{ marginBottom: "20px" }}>
+                      <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#666", margin: "0 0 10px 0" }}>
+                        {getFlagName(type)}
+                      </h3>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                        {groupAlerts.map((na) => {
+                          const isResolved = resolvedNoActionFlags.has(na.flagType);
+                          const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges"].includes(na.flagType);
+                          const naKey = na.fingerprintHash || na.flagType;
+                          const analysis = noActionAnalysis[naKey] || na.analysisResult;
+                          const isLoading = noActionAnalysisLoading[naKey];
+
+                          if (isRichFlag && !isResolved) {
+                            const overallOk = analysis?.overallOk;
+                            const borderColor = !analysis ? "#e0e0e0" : overallOk ? "#c8e6c9" : "#ffccbc";
+                            const bgColor = !analysis ? "#fff" : overallOk ? "#f1f8f2" : "#fff8f6";
+
+                            return (
+                              <div key={na.flagType} style={{ border: `1px solid ${borderColor}`, borderRadius: "6px", background: bgColor, padding: "12px" }}>
+                                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
+                                  <div style={{ flexShrink: 1, minWidth: 0 }}>
+                                    <div style={{ fontSize: "13px", fontWeight: "600", color: "#444" }}>
+                                      {na.flagName || getFlagName(na.flagType)}
+                                    </div>
+                                    {na.flagDetail && (
+                                      <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", lineHeight: "1.4" }}>
+                                        {na.flagDetail}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
+                                    {selectedClient?.clientSheetId && (
+                                      <button className="triage-btn"
+                                        onClick={() => {
+                                          if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
+                                          if (selectedClient.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`, "_blank");
+                                        }}
+                                        style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}
+                                      >
+                                        📊 Open Sheets
+                                      </button>
+                                    )}
+                                    {!analysis && !isLoading && (
+                                      <button className="triage-btn"
+                                        onClick={() => analyzeNoActionFlag(na)}
+                                        style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
+                                      >
+                                        🔍 Analyse
+                                      </button>
+                                    )}
+                                    {isLoading && (
+                                      <span style={{ fontSize: "12px", color: "#888", padding: "5px 10px", display: "inline-flex", alignItems: "center" }}><Spinner size={12} />Analysing…</span>
+                                    )}
+                                    {analysis && !isLoading && (
+                                      <button className="triage-btn"
+                                        onClick={() => analyzeNoActionFlag(na)}
+                                        style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
+                                      >
+                                        ↻ Re-run
+                                      </button>
+                                    )}
+                                    <button className="triage-btn"
+                                      onClick={() => {
+                                        const newResolved = new Set([...resolvedNoActionFlags, na.flagType]);
+                                        setResolvedNoActionFlags(newResolved);
+                                        setClientsWithFlags(prev => prev.map(c => {
+                                          if (c.clientName !== selectedClient?.clientName) return c;
+                                          return { ...c, flags: { ...c.flags, [na.flagType]: false } };
+                                        }));
+                                        if (sessionId && selectedClient) {
+                                          fetch("/api/triage", {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, automationCommanderSheetId }),
+                                          }).catch(() => {});
+                                          fetch("/api/triage", {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
+                                          }).catch(() => {});
+                                        }
+                                        if (RICH_NOACTION_FLAG_GROUP[na.flagType]) {
+                                          autoClearFlags(clientAlerts, newResolved).catch(() => {});
+                                        }
+                                        const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.flagType));
+                                        const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+                                        if (allResolved && proactiveDone && clientAlerts.length === 0) {
+                                          handlePostClear([], newResolved);
+                                        }
+                                      }}
+                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
+                                    >
+                                      ✓ Mark resolved
+                                    </button>
+                                  </div>
+                                </div>
+                                {analysis && !isLoading && (
+                                  <div>
+                                    <div style={{
+                                      padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
+                                      background: overallOk ? "#e8f5e9" : "#fbe9e7", color: overallOk ? "#2e7d32" : "#bf360c",
+                                    }}>
+                                      {overallOk ? "✓ Everything looks correct" : "⚠ Issues found — review below"}
+                                    </div>
+                                    {(analysis.results || []).map((r, ri) => (
+                                      <div key={ri} style={{
+                                        marginBottom: "8px", padding: "8px 10px", borderRadius: "4px",
+                                        border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
+                                        background: r.status === "ok" ? "#f9fef9" : r.status === "issue" ? "#fff8f6" : "#fafafa",
+                                      }}>
+                                        {(r.jobName || r.projectCode) && (
+                                          <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
+                                            {r.clientName && <span style={{ fontWeight: "400", color: "#666" }}>{r.clientName} — </span>}
+                                            {r.jobName || r.projectCode}
+                                            {r.projectCode && r.jobName && <TruncatedCode code={r.projectCode} />}
+                                            {r.periodLabel && <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> — {r.periodLabel}</span>}
+                                            {r.parentSheetRow && <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>{r.tab || "Confirmed"} row {r.parentSheetRow}</span>}
+                                            {(r.pipelineRow || r.confirmedRow) && (
+                                              <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>
+                                                {r.pipelineRow ? `Pipeline row ${r.pipelineRow}` : ""}
+                                                {r.pipelineRow && r.confirmedRow ? " · " : ""}
+                                                {r.confirmedRow ? `Confirmed row ${r.confirmedRow}` : ""}
+                                              </span>
+                                            )}
+                                          </div>
+                                        )}
+                                        {r.message && (!r.checks || r.checks.length === 0) && (
+                                          <div style={{ fontSize: "12px", color: "#666" }}>{r.message}</div>
+                                        )}
+                                        {(r.checks || []).map((chk, ci) => (
+                                          <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
+                                            {(() => {
+                                              const parts = [];
+                                              const re = /\(([^)]{17,})\)/g;
+                                              let last = 0, m;
+                                              const msg = chk.message || "";
+                                              while ((m = re.exec(msg)) !== null) {
+                                                if (m.index > last) parts.push(msg.slice(last, m.index));
+                                                parts.push(<TruncatedCode key={m.index} code={m[1]} />);
+                                                last = m.index + m[0].length;
+                                              }
+                                              if (last < msg.length) parts.push(msg.slice(last));
+                                              return parts.length > 1 ? parts : msg;
+                                            })()}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {analysis && !analysis.success && (
+                                  <div style={{ fontSize: "12px", color: "#c62828", marginTop: "6px" }}>Error: {analysis.error}</div>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div key={na.flagType} style={{
+                              display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: "4px",
+                              border: `1px solid ${isResolved ? "#c8e6c9" : "#e0e0e0"}`, background: isResolved ? "#f1f8f2" : "#fff", gap: "12px",
+                            }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: "13px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#555", textDecoration: isResolved ? "line-through" : "none" }}>
+                                  {na.flagName || getFlagName(na.flagType)}
+                                </div>
+                                {na.flagDetail && (
+                                  <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#888", marginTop: "4px", textDecoration: isResolved ? "line-through" : "none", lineHeight: "1.4" }}>
+                                    {na.flagDetail}
+                                  </div>
+                                )}
+                              </div>
+                              {isResolved ? (
+                                <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
+                              ) : (
+                                <button className="triage-btn"
+                                  onClick={() => {
+                                    setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
+                                    setClientsWithFlags(prev => prev.map(c => {
+                                      if (c.clientName !== selectedClient?.clientName) return c;
+                                      return { ...c, flags: { ...c.flags, [na.flagType]: false } };
+                                    }));
+                                    if (sessionId && selectedClient) {
+                                      fetch("/api/triage", {
+                                        method: "POST", headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, automationCommanderSheetId }),
+                                      }).catch(() => {});
+                                      fetch("/api/triage", {
+                                        method: "POST", headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
+                                      }).catch(() => {});
+                                    }
+                                    const newResolved2 = new Set([...resolvedNoActionFlags, na.flagType]);
+                                    const allResolved2 = clientNoActionAlerts.every(n => newResolved2.has(n.flagType));
+                                    const proactiveDone2 = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+                                    if (allResolved2 && proactiveDone2 && clientAlerts.length === 0) {
+                                      handlePostClear([], newResolved2);
+                                    }
+                                  }}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", whiteSpace: "nowrap", flexShrink: 0 }}
+                                >
+                                  Mark resolved
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Proactive Alerts Section */}
+          {clientProactiveAlertsList.length > 0 && (
+            <div style={{ marginBottom: "32px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", paddingBottom: "8px", borderBottom: "2px solid #e0e0e0" }}>
+                <h2 style={{ fontSize: "18px", fontWeight: "700", color: "#1a1a1a", margin: 0 }}>
+                  Proactive alerts
+                  <span style={{ fontWeight: "400", marginLeft: "8px", fontSize: "13px", color: "#666" }}>
+                    ({clientProactiveAlertsList.length})
+                  </span>
+                </h2>
+                {clientProactiveAlertsList.length > 1 && (
+                  <button className="triage-btn" onClick={() => { setProactiveBulkMode(m => !m); setProactiveBulkSelected(new Set()); }}
+                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px",
+                      ...(proactiveBulkMode ? { background: "#ede9fe", borderColor: "#7c3aed", color: "#5b21b6" } : {}) }}>
+                    {proactiveBulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
+                  </button>
+                )}
+              </div>
+              
+              {proactiveBulkMode && clientProactiveAlertsList.length > 0 && (() => {
+                const allKeys = clientProactiveAlertsList.map(a => a.rowIndex);
+                const allSelected = allKeys.every(k => proactiveBulkSelected.has(k));
+                return (
+                  <div style={{ marginBottom: "16px" }}>
+                    <button className="triage-btn" onClick={() => {
+                      setProactiveBulkSelected(allSelected ? new Set() : new Set(allKeys));
+                    }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 10px" }}>
+                      {allSelected ? "Deselect all" : "Select all"}
+                    </button>
+                  </div>
+                );
+              })()}
+
+              <div>
+                {Object.keys(groupedProactiveAlerts).map(type => {
+                  const groupAlerts = groupedProactiveAlerts[type];
+                  return (
+                    <div key={type} style={{ marginBottom: "20px" }}>
+                      <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#d97706", margin: "0 0 10px 0" }}>
+                        {PROACTIVE_TYPE_LABELS[type] || type || "Proactive Alert"}
+                      </h3>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                        {groupAlerts.map((alert, idx) => {
+                          const m = alert.metadata || {};
+                          const isBulkSelected = proactiveBulkSelected.has(alert.rowIndex);
+                          return (
+                            <div key={idx} style={{ border: `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#ddd"}`, borderRadius: "6px", padding: "14px", backgroundColor: proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#fafafa" }}>
+                              {proactiveBulkMode && (
+                                <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
+                                  <input type="checkbox" checked={isBulkSelected} onChange={() => {
+                                    setProactiveBulkSelected(prev => {
+                                      const next = new Set(prev);
+                                      if (isBulkSelected) next.delete(alert.rowIndex); else next.add(alert.rowIndex);
+                                      return next;
+                                    });
+                                  }} style={{ accentColor: "#7c3aed", cursor: "pointer" }} />
+                                  Select for bulk action
+                                </label>
+                              )}
+                              <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px" }}>
+                                {alert.heading}
+                              </div>
+                              <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
+                                {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_revenue" ? null : alert.detail}
+                              </div>
+
+                              {alert.alertType === "retainer_invoice" && (
+                                <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
+                                  {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
+                                  {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                                  {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
+                                  {m.startDate && <div><strong>Contract period:</strong> {m.startDate} → {m.endDate}</div>}
+                                  {m.frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(m.frequencyDays)} (every ~{m.frequencyDays} days)</div>}
+                                  {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
+                                  {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
+                                  {m.possibleMatchInvoiceNo && (
+                                    <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
+                                      {m.possibleMatchCase === "changed" && (
+                                        <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: m.possibleMatchConfidence === "high" ? "#fee2e2" : "#fef9c3", color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12", border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}` }}>
+                                          Possible retainer change — {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
+                                        </div>
+                                      )}
+                                      {m.possibleMatchCase === "draft" && (
+                                        <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: "#e0f2fe", color: "#075985", border: "1px solid #7dd3fc" }}>
+                                          Draft invoice found nearby
+                                        </div>
+                                      )}
+                                      <div><strong>{m.possibleMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}</div>
+                                      <div>{m.possibleMatchConfirmedRow ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</> : <>Not yet attached to any job in the Confirmed tab</>}</div>
+                                      {m.possibleMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
+                                      {m.possibleMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
+                                      {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
+                                    </div>
+                                  )}
+                                  {m.confirmedRow && m.jobName && (!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
+                                    <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                                      {m.possibleMatchInvoiceNo ? (
+                                        <>
+                                          <button className="triage-btn" onClick={() => {
+                                            const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
+                                            setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                          }} style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Change retainer amount</button>
+                                          <button className="triage-btn" onClick={() => {
+                                            const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
+                                            setRetainerSplitInvoice({ alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                          }} style={{ padding: "6px 12px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>Split invoice</button>
+                                        </>
+                                      ) : (
+                                        <button className="triage-btn" onClick={() => {
+                                          const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
+                                          setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
+                                        }} style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>End retainer</button>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {alert.alertType === "uninvoiced_revenue" && (
+                                <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
+                                  {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
+                                  {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                                  {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
+                                  {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
+                                  {m.uninvoicedAmount && <div style={{ marginTop: "6px", fontWeight: "700", color: "#991b1b" }}>£{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)</div>}
+                                  {m.draftCount && parseInt(m.draftCount) > 0 && <div style={{ marginTop: "6px", padding: "6px 8px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", color: "#78350f" }}>{m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) — not counted as invoiced above.</div>}
+                                </div>
+                              )}
+
+                              {alert.alertType === "crm_wipe" && (
+                                <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  {m.timestamp && <div><strong>Log timestamp:</strong> {m.timestamp}</div>}
+                                  {m.sequenceType && <div><strong>Sequence:</strong> {m.sequenceType}</div>}
+                                  {m.summary && <div><strong>Summary:</strong> {m.summary}</div>}
+                                  {m.jobInfo && <div><strong>Job:</strong> {m.jobInfo}</div>}
+                                  {m.detailsSnippet && <div style={{ marginTop: "4px" }}><strong>AutoLog details:</strong><div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.detailsSnippet}</div></div>}
+                                </div>
+                              )}
+
+                              {alert.alertType === "revenue_mismatch" && (
+                                <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef3c7", border: "1px solid #fcd34d", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  {(() => {
+                                    const detail = alert.detail || "";
+                                    const mismatchIdx = detail.indexOf("Mismatched rows:");
+                                    if (mismatchIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
+                                    const header = detail.slice(0, mismatchIdx).trim();
+                                    const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
+                                    const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
+                                    return (
+                                      <>
+                                        <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
+                                        <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
+                                        {rows.map((row, i) => {
+                                          const diffIdx = row.indexOf("— diff");
+                                          if (diffIdx === -1) return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
+                                          return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong></div>;
+                                        })}
+                                      </>
+                                    );
+                                  })()}
+                                </div>
+                              )}
+
+                              {alert.alertType === "direct_costs_mismatch" && (
+                                <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fce7f3", border: "1px solid #f9a8d4", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  {alert.metadata?.tab && <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: alert.metadata.tab === "Pipeline" ? "#fef3c7" : "#dbeafe", color: alert.metadata.tab === "Pipeline" ? "#92400e" : "#1e40af", border: `1px solid ${alert.metadata.tab === "Pipeline" ? "#fcd34d" : "#93c5fd"}` }}>{alert.metadata.tab} tab</span>}
+                                  {(() => {
+                                    const detail = alert.detail || "";
+                                    const mismatchIdx = detail.indexOf("Mismatched rows:");
+                                    if (mismatchIdx === -1) return <div style={{ fontWeight: "600" }}>{detail}</div>;
+                                    const header = detail.slice(0, mismatchIdx).trim();
+                                    const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
+                                    const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
+                                    return (
+                                      <>
+                                        <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
+                                        <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
+                                        {rows.map((row, i) => {
+                                          const diffIdx = row.indexOf("— diff");
+                                          if (diffIdx === -1) return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
+                                          return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong></div>;
+                                        })}
+                                      </>
+                                    );
+                                  })()}
+                                </div>
+                              )}
+
+                              {alert.alertType === "pipeline_confirmed_overlap" && (() => {
+                                const md = alert.metadata || {};
+                                return (
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0fdf4", border: "1px solid #86efac", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontWeight: "600", marginBottom: "6px" }}>Job exists in both tabs but Pipeline is not closed out</div>
+                                    <div style={{ marginBottom: "4px" }}><strong>Confirmed tab</strong></div>
+                                    {md.confirmedRow  && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
+                                    {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
+                                    {md.jobName       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
+                                    {md.projectCode   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
+                                    {md.jobType       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
+                                    <div style={{ marginBottom: "4px", marginTop: "6px" }}><strong>Pipeline tab</strong></div>
+                                    {md.pipelineRow   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.pipelineRow}</div>}
+                                    <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
+                                    <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>"Copied to confirmed?": <strong>{md.copiedToConf || "(blank)"}</strong></div>
+                                    <div style={{ marginTop: "6px", color: "#166534", fontStyle: "italic" }}>Expected fix: set Pipeline likelihood to 0% or mark "Copied to confirmed?" as Yes.</div>
+                                    {md.pipelineRow && (
+                                      <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #86efac" }}>
+                                        <button className="triage-btn" onClick={() => markPipelineCopied(alert)} style={{ padding: "6px 14px", background: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>✓ Mark "Copied to confirmed?" = Yes</button>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+
+                              {alert.alertType === "retainer_shrink_blocked" && (() => {
+                                const md = alert.metadata || {};
+                                return (
+                                  <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                    <div style={{ fontWeight: "600", marginBottom: "6px" }}>Retainer contract shrunk — excess child row could not be removed automatically</div>
+                                    {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
+                                    {md.childRowNum  && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
+                                    {md.timestamp    && <div style={{ marginBottom: "6px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
+                                    <div style={{ color: "#92400e", fontStyle: "italic" }}>Row {md.childRowNum} falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.</div>
+                                  </div>
+                                );
+                              })()}
+
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <div style={{ fontSize: "11px", color: "#aaa" }}>First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}</div>
+                                <div style={{ display: "flex", gap: "8px" }}>
+                                  {(() => {
+                                    const clientInfo = clientsWithFlags.find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName];
+                                    return (
+                                      <>
+                                        {(clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
+                                          <button className="triage-btn" onClick={() => {
+                                            if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
+                                            if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
+                                          }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
+                                        )}
+                                        {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
+                                          <button className="triage-btn" onClick={() => { setActiveNav("outgoings"); if (clientInfo) loadOutgoings(clientInfo); }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Outgoings</button>
+                                        )}
+                                      </>
+                                    );
+                                  })()}
+                                  <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>📋 Create Task</button>
+                                  <button className="triage-btn" onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}>✓ Acknowledge</button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Sticky bulk action bar for Proactive */}
+              {proactiveBulkMode && proactiveBulkSelected.size > 0 && (
+                <div style={{ position: "sticky", bottom: 0, background: "#fff", borderTop: "2px solid #7c3aed",
+                  padding: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
+                  boxShadow: "0 -2px 8px rgba(0,0,0,0.08)", zIndex: 10, marginTop: "12px" }}>
+                  <span style={{ fontSize: "13px", color: "#5b21b6", fontWeight: "600", flex: 1 }}>
+                    {proactiveBulkSelected.size} alert{proactiveBulkSelected.size !== 1 ? "s" : ""} selected
+                  </span>
+                  <button className="triage-btn" onClick={bulkAcknowledgeProactive} disabled={proactiveBulkSubmitting}
+                    style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
+                      padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
+                      opacity: proactiveBulkSubmitting ? 0.5 : 1 }}>
+                    {proactiveBulkSubmitting ? <><Spinner />Acknowledging...</> : `✓ Acknowledge ${proactiveBulkSelected.size} alert${proactiveBulkSelected.size !== 1 ? "s" : ""}`}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -9058,673 +9561,6 @@ export default function TriageSystem({ onBack }) {
               </div>
             </div>
           )}
-
-          {/* Non-actionable flags section */}
-          {clientNoActionAlerts.length > 0 && (
-            <div style={styles.noActionSection}>
-              <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#666", marginBottom: "10px" }}>
-                Informational Flags
-                <span style={{ fontWeight: "400", marginLeft: "8px", fontSize: "12px" }}>
-                  ({resolvedNoActionFlags.size}/{clientNoActionAlerts.length} resolved)
-                </span>
-              </h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                {clientNoActionAlerts.map((na) => {
-                  const isResolved = resolvedNoActionFlags.has(na.flagType);
-                  const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges"].includes(na.flagType);
-                  // A manual re-run (noActionAnalysis) takes precedence once
-                  // triggered, since it's more recent than whatever was
-                  // computed automatically at build time — but by default,
-                  // na.analysisResult is already there the moment this card
-                  // renders (26 Aug 2026, proposal 2) with no click needed.
-                  const naKey = na.fingerprintHash || na.flagType; // matches analyzeNoActionFlag's key fallback
-                  const analysis = noActionAnalysis[naKey] || na.analysisResult;
-                  const isLoading = noActionAnalysisLoading[naKey];
-
-                  if (isRichFlag && !isResolved) {
-                    // Rich analysis card
-                    const overallOk = analysis?.overallOk;
-                    const borderColor = !analysis ? "#e0e0e0" : overallOk ? "#c8e6c9" : "#ffccbc";
-                    const bgColor = !analysis ? "#fff" : overallOk ? "#f1f8f2" : "#fff8f6";
-
-                    return (
-                      <div key={na.flagType} style={{ border: `1px solid ${borderColor}`, borderRadius: "6px", background: bgColor, padding: "12px" }}>
-                        {/* Header row */}
-                        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
-                          <div style={{ flexShrink: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: "13px", fontWeight: "600", color: "#444" }}>
-                              {na.flagName || getFlagName(na.flagType)}
-                            </div>
-                            {na.flagDetail && (
-                              <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", lineHeight: "1.4" }}>
-                                {na.flagDetail}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
-                            {selectedClient?.clientSheetId && (
-                              <button className="triage-btn"
-                                onClick={() => {
-                                  if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
-                                  if (selectedClient.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`, "_blank");
-                                }}
-                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}
-                              >
-                                📊 Open Sheets
-                              </button>
-                            )}
-                            {!analysis && !isLoading && (
-                              <button className="triage-btn"
-                                onClick={() => analyzeNoActionFlag(na)}
-                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
-                              >
-                                🔍 Analyse
-                              </button>
-                            )}
-                            {isLoading && (
-                              <span style={{ fontSize: "12px", color: "#888", padding: "5px 10px", display: "inline-flex", alignItems: "center" }}><Spinner size={12} />Analysing…</span>
-                            )}
-                            {analysis && !isLoading && (
-                              <button className="triage-btn"
-                                onClick={() => analyzeNoActionFlag(na)}
-                                style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 8px" }}
-                              >
-                                ↻ Re-run
-                              </button>
-                            )}
-                            <button className="triage-btn"
-                              onClick={() => {
-                                const newResolved = new Set([...resolvedNoActionFlags, na.flagType]);
-                                setResolvedNoActionFlags(newResolved);
-                                // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
-                                setClientsWithFlags(prev => prev.map(c => {
-                                  if (c.clientName !== selectedClient?.clientName) return c;
-                                  return { ...c, flags: { ...c.flags, [na.flagType]: false } };
-                                }));
-                                if (sessionId && selectedClient) {
-                                  // Persist to Redis session and clear from precomputed cache
-                                  fetch("/api/triage", {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, automationCommanderSheetId }),
-                                  }).catch(() => {});
-                                  fetch("/api/triage", {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
-                                  }).catch(() => {});
-                                }
-                                // Auto-clear this flag group if it qualifies (rich noAction flags only)
-                                if (RICH_NOACTION_FLAG_GROUP[na.flagType]) {
-                                  autoClearFlags(clientAlerts, newResolved).catch(() => {});
-                                }
-                                // If all noAction flags are now resolved AND no actionable alerts remain,
-                  						              // auto-proceed to clear flags and return to client selection
-       							                         const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.flagType));
-         						                       const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
-             						                   if (allResolved && proactiveDone && clientAlerts.length === 0) {
-          						                        handlePostClear([], newResolved);
-      						                             }
-           						                   }}
-                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
-                            >
-                              ✓ Mark resolved
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Analysis results */}
-                        {analysis && !isLoading && (
-                          <div>
-                            {/* Overall status banner */}
-                            <div style={{
-                              padding: "6px 10px",
-                              borderRadius: "4px",
-                              marginBottom: "8px",
-                              fontSize: "12px",
-                              fontWeight: "600",
-                              background: overallOk ? "#e8f5e9" : "#fbe9e7",
-                              color: overallOk ? "#2e7d32" : "#bf360c",
-                            }}>
-                              {overallOk ? "✓ Everything looks correct" : "⚠ Issues found — review below"}
-                            </div>
-
-                            {/* Per-job results */}
-                            {(analysis.results || []).map((r, ri) => (
-                              <div key={ri} style={{
-                                marginBottom: "8px",
-                                padding: "8px 10px",
-                                borderRadius: "4px",
-                                border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
-                                background: r.status === "ok" ? "#f9fef9" : r.status === "issue" ? "#fff8f6" : "#fafafa",
-                              }}>
-                                {/* Job header */}
-                                {(r.jobName || r.projectCode) && (
-                                  <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
-                                    {r.clientName && (
-                                      <span style={{ fontWeight: "400", color: "#666" }}>{r.clientName} — </span>
-                                    )}
-                                    {r.jobName || r.projectCode}
-                                    {r.projectCode && r.jobName && (
-                                      <TruncatedCode code={r.projectCode} />
-                                    )}
-                                    {r.periodLabel && (
-                                      <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> — {r.periodLabel}</span>
-                                    )}
-                                    {r.parentSheetRow && (
-                                      <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>{r.tab || "Confirmed"} row {r.parentSheetRow}</span>
-                                    )}
-                                    {(r.pipelineRow || r.confirmedRow) && (
-                                      <span style={{ fontWeight: "400", color: "#aaa", marginLeft: "6px", fontSize: "11px" }}>
-                                        {r.pipelineRow ? `Pipeline row ${r.pipelineRow}` : ""}
-                                        {r.pipelineRow && r.confirmedRow ? " · " : ""}
-                                        {r.confirmedRow ? `Confirmed row ${r.confirmedRow}` : ""}
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
-                                {/* Info message (no job breakdown) */}
-                                {r.message && (!r.checks || r.checks.length === 0) && (
-                                  <div style={{ fontSize: "12px", color: "#666" }}>{r.message}</div>
-                                )}
-                                {/* Check lines */}
-                                {(r.checks || []).map((chk, ci) => (
-                                  <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
-                                    {(() => {
-                                      // Split message on (LONG_CODE) tokens and render codes via TruncatedCode
-                                      const parts = [];
-                                      const re = /\(([^)]{17,})\)/g;
-                                      let last = 0, m;
-                                      const msg = chk.message || "";
-                                      while ((m = re.exec(msg)) !== null) {
-                                        if (m.index > last) parts.push(msg.slice(last, m.index));
-                                        parts.push(<TruncatedCode key={m.index} code={m[1]} />);
-                                        last = m.index + m[0].length;
-                                      }
-                                      if (last < msg.length) parts.push(msg.slice(last));
-                                      return parts.length > 1 ? parts : msg;
-                                    })()}
-                                  </div>
-                                ))}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* API error */}
-                        {analysis && !analysis.success && (
-                          <div style={{ fontSize: "12px", color: "#c62828", marginTop: "6px" }}>
-                            Error: {analysis.error}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  }
-
-                  // Simple flag (no rich analysis) or resolved
-                  return (
-                    <div
-                      key={na.flagType}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "10px 12px",
-                        borderRadius: "4px",
-                        border: `1px solid ${isResolved ? "#c8e6c9" : "#e0e0e0"}`,
-                        background: isResolved ? "#f1f8f2" : "#fff",
-                        gap: "12px",
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{
-                          fontSize: "13px",
-                          fontWeight: "600",
-                          color: isResolved ? "#2e7d32" : "#555",
-                          textDecoration: isResolved ? "line-through" : "none",
-                        }}>
-                          {na.flagName || getFlagName(na.flagType)}
-                        </div>
-                        {na.flagDetail && (
-                          <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#888", marginTop: "4px", textDecoration: isResolved ? "line-through" : "none", lineHeight: "1.4" }}>
-                            {na.flagDetail}
-                          </div>
-                        )}
-                      </div>
-                      {isResolved ? (
-                        <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>
-                          ✓ Resolved
-                        </span>
-                      ) : (
-                        <button className="triage-btn"
-                          onClick={() => {
-                                setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
-                                // Zero out this flag in clientsWithFlags so the pill disappears on the client selection screen
-                                setClientsWithFlags(prev => prev.map(c => {
-                                  if (c.clientName !== selectedClient?.clientName) return c;
-                                  return { ...c, flags: { ...c.flags, [na.flagType]: false } };
-                                }));
-                                if (sessionId && selectedClient) {
-                                  // Persist to Redis session and clear from precomputed cache
-                                  fetch("/api/triage", {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, automationCommanderSheetId }),
-                                  }).catch(() => {});
-                                  fetch("/api/triage", {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
-                                  }).catch(() => {});
-                                }
-                                // If all noAction flags are now resolved AND no actionable alerts remain,
-                                // auto-proceed to clear flags and return to client selection
-                                const newResolved2 = new Set([...resolvedNoActionFlags, na.flagType]);
-                                const allResolved2 = clientNoActionAlerts.every(n => newResolved2.has(n.flagType));
-                                const proactiveDone2 = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
-                                if (allResolved2 && proactiveDone2 && clientAlerts.length === 0) {
-                                  handlePostClear([], newResolved2);
-                                }
-                              }}
-                          style={{
-                            ...styles.buttonSecondary,
-                            fontSize: "12px",
-                            padding: "5px 10px",
-                            whiteSpace: "nowrap",
-                            flexShrink: 0,
-                          }}
-                        >
-                          Mark resolved
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Proactive Alerts — merged into this screen per Paul's direction
-              (23 Aug 2026), replacing the separate proactiveReview screen */}
-          {clientProactiveAlertsList.length > 0 && (
-            <div style={styles.noActionSection}>
-              <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#d97706", marginBottom: "10px" }}>
-                Proactive Alerts
-                <span style={{ fontWeight: "400", marginLeft: "8px", fontSize: "12px" }}>
-                  ({clientProactiveAlertsList.length})
-                </span>
-              </h3>
-            <div style={{ marginBottom: "16px", display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
-              {clientProactiveAlertsList.length > 1 && (
-                <button className="triage-btn" onClick={() => { setProactiveBulkMode(m => !m); setProactiveBulkSelected(new Set()); }}
-                  style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
-                  {proactiveBulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
-                </button>
-              )}
-            </div>
-            {proactiveBulkMode && clientProactiveAlertsList.length > 0 && (() => {
-              const allKeys = clientProactiveAlertsList.map(a => a.rowIndex);
-              const allSelected = allKeys.every(k => proactiveBulkSelected.has(k));
-              return (
-                <div style={{ marginBottom: "10px" }}>
-                  <button className="triage-btn" onClick={() => {
-                    setProactiveBulkSelected(allSelected ? new Set() : new Set(allKeys));
-                  }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "3px 8px" }}>
-                    {allSelected ? "Deselect all" : "Select all"}
-                  </button>
-                </div>
-              );
-            })()}
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {clientProactiveAlertsList.map((alert, idx) => {
-                const m = alert.metadata || {};
-                const isBulkSelected = proactiveBulkSelected.has(alert.rowIndex);
-                return (
-                  <div key={idx} style={{ border: `1px solid ${proactiveBulkMode && isBulkSelected ? "#7c3aed" : "#ddd"}`, borderRadius: "6px", padding: "14px", backgroundColor: proactiveBulkMode && isBulkSelected ? "#ede9fe" : "#fafafa" }}>
-                    {proactiveBulkMode && (
-                      <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
-                        <input type="checkbox" checked={isBulkSelected} onChange={() => {
-                          setProactiveBulkSelected(prev => {
-                            const next = new Set(prev);
-                            if (isBulkSelected) next.delete(alert.rowIndex); else next.add(alert.rowIndex);
-                            return next;
-                          });
-                        }} style={{ accentColor: "#7c3aed", cursor: "pointer" }} />
-                        Select for bulk action
-                      </label>
-                    )}
-                    <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px" }}>
-                      {alert.heading}
-                    </div>
-                    <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_revenue" ? null : alert.detail}
-                    </div>
-
-                    {/* Retainer invoice detail */}
-                    {alert.alertType === "retainer_invoice" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
-                        {m.jobName && <div><strong>Job:</strong> {m.jobName}</div>}
-                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
-                        {m.revenue && <div><strong>Monthly revenue:</strong> {m.revenue}</div>}
-                        {m.startDate && <div><strong>Contract period:</strong> {m.startDate} → {m.endDate}</div>}
-                        {m.frequencyDays && <div><strong>Invoice frequency:</strong> {freqLabel(m.frequencyDays)} (every ~{m.frequencyDays} days)</div>}
-                        {m.lastInvoiceDate && <div><strong>Last invoice sent:</strong> {m.lastInvoiceDate}</div>}
-                        {m.expectedByDate && <div><strong>Next expected by:</strong> {m.expectedByDate}</div>}
-                        {m.possibleMatchInvoiceNo && (
-                          <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #bae6fd" }}>
-                            {m.possibleMatchCase === "changed" && (
-                              <div style={{
-                                display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
-                                background: m.possibleMatchConfidence === "high" ? "#fee2e2" : "#fef9c3",
-                                color: m.possibleMatchConfidence === "high" ? "#991b1b" : "#713f12",
-                                border: `1px solid ${m.possibleMatchConfidence === "high" ? "#fca5a5" : "#fde047"}`,
-                              }}>
-                                Possible retainer change — {m.possibleMatchConfidence === "high" ? "high" : "medium"} confidence
-                              </div>
-                            )}
-                            {m.possibleMatchCase === "draft" && (
-                              <div style={{
-                                display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px",
-                                background: "#e0f2fe", color: "#075985", border: "1px solid #7dd3fc",
-                              }}>
-                                Draft invoice found nearby
-                              </div>
-                            )}
-                            <div>
-                              <strong>{m.possibleMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{m.possibleMatchInvoiceNo} for £{parseFloat(m.possibleMatchAmount || 0).toFixed(2)}, sent {m.possibleMatchSentDate}
-                            </div>
-                            <div>
-                              {m.possibleMatchConfirmedRow
-                                ? <>Already attached to Confirmed row {m.possibleMatchConfirmedRow}</>
-                                : <>Not yet attached to any job in the Confirmed tab</>}
-                            </div>
-                            {m.possibleMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
-                            {m.possibleMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
-                            {m.possibleMatchCase === "draft" && <div style={{ marginTop: "4px" }}>It likely just needs sending.</div>}
-                          </div>
-                        )}
-                        {m.confirmedRow && m.jobName && (!m.possibleMatchInvoiceNo || m.possibleMatchCase === "changed") && (
-                          <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #bae6fd", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                            {m.possibleMatchInvoiceNo ? (
-                              <>
-                                <button className="triage-btn" onClick={() => {
-                                  const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                  setRetainerAlertResolution({ resolutionType: "changeAmount", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
-                                }}
-                                  style={{ padding: "6px 12px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                                  Change retainer amount
-                                </button>
-                                <button className="triage-btn" onClick={() => {
-                                  const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                  setRetainerSplitInvoice({ alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
-                                }}
-                                  style={{ padding: "6px 12px", background: "#0891b2", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                                  Split invoice
-                                </button>
-                              </>
-                            ) : (
-                              <button className="triage-btn" onClick={() => {
-                                const clientInfo = (clientsWithFlags || []).find(c => c.clientName === alert.clientName) || allClientsMap[alert.clientName];
-                                setRetainerAlertResolution({ resolutionType: "end", alertMeta: m, alertKey: alert.alertKey, clientSheetId: clientInfo?.clientSheetId, masterSheetId: clientInfo?.masterSheetId });
-                              }}
-                                style={{ padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                                End retainer
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Uninvoiced revenue detail */}
-                    {alert.alertType === "uninvoiced_revenue" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
-                        {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
-                        {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
-                        {m.endDate && <div><strong>Job ended:</strong> {m.endDate}</div>}
-                        {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
-                        {m.uninvoicedAmount && (
-                          <div style={{ marginTop: "6px", fontWeight: "700", color: "#991b1b" }}>
-                            £{parseFloat(m.uninvoicedAmount).toFixed(2)} uninvoiced (placeholders and drafts excluded)
-                          </div>
-                        )}
-                        {m.draftCount && parseInt(m.draftCount) > 0 && (
-                          <div style={{ marginTop: "6px", padding: "6px 8px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", color: "#78350f" }}>
-                            {m.draftCount} invoice{parseInt(m.draftCount) > 1 ? "s" : ""} totalling £{parseFloat(m.draftTotal || 0).toFixed(2)} {parseInt(m.draftCount) > 1 ? "have" : "has"} a reference but {parseInt(m.draftCount) > 1 ? "are" : "is"} still <strong>Draft</strong> (not yet sent) — not counted as invoiced above.
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* CRM wipe detail */}
-                    {alert.alertType === "crm_wipe" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {m.timestamp && <div><strong>Log timestamp:</strong> {m.timestamp}</div>}
-                        {m.sequenceType && <div><strong>Sequence:</strong> {m.sequenceType}</div>}
-                        {m.summary && <div><strong>Summary:</strong> {m.summary}</div>}
-                        {m.jobInfo && <div><strong>Job:</strong> {m.jobInfo}</div>}
-                        {m.detailsSnippet && (
-                          <div style={{ marginTop: "4px" }}>
-                            <strong>AutoLog details:</strong>
-                            <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                              {m.detailsSnippet}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Revenue / invoiced mismatch detail */}
-                    {alert.alertType === "revenue_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef3c7", border: "1px solid #fcd34d", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {(() => {
-                          const detail = alert.detail || "";
-                          const mismatchIdx = detail.indexOf("Mismatched rows:");
-                          if (mismatchIdx === -1) {
-                            // No mismatch breakdown — just show the whole detail bolded
-                            return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                          }
-                          const header = detail.slice(0, mismatchIdx).trim();
-                          const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
-                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
-                          return (
-                            <>
-                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
-                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
-                              {rows.map((row, i) => {
-                                // Bold the "— diff £X" part
-                                const diffIdx = row.indexOf("— diff");
-                                if (diffIdx === -1) {
-                                  return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
-                                }
-                                return (
-                                  <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>
-                                    • {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong>
-                                  </div>
-                                );
-                              })}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    )}
-
-                    {/* Direct costs / expenses mismatch detail */}
-                    {alert.alertType === "direct_costs_mismatch" && (
-                      <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fce7f3", border: "1px solid #f9a8d4", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                        {alert.metadata?.tab && (
-                          <span style={{ display: "inline-block", marginBottom: "6px", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", background: alert.metadata.tab === "Pipeline" ? "#fef3c7" : "#dbeafe", color: alert.metadata.tab === "Pipeline" ? "#92400e" : "#1e40af", border: `1px solid ${alert.metadata.tab === "Pipeline" ? "#fcd34d" : "#93c5fd"}` }}>
-                            {alert.metadata.tab} tab
-                          </span>
-                        )}
-                        {(() => {
-                          const detail = alert.detail || "";
-                          const mismatchIdx = detail.indexOf("Mismatched rows:");
-                          if (mismatchIdx === -1) {
-                            return <div style={{ fontWeight: "600" }}>{detail}</div>;
-                          }
-                          const header = detail.slice(0, mismatchIdx).trim();
-                          const rowsPart = detail.slice(mismatchIdx + "Mismatched rows:".length).trim();
-                          const rows = rowsPart.split(";").map(s => s.trim()).filter(Boolean);
-                          return (
-                            <>
-                              <div style={{ fontWeight: "600", marginBottom: "6px" }}>{header}</div>
-                              <div style={{ fontWeight: "600", marginBottom: "4px" }}>Mismatched rows:</div>
-                              {rows.map((row, i) => {
-                                const diffIdx = row.indexOf("— diff");
-                                if (diffIdx === -1) {
-                                  return <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>• {row}</div>;
-                                }
-                                return (
-                                  <div key={i} style={{ paddingLeft: "8px", marginBottom: "2px" }}>
-                                    • {row.slice(0, diffIdx)}<strong>{row.slice(diffIdx)}</strong>
-                                  </div>
-                                );
-                              })}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    )}
-
-                    {/* Pipeline / Confirmed overlap detail */}
-                    {alert.alertType === "pipeline_confirmed_overlap" && (() => {
-                      const md = alert.metadata || {};
-                      return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0fdf4", border: "1px solid #86efac", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Job exists in both tabs but Pipeline is not closed out</div>
-                          <div style={{ marginBottom: "4px" }}><strong>Confirmed tab</strong></div>
-                          {md.confirmedRow  && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.confirmedRow}</div>}
-                          {md.endClientName && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Client: {md.endClientName}</div>}
-                          {md.jobName       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job: {md.jobName}</div>}
-                          {md.projectCode   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Project code: {md.projectCode}</div>}
-                          {md.jobType       && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Job type: {md.jobType}</div>}
-                          <div style={{ marginBottom: "4px", marginTop: "6px" }}><strong>Pipeline tab</strong></div>
-                          {md.pipelineRow   && <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Row: {md.pipelineRow}</div>}
-                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>Likelihood: <strong>{md.likelihood ? (parseFloat(md.likelihood) * 100).toFixed(0) + "%" : "(blank)"}</strong></div>
-                          <div style={{ paddingLeft: "8px", marginBottom: "2px" }}>"Copied to confirmed?": <strong>{md.copiedToConf || "(blank)"}</strong></div>
-                          <div style={{ marginTop: "6px", color: "#166534", fontStyle: "italic" }}>
-                            Expected fix: set Pipeline likelihood to 0% or mark "Copied to confirmed?" as Yes.
-                          </div>
-                          {md.pipelineRow && (
-                            <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #86efac" }}>
-                              <button className="triage-btn"
-                                onClick={() => markPipelineCopied(alert)}
-                                style={{ padding: "6px 14px", background: "#16a34a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                                ✓ Mark "Copied to confirmed?" = Yes
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-
-                    {/* Retainer shrink blocked detail */}
-                    {alert.alertType === "retainer_shrink_blocked" && (() => {
-                      const md = alert.metadata || {};
-                      return (
-                        <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fff7ed", border: "1px solid #fed7aa", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
-                          <div style={{ fontWeight: "600", marginBottom: "6px" }}>Retainer contract shrunk — excess child row could not be removed automatically</div>
-                          {md.clientJobStr && <div style={{ marginBottom: "2px" }}><strong>Job:</strong> {md.clientJobStr}</div>}
-                          {md.childRowNum  && <div style={{ marginBottom: "2px" }}><strong>Blocked child row:</strong> {md.childRowNum}</div>}
-                          {md.timestamp    && <div style={{ marginBottom: "6px" }}><strong>First detected:</strong> {String(md.timestamp).slice(0, 10)}</div>}
-                          <div style={{ color: "#92400e", fontStyle: "italic" }}>
-                            Row {md.childRowNum} falls outside the new contract period but contains actuals (invoices or expenses) so cannot be auto-removed. Manual review required.
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div style={{ fontSize: "11px", color: "#aaa" }}>
-                        First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}
-                      </div>
-                      <div style={{ display: "flex", gap: "8px" }}>
-                        {(() => {
-                          // clientInfo previously computed here but only used
-                          // by the "Open Sheets" button below — the
-                          // "Assign Outgoings" button right after it also
-                          // referenced clientInfo, assuming it was still in
-                          // scope from this IIFE. It wasn't: IIFE scope
-                          // doesn't leak to sibling JSX, so that second
-                          // usage was a guaranteed ReferenceError during
-                          // React's render for any expenseDashboardDiscr
-                          // alert — not just an async error silently
-                          // swallowed, but a render-time crash. Found via a
-                          // full-codebase sweep (20 Aug 2026) and fixed by
-                          // combining both buttons into one IIFE so they
-                          // share the same clientInfo, computed once.
-                          const clientInfo = clientsWithFlags.find(c => c.clientName === selectedClient.clientName)
-                            || allClientsMap[selectedClient.clientName];
-                          return (
-                            <>
-                              {(clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
-                                <button className="triage-btn"
-                                  onClick={() => {
-                                    if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
-                                    if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
-                                  }}
-                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
-                                >
-                                  📊 Open Sheets
-                                </button>
-                              )}
-                              {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                                <button
-                                  className="triage-btn"
-                                  onClick={() => {
-                                    setActiveNav("outgoings");
-                                    if (clientInfo) loadOutgoings(clientInfo);
-                                  }}
-                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}
-                                >
-                                  📤 Assign Outgoings
-                                </button>
-                              )}
-                            </>
-                          );
-                        })()}
-                        <button
-                          className="triage-btn"
-                          onClick={() => openCreateTaskModal(alert, true)}
-                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
-                        >
-                          📋 Create Task
-                        </button>
-                        <button
-                          className="triage-btn"
-                          onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)}
-                          style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
-                        >
-                          ✓ Acknowledge
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {proactiveBulkMode && proactiveBulkSelected.size > 0 && (
-              <div style={{ position: "sticky", bottom: 0, background: "#fff", borderTop: "2px solid #7c3aed",
-                padding: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
-                boxShadow: "0 -2px 8px rgba(0,0,0,0.08)", zIndex: 10, marginTop: "12px" }}>
-                <span style={{ fontSize: "13px", color: "#5b21b6", fontWeight: "600", flex: 1 }}>
-                  {proactiveBulkSelected.size} alert{proactiveBulkSelected.size !== 1 ? "s" : ""} selected
-                </span>
-                <button className="triage-btn" onClick={bulkAcknowledgeProactive} disabled={proactiveBulkSubmitting}
-                  style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
-                    padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
-                    opacity: proactiveBulkSubmitting ? 0.5 : 1 }}>
-                  {proactiveBulkSubmitting ? <><Spinner />Acknowledging...</> : `✓ Acknowledge ${proactiveBulkSelected.size} alert${proactiveBulkSelected.size !== 1 ? "s" : ""}`}
-                </button>
-              </div>
-            )}
-
-          </div>
-            )}
 
         </div>
         </div>

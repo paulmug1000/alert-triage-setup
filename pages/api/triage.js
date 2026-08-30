@@ -7361,6 +7361,22 @@ export default async function handler(req, res) {
           activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
         }));
 
+        // Rebuild the global dictionary dynamically from the filtered rows
+        // so dismissed alerts are entirely stripped from the UI payload
+        let aggregatedNoActionResults = {};
+        for (const na of filteredNoAction) {
+          if (na.analysisResult && na.analysisResult.results) {
+            const key = `${na.clientName}___${na.flagType}`;
+            if (!aggregatedNoActionResults[key]) {
+              aggregatedNoActionResults[key] = { success: true, flagType: na.flagType, results: [], overallOk: true };
+            }
+            aggregatedNoActionResults[key].results.push(...na.analysisResult.results);
+            if (na.analysisResult.overallOk === false) {
+              aggregatedNoActionResults[key].overallOk = false;
+            }
+          }
+        }
+
         // Promote into a regular session so the existing get_alerts flow works unchanged
         const sessionId = Math.random().toString(36).substring(2, 15);
         await redisClient.set(
@@ -7391,8 +7407,9 @@ export default async function handler(req, res) {
           })),
           computedAt: data.computedAt,
           computedMinutesAgo: Math.round(ageMs / 60000),
-          noActionAnalysisResults: data.noActionAnalysisResults || {},
+          noActionAnalysisResults: aggregatedNoActionResults,
         });
+
       } catch (err) {
         console.error("❌ Error retrieving precomputed data:", err);
         return res.status(500).json({ success: false, error: err.message });
@@ -13742,7 +13759,10 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           // Remove stale noAction analysis results for this client's cleared flags
           // so the next load forces a fresh Analyse rather than showing outdated results
           if (parsed.noActionAnalysisResults) {
-            const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted"];
+            const richFlags = [
+              "crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
+              "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"
+            ];
             richFlags.forEach(flagType => {
               if (keysToZero.has(flagType)) {
                 delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`];

@@ -13799,25 +13799,19 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
       }
 
     } else if (action === "resolve_noaction_flag") {
-      // Mark a noAction flag as resolved in the Redis session so it persists
-      // across reloads, AND (23 Aug 2026, replacing the old group-level
-      // flag_cleared marker) mark every currently-cached AlertMemory row for
-      // this client+flagType as "accepted" — giving analyze_noaction_flag a
-      // genuine, per-event timestamp to compute its lookback window from,
-      // rather than a separate group-clear record. automationCommanderSheetId
-      // was already being sent by the frontend for this call but previously
-      // unused here.
-      const { sessionId, clientName, flagType, automationCommanderSheetId: acIdResolve } = req.body;
+      const { sessionId, clientName, flagType, fingerprintHash, automationCommanderSheetId: acIdResolve } = req.body;
       if (!sessionId || !clientName || !flagType) {
-        return res.status(400).json({ success: false, error: "Missing sessionId, clientName, or flagType" });
+        return res.status(400).json({ success: false, error: "Missing required fields" });
       }
       try {
-        // Persist resolution in Redis session
         const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
         if (!sessionData) return res.status(200).json({ success: true, notFound: true });
         const parsed = JSON.parse(sessionData);
         if (!parsed.resolvedNoActionFlags) parsed.resolvedNoActionFlags = [];
-        const key = `${clientName}___${flagType}`;
+        
+        const resolvedId = fingerprintHash || flagType;
+        const key = `${clientName}___${resolvedId}`;
+        
         if (!parsed.resolvedNoActionFlags.includes(key)) {
           parsed.resolvedNoActionFlags.push(key);
         }
@@ -13829,13 +13823,17 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             const sheets = await getSheetsClient();
             const acIdClean = extractSheetIdFromUrl(acIdResolve) || acIdResolve;
             const memoryRows = await readAlertMemory(sheets, acIdClean);
-            const toAccept = memoryRows.filter(r =>
-              r.clientName === clientName && r.alertType === flagType && r.status === "cached");
+            
+            const toAccept = memoryRows.filter(r => {
+              if (r.clientName !== clientName || r.alertType !== flagType || r.status !== "cached") return false;
+              if (fingerprintHash) return r.fingerprintHash === fingerprintHash;
+              return true; 
+            });
+            
             for (const row of toAccept) {
               await updateAlertMemoryRow(sheets, acIdClean, row.rowIndex, {
-                fingerprintHash: row.fingerprintHash, alertType: row.alertType, clientName: row.clientName,
-                alertSummary: row.alertSummary, cachedOptionsJSON: row.cachedOptionsJSON,
-                status: "accepted", firstSeen: row.firstSeen, dataSnapshot: row.dataSnapshot,
+                ...row,
+                status: "accepted",
               });
             }
             if (toAccept.length > 0) {

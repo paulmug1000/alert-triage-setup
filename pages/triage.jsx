@@ -2680,7 +2680,7 @@ export default function TriageSystem({ onBack }) {
         // Use restoredResolved directly — resolvedNoActionFlags state update is async
         const clientProactive = proactiveAlerts.filter(a => a.clientName === client.clientName);
         const noActionAllDone = filteredNoAction.length === 0 ||
-          filteredNoAction.every(na => restoredResolved.has(na.flagType));
+          filteredNoAction.every(na => restoredResolved.has(na.fingerprintHash || na.flagType));
         if (noActionAllDone && clientProactive.length === 0) {
           console.log(`  → No unprocessed alerts, all no-action flags resolved, and no proactive alerts, auto-clearing`);
           handlePostClear([], restoredResolved, client);
@@ -2856,7 +2856,7 @@ export default function TriageSystem({ onBack }) {
 
   // Returns true when all non-actionable flags AND proactive alerts for the current client are resolved
   const allNoActionResolved = () => {
-    const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.flagType));
+    const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || na.flagType));
     const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
     return infoDone && proactiveDone;
   };
@@ -2894,10 +2894,10 @@ export default function TriageSystem({ onBack }) {
 
     const invoiceNoActionDone = invoiceBlockingFlags
       .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
-      .every(f => resolvedSet.has(f));
+      .every(f => activeNoActionAlerts.filter(na => na.flagType === f).every(na => resolvedSet.has(na.fingerprintHash || na.flagType)));
     const crmNoActionDone = crmBlockingFlags
       .filter(f => activeNoActionAlerts.some(na => na.flagType === f))
-      .every(f => resolvedSet.has(f));
+      .every(f => activeNoActionAlerts.filter(na => na.flagType === f).every(na => resolvedSet.has(na.fingerprintHash || na.flagType)));
 
     // Groups where all actionable alerts are gone — used for visual update regardless of noAction blocking
     const toZeroVisually = {
@@ -9069,11 +9069,51 @@ export default function TriageSystem({ onBack }) {
                       </h3>
                       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                         {groupAlerts.map((na) => {
-                          const isResolved = resolvedNoActionFlags.has(na.flagType);
+                          const alertId = na.fingerprintHash || na.flagType;
+                          const isResolved = resolvedNoActionFlags.has(alertId);
                           const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges"].includes(na.flagType);
-                          const naKey = na.fingerprintHash || na.flagType;
-                          const analysis = noActionAnalysis[naKey] || na.analysisResult;
-                          const isLoading = noActionAnalysisLoading[naKey];
+                          const analysis = noActionAnalysis[alertId] || na.analysisResult;
+                          const isLoading = noActionAnalysisLoading[alertId];
+
+                          const handleMarkResolved = () => {
+                            const newResolved = new Set([...resolvedNoActionFlags, alertId]);
+                            setResolvedNoActionFlags(newResolved);
+                            
+                            const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || n.flagType));
+                            const isLastOfType = remainingOfType.length === 0;
+
+                            setClientsWithFlags(prev => prev.map(c => {
+                              if (c.clientName !== selectedClient?.clientName) return c;
+                              const updatedCounts = { ...c.alertCounts };
+                              if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
+                              const updatedFlags = { ...c.flags };
+                              if (isLastOfType) updatedFlags[na.flagType] = false;
+                              return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+                            }));
+
+                            if (sessionId && selectedClient) {
+                              fetch("/api/triage", {
+                                method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash, automationCommanderSheetId }),
+                              }).catch(() => {});
+                              
+                              if (isLastOfType) {
+                                fetch("/api/triage", {
+                                  method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
+                                }).catch(() => {});
+                              }
+                            }
+                            
+                            if (RICH_NOACTION_FLAG_GROUP[na.flagType] && isLastOfType) {
+                              autoClearFlags(clientAlerts, newResolved).catch(() => {});
+                            }
+                            const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || n.flagType));
+                            const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+                            if (allResolved && proactiveDone && clientAlerts.length === 0) {
+                              handlePostClear([], newResolved);
+                            }
+                          };
 
                           if (isRichFlag && !isResolved) {
                             const overallOk = analysis?.overallOk;
@@ -9081,7 +9121,7 @@ export default function TriageSystem({ onBack }) {
                             const bgColor = !analysis ? "#fff" : overallOk ? "#f1f8f2" : "#fff8f6";
 
                             return (
-                              <div key={na.flagType} style={{ border: `1px solid ${borderColor}`, borderRadius: "6px", background: bgColor, padding: "12px" }}>
+                              <div key={alertId} style={{ border: `1px solid ${borderColor}`, borderRadius: "6px", background: bgColor, padding: "12px" }}>
                                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
                                   <div style={{ flexShrink: 1, minWidth: 0 }}>
                                     <div style={{ fontSize: "13px", fontWeight: "600", color: "#444" }}>
@@ -9125,34 +9165,7 @@ export default function TriageSystem({ onBack }) {
                                       </button>
                                     )}
                                     <button className="triage-btn"
-                                      onClick={() => {
-                                        const newResolved = new Set([...resolvedNoActionFlags, na.flagType]);
-                                        setResolvedNoActionFlags(newResolved);
-                                        setClientsWithFlags(prev => prev.map(c => {
-                                          if (c.clientName !== selectedClient?.clientName) return c;
-                                          return { ...c, flags: { ...c.flags, [na.flagType]: false } };
-                                        }));
-                                        if (sessionId && selectedClient) {
-                                          fetch("/api/triage", {
-                                            method: "POST",
-                                            headers: { "Content-Type": "application/json" },
-                                            body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, automationCommanderSheetId }),
-                                          }).catch(() => {});
-                                          fetch("/api/triage", {
-                                            method: "POST",
-                                            headers: { "Content-Type": "application/json" },
-                                            body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
-                                          }).catch(() => {});
-                                        }
-                                        if (RICH_NOACTION_FLAG_GROUP[na.flagType]) {
-                                          autoClearFlags(clientAlerts, newResolved).catch(() => {});
-                                        }
-                                        const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.flagType));
-                                        const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
-                                        if (allResolved && proactiveDone && clientAlerts.length === 0) {
-                                          handlePostClear([], newResolved);
-                                        }
-                                      }}
+                                      onClick={handleMarkResolved}
                                       style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
                                     >
                                       ✓ Mark resolved
@@ -9221,7 +9234,7 @@ export default function TriageSystem({ onBack }) {
                           }
 
                           return (
-                            <div key={na.flagType} style={{
+                            <div key={alertId} style={{
                               display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: "4px",
                               border: `1px solid ${isResolved ? "#c8e6c9" : "#e0e0e0"}`, background: isResolved ? "#f1f8f2" : "#fff", gap: "12px",
                             }}>
@@ -9239,29 +9252,7 @@ export default function TriageSystem({ onBack }) {
                                 <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
                               ) : (
                                 <button className="triage-btn"
-                                  onClick={() => {
-                                    setResolvedNoActionFlags(prev => new Set([...prev, na.flagType]));
-                                    setClientsWithFlags(prev => prev.map(c => {
-                                      if (c.clientName !== selectedClient?.clientName) return c;
-                                      return { ...c, flags: { ...c.flags, [na.flagType]: false } };
-                                    }));
-                                    if (sessionId && selectedClient) {
-                                      fetch("/api/triage", {
-                                        method: "POST", headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, automationCommanderSheetId }),
-                                      }).catch(() => {});
-                                      fetch("/api/triage", {
-                                        method: "POST", headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: [na.flagType] }),
-                                      }).catch(() => {});
-                                    }
-                                    const newResolved2 = new Set([...resolvedNoActionFlags, na.flagType]);
-                                    const allResolved2 = clientNoActionAlerts.every(n => newResolved2.has(n.flagType));
-                                    const proactiveDone2 = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
-                                    if (allResolved2 && proactiveDone2 && clientAlerts.length === 0) {
-                                      handlePostClear([], newResolved2);
-                                    }
-                                  }}
+                                  onClick={handleMarkResolved}
                                   style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", whiteSpace: "nowrap", flexShrink: 0 }}
                                 >
                                   Mark resolved

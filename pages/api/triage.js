@@ -7308,7 +7308,14 @@ export default async function handler(req, res) {
           return memRow.status === "cached" || memRow.status === "pending_automation";
         });
 
-        if (filteredAlerts.length < data.alerts.length || filteredProactive.length < (data.proactiveAlerts || []).length) {
+        const filteredNoAction = (data.noActionAlerts || []).filter(alert => {
+          if (!alert.fingerprintHash) return true;
+          const memRow = findMemoryRow(memoryRows, alert.fingerprintHash);
+          if (!memRow) return true;
+          return memRow.status === "cached" || memRow.status === "pending_automation";
+        });
+
+        if (filteredAlerts.length < data.alerts.length || filteredProactive.length < (data.proactiveAlerts || []).length || filteredNoAction.length < (data.noActionAlerts || []).length) {
           console.log(`  Filtered ignored alert(s) from precomputed data`);
         }
 
@@ -7352,7 +7359,7 @@ export default async function handler(req, res) {
           `triage_alerts:${sessionId}`,
           JSON.stringify({
             alerts: filteredAlerts,
-            noActionAlerts: data.noActionAlerts,
+            noActionAlerts: filteredNoAction,
             proactiveAlerts: filteredProactive,
             clientsWithFlags: clientsWithUpdatedCounts,
           }),
@@ -7364,7 +7371,7 @@ export default async function handler(req, res) {
           available: true,
           sessionId,
           totalAlerts: filteredAlerts.length,
-          noActionCount: data.noActionCount,
+          noActionCount: filteredNoAction.length,
           proactiveAlerts: filteredProactive,
           clientsWithFlags: clientsWithUpdatedCounts.map(c => ({
             clientName: c.clientName,
@@ -13643,22 +13650,16 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             if (a.clientName !== clientName) return true;
             return !keysToZero.has(a.flagType || a.type);
           });
-          // Look up this client's masterSheetId — noActionAlerts are keyed by
-          // clientId (=masterSheetId), never by clientName directly.
-          const targetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
           // Remove noAction alerts for this client that belong to cleared flag groups
           if (parsed.noActionAlerts) {
             parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
-              // Fixed 21 Aug 2026: previously compared na.clientId (a sheet ID)
-              // directly against clientName (a human-readable name) — always a type
-              // mismatch, so the "keep if can't determine" branch never actually
-              // fired, and every noAction alert fell through to being matched purely
-              // by flagType regardless of which client it belonged to — meaning
-              // clearing one client's flags could silently clear another client's
-              // matching informational flag too. Found while tracing the same
-              // clientId/clientName confusion pattern in the store_precomputed fix
-              // just above.
-              if (na.clientId !== targetClientId) return true; // different client, keep untouched
+              // We now have clientName directly attached to noActionAlerts, which is 
+              // infinitely safer than matching via masterSheetId.
+              if (na.clientName && na.clientName !== clientName) return true; // different client, keep untouched
+              // Fallback for older cached data without clientName
+              const targetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
+              if (!na.clientName && na.clientId !== targetClientId) return true; 
+              
               return !keysToZero.has(na.flagType);
             });
           }
@@ -13684,14 +13685,10 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             return !keysToZero.has(a.flagType || a.type);
           });
           if (parsed.noActionAlerts) {
-            // Fixed 21 Aug 2026 — same clientId/clientName type-mismatch bug as the
-            // session-update block above, but here it made the filter completely
-            // inert instead: na.clientId !== clientName was always true (different
-            // types never equal), so `!keysToZero.has(...) || true` was always true
-            // and nothing was ever actually removed from the precomputed cache.
-            const precompTargetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
             parsed.noActionAlerts = parsed.noActionAlerts.filter(na => {
-              if (na.clientId !== precompTargetClientId) return true;
+              if (na.clientName && na.clientName !== clientName) return true;
+              const precompTargetClientId = (parsed.clientsWithFlags || []).find(c => c.clientName === clientName)?.masterSheetId;
+              if (!na.clientName && na.clientId !== precompTargetClientId) return true;
               return !keysToZero.has(na.flagType);
             });
           }

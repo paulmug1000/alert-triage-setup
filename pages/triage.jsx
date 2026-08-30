@@ -9975,7 +9975,7 @@ export default function TriageSystem({ onBack }) {
 
                 const subHeader = isMismatch
                   ? `Field mismatch: ${mismatchedFieldNames.join(", ")}`
-                  : isDashDiscr
+                  : isDash
                     ? `Missing job — in CRM, not in ${tabLabel} tab`
                     : `Missing job — in ${tabLabel} tab, not in CRM`;
 

@@ -8687,27 +8687,21 @@ export default function TriageSystem({ onBack }) {
       return "annual";
     };
 
-    // Group informational alerts
-    const groupedInfoAlerts = React.useMemo(() => {
-      const g = {};
-      clientNoActionAlerts.forEach(na => {
-        const type = na.flagType || "unknown";
-        if (!g[type]) g[type] = [];
-        g[type].push(na);
-      });
-      return g;
-    }, [clientNoActionAlerts]);
+   // Group informational alerts
+    const groupedInfoAlerts = {};
+    clientNoActionAlerts.forEach(na => {
+      const type = na.flagType || "unknown";
+      if (!groupedInfoAlerts[type]) groupedInfoAlerts[type] = [];
+      groupedInfoAlerts[type].push(na);
+    });
 
     // Group proactive alerts
-    const groupedProactiveAlerts = React.useMemo(() => {
-      const g = {};
-      clientProactiveAlertsList.forEach(pa => {
-        const type = pa.alertType || "unknown";
-        if (!g[type]) g[type] = [];
-        g[type].push(pa);
-      });
-      return g;
-    }, [clientProactiveAlertsList]);
+    const groupedProactiveAlerts = {};
+    clientProactiveAlertsList.forEach(pa => {
+      const type = pa.alertType || "unknown";
+      if (!groupedProactiveAlerts[type]) groupedProactiveAlerts[type] = [];
+      groupedProactiveAlerts[type].push(pa);
+    });
 
     // Helper for actionable details (Invoice and Expense)
     const getActionableDetail = (alert) => {

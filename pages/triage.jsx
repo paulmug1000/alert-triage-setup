@@ -2568,9 +2568,9 @@ export default function TriageSystem({ onBack }) {
         alert.clientName === client.clientName && !processedAlerts.has(`${alert.sheetName}-${alert.rowNumber}`)
       );
       
-      // Filter non-actionable alerts for this client by masterSheetId
+      // Filter non-actionable alerts for this client by clientName (with fallback to masterSheetId)
       const filteredNoAction = (data.noActionAlerts || []).filter(
-        na => na.clientId === client.masterSheetId
+        na => (na.clientName && na.clientName === client.clientName) || na.clientId === client.masterSheetId
       );
       
       if (data.proactiveAlerts) {

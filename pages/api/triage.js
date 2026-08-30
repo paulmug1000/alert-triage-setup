@@ -7568,6 +7568,7 @@ export default async function handler(req, res) {
               }
               newNoActionFromMemory.push({
                 clientId: clientMeta.masterSheetId,
+                clientName: row.clientName,
                 flagType: row.alertType,
                 flagName: FLAG_NAMES[row.alertType] || row.alertType,
                 flagDetail: row.alertSummary, // Pass the raw text so the UI can display it

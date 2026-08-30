@@ -7326,6 +7326,7 @@ export default async function handler(req, res) {
           return memRow.status === "cached" || memRow.status === "pending_automation";
         });
 
+        // SAFELY DEFINE filteredNoAction
         const filteredNoAction = (data.noActionAlerts || []).filter(alert => {
           if (!alert.fingerprintHash) return true;
           const memRow = findMemoryRow(memoryRows, alert.fingerprintHash);
@@ -7340,6 +7341,7 @@ export default async function handler(req, res) {
         // Rebuild alertCounts after filtering
         const alertCountsByClientAndFlag = {};
         const activeExpenseIdsByClient = {};
+        
         for (const alert of filteredAlerts) {
           const key = alert.clientName;
           let flagKey = alert.flagType || alert.alertType || alert.type;
@@ -7349,7 +7351,6 @@ export default async function handler(req, res) {
           if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
           if (flagKey === "crm") flagKey = alert.flagType || alert.alertType || "crmPipeAppDiscr";
 
-          // CRITICAL FIX: Actually apply the upgraded label to the alert object!
           alert.flagType = flagKey;
           alert.alertType = flagKey;
 
@@ -7357,32 +7358,31 @@ export default async function handler(req, res) {
           alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
           
           if (flagKey === "expenseDashboardDiscr") {
-               const txId = alert.summary?.transactionId || alert.summary?.appId;
-               if (txId) {
-                  if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
-                  activeExpenseIdsByClient[key].push(txId);
-               }
-            }
+             const txId = alert.summary?.transactionId || alert.summary?.appId;
+             if (txId) {
+                if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
+                activeExpenseIdsByClient[key].push(txId);
+             }
           }
+        }
 
-          // Tally counts for informational (noAction) alerts
-          for (const alert of (fresh.noActionAlerts || [])) {
-            const key = alert.clientName;
-            const flagKey = alert.flagType;
-            if (key && flagKey) {
-              if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
-              alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
-            }
+        // Tally counts for informational (noAction) alerts using the safely defined filteredNoAction
+        for (const alert of filteredNoAction) {
+          const key = alert.clientName;
+          const flagKey = alert.flagType;
+          if (key && flagKey) {
+            if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+            alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
           }
+        }
 
-          const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
+        const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => ({
           ...c,
           alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
           activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
         }));
 
         // Rebuild the global dictionary dynamically from the filtered rows
-        // so dismissed alerts are entirely stripped from the UI payload
         let aggregatedNoActionResults = {};
         for (const na of filteredNoAction) {
           if (na.analysisResult && na.analysisResult.results) {
@@ -7429,7 +7429,6 @@ export default async function handler(req, res) {
           computedMinutesAgo: Math.round(ageMs / 60000),
           noActionAnalysisResults: aggregatedNoActionResults,
         });
-
       } catch (err) {
         console.error("❌ Error retrieving precomputed data:", err);
         return res.status(500).json({ success: false, error: err.message });

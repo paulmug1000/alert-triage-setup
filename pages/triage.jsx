@@ -2944,30 +2944,33 @@ export default function TriageSystem({ onBack }) {
       "invoiceDashboardDiscr", "expenseDashboardDiscr",
       "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
     ]);
-    const COUNTED_ALERT_TYPES = [
-      "invoiceDashboardDiscr",
-      "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
-      "expenseDashboardDiscr", "expenseAdded", "expenseUnreconGaps",
-      "invoiceStaleUnsentChanges",
-    ];
     const EXPENSE_TYPES = new Set(["expenseDashboardDiscr"]);
+
     return clientsWithFlags.reduce((total, c) => {
       const assignedSet = assignedByClient[c.clientName] || new Set();
       const expenseIds = c.activeExpenseIds || [];
       const validAssigned = expenseIds.filter(id => assignedSet.has(id)).length;
       
-      // Count actionable alerts from alertCounts, subtracting assigned expenses per client
-      const actionable = COUNTED_ALERT_TYPES.reduce((sum, ft) => {
-        let count = c.alertCounts?.[ft] || 0;
-        if (EXPENSE_TYPES.has(ft)) {
-          count = Math.max(0, count - validAssigned);
+      let clientTotal = 0;
+
+      Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {
+        if (!isSet) return;
+        
+        let count = c.alertCounts?.[flagKey] || 0;
+
+        if (ACTIONABLE_FLAG_KEYS_SET.has(flagKey)) {
+          // Actionable alerts: use the exact count (minus suppressed expenses)
+          if (EXPENSE_TYPES.has(flagKey)) {
+            count = Math.max(0, count - validAssigned);
+          }
+          clientTotal += count;
+        } else {
+          // Informational alerts: sum the exact count if available, otherwise fallback to 1 (representing the flag itself)
+          clientTotal += (count > 0 ? count : 1);
         }
-        return sum + count;
-      }, 0);
-      // Count info flags (grey bullets) — flags that are TRUE but not in the actionable display set
-      const infoFlags = Object.entries(c.flags || {})
-        .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS_SET.has(key)).length;
-      return total + actionable + infoFlags;
+      });
+
+      return total + clientTotal;
     }, 0);
   }, [clientsWithFlags, assignedByClient]);
 
@@ -8693,7 +8696,7 @@ export default function TriageSystem({ onBack }) {
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
-          <p style={styles.subtitle}>{selectedClient.clientName} - {clientAlerts.length + clientNoActionAlerts.length + clientProactiveAlertsList.length} alert(s)</p>
+          <p style={styles.subtitle}>{selectedClient.clientName} - {Object.values(groupedAlerts).reduce((sum, arr) => sum + arr.length, 0) + clientNoActionAlerts.length + clientProactiveAlertsList.length} alert(s)</p>
         </div>
 
         <div style={styles.card}>
@@ -9826,7 +9829,7 @@ export default function TriageSystem({ onBack }) {
                 ⚠ {alert.type === "expense" ? (() => {
                     const expFlags = alert.data?.flags || [];
                     const isMissing = String(expFlags[0]||"").trim() === "1";
-                    if (isMissing) return "Missing cost — in accounting system, not in Confirmed tab";
+                    if (isMissing) return "Missing cost — in accounting system, not in Confirmed or Outgoings tab";
                     const expFlagNames = [null,"Duplicate App ID","Description mismatch","Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
                     const active = expFlags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
                     return active.length > 0 ? `Field mismatch: ${active.join(", ")}` : "Expense Discrepancy";
@@ -9972,7 +9975,9 @@ export default function TriageSystem({ onBack }) {
 
                 const subHeader = isMismatch
                   ? `Field mismatch: ${mismatchedFieldNames.join(", ")}`
-                  : `Missing job — in ${tabLabel} tab, not in CRM`;
+                  : isDashDiscr
+                    ? `Missing job — in CRM, not in ${tabLabel} tab`
+                    : `Missing job — in ${tabLabel} tab, not in CRM`;
 
                 return (
                   <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#f5f3ff", borderLeft: "4px solid #7c3aed", borderRadius: "4px" }}>

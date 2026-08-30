@@ -2496,6 +2496,60 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
+  const reloadFromCache = async () => {
+    try {
+      setIsLoading(true);
+      setError("");
+      setRefreshStatus("Loading from cache...");
+
+      const preResponse = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId }),
+      });
+      const preData = await preResponse.json();
+
+      if (preData.success && preData.available) {
+        setSessionId(preData.sessionId);
+        setTotalAlerts(preData.totalAlerts || 0);
+        setNoActionCount(preData.noActionCount || 0);
+        setProactiveAlerts(preData.proactiveAlerts || []);
+        const pCounts = {};
+        (preData.proactiveAlerts || []).forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
+        setProactiveCountsByClient(pCounts);
+        setProactiveLoadedAt(Date.now());
+        setClientsWithFlags(preData.clientsWithFlags || []);
+        setAcknowledgedNoAction(new Set());
+        setProcessedAlerts(new Set());
+
+        if (preData.noActionAnalysisResults && Object.keys(preData.noActionAnalysisResults).length > 0) {
+          const raw = preData.noActionAnalysisResults;
+          const flat = {};
+          Object.entries(raw).forEach(([keyOrClient, val]) => {
+            if (keyOrClient.includes("___")) {
+              flat[keyOrClient] = val;
+            } else {
+              Object.entries(val || {}).forEach(([flagType, results]) => {
+                flat[`${keyOrClient}___${flagType}`] = results;
+              });
+            }
+          });
+          setPrecomputedNoActionResults(flat);
+        }
+
+        setScreen("clientSelection");
+        setTriageComplete(true);
+      } else {
+        setError("Cache is empty or stale (>4 hours old). Please use '↻ Refresh' to run a full sweep.");
+      }
+    } catch (err) {
+      setError("Failed to load from cache: " + err.message);
+    } finally {
+      setIsLoading(false);
+      setRefreshStatus("");
+    }
+  };
+
   // Shared across every place a proactive alert's type needs a display
   // label (the merged client list, the merged detail screen) — previously
   // three separate inline copies of this same mapping existed across
@@ -8435,9 +8489,14 @@ export default function TriageSystem({ onBack }) {
             </div>
             <div style={styles.card}>
               <div style={styles.successBanner}>✓ No outstanding alerts or flags</div>
-              <button className="triage-btn" onClick={refreshTriage} disabled={isLoading} style={{ ...styles.buttonSecondary, marginTop: "16px", opacity: isLoading ? 0.5 : 1 }}>
-                {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
-              </button>
+              <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
+                <button className="triage-btn" onClick={reloadFromCache} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
+                  ⚡ Reload
+                </button>
+                <button className="triage-btn" onClick={refreshTriage} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
+                  {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
+                </button>
+              </div>
             </div>
           </div>
         </NavShell>
@@ -8615,9 +8674,18 @@ export default function TriageSystem({ onBack }) {
                 🔍 Debug
               </button>
               <button className="triage-btn"
+                onClick={reloadFromCache}
+                disabled={isLoading}
+                style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1 }}
+                title="Pull latest data from cache"
+              >
+                ⚡ Reload
+              </button>
+              <button className="triage-btn"
                 onClick={refreshTriage}
                 disabled={isLoading}
                 style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1 }}
+                title="Run full alert sweep"
               >
                 {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
               </button>

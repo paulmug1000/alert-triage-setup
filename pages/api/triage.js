@@ -6624,15 +6624,25 @@ export default async function handler(req, res) {
             alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
             
             if (flagKey === "expenseDashboardDiscr") {
-               const txId = alert.summary?.transactionId || alert.summary?.appId;
-               if (txId) {
-                  if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
-                  activeExpenseIdsByClient[key].push(txId);
-               }
-            }
+             const txId = alert.summary?.transactionId || alert.summary?.appId;
+             if (txId) {
+                if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
+                activeExpenseIdsByClient[key].push(txId);
+             }
           }
+        }
 
-          const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
+        // Tally counts for informational (noAction) alerts
+        for (const alert of filteredNoAction) {
+          const key = alert.clientName;
+          const flagKey = alert.flagType;
+          if (key && flagKey) {
+            if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+            alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+          }
+        }
+
+        const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => ({
             ...c, alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
             activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
           }));
@@ -7347,15 +7357,25 @@ export default async function handler(req, res) {
           alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
           
           if (flagKey === "expenseDashboardDiscr") {
-             const txId = alert.summary?.transactionId || alert.summary?.appId;
-             if (txId) {
-                if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
-                activeExpenseIdsByClient[key].push(txId);
-             }
+               const txId = alert.summary?.transactionId || alert.summary?.appId;
+               if (txId) {
+                  if (!activeExpenseIdsByClient[key]) activeExpenseIdsByClient[key] = [];
+                  activeExpenseIdsByClient[key].push(txId);
+               }
+            }
           }
-        }
 
-        const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => ({
+          // Tally counts for informational (noAction) alerts
+          for (const alert of (fresh.noActionAlerts || [])) {
+            const key = alert.clientName;
+            const flagKey = alert.flagType;
+            if (key && flagKey) {
+              if (!alertCountsByClientAndFlag[key]) alertCountsByClientAndFlag[key] = {};
+              alertCountsByClientAndFlag[key][flagKey] = (alertCountsByClientAndFlag[key][flagKey] || 0) + 1;
+            }
+          }
+
+          const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
           ...c,
           alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
           activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],

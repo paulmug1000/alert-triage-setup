@@ -8459,7 +8459,7 @@ export default function TriageSystem({ onBack }) {
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Alerts</h1>
-          <p style={styles.subtitle}>Choose a client to review their alerts ({totalAlerts} total)</p>
+          <p style={styles.subtitle}>Choose a client to review their alerts ({liveAlertCount + proactiveAlerts.length} total)</p>
         </div>
 
         <div style={styles.card}>
@@ -8537,7 +8537,11 @@ export default function TriageSystem({ onBack }) {
 
                 const infoLines = Object.entries(client.flags || {})
                   .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key))
-                  .map(([key]) => getFlagName(key));
+                  .map(([key]) => {
+                    const count = client.alertCounts?.[key] || 0;
+                    const label = getFlagName(key);
+                    return count > 0 ? `${label} (${count} alert${count !== 1 ? "s" : ""})` : label;
+                  });
 
                 // Actual type lines rather than just a count badge — matches
                 // actionableLines/infoLines' style, merging what used to be
@@ -8689,7 +8693,7 @@ export default function TriageSystem({ onBack }) {
         <div style={styles.container}>
         <div style={styles.header}>
           <h1 style={styles.title}>Select Alert</h1>
-          <p style={styles.subtitle}>{selectedClient.clientName} - {clientAlerts.length} alert(s)</p>
+          <p style={styles.subtitle}>{selectedClient.clientName} - {clientAlerts.length + clientNoActionAlerts.length + clientProactiveAlertsList.length} alert(s)</p>
         </div>
 
         <div style={styles.card}>

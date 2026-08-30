@@ -7040,6 +7040,8 @@ export default async function handler(req, res) {
             hash:        r.fingerprintHash,
             alertType:   r.alertType,
             status:      r.status,
+            category:    r.category || "MISSING",
+            hasOptions:  !!r.cachedOptionsJSON,
             summary:     r.alertSummary?.slice(0, 60),
             ignoreReason: r.ignoreReason || "",
           }));
@@ -7067,6 +7069,7 @@ export default async function handler(req, res) {
           const pre = JSON.parse(preRaw);
           const preAlerts = (pre.alerts || []).filter(a => !clientName || a.clientName === clientName);
           const preClients = (pre.clientsWithFlags || []).filter(c => !clientName || c.clientName === clientName);
+          const preNoAction = (pre.noActionAlerts || []).filter(na => !clientName || na.clientName === clientName || na.clientId === preClients[0]?.masterSheetId);
           precompSummary = {
             computedAt:    pre.computedAt,
             totalAlerts:   pre.totalAlerts,
@@ -7076,6 +7079,11 @@ export default async function handler(req, res) {
               subType:       a.subType,
               fingerprint:   a.fingerprintHash,
               rowNumber:     a.rowNumber,
+            })),
+            clientNoAction: preNoAction.map(na => ({
+              flagType:    na.flagType,
+              hash:        na.fingerprintHash,
+              hasAnalysis: !!na.analysisResult,
             })),
             clientFlags:   preClients.map(c => ({
               clientName: c.clientName,
@@ -7476,6 +7484,11 @@ export default async function handler(req, res) {
           for (const row of memoryRowsForMerge) {
             if (row.status !== "cached") continue;
 
+            // Auto-correct category for info types in case they were saved before the category column existed
+            if (Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, row.alertType)) {
+              row.category = "info";
+            }
+
             if (row.category === "discrepancy") {
               if (!row.cachedOptionsJSON) continue;
               if (oldPathFingerprints.has(row.fingerprintHash)) continue; 
@@ -7576,16 +7589,13 @@ export default async function handler(req, res) {
               newNoActionFromMemory.push({
                 clientId: clientMeta.masterSheetId,
                 clientName: row.clientName,
+                type: "info",
+                alertType: row.alertType,
+                id: row.fingerprintHash,
                 flagType: row.alertType,
                 flagName: FLAG_NAMES[row.alertType] || row.alertType,
                 flagDetail: row.alertSummary, // Pass the raw text so the UI can display it
                 fingerprintHash: row.fingerprintHash,
-                // Pre-computed at build_cached_alert_options time (26 Aug
-                // 2026, proposal 2) for the 6 rich informational types —
-                // the exact {success, flagType, results, overallOk} shape
-                // analyzeNoActionFlag has always returned on manual re-run,
-                // just already sitting here rather than requiring a live,
-                // on-demand call.
                 analysisResult,
               });
 
@@ -8189,7 +8199,10 @@ export default async function handler(req, res) {
         const memoryRows = await readAlertMemory(sheets, acIdBuild);
 
         const pending = memoryRows.filter(r =>
-          r.status === "cached" && r.category === "discrepancy" && !r.cachedOptionsJSON
+          r.status === "cached" && 
+          r.category === "discrepancy" && 
+          !Object.prototype.hasOwnProperty.call(AUTOLOG_TYPE_PATTERNS, r.alertType) && 
+          !r.cachedOptionsJSON
         );
         console.log(`build_cached_alert_options: ${pending.length} rows pending options`);
 
@@ -8346,7 +8359,7 @@ export default async function handler(req, res) {
         const RICH_INFO_TYPES = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
           "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
         const pendingRich = memoryRows.filter(r =>
-          r.status === "cached" && r.category === "info" && RICH_INFO_TYPES.includes(r.alertType) && !r.cachedOptionsJSON
+          r.status === "cached" && RICH_INFO_TYPES.includes(r.alertType) && !r.cachedOptionsJSON
         );
         let richAnalyzed = 0, richErrors = 0;
         if (pendingRich.length > 0 && !hasMore) {

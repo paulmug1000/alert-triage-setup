@@ -7634,6 +7634,30 @@ export default async function handler(req, res) {
           console.log(`  ⚠️ Could not merge AlertMemory-sourced alerts: ${mergeErr.message}`);
         }
 
+        // Aggregate individual row-level analysis results into the global dictionary the UI expects
+        let aggregatedNoActionResults = { ...(noActionAnalysisResults || {}) };
+        
+        // Clear out old aggregated results for any client+flag we are about to rebuild
+        const keysToRebuild = new Set();
+        for (const na of finalNoActionAlerts) {
+          if (na.analysisResult && na.analysisResult.results) {
+            keysToRebuild.add(`${na.clientName}___${na.flagType}`);
+          }
+        }
+        for (const key of keysToRebuild) {
+          aggregatedNoActionResults[key] = { success: true, flagType: key.split("___")[1], results: [], overallOk: true };
+        }
+
+        for (const na of finalNoActionAlerts) {
+          if (na.analysisResult && na.analysisResult.results) {
+            const key = `${na.clientName}___${na.flagType}`;
+            aggregatedNoActionResults[key].results.push(...na.analysisResult.results);
+            if (na.analysisResult.overallOk === false) {
+              aggregatedNoActionResults[key].overallOk = false;
+            }
+          }
+        }
+
         const precomputedData = {
           computedAt: computedAt || Date.now(),
           totalAlerts: finalAlerts.length,
@@ -7642,7 +7666,7 @@ export default async function handler(req, res) {
           noActionAlerts: finalNoActionAlerts,
           proactiveAlerts: finalProactiveAlerts,
           clientsWithFlags: finalClientsWithFlags,
-          noActionAnalysisResults: noActionAnalysisResults || {},
+          noActionAnalysisResults: aggregatedNoActionResults,
         };
 
         await redisClient.set(

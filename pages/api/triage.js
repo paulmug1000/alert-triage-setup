@@ -17319,23 +17319,28 @@ async function checkJobStructureErrors_(clientName, clientSheetId, sharedData) {
               const projectCode = String(row[2] || "").trim();
               const revenue = row[32], jobType = String(row[35] || "").toLowerCase(), startVal = row[37], endVal = row[38];
 
-              // TARGETED DEBUG TRAP
-              // Replace "the_job_name" with a unique part of the missing job's name (lowercase)
-              if (jobNameV.toLowerCase().includes("Retainer (Sep 26 onwards)")) {
-                console.log(`\n🔍 DEBUG JOB STRUCTURE: ${jobClient} | ${jobNameV}`);
-                console.log(`  - startVal: ${startVal} (typeof: ${typeof startVal}) -> hasVal: ${hasVal(startVal)}`);
-                console.log(`  - endVal:   ${endVal} (typeof: ${typeof endVal}) -> hasVal: ${hasVal(endVal)}`);
-                console.log(`  - revenue:  ${revenue} (typeof: ${typeof revenue}) -> hasVal: ${hasVal(revenue)}`);
-                console.log(`  - parsedStart: ${parseConfirmedDate_(startVal)}`);
-                console.log(`  - parsedEnd:   ${parseConfirmedDate_(endVal)}`);
-              }
-
               if (!jobClient || !jobNameV || !hasVal(revenue) || !hasVal(startVal) || !hasVal(endVal)) { r++; continue; }
 
               const isRetainer = jobType.includes("retainer");
               const jobRows = collectJobRows_(data, r);
               const hasChildren = jobRows.length > 1;
               const problems = [];
+
+              const parsedStart = parseConfirmedDate_(startVal);
+              const parsedEnd = parseConfirmedDate_(endVal);
+              
+              if (parsedStart && parsedEnd) {
+                if (parsedEnd.getTime() < parsedStart.getTime()) {
+                  console.log(`\n🚨 FOUND DATE ERROR: ${jobClient} | ${jobNameV}`);
+                  console.log(`  - startVal: ${startVal} -> parsed: ${parsedStart}`);
+                  console.log(`  - endVal:   ${endVal} -> parsed: ${parsedEnd}`);
+                  problems.push(`Row ${r + 1} (parent): end date (${fmtDate(parsedEnd)}) is before start date (${fmtDate(parsedStart)})`);
+                }
+              } else {
+                console.log(`\n⚠️ FAILED TO PARSE DATES: ${jobClient} | ${jobNameV}`);
+                console.log(`  - startVal: "${startVal}" -> parsed: ${parsedStart}`);
+                console.log(`  - endVal:   "${endVal}" -> parsed: ${parsedEnd}`);
+              }
 
               const parsedStart = parseConfirmedDate_(startVal);
               const parsedEnd = parseConfirmedDate_(endVal);

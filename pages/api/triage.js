@@ -9863,14 +9863,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const rowRef = jobRow ? ` (${tabName} row ${jobRow})` : "";
             const jobLabel = `${shtClient || crmClient} — ${shtJob || crmJob}${crmCode ? ` (${crmCode})` : ""}`;
 
-            // Build one option per mismatched field
+            // Consolidated mismatch handler
             const mismatchFields = alert.mismatchFields || [];
             let options = [];
 
             // Field config: [flagName, crmValue, sheetValue, tabCol, isWritable, note]
             const FIELD_CONFIG = [
-              { name: "Client name",    crm: crmClient,   sheet: shtClient,   col: "A",  writable: false },
-              { name: "Job name",       crm: crmJob,      sheet: shtJob,      col: "B",  writable: false },
+              { name: "Client name",    crm: crmClient,   sheet: shtClient,   col: "A",  writable: true  },
+              { name: "Job name",       crm: crmJob,      sheet: shtJob,      col: "B",  writable: true  },
               { name: "Revenue",        crm: crmRevenue,  sheet: shtRevenue,  col: "AG", writable: true  },
               { name: "Direct costs",   crm: crmDirCosts, sheet: shtDirCosts, col: "AH", writable: true  },
               { name: "Start date",     crm: crmStart,    sheet: shtStart,    col: "AL", writable: true  },
@@ -9878,14 +9878,48 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               { name: "% Likelihood",   crm: crmLikely,   sheet: shtLikely,   col: "AN", writable: tabName === "Pipeline" },
             ];
 
-            for (let fi = 0; fi < FIELD_CONFIG.length; fi++) {
-              const fc = FIELD_CONFIG[fi];
-              if (!mismatchFields.includes(fc.name)) continue;
+            if (jobRow) {
+              // Collect child rows to safely batch structural updates (Client/Job names)
+              const jobRowsToUpdate = [jobRow];
+              for (let i = jobRow; i < tabRows.length; i++) { // jobRow is 1-indexed, so tabRows[jobRow] targets the next row down
+                const r = tabRows[i] || [];
+                const rClient = String(r[0] || "").trim().toLowerCase();
+                const rJob    = String(r[1] || "").trim().toLowerCase();
+                // If it shares the identity but has no revenue/dates of its own, it's a child row
+                if (rClient === clientToFind && rJob === jobToFind && !String(r[32] || "").trim() && !String(r[37] || "").trim()) {
+                  jobRowsToUpdate.push(i + 1);
+                } else {
+                  break;
+                }
+              }
 
-              if (fc.writable && jobRow) {
+              const actions = [];
+              const explanations = [];
+              const unWritable = [];
+
+              for (const fc of FIELD_CONFIG) {
+                if (!mismatchFields.includes(fc.name)) continue;
+                if (fc.writable) {
+                  explanations.push(`${fc.name} (${tabName}: "${fc.sheet}" → CRM: "${fc.crm}")`);
+                  // Structural fields map to every row in the block; scalar fields map only to the parent
+                  if (fc.name === "Client name" || fc.name === "Job name") {
+                    jobRowsToUpdate.forEach(r => actions.push(`Write "${fc.crm}" to ${fc.col}${r}`));
+                  } else {
+                    actions.push(`Write "${fc.crm}" to ${fc.col}${jobRow}`);
+                  }
+                } else {
+                  unWritable.push(fc.name);
+                }
+              }
+
+              if (actions.length > 0) {
+                const titleStr = unWritable.length > 0 
+                  ? `UPDATE all writable fields (${explanations.length}) to match CRM, review others manually`
+                  : `UPDATE all ${explanations.length} mismatched fields to match CRM`;
+                  
                 options.push({
                   optionId: options.length + 1,
-                  title: `UPDATE ${shtClient || crmClient} — ${shtJob || crmJob} — ${fc.name} to match CRM: "${fc.crm}"`,
+                  title: titleStr,
                   matchType: "existing_job",
                   jobRow,
                   jobName: shtJob || crmJob,
@@ -9894,48 +9928,51 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                   },
                   matchAnalysis: {
                     matchConfidence: "High",
-                    reasonForChoice: `${fc.name} differs between CRM and ${tabName} tab. CRM value: "${fc.crm}". ${tabName} value: "${fc.sheet}". Updating ${tabName} to match CRM.`,
-                    discrepancies: `${fc.name} mismatch: CRM="${fc.crm}" vs ${tabName}="${fc.sheet}"`,
+                    reasonForChoice: `Mismatched fields: ${explanations.join("; ")}. Updating ${tabName} to match CRM data perfectly.`,
+                    discrepancies: `Mismatch fields: ${mismatchFields.join(", ")}`,
                   },
                   recommendedActions: [
-                    `Update ${fc.name} in ${tabName} tab${rowRef} to match CRM value "${fc.crm}"`,
-                    `Write "${fc.crm}" to ${fc.col}${jobRow} (${fc.name})`,
+                    `Update all writable mismatched fields in ${tabName} tab to match CRM values`,
+                    ...actions
                   ],
                 });
-              } else if (!fc.writable) {
+              }
+
+              // Catch un-writable fields (e.g., Likelihood mismatch on the Confirmed tab)
+              if (unWritable.length > 0 && actions.length === 0) {
                 options.push({
                   optionId: options.length + 1,
-                  title: `REVIEW ${shtClient || crmClient} — ${shtJob || crmJob} — ${fc.name} mismatch — manual update required`,
+                  title: `REVIEW ${shtClient || crmClient} — ${shtJob || crmJob} — manual update required`,
                   matchType: "info",
                   jobName: shtJob || crmJob,
                   matchAnalysis: {
                     matchConfidence: "N/A",
-                    reasonForChoice: `${fc.name} differs between CRM and ${tabName} tab but cannot be updated automatically. CRM: "${fc.crm}". ${tabName}: "${fc.sheet}". Review both systems and correct the one that is wrong.`,
-                    discrepancies: `${fc.name} mismatch: CRM="${fc.crm}" vs ${tabName}="${fc.sheet}"`,
+                    reasonForChoice: `Mismatched fields (${unWritable.join(", ")}) cannot be updated automatically. Review both systems manually.`,
+                    discrepancies: `Mismatched fields: ${unWritable.join(", ")}`,
                   },
                   recommendedActions: [
-                    `Review ${fc.name}: CRM has "${fc.crm}", ${tabName} tab has "${fc.sheet}"`,
-                    `Correct the wrong value in whichever system is out of date`,
+                    `Review and correct ${unWritable.join(", ")} manually`,
                   ],
-                  explanation: `${fc.name} cannot be updated automatically — review both systems and correct manually.`,
-                });
-              } else if (fc.writable && !jobRow) {
-                options.push({
-                  optionId: options.length + 1,
-                  title: `REVIEW ${shtClient || crmClient} — ${shtJob || crmJob} — ${fc.name} mismatch — job row not found in ${tabName}`,
-                  matchType: "info",
-                  jobName: shtJob || crmJob,
-                  matchAnalysis: {
-                    matchConfidence: "Low",
-                    reasonForChoice: `${fc.name} mismatch detected but could not locate the job row in ${tabName} tab by project code or client+job name. Manual review required.`,
-                    discrepancies: `${fc.name}: CRM="${fc.crm}" vs ${tabName}="${fc.sheet}"`,
-                  },
-                  recommendedActions: [
-                    `Locate "${jobLabel}" in ${tabName} tab and update ${fc.name} from "${fc.sheet}" to "${fc.crm}"`,
-                  ],
-                  explanation: `Job row could not be located automatically — update manually.`,
+                  explanation: `${unWritable.join(", ")} cannot be updated automatically.`,
                 });
               }
+            } else {
+              // Fallback if the job row cannot be found
+              options.push({
+                optionId: options.length + 1,
+                title: `REVIEW ${shtClient || crmClient} — ${shtJob || crmJob} — job row not found in ${tabName}`,
+                matchType: "info",
+                jobName: shtJob || crmJob,
+                matchAnalysis: {
+                  matchConfidence: "Low",
+                  reasonForChoice: `Mismatch detected but could not locate the job row in ${tabName} tab by project code or client+job name.`,
+                  discrepancies: `Mismatched fields: ${mismatchFields.join(", ")}`,
+                },
+                recommendedActions: [
+                  `Locate job manually in ${tabName} tab and update mismatched fields`,
+                ],
+                explanation: `Job row could not be located automatically — update manually.`,
+              });
             }
 
             // Always add an ignore option at the end

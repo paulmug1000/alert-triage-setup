@@ -7601,7 +7601,7 @@ export default async function handler(req, res) {
                   const metadata = {};
                   for (const f of metaFields) { if (alertObj[f] !== undefined) metadata[f] = alertObj[f]; }
                   newProactiveFromMemory.push({
-                    ...alertObj, rowIndex: row.rowIndex, clientName: alertObj.clientName || row.clientName, alertType: alertObj.alertType || row.alertType, metadata
+                    ...alertObj, rowIndex: row.rowIndex, clientName: alertObj.clientName || row.clientName, alertType: alertObj.alertType || row.alertType, metadata, firstSeen: row.firstSeen, lastSeen: row.lastSeen
                   });
                   if (!finalClientsWithFlags.some(c => c.clientName === row.clientName) && !newClientMeta.has(row.clientName)) {
                     newClientMeta.set(row.clientName, {
@@ -13119,10 +13119,39 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               }
 
               // ── Single-row retainer check ────────────────────────────────────
+              let isSingleMonth = false;
+              if (startDate && endDate) {
+                const diffTime = endDate.getTime() - startDate.getTime();
+                const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+                const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
+                isSingleMonth = (monthsDiff === 1);
+              }
+
               const parentInvAmt = parseFloat(String(parentRow[41] || "").replace(/[£$€,\s]/g, "")) || 0;
               const parentInvRef = String(parentRow[42] || "").trim();
+              
               if (childRows.length === 0 && (parentInvAmt > 0 || parentInvRef)) {
-                checks.push({ ok: false, message: `✗ Parent row has an invoice (amount/ref) but no child rows exist — single-row retainers are not allowed` });
+                if (isSingleMonth) {
+                  const hasInvoice = parentInvAmt > 0;
+                  const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+                  checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (1 month total, single invoice)` });
+                  checks.push({ ok: true, message: `Single-row retainer (1-month exception) — invoice sits on parent row, no child rows expected` });
+                  if (hasInvoice) {
+                    checks.push({ ok: true, message: `✓ Parent row slot 1 has invoice amount £${parentInvAmt.toFixed(2)}${parentInvRef ? ` (ref: ${parentInvRef})` : ""}` });
+                  } else {
+                    checks.push({ ok: false, message: `✗ Parent row slot 1 has no invoice amount — invoice not yet created` });
+                  }
+                  retainerChecks.push({
+                    jobName, clientName: clientN, projectCode,
+                    parentSheetRow: confirmedSheetRow,
+                    tab: targetTab,
+                    status: hasInvoice ? "ok" : "issue",
+                    periodLabel: "single invoice", checks,
+                  });
+                  continue;
+                } else {
+                  checks.push({ ok: false, message: `✗ Parent row has an invoice (amount/ref) but no child rows exist — single-row retainers are not allowed for multi-month jobs` });
+                }
               }
 
               // Count child rows whose scheduled invoice date (Inv1 sent-date slot) falls
@@ -13362,12 +13391,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 }
               }
 
-              // ── Single-row retainer check ────────────────────────────────────
               const parentInvAmt2 = parseFloat(String(parentRow[41] || "").replace(/[£$€,\s]/g, "")) || 0;
-              const parentInvRef2 = String(parentRow[42] || "").trim();
-              if (childRows.length === 0 && (parentInvAmt2 > 0 || parentInvRef2)) {
-                checks.push({ ok: false, message: `✗ Parent row has an invoice (amount/ref) but no child rows exist — single-row retainers are not allowed` });
-              }
 
               // Rolling 18-month runway: count rows with scheduled date ≤ end of current month
               const parseConfDate = (val) => {
@@ -14566,7 +14590,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             try { alert = JSON.parse(r.dataSnapshot || "{}"); } catch (e) { alert = {}; }
             const metadata = {};
             for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
-            return { ...alert, rowIndex: r.rowIndex, clientName: alert.clientName || r.clientName, alertType: alert.alertType || r.alertType, metadata };
+            return { ...alert, rowIndex: r.rowIndex, clientName: alert.clientName || r.clientName, alertType: alert.alertType || r.alertType, metadata, firstSeen: r.firstSeen, lastSeen: r.lastSeen };
           });
         // Group by clientName for count display
         const countsByClient = {};
@@ -17288,12 +17312,19 @@ async function checkJobStructureErrors_(clientName, clientSheetId, sharedData) {
               const parsedStart = parseConfirmedDate_(startVal);
               const parsedEnd = parseConfirmedDate_(endVal);
               
+              let isSingleMonth = false;
+
               if (parsedStart && parsedEnd) {
                 if (parsedEnd.getTime() < parsedStart.getTime()) {
                   console.log(`\n🚨 FOUND DATE ERROR: ${jobClient} | ${jobNameV}`);
                   console.log(`  - startVal: ${startVal} -> parsed: ${parsedStart}`);
                   console.log(`  - endVal:   ${endVal} -> parsed: ${parsedEnd}`);
                   problems.push(`Row ${r + 1} (parent): end date (${fmtDate(parsedEnd)}) is before start date (${fmtDate(parsedStart)})`);
+                } else {
+                  const diffTime = parsedEnd.getTime() - parsedStart.getTime();
+                  const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+                  const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
+                  isSingleMonth = (monthsDiff === 1);
                 }
               } else {
                 console.log(`\n⚠️ FAILED TO PARSE DATES: ${jobClient} | ${jobNameV}`);
@@ -17301,7 +17332,7 @@ async function checkJobStructureErrors_(clientName, clientSheetId, sharedData) {
                 console.log(`  - endVal:   "${endVal}" -> parsed: ${parsedEnd}`);
               }
 
-              if (isRetainer && !hasChildren) {
+              if (isRetainer && !hasChildren && !isSingleMonth) {
                 problems.push(`Row ${r + 1} (parent): retainer job has no child rows (single-row retainers are not allowed)`);
               }
 

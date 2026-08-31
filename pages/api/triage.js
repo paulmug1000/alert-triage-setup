@@ -17363,8 +17363,12 @@ async function checkJobStructureErrors_(clientName, clientSheetId, sharedData) {
       }
 
       if (problems.length > 0) {
+        // Encode the exact combination of problems so the key changes if the errors change
+        const problemFootprint = Buffer.from(problems.join("; ")).toString("base64");
+        
         alerts.push({
-          alertType: "job_structure_error", alertKey: `job_structure_error|${clientName}|${jobClient}|${jobNameV}${projectCode ? `|${projectCode}` : ""}`,
+          alertType: "job_structure_error", 
+          alertKey: `job_structure_error|${clientName}|${jobClient}|${jobNameV}${projectCode ? `|${projectCode}` : ""}|${problemFootprint}`,
           heading: "Job structure doesn't match expected invoice/expense layout",
           detail: `${jobClient} | ${jobNameV}${projectCode ? ` [${projectCode}]` : ""} (${isRetainer ? "Retainer" : "Project"}): ${problems.join("; ")}`,
           jobName: jobNameV, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,

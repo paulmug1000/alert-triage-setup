@@ -17322,6 +17322,16 @@ async function checkJobStructureErrors_(clientName, clientSheetId, sharedData) {
       const hasChildren = jobRows.length > 1;
       const problems = [];
 
+      const parsedStart = parseConfirmedDate_(startVal);
+      const parsedEnd = parseConfirmedDate_(endVal);
+      if (parsedStart && parsedEnd && parsedEnd < parsedStart) {
+        problems.push(`Row ${r + 1} (parent): end date (${String(endVal).trim()}) is before start date (${String(startVal).trim()})`);
+      }
+
+      if (isRetainer && !hasChildren) {
+        problems.push(`Row ${r + 1} (parent): retainer job has no child rows (single-row retainers are not allowed)`);
+      }
+
       for (let jr = 0; jr < jobRows.length; jr++) {
         const jRow = jobRows[jr].row, jSheetRow = jobRows[jr].sheetRow;
         const rowLabel = `Row ${jSheetRow} (${jobRows[jr].isParent ? "parent" : "child"})`;

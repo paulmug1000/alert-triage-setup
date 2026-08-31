@@ -1253,6 +1253,14 @@ export default function TriageSystem({ onBack }) {
   const [proactiveBulkTaskNote, setProactiveBulkTaskNote] = useState("");
   const [proactiveBulkTaskSnoozeDate, setProactiveBulkTaskSnoozeDate] = useState("");
   const [proactiveBulkTaskSnoozeTime, setProactiveBulkTaskSnoozeTime] = useState("07:00");
+
+  const [infoBulkMode, setInfoBulkMode] = useState(false);
+  const [infoBulkSelected, setInfoBulkSelected] = useState(new Set()); // Set of fingerprintHash or flagType
+  const [infoBulkSubmitting, setInfoBulkSubmitting] = useState(false);
+  const [showInfoBulkTaskModal, setShowInfoBulkTaskModal] = useState(false);
+  const [infoBulkTaskNote, setInfoBulkTaskNote] = useState("");
+  const [infoBulkTaskSnoozeDate, setInfoBulkTaskSnoozeDate] = useState("");
+  const [infoBulkTaskSnoozeTime, setInfoBulkTaskSnoozeTime] = useState("07:00");
   const [taskSnoozeDate, setTaskSnoozeDate] = useState(""); // ISO date string for snooze
   const [taskSnoozeTime, setTaskSnoozeTime] = useState("07:00");
   const [taskSnoozeSubmitting, setTaskSnoozeSubmitting] = useState(false);
@@ -3199,7 +3207,171 @@ export default function TriageSystem({ onBack }) {
     } catch (err) {
       setAcceptError(`Bulk task error: ${err.message}`);
     } finally {
-      setBulkSubmitting(false);
+      setProactiveBulkSubmitting(false);
+    }
+  };
+
+  const bulkResolveInfo = async () => {
+    const alerts = clientNoActionAlerts.filter(a => infoBulkSelected.has(a.fingerprintHash || a.flagType));
+    if (!alerts.length) return;
+    try {
+      setInfoBulkSubmitting(true);
+      const newResolved = new Set(resolvedNoActionFlags);
+      alerts.forEach(a => newResolved.add(a.fingerprintHash || a.flagType));
+      setResolvedNoActionFlags(newResolved);
+
+      const typesToClear = new Set();
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== selectedClient?.clientName) return c;
+        const updatedCounts = { ...c.alertCounts };
+        const updatedFlags = { ...c.flags };
+        
+        alerts.forEach(na => {
+          if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
+          const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || n.flagType));
+          if (remainingOfType.length === 0) {
+            updatedFlags[na.flagType] = false;
+            typesToClear.add(na.flagType);
+          }
+        });
+        return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+      }));
+
+      if (sessionId && selectedClient) {
+        await Promise.all(alerts.map(na => 
+          fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash, automationCommanderSheetId }),
+          }).catch(() => {})
+        ));
+        
+        if (typesToClear.size > 0) {
+          fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: Array.from(typesToClear) }),
+          }).catch(() => {});
+        }
+      }
+
+      const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || n.flagType));
+      const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+      if (allResolved && proactiveDone && clientAlerts.length === 0) {
+        handlePostClear([], newResolved);
+      }
+
+      setInfoBulkSelected(new Set());
+      setInfoBulkMode(false);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setInfoBulkSubmitting(false);
+    }
+  };
+
+  const infoBulkCreateTasks = async () => {
+    const alerts = clientNoActionAlerts.filter(a => infoBulkSelected.has(a.fingerprintHash || a.flagType));
+    if (!alerts.length) return;
+    try {
+      setInfoBulkSubmitting(true);
+      setAcceptError("");
+      const snoozedUntil = infoBulkTaskSnoozeDate
+        ? new Date(`${infoBulkTaskSnoozeDate}T${infoBulkTaskSnoozeTime}:00`).toISOString()
+        : null;
+      
+      let successCount = 0;
+      const newResolved = new Set(resolvedNoActionFlags);
+
+      for (const na of alerts) {
+        const alertPayload = { ...na, heading: na.flagName, detail: na.flagDetail, summary: { summary: na.flagDetail } };
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "create_task",
+            alert: alertPayload,
+            taskNote: infoBulkTaskNote,
+            automationCommanderSheetId,
+            isProactive: false,
+          }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          successCount++;
+          newResolved.add(na.fingerprintHash || na.flagType);
+          
+          if (sessionId && selectedClient) {
+            await fetch("/api/triage", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "resolve_noaction_flag", sessionId, clientName: selectedClient.clientName, flagType: na.flagType, fingerprintHash: na.fingerprintHash, automationCommanderSheetId }),
+            }).catch(() => {});
+          }
+
+          if (infoBulkTaskSnoozeDate && data.fingerprintHash) {
+            await fetch("/api/triage", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "snooze_task",
+                fingerprintHash: data.fingerprintHash,
+                snoozedUntil,
+                automationCommanderSheetId,
+              }),
+            }).catch(() => {});
+          }
+        }
+      }
+
+      if (successCount === 0) {
+        setAcceptError("Failed to create tasks for selected alerts");
+        return;
+      }
+
+      setResolvedNoActionFlags(newResolved);
+      const typesToClear = new Set();
+
+      setClientsWithFlags(prev => prev.map(c => {
+        if (c.clientName !== selectedClient?.clientName) return c;
+        const updatedCounts = { ...c.alertCounts };
+        const updatedFlags = { ...c.flags };
+        
+        alerts.forEach(na => {
+          if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
+          const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || n.flagType));
+          if (remainingOfType.length === 0) {
+            updatedFlags[na.flagType] = false;
+            typesToClear.add(na.flagType);
+          }
+        });
+        return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+      }));
+
+      if (sessionId && selectedClient && typesToClear.size > 0) {
+        fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: Array.from(typesToClear) }),
+        }).catch(() => {});
+      }
+
+      if (!infoBulkTaskSnoozeDate) setNavTaskCount(prev => prev + successCount);
+      else setSnoozedTaskCount(prev => prev + successCount);
+
+      const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || n.flagType));
+      const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+      if (allResolved && proactiveDone && clientAlerts.length === 0) {
+        handlePostClear([], newResolved);
+      }
+
+      setInfoBulkSelected(new Set());
+      setInfoBulkMode(false);
+      setShowInfoBulkTaskModal(false);
+      setInfoBulkTaskNote("");
+      setInfoBulkTaskSnoozeDate("");
+      setInfoBulkTaskSnoozeTime("07:00");
+
+    } catch (err) {
+      setAcceptError(`Bulk task error: ${err.message}`);
+    } finally {
+      setInfoBulkSubmitting(false);
     }
   };
 
@@ -9142,8 +9314,29 @@ export default function TriageSystem({ onBack }) {
                     ({resolvedNoActionFlags.size}/{clientNoActionAlerts.length} resolved)
                   </span>
                 </h2>
+                {clientNoActionAlerts.length > 1 && (
+                  <button className="triage-btn" onClick={() => { setInfoBulkMode(m => !m); setInfoBulkSelected(new Set()); }}
+                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px",
+                      ...(infoBulkMode ? { background: "#ede9fe", borderColor: "#7c3aed", color: "#5b21b6" } : {}) }}>
+                    {infoBulkMode ? "✕ Cancel bulk" : "☑ Bulk actions"}
+                  </button>
+                )}
               </div>
               
+              {infoBulkMode && clientNoActionAlerts.length > 0 && (() => {
+                const allKeys = clientNoActionAlerts.map(a => a.fingerprintHash || a.flagType);
+                const allSelected = allKeys.every(k => infoBulkSelected.has(k));
+                return (
+                  <div style={{ marginBottom: "16px" }}>
+                    <button className="triage-btn" onClick={() => {
+                      setInfoBulkSelected(allSelected ? new Set() : new Set(allKeys));
+                    }} style={{ ...styles.buttonSecondary, fontSize: "11px", padding: "4px 10px" }}>
+                      {allSelected ? "Deselect all" : "Select all"}
+                    </button>
+                  </div>
+                );
+              })()}
+
               <div>
                 {Object.keys(groupedInfoAlerts).map(type => {
                   const groupAlerts = groupedInfoAlerts[type];
@@ -9207,6 +9400,18 @@ export default function TriageSystem({ onBack }) {
 
                             return (
                               <div key={alertId} style={{ border: `1px solid ${borderColor}`, borderRadius: "6px", background: bgColor, padding: "12px" }}>
+                                {infoBulkMode && (
+                                  <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", cursor: "pointer", fontSize: "12px", fontWeight: "600", color: "#5b21b6" }}>
+                                    <input type="checkbox" checked={infoBulkSelected.has(alertId)} onChange={() => {
+                                      setInfoBulkSelected(prev => {
+                                        const next = new Set(prev);
+                                        if (next.has(alertId)) next.delete(alertId); else next.add(alertId);
+                                        return next;
+                                      });
+                                    }} style={{ accentColor: "#7c3aed", cursor: "pointer" }} />
+                                    Select for bulk action
+                                  </label>
+                                )}
                                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
                                   <div style={{ flexShrink: 1, minWidth: 0 }}>
                                     <div style={{ fontSize: "13px", fontWeight: "600", color: "#444" }}>
@@ -9323,6 +9528,15 @@ export default function TriageSystem({ onBack }) {
                               display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: "4px",
                               border: `1px solid ${isResolved ? "#c8e6c9" : "#e0e0e0"}`, background: isResolved ? "#f1f8f2" : "#fff", gap: "12px",
                             }}>
+                              {infoBulkMode && (
+                                <input type="checkbox" checked={infoBulkSelected.has(alertId)} onChange={() => {
+                                  setInfoBulkSelected(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(alertId)) next.delete(alertId); else next.add(alertId);
+                                    return next;
+                                  });
+                                }} style={{ accentColor: "#7c3aed", cursor: "pointer", flexShrink: 0 }} />
+                              )}
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 <div style={{ fontSize: "13px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#555", textDecoration: isResolved ? "line-through" : "none" }}>
                                   {na.flagName || getFlagName(na.flagType)}
@@ -9350,6 +9564,75 @@ export default function TriageSystem({ onBack }) {
                     </div>
                   );
                 })}
+              </div>
+
+              {/* Sticky bulk action bar for Info */}
+              {infoBulkMode && infoBulkSelected.size > 0 && (
+                <div style={{ position: "sticky", bottom: 0, background: "#fff", borderTop: "2px solid #7c3aed",
+                  padding: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
+                  boxShadow: "0 -2px 8px rgba(0,0,0,0.08)", zIndex: 10, marginTop: "12px" }}>
+                  <span style={{ fontSize: "13px", color: "#5b21b6", fontWeight: "600", flex: 1 }}>
+                    {infoBulkSelected.size} alert{infoBulkSelected.size !== 1 ? "s" : ""} selected
+                  </span>
+                  <button className="triage-btn" onClick={bulkResolveInfo} disabled={infoBulkSubmitting}
+                    style={{ background: "#f5f3ff", color: "#7c3aed", border: "1px solid #c4b5fd", borderRadius: "6px",
+                      padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
+                      opacity: infoBulkSubmitting ? 0.5 : 1 }}>
+                    {infoBulkSubmitting ? <><Spinner />Resolving...</> : `✓ Mark resolved (${infoBulkSelected.size})`}
+                  </button>
+                  <button className="triage-btn" onClick={() => setShowInfoBulkTaskModal(true)} disabled={infoBulkSubmitting}
+                    style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
+                      padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
+                      opacity: infoBulkSubmitting ? 0.5 : 1 }}>
+                    📋 Create tasks
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Info bulk create tasks modal */}
+          {showInfoBulkTaskModal && (
+            <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowInfoBulkTaskModal(false); }}>
+              <div style={styles.modalCard}>
+                <h3 style={styles.modalTitle}>Create {infoBulkSelected.size} Task{infoBulkSelected.size !== 1 ? "s" : ""}</h3>
+                <p style={styles.modalSubtitle}>These informational alerts will be added to your task list for follow-up.</p>
+                <textarea value={infoBulkTaskNote} onChange={e => setInfoBulkTaskNote(e.target.value)}
+                  placeholder="Shared note for all tasks (optional)..." style={styles.modalTextarea} autoFocus />
+                <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", marginBottom: "8px" }}>Snooze until (optional)</div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                    <input type="date" value={infoBulkTaskSnoozeDate}
+                      min={new Date().toISOString().split("T")[0]}
+                      onChange={e => setInfoBulkTaskSnoozeDate(e.target.value)}
+                      style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px" }} />
+                    {infoBulkTaskSnoozeDate && (
+                      <>
+                        <input type="time" value={infoBulkTaskSnoozeTime}
+                          onChange={e => setInfoBulkTaskSnoozeTime(e.target.value)}
+                          style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", width: "100px" }} />
+                        <button className="triage-btn" onClick={() => { setInfoBulkTaskSnoozeDate(""); setInfoBulkTaskSnoozeTime("07:00"); }}
+                          style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>✕ Clear</button>
+                      </>
+                    )}
+                  </div>
+                  {infoBulkTaskSnoozeDate && (
+                    <div style={{ fontSize: "12px", color: "#d97706", marginTop: "6px" }}>
+                      Tasks will be snoozed until {new Date(`${infoBulkTaskSnoozeDate}T${infoBulkTaskSnoozeTime}:00`).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}.
+                    </div>
+                  )}
+                </div>
+                <div style={styles.modalButtons}>
+                  <button className="triage-btn" onClick={() => setShowInfoBulkTaskModal(false)} style={styles.buttonSecondary}>Cancel</button>
+                  <button className="triage-btn" onClick={infoBulkCreateTasks} disabled={infoBulkSubmitting}
+                    style={{ background: infoBulkTaskSnoozeDate ? "#d97706" : "#7c3aed", color: "white", border: "none",
+                      borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px",
+                      cursor: "pointer", opacity: infoBulkSubmitting ? 0.5 : 1 }}>
+                    {infoBulkSubmitting ? <><Spinner />Creating...</> : infoBulkTaskSnoozeDate
+                      ? `📋 Create & Snooze ${infoBulkSelected.size} task${infoBulkSelected.size !== 1 ? "s" : ""}`
+                      : `📋 Create ${infoBulkSelected.size} task${infoBulkSelected.size !== 1 ? "s" : ""}`}
+                  </button>
+                </div>
               </div>
             </div>
           )}

@@ -17329,7 +17329,7 @@ async function checkJobStructureErrors_(clientName, clientSheetId, sharedData) {
       }
 
       if (isRetainer && !hasChildren) {
-        problems.push(`Row ${r + 1} (parent): retainer job has no child rows (single-row retainers are not allowed)`);
+        problems.push(`Row ${r + 1} (parent): retainer job has no child rows`);
       }
 
       for (let jr = 0; jr < jobRows.length; jr++) {

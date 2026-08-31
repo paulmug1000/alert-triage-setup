@@ -3420,28 +3420,46 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
           return slice;
         };
         alerts.push({
-          type: "crm",
-          alertType,
-          subType,
-          mismatchFields,
-          mode,
-          sheetName: "CRMComp",
-          rowNumber: 7 + rowIdx,
-          data: {
-            crmData:   padSlice(row, crmDataCols[0], crmDataCols[1]),
-            sheetData: padSlice(row, sheetDataCols[0], sheetDataCols[1]),
-            flags:     filteredFlags,
-          },
-        });
-      }
-    }
+                  type: "crm",
+                  alertType,
+                  subType,
+                  mismatchFields,
+                  mode,
+                  sheetName: "CRMComp",
+                  rowNumber: 7 + rowIdx,
+                  data: {
+                    crmData:   padSlice(row, crmDataCols[0], crmDataCols[1]),
+                    sheetData: padSlice(row, sheetDataCols[0], sheetDataCols[1]),
+                    flags:     filteredFlags,
+                  },
+                });
+              }
+            }
 
-    console.log(`  ✓ CRMComp (${mode}): ${alerts.length} alerts`);
-    return alerts;
-  } catch (error) {
-    console.error(`❌ Error reading CRMComp alerts:`, error);
-    throw error;
-  }
+            // Suppress redundant App field mismatches if the Dash equivalent is present
+            const dashAlerts = alerts.filter(a => a.alertType.endsWith("DashDiscr"));
+            const dashMismatchJobNames = new Set(
+              dashAlerts.filter(a => a.subType === "field_mismatch").map(a => 
+                String(a.data?.crmData?.[1] || a.data?.sheetData?.[2] || "").trim().toLowerCase()
+              )
+            );
+
+            const filteredAlerts = alerts.filter(a => {
+              if (a.alertType.endsWith("AppDiscr") && a.subType === "field_mismatch") {
+                const jobName = String(a.data?.sheetData?.[1] || a.data?.crmData?.[2] || "").trim().toLowerCase();
+                if (dashMismatchJobNames.has(jobName)) {
+                  return false; // Suppress duplicate
+                }
+              }
+              return true;
+            });
+
+            console.log(`  ✓ CRMComp (${mode}): ${filteredAlerts.length} alerts (suppressed ${alerts.length - filteredAlerts.length} duplicate App field mismatches)`);
+            return filteredAlerts;
+          } catch (error) {
+            console.error(`❌ Error reading CRMComp alerts:`, error);
+            throw error;
+          }
 }
 
 // ============================================================================

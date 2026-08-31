@@ -10,7 +10,7 @@ export default function Index() {
         <link rel="apple-touch-icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        <meta name="apple-mobile-web-app-title" content="Pulse Triage" />
+        <meta name="apple-mobile-web-app-title" content="Pulse Management System" />
       </Head>
       <TriageSystem onBack={() => {}} />
     </>

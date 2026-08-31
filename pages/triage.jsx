@@ -4073,6 +4073,18 @@ export default function TriageSystem({ onBack }) {
         return;
       }
       updateToolsFile(id, { processStatus: d.writeSuccess ? "complete" : "error", result: d, processMsg: d.writeSuccess ? "" : (d.error || "Write failed") });
+
+      if (d.writeSuccess) {
+        fetch("/api/triage", { 
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId }) 
+        })
+        .then(r => r.json())
+        .then(statusD => {
+          if (statusD.success) setEomStatusOverrides(statusD.statusOverrides || []);
+        })
+        .catch(e => console.error("Auto-refresh status error:", e));
+      }
     } catch (err) {
       updateToolsFile(id, { processStatus: "error", processMsg: err.message });
     }

@@ -17319,6 +17319,17 @@ async function checkJobStructureErrors_(clientName, clientSheetId, sharedData) {
               const projectCode = String(row[2] || "").trim();
               const revenue = row[32], jobType = String(row[35] || "").toLowerCase(), startVal = row[37], endVal = row[38];
 
+              // TARGETED DEBUG TRAP
+              // Replace "the_job_name" with a unique part of the missing job's name (lowercase)
+              if (jobNameV.toLowerCase().includes("Retainer (Sep 26 onwards)")) {
+                console.log(`\n🔍 DEBUG JOB STRUCTURE: ${jobClient} | ${jobNameV}`);
+                console.log(`  - startVal: ${startVal} (typeof: ${typeof startVal}) -> hasVal: ${hasVal(startVal)}`);
+                console.log(`  - endVal:   ${endVal} (typeof: ${typeof endVal}) -> hasVal: ${hasVal(endVal)}`);
+                console.log(`  - revenue:  ${revenue} (typeof: ${typeof revenue}) -> hasVal: ${hasVal(revenue)}`);
+                console.log(`  - parsedStart: ${parseConfirmedDate_(startVal)}`);
+                console.log(`  - parsedEnd:   ${parseConfirmedDate_(endVal)}`);
+              }
+
               if (!jobClient || !jobNameV || !hasVal(revenue) || !hasVal(startVal) || !hasVal(endVal)) { r++; continue; }
 
               const isRetainer = jobType.includes("retainer");

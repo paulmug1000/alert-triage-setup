@@ -1249,6 +1249,10 @@ export default function TriageSystem({ onBack }) {
   const [proactiveBulkMode, setProactiveBulkMode]         = useState(false);
   const [proactiveBulkSelected, setProactiveBulkSelected] = useState(new Set()); // Set of alert.rowIndex
   const [proactiveBulkSubmitting, setProactiveBulkSubmitting] = useState(false);
+  const [showProactiveBulkTaskModal, setShowProactiveBulkTaskModal] = useState(false);
+  const [proactiveBulkTaskNote, setProactiveBulkTaskNote] = useState("");
+  const [proactiveBulkTaskSnoozeDate, setProactiveBulkTaskSnoozeDate] = useState("");
+  const [proactiveBulkTaskSnoozeTime, setProactiveBulkTaskSnoozeTime] = useState("07:00");
   const [taskSnoozeDate, setTaskSnoozeDate] = useState(""); // ISO date string for snooze
   const [taskSnoozeTime, setTaskSnoozeTime] = useState("07:00");
   const [taskSnoozeSubmitting, setTaskSnoozeSubmitting] = useState(false);
@@ -3601,6 +3605,87 @@ export default function TriageSystem({ onBack }) {
       setProactiveBulkMode(false);
     } catch (err) {
       console.error("Failed to bulk acknowledge:", err);
+    } finally {
+      setProactiveBulkSubmitting(false);
+    }
+  };
+
+  const proactiveBulkCreateTasks = async () => {
+    const alerts = proactiveAlerts.filter(a => proactiveBulkSelected.has(a.rowIndex));
+    if (!alerts.length) return;
+    try {
+      setProactiveBulkSubmitting(true);
+      setAcceptError("");
+      const snoozedUntil = proactiveBulkTaskSnoozeDate
+        ? new Date(`${proactiveBulkTaskSnoozeDate}T${proactiveBulkTaskSnoozeTime}:00`).toISOString()
+        : null;
+      
+      let successCount = 0;
+      for (const alert of alerts) {
+        const res = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "create_task",
+            alert: alert,
+            taskNote: proactiveBulkTaskNote,
+            automationCommanderSheetId,
+            isProactive: true,
+            proactiveAlertKey: alert.alertKey,
+          }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          successCount++;
+          
+          if (sessionId) {
+            await fetch("/api/triage", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alert.alertKey }),
+            }).catch(() => {});
+          }
+
+          if (proactiveBulkTaskSnoozeDate && data.fingerprintHash) {
+            await fetch("/api/triage", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "snooze_task",
+                fingerprintHash: data.fingerprintHash,
+                snoozedUntil,
+                automationCommanderSheetId,
+              }),
+            }).catch(() => {});
+          }
+        }
+      }
+
+      if (successCount === 0) {
+        setAcceptError("Failed to create tasks for selected alerts");
+        return;
+      }
+
+      const selectedRowIndexes = new Set(alerts.map(a => a.rowIndex));
+      setProactiveAlerts(prev => {
+        const remaining = prev.filter(a => !selectedRowIndexes.has(a.rowIndex));
+        const counts = {};
+        remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+        setProactiveCountsByClient(counts);
+        return remaining;
+      });
+
+      if (!proactiveBulkTaskSnoozeDate) setNavTaskCount(prev => prev + successCount);
+      else setSnoozedTaskCount(prev => prev + successCount);
+
+      setProactiveBulkSelected(new Set());
+      setProactiveBulkMode(false);
+      setShowProactiveBulkTaskModal(false);
+      setProactiveBulkTaskNote("");
+      setProactiveBulkTaskSnoozeDate("");
+      setProactiveBulkTaskSnoozeTime("07:00");
+
+    } catch (err) {
+      setAcceptError(`Bulk task error: ${err.message}`);
     } finally {
       setProactiveBulkSubmitting(false);
     }
@@ -9538,13 +9623,65 @@ export default function TriageSystem({ onBack }) {
                     {proactiveBulkSelected.size} alert{proactiveBulkSelected.size !== 1 ? "s" : ""} selected
                   </span>
                   <button className="triage-btn" onClick={bulkAcknowledgeProactive} disabled={proactiveBulkSubmitting}
-                    style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
+                    style={{ background: "#f5f3ff", color: "#7c3aed", border: "1px solid #c4b5fd", borderRadius: "6px",
                       padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
                       opacity: proactiveBulkSubmitting ? 0.5 : 1 }}>
                     {proactiveBulkSubmitting ? <><Spinner />Acknowledging...</> : `✓ Acknowledge ${proactiveBulkSelected.size} alert${proactiveBulkSelected.size !== 1 ? "s" : ""}`}
                   </button>
+                  <button className="triage-btn" onClick={() => setShowProactiveBulkTaskModal(true)} disabled={proactiveBulkSubmitting}
+                    style={{ background: "#7c3aed", color: "white", border: "none", borderRadius: "6px",
+                      padding: "6px 12px", fontWeight: "600", fontSize: "12px", cursor: "pointer",
+                      opacity: proactiveBulkSubmitting ? 0.5 : 1 }}>
+                    📋 Create tasks
+                  </button>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Proactive bulk create tasks modal */}
+          {showProactiveBulkTaskModal && (
+            <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowProactiveBulkTaskModal(false); }}>
+              <div style={styles.modalCard}>
+                <h3 style={styles.modalTitle}>Create {proactiveBulkSelected.size} Task{proactiveBulkSelected.size !== 1 ? "s" : ""}</h3>
+                <p style={styles.modalSubtitle}>These proactive alerts will be added to your task list for follow-up.</p>
+                <textarea value={proactiveBulkTaskNote} onChange={e => setProactiveBulkTaskNote(e.target.value)}
+                  placeholder="Shared note for all tasks (optional)..." style={styles.modalTextarea} autoFocus />
+                <div style={{ marginTop: "12px", borderTop: "1px solid #eee", paddingTop: "12px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", marginBottom: "8px" }}>Snooze until (optional)</div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                    <input type="date" value={proactiveBulkTaskSnoozeDate}
+                      min={new Date().toISOString().split("T")[0]}
+                      onChange={e => setProactiveBulkTaskSnoozeDate(e.target.value)}
+                      style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px" }} />
+                    {proactiveBulkTaskSnoozeDate && (
+                      <>
+                        <input type="time" value={proactiveBulkTaskSnoozeTime}
+                          onChange={e => setProactiveBulkTaskSnoozeTime(e.target.value)}
+                          style={{ fontSize: "13px", padding: "6px 8px", border: "1px solid #ddd", borderRadius: "4px", width: "100px" }} />
+                        <button className="triage-btn" onClick={() => { setProactiveBulkTaskSnoozeDate(""); setProactiveBulkTaskSnoozeTime("07:00"); }}
+                          style={{ fontSize: "12px", padding: "5px 8px", color: "#888", borderColor: "#ddd" }}>✕ Clear</button>
+                      </>
+                    )}
+                  </div>
+                  {proactiveBulkTaskSnoozeDate && (
+                    <div style={{ fontSize: "12px", color: "#d97706", marginTop: "6px" }}>
+                      Tasks will be snoozed until {new Date(`${proactiveBulkTaskSnoozeDate}T${proactiveBulkTaskSnoozeTime}:00`).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}.
+                    </div>
+                  )}
+                </div>
+                <div style={styles.modalButtons}>
+                  <button className="triage-btn" onClick={() => setShowProactiveBulkTaskModal(false)} style={styles.buttonSecondary}>Cancel</button>
+                  <button className="triage-btn" onClick={proactiveBulkCreateTasks} disabled={proactiveBulkSubmitting}
+                    style={{ background: proactiveBulkTaskSnoozeDate ? "#d97706" : "#7c3aed", color: "white", border: "none",
+                      borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px",
+                      cursor: "pointer", opacity: proactiveBulkSubmitting ? 0.5 : 1 }}>
+                    {proactiveBulkSubmitting ? <><Spinner />Creating...</> : proactiveBulkTaskSnoozeDate
+                      ? `📋 Create & Snooze ${proactiveBulkSelected.size} task${proactiveBulkSelected.size !== 1 ? "s" : ""}`
+                      : `📋 Create ${proactiveBulkSelected.size} task${proactiveBulkSelected.size !== 1 ? "s" : ""}`}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

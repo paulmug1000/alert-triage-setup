@@ -17305,32 +17305,36 @@ async function checkJobStructureErrors_(clientName, clientSheetId, sharedData) {
     if (data.length < 2) return alerts;
 
     const invAmtIdx = [41, 48, 55], expAmtIdx = [76, 83, 90];
-    const hasVal = (v) => v !== "" && v !== null && v !== undefined;
+            const hasVal = (v) => v !== "" && v !== null && v !== undefined;
+            const fmtDate = (d) => {
+              const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+              return `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+            };
 
-    let r = 1;
-    while (r < data.length) {
-      const row = data[r];
-      const jobClient   = String(row[0] || "").trim();
-      const jobNameV    = String(row[1] || "").trim();
-      const projectCode = String(row[2] || "").trim();
-      const revenue = row[32], jobType = String(row[35] || "").toLowerCase(), startVal = row[37], endVal = row[38];
+            let r = 1;
+            while (r < data.length) {
+              const row = data[r];
+              const jobClient   = String(row[0] || "").trim();
+              const jobNameV    = String(row[1] || "").trim();
+              const projectCode = String(row[2] || "").trim();
+              const revenue = row[32], jobType = String(row[35] || "").toLowerCase(), startVal = row[37], endVal = row[38];
 
-      if (!jobClient || !jobNameV || !revenue || !startVal || !endVal) { r++; continue; }
+              if (!jobClient || !jobNameV || !hasVal(revenue) || !hasVal(startVal) || !hasVal(endVal)) { r++; continue; }
 
-      const isRetainer = jobType.includes("retainer");
-      const jobRows = collectJobRows_(data, r);
-      const hasChildren = jobRows.length > 1;
-      const problems = [];
+              const isRetainer = jobType.includes("retainer");
+              const jobRows = collectJobRows_(data, r);
+              const hasChildren = jobRows.length > 1;
+              const problems = [];
 
-      const parsedStart = parseConfirmedDate_(startVal);
-      const parsedEnd = parseConfirmedDate_(endVal);
-      if (parsedStart && parsedEnd && parsedEnd < parsedStart) {
-        problems.push(`Row ${r + 1} (parent): end date (${String(endVal).trim()}) is before start date (${String(startVal).trim()})`);
-      }
+              const parsedStart = parseConfirmedDate_(startVal);
+              const parsedEnd = parseConfirmedDate_(endVal);
+              if (parsedStart && parsedEnd && parsedEnd.getTime() < parsedStart.getTime()) {
+                problems.push(`Row ${r + 1} (parent): end date (${fmtDate(parsedEnd)}) is before start date (${fmtDate(parsedStart)})`);
+              }
 
-      if (isRetainer && !hasChildren) {
-        problems.push(`Row ${r + 1} (parent): retainer job has no child rows`);
-      }
+              if (isRetainer && !hasChildren) {
+                problems.push(`Row ${r + 1} (parent): retainer job has no child rows (single-row retainers are not allowed)`);
+              }
 
       for (let jr = 0; jr < jobRows.length; jr++) {
         const jRow = jobRows[jr].row, jSheetRow = jobRows[jr].sheetRow;

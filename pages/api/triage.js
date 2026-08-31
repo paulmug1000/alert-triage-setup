@@ -6633,7 +6633,7 @@ export default async function handler(req, res) {
         }
 
         // Tally counts for informational (noAction) alerts
-        for (const alert of filteredNoAction) {
+        for (const alert of (fresh.noActionAlerts || [])) {
           const key = alert.clientName;
           const flagKey = alert.flagType;
           if (key && flagKey) {
@@ -6642,7 +6642,7 @@ export default async function handler(req, res) {
           }
         }
 
-        const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => ({
+        const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
             ...c, alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
             activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
           }));

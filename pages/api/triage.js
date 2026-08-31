@@ -13118,34 +13118,11 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 }
               }
 
-              // ── Single-row retainer detection ────────────────────────────────
-              // Mode A: parent row has invoice in slot 1 (col AP = index 41), no child rows needed.
-              // This is a single-invoice retainer — check the parent's own slot 1.
+              // ── Single-row retainer check ────────────────────────────────────
               const parentInvAmt = parseFloat(String(parentRow[41] || "").replace(/[£$€,\s]/g, "")) || 0;
               const parentInvRef = String(parentRow[42] || "").trim();
-              const isSingleRowRetainer = childRows.length === 0 && (parentInvAmt > 0 || parentInvRef);
-
-              if (isSingleRowRetainer) {
-                const hasInvoice = parentInvAmt > 0;
-                const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
-                const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
-                const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-                const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
-                checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, single invoice)` });
-                checks.push({ ok: true, message: `Single-row retainer (Mode A) — invoice sits on parent row, no child rows expected` });
-                if (hasInvoice) {
-                  checks.push({ ok: true, message: `✓ Parent row slot 1 has invoice amount £${parentInvAmt.toFixed(2)}${parentInvRef ? ` (ref: ${parentInvRef})` : ""}` });
-                } else {
-                  checks.push({ ok: false, message: `✗ Parent row slot 1 has no invoice amount — invoice not yet created` });
-                }
-                retainerChecks.push({
-                  jobName, clientName: clientN, projectCode,
-                  parentSheetRow: confirmedSheetRow,
-                  tab: targetTab,
-                  status: hasInvoice ? "ok" : "issue",
-                  periodLabel: "single invoice", checks,
-                });
-                continue;
+              if (childRows.length === 0 && (parentInvAmt > 0 || parentInvRef)) {
+                checks.push({ ok: false, message: `✗ Parent row has an invoice (amount/ref) but no child rows exist — single-row retainers are not allowed` });
               }
 
               // Count child rows whose scheduled invoice date (Inv1 sent-date slot) falls
@@ -13385,29 +13362,11 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 }
               }
 
-              // ── Single-row retainer detection ────────────────────────────────
+              // ── Single-row retainer check ────────────────────────────────────
               const parentInvAmt2 = parseFloat(String(parentRow[41] || "").replace(/[£$€,\s]/g, "")) || 0;
               const parentInvRef2 = String(parentRow[42] || "").trim();
-              const isSingleRowRetainer2 = childRows.length === 0 && (parentInvAmt2 > 0 || parentInvRef2);
-
-              if (isSingleRowRetainer2) {
-                const hasInvoice2 = parentInvAmt2 > 0;
-                const fmt2 = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
-                const diffTime2b = Math.abs(endDate.getTime() - startDate.getTime());
-                const monthsDiff2b = Math.max(1, Math.round(diffTime2b / (1000 * 60 * 60 * 24) / 30.4375));
-                checks.push({ ok: true, message: `Duration: ${fmt2(startDate)} → ${fmt2(endDate)} (${monthsDiff2b} months total, single invoice)` });
-                checks.push({ ok: true, message: `Single-row retainer (Mode A) — invoice sits on parent row, no child rows expected` });
-                if (hasInvoice2) {
-                  checks.push({ ok: true, message: `✓ Parent row slot 1 has invoice amount £${parentInvAmt2.toFixed(2)}${parentInvRef2 ? ` (ref: ${parentInvRef2})` : ""}` });
-                } else {
-                  checks.push({ ok: false, message: `✗ Parent row slot 1 has no invoice amount — invoice not yet created` });
-                }
-                retainerChecks.push({
-                  jobName: jobName2, clientName: jobClient, projectCode,
-                  parentSheetRow, status: hasInvoice2 ? "ok" : "issue",
-                  periodLabel: "single invoice", checks,
-                });
-                continue;
+              if (childRows.length === 0 && (parentInvAmt2 > 0 || parentInvRef2)) {
+                checks.push({ ok: false, message: `✗ Parent row has an invoice (amount/ref) but no child rows exist — single-row retainers are not allowed` });
               }
 
               // Rolling 18-month runway: count rows with scheduled date ≤ end of current month

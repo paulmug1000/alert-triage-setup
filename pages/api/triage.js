@@ -2444,7 +2444,7 @@ const AUTOLOG_TYPE_PATTERNS = {
   // exact, new wording, not the old, ambiguous one.
   retainerInvoicesCreated:   ["[Retainers - Confirmed] Added"],
   retainerInvoicesDeleted:   ["[Retainers - Confirmed] Trimmed"],
-  expenseUnreconGaps:        ["Created Manual Gap:", "Changed Manual Gap:", "Removed Manual Gap"],
+  expenseUnreconGaps:        ["[Confirmed] Created Manual Gap:", "[Confirmed] Changed Manual Gap:", "[Confirmed] Removed Manual Gap"],
   expenseAdded:              ["Created New Row:"],
   invoiceStaleUnsentChanges: ["Stale Invoice - Row"],
   // AN2 — job copied Pipeline -> Confirmed. Includes the fail-safe

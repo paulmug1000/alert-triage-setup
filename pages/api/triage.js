@@ -1994,7 +1994,12 @@ function eomTargetMonthToWorkMonth_(targetMonthKey) {
  */
 async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, linkedFunctionValue, workMonthKey) {
   try {
-    if (!workMonthKey) return false;
+    console.log(`\n🔍 DEBUG AUTO-COMPLETE: Client=${clientName}, Func=${linkedFunctionValue}, Month=${workMonthKey}, CmdrID=${!!automationCommanderSheetId}`);
+    
+    if (!workMonthKey || !automationCommanderSheetId) {
+      console.log(`  ❌ Aborting: Missing workMonthKey or automationCommanderSheetId`);
+      return false;
+    }
     const [templatesR, clientTasksR] = await Promise.all([
       sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
       sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
@@ -2003,7 +2008,11 @@ async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cl
     const linkedTask = (clientTasksR.data.values || []).find(r =>
       r[0] && r[1] === clientName && linkedTemplateIds.has(r[2]) && (r[5] !== "FALSE" && r[5] !== false)
     );
-    if (!linkedTask) return false;
+    if (!linkedTask) {
+      console.log(`  ❌ Failed: No active task found for ${clientName} linked to template function '${linkedFunctionValue}'.`);
+      return false;
+    }
+    console.log(`  ✓ Found linked task: ${linkedTask[0]} - proceeding with status update.`);
 
     const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
     const statusRows = statusResp.data.values || [];

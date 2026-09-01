@@ -3973,9 +3973,16 @@ export default function TriageSystem({ onBack }) {
           totalHeight += viewport.height;
           if (viewport.width > maxWidth) maxWidth = viewport.width;
         }
+        
+        const maxDim = 7900; // Keep safely below 8000 pixel limit
+        let downscale = 1;
+        if (totalHeight > maxDim || maxWidth > maxDim) {
+          downscale = maxDim / Math.max(totalHeight, maxWidth);
+        }
+        
         const canvas = document.createElement("canvas");
-        canvas.width = maxWidth;
-        canvas.height = totalHeight;
+        canvas.width = Math.floor(maxWidth * downscale);
+        canvas.height = Math.floor(totalHeight * downscale);
         const context = canvas.getContext("2d");
         let currentY = 0;
         for (let i = 1; i <= pdf.numPages; i++) {
@@ -3987,8 +3994,11 @@ export default function TriageSystem({ onBack }) {
           tempCanvas.height = viewport.height;
           const tempContext = tempCanvas.getContext("2d");
           await page.render({ canvasContext: tempContext, viewport }).promise;
-          context.drawImage(tempCanvas, 0, currentY);
-          currentY += viewport.height;
+          
+          const scaledWidth = viewport.width * downscale;
+          const scaledHeight = viewport.height * downscale;
+          context.drawImage(tempCanvas, 0, currentY, scaledWidth, scaledHeight);
+          currentY += scaledHeight;
         }
         const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
         await uploadAndDetect(id, { data: b64, type: "image" }, file.name, toolType);
@@ -3996,13 +4006,27 @@ export default function TriageSystem({ onBack }) {
       }
 
       // Plain image
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const b64 = e.target.result.split(",")[1];
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 7900;
+        let downscale = 1;
+        if (img.height > maxDim || img.width > maxDim) {
+          downscale = maxDim / Math.max(img.height, img.width);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.floor(img.width * downscale);
+        canvas.height = Math.floor(img.height * downscale);
+        const ctx = canvas.getContext("2d");
+        // Fill white background for transparent PNGs before drawing
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
         uploadAndDetect(id, { data: b64, type: "image" }, file.name, toolType);
       };
-      reader.onerror = () => updateToolsFile(id, { convertStatus: "error", convertMsg: "Failed to read image file." });
-      reader.readAsDataURL(file);
+      img.onerror = () => updateToolsFile(id, { convertStatus: "error", convertMsg: "Failed to read image file." });
+      img.src = URL.createObjectURL(file);
     } catch (err) {
       updateToolsFile(id, { convertStatus: "error", convertMsg: "Error reading file: " + err.message });
     }
@@ -4054,11 +4078,11 @@ export default function TriageSystem({ onBack }) {
       processMsg: confirmedMonth ? `Saving data to ${confirmedMonth}...` : `Sending to AI for ${isTime ? "time report" : "payroll"} processing...` });
     try {
       const action = isTime ? "process_time_document" : "process_payroll_document";
-      const body = isTime
-        ? { action, masterSheetId: client.masterSheetId, clientName: target.client, uploadId: target.uploadId, confirmedMonth: confirmedMonth || undefined }
-        : { action, clientSheetId: client.clientSheetId, clientName: target.client, uploadId: target.uploadId, confirmedMonth: confirmedMonth || undefined };
-      const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body) });
+    const body = isTime
+      ? { action, masterSheetId: client.masterSheetId, clientName: target.client, uploadId: target.uploadId, confirmedMonth: confirmedMonth || undefined, automationCommanderSheetId }
+      : { action, clientSheetId: client.clientSheetId, clientName: target.client, uploadId: target.uploadId, confirmedMonth: confirmedMonth || undefined, automationCommanderSheetId };
+    const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) });
       const d = await res.json();
       if (!d.success) {
         updateToolsFile(id, { processStatus: "error", processMsg: d.error || "Failed to process document" });

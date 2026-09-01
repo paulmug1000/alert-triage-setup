@@ -1200,7 +1200,7 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
 
   for (const emp of extractedData.employees) {
     if (emp.mappedName === "NEW_STARTER") continue;
-    const rowIdx = sheetNames.indexOf(emp.mappedName);
+    const rowIdx = allEmployeeNames.indexOf(emp.mappedName);
     if (rowIdx === -1) { unmatched.push(emp.originalName); continue; }
     const sheetRow = rowIdx + 4;
     const vals = [emp.grossPay||0, emp.eeNic||0, emp.erNic||0, emp.studLoan||0, emp.eePension||0, emp.erPension||0, emp.paye||0];
@@ -1270,7 +1270,7 @@ async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targe
 
   for (const emp of extractedData.employees) {
     if (emp.mappedName === "NEW_STARTER") continue;
-    const rowIdx = sheetNames.indexOf(emp.mappedName);
+    const rowIdx = allEmployeeNames.indexOf(emp.mappedName);
     if (rowIdx === -1) { unmatched.push(emp.originalName); continue; }
     const sheetRow = rowIdx + 12;
     const vals = [emp.billableHrs || 0, emp.totalHrs || 0];
@@ -15439,7 +15439,8 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
         const empResp = await sheets.spreadsheets.values.get({
           spreadsheetId: payrollClientSheetId, range: "Salaries!A4:A53",
         });
-        const validEmployeeNames = (empResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+        const allEmployeeNames = (empResp.data.values || []).map(r => String(r[0] || "").trim());
+        const validEmployeeNames = allEmployeeNames.filter(Boolean);
         const namesString = JSON.stringify(validEmployeeNames);
         const currentDateContext = new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 
@@ -15560,7 +15561,8 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         const empResp = await sheets.spreadsheets.values.get({
           spreadsheetId: timeMasterSheetId, range: "TimeComp!A12:A62",
         });
-        const validEmployeeNames = (empResp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+        const allEmployeeNames = (empResp.data.values || []).map(r => String(r[0] || "").trim());
+        const validEmployeeNames = allEmployeeNames.filter(Boolean);
         const namesString = JSON.stringify(validEmployeeNames);
         const currentDateContext = new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 

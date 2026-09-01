@@ -15445,7 +15445,7 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
 
         const promptText = `You are a payroll data extraction assistant. Analyze this payroll document.
 
-TASK 1: Identify the Period. Find the "Ending Date", "Process Date", or "Tax Point". Output format: "MMM YYYY" (e.g. "Jan 2026").
+TASK 1: Identify the Period. Find the "Ending Date", "Process Date", "Tax Point", "Pay Period", "Pay Date", or look for a prominent month/year near the top of the document. Output format: "MMM YYYY" (e.g. "Jan 2026").
 - CRITICAL DATE HANDLING: The current real-world date context is ${currentDateContext}. If the document explicitly states a month but does NOT provide a year, calculate and output the most recent instance of that month relative to this context date (e.g. if context is Jun 2026 and doc says May, output "May 2026"; if doc says Dec, output "Dec 2025"). If no period info is found at all, output "Unknown".
 
 TASK 2: Extract Employee Data visible ON THE DOCUMENT.

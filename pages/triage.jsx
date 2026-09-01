@@ -3965,48 +3965,28 @@ export default function TriageSystem({ onBack }) {
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await window.pdfjsLib.getDocument(arrayBuffer).promise;
         const scale = 2;
-        let totalHeight = 0, maxWidth = 0;
-        updateToolsFile(id, { convertMsg: `Analyzing ${pdf.numPages} page${pdf.numPages !== 1 ? "s" : ""}...` });
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale });
-          totalHeight += viewport.height;
-          if (viewport.width > maxWidth) maxWidth = viewport.width;
-        }
-        
-        const maxDim = 7900; // Keep safely below 8000 pixel limit
-        let downscale = 1;
-        if (totalHeight > maxDim || maxWidth > maxDim) {
-          downscale = maxDim / Math.max(totalHeight, maxWidth);
-        }
-        
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.floor(maxWidth * downscale);
-        canvas.height = Math.floor(totalHeight * downscale);
-        const context = canvas.getContext("2d");
-        
-        // Fill white background so transparent PDFs don't become unreadable black rectangles
-        context.fillStyle = "#ffffff";
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        
-        let currentY = 0;
+        const images = [];
+
         for (let i = 1; i <= pdf.numPages; i++) {
           updateToolsFile(id, { convertMsg: `Converting page ${i} of ${pdf.numPages}...` });
           const page = await pdf.getPage(i);
           const viewport = page.getViewport({ scale });
-          const tempCanvas = document.createElement("canvas");
-          tempCanvas.width = viewport.width;
-          tempCanvas.height = viewport.height;
-          const tempContext = tempCanvas.getContext("2d");
-          await page.render({ canvasContext: tempContext, viewport }).promise;
           
-          const scaledWidth = viewport.width * downscale;
-          const scaledHeight = viewport.height * downscale;
-          context.drawImage(tempCanvas, 0, currentY, scaledWidth, scaledHeight);
-          currentY += scaledHeight;
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const context = canvas.getContext("2d");
+          
+          // Fill white background to prevent transparent PDFs turning black
+          context.fillStyle = "#ffffff";
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          
+          await page.render({ canvasContext: context, viewport }).promise;
+          const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
+          images.push(b64);
         }
-        const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
-        await uploadAndDetect(id, { data: b64, type: "image", fileName: file.name }, file.name, toolType);
+        
+        await uploadAndDetect(id, { data: images, type: "image_array", fileName: file.name }, file.name, toolType);
         return;
       }
 

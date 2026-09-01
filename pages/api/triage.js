@@ -1174,7 +1174,7 @@ async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, a
  * clientSheetId directly), and returns structured data instead of a text
  * log, since this feeds a proper review UI rather than a sidebar textbox.
  */
-async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, targetMonthStr, validEmployeeNames) {
+async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, targetMonthStr, allEmployeeNames) {
   const headerResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Salaries!1:1" });
   const headers = (headerResp.data.values && headerResp.data.values[0]) || [];
   let startColIdx0 = -1; // 0-indexed
@@ -1187,7 +1187,7 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
   const startColLetter = columnIndexToLetter_(startColIdx0 + 1);
   const endColLetter = columnIndexToLetter_(startColIdx0 + 7);
 
-  const sheetNames = validEmployeeNames; // already read by the caller from Salaries!A4:A53
+  const sheetNames = allEmployeeNames; // already read by the caller from Salaries!A4:A53
 
   const namesFoundInDoc = extractedData.employees.filter(e => e.mappedName !== "NEW_STARTER").map(e => e.mappedName);
   const missingFromDoc = sheetNames.filter(n => n && !namesFoundInDoc.includes(n));
@@ -1200,7 +1200,7 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
 
   for (const emp of extractedData.employees) {
     if (emp.mappedName === "NEW_STARTER") continue;
-    const rowIdx = allEmployeeNames.indexOf(emp.mappedName);
+    const rowIdx = sheetNames.indexOf(emp.mappedName);
     if (rowIdx === -1) { unmatched.push(emp.originalName); continue; }
     const sheetRow = rowIdx + 4;
     const vals = [emp.grossPay||0, emp.eeNic||0, emp.erNic||0, emp.studLoan||0, emp.eePension||0, emp.erPension||0, emp.paye||0];
@@ -1245,7 +1245,7 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
  * no totals-reconciliation concept for time at all, unlike payroll, so
  * none is added here either.
  */
-async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targetMonthStr, validEmployeeNames) {
+async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targetMonthStr, allEmployeeNames) {
   const headerResp = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "TimeComp!4:4" });
   const headers = (headerResp.data.values && headerResp.data.values[0]) || [];
   let startColIdx0 = -1; // 0-indexed
@@ -1258,7 +1258,7 @@ async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targe
   const startColLetter = columnIndexToLetter_(startColIdx0 + 1);
   const endColLetter = columnIndexToLetter_(startColIdx0 + 2);
 
-  const sheetNames = validEmployeeNames; // already read by the caller from TimeComp!A12:A62
+  const sheetNames = allEmployeeNames; // already read by the caller from TimeComp!A12:A62
 
   const namesFoundInDoc = extractedData.employees.filter(e => e.mappedName !== "NEW_STARTER").map(e => e.mappedName);
   const missingFromDoc = sheetNames.filter(n => n && !namesFoundInDoc.includes(n));
@@ -1270,7 +1270,7 @@ async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targe
 
   for (const emp of extractedData.employees) {
     if (emp.mappedName === "NEW_STARTER") continue;
-    const rowIdx = allEmployeeNames.indexOf(emp.mappedName);
+    const rowIdx = sheetNames.indexOf(emp.mappedName);
     if (rowIdx === -1) { unmatched.push(emp.originalName); continue; }
     const sheetRow = rowIdx + 12;
     const vals = [emp.billableHrs || 0, emp.totalHrs || 0];
@@ -15476,6 +15476,9 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         if (fileData.type === "text") {
           const verticalText = buildVerticalCsvText_(fileData.data);
           content = promptText + "\n\nDOCUMENT DATA (Vertical List):\n" + verticalText;
+        } else if (fileData.type === "image_array") {
+          content = fileData.data.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+          content.push({ type: "text", text: promptText });
         } else {
           content = [
             { type: "image", source: { type: "base64", media_type: "image/jpeg", data: fileData.data } },
@@ -15511,7 +15514,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           return res.status(200).json({ success: true, status: "CONFIRM_PERIOD", extractedData, fallback });
         }
 
-        const writeResult = await writePayrollDataToSheet_(sheets, payrollClientSheetId, extractedData, targetMonthStr, validEmployeeNames);
+        const writeResult = await writePayrollDataToSheet_(sheets, payrollClientSheetId, extractedData, targetMonthStr, allEmployeeNames);
         await redisClient.del(`payroll_upload:${uploadId}`).catch(e => console.error("  Upload cleanup failed (non-fatal):", e.message));
 
         // Auto-complete the linked EoM "salaries" task for this client, if
@@ -15629,7 +15632,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
           return res.status(200).json({ success: true, status: "CONFIRM_PERIOD", extractedData, fallback });
         }
 
-        const writeResult = await writeTimeDataToSheet_(sheets, timeMasterSheetId, extractedData, targetMonthStr, validEmployeeNames);
+        const writeResult = await writeTimeDataToSheet_(sheets, timeMasterSheetId, extractedData, targetMonthStr, allEmployeeNames);
         await redisClient.del(`payroll_upload:${uploadId}`).catch(e => console.error("  Upload cleanup failed (non-fatal):", e.message));
 
         // Auto-complete the linked EoM "time_import" task for this client,

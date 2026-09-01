@@ -3957,7 +3957,7 @@ export default function TriageSystem({ onBack }) {
           excelText += `--- SHEET: ${sheetName} ---\n`;
           excelText += window.XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]) + "\n\n";
         });
-        await uploadAndDetect(id, { data: excelText, type: "text" }, file.name, toolType);
+        await uploadAndDetect(id, { data: excelText, type: "text", fileName: file.name }, file.name, toolType);
         return;
       }
 
@@ -3984,6 +3984,11 @@ export default function TriageSystem({ onBack }) {
         canvas.width = Math.floor(maxWidth * downscale);
         canvas.height = Math.floor(totalHeight * downscale);
         const context = canvas.getContext("2d");
+        
+        // Fill white background so transparent PDFs don't become unreadable black rectangles
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        
         let currentY = 0;
         for (let i = 1; i <= pdf.numPages; i++) {
           updateToolsFile(id, { convertMsg: `Converting page ${i} of ${pdf.numPages}...` });
@@ -4001,7 +4006,7 @@ export default function TriageSystem({ onBack }) {
           currentY += scaledHeight;
         }
         const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
-        await uploadAndDetect(id, { data: b64, type: "image" }, file.name, toolType);
+        await uploadAndDetect(id, { data: b64, type: "image", fileName: file.name }, file.name, toolType);
         return;
       }
 
@@ -4023,7 +4028,7 @@ export default function TriageSystem({ onBack }) {
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         
         const b64 = canvas.toDataURL("image/jpeg").split(",")[1];
-        uploadAndDetect(id, { data: b64, type: "image" }, file.name, toolType);
+        uploadAndDetect(id, { data: b64, type: "image", fileName: file.name }, file.name, toolType);
       };
       img.onerror = () => updateToolsFile(id, { convertStatus: "error", convertMsg: "Failed to read image file." });
       img.src = URL.createObjectURL(file);

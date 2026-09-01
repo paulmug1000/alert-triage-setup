@@ -15443,9 +15443,11 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
         const namesString = JSON.stringify(validEmployeeNames);
         const currentDateContext = new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 
-        const promptText = `You are a payroll data extraction assistant. Analyze this payroll document.
+        const filenameContext = fileData.fileName ? `\nDocument Filename: "${fileData.fileName}" (Use this to help determine the period if the document text is ambiguous)` : "";
 
-TASK 1: Identify the Period. Find the "Ending Date", "Process Date", "Tax Point", "Pay Period", "Pay Date", or look for a prominent month/year near the top of the document. Output format: "MMM YYYY" (e.g. "Jan 2026").
+        const promptText = `You are a payroll data extraction assistant. Analyze this payroll document.${filenameContext}
+
+TASK 1: Identify the Period. Find the "Ending Date", "Process Date", "Tax Point", "Pay Period", "Pay Date", or look for a prominent month/year near the top of the document or in the filename. Output format: "MMM YYYY" (e.g. "Jan 2026").
 - CRITICAL DATE HANDLING: The current real-world date context is ${currentDateContext}. If the document explicitly states a month but does NOT provide a year, calculate and output the most recent instance of that month relative to this context date (e.g. if context is Jun 2026 and doc says May, output "May 2026"; if doc says Dec, output "Dec 2025"). If no period info is found at all, output "Unknown".
 
 TASK 2: Extract Employee Data visible ON THE DOCUMENT.
@@ -15562,9 +15564,11 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         const namesString = JSON.stringify(validEmployeeNames);
         const currentDateContext = new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 
-        const promptText = `You are a time-tracking data extraction assistant. Analyze this time tracking document.
+        const filenameContext = fileData.fileName ? `\nDocument Filename: "${fileData.fileName}" (Use this to help determine the period if the document text is ambiguous)` : "";
 
-TASK 1: Identify the Period (Month/Year). Output format: "MMM YYYY" (e.g. "Jan 2026").
+        const promptText = `You are a time-tracking data extraction assistant. Analyze this time tracking document.${filenameContext}
+
+TASK 1: Identify the Period (Month/Year). Look at the document text and the filename. Output format: "MMM YYYY" (e.g. "Jan 2026").
 - CRITICAL DATE HANDLING: The current real-world date context is ${currentDateContext}. If the document explicitly states a month but does NOT provide a year, calculate and output the most recent instance of that month relative to this context date (e.g. if context is Jun 2026 and doc says May, output "May 2026"; if doc says Dec, output "Dec 2025"). If no period info is found at all, output "Unknown".
 
 TASK 2: Extract Employee Data visible ON THE DOCUMENT.

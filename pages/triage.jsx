@@ -2146,7 +2146,10 @@ export default function TriageSystem({ onBack }) {
             ? prev.filter(a => a.rowIndex !== taskModalAlert.rowIndex)
             : prev.filter(a => a.alertKey !== taskModalAlert.alertKey);
           const counts = {};
-          remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+          remaining.forEach(a => { 
+            const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+            if (cName) counts[cName] = (counts[cName] || 0) + 1; 
+          });
           setProactiveCountsByClient(counts);
           return remaining;
         });
@@ -3676,20 +3679,17 @@ export default function TriageSystem({ onBack }) {
       }
 
       setProactiveAlerts(prev => {
-        // Remove by rowIndex (unique) not alertKey — prevents removing duplicates at once
-        const remaining = rowIndex
-          ? prev.filter(a => a.rowIndex !== rowIndex)
-          : prev.filter(a => a.alertKey !== alertKey);
-        const counts = {};
-        remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
-        setProactiveCountsByClient(counts);
-        // No longer auto-navigates away when a client's last proactive
-        // alert is handled (23 Aug 2026) — this screen is now merged with
-        // the main alert screen, so the client may still have other alert
-        // types visible; the proactive section here just naturally
-        // disappears once empty, no navigation needed.
-        return remaining;
-      });
+          const remaining = rowIndex
+            ? prev.filter(a => a.rowIndex !== rowIndex)
+            : prev.filter(a => a.alertKey !== alertKey);
+          const counts = {};
+          remaining.forEach(a => { 
+            const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+            if (cName) counts[cName] = (counts[cName] || 0) + 1; 
+          });
+          setProactiveCountsByClient(counts);
+          return remaining;
+        });
     } catch (err) {
       console.error("Failed to acknowledge proactive alert:", err);
     }
@@ -3729,17 +3729,15 @@ export default function TriageSystem({ onBack }) {
         } catch (resolveErr) { console.error("Failed to mark alert resolved:", resolveErr); }
       }
       setProactiveAlerts(prev => {
-        const remaining = prev.filter(a => a.rowIndex !== alert.rowIndex);
-        const counts = {};
-        remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
-        setProactiveCountsByClient(counts);
-        // No longer auto-navigates away when a client's last proactive
-        // alert is handled (23 Aug 2026) — this screen is now merged with
-        // the main alert screen, so the client may still have other alert
-        // types visible; the proactive section here just naturally
-        // disappears once empty, no navigation needed.
-        return remaining;
-      });
+          const remaining = prev.filter(a => a.rowIndex !== alert.rowIndex);
+          const counts = {};
+          remaining.forEach(a => { 
+            const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+            if (cName) counts[cName] = (counts[cName] || 0) + 1; 
+          });
+          setProactiveCountsByClient(counts);
+          return remaining;
+        });
     } catch (err) {
       console.error("Failed to mark pipeline copied:", err);
     }

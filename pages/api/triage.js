@@ -2193,7 +2193,11 @@ async function getSheetGid(sheets, spreadsheetId, sheetName) {
 function parseAutomationTime_(str) {
   if (!str) return 0;
   const m = String(str).trim().match(/([A-Za-z]{3})\s+(\d{1,2})-([A-Za-z]{3})\s+(\d{2}):(\d{2})/);
-  if (!m) return 0;
+  if (!m) {
+    // Fallback for standard date formats if the sheet's format changes
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? 0 : d.getTime();
+  }
   const day = parseInt(m[2], 10);
   const monthStr = m[3].toLowerCase();
   const hrs = parseInt(m[4], 10);

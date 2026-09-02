@@ -3458,16 +3458,28 @@ async function readCRMCompAlerts(sheets, spreadsheetId, mode, alertTypes, master
 
             // Suppress redundant App field mismatches if the Dash equivalent is present
             const dashAlerts = alerts.filter(a => a.alertType.endsWith("DashDiscr"));
-            const dashMismatchJobNames = new Set(
-              dashAlerts.filter(a => a.subType === "field_mismatch").map(a => 
-                String(a.data?.crmData?.[1] || a.data?.sheetData?.[2] || "").trim().toLowerCase()
-              )
+            
+            const getIdentityKey = (a) => {
+              let code = "", client = "", job = "";
+              if (a.alertType.endsWith("DashDiscr")) {
+                code = String(a.data?.crmData?.[2] || a.data?.sheetData?.[0] || "").trim().toLowerCase();
+                client = String(a.data?.crmData?.[0] || a.data?.sheetData?.[1] || "").trim().toLowerCase();
+                job = String(a.data?.crmData?.[1] || a.data?.sheetData?.[2] || "").trim().toLowerCase();
+              } else {
+                code = String(a.data?.crmData?.[0] || a.data?.sheetData?.[2] || "").trim().toLowerCase();
+                client = String(a.data?.crmData?.[1] || a.data?.sheetData?.[0] || "").trim().toLowerCase();
+                job = String(a.data?.crmData?.[2] || a.data?.sheetData?.[1] || "").trim().toLowerCase();
+              }
+              return code ? `code:${code}` : `name:${client}|${job}`;
+            };
+
+            const dashMismatchKeys = new Set(
+              dashAlerts.filter(a => a.subType === "field_mismatch").map(getIdentityKey)
             );
 
             const filteredAlerts = alerts.filter(a => {
               if (a.alertType.endsWith("AppDiscr") && a.subType === "field_mismatch") {
-                const jobName = String(a.data?.sheetData?.[1] || a.data?.crmData?.[2] || "").trim().toLowerCase();
-                if (dashMismatchJobNames.has(jobName)) {
+                if (dashMismatchKeys.has(getIdentityKey(a))) {
                   return false; // Suppress duplicate
                 }
               }

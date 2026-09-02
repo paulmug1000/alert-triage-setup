@@ -9202,7 +9202,19 @@ export default function TriageSystem({ onBack }) {
               ← Back to Clients
             </button>
             {(() => {
-              const info = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
+              let info = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName);
+              
+              // Debugging log to prove exactly what is happening in the data flow
+              console.log(`[Debug Open Sheets] Client: ${selectedClient.clientName}`);
+              console.log(`  -> found in clientsWithFlags?`, !!info);
+              console.log(`  -> IDs present in clientsWithFlags? client: "${info?.clientSheetId}", master: "${info?.masterSheetId}"`);
+              
+              // The proper fallback: if the object exists but has blank IDs, grab the IDs from the map
+              if (!info?.clientSheetId && !info?.masterSheetId) {
+                info = allClientsMap[selectedClient.clientName] || selectedClient;
+                console.log(`  -> Fell back to allClientsMap. New IDs - client: "${info?.clientSheetId}", master: "${info?.masterSheetId}"`);
+              }
+
               if (!info?.clientSheetId && !info?.masterSheetId) return null;
               return (
                 <button className="triage-btn" onClick={() => {
@@ -10146,7 +10158,19 @@ export default function TriageSystem({ onBack }) {
               ← Back to Alerts
             </button>
             {(() => {
-              const info = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
+              let info = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName);
+              
+              // Debugging log to prove exactly what is happening in the data flow
+              console.log(`[Debug Open Sheets] Client: ${selectedClient.clientName}`);
+              console.log(`  -> found in clientsWithFlags?`, !!info);
+              console.log(`  -> IDs present in clientsWithFlags? client: "${info?.clientSheetId}", master: "${info?.masterSheetId}"`);
+              
+              // The proper fallback: if the object exists but has blank IDs, grab the IDs from the map
+              if (!info?.clientSheetId && !info?.masterSheetId) {
+                info = allClientsMap[selectedClient.clientName] || selectedClient;
+                console.log(`  -> Fell back to allClientsMap. New IDs - client: "${info?.clientSheetId}", master: "${info?.masterSheetId}"`);
+              }
+
               if (!info?.clientSheetId && !info?.masterSheetId) return null;
               return (
                 <button className="triage-btn" onClick={() => {

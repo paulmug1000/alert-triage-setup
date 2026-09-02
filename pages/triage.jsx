@@ -9201,14 +9201,18 @@ export default function TriageSystem({ onBack }) {
             <button className="triage-btn" onClick={() => { setAcceptError(""); setScreen("clientSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
               ← Back to Clients
             </button>
-            {(selectedClient.clientSheetId || selectedClient.masterSheetId) && (
-              <button className="triage-btn" onClick={() => {
-                if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
-                if (selectedClient.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`, "_blank");
-              }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
-                📊 Open Sheets
-              </button>
-            )}
+            {(() => {
+              const info = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
+              if (!info?.clientSheetId && !info?.masterSheetId) return null;
+              return (
+                <button className="triage-btn" onClick={() => {
+                  if (info.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.clientSheetId}/edit`, "_blank");
+                  if (info.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.masterSheetId}/edit`, "_blank");
+                }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
+                  📊 Open Sheets
+                </button>
+              );
+            })()}
           </div>
           {acceptError && <div style={styles.errorBanner}>{acceptError}</div>}
 
@@ -10141,14 +10145,18 @@ export default function TriageSystem({ onBack }) {
             <button className="triage-btn" onClick={() => { setAcceptError(""); setCurrentClientAlertIndex(0); setScreen("alertSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
               ← Back to Alerts
             </button>
-            {(selectedClient.clientSheetId || selectedClient.masterSheetId) && (
-              <button className="triage-btn" onClick={() => {
-                if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
-                if (selectedClient.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`, "_blank");
-              }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
-                📊 Open Sheets
-              </button>
-            )}
+            {(() => {
+              const info = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
+              if (!info?.clientSheetId && !info?.masterSheetId) return null;
+              return (
+                <button className="triage-btn" onClick={() => {
+                  if (info.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.clientSheetId}/edit`, "_blank");
+                  if (info.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.masterSheetId}/edit`, "_blank");
+                }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
+                  📊 Open Sheets
+                </button>
+              );
+            })()}
           </div>
           <div style={styles.alertHeader}>
             <h2 style={styles.alertTitle}>

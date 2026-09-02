@@ -3074,9 +3074,13 @@ export default function TriageSystem({ onBack }) {
   const computeAlertCheckCount = (clientName, categoriesStr) => {
     const client = (clientsWithFlags || []).find(c => c.clientName === clientName);
     if (!client) return 0; // not in clientsWithFlags at all means zero active flags for this client
-    const assignedSet = assignedByClient[clientName] || new Set();
-    const expenseIds = client.activeExpenseIds || [];
-    const validAssigned = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+    
+    let validAssigned = 0;
+    if (client.activeExpenseIds && Array.isArray(client.activeExpenseIds)) {
+      const assignedSet = assignedByClient[clientName] || new Set();
+      validAssigned = client.activeExpenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+    }
+
     const categories = (categoriesStr || "").split(",").filter(Boolean);
     let total = 0;
     categories.forEach(cat => {

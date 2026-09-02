@@ -2993,7 +2993,7 @@ export default function TriageSystem({ onBack }) {
     // same value, so check both to be safe.
     const filteredAlerts = (clientAlerts || []).filter(alert => {
       const txId = alert.summary?.transactionId || alert.summary?.appId;
-      if (txId && assignedAppIds.has(txId)) return false;
+      if (txId && (assignedAppIds.has(txId) || assignedByClient[selectedClient?.clientName]?.has(txId))) return false;
       return true;
     });
     filteredAlerts.forEach(alert => {
@@ -4247,41 +4247,47 @@ export default function TriageSystem({ onBack }) {
         if (currentIdx >= 0) setOutgoingsMonthOffset(Math.max(0, currentIdx - 3));
       }
       if (inboxData.success) {
-        const allInboxIds = new Set((inboxData.inbox || []).map(e => e.appId));
-        // Prune assignedAppIds: keep only IDs that are STILL in the inbox
-        // (meaning refreshOutgoingsAndUI hasn't run yet — they're assigned but DirComp
-        // hasn't been updated). Remove IDs that are no longer in the inbox — they've been
-        // fully processed and don't need suppression any more.
-        setAssignedAppIds(prev => {
-          const pruned = new Set([...prev].filter(id => allInboxIds.has(id)));
-          try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...pruned])); } catch {}
-          return pruned;
-        });
-        setAssignedByClient(prev => {
-          // Scoped to only THIS client — previously this compared every
-          // client's assigned ids against this one client's inbox ids,
-          // which would never match for any other client and silently
-          // wiped their assignments out on every Outgoings load. Fixed as
-          // part of the server-side migration, 19 Aug 2026.
-          const next = { ...prev };
-          const existingIds = prev[client.clientName] || new Set();
-          const pruned = new Set([...existingIds].filter(id => allInboxIds.has(id)));
-          if (pruned.size > 0) next[client.clientName] = pruned;
-          else delete next[client.clientName];
-          return next;
-        });
-        fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "prune_assigned_expenses", automationCommanderSheetId,
-            clientName: client.clientName, validAppIds: [...allInboxIds] }) })
-          .catch(e => console.error("prune_assigned_expenses error:", e));
-        // Filter inbox: hide items that are in assignedAppIds (assigned but not yet processed)
-        // Use the current state directly since setAssignedAppIds above is async
-        const currentAssigned = new Set([
-          ...Array.from(assignedAppIds).filter(id => allInboxIds.has(id))
-        ]);
-        const freshInbox = (inboxData.inbox || []).filter(exp => !currentAssigned.has(exp.appId));
-        setOutgoingsInbox(freshInbox);
-        if (inboxData.locked) console.warn("Outgoings inbox: GAS lock active —", inboxData.lockMessage);
+        if (inboxData.locked) {
+          console.warn("Outgoings inbox: GAS lock active —", inboxData.lockMessage);
+          const serverAssigned = assignedByClient[client.clientName] || new Set();
+          const currentAssigned = new Set([...assignedAppIds, ...serverAssigned]);
+          const freshInbox = (inboxData.inbox || []).filter(exp => !currentAssigned.has(exp.appId));
+          setOutgoingsInbox(freshInbox);
+        } else {
+          const allInboxIds = new Set((inboxData.inbox || []).map(e => e.appId));
+          
+          setAssignedByClient(prev => {
+            const next = { ...prev };
+            const existingIds = prev[client.clientName] || new Set();
+            const pruned = new Set([...existingIds].filter(id => allInboxIds.has(id)));
+            if (pruned.size > 0) next[client.clientName] = pruned;
+            else delete next[client.clientName];
+            
+            setAssignedAppIds(prevGlobal => {
+              const nextGlobal = new Set(prevGlobal);
+              for (const id of existingIds) {
+                if (!allInboxIds.has(id)) nextGlobal.delete(id);
+              }
+              try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...nextGlobal])); } catch {}
+              return nextGlobal;
+            });
+            
+            return next;
+          });
+
+          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "prune_assigned_expenses", automationCommanderSheetId,
+              clientName: client.clientName, validAppIds: [...allInboxIds] }) })
+            .catch(e => console.error("prune_assigned_expenses error:", e));
+
+          const serverAssigned = assignedByClient[client.clientName] || new Set();
+          const currentAssigned = new Set([
+            ...Array.from(assignedAppIds).filter(id => allInboxIds.has(id)),
+            ...Array.from(serverAssigned).filter(id => allInboxIds.has(id))
+          ]);
+          const freshInbox = (inboxData.inbox || []).filter(exp => !currentAssigned.has(exp.appId));
+          setOutgoingsInbox(freshInbox);
+        }
       }
     } catch(e) { console.error("loadOutgoings error:", e); }
     finally {

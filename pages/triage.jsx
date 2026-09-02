@@ -9955,7 +9955,7 @@ export default function TriageSystem({ onBack }) {
                                 <div style={{ fontSize: "11px", color: "#aaa" }}>First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}</div>
                                 <div style={{ display: "flex", gap: "8px" }}>
                                   {(() => {
-                                    const clientInfo = clientsWithFlags.find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName];
+                                    const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
                                     return (
                                       <>
                                         {(clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (

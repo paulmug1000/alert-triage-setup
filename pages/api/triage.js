@@ -3781,7 +3781,7 @@ export default async function handler(req, res) {
           const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
           const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
           clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl });
-          if (clientSheetId && masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl };
+          if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl };
         }
         clientsArray.sort((a, b) => a.clientName.localeCompare(b.clientName));
         return res.status(200).json({ success: true, clients: clientsArray, clientsMap: clientsObj });

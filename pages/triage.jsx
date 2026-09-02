@@ -9150,8 +9150,8 @@ export default function TriageSystem({ onBack }) {
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.title}>Select Alert</h1>
-          <p style={styles.subtitle}>{selectedClient.clientName} - {Object.values(groupedAlerts).reduce((sum, arr) => sum + arr.length, 0) + clientNoActionAlerts.length + clientProactiveAlertsList.length} alert(s)</p>
+          <h1 style={styles.title}>{selectedClient.clientName}</h1>
+          <p style={styles.subtitle}>{Object.values(groupedAlerts).reduce((sum, arr) => sum + arr.length, 0) + clientNoActionAlerts.length + clientProactiveAlertsList.length} alert(s)</p>
         </div>
 
         <div style={styles.card}>

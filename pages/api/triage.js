@@ -3245,7 +3245,7 @@ async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null) {
           console.log(`  [DirComp Debug] Row ${7 + rowIdx} flags (AO-AV): ${JSON.stringify(flagValues)}`);
         }
 
-        const hasDiscrepancy = [40, 41, 42, 43, 44, 45, 46, 47].some(
+        const hasDiscrepancy = [40, 42, 43, 44, 45, 46, 47].some(
           (idx) => String(row[idx] || "").trim() === "1"
         );
 

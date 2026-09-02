@@ -2130,26 +2130,43 @@ export default function TriageSystem({ onBack }) {
           return { ...c, alertCounts: updatedCounts };
         }));
         if (updatedAlerts.length === 0) {
-          if (allNoActionResolved()) { handlePostClear([], resolvedNoActionFlags); }
-          else setScreen("alertSelection");
-        } else {
-          setScreen("alertSelection");
-        }
-      } else {
-        // Proactive: remove from proactive list — use rowIndex (unique) not alertKey
-        setProactiveAlerts(prev => {
-          const remaining = (taskModalAlert.rowIndex != null)
-            ? prev.filter(a => a.rowIndex !== taskModalAlert.rowIndex)
-            : prev.filter(a => a.alertKey !== taskModalAlert.alertKey);
-          const counts = {};
-          remaining.forEach(a => { 
-            const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
-            if (cName) counts[cName] = (counts[cName] || 0) + 1; 
-          });
-          setProactiveCountsByClient(counts);
-          return remaining;
-        });
-      }
+                    if (allNoActionResolved()) { handlePostClear([], resolvedNoActionFlags); }
+                    else setScreen("alertSelection");
+                  } else {
+                    setScreen("alertSelection");
+                  }
+                } else {
+                  // Proactive: remove from proactive list — use rowIndex (unique) not alertKey
+                  if (sessionId) {
+                    fetch("/api/triage", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "remove_alert", sessionId, alertId: taskModalAlert.alertKey }),
+                    }).catch(() => {});
+                  }
+
+                  let remainingProactiveCount = 0;
+                  setProactiveAlerts(prev => {
+                    const remaining = (taskModalAlert.rowIndex != null)
+                      ? prev.filter(a => a.rowIndex !== taskModalAlert.rowIndex)
+                      : prev.filter(a => a.alertKey !== taskModalAlert.alertKey);
+                    const counts = {};
+                    remaining.forEach(a => { 
+                      const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+                      if (cName) counts[cName] = (counts[cName] || 0) + 1; 
+                    });
+                    setProactiveCountsByClient(counts);
+                    remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
+                    return remaining;
+                  });
+
+                  const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
+                  if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
+                    handlePostClear([], resolvedNoActionFlags);
+                  } else {
+                    setScreen("alertSelection");
+                  }
+                }
     } catch (e) {
       setTaskActionError(e.message);
     } finally {
@@ -3659,26 +3676,33 @@ export default function TriageSystem({ onBack }) {
       console.log(`✅ Acknowledged alert: ${alertKey} (rowIndex ${rowIndex})`);
       
       if (sessionId) {
-        fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
-        }).catch(() => {});
-      }
+                    fetch("/api/triage", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alertKey }),
+                    }).catch(() => {});
+                  }
 
-      setProactiveAlerts(prev => {
-          const remaining = (rowIndex != null)
-            ? prev.filter(a => a.rowIndex !== rowIndex)
-            : prev.filter(a => a.alertKey !== alertKey);
-          const counts = {};
-          remaining.forEach(a => { 
-            const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
-            if (cName) counts[cName] = (counts[cName] || 0) + 1; 
-          });
-          setProactiveCountsByClient(counts);
-          return remaining;
-        });
-    } catch (err) {
+                  let remainingProactiveCount = 0;
+                  setProactiveAlerts(prev => {
+                      const remaining = (rowIndex != null)
+                        ? prev.filter(a => a.rowIndex !== rowIndex)
+                        : prev.filter(a => a.alertKey !== alertKey);
+                      const counts = {};
+                      remaining.forEach(a => { 
+                        const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+                        if (cName) counts[cName] = (counts[cName] || 0) + 1; 
+                      });
+                      setProactiveCountsByClient(counts);
+                      remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
+                      return remaining;
+                  });
+
+                  const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
+                  if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
+                    handlePostClear([], resolvedNoActionFlags);
+                  }
+                } catch (err) {
       console.error("Failed to acknowledge proactive alert:", err);
     }
   };
@@ -3709,24 +3733,32 @@ export default function TriageSystem({ onBack }) {
       // This is a real fix, not just a dismissal — mark the alert "resolved"
       // (same distinction the retainer alerts use), not "acknowledged".
       if (alert.alertKey && automationCommanderSheetId) {
-        try {
-          await fetch("/api/triage", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "resolve_proactive_alert", automationCommanderSheetId, alertKey: alert.alertKey, resolution: "Marked \"Copied to confirmed?\" = Yes in Pipeline" }),
-          });
-        } catch (resolveErr) { console.error("Failed to mark alert resolved:", resolveErr); }
-      }
-      setProactiveAlerts(prev => {
-          const remaining = prev.filter(a => a.rowIndex !== alert.rowIndex);
-          const counts = {};
-          remaining.forEach(a => { 
-            const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
-            if (cName) counts[cName] = (counts[cName] || 0) + 1; 
-          });
-          setProactiveCountsByClient(counts);
-          return remaining;
-        });
-    } catch (err) {
+                    try {
+                      await fetch("/api/triage", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "resolve_proactive_alert", automationCommanderSheetId, alertKey: alert.alertKey, resolution: "Marked \"Copied to confirmed?\" = Yes in Pipeline" }),
+                      });
+                    } catch (resolveErr) { console.error("Failed to mark alert resolved:", resolveErr); }
+                  }
+
+                  let remainingProactiveCount = 0;
+                  setProactiveAlerts(prev => {
+                      const remaining = prev.filter(a => a.rowIndex !== alert.rowIndex);
+                      const counts = {};
+                      remaining.forEach(a => { 
+                        const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+                        if (cName) counts[cName] = (counts[cName] || 0) + 1; 
+                      });
+                      setProactiveCountsByClient(counts);
+                      remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
+                      return remaining;
+                  });
+
+                  const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
+                  if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
+                    handlePostClear([], resolvedNoActionFlags);
+                  }
+                } catch (err) {
       console.error("Failed to mark pipeline copied:", err);
     }
   };
@@ -3747,21 +3779,23 @@ export default function TriageSystem({ onBack }) {
         return;
       }
       const selectedRowIndexes = new Set(alerts.map(a => a.rowIndex));
-      setProactiveAlerts(prev => {
-        const remaining = prev.filter(a => !selectedRowIndexes.has(a.rowIndex));
-        const counts = {};
-        remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
-        setProactiveCountsByClient(counts);
-        // No longer auto-navigates away when a client's last proactive
-        // alert is handled (23 Aug 2026) — this screen is now merged with
-        // the main alert screen, so the client may still have other alert
-        // types visible; the proactive section here just naturally
-        // disappears once empty, no navigation needed.
-        return remaining;
-      });
-      setProactiveBulkSelected(new Set());
-      setProactiveBulkMode(false);
-    } catch (err) {
+                  let remainingProactiveCount = 0;
+                  setProactiveAlerts(prev => {
+                    const remaining = prev.filter(a => !selectedRowIndexes.has(a.rowIndex));
+                    const counts = {};
+                    remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+                    setProactiveCountsByClient(counts);
+                    remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
+                    return remaining;
+                  });
+                  setProactiveBulkSelected(new Set());
+                  setProactiveBulkMode(false);
+
+                  const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
+                  if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
+                    handlePostClear([], resolvedNoActionFlags);
+                  }
+                } catch (err) {
       console.error("Failed to bulk acknowledge:", err);
     } finally {
       setProactiveBulkSubmitting(false);
@@ -3779,70 +3813,78 @@ export default function TriageSystem({ onBack }) {
         : null;
       
       let successCount = 0;
-      for (const alert of alerts) {
-        const res = await fetch("/api/triage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "create_task",
-            alert: alert,
-            taskNote: proactiveBulkTaskNote,
-            automationCommanderSheetId,
-            isProactive: true,
-            proactiveAlertKey: alert.alertKey,
-          }),
-        });
-        const data = await res.json();
-        if (data.success) {
-          successCount++;
-          
-          if (sessionId) {
-            await fetch("/api/triage", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alert.alertKey }),
-            }).catch(() => {});
-          }
+                  const successfulRowIndexes = new Set();
+                  for (const alert of alerts) {
+                    const res = await fetch("/api/triage", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        action: "create_task",
+                        alert: alert,
+                        taskNote: proactiveBulkTaskNote,
+                        automationCommanderSheetId,
+                        isProactive: true,
+                        proactiveAlertKey: alert.alertKey,
+                      }),
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                      successCount++;
+                      successfulRowIndexes.add(alert.rowIndex);
+                      
+                      if (sessionId) {
+                        await fetch("/api/triage", {
+                          method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ action: "remove_alert", sessionId, alertId: alert.alertKey }),
+                        }).catch(() => {});
+                      }
 
-          if (proactiveBulkTaskSnoozeDate && data.fingerprintHash) {
-            await fetch("/api/triage", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                action: "snooze_task",
-                fingerprintHash: data.fingerprintHash,
-                snoozedUntil,
-                automationCommanderSheetId,
-              }),
-            }).catch(() => {});
-          }
-        }
-      }
+                      if (proactiveBulkTaskSnoozeDate && data.fingerprintHash) {
+                        await fetch("/api/triage", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            action: "snooze_task",
+                            fingerprintHash: data.fingerprintHash,
+                            snoozedUntil,
+                            automationCommanderSheetId,
+                          }),
+                        }).catch(() => {});
+                      }
+                    }
+                  }
 
-      if (successCount === 0) {
-        setAcceptError("Failed to create tasks for selected alerts");
-        return;
-      }
+                  if (successCount === 0) {
+                    setAcceptError("Failed to create tasks for selected alerts");
+                    return;
+                  }
 
-      const selectedRowIndexes = new Set(alerts.map(a => a.rowIndex));
-      setProactiveAlerts(prev => {
-        const remaining = prev.filter(a => !selectedRowIndexes.has(a.rowIndex));
-        const counts = {};
-        remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
-        setProactiveCountsByClient(counts);
-        return remaining;
-      });
+                  let remainingProactiveCount = 0;
+                  setProactiveAlerts(prev => {
+                    const remaining = prev.filter(a => !successfulRowIndexes.has(a.rowIndex));
+                    const counts = {};
+                    remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+                    setProactiveCountsByClient(counts);
+                    remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
+                    return remaining;
+                  });
 
-      if (!proactiveBulkTaskSnoozeDate) setNavTaskCount(prev => prev + successCount);
-      else setSnoozedTaskCount(prev => prev + successCount);
+                  if (!proactiveBulkTaskSnoozeDate) setNavTaskCount(prev => prev + successCount);
+                  else setSnoozedTaskCount(prev => prev + successCount);
 
-      setProactiveBulkSelected(new Set());
-      setProactiveBulkMode(false);
-      setShowProactiveBulkTaskModal(false);
-      setProactiveBulkTaskNote("");
-      setProactiveBulkTaskSnoozeDate("");
-      setProactiveBulkTaskSnoozeTime("07:00");
+                  setProactiveBulkSelected(new Set());
+                  setProactiveBulkMode(false);
+                  setShowProactiveBulkTaskModal(false);
+                  setProactiveBulkTaskNote("");
+                  setProactiveBulkTaskSnoozeDate("");
+                  setProactiveBulkTaskSnoozeTime("07:00");
 
-    } catch (err) {
+                  const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
+                  if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
+                    handlePostClear([], resolvedNoActionFlags);
+                  }
+
+                } catch (err) {
       setAcceptError(`Bulk task error: ${err.message}`);
     } finally {
       setProactiveBulkSubmitting(false);

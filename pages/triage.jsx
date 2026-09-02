@@ -3032,7 +3032,7 @@ export default function TriageSystem({ onBack }) {
     return clientsWithFlags.reduce((total, c) => {
       const assignedSet = assignedByClient[c.clientName] || new Set();
       const expenseIds = c.activeExpenseIds || [];
-      const validAssigned = expenseIds.filter(id => assignedSet.has(id)).length;
+      const validAssigned = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
       
       let clientTotal = 0;
 
@@ -3055,7 +3055,7 @@ export default function TriageSystem({ onBack }) {
 
       return total + clientTotal;
     }, 0);
-  }, [clientsWithFlags, assignedByClient]);
+  }, [clientsWithFlags, assignedByClient, assignedAppIds]);
 
   // EoM "alert_check" live-status computation — shared by both the Overview
   // screen's totals and the client detail screen's per-task pill, so they
@@ -3074,13 +3074,15 @@ export default function TriageSystem({ onBack }) {
   const computeAlertCheckCount = (clientName, categoriesStr) => {
     const client = (clientsWithFlags || []).find(c => c.clientName === clientName);
     if (!client) return 0; // not in clientsWithFlags at all means zero active flags for this client
-    const assignedCount = assignedByClient[clientName]?.size || 0;
+    const assignedSet = assignedByClient[clientName] || new Set();
+    const expenseIds = client.activeExpenseIds || [];
+    const validAssigned = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
     const categories = (categoriesStr || "").split(",").filter(Boolean);
     let total = 0;
     categories.forEach(cat => {
       (ALERT_CATEGORY_FLAGS[cat] || []).forEach(flagKey => {
         let count = client.alertCounts?.[flagKey] || 0;
-        if (EXPENSE_SUPPRESSIBLE.has(flagKey)) count = Math.max(0, count - assignedCount);
+        if (EXPENSE_SUPPRESSIBLE.has(flagKey)) count = Math.max(0, count - validAssigned);
         total += count;
       });
     });
@@ -6141,11 +6143,7 @@ export default function TriageSystem({ onBack }) {
                                       if (!exp) return;
                                       setOutgoingsPlacing(null);
                                       setDirectCostsSavingCell(cellSavingKey);
-                                      setAssignedAppIds(prevSet => {
-                                        const next = new Set(prevSet); next.add(exp.appId);
-                                        try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
-                                        return next;
-                                      });
+                                      addAssignedAppId(exp.appId, outgoingsClient?.clientName);
                                       setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
                                       try {
                                         await fetch("/api/triage", {
@@ -6225,11 +6223,7 @@ export default function TriageSystem({ onBack }) {
                                     setOutgoingsPlacing(null);
                                     const savingKey = `newrow-${job.client}|||${job.jobName}`;
                                     setDirectCostsSavingCell(savingKey);
-                                    setAssignedAppIds(prevSet => {
-                                      const next = new Set(prevSet); next.add(exp.appId);
-                                      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
-                                      return next;
-                                    });
+                                    addAssignedAppId(exp.appId, outgoingsClient?.clientName);
                                     setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
                                     try {
                                       await fetch("/api/triage", {
@@ -8873,11 +8867,11 @@ export default function TriageSystem({ onBack }) {
                   }),
                 ];
                 return combinedClientList;
-              })().filter(client => {
+              }).filter(client => {
                 // Check if client has any visible alerts after applying assignedByClient suppression
                 const assignedSet = assignedByClient[client.clientName] || new Set();
                 const expenseIds = client.activeExpenseIds || [];
-                const validAssigned = expenseIds.filter(id => assignedSet.has(id)).length;
+                const validAssigned = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
                 
                 const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
                   if (!client.flags?.[key]) return false;
@@ -8893,7 +8887,7 @@ export default function TriageSystem({ onBack }) {
               }).map((client, idx) => {
                 const assignedSet = assignedByClient[client.clientName] || new Set();
                 const expenseIds = client.activeExpenseIds || [];
-                const validAssigned = expenseIds.filter(id => assignedSet.has(id)).length;
+                const validAssigned = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
                 
                 const actionableLines = ACTIONABLE_FLAG_KEYS
                   .filter(key => client.flags?.[key])

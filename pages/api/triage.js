@@ -561,21 +561,22 @@ async function appendAlertMemoryRow(sheets, automationCommanderSheetId, payload)
   if (alertType === "crm") alertType = "crmPipeAppDiscr";
 
   const now = new Date().toISOString().split("T")[0];
-  await withRetry(() => sheets.spreadsheets.values.append({
-    spreadsheetId: automationCommanderSheetId,
-    range: `${ALERT_MEMORY_TAB}!A:L`,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[
-        fingerprintHash, alertType, clientName, alertSummary,
-        cachedOptionsJSON, status, ignoreReason || "", now, now,
-        now, // lastRechecked = now on creation
-        dataSnapshot || "",
-        category || "discrepancy",
-      ]],
-    },
-  }));
-}
+          const response = await withRetry(() => sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId,
+            range: `${ALERT_MEMORY_TAB}!A:L`,
+            valueInputOption: "RAW",
+            requestBody: {
+              values: [[
+                fingerprintHash, alertType, clientName, alertSummary,
+                cachedOptionsJSON, status, ignoreReason || "", now, now,
+                now, // lastRechecked = now on creation
+                dataSnapshot || "",
+                category || "discrepancy",
+              ]],
+            },
+          }));
+          console.log(`  📝 DEBUG: Appended alert ${fingerprintHash} to ${response.data.updates.updatedRange} with status "${status}"`);
+        }
 /**
  * Update an existing AlertMemory row by its 1-indexed sheet row number.
  */

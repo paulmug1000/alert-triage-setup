@@ -9065,6 +9065,14 @@ export default function TriageSystem({ onBack }) {
 
     // Centralized rendering helper to preserve rich data across both bulk and normal modes
     const renderAlertContent = (alert) => {
+      const alertDates = (alert.firstSeen || alert.lastSeen) ? (
+        <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
+          {alert.firstSeen ? `First seen: ${alert.firstSeen.split("T")[0]}` : ""}
+          {alert.firstSeen && alert.lastSeen ? " · " : ""}
+          {alert.lastSeen ? `Last seen: ${alert.lastSeen.split("T")[0]}` : ""}
+        </div>
+      ) : null;
+
       const ft = alert.flagType || alert.alertType || "";
       const isAppDiscr = ft === "crmConfAppDiscr" || ft === "crmPipeAppDiscr";
       const isDashDiscr = ft === "crmPipeDashDiscr" || ft === "crmConfDashDiscr";
@@ -9093,6 +9101,7 @@ export default function TriageSystem({ onBack }) {
                 {isPipeline ? "In Pipeline — not in CRM" : "In Confirmed — not in CRM"}
               </div>
             )}
+            {alertDates}
           </div>
         );
       }
@@ -9121,6 +9130,7 @@ export default function TriageSystem({ onBack }) {
                 {isPipeline ? "In CRM — not in Pipeline" : "In CRM — not in Confirmed"}
               </div>
             )}
+            {alertDates}
           </div>
         );
       }
@@ -9131,6 +9141,7 @@ export default function TriageSystem({ onBack }) {
         <div style={{ pointerEvents: "none" }}>
           <div style={{ fontWeight: "600", color: "#333" }}>{getAlertSummary(alert)}</div>
           {detailSub && <div style={{ fontSize: "11px", fontWeight: "600", color: "#d97706", marginTop: "4px" }}>⚠ {detailSub}</div>}
+          {alertDates}
         </div>
       );
     };
@@ -9435,6 +9446,13 @@ export default function TriageSystem({ onBack }) {
                                         {na.flagDetail}
                                       </div>
                                     )}
+                                    {(na.firstSeen || na.lastSeen) && (
+                                      <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
+                                        {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
+                                        {na.firstSeen && na.lastSeen ? " · " : ""}
+                                        {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
+                                      </div>
+                                    )}
                                   </div>
                                   <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
                                     {selectedClient?.clientSheetId && (
@@ -9559,6 +9577,13 @@ export default function TriageSystem({ onBack }) {
                                 {na.flagDetail && (
                                   <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#888", marginTop: "4px", textDecoration: isResolved ? "line-through" : "none", lineHeight: "1.4" }}>
                                     {na.flagDetail}
+                                  </div>
+                                )}
+                                {(na.firstSeen || na.lastSeen) && (
+                                  <div style={{ fontSize: "10px", color: "#aaa", marginTop: "6px" }}>
+                                    {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
+                                    {na.firstSeen && na.lastSeen ? " · " : ""}
+                                    {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
                                   </div>
                                 )}
                               </div>
@@ -10137,7 +10162,16 @@ export default function TriageSystem({ onBack }) {
             const fullName = getFlagName(key);
             return (
               <div style={{ ...styles.alertMetadata, fontSize: "15px", fontWeight: "600", padding: "14px", marginBottom: "16px", color: "#1d4ed8", backgroundColor: "#eff6ff", borderLeft: "4px solid #3b82f6" }}>
-                {fullName}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{fullName}</span>
+                  {(alert.firstSeen || alert.lastSeen) && (
+                    <span style={{ fontSize: "11px", color: "#3b82f6", fontWeight: "500", opacity: 0.8 }}>
+                      {alert.firstSeen ? `First seen: ${alert.firstSeen.split("T")[0]}` : ""}
+                      {alert.firstSeen && alert.lastSeen ? " · " : ""}
+                      {alert.lastSeen ? `Last seen: ${alert.lastSeen.split("T")[0]}` : ""}
+                    </span>
+                  )}
+                </div>
               </div>
             );
           })()}

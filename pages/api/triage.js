@@ -7605,7 +7605,9 @@ export default async function handler(req, res) {
                 clientName: row.clientName,
                 clientId: liveMeta.clientSheetId || alertObj.clientId || alertObj.clientSheetId || "",
                 masterSheetId: liveMeta.masterSheetId || alertObj.masterSheetId || "",
-                options 
+                options,
+                firstSeen: row.firstSeen,
+                lastSeen: row.lastSeen
               });
 
               if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});
@@ -7668,9 +7670,11 @@ export default async function handler(req, res) {
                 id: row.fingerprintHash,
                 flagType: row.alertType,
                 flagName: FLAG_NAMES[row.alertType] || row.alertType,
-                flagDetail: row.alertSummary, // Pass the raw text so the UI can display it
+                flagDetail: row.alertSummary,
                 fingerprintHash: row.fingerprintHash,
                 analysisResult,
+                firstSeen: row.firstSeen,
+                lastSeen: row.lastSeen,
               });
 
               if (!extraFlagsByClient.has(row.clientName)) extraFlagsByClient.set(row.clientName, {});

@@ -2107,7 +2107,8 @@ export default function TriageSystem({ onBack }) {
       if (!taskModalIsProactive) {
         const alert = taskModalAlert;
         const alertId = `${alert.sheetName}-${alert.rowNumber}`;
-        setProcessedAlerts(prev => new Set([...prev, alert.fingerprintHash]));
+        const uniqueId = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
+        setProcessedAlerts(prev => new Set([...prev, uniqueId]));
         if (sessionId) {
           fetch("/api/triage", {
             method: "POST",
@@ -2115,7 +2116,7 @@ export default function TriageSystem({ onBack }) {
             body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
           }).catch(() => {});
         }
-        const updatedAlerts = clientAlerts.filter(a => a.fingerprintHash !== alert.fingerprintHash);
+        const updatedAlerts = clientAlerts.filter(a => (a.fingerprintHash || `${a.flagType || a.type}-${a.sheetName}-${a.rowNumber}`) !== uniqueId);
         setClientAlerts(updatedAlerts);
         let taskFlagType = alert.flagType || alert.alertType || alert.type || "";
         if (taskFlagType === "invoice") taskFlagType = "invoiceDashboardDiscr";
@@ -2137,7 +2138,7 @@ export default function TriageSystem({ onBack }) {
       } else {
         // Proactive: remove from proactive list — use rowIndex (unique) not alertKey
         setProactiveAlerts(prev => {
-          const remaining = taskModalAlert.rowIndex
+          const remaining = (taskModalAlert.rowIndex != null)
             ? prev.filter(a => a.rowIndex !== taskModalAlert.rowIndex)
             : prev.filter(a => a.alertKey !== taskModalAlert.alertKey);
           const counts = {};
@@ -2629,7 +2630,7 @@ export default function TriageSystem({ onBack }) {
       
       // Filter alerts for this client and remove processed ones
       const filteredAlerts = data.alerts.filter(alert => 
-        alert.clientName === client.clientName && !processedAlerts.has(alert.fingerprintHash)
+        alert.clientName === client.clientName && !processedAlerts.has(alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`)
       );
       
       // Filter non-actionable alerts for this client by clientName (with fallback to masterSheetId)
@@ -2814,7 +2815,8 @@ export default function TriageSystem({ onBack }) {
       
       // Mark alert as processed
       const alertId = `${alert.sheetName}-${alert.rowNumber}`;
-      setProcessedAlerts(new Set([...processedAlerts, alertId]));
+      const uniqueId = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
+      setProcessedAlerts(new Set([...processedAlerts, uniqueId]));
 
       // Update Redis session so reloads reflect resolved state (fire-and-forget)
       if (sessionId) {
@@ -3071,7 +3073,7 @@ export default function TriageSystem({ onBack }) {
   // ── Bulk action helpers ──────────────────────────────────────────────────
 
   const getBulkSelectedAlerts = () => {
-    return clientAlerts.filter(a => bulkSelected.has(a.fingerprintHash));
+    return clientAlerts.filter(a => bulkSelected.has(a.fingerprintHash || `${a.flagType || a.type}-${a.sheetName}-${a.rowNumber}`));
   };
 
   const bulkIgnore = async () => {
@@ -3087,8 +3089,8 @@ export default function TriageSystem({ onBack }) {
       const data = await res.json();
       if (!data.success) { setAcceptError(data.error || "Bulk ignore failed"); return; }
 
-      const hashesToRemove = new Set(alerts.map(a => a.fingerprintHash));
-      const updatedAlerts = clientAlerts.filter(a => !hashesToRemove.has(a.fingerprintHash));
+      const hashesToRemove = new Set(alerts.map(a => a.fingerprintHash || `${a.flagType || a.type}-${a.sheetName}-${a.rowNumber}`));
+      const updatedAlerts = clientAlerts.filter(a => !hashesToRemove.has(a.fingerprintHash || `${a.flagType || a.type}-${a.sheetName}-${a.rowNumber}`));
 
       if (sessionId) {
         setProcessedAlerts(prev => new Set([...prev, ...hashesToRemove]));
@@ -3148,8 +3150,8 @@ export default function TriageSystem({ onBack }) {
       const data = await res.json();
       if (!data.success) { setAcceptError(data.error || "Bulk task creation failed"); return; }
 
-      const hashesToRemove = new Set(alerts.map(a => a.fingerprintHash));
-      const updatedAlerts = clientAlerts.filter(a => !hashesToRemove.has(a.fingerprintHash));
+      const hashesToRemove = new Set(alerts.map(a => a.fingerprintHash || `${a.flagType || a.type}-${a.sheetName}-${a.rowNumber}`));
+      const updatedAlerts = clientAlerts.filter(a => !hashesToRemove.has(a.fingerprintHash || `${a.flagType || a.type}-${a.sheetName}-${a.rowNumber}`));
 
       if (sessionId) {
         setProcessedAlerts(prev => new Set([...prev, ...hashesToRemove]));
@@ -3200,12 +3202,12 @@ export default function TriageSystem({ onBack }) {
   };
 
   const bulkResolveInfo = async () => {
-    const alerts = clientNoActionAlerts.filter(a => infoBulkSelected.has(a.fingerprintHash || a.flagType));
+    const alerts = clientNoActionAlerts.filter(a => infoBulkSelected.has(a.fingerprintHash || `${a.flagType}-${a.flagDetail || ""}`));
     if (!alerts.length) return;
     try {
       setInfoBulkSubmitting(true);
       const newResolved = new Set(resolvedNoActionFlags);
-      alerts.forEach(a => newResolved.add(a.fingerprintHash || a.flagType));
+      alerts.forEach(a => newResolved.add(a.fingerprintHash || `${a.flagType}-${a.flagDetail || ""}`));
       setResolvedNoActionFlags(newResolved);
 
       const typesToClear = new Set();
@@ -3257,7 +3259,7 @@ export default function TriageSystem({ onBack }) {
   };
 
   const infoBulkCreateTasks = async () => {
-    const alerts = clientNoActionAlerts.filter(a => infoBulkSelected.has(a.fingerprintHash || a.flagType));
+    const alerts = clientNoActionAlerts.filter(a => infoBulkSelected.has(a.fingerprintHash || `${a.flagType}-${a.flagDetail || ""}`));
     if (!alerts.length) return;
     try {
       setInfoBulkSubmitting(true);
@@ -3285,7 +3287,7 @@ export default function TriageSystem({ onBack }) {
         const data = await res.json();
         if (data.success) {
           successCount++;
-          newResolved.add(na.fingerprintHash || na.flagType);
+          newResolved.add(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`);
           
           if (sessionId && selectedClient) {
             await fetch("/api/triage", {
@@ -3475,7 +3477,8 @@ export default function TriageSystem({ onBack }) {
 
       // Mark alert as processed
       const alertId = `${alert.sheetName}-${alert.rowNumber}`;
-      setProcessedAlerts(new Set([...processedAlerts, alert.fingerprintHash]));
+      const uniqueId = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
+      setProcessedAlerts(new Set([...processedAlerts, uniqueId]));
 
       // Update Redis session so reloads reflect resolved state (fire-and-forget)
       if (sessionId) {
@@ -3664,7 +3667,7 @@ export default function TriageSystem({ onBack }) {
       }
 
       setProactiveAlerts(prev => {
-          const remaining = rowIndex
+          const remaining = (rowIndex != null)
             ? prev.filter(a => a.rowIndex !== rowIndex)
             : prev.filter(a => a.alertKey !== alertKey);
           const counts = {};
@@ -9173,7 +9176,7 @@ export default function TriageSystem({ onBack }) {
               <div>
                 {Object.keys(groupedAlerts).map((type) => {
                   const groupAlerts = groupedAlerts[type];
-                  const groupKeys   = groupAlerts.map((alert) => alert.fingerprintHash);
+                  const groupKeys   = groupAlerts.map((alert) => alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`);
                   const allSelected = groupKeys.every(k => bulkSelected.has(k));
                   const anySelected = groupKeys.some(k => bulkSelected.has(k));
                   return (
@@ -9220,7 +9223,7 @@ export default function TriageSystem({ onBack }) {
                             <div key={label}>
                               <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>{label}</div>
                               {alerts.map((alert, localIdx) => {
-                                const selKey = alert.fingerprintHash;
+                                const selKey = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
                           const isChecked = bulkSelected.has(selKey);
 
                                 return bulkMode ? (
@@ -9253,7 +9256,7 @@ export default function TriageSystem({ onBack }) {
                         // Non-invoice types: render normally
                         const isExpenseGroup = type === "expenseDashboardDiscr";
                         const alertBtns = groupAlerts.map((alert, idx) => {
-                          const selKey = alert.fingerprintHash;
+                          const selKey = alert.fingerprintHash || `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`;
                           const isChecked = bulkSelected.has(selKey);
 
                           return bulkMode ? (
@@ -9334,7 +9337,7 @@ export default function TriageSystem({ onBack }) {
               </div>
               
               {infoBulkMode && clientNoActionAlerts.length > 0 && (() => {
-                const allKeys = clientNoActionAlerts.map(a => a.fingerprintHash || a.flagType);
+                const allKeys = clientNoActionAlerts.map(a => a.fingerprintHash || `${a.flagType}-${a.flagDetail || ""}`);
                 const allSelected = allKeys.every(k => infoBulkSelected.has(k));
                 return (
                   <div style={{ marginBottom: "16px" }}>
@@ -9357,7 +9360,7 @@ export default function TriageSystem({ onBack }) {
                       </h3>
                       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                         {groupAlerts.map((na) => {
-                          const alertId = na.fingerprintHash || na.flagType;
+                          const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
                           const isResolved = resolvedNoActionFlags.has(alertId);
                           const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges"].includes(na.flagType);
                           const analysis = noActionAnalysis[alertId] || na.analysisResult;
@@ -9367,7 +9370,7 @@ export default function TriageSystem({ onBack }) {
                             const newResolved = new Set([...resolvedNoActionFlags, alertId]);
                             setResolvedNoActionFlags(newResolved);
                             
-                            const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || n.flagType));
+                            const remainingOfType = clientNoActionAlerts.filter(n => n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || `${n.flagType}-${n.flagDetail || ""}`));
                             const isLastOfType = remainingOfType.length === 0;
 
                             setClientsWithFlags(prev => prev.map(c => {
@@ -9396,7 +9399,7 @@ export default function TriageSystem({ onBack }) {
                             if (RICH_NOACTION_FLAG_GROUP[na.flagType] && isLastOfType) {
                               autoClearFlags(clientAlerts, newResolved).catch(() => {});
                             }
-                            const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || n.flagType));
+                            const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || `${n.flagType}-${n.flagDetail || ""}`));
                             const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
                             if (allResolved && proactiveDone && clientAlerts.length === 0) {
                               handlePostClear([], newResolved);

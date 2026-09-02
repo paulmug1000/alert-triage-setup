@@ -3235,14 +3235,20 @@ async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null) {
 
     const alerts = [];
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
-      const row = rows[rowIdx];
-      if (!row || row.length === 0) continue;
+        const row = rows[rowIdx];
+        if (!row || row.length === 0) continue;
 
-      const hasDiscrepancy = [40, 42, 43, 44, 45, 46, 47].some(
-        (idx) => String(row[idx] || "").trim() === "1"
-      );
+        // DEBUG: Output raw flag values for any row with a 1 in columns AO through AV
+        const flagValues = row.slice(40, 48).map(v => String(v || "").trim());
+        if (flagValues.includes("1")) {
+          console.log(`  [DirComp Debug] Row ${7 + rowIdx} flags (AO-AV): ${JSON.stringify(flagValues)}`);
+        }
 
-      if (hasDiscrepancy) {
+        const hasDiscrepancy = [40, 41, 42, 43, 44, 45, 46, 47].some(
+          (idx) => String(row[idx] || "").trim() === "1"
+        );
+
+        if (hasDiscrepancy) {
         const alert = {
           type: "expense",
           sheetName: "DirComp",
@@ -7899,11 +7905,14 @@ export default async function handler(req, res) {
               }
             }
 
+            console.log(`\n🔍 DIRCOMP GATES FOR ${client.clientName}: hasExpense=${hasExpense}, actionableDue=${actionableDue}, expLock=${gasLocks.expense?.locked}`);
+
             if (hasExpense && actionableDue) {
               const expLock = gasLocks.expense;
               if (!expLock.locked) {
+                console.log(`  -> Passing to readDirCompAlerts for ${client.clientName}`);
                 const expAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
-                expAlerts.forEach(a => { 
+                expAlerts.forEach(a => {
                   a.clientName = client.clientName;
                   a.clientId = client.clientSheetId;
                   a.masterSheetId = client.masterSheetId;

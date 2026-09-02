@@ -2583,24 +2583,24 @@ export default function TriageSystem({ onBack }) {
 
   // NEW: Helper function to get flag name from flag key
   const getFlagName = (flagKey) => {
-    const flagNames = {
-      "invoiceDashboardDiscr": "Invoice discrepancy",
-      "crmPipeDashDiscr":      "CRM dashboard discrepancy (Pipeline)",
-      "crmPipeAppDiscr":       "CRM app discrepancy (Pipeline)",
-      "crmConfDashDiscr":      "CRM dashboard discrepancy (Confirmed)",
-      "crmConfAppDiscr":       "CRM app discrepancy (Confirmed)",
-      "crmCopiedConfChecked":  "CRM copied to conf box checked",
-      "crmCopiedConfUnchecked":"CRM copied to conf box UNchecked",
-      "crmCopiedConfDelete":   "CRM copied to conf box DELETE",
-      "retainerInvoicesCreated": "Retainer invoices created",
-      "retainerInvoicesDeleted": "Retainer invoices deleted",
-      "expenseDashboardDiscr": "Expense discrepancy",
-      "expenseAdded":          "Expense added",
-      "expenseUnreconGaps":    "Expense reconciliation gaps",
-      "invoiceStaleUnsentChanges": "Invoice stale/unsent changes",
-    };
-    return flagNames[flagKey] || flagKey;
-  };
+        const flagNames = {
+          "invoiceDashboardDiscr": "Invoice discrepancy",
+          "crmPipeDashDiscr":      "CRM dashboard discrepancy (Pipeline)",
+          "crmPipeAppDiscr":       "CRM app discrepancy (Pipeline)",
+          "crmConfDashDiscr":      "CRM dashboard discrepancy (Confirmed)",
+          "crmConfAppDiscr":       "CRM app discrepancy (Confirmed)",
+          "crmCopiedConfChecked":  "CRM copied to conf box checked",
+          "crmCopiedConfUnchecked":"CRM copied to conf box UNchecked",
+          "crmCopiedConfDelete":   "CRM copied to conf box DELETE",
+          "retainerInvoicesCreated": "Retainer invoices created",
+          "retainerInvoicesDeleted": "Retainer invoices deleted",
+          "expenseDashboardDiscr": "Expense discrepancy",
+          "expenseAdded":          "Expense added",
+          "expenseUnreconGaps":    "Expense reconciliation gaps",
+          "invoiceStaleUnsentChanges": "Stale unsent invoice send date changed",
+        };
+        return flagNames[flagKey] || flagKey;
+      };
 
   // NEW: Select a client and fetch its alerts
   const selectClient = async (client) => {
@@ -8325,7 +8325,7 @@ export default function TriageSystem({ onBack }) {
                     group: "Invoice",
                     items: [
                       { key: "invoiceDashboardDiscr", name: "Invoice dashboard discrepancy", kind: "actionable" },
-                      { key: "invoiceStaleUnsentChanges", name: "Invoice stale/unsent changes", kind: "info" },
+                      { key: "invoiceStaleUnsentChanges", name: "Stale unsent invoice send date changed", kind: "info" },
                       { key: "retainerInvoicesCreated", name: "Retainer invoices created", kind: "info" },
                       { key: "retainerInvoicesDeleted", name: "Retainer invoices deleted", kind: "info" },
                     ],
@@ -9477,12 +9477,14 @@ export default function TriageSystem({ onBack }) {
                                 </div>
                                 {analysis && !isLoading && (
                                   <div>
-                                    <div style={{
-                                      padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
-                                      background: overallOk ? "#e8f5e9" : "#fbe9e7", color: overallOk ? "#2e7d32" : "#bf360c",
-                                    }}>
-                                      {overallOk ? "✓ Everything looks correct" : "⚠ Issues found — review below"}
-                                    </div>
+                                    {na.flagType !== "invoiceStaleUnsentChanges" && (
+                                      <div style={{
+                                        padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
+                                        background: overallOk ? "#e8f5e9" : "#fbe9e7", color: overallOk ? "#2e7d32" : "#bf360c",
+                                      }}>
+                                        {overallOk ? "✓ Everything looks correct" : "⚠ Issues found — review below"}
+                                      </div>
+                                    )}
                                     {(analysis.results || []).map((r, ri) => (
                                       <div key={ri} style={{
                                         marginBottom: "8px", padding: "8px 10px", borderRadius: "4px",

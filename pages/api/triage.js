@@ -60,7 +60,7 @@ const FLAG_NAMES = {
   expenseDashboardDiscr: "Expense dashboard discr",
   expenseAdded: "Expense added",
   expenseUnreconGaps: "Expense unrecon gaps",
-  invoiceStaleUnsentChanges: "Invoice stale unsent changes",
+  invoiceStaleUnsentChanges: "Stale unsent invoice send date changed",
 };
 
 // Column offsets within a DataChgAlert!AF2:BG2 read (0 = column AF), per

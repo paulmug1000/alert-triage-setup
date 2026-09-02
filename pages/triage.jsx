@@ -2112,7 +2112,7 @@ export default function TriageSystem({ onBack }) {
       if (!taskModalIsProactive) {
         const alert = taskModalAlert;
         const alertId = `${alert.sheetName}-${alert.rowNumber}`;
-        setProcessedAlerts(prev => new Set([...prev, alertId]));
+        setProcessedAlerts(prev => new Set([...prev, alert.fingerprintHash]));
         if (sessionId) {
           fetch("/api/triage", {
             method: "POST",
@@ -2120,7 +2120,7 @@ export default function TriageSystem({ onBack }) {
             body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
           }).catch(() => {});
         }
-        const updatedAlerts = clientAlerts.filter(a => `${a.sheetName}-${a.rowNumber}` !== alertId);
+        const updatedAlerts = clientAlerts.filter(a => a.fingerprintHash !== alert.fingerprintHash);
         setClientAlerts(updatedAlerts);
         let taskFlagType = alert.flagType || alert.alertType || alert.type || "";
         if (taskFlagType === "invoice") taskFlagType = "invoiceDashboardDiscr";
@@ -2634,7 +2634,7 @@ export default function TriageSystem({ onBack }) {
       
       // Filter alerts for this client and remove processed ones
       const filteredAlerts = data.alerts.filter(alert => 
-        alert.clientName === client.clientName && !processedAlerts.has(`${alert.sheetName}-${alert.rowNumber}`)
+        alert.clientName === client.clientName && !processedAlerts.has(alert.fingerprintHash)
       );
       
       // Filter non-actionable alerts for this client by clientName (with fallback to masterSheetId)
@@ -3076,17 +3076,7 @@ export default function TriageSystem({ onBack }) {
   // ── Bulk action helpers ──────────────────────────────────────────────────
 
   const getBulkSelectedAlerts = () => {
-    const alerts = [];
-    for (const key of bulkSelected) {
-      const sepIdx = key.lastIndexOf("|||");
-      const type   = key.slice(0, sepIdx);
-      const alertId = key.slice(sepIdx + 3); // "SheetName-rowNumber"
-      const alert  = (groupedAlerts[type] || []).find(
-        a => `${a.sheetName}-${a.rowNumber}` === alertId
-      );
-      if (alert) alerts.push(alert);
-    }
-    return alerts;
+    return clientAlerts.filter(a => bulkSelected.has(a.fingerprintHash));
   };
 
   const bulkIgnore = async () => {
@@ -3102,11 +3092,11 @@ export default function TriageSystem({ onBack }) {
       const data = await res.json();
       if (!data.success) { setAcceptError(data.error || "Bulk ignore failed"); return; }
 
-      const alertIdsToRemove = new Set(alerts.map(a => `${a.sheetName}-${a.rowNumber}`));
-      const updatedAlerts = clientAlerts.filter(a => !alertIdsToRemove.has(`${a.sheetName}-${a.rowNumber}`));
+      const hashesToRemove = new Set(alerts.map(a => a.fingerprintHash));
+      const updatedAlerts = clientAlerts.filter(a => !hashesToRemove.has(a.fingerprintHash));
 
       if (sessionId) {
-        setProcessedAlerts(prev => new Set([...prev, ...alertIdsToRemove]));
+        setProcessedAlerts(prev => new Set([...prev, ...hashesToRemove]));
         for (const alert of alerts) {
           const alertId = `${alert.sheetName}-${alert.rowNumber}`;
           fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -3163,11 +3153,11 @@ export default function TriageSystem({ onBack }) {
       const data = await res.json();
       if (!data.success) { setAcceptError(data.error || "Bulk task creation failed"); return; }
 
-      const alertIdsToRemove = new Set(alerts.map(a => `${a.sheetName}-${a.rowNumber}`));
-      const updatedAlerts = clientAlerts.filter(a => !alertIdsToRemove.has(`${a.sheetName}-${a.rowNumber}`));
+      const hashesToRemove = new Set(alerts.map(a => a.fingerprintHash));
+      const updatedAlerts = clientAlerts.filter(a => !hashesToRemove.has(a.fingerprintHash));
 
       if (sessionId) {
-        setProcessedAlerts(prev => new Set([...prev, ...alertIdsToRemove]));
+        setProcessedAlerts(prev => new Set([...prev, ...hashesToRemove]));
         for (const alert of alerts) {
           const alertId = `${alert.sheetName}-${alert.rowNumber}`;
           fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -3488,9 +3478,9 @@ export default function TriageSystem({ onBack }) {
       setShowIgnoreModal(false);
       setIgnoreReason("");
 
-      // Mark as processed so it won't reappear if selectClient reloads from Redis
+      // Mark alert as processed
       const alertId = `${alert.sheetName}-${alert.rowNumber}`;
-      setProcessedAlerts(prev => new Set([...prev, alertId]));
+      setProcessedAlerts(new Set([...processedAlerts, alert.fingerprintHash]));
 
       // Update Redis session so reloads reflect resolved state (fire-and-forget)
       if (sessionId) {
@@ -9182,7 +9172,7 @@ export default function TriageSystem({ onBack }) {
               <div>
                 {Object.keys(groupedAlerts).map((type) => {
                   const groupAlerts = groupedAlerts[type];
-                  const groupKeys   = groupAlerts.map((alert) => `${type}|||${alert.sheetName}-${alert.rowNumber}`);
+                  const groupKeys   = groupAlerts.map((alert) => alert.fingerprintHash);
                   const allSelected = groupKeys.every(k => bulkSelected.has(k));
                   const anySelected = groupKeys.some(k => bulkSelected.has(k));
                   return (
@@ -9229,8 +9219,8 @@ export default function TriageSystem({ onBack }) {
                             <div key={label}>
                               <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 4px" }}>{label}</div>
                               {alerts.map((alert, localIdx) => {
-                                const selKey = `${type}|||${alert.sheetName}-${alert.rowNumber}`;
-                                const isChecked = bulkSelected.has(selKey);
+                                const selKey = alert.fingerprintHash;
+                          const isChecked = bulkSelected.has(selKey);
 
                                 return bulkMode ? (
                                   <div key={selKey} onClick={() => {
@@ -9262,7 +9252,7 @@ export default function TriageSystem({ onBack }) {
                         // Non-invoice types: render normally
                         const isExpenseGroup = type === "expenseDashboardDiscr";
                         const alertBtns = groupAlerts.map((alert, idx) => {
-                          const selKey = `${type}|||${alert.sheetName}-${alert.rowNumber}`;
+                          const selKey = alert.fingerprintHash;
                           const isChecked = bulkSelected.has(selKey);
 
                           return bulkMode ? (

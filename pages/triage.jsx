@@ -1372,9 +1372,8 @@ export default function TriageSystem({ onBack }) {
   // lazily, the first time they're actually needed (the "add task" picker)
   // — a genuinely separate concern, not combined here.
   useEffect(() => {
-    if (activeNav !== "tools" || eomSubView !== "overview") return;
-    setEomAllTasks([]);
-    setEomStatusOverrides([]);
+    // Run unconditionally on mount and month changes to preload in the background.
+    // We DO NOT wipe the existing state (setEomAllTasks/Overrides) so the UI doesn't flash empty.
     setEomStatusLoading(true);
     setEomStatusError("");
     Promise.all([
@@ -1391,19 +1390,19 @@ export default function TriageSystem({ onBack }) {
       })
       .catch(e => setEomStatusError(e.message))
       .finally(() => setEomStatusLoading(false));
-  }, [activeNav, eomSubView, eomMonthKey]);
+  }, [eomMonthKey]);
 
   // Client settings (excluded + order) load once, lazily — unlike
   // tasks/status they aren't month-scoped, so there's no reason to
   // re-fetch on every month change.
   useEffect(() => {
-    if (activeNav !== "tools" || eomClientSettings !== null) return;
+    if (eomClientSettings !== null) return;
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_get_excluded_clients", automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => { if (d.success) setEomClientSettings(d.clients || []); })
       .catch(e => console.error("eom_get_excluded_clients error:", e));
-  }, [activeNav, eomClientSettings]);
+  }, [eomClientSettings]);
 
   const handleEomToggleClientExcluded = (clientName, excluded) => {
     setEomClientSettings(prev => {
@@ -1454,14 +1453,9 @@ export default function TriageSystem({ onBack }) {
   // populated, it stays populated) and without widening the Overview's
   // own effect, which would undo the instant-navigation fix by re-fetching
   // on every sub-tab switch instead of just on month changes.
-  useEffect(() => {
-    if (activeNav !== "tools" || eomSubView !== "cash" || eomAllTasks !== null) return;
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId }) })
-      .then(r => r.json())
-      .then(d => { if (d.success) setEomAllTasks(d.tasks || []); })
-      .catch(e => console.error("eom_get_client_tasks error:", e));
-  }, [activeNav, eomSubView, eomAllTasks]);
+  
+  // The fallback task fetch for Cash Balances has been safely removed,
+  // as eomAllTasks is now guaranteed to preload globally on mount.
 
   // Which clients are eligible for the Cash Balances tool — not excluded
   // from EoM, and have an active task linked to "cash_balance". Shared
@@ -1508,9 +1502,9 @@ export default function TriageSystem({ onBack }) {
       .catch(e => setEomTemplatesError(e.message));
   };
   useEffect(() => {
-    if (!eomDetailClient || eomTemplates) return;
+    if (eomTemplates) return; // Only load once
     reloadEomTemplatesForPicker();
-  }, [eomDetailClient, eomTemplates]);
+  }, [eomTemplates]);
 
   const reloadEomTemplateManager = () => {
     setEomManagerLoading(true);
@@ -1545,16 +1539,17 @@ export default function TriageSystem({ onBack }) {
   // since account names change rarely and reading every client's sheet is
   // comparatively slow.
   useEffect(() => {
-    if (eomSubView !== "cash") return;
+    // Preload bank accounts in background so Cash Balance view is instant
+    if (eomBankAccountsByClient !== null) return;
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_get_bank_accounts", automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => { if (d.success) { setEomBankAccountsByClient(d.accountsByClient || {}); setEomBankAccountsLoadedAt(d.loadedAt || ""); } })
       .catch(e => console.error("eom_get_bank_accounts error:", e));
-  }, [eomSubView]);
+  }, [eomBankAccountsByClient]);
 
   useEffect(() => {
-    if (eomSubView !== "cash") return;
+    // Preload cash balance progress in background
     setEomCashProgressLoading(true);
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "eom_get_cash_balance_progress", monthKey: eomCashMonthKey, automationCommanderSheetId }) })
@@ -1562,7 +1557,7 @@ export default function TriageSystem({ onBack }) {
       .then(d => { if (d.success) setEomCashCompletedClients(d.completedClients || []); })
       .catch(e => console.error("eom_get_cash_balance_progress error:", e))
       .finally(() => setEomCashProgressLoading(false));
-  }, [eomSubView, eomCashMonthKey]);
+  }, [eomCashMonthKey]);
 
   // Consumes a pending client set by clicking "Enter Cash Balance" on a
   // task row elsewhere — waits until bank accounts have actually loaded

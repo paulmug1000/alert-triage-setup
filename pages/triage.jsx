@@ -8871,7 +8871,7 @@ export default function TriageSystem({ onBack }) {
                   }),
                 ];
                 return combinedClientList;
-              }).filter(client => {
+              })().filter(client => {
                 // Check if client has any visible alerts after applying assignedByClient suppression
                 const assignedSet = assignedByClient[client.clientName] || new Set();
                 const expenseIds = client.activeExpenseIds || [];

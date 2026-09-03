@@ -2089,7 +2089,7 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
         headerWrites.push({ range: "EomClientTasks!A1:H1", values: [["taskId", "clientName", "templateId", "taskName", "clientNotes", "active", "createdAt", "sortOrder"]] });
       }
       if (toCreate.includes("EomMonthlyStatus")) {
-        headerWrites.push({ range: "EomMonthlyStatus!A1:E1", values: [["clientName", "taskId", "monthKey", "status", "completedAt"]] });
+        headerWrites.push({ range: "EomMonthlyStatus!A1:F1", values: [["clientName", "taskId", "monthKey", "status", "completedAt", "notelet"]] });
       }
       if (toCreate.includes("EomBankAccounts")) {
         headerWrites.push({ range: "EomBankAccounts!A1:C1", values: [["clientName", "accountName", "loadedAt"]] });
@@ -2105,6 +2105,14 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
     // sortOrder (column H) was added to EomClientTasks after that tab may
     // already have been created on a live sheet — patch the header label in
     // if it's missing, without disturbing anything else already there.
+    if (!toCreate.includes("EomMonthlyStatus")) {
+      const f1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomMonthlyStatus!F1" });
+      if (!f1.data.values || !f1.data.values[0] || !f1.data.values[0][0]) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId, range: "EomMonthlyStatus!F1", valueInputOption: "RAW", requestBody: { values: [["notelet"]] },
+        });
+      }
+    }
     if (!toCreate.includes("EomClientTasks")) {
       const h1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomClientTasks!H1" });
       if (!h1.data.values || !h1.data.values[0] || !h1.data.values[0][0]) {
@@ -15965,7 +15973,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         const [tasksResp, templatesResp, statusResp] = await Promise.all([
           sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
           sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" }),
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" }),
+          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" }),
         ]);
         const templateNameById = {};
         const templateLinkedFunctionById = {};
@@ -15989,7 +15997,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
 
         const statusOverrides = (statusResp.data.values || [])
           .filter(r => r[0] === detailClient && r[2] === detailMonthKey)
-          .map(r => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending" }));
+          .map(r => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending", notelet: r[5] || "" }));
 
         return res.status(200).json({ success: true, tasks, statusOverrides });
       } catch (err) {
@@ -16084,10 +16092,10 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
             alertCategories: r[2] ? (templateAlertCategoriesById[r[2]] || "") : "",
           }));
 
-        const statusResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" }));
+        const statusResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" }));
         const statusOverrides = (statusResp.data.values || [])
-          .filter(r => r[0] && r[2] === monthKey)
-          .map(r => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending" }));
+          .filter(r => (!statusClient || r[0] === statusClient) && r[2] === monthKey)
+          .map(r => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending", notelet: r[5] || "" }));
 
         return res.status(200).json({ success: true, monthKey, activeTasks, statusOverrides });
       } catch (err) {
@@ -16106,15 +16114,15 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" });
         const rows = resp.data.values || [];
         const rowIdx = rows.findIndex(r => r[0] === uClientName && r[1] === uTaskId && r[2] === uMonthKey);
         const completedAt = uStatus === "done" ? new Date().toISOString() : "";
 
         if (rowIdx === -1) {
           await sheets.spreadsheets.values.append({
-            spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
-            requestBody: { values: [[uClientName, uTaskId, uMonthKey, uStatus, completedAt]] },
+            spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:F", valueInputOption: "RAW",
+            requestBody: { values: [[uClientName, uTaskId, uMonthKey, uStatus, completedAt, ""]] },
           });
         } else {
           const sheetRow = rowIdx + 2;
@@ -16126,6 +16134,36 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error("❌ eom_update_task_status error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_update_task_notelet") {
+      const { clientName: uClientName, taskId: uTaskId, monthKey: uMonthKey, notelet } = req.body;
+      if (!uClientName || !uTaskId || !uMonthKey) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        await ensureEomTabs_(sheets, automationCommanderSheetId);
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" }));
+        const rows = resp.data.values || [];
+        const rowIdx = rows.findIndex(r => r[0] === uClientName && r[1] === uTaskId && r[2] === uMonthKey);
+
+        if (rowIdx === -1) {
+          await withRetry(() => sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:F", valueInputOption: "RAW",
+            requestBody: { values: [[uClientName, uTaskId, uMonthKey, "pending", "", notelet || ""]] },
+          }));
+        } else {
+          const sheetRow = rowIdx + 2;
+          await withRetry(() => sheets.spreadsheets.values.update({
+            spreadsheetId: automationCommanderSheetId, range: `EomMonthlyStatus!F${sheetRow}`,
+            valueInputOption: "RAW", requestBody: { values: [[notelet || ""]] },
+          }));
+        }
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ eom_update_task_notelet error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

@@ -1124,6 +1124,9 @@ export default function TriageSystem({ onBack }) {
   const [eomNameDraft, setEomNameDraft] = useState("");
   const [eomExpandedNotesFor, setEomExpandedNotesFor] = useState(() => new Set()); // taskIds with notes currently shown, not collapsed
   const [eomNotesDraft, setEomNotesDraft] = useState("");
+  const [eomEditingNotelet, setEomEditingNotelet] = useState(null); // { taskId, clientName }
+  const [eomNoteletDraft, setEomNoteletDraft] = useState("");
+  const [eomNoteletSaving, setEomNoteletSaving] = useState(false);
   const [eomDraggedTaskId, setEomDraggedTaskId] = useState(null);
   const [eomShowTemplateManager, setEomShowTemplateManager] = useState(false);
   const [eomClientSettings, setEomClientSettings] = useState(null); // [{clientName, excluded, sortOrder}, ...] — every client that's been touched (excluded and/or reordered)
@@ -1770,6 +1773,29 @@ export default function TriageSystem({ onBack }) {
         else setEomClientTasksError(d.error || "Failed to save name");
       })
       .catch(e => setEomClientTasksError(e.message));
+  };
+
+  const handleEomSaveNotelet = async () => {
+    if (!eomEditingNotelet) return;
+    setEomNoteletSaving(true);
+    const { taskId, clientName } = eomEditingNotelet;
+    const newText = eomNoteletDraft.trim();
+    
+    setEomStatusOverrides(prev => {
+      const list = prev || [];
+      const existing = list.find(s => s.clientName === clientName && s.taskId === taskId);
+      const withoutThis = list.filter(s => !(s.clientName === clientName && s.taskId === taskId));
+      return [...withoutThis, { clientName, taskId, status: existing?.status || "pending", notelet: newText }];
+    });
+
+    try {
+      await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_update_task_notelet", clientName, taskId, monthKey: eomMonthKey, notelet: newText, automationCommanderSheetId }) });
+    } catch(e) { console.error(e); }
+    finally {
+      setEomNoteletSaving(false);
+      setEomEditingNotelet(null);
+    }
   };
 
   const handleEomToggleTaskActive = (task) => {
@@ -7020,6 +7046,27 @@ export default function TriageSystem({ onBack }) {
 
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
+        {eomEditingNotelet && (() => {
+          const [y, m] = eomMonthKey.split("-").map(Number);
+          const monthName = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+          return (
+            <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setEomEditingNotelet(null); }}>
+              <div style={styles.modalCard}>
+                <h3 style={styles.modalTitle}>Month-specific note</h3>
+                <p style={styles.modalSubtitle}>Applies only to {eomEditingNotelet.clientName} for {monthName}.</p>
+                <textarea value={eomNoteletDraft} onChange={e => setEomNoteletDraft(e.target.value)}
+                  placeholder="e.g. Waiting on client for X..." style={styles.modalTextarea} autoFocus />
+                <div style={styles.modalButtons}>
+                  <button className="triage-btn" onClick={() => setEomEditingNotelet(null)} disabled={eomNoteletSaving} style={styles.buttonSecondary}>Cancel</button>
+                  <button className="triage-btn" onClick={handleEomSaveNotelet} disabled={eomNoteletSaving}
+                    style={{ background: "#0066cc", color: "white", border: "none", borderRadius: "6px", padding: "9px 18px", fontWeight: "600", fontSize: "13px", cursor: "pointer", opacity: eomNoteletSaving ? 0.5 : 1 }}>
+                    {eomNoteletSaving ? "Saving..." : "Save note"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         <div style={{ padding: "20px", maxWidth: "900px" }}>
           <h2 style={{ margin: "0 0 14px", fontSize: "20px", fontWeight: "700" }}>EoM</h2>
 
@@ -7128,21 +7175,31 @@ export default function TriageSystem({ onBack }) {
                     if (cTasks.length === 0) return null;
                     
                     const statusByTaskId = {};
-                    (eomStatusOverrides || []).forEach(s => { if (s.clientName === c.clientName) statusByTaskId[s.taskId] = s.status; });
+                    const noteletByTaskId = {};
+                    (eomStatusOverrides || []).forEach(s => { if (s.clientName === c.clientName) { statusByTaskId[s.taskId] = s.status; noteletByTaskId[s.taskId] = s.notelet; } });
 
-                    const statePill = (taskId, current) => {
+                    const statePill = (taskId, current, noteletText) => {
                       const options = [["pending", "Pending", "#f59e0b"], ["done", "Done", "#16a34a"], ["not_applicable", "N/A", "#999"]];
+                      const hasNotelet = !!noteletText;
                       return (
-                        <div style={{ display: "flex", gap: "4px" }}>
-                          {options.map(([val, label, color]) => (
-                            <button key={val} onClick={() => handleEomStatusChange(taskId, val, c.clientName)}
-                              style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
-                                border: `1px solid ${current === val ? color : "#ddd"}`,
-                                background: current === val ? color : "#fff",
-                                color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400" }}>
-                              {label}
-                            </button>
-                          ))}
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <button 
+                            onClick={() => { setEomEditingNotelet({ taskId, clientName: c.clientName }); setEomNoteletDraft(noteletText || ""); }}
+                            title={hasNotelet ? noteletText : "Add month-specific note"}
+                            style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", fontSize: "14px", opacity: hasNotelet ? 1 : 0.3, color: hasNotelet ? "#0066cc" : "#999", transition: "opacity 0.2s" }}>
+                            {hasNotelet ? "💬" : "🗨️"}
+                          </button>
+                          <div style={{ display: "flex", gap: "4px" }}>
+                            {options.map(([val, label, color]) => (
+                              <button key={val} onClick={() => handleEomStatusChange(taskId, val, c.clientName)}
+                                style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
+                                  border: `1px solid ${current === val ? color : "#ddd"}`,
+                                  background: current === val ? color : "#fff",
+                                  color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400" }}>
+                                {label}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       );
                     };
@@ -7230,8 +7287,8 @@ export default function TriageSystem({ onBack }) {
                                     </span>
                                   )}
                                 </div>
-                                {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
-                                <button onClick={() => setEomExpandedNotesFor(prev => {
+                        {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending", noteletByTaskId[t.taskId])}
+                        <button onClick={() => setEomExpandedNotesFor(prev => {
                                     const next = new Set(prev);
                                     if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
                                     return next;
@@ -7497,22 +7554,32 @@ export default function TriageSystem({ onBack }) {
               setEomMonthKey(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
             };
             const statusByTaskId = {};
-            (eomStatusOverrides || []).forEach(s => { if (s.clientName === eomDetailClient) statusByTaskId[s.taskId] = s.status; });
+            const noteletByTaskId = {};
+            (eomStatusOverrides || []).forEach(s => { if (s.clientName === eomDetailClient) { statusByTaskId[s.taskId] = s.status; noteletByTaskId[s.taskId] = s.notelet; } });
             const activeTasks = (eomClientTasks || []).filter(t => t.active).sort((a, b) => a.sortOrder - b.sortOrder);
             const inactiveTasks = (eomClientTasks || []).filter(t => !t.active);
-            const statePill = (taskId, current) => {
+            const statePill = (taskId, current, noteletText) => {
               const options = [["pending", "Pending", "#f59e0b"], ["done", "Done", "#16a34a"], ["not_applicable", "N/A", "#999"]];
+              const hasNotelet = !!noteletText;
               return (
-                <div style={{ display: "flex", gap: "4px" }}>
-                  {options.map(([val, label, color]) => (
-                    <button key={val} onClick={() => handleEomStatusChange(taskId, val)}
-                      style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
-                        border: `1px solid ${current === val ? color : "#ddd"}`,
-                        background: current === val ? color : "#fff",
-                        color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400" }}>
-                      {label}
-                    </button>
-                  ))}
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <button 
+                    onClick={() => { setEomEditingNotelet({ taskId, clientName: eomDetailClient }); setEomNoteletDraft(noteletText || ""); }}
+                    title={hasNotelet ? noteletText : "Add month-specific note"}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", fontSize: "14px", opacity: hasNotelet ? 1 : 0.3, color: hasNotelet ? "#0066cc" : "#999", transition: "opacity 0.2s" }}>
+                    {hasNotelet ? "💬" : "🗨️"}
+                  </button>
+                  <div style={{ display: "flex", gap: "4px" }}>
+                    {options.map(([val, label, color]) => (
+                      <button key={val} onClick={() => handleEomStatusChange(taskId, val)}
+                        style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
+                          border: `1px solid ${current === val ? color : "#ddd"}`,
+                          background: current === val ? color : "#fff",
+                          color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400" }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               );
             };
@@ -7625,7 +7692,7 @@ export default function TriageSystem({ onBack }) {
                             </span>
                           )}
                         </div>
-                        {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
+                        {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending", noteletByTaskId[t.taskId])}
                         <button onClick={() => setEomExpandedNotesFor(prev => {
                             const next = new Set(prev);
                             if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);

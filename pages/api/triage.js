@@ -9337,7 +9337,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const aiExpSummary = alert.summary?.summary || `Expense ${expRef2} £${expAmount2}`;
             if (memoryRow) { await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(aiExpOptions) }); }
             else { await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType: "expense", clientName: alert.clientName || "", alertSummary: aiExpSummary, cachedOptionsJSON: JSON.stringify(aiExpOptions), status: "cached" }); }
-            return res.status(200).json({ success: true, options: aiExpOptions, alertId: alert.rowNumber });
+            return res.status(200).json({ success: true, options: aiExpOptions, alertId: alert.rowNumber, previousIgnoreReason });
           }
           // Noise-word stripping for fuzzy matching
           const EXP_NOISE = new Set(["ltd","limited","plc","inc","llc","llp","the","and","&",
@@ -9675,6 +9675,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             success: true,
             options,
             alertId: alert.rowNumber,
+            previousIgnoreReason
           });
         }
         
@@ -10145,7 +10146,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const aiCrmSummary = `CRM ${alert.alertType||""} ${crmSrcAI[0]||""} ${crmSrcAI[1]||""}`.trim();
             if (memoryRow) { await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(aiCrmOptions) }); }
             else { await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType: alert.alertType||"crm", clientName: alert.clientName||"", alertSummary: aiCrmSummary, cachedOptionsJSON: JSON.stringify(aiCrmOptions), status:"cached" }); }
-            return res.status(200).json({ success: true, options: aiCrmOptions, alertId: alert.rowNumber });
+            return res.status(200).json({ success: true, options: aiCrmOptions, alertId: alert.rowNumber, previousIgnoreReason });
           }
           // A job exists in CRM but is absent from Pipeline/Confirmed.
           // Options: Ignore, or Create new job in the sheet.
@@ -10253,10 +10254,11 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           console.log(`  💾 Options cached in AlertMemory`);
           
           return res.status(200).json({
-            success: true,
-            options: dashOptions,
-            alertId: alert.rowNumber,
-          });
+                success: true,
+                options: dashOptions,
+                alertId: alert.rowNumber,
+                previousIgnoreReason
+              });
         }
         
         // Default: Handle invoice alerts        // Default: Handle invoice alerts with flag-based branching
@@ -11275,7 +11277,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const aiInvSummary = `Invoice ${invoiceRef} ${invClient} — ${invJob}`;
           if (memoryRow) { await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(aiInvOptions) }); }
           else { await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType:"invoice", clientName: alert.clientName||"", alertSummary: aiInvSummary, cachedOptionsJSON: JSON.stringify(aiInvOptions), status:"cached" }); }
-          return res.status(200).json({ success: true, options: aiInvOptions, alertId: alert.rowNumber });
+          return res.status(200).json({ success: true, options: aiInvOptions, alertId: alert.rowNumber, previousIgnoreReason });
         }
         // Strategy:
         // A) Amount-matched slots (already found in slotMatches) → high-confidence options
@@ -11665,6 +11667,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           success: true,
           options,
           alertId: alert.rowNumber,
+          previousIgnoreReason
         });
       } catch (err) {
         console.error("❌ Error generating options:", err);

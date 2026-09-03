@@ -16411,6 +16411,96 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "eom_create_dashboard_backup") {
+      const { clientSheetId, clientName: backupClientName, workMonthKey: backupWorkMonthKey, automationCommanderSheetId } = req.body;
+      if (!clientSheetId || !backupClientName || !backupWorkMonthKey) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        
+        // 1. Get Backup Sheet URL from AutoUpdates col E (index 4)
+        const clientResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "AutoUpdates!A2:E500" });
+        const clientRows = clientResp.data.values || [];
+        const row = clientRows.find(r => String(r[0] || "").trim() === backupClientName);
+        if (!row || !row[4]) {
+          return res.status(400).json({ success: false, error: "No backup sheet URL found in AutoUpdates column E for this client." });
+        }
+        const backupSheetId = extractSheetIdFromUrl(row[4]) || String(row[4]).trim();
+
+        // 2. Get source Dashboard sheet ID
+        const sourceMeta = await sheets.spreadsheets.get({ spreadsheetId: clientSheetId, fields: "sheets.properties" });
+        const sourceSheet = sourceMeta.data.sheets.find(s => s.properties.title === "Dashboard");
+        if (!sourceSheet) {
+          return res.status(400).json({ success: false, error: "Source client sheet does not have a 'Dashboard' tab." });
+        }
+        const sourceSheetId = sourceSheet.properties.sheetId;
+
+        // 3. Determine new tab name (YYMMDD)
+        const now = new Date();
+        const yy = String(now.getFullYear()).slice(2);
+        const mm = String(now.getMonth() + 1).padStart(2, "0");
+        const dd = String(now.getDate()).padStart(2, "0");
+        const tabName = `${yy}${mm}${dd}`;
+
+        // 4. Check destination for existing tab and delete if necessary (to overwrite)
+        const backupMeta = await sheets.spreadsheets.get({ spreadsheetId: backupSheetId, fields: "sheets.properties" });
+        const existingSheet = backupMeta.data.sheets.find(s => s.properties.title === tabName);
+        if (existingSheet) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: backupSheetId,
+            requestBody: { requests: [{ deleteSheet: { sheetId: existingSheet.properties.sheetId } }] }
+          });
+        }
+
+        // 5. Copy formatting/formulas over
+        const copyResp = await sheets.spreadsheets.sheets.copyTo({
+          spreadsheetId: clientSheetId,
+          sheetId: sourceSheetId,
+          requestBody: { destinationSpreadsheetId: backupSheetId }
+        });
+        const newSheetId = copyResp.data.sheetId;
+
+        // 6. Rename and move to index 0 (far left)
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: backupSheetId,
+          requestBody: {
+            requests: [{
+              updateSheetProperties: {
+                properties: { sheetId: newSheetId, title: tabName, index: 0 },
+                fields: "title,index"
+              }
+            }]
+          }
+        });
+
+        // 7. Freeze values (overwrite formulas with raw data)
+        const newTabDataResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: backupSheetId,
+          range: `'${tabName}'!A1:ZZ`,
+          valueRenderOption: "UNFORMATTED_VALUE",
+          dateTimeRenderOption: "SERIAL_NUMBER"
+        });
+        const newTabData = newTabDataResp.data.values || [];
+        if (newTabData.length > 0) {
+          // Writing RAW back into the cells preserves the serial dates correctly because copyTo brought over the date formatting
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: backupSheetId,
+            range: `'${tabName}'!A1`,
+            valueInputOption: "RAW",
+            requestBody: { values: newTabData }
+          });
+        }
+
+        // 8. Auto-complete the task
+        await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, backupClientName, "create_backup", backupWorkMonthKey);
+
+        return res.status(200).json({ success: true, tabName });
+      } catch (err) {
+        console.error("❌ eom_create_dashboard_backup error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "eom_mark_month_actual") {
       // Simple, single-client EoM function called directly from a task
       // row (not a batch tool with its own sub-tab, unlike payroll/cash

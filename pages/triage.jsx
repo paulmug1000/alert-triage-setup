@@ -1167,6 +1167,7 @@ export default function TriageSystem({ onBack }) {
   const [eomCashSaveStatus, setEomCashSaveStatus] = useState("idle"); // idle | saving | error
   const [eomCashSaveError, setEomCashSaveError] = useState("");
   const [eomMarkActualRunning, setEomMarkActualRunning] = useState(""); // taskId currently running, or ""
+  const [eomBackupRunning, setEomBackupRunning] = useState(""); // taskId currently running, or ""
   const [eomAlertDataReady, setEomAlertDataReady] = useState(!!sessionId);
   const [eomCashPendingClient, setEomCashPendingClient] = useState(""); // client to auto-open in Cash Balances once bank accounts are loaded
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
@@ -1674,6 +1675,24 @@ export default function TriageSystem({ onBack }) {
   // this always inherit the checklist's own current month instead.
   // Reloads this month's status afterward so the task's pill updates to
   // reflect the completion that just happened.
+  const handleEomCreateBackup = (taskId, targetClientName = eomDetailClient) => {
+    const client = (allOutgoingsClients || []).find(c => c.clientName === targetClientName);
+    if (!client) return;
+    setEomBackupRunning(taskId);
+    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_create_dashboard_backup", clientSheetId: client.clientSheetId, clientName: targetClientName, workMonthKey: eomMonthKey, automationCommanderSheetId }) })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) { setEomClientTasksError(d.error || "Failed to create backup"); return; }
+        setEomStatusOverrides(prev => {
+          const withoutThis = (prev || []).filter(s => !(s.clientName === targetClientName && s.taskId === taskId));
+          return [...withoutThis, { clientName: targetClientName, taskId, status: "done" }];
+        });
+      })
+      .catch(e => setEomClientTasksError(e.message))
+      .finally(() => setEomBackupRunning(""));
+  };
+
   const handleEomMarkActual = (taskId, targetClientName = eomDetailClient) => {
     const client = (allOutgoingsClients || []).find(c => c.clientName === targetClientName);
     if (!client) return;
@@ -7289,10 +7308,18 @@ export default function TriageSystem({ onBack }) {
                                         style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
                                           color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
                                         {eomMarkActualRunning === t.taskId ? "Marking..." : `Mark ${targetLabel} Actual`}
+                                        </button>
+                                      );
+                                    })()}
+                                    {t.linkedFunction === "create_backup" && (
+                                      <button onClick={() => handleEomCreateBackup(t.taskId, c.clientName)} disabled={eomBackupRunning === t.taskId}
+                                        title={`Copies the Dashboard tab to the backup sheet as values only`}
+                                        style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                                          color: "#0066cc", cursor: eomBackupRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                        {eomBackupRunning === t.taskId ? "Creating..." : `Create Backup`}
                                       </button>
-                                    );
-                                  })()}
-                                  {t.linkedFunction === "cash_balance" && (
+                                    )}
+                                    {t.linkedFunction === "cash_balance" && (
                                     <button onClick={() => { setEomCashPendingClient(c.clientName); setEomSubView("cash"); }}
                                       style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                                       Enter Cash Balance →
@@ -7442,6 +7469,7 @@ export default function TriageSystem({ onBack }) {
                               <option value="salaries">Salaries</option>
                               <option value="cash_balance">Cash Balance</option>
                               <option value="mark_actual">Mark Month Actual</option>
+                              <option value="create_backup">Create Dashboard Backup</option>
                               <option value="time_import">Time Report Import</option>
                               <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                             </select>
@@ -7487,7 +7515,7 @@ export default function TriageSystem({ onBack }) {
                               {!tpl.active && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#b45309" }}>(inactive)</span>}
                               {tpl.linkedFunction && (
                                 <span style={{ marginLeft: "6px", fontSize: "10px", color: "#0066cc" }}>
-                                  (linked: {({ salaries: "salaries", cash_balance: "cash balance", mark_actual: "mark actual", alert_check: "alert check", time_import: "time import" }[tpl.linkedFunction]) || tpl.linkedFunction})
+                                  (linked: {({ salaries: "salaries", cash_balance: "cash balance", mark_actual: "mark actual", create_backup: "create backup", alert_check: "alert check", time_import: "time import" }[tpl.linkedFunction]) || tpl.linkedFunction})
                                 </span>
                               )}
                             </div>
@@ -7525,8 +7553,9 @@ export default function TriageSystem({ onBack }) {
                           <option value="salaries">Salaries</option>
                           <option value="cash_balance">Cash Balance</option>
                           <option value="mark_actual">Mark Month Actual</option>
+                              <option value="create_backup">Create Dashboard Backup</option>
                               <option value="time_import">Time Report Import</option>
-                          <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
+                              <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                         </select>
                       </div>
                       {eomNewTplLinkedFunction === "alert_check" && (
@@ -7701,10 +7730,18 @@ export default function TriageSystem({ onBack }) {
                                 style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
                                   color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
                                 {eomMarkActualRunning === t.taskId ? "Marking..." : `Mark ${targetLabel} Actual`}
-                              </button>
-                            );
-                          })()}
-                          {t.linkedFunction === "cash_balance" && (
+                                        </button>
+                                      );
+                                    })()}
+                                    {t.linkedFunction === "create_backup" && (
+                                      <button onClick={() => handleEomCreateBackup(t.taskId)} disabled={eomBackupRunning === t.taskId}
+                                        title={`Copies the Dashboard tab to the backup sheet as values only`}
+                                        style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                                          color: "#0066cc", cursor: eomBackupRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                        {eomBackupRunning === t.taskId ? "Creating..." : `Create Backup`}
+                                      </button>
+                                    )}
+                                    {t.linkedFunction === "cash_balance" && (
                             <button onClick={() => { setEomCashPendingClient(eomDetailClient); setEomSubView("cash"); }}
                               style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                               Enter Cash Balance →

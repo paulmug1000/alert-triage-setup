@@ -9225,6 +9225,15 @@ export default function TriageSystem({ onBack }) {
         </div>
       ) : null;
 
+      const ignoreBanner = alert.previousIgnoreReason ? (
+        <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: "8px 10px", borderRadius: "6px", fontSize: "11px", marginTop: "8px", border: "1px solid #fde68a", pointerEvents: "auto" }}>
+          <strong>⚠ Previously Ignored:</strong> {alert.previousIgnoreReason.ignoreReason || "No reason provided"}
+          <div style={{ marginTop: "4px", color: "#b45309" }}>
+            <em>Resurfaced: {alert.previousIgnoreReason.changeReason}</em>
+          </div>
+        </div>
+      ) : null;
+
       const ft = alert.flagType || alert.alertType || "";
       const isAppDiscr = ft === "crmConfAppDiscr" || ft === "crmPipeAppDiscr";
       const isDashDiscr = ft === "crmPipeDashDiscr" || ft === "crmConfDashDiscr";
@@ -9253,6 +9262,7 @@ export default function TriageSystem({ onBack }) {
                 {isPipeline ? "In Pipeline — not in CRM" : "In Confirmed — not in CRM"}
               </div>
             )}
+            {ignoreBanner}
             {alertDates}
           </div>
         );
@@ -9282,6 +9292,7 @@ export default function TriageSystem({ onBack }) {
                 {isPipeline ? "In CRM — not in Pipeline" : "In CRM — not in Confirmed"}
               </div>
             )}
+            {ignoreBanner}
             {alertDates}
           </div>
         );
@@ -9293,6 +9304,7 @@ export default function TriageSystem({ onBack }) {
         <div style={{ pointerEvents: "none" }}>
           <div style={{ fontWeight: "600", color: "#333" }}>{getAlertSummary(alert)}</div>
           {detailSub && <div style={{ fontSize: "11px", fontWeight: "600", color: "#d97706", marginTop: "4px" }}>⚠ {detailSub}</div>}
+          {ignoreBanner}
           {alertDates}
         </div>
       );

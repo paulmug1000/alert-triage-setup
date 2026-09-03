@@ -8457,9 +8457,18 @@ export default async function handler(req, res) {
                 if (analyzeData.success) {
                   // Catch-All Fix: Guarantee the options are saved to the database, even if a fast-path forgot to save them.
                   if (analyzeData.options) {
+                    let updatedSnapshot = row.dataSnapshot;
+                    if (analyzeData.previousIgnoreReason) {
+                      try {
+                        const snapObj = JSON.parse(updatedSnapshot || "{}");
+                        snapObj.previousIgnoreReason = analyzeData.previousIgnoreReason;
+                        updatedSnapshot = JSON.stringify(snapObj);
+                      } catch (e) {}
+                    }
                     await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
                       ...row,
-                      cachedOptionsJSON: JSON.stringify(analyzeData.options)
+                      cachedOptionsJSON: JSON.stringify(analyzeData.options),
+                      dataSnapshot: updatedSnapshot
                     });
                   }
                   built++;

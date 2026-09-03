@@ -15715,7 +15715,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:H1000" });
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:H1000" }));
         const rows = resp.data.values || [];
         const templates = rows.filter(r => r[0]).map((r, i) => ({
           templateId: r[0], name: r[1] || "", defaultNotes: r[2] || "", linkedFunction: r[3] || "",
@@ -15740,7 +15740,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:C1000" });
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomExcludedClients!A2:C1000" }));
         const clients = (resp.data.values || []).filter(r => r[0]).map(r => ({
           clientName: r[0], excluded: r[1] === "TRUE" || r[1] === true,
           sortOrder: r[2] !== undefined && r[2] !== "" ? Number(r[2]) : null,
@@ -15884,8 +15884,8 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
         const [tasksResp, templatesResp] = await Promise.all([
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" }),
+          withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" })),
+          withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" })),
         ]);
         const templateNameById = {};
         const templateLinkedFunctionById = {};
@@ -16037,8 +16037,8 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         await ensureEomTabs_(sheets, automationCommanderSheetId);
 
         const [tasksResp, templatesResp] = await Promise.all([
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" }),
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" }),
+          withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:G5000" })),
+          withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:G1000" })),
         ]);
         const templateLinkedFunctionById = {};
         const templateAlertCategoriesById = {};
@@ -16055,7 +16055,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
             alertCategories: r[2] ? (templateAlertCategoriesById[r[2]] || "") : "",
           }));
 
-        const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
+        const statusResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" }));
         const statusOverrides = (statusResp.data.values || [])
           .filter(r => r[0] && r[2] === monthKey)
           .map(r => ({ clientName: r[0], taskId: r[1], status: r[3] || "pending" }));
@@ -16231,7 +16231,7 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2:C50000" });
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2:C50000" }));
         const rows = (resp.data.values || []).filter(r => r[0] && r[1]);
         const accountsByClient = {};
         let loadedAt = "";
@@ -16261,9 +16261,9 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
         const [templatesR, clientTasksR, statusR] = await Promise.all([
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
-          sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" }),
+          withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" })),
+          withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" })),
+          withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" })),
         ]);
         const cashTemplateIds = new Set((templatesR.data.values || []).filter(r => r[0] && r[3] === "cash_balance").map(r => r[0]));
         const cashTaskIdByClient = {};

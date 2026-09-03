@@ -16473,22 +16473,24 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
             }]
           }
         });
-
-        // 7. Freeze values (overwrite formulas with raw data)
-        const newTabDataResp = await sheets.spreadsheets.values.get({
-          spreadsheetId: backupSheetId,
-          range: `'${tabName}'!A1:ZZ`,
+        // 7. Freeze values (overwrite formulas with raw data from the SOURCE sheet)
+        // We must read the calculated values from the source sheet where references like 'KeyInfo' are valid.
+        const sourceDataResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: "Dashboard!A1:ZZ",
           valueRenderOption: "UNFORMATTED_VALUE",
           dateTimeRenderOption: "SERIAL_NUMBER"
         });
-        const newTabData = newTabDataResp.data.values || [];
-        if (newTabData.length > 0) {
-          // Writing RAW back into the cells preserves the serial dates correctly because copyTo brought over the date formatting
+        const sourceData = sourceDataResp.data.values || [];
+        
+        if (sourceData.length > 0) {
+          // Writing RAW back into the destination cells preserves the formatting brought over by copyTo,
+          // while replacing the broken #REF! formulas with the actual calculated values.
           await sheets.spreadsheets.values.update({
             spreadsheetId: backupSheetId,
             range: `'${tabName}'!A1`,
             valueInputOption: "RAW",
-            requestBody: { values: newTabData }
+            requestBody: { values: sourceData }
           });
         }
 

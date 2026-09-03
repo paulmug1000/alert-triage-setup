@@ -2068,11 +2068,16 @@ async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cl
   }
 }
 
+let eomTabsVerifyPromise = null;
+
 async function ensureEomTabs_(sheets, spreadsheetId) {
   if (eomTabsVerified) return; // already confirmed on this warm instance — nothing can have changed
-  try {
-    const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
-    const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
+  
+  if (!eomTabsVerifyPromise) {
+    eomTabsVerifyPromise = (async () => {
+      try {
+        const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
+        const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
     const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus", "EomBankAccounts", "EomExcludedClients"].filter(t => !existingTitles.has(t));
 
     if (toCreate.length > 0) {
@@ -2168,7 +2173,12 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
     eomTabsVerified = true;
   } catch (e) {
     console.error("ensureEomTabs_ error:", e.message);
+  } finally {
+    eomTabsVerifyPromise = null;
   }
+    })();
+  }
+  await eomTabsVerifyPromise;
 }
 
 // Same warm-instance caching pattern as eomTabsVerified above — once

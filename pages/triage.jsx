@@ -7044,7 +7044,7 @@ export default function TriageSystem({ onBack }) {
       return { files, stillResolving, readyToStart, completeCount, errorCount };
     };
 
-    
+
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {eomEditingNotelet && (() => {
@@ -7155,7 +7155,16 @@ export default function TriageSystem({ onBack }) {
                     </div>
                   ))}
                   {clientRows.length === 0 && (
-                    <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No clients found.</div>
+                    <div style={{ padding: "40px 20px", fontSize: "14px", color: "#666", textAlign: "center" }}>
+                      {!allClientsLoaded || eomStatusLoading ? (
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+                          <Spinner size={28} color="#0066cc" />
+                          <span>Loading EoM data...</span>
+                        </div>
+                      ) : (
+                        "No clients found."
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -7187,7 +7196,14 @@ export default function TriageSystem({ onBack }) {
                           <button 
                             onClick={() => { setEomEditingNotelet({ taskId, clientName: c.clientName }); setEomNoteletDraft(noteletText || ""); }}
                             title={hasNotelet ? noteletText : "Add month-specific note"}
-                            style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", fontSize: "14px", opacity: hasNotelet ? 1 : 0.3, color: hasNotelet ? "#0066cc" : "#999", transition: "opacity 0.2s" }}>
+                            style={{ 
+                              background: hasNotelet ? "#ffeb3b" : "none", 
+                              border: hasNotelet ? "1px solid #fbc02d" : "1px solid transparent", 
+                              borderRadius: "6px", cursor: "pointer", padding: "4px 6px", fontSize: "15px", 
+                              opacity: hasNotelet ? 1 : 0.4, color: hasNotelet ? "#f57f17" : "#999", 
+                              boxShadow: hasNotelet ? "0 2px 4px rgba(0,0,0,0.15)" : "none",
+                              transition: "all 0.2s" 
+                            }}>
                             {hasNotelet ? "💬" : "🗨️"}
                           </button>
                           <div style={{ display: "flex", gap: "4px" }}>
@@ -7567,7 +7583,14 @@ export default function TriageSystem({ onBack }) {
                   <button 
                     onClick={() => { setEomEditingNotelet({ taskId, clientName: eomDetailClient }); setEomNoteletDraft(noteletText || ""); }}
                     title={hasNotelet ? noteletText : "Add month-specific note"}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", fontSize: "14px", opacity: hasNotelet ? 1 : 0.3, color: hasNotelet ? "#0066cc" : "#999", transition: "opacity 0.2s" }}>
+                    style={{ 
+                      background: hasNotelet ? "#ffeb3b" : "none", 
+                      border: hasNotelet ? "1px solid #fbc02d" : "1px solid transparent", 
+                      borderRadius: "6px", cursor: "pointer", padding: "4px 6px", fontSize: "15px", 
+                      opacity: hasNotelet ? 1 : 0.4, color: hasNotelet ? "#f57f17" : "#999", 
+                      boxShadow: hasNotelet ? "0 2px 4px rgba(0,0,0,0.15)" : "none",
+                      transition: "all 0.2s" 
+                    }}>
                     {hasNotelet ? "💬" : "🗨️"}
                   </button>
                   <div style={{ display: "flex", gap: "4px" }}>

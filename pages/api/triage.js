@@ -384,10 +384,12 @@ async function findPreviousIgnoreReason(memoryRows, alert) {
     const crmIdentity    = alertType === "crm" ? extractCrmComparisonSnapshot(alert) : null;
 
     for (const row of supersededRows) {
-      if ((row.clientName || "").toLowerCase().trim() !== alertClient) continue;
-      if ((row.alertType || "").toLowerCase() !== alertType) continue;
+          if ((row.clientName || "").toLowerCase().trim() !== alertClient) continue;
+          
+          const rowType = (row.alertType || "").toLowerCase().trim();
+          if (rowType !== alertType && rowType !== alertFlagType.toLowerCase()) continue;
 
-      let matched = false;
+          let matched = false;
       let snap = null;
 
       // Try to match by invoice number or reference from dataSnapshot

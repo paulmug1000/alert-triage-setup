@@ -1282,7 +1282,15 @@ async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targe
   }
 
   if (writeData.length > 0) {
-    await withRetry(() => sheets.spreadsheets.values.batchUpdate({ spreadsheetId: masterSheetId, requestBody: { data: writeData, valueInputOption: "RAW" } }));
+    console.log(`  📝 DEBUG Time Import - Target Master Sheet ID: ${masterSheetId}`);
+    console.log(`  📝 DEBUG Time Import - Payload:`, JSON.stringify(writeData, null, 2));
+    
+    const result = await withRetry(() => sheets.spreadsheets.values.batchUpdate({ 
+      spreadsheetId: masterSheetId, 
+      requestBody: { data: writeData, valueInputOption: "USER_ENTERED" } 
+    }));
+    
+    console.log(`  📝 DEBUG Time Import - API Response Status: ${result.status}`);
   }
 
   return {

@@ -15304,6 +15304,9 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
         let idContent;
         if (fileData.type === "text") {
           idContent = identifyPrompt + "\n\nDOCUMENT DATA:\n" + buildVerticalCsvText_(fileData.data);
+        } else if (fileData.type === "image_array") {
+          idContent = fileData.data.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+          idContent.push({ type: "text", text: identifyPrompt });
         } else {
           idContent = [
             { type: "image", source: { type: "base64", media_type: "image/jpeg", data: fileData.data } },
@@ -15398,6 +15401,9 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
         let idContent;
         if (fileData.type === "text") {
           idContent = identifyPrompt + "\n\nDOCUMENT DATA:\n" + buildVerticalCsvText_(fileData.data);
+        } else if (fileData.type === "image_array") {
+          idContent = fileData.data.map(b64 => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }));
+          idContent.push({ type: "text", text: identifyPrompt });
         } else {
           idContent = [
             { type: "image", source: { type: "base64", media_type: "image/jpeg", data: fileData.data } },

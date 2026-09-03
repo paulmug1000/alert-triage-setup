@@ -1176,7 +1176,7 @@ async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, a
  * log, since this feeds a proper review UI rather than a sidebar textbox.
  */
 async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, targetMonthStr, allEmployeeNames) {
-  const headerResp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Salaries!1:1" });
+  const headerResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Salaries!1:1" }));
   const headers = (headerResp.data.values && headerResp.data.values[0]) || [];
   let startColIdx0 = -1; // 0-indexed
   for (let i = 0; i < headers.length; i++) {
@@ -1212,7 +1212,7 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
   }
 
   if (writeData.length > 0) {
-    await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: clientSheetId, requestBody: { data: writeData, valueInputOption: "RAW" } });
+    await withRetry(() => sheets.spreadsheets.values.batchUpdate({ spreadsheetId: clientSheetId, requestBody: { data: writeData, valueInputOption: "RAW" } }));
   }
 
   // Totals reconciliation — documentTotal's meaning depends on totalsSource:
@@ -1247,7 +1247,7 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
  * none is added here either.
  */
 async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targetMonthStr, allEmployeeNames) {
-  const headerResp = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "TimeComp!4:4" });
+  const headerResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "TimeComp!4:4" }));
   const headers = (headerResp.data.values && headerResp.data.values[0]) || [];
   let startColIdx0 = -1; // 0-indexed
   for (let i = 0; i < headers.length; i++) {
@@ -1280,7 +1280,7 @@ async function writeTimeDataToSheet_(sheets, masterSheetId, extractedData, targe
   }
 
   if (writeData.length > 0) {
-    await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: masterSheetId, requestBody: { data: writeData, valueInputOption: "RAW" } });
+    await withRetry(() => sheets.spreadsheets.values.batchUpdate({ spreadsheetId: masterSheetId, requestBody: { data: writeData, valueInputOption: "RAW" } }));
   }
 
   return {
@@ -1479,24 +1479,41 @@ function normalizeForMatch_(s) {
 
 /**
  * Tries to match a piece of text (a filename or an employer name extracted
- * from a document) against the client list. Requires the shorter of the two
- * normalized strings to be at least 4 characters, to avoid matching on tiny
- * or generic words. Returns matched=null (not confident) if zero or more
- * than one client match — an ambiguous multi-match is exactly as unhelpful
- * as no match at all here.
+ * from a document) against the client list. Uses word overlap and substring
+ * matching to handle variations (e.g., "Thrive Marketing Communications Ltd" 
+ * matching "Thrive Recruitment Marketing").
  */
 function findClientByNameMatch_(candidateText, allClients) {
-  const norm = normalizeForMatch_(candidateText);
-  if (!norm || norm.length < 3) return { matched: null, candidates: [] };
+  const candidateWords = normClientWords_(candidateText);
+  if (candidateWords.length === 0) return { matched: null, candidates: [] };
+  const candidateJoined = candidateWords.join(" ");
+  
   const matches = [];
   for (const client of allClients) {
-    const clientNorm = normalizeForMatch_(client.clientName);
-    if (!clientNorm || clientNorm.length < 4) continue;
-    if (norm.includes(clientNorm) || clientNorm.includes(norm)) {
+    const clientWords = normClientWords_(client.clientName);
+    if (clientWords.length === 0) continue;
+    const clientJoined = clientWords.join(" ");
+    
+    // 1. Exact or Substring match on the cleaned strings
+    if (candidateJoined.includes(clientJoined) || clientJoined.includes(candidateJoined)) {
+      matches.push(client.clientName);
+      continue;
+    }
+    
+    // 2. Fuzzy word overlap
+    // Count how many words they share
+    const overlapCount = candidateWords.filter(w => clientWords.includes(w)).length;
+    
+    // Safe heuristics for a match:
+    // - They share at least 2 meaningful words (e.g. "thrive", "marketing")
+    // - OR they share 1 word, AND it's the exact first word of both, AND it's >= 4 chars (e.g. "Orinoco")
+    if (overlapCount >= 2 || (overlapCount === 1 && candidateWords[0] === clientWords[0] && candidateWords[0].length >= 4)) {
       matches.push(client.clientName);
     }
   }
+  
   const unique = [...new Set(matches)];
+  // If we narrowed it down to exactly 1 client, it's a confident match.
   if (unique.length === 1) return { matched: unique[0], candidates: unique };
   return { matched: null, candidates: unique };
 }
@@ -1525,17 +1542,22 @@ async function scoreClientsByEmployeeOverlap_(sheets, allClients, extractedEmplo
     const sheetId = client[sheetIdField];
     if (!sheetId) continue;
     try {
-      const resp = await sheets.spreadsheets.values.get({
+      // Use withRetry to safely handle 429 Quota errors
+      const resp = await withRetry(() => sheets.spreadsheets.values.get({
         spreadsheetId: sheetId, range,
-      });
+      }));
       const sheetNames = (resp.data.values || []).map(r => normalizeForMatch_(r[0])).filter(Boolean);
-      if (sheetNames.length === 0) continue;
-      let overlap = 0;
-      for (const en of normalizedExtracted) {
-        if (sheetNames.some(sn => sn === en)) overlap++;
+      if (sheetNames.length > 0) {
+        let overlap = 0;
+        for (const en of normalizedExtracted) {
+          if (sheetNames.some(sn => sn === en)) overlap++;
+        }
+        if (overlap > 0) scores.push({ clientName: client.clientName, overlap });
       }
-      if (overlap > 0) scores.push({ clientName: client.clientName, overlap });
     } catch (e) { /* sheet may have no matching tab at all — skip it */ }
+    
+    // Brief pause to respect Google Sheets 60 requests/minute read limit
+    await new Promise(resolve => setTimeout(resolve, 250));
   }
   scores.sort((a, b) => b.overlap - a.overlap);
   if (scores.length === 0) return { matched: null, scores: [] };
@@ -2002,8 +2024,8 @@ async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cl
       return false;
     }
     const [templatesR, clientTasksR] = await Promise.all([
-      sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" }),
-      sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }),
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomTemplates!A2:F1000" })),
+      withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" })),
     ]);
     const linkedTemplateIds = new Set((templatesR.data.values || []).filter(r => r[0] && r[3] === linkedFunctionValue).map(r => r[0]));
     const linkedTask = (clientTasksR.data.values || []).find(r =>
@@ -2015,19 +2037,19 @@ async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cl
     }
     console.log(`  ✓ Found linked task: ${linkedTask[0]} - proceeding with status update.`);
 
-    const statusResp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" });
+    const statusResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:E200000" }));
     const statusRows = statusResp.data.values || [];
     const existingIdx = statusRows.findIndex(r => r[0] === clientName && r[1] === linkedTask[0] && r[2] === workMonthKey);
     if (existingIdx === -1) {
-      await sheets.spreadsheets.values.append({
+      await withRetry(() => sheets.spreadsheets.values.append({
         spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
         requestBody: { values: [[clientName, linkedTask[0], workMonthKey, "done", new Date().toISOString()]] },
-      });
+      }));
     } else {
-      await sheets.spreadsheets.values.update({
+      await withRetry(() => sheets.spreadsheets.values.update({
         spreadsheetId: automationCommanderSheetId, range: `EomMonthlyStatus!D${existingIdx + 2}:E${existingIdx + 2}`,
         valueInputOption: "RAW", requestBody: { values: [["done", new Date().toISOString()]] },
-      });
+      }));
     }
     return true;
   } catch (e) {
@@ -15472,9 +15494,9 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
       try {
         const sheets = await getSheetsClient();
 
-        const empResp = await sheets.spreadsheets.values.get({
+        const empResp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: payrollClientSheetId, range: "Salaries!A4:A53",
-        });
+        }));
         const allEmployeeNames = (empResp.data.values || []).map(r => String(r[0] || "").trim());
         const validEmployeeNames = allEmployeeNames.filter(Boolean);
         const namesString = JSON.stringify(validEmployeeNames);
@@ -15597,9 +15619,9 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
 
-        const empResp = await sheets.spreadsheets.values.get({
+        const empResp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: timeMasterSheetId, range: "TimeComp!A12:A62",
-        });
+        }));
         const allEmployeeNames = (empResp.data.values || []).map(r => String(r[0] || "").trim());
         const validEmployeeNames = allEmployeeNames.filter(Boolean);
         const namesString = JSON.stringify(validEmployeeNames);

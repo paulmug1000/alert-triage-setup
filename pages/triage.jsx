@@ -7044,6 +7044,7 @@ export default function TriageSystem({ onBack }) {
       return { files, stillResolving, readyToStart, completeCount, errorCount };
     };
 
+    
     return withModal(
       <NavShell activeNav={activeNav} onHome={handleNavHome} onOverview={handleNavOverview} onTasks={handleNavTasks} onAppLog={handleNavAppLog} onOutgoings={handleNavOutgoings} onInvoices={handleNavInvoices} onRetainers={handleNavRetainers} onTools={handleNavTools} onSettings={handleNavSettings} homeAlertCount={liveAlertCount + proactiveAlerts.length} taskCount={navTaskCount}>
         {eomEditingNotelet && (() => {

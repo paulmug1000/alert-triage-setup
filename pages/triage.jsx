@@ -1671,56 +1671,34 @@ export default function TriageSystem({ onBack }) {
   // this always inherit the checklist's own current month instead.
   // Reloads this month's status afterward so the task's pill updates to
   // reflect the completion that just happened.
-  const handleEomMarkActual = (taskId) => {
-    const client = (allOutgoingsClients || []).find(c => c.clientName === eomDetailClient);
+  const handleEomMarkActual = (taskId, targetClientName = eomDetailClient) => {
+    const client = (allOutgoingsClients || []).find(c => c.clientName === targetClientName);
     if (!client) return;
     setEomMarkActualRunning(taskId);
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_mark_month_actual", clientSheetId: client.clientSheetId, clientName: eomDetailClient, workMonthKey: eomMonthKey, automationCommanderSheetId }) })
+      body: JSON.stringify({ action: "eom_mark_month_actual", clientSheetId: client.clientSheetId, clientName: targetClientName, workMonthKey: eomMonthKey, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
         if (!d.success) { setEomClientTasksError(d.error || "Failed to mark month actual"); return; }
-        // Optimistic update instead of a re-fetch (fixed 20 Aug 2026, found
-        // during a full-codebase sweep) — this previously called the
-        // now-removed setEomActiveTasks (a ReferenceError at runtime,
-        // silently swallowed with no .catch on this inner fetch, so the
-        // task's pill just never updated to "done" until an unrelated
-        // reload happened to fix it). A same-shape re-fetch wouldn't have
-        // been the right fix either: eomAllTasks is the single, all-clients
-        // source of truth now, and this call is scoped to one client —
-        // replacing it with a partial response would have wiped out every
-        // other client's task data. Mark Actual always completes the task
-        // (never toggles), so this mirrors handleEomStatusChange's own
-        // optimistic-update approach exactly.
         setEomStatusOverrides(prev => {
-          const withoutThis = (prev || []).filter(s => !(s.clientName === eomDetailClient && s.taskId === taskId));
-          return [...withoutThis, { clientName: eomDetailClient, taskId, status: "done" }];
+          const withoutThis = (prev || []).filter(s => !(s.clientName === targetClientName && s.taskId === taskId));
+          return [...withoutThis, { clientName: targetClientName, taskId, status: "done" }];
         });
       })
       .catch(e => setEomClientTasksError(e.message))
       .finally(() => setEomMarkActualRunning(""));
   };
 
-  const handleEomStatusChange = (taskId, newStatus) => {
-    // Optimistic local update — avoids a full refetch for something this
-    // frequent (checking tasks off one at a time). Updates the override
-    // list only — eomAllTasks (the denominator) never needs touching
-    // here, since a status change doesn't add or remove a task, just its
-    // status for this month.
+  const handleEomStatusChange = (taskId, newStatus, targetClientName = eomDetailClient) => {
     const previous = eomStatusOverrides;
     setEomStatusOverrides(prev => {
-      const withoutThis = (prev || []).filter(s => !(s.clientName === eomDetailClient && s.taskId === taskId));
-      return [...withoutThis, { clientName: eomDetailClient, taskId, status: newStatus }];
+      const withoutThis = (prev || []).filter(s => !(s.clientName === targetClientName && s.taskId === taskId));
+      return [...withoutThis, { clientName: targetClientName, taskId, status: newStatus }];
     });
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_update_task_status", clientName: eomDetailClient, taskId, monthKey: eomMonthKey, status: newStatus, automationCommanderSheetId }) })
+      body: JSON.stringify({ action: "eom_update_task_status", clientName: targetClientName, taskId, monthKey: eomMonthKey, status: newStatus, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
-        // The save genuinely failed — revert the optimistic update rather
-        // than let the UI keep showing a status that was never actually
-        // persisted (see conversation 19 Aug 2026: this check was missing
-        // entirely before, so a failed save looked identical to a
-        // succeeded one until the next reload silently corrected it).
         if (!d.success) { setEomStatusOverrides(previous); setEomClientTasksError(d.error || "Failed to save status"); }
       })
       .catch(e => { setEomStatusOverrides(previous); setEomClientTasksError(e.message); });
@@ -1768,9 +1746,9 @@ export default function TriageSystem({ onBack }) {
     }
   };
 
-  const handleEomSaveNotes = (task) => {
+  const handleEomSaveNotes = (task, targetClientName = eomDetailClient) => {
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
+      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: targetClientName,
         templateId: task.templateId || undefined, taskName: task.templateId ? undefined : task.name,
         clientNotes: eomNotesDraft, active: true, automationCommanderSheetId }) })
       .then(r => r.json())
@@ -1781,12 +1759,10 @@ export default function TriageSystem({ onBack }) {
       .catch(e => setEomClientTasksError(e.message));
   };
 
-  // Custom (non-template) tasks only — a template-based task's name is
-  // edited via Manage Templates instead, since it's shared across clients.
-  const handleEomSaveName = (task) => {
+  const handleEomSaveName = (task, targetClientName = eomDetailClient) => {
     if (!eomNameDraft.trim()) return;
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
+      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: targetClientName,
         taskName: eomNameDraft.trim(), clientNotes: task.clientNotes, active: true, automationCommanderSheetId }) })
       .then(r => r.json())
       .then(d => {
@@ -1809,12 +1785,9 @@ export default function TriageSystem({ onBack }) {
       .catch(e => setEomClientTasksError(e.message));
   };
 
-  // Persists a new task order given the taskId that was dragged and the
-  // taskId it was dropped onto — inserts the dragged task at the target's
-  // position (shifting others along), rather than a simple adjacent swap.
-  const persistEomTaskOrder = (draggedTaskId, targetTaskId) => {
+  const persistEomTaskOrder = (draggedTaskId, targetTaskId, targetClientName = eomDetailClient) => {
     if (!draggedTaskId || draggedTaskId === targetTaskId) return;
-    const active = (eomClientTasks || []).filter(t => t.active).sort((a, b) => a.sortOrder - b.sortOrder);
+    const active = (eomAllTasks || []).filter(t => t.clientName === targetClientName && t.active).sort((a, b) => a.sortOrder - b.sortOrder);
     const fromIdx = active.findIndex(t => t.taskId === draggedTaskId);
     const toIdx = active.findIndex(t => t.taskId === targetTaskId);
     if (fromIdx === -1 || toIdx === -1) return;
@@ -1824,17 +1797,13 @@ export default function TriageSystem({ onBack }) {
     reordered.splice(toIdx, 0, moved);
     const orderedTaskIds = reordered.map(t => t.taskId);
 
-    // Optimistic local update — reassign sortOrder to match the new order
-    // immediately, rather than waiting on a round trip before rows move.
-    // Updates the underlying eomAllTasks (eomClientTasks is now just a
-    // derived filter over it, not settable directly).
     setEomAllTasks(prev => (prev || []).map(t => {
       const newIdx = orderedTaskIds.indexOf(t.taskId);
       return newIdx === -1 ? t : { ...t, sortOrder: (newIdx + 1) * 10 };
     }));
 
     fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_reorder_tasks", clientName: eomDetailClient, orderedTaskIds, automationCommanderSheetId }) })
+      body: JSON.stringify({ action: "eom_reorder_tasks", clientName: targetClientName, orderedTaskIds, automationCommanderSheetId }) })
       .catch(e => console.error("eom_reorder_tasks error:", e));
   };
 
@@ -7134,6 +7103,149 @@ export default function TriageSystem({ onBack }) {
                     style={{ padding: "6px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "#666" }}>
                     Manage Clients
                   </button>
+                </div>
+
+                <div style={{ marginTop: "32px" }}>
+                  {clientRows.map((c) => {
+                    const cTasks = (eomAllTasks || []).filter(t => t.clientName === c.clientName && t.active).sort((a, b) => a.sortOrder - b.sortOrder);
+                    if (cTasks.length === 0) return null;
+                    
+                    const statusByTaskId = {};
+                    (eomStatusOverrides || []).forEach(s => { if (s.clientName === c.clientName) statusByTaskId[s.taskId] = s.status; });
+
+                    const statePill = (taskId, current) => {
+                      const options = [["pending", "Pending", "#f59e0b"], ["done", "Done", "#16a34a"], ["not_applicable", "N/A", "#999"]];
+                      return (
+                        <div style={{ display: "flex", gap: "4px" }}>
+                          {options.map(([val, label, color]) => (
+                            <button key={val} onClick={() => handleEomStatusChange(taskId, val, c.clientName)}
+                              style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
+                                border: `1px solid ${current === val ? color : "#ddd"}`,
+                                background: current === val ? color : "#fff",
+                                color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400" }}>
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    };
+
+                    const alertCheckPill = (categoriesStr) => {
+                      if (!eomAlertDataReady) return <span style={{ fontSize: "11px", color: "#999", padding: "3px 9px" }}><Spinner /> Checking...</span>;
+                      const count = computeAlertCheckCount(c.clientName, categoriesStr);
+                      const isDone = count === 0;
+                      return (
+                        <span title={isDone ? "No active alerts in the selected categories" : `${count} active alert${count !== 1 ? "s" : ""} in the selected categories`}
+                          style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", fontWeight: "600",
+                            border: `1px solid ${isDone ? "#16a34a" : "#f59e0b"}`, background: isDone ? "#16a34a" : "#f59e0b", color: "#fff" }}>
+                          {isDone ? "Done" : `Pending (${count})`}
+                        </span>
+                      );
+                    };
+
+                    return (
+                      <div key={c.clientName} style={{ marginBottom: "24px" }}>
+                        <h3 style={{ fontSize: "16px", fontWeight: "700", color: "#1a1a1a", marginBottom: "12px", borderBottom: "2px solid #e0e0e0", paddingBottom: "6px" }}>{c.clientName}</h3>
+                        <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0" }}>
+                          {cTasks.map((t, i) => (
+                            <div key={t.taskId}
+                              draggable
+                              onDragStart={() => setEomDraggedTaskId(t.taskId)}
+                              onDragOver={e => { e.preventDefault(); if (eomDragOverTaskId !== t.taskId) setEomDragOverTaskId(t.taskId); }}
+                              onDragLeave={() => setEomDragOverTaskId(prev => prev === t.taskId ? null : prev)}
+                              onDrop={e => { e.preventDefault(); persistEomTaskOrder(eomDraggedTaskId, t.taskId, c.clientName); setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
+                              onDragEnd={() => { setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
+                              style={{ padding: "8px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
+                                background: eomDragOverTaskId === t.taskId ? "#f0f7ff" : "transparent",
+                                opacity: eomDraggedTaskId === t.taskId ? 0.4 : 1 }}>
+                              <div style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
+                                <div title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", lineHeight: "20px", userSelect: "none" }}>⠿</div>
+                                <div style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
+                                  {eomEditingNameFor === t.taskId ? (
+                                    <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                                      <input value={eomNameDraft} onChange={e => setEomNameDraft(e.target.value)} autoFocus
+                                        style={{ flex: 1, padding: "4px 7px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", fontWeight: "600" }} />
+                                      <button onClick={() => handleEomSaveName(t, c.clientName)} style={{ padding: "4px 9px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "11px", fontWeight: "600" }}>Save</button>
+                                      <button onClick={() => setEomEditingNameFor("")} style={{ padding: "4px 9px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
+                                    </div>
+                                  ) : (
+                                    <span onClick={t.templateId ? undefined : () => { setEomEditingNameFor(t.taskId); setEomNameDraft(t.name); }}
+                                      title={t.templateId ? "Shared template — edit via Manage Templates" : "Click to rename"}
+                                      style={{ cursor: t.templateId ? "default" : "pointer" }}>
+                                      {t.name}
+                                    </span>
+                                  )}
+                                  {t.templateId && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#888", fontWeight: "400" }}>(shared)</span>}
+                                  {t.linkedFunction === "salaries" && (
+                                    <button onClick={() => setEomSubView("payroll")}
+                                      style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                      Import Payroll →
+                                    </button>
+                                  )}
+                                  {t.linkedFunction === "time_import" && (
+                                    <button onClick={() => setEomSubView("time")}
+                                      style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                      Import Time →
+                                    </button>
+                                  )}
+                                  {t.linkedFunction === "mark_actual" && (() => {
+                                    const targetKey = eomWorkMonthToTargetMonth(eomMonthKey);
+                                    const [ty, tm] = (targetKey || "").split("-").map(Number);
+                                    const targetLabel = ty ? new Date(ty, tm - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "";
+                                    return (
+                                      <button onClick={() => handleEomMarkActual(t.taskId, c.clientName)} disabled={eomMarkActualRunning === t.taskId}
+                                        title={`Writes "Actual" to the ${targetLabel} column on the Performance tab`}
+                                        style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                                          color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                        {eomMarkActualRunning === t.taskId ? "Marking..." : `Mark ${targetLabel} Actual`}
+                                      </button>
+                                    );
+                                  })()}
+                                  {t.linkedFunction === "cash_balance" && (
+                                    <button onClick={() => { setEomCashPendingClient(c.clientName); setEomSubView("cash"); }}
+                                      style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                      Enter Cash Balance →
+                                    </button>
+                                  )}
+                                  {t.linkedFunction === "alert_check" && (
+                                    <span style={{ marginLeft: "8px", fontSize: "10px", color: "#888" }}>
+                                      ({(t.alertCategories || "").split(",").filter(Boolean).map(cat => ({ invoice: "InvComp", expense: "DirComp", crm: "CRMComp" }[cat])).join(", ") || "no categories set"})
+                                    </span>
+                                  )}
+                                </div>
+                                {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending")}
+                                <button onClick={() => setEomExpandedNotesFor(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
+                                    return next;
+                                  })}
+                                  title={t.clientNotes ? "Show/hide note" : "Add note"}
+                                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
+                                    color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400" }}>
+                                  {eomExpandedNotesFor.has(t.taskId) ? "−" : "+"}
+                                </button>
+                              </div>
+                              {(eomExpandedNotesFor.has(t.taskId) || eomEditingNotesFor === t.taskId) && (
+                                eomEditingNotesFor === t.taskId ? (
+                                  <div style={{ marginTop: "8px", display: "flex", gap: "8px" }}>
+                                    <input value={eomNotesDraft} onChange={e => setEomNotesDraft(e.target.value)} placeholder="Client-specific notes..."
+                                      style={{ flex: 1, padding: "5px 8px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "12px" }} />
+                                    <button onClick={() => handleEomSaveNotes(t, c.clientName)} style={{ padding: "5px 10px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Save</button>
+                                    <button onClick={() => setEomEditingNotesFor("")} style={{ padding: "5px 10px", background: "none", border: "1px solid #ddd", borderRadius: "5px", cursor: "pointer", fontSize: "11px" }}>Cancel</button>
+                                  </div>
+                                ) : (
+                                  <div onClick={() => { setEomEditingNotesFor(t.taskId); setEomNotesDraft(t.clientNotes || ""); }}
+                                    style={{ marginTop: "6px", fontSize: "12px", color: t.clientNotes ? "#666" : "#bbb", cursor: "pointer" }}>
+                                    {t.clientNotes || "+ add note"}
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );

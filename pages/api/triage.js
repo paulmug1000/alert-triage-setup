@@ -16484,6 +16484,13 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         const sourceData = sourceDataResp.data.values || [];
         
         if (sourceData.length > 0) {
+          // Clear all values and broken formulas (strictly preserves formatting/colors)
+          await withRetry(() => sheets.spreadsheets.values.clear({
+            spreadsheetId: backupSheetId,
+            range: `'${tabName}'!A1:ZZ`
+          }));
+
+          // Write the evaluated values back into the cleared sheet
           await withRetry(() => sheets.spreadsheets.values.update({
             spreadsheetId: backupSheetId,
             range: `'${tabName}'!A1`,

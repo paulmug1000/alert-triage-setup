@@ -8728,6 +8728,13 @@ export default async function handler(req, res) {
         const previousIgnoreReason = await findPreviousIgnoreReason(memoryRows, alert);
         if (previousIgnoreReason) {
           console.log(`  ℹ️ Found previous ignore reason for this alert`);
+          if (memoryRow) {
+            try {
+              const snapObj = JSON.parse(memoryRow.dataSnapshot || "{}");
+              snapObj.previousIgnoreReason = previousIgnoreReason;
+              memoryRow.dataSnapshot = JSON.stringify(snapObj);
+            } catch(e){}
+          }
         }
         // ────────────────────────────────────────────────────────────────────
 

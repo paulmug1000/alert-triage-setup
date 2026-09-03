@@ -2750,7 +2750,24 @@ export default function TriageSystem({ onBack }) {
       
       console.log(`✅ Generated ${data.options?.length || 0} options${data.fromCache ? " (from cache)" : ""}`);
       setFromCache(!!data.fromCache);
-      const pir = data.previousIgnoreReason; setPreviousIgnoreReason(pir && typeof pir === "object" ? pir : pir ? { ignoreReason: pir, changeReason: null } : null);
+      const pir = data.previousIgnoreReason; 
+      const formattedPir = pir && typeof pir === "object" ? pir : pir ? { ignoreReason: pir, changeReason: null } : null;
+      setPreviousIgnoreReason(formattedPir);
+      
+      // Instantly attach the fetched reason to the frontend alert array so it shows on the main list
+      setClientAlerts(prev => {
+        const newAlerts = [...prev];
+        const idx = newAlerts.findIndex(a => a.sheetName === alert.sheetName && a.rowNumber === alert.rowNumber);
+        if (idx !== -1) {
+          newAlerts[idx] = { 
+            ...newAlerts[idx], 
+            options: data.options,
+            previousIgnoreReason: formattedPir 
+          };
+        }
+        return newAlerts;
+      });
+
       setClaudeAnalysis(JSON.stringify(data.options || [], null, 2));
       setIsAnalyzing(false);
 

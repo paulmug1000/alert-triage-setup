@@ -2720,7 +2720,7 @@ export default function TriageSystem({ onBack }) {
         // No actionable alerts — only run handlePostClear if no-action flags are all resolved too
         // AND there are no proactive alerts
         // Use restoredResolved directly — resolvedNoActionFlags state update is async
-        const clientProactive = proactiveAlerts.filter(a => a.clientName === client.clientName);
+        const clientProactive = (data.proactiveAlerts || []).filter(a => a.clientName === client.clientName);
         const noActionAllDone = filteredNoAction.length === 0 ||
           filteredNoAction.every(na => restoredResolved.has(na.fingerprintHash || na.flagType));
         if (noActionAllDone && clientProactive.length === 0) {

@@ -3636,7 +3636,7 @@ export default function TriageSystem({ onBack }) {
     if (triageComplete && totalAlerts === 0 && noActionCount === 0
         && proactiveLoadedAt > 0 && proactiveAlerts.length > 0
         && activeNav !== "tasks" && activeNav !== "overview"
-        && screen !== "clientSelection") {
+        && screen === "initial") { // ONLY redirect if stuck on the initial loading screen
       console.log(`📋 Proactive alerts loaded (${proactiveAlerts.length}), redirecting to clientSelection`);
       setScreen("clientSelection");
     }

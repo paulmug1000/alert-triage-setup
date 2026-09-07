@@ -219,59 +219,9 @@ function getHandledFingerprintHashes_(memoryRows) {
  * Safe to call on every run — does nothing if tab already exists.
  */
 async function ensureAlertMemoryTab(sheets, automationCommanderSheetId) {
-  try {
-    await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${ALERT_MEMORY_TAB}!A1`,
-    });
-    // Tab exists — but may predate the "category" column (added 22 Aug 2026
-    // as part of the unified alert-system redesign, appended at the end so
-    // existing column positions for Paul's already-live tab aren't
-    // disturbed). Check L1 specifically and backfill the header if missing.
-    try {
-      const l1 = await sheets.spreadsheets.values.get({
-        spreadsheetId: automationCommanderSheetId,
-        range: `${ALERT_MEMORY_TAB}!L1`,
-      });
-      const hasCategoryHeader = (l1.data.values || [])[0]?.[0];
-      if (!hasCategoryHeader) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId: automationCommanderSheetId,
-          range: `${ALERT_MEMORY_TAB}!L1`,
-          valueInputOption: "RAW",
-          requestBody: { values: [["category"]] },
-        });
-        console.log(`✅ Backfilled "category" header on existing AlertMemory tab`);
-      }
-    } catch (backfillErr) {
-      console.log(`⚠️ Could not check/backfill category header: ${backfillErr.message}`);
-    }
-  } catch (err) {
-    // Tab doesn't exist — create it
-    try {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: automationCommanderSheetId,
-        requestBody: {
-          requests: [{ addSheet: { properties: { title: ALERT_MEMORY_TAB } } }],
-        },
-      });
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId,
-        range: `${ALERT_MEMORY_TAB}!A1:L1`,
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [[
-            "fingerprintHash", "alertType", "clientName", "alertSummary",
-            "cachedOptionsJSON", "status", "ignoreReason", "firstSeen", "lastSeen",
-            "lastRechecked", "dataSnapshot", "category",
-          ]],
-        },
-      });
-      console.log(`✅ Created AlertMemory tab`);
-    } catch (createErr) {
-      console.log(`⚠️ Could not create AlertMemory tab: ${createErr.message}`);
-    }
-  }
+  // Bypassed for production to save API quota. 
+  // Tab is permanent infrastructure.
+  return;
 }
 
 /**
@@ -1584,40 +1534,7 @@ async function scoreClientsByEmployeeOverlap_(sheets, allClients, extractedEmplo
 
 /** Ensure ClaudeUsage tab exists in Automation Commander with correct headers and config */
 async function ensureClaudeUsageTab_(sheets, spreadsheetId) {
-  try {
-    // Check if tab exists
-    const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
-    const exists = meta.data.sheets.some(s => s.properties.title === "ClaudeUsage");
-    if (!exists) {
-      // Create the tab
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: { requests: [{ addSheet: { properties: { title: "ClaudeUsage" } } }] },
-      });
-      // Write config section and headers
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          valueInputOption: "RAW",
-          data: [
-            { range: "ClaudeUsage!A1:B6", values: [
-              ["Claude API Usage & Settings", ""],
-              ["hourly_limit", 10],
-              ["daily_limit", 30],
-              ["anomaly_threshold", 15],
-              ["Pricing: Sonnet 4 ($/1M tokens)", "input: $3, output: $15"],
-              ["", ""],
-            ]},
-            { range: "ClaudeUsage!A7:F7", values: [
-              ["Timestamp", "Source", "Client", "Alert Type", "Tokens", "Cost (USD)"],
-            ]},
-          ],
-        },
-      });
-    }
-  } catch(e) {
-    console.error("ensureClaudeUsageTab_ error:", e.message);
-  }
+  return;
 }
 
 /**
@@ -2071,114 +1988,9 @@ async function autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cl
 let eomTabsVerifyPromise = null;
 
 async function ensureEomTabs_(sheets, spreadsheetId) {
-  if (eomTabsVerified) return; // already confirmed on this warm instance — nothing can have changed
-  
-  if (!eomTabsVerifyPromise) {
-    eomTabsVerifyPromise = (async () => {
-      try {
-        const meta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" }));
-        const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
-        const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus", "EomBankAccounts", "EomExcludedClients"].filter(t => !existingTitles.has(t));
-
-        if (toCreate.length > 0) {
-          await withRetry(() => sheets.spreadsheets.batchUpdate({
-            spreadsheetId,
-            requestBody: { requests: toCreate.map(title => ({ addSheet: { properties: { title } } })) },
-          }));
-
-          const headerWrites = [];
-          if (toCreate.includes("EomTemplates")) {
-            headerWrites.push({ range: "EomTemplates!A1:H1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt", "alertCategories", "sortOrder"]] });
-          }
-          if (toCreate.includes("EomClientTasks")) {
-            headerWrites.push({ range: "EomClientTasks!A1:H1", values: [["taskId", "clientName", "templateId", "taskName", "clientNotes", "active", "createdAt", "sortOrder"]] });
-          }
-          if (toCreate.includes("EomMonthlyStatus")) {
-            headerWrites.push({ range: "EomMonthlyStatus!A1:F1", values: [["clientName", "taskId", "monthKey", "status", "completedAt", "notelet"]] });
-          }
-          if (toCreate.includes("EomBankAccounts")) {
-            headerWrites.push({ range: "EomBankAccounts!A1:C1", values: [["clientName", "accountName", "loadedAt"]] });
-          }
-          if (toCreate.includes("EomExcludedClients")) {
-            headerWrites.push({ range: "EomExcludedClients!A1:C1", values: [["clientName", "excluded", "sortOrder"]] });
-          }
-          await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-            spreadsheetId, requestBody: { valueInputOption: "RAW", data: headerWrites },
-          }));
-        }
-
-        // sortOrder (column H) was added to EomClientTasks after that tab may
-        // already have been created on a live sheet — patch the header label in
-        // if it's missing, without disturbing anything else already there.
-        if (!toCreate.includes("EomMonthlyStatus")) {
-          const f1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomMonthlyStatus!F1" }));
-          if (!f1.data.values || !f1.data.values[0] || !f1.data.values[0][0]) {
-            await withRetry(() => sheets.spreadsheets.values.update({
-              spreadsheetId, range: "EomMonthlyStatus!F1", valueInputOption: "RAW", requestBody: { values: [["notelet"]] },
-            }));
-          }
-        }
-        if (!toCreate.includes("EomClientTasks")) {
-          const h1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomClientTasks!H1" }));
-          if (!h1.data.values || !h1.data.values[0] || !h1.data.values[0][0]) {
-            await withRetry(() => sheets.spreadsheets.values.update({
-              spreadsheetId, range: "EomClientTasks!H1", valueInputOption: "RAW", requestBody: { values: [["sortOrder"]] },
-            }));
-          }
-        }
-        // alertCategories (column G) was added to EomTemplates after that tab
-        // may already have been created — same patch pattern as sortOrder above.
-        if (!toCreate.includes("EomTemplates")) {
-          const g1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomTemplates!G1" }));
-          if (!g1.data.values || !g1.data.values[0] || !g1.data.values[0][0]) {
-            await withRetry(() => sheets.spreadsheets.values.update({
-              spreadsheetId, range: "EomTemplates!G1", valueInputOption: "RAW", requestBody: { values: [["alertCategories"]] },
-            }));
-          }
-          const th1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomTemplates!H1" }));
-          if (!th1.data.values || !th1.data.values[0] || !th1.data.values[0][0]) {
-            await withRetry(() => sheets.spreadsheets.values.update({
-              spreadsheetId, range: "EomTemplates!H1", valueInputOption: "RAW", requestBody: { values: [["sortOrder"]] },
-            }));
-          }
-        }
-        // EomExcludedClients gained "excluded" and "sortOrder" columns after
-        // that tab may already have been created and populated (19 Aug 2026) —
-        // under the old schema, a row's mere presence meant "excluded". Patch
-        // the header in, and for any existing row with no explicit "excluded"
-        // value yet, set it to TRUE — otherwise those clients would silently
-        // stop being excluded the moment this ran, since the new read logic
-        // checks the column explicitly rather than just row presence.
-        if (!toCreate.includes("EomExcludedClients")) {
-          const b1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomExcludedClients!B1" }));
-          if (!b1.data.values || !b1.data.values[0] || !b1.data.values[0][0]) {
-            await withRetry(() => sheets.spreadsheets.values.update({
-              spreadsheetId, range: "EomExcludedClients!B1:C1", valueInputOption: "RAW", requestBody: { values: [["excluded", "sortOrder"]] },
-            }));
-            const existingRows = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomExcludedClients!A2:C1000" }));
-            const rows = existingRows.data.values || [];
-            const migrateWrites = [];
-            rows.forEach((r, i) => {
-              if (r[0] && (r[1] === undefined || r[1] === "")) {
-                migrateWrites.push({ range: `EomExcludedClients!B${i + 2}`, values: [[true]] });
-              }
-            });
-            if (migrateWrites.length > 0) {
-              await withRetry(() => sheets.spreadsheets.values.batchUpdate({
-                spreadsheetId, requestBody: { valueInputOption: "RAW", data: migrateWrites },
-              }));
-            }
-          }
-        }
-        eomTabsVerified = true;
-      } catch (e) {
-        console.error("ensureEomTabs_ error:", e.message);
-      } finally {
-        eomTabsVerifyPromise = null;
-      }
-    })();
-  }
-  await eomTabsVerifyPromise;
+  // Database schema is stable and tabs exist in production. 
+  // Bypassed to save Google Sheets API read quota on Vercel cold starts.
+  return;
 }
 
 // Same warm-instance caching pattern as eomTabsVerified above — once
@@ -2191,34 +2003,10 @@ let assignedExpensesTabVerified = false;
  * shared across devices/sessions rather than trapped in one browser.
  * AssignedExpenses columns: A=clientName, B=appId, C=assignedAt.
  */
-let assignedExpensesTabVerifyPromise = null;
-
 async function ensureAssignedExpensesTab_(sheets, spreadsheetId) {
-  if (assignedExpensesTabVerified) return;
-  
-  if (!assignedExpensesTabVerifyPromise) {
-    assignedExpensesTabVerifyPromise = (async () => {
-      try {
-        const meta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" }));
-        const exists = meta.data.sheets.some(s => s.properties.title === "AssignedExpenses");
-        if (!exists) {
-          await withRetry(() => sheets.spreadsheets.batchUpdate({
-            spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: "AssignedExpenses" } } }] },
-          }));
-          await withRetry(() => sheets.spreadsheets.values.update({
-            spreadsheetId, range: "AssignedExpenses!A1:C1", valueInputOption: "RAW",
-            requestBody: { values: [["clientName", "appId", "assignedAt"]] },
-          }));
-        }
-        assignedExpensesTabVerified = true;
-      } catch (e) {
-        console.error("ensureAssignedExpensesTab_ error:", e.message);
-      } finally {
-        assignedExpensesTabVerifyPromise = null;
-      }
-    })();
-  }
-  await assignedExpensesTabVerifyPromise;
+  // Database schema is stable and tabs exist in production. 
+  // Bypassed to save Google Sheets API read quota on Vercel cold starts.
+  return;
 }
 
 function colLetterToNum(col) {
@@ -2644,34 +2432,7 @@ const SWEEP_SCHEDULE_DEFAULTS = {
 };
 
 async function ensureSweepScheduleTab(sheets, automationCommanderSheetId) {
-  try {
-    await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${SWEEP_SCHEDULE_TAB}!A1`,
-    });
-  } catch (err) {
-    try {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: automationCommanderSheetId,
-        requestBody: { requests: [{ addSheet: { properties: { title: SWEEP_SCHEDULE_TAB } } }] },
-      });
-      // lastCheckedAt starts blank for all three default rows — no timestamp needed here.
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId,
-        range: `${SWEEP_SCHEDULE_TAB}!A1:C4`,
-        valueInputOption: "RAW",
-        requestBody: { values: [
-          ["category", "frequencyMinutes", "lastCheckedAt"],
-          ["actionable", SWEEP_SCHEDULE_DEFAULTS.actionable, ""],
-          ["info", SWEEP_SCHEDULE_DEFAULTS.info, ""],
-          ["proactive", SWEEP_SCHEDULE_DEFAULTS.proactive, ""],
-        ] },
-      });
-      console.log(`✅ Created ${SWEEP_SCHEDULE_TAB} tab with default frequencies`);
-    } catch (createErr) {
-      console.log(`⚠️ Could not create ${SWEEP_SCHEDULE_TAB} tab: ${createErr.message}`);
-    }
-  }
+  return;
 }
 
 // Returns { actionable: { rowIndex, frequencyMinutes, lastCheckedAt }, info: {...}, proactive: {...} }
@@ -2738,30 +2499,7 @@ async function markCategoryChecked_(sheets, automationCommanderSheetId, category
 }
 
 async function ensureProactiveCheckLogTab(sheets, automationCommanderSheetId) {
-  try {
-    await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${PROACTIVE_CHECK_LOG_TAB}!A1`,
-    });
-  } catch (err) {
-    try {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: automationCommanderSheetId,
-        requestBody: { requests: [{ addSheet: { properties: { title: PROACTIVE_CHECK_LOG_TAB } } }] },
-      });
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId,
-        range: `${PROACTIVE_CHECK_LOG_TAB}!A1:E1`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[
-          "runAt", "clientsChecked", "newAlerts", "updatedAlerts", "dismissedAlerts",
-        ]] },
-      });
-      console.log(`✅ Created ${PROACTIVE_CHECK_LOG_TAB} tab`);
-    } catch (createErr) {
-      console.log(`⚠️ Could not create ${PROACTIVE_CHECK_LOG_TAB} tab: ${createErr.message}`);
-    }
-  }
+  return;
 }
 
 // Appends one run-summary row and trims the log to the most recent 30 entries,
@@ -2823,38 +2561,7 @@ async function readProactiveCheckLog(sheets, automationCommanderSheetId, limit =
 }
 
 async function ensureFlagSweepLogTab(sheets, automationCommanderSheetId) {
-  try {
-    await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${FLAG_SWEEP_LOG_TAB}!A1`,
-    });
-    // Ensure headers H and I exist for alertsDelayed and alertsWoken
-    const i1 = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: `${FLAG_SWEEP_LOG_TAB}!I1` });
-    if (!i1.data.values || !i1.data.values[0] || !i1.data.values[0][0]) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId, range: `${FLAG_SWEEP_LOG_TAB}!G1:I1`,
-        valueInputOption: "RAW", requestBody: { values: [["categoriesRun", "alertsDelayed", "alertsWoken"]] },
-      });
-    }
-  } catch (err) {
-    try {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: automationCommanderSheetId,
-        requestBody: { requests: [{ addSheet: { properties: { title: FLAG_SWEEP_LOG_TAB } } }] },
-      });
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId,
-        range: `${FLAG_SWEEP_LOG_TAB}!A1:I1`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[
-          "runAt", "clientsChecked", "flagsRaised", "errors", "elapsedSeconds", "raisedDetailJSON", "categoriesRun", "alertsDelayed", "alertsWoken"
-        ]] },
-      });
-      console.log(`✅ Created ${FLAG_SWEEP_LOG_TAB} tab`);
-    } catch (createErr) {
-      console.log(`⚠️ Could not create ${FLAG_SWEEP_LOG_TAB} tab: ${createErr.message}`);
-    }
-  }
+  return;
 }
 
 // Appends one run-summary row and trims the log to the most recent 200
@@ -2971,38 +2678,7 @@ async function readFlagSweepLog(sheets, automationCommanderSheetId, limit = 20) 
 }
 
 async function ensurePrecomputeLogTab(sheets, automationCommanderSheetId) {
-  try {
-    await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${PRECOMPUTE_LOG_TAB}!A1`,
-    });
-    // Ensure header F and G exist for the new proactiveCount
-    const f1 = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: `${PRECOMPUTE_LOG_TAB}!F1` });
-    if (!f1.data.values || !f1.data.values[0] || f1.data.values[0][0] !== "proactiveCount") {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId, range: `${PRECOMPUTE_LOG_TAB}!F1:G1`,
-        valueInputOption: "RAW", requestBody: { values: [["proactiveCount", "clientDetailJSON"]] },
-      });
-    }
-  } catch (err) {
-    try {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: automationCommanderSheetId,
-        requestBody: { requests: [{ addSheet: { properties: { title: PRECOMPUTE_LOG_TAB } } }] },
-      });
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId,
-        range: `${PRECOMPUTE_LOG_TAB}!A1:G1`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[
-          "runAt", "clientsWithFlags", "totalAlerts", "noActionCount", "analysisCount", "proactiveCount", "clientDetailJSON",
-        ]] },
-      });
-      console.log(`✅ Created ${PRECOMPUTE_LOG_TAB} tab`);
-    } catch (createErr) {
-      console.log(`⚠️ Could not create ${PRECOMPUTE_LOG_TAB} tab: ${createErr.message}`);
-    }
-  }
+  return;
 }
 
 // Logs each store_precomputed run — the other end of the pipeline from
@@ -3087,38 +2763,7 @@ async function readPrecomputeLog(sheets, automationCommanderSheetId, limit = 20)
 }
 
 async function ensureBuildOptionsLogTab(sheets, automationCommanderSheetId) {
-  try {
-    await sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: `${BUILD_OPTIONS_LOG_TAB}!A1`,
-    });
-    // Ensure header G exists for the new detail JSON
-    const g1 = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: `${BUILD_OPTIONS_LOG_TAB}!G1` });
-    if (!g1.data.values || !g1.data.values[0] || !g1.data.values[0][0]) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId, range: `${BUILD_OPTIONS_LOG_TAB}!G1`,
-        valueInputOption: "RAW", requestBody: { values: [["builtDetailJSON"]] },
-      });
-    }
-  } catch (err) {
-    try {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: automationCommanderSheetId,
-        requestBody: { requests: [{ addSheet: { properties: { title: BUILD_OPTIONS_LOG_TAB } } }] },
-      });
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: automationCommanderSheetId,
-        range: `${BUILD_OPTIONS_LOG_TAB}!A1:G1`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[
-          "runAt", "processed", "built", "notFound", "errors", "elapsedSeconds", "builtDetailJSON"
-        ]] },
-      });
-      console.log(`✅ Created ${BUILD_OPTIONS_LOG_TAB} tab`);
-    } catch (createErr) {
-      console.log(`⚠️ Could not create ${BUILD_OPTIONS_LOG_TAB} tab: ${createErr.message}`);
-    }
-  }
+  return;
 }
 
 async function logBuildOptionsRun(sheets, automationCommanderSheetId, { processed, built, notFound, errors, elapsedSeconds, builtDetail, isContinuation }) {

@@ -1169,6 +1169,8 @@ export default function TriageSystem({ onBack }) {
   const [eomMarkActualRunning, setEomMarkActualRunning] = useState(""); // taskId currently running, or ""
   const [eomBackupRunning, setEomBackupRunning] = useState(""); // taskId currently running, or ""
   const [eomAlertDataReady, setEomAlertDataReady] = useState(!!sessionId);
+  const eomStatusQueueRef = React.useRef([]);
+  const eomStatusTimerRef = React.useRef(null);
   const [eomCashPendingClient, setEomCashPendingClient] = useState(""); // client to auto-open in Cash Balances once bank accounts are loaded
   const [eomDragOverTaskId, setEomDragOverTaskId] = useState(null);
   const [eomDraggedTemplateId, setEomDraggedTemplateId] = useState(null);
@@ -1712,18 +1714,39 @@ export default function TriageSystem({ onBack }) {
   };
 
   const handleEomStatusChange = (taskId, newStatus, targetClientName = eomDetailClient) => {
-    const previous = eomStatusOverrides;
+    // 1. Optimistic UI update (instant visual feedback)
     setEomStatusOverrides(prev => {
       const withoutThis = (prev || []).filter(s => !(s.clientName === targetClientName && s.taskId === taskId));
       return [...withoutThis, { clientName: targetClientName, taskId, status: newStatus }];
     });
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_update_task_status", clientName: targetClientName, taskId, monthKey: eomMonthKey, status: newStatus, automationCommanderSheetId }) })
-      .then(r => r.json())
-      .then(d => {
-        if (!d.success) { setEomStatusOverrides(previous); setEomClientTasksError(d.error || "Failed to save status"); }
-      })
-      .catch(e => { setEomStatusOverrides(previous); setEomClientTasksError(e.message); });
+
+    // 2. Add to queue (overwrite if user clicks the exact same task multiple times quickly)
+    const existingIdx = eomStatusQueueRef.current.findIndex(u => u.clientName === targetClientName && u.taskId === taskId && u.monthKey === eomMonthKey);
+    if (existingIdx !== -1) {
+      eomStatusQueueRef.current[existingIdx].status = newStatus;
+    } else {
+      eomStatusQueueRef.current.push({ clientName: targetClientName, taskId, monthKey: eomMonthKey, status: newStatus });
+    }
+
+    // 3. Reset the debounce timer
+    if (eomStatusTimerRef.current) clearTimeout(eomStatusTimerRef.current);
+    
+    eomStatusTimerRef.current = setTimeout(() => {
+      const updates = [...eomStatusQueueRef.current];
+      eomStatusQueueRef.current = []; // clear the queue
+      
+      if (updates.length > 0) {
+        fetch("/api/triage", { 
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "eom_update_task_status_batch", updates, automationCommanderSheetId }) 
+        })
+        .then(r => r.json())
+        .then(d => {
+          if (!d.success) setEomClientTasksError(d.error || "Failed to save status batch");
+        })
+        .catch(e => setEomClientTasksError(e.message));
+      }
+    }, 1000); // 1-second debounce
   };
 
   const handleEomAddTask = () => {

@@ -15681,17 +15681,17 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" });
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A2:H5000" }));
         const rows = resp.data.values || [];
 
         if (taskId) {
           const rowIdx = rows.findIndex(r => r[0] === taskId);
           if (rowIdx === -1) return res.status(404).json({ success: false, error: "Task assignment not found" });
           const sheetRow = rowIdx + 2;
-          await sheets.spreadsheets.values.update({
+          await withRetry(() => sheets.spreadsheets.values.update({
             spreadsheetId: automationCommanderSheetId, range: `EomClientTasks!B${sheetRow}:F${sheetRow}`,
             valueInputOption: "RAW", requestBody: { values: [[taskClientName, taskTemplateId || "", taskName || "", clientNotes || "", taskActive !== false]] },
-          });
+          }));
           return res.status(200).json({ success: true, taskId });
         }
 
@@ -15699,10 +15699,10 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
         // Default sortOrder is "now" — large enough to always sort after any
         // explicitly-ordered task, so a new task lands at the end of the
         // list by default; reorder afterward if it needs to move.
-        await sheets.spreadsheets.values.append({
+        await withRetry(() => sheets.spreadsheets.values.append({
           spreadsheetId: automationCommanderSheetId, range: "EomClientTasks!A:H", valueInputOption: "RAW",
           requestBody: { values: [[newId, taskClientName, taskTemplateId || "", taskName || "", clientNotes || "", true, new Date().toISOString(), Date.now()]] },
-        });
+        }));
         return res.status(200).json({ success: true, taskId: newId });
       } catch (err) {
         console.error("❌ eom_save_client_task error:", err);
@@ -15779,26 +15779,79 @@ Return ONLY valid JSON, no other text, matching exactly this structure:
       try {
         const sheets = await getSheetsClient();
         await ensureEomTabs_(sheets, automationCommanderSheetId);
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" });
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" }));
         const rows = resp.data.values || [];
         const rowIdx = rows.findIndex(r => r[0] === uClientName && r[1] === uTaskId && r[2] === uMonthKey);
         const completedAt = uStatus === "done" ? new Date().toISOString() : "";
 
         if (rowIdx === -1) {
-          await sheets.spreadsheets.values.append({
+          await withRetry(() => sheets.spreadsheets.values.append({
             spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:F", valueInputOption: "RAW",
             requestBody: { values: [[uClientName, uTaskId, uMonthKey, uStatus, completedAt, ""]] },
-          });
+          }));
         } else {
           const sheetRow = rowIdx + 2;
-          await sheets.spreadsheets.values.update({
+          await withRetry(() => sheets.spreadsheets.values.update({
             spreadsheetId: automationCommanderSheetId, range: `EomMonthlyStatus!D${sheetRow}:E${sheetRow}`,
             valueInputOption: "RAW", requestBody: { values: [[uStatus, completedAt]] },
-          });
+          }));
         }
         return res.status(200).json({ success: true });
       } catch (err) {
         console.error("❌ eom_update_task_status error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "eom_update_task_status_batch") {
+      const { updates, automationCommanderSheetId } = req.body;
+      if (!updates || !updates.length) return res.status(400).json({ success: false, error: "Missing updates" });
+      
+      try {
+        const sheets = await getSheetsClient();
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A2:F200000" }));
+        const rows = resp.data.values || [];
+        
+        const appends = [];
+        const updateRequests = [];
+        const nowIso = new Date().toISOString();
+
+        // Process each update in the batch
+        for (const u of updates) {
+          const rowIdx = rows.findIndex(r => r[0] === u.clientName && r[1] === u.taskId && r[2] === u.monthKey);
+          const completedAt = u.status === "done" ? nowIso : "";
+          
+          if (rowIdx === -1) {
+            // Add to our virtual rows array so duplicates in the same batch don't append twice
+            rows.push([u.clientName, u.taskId, u.monthKey, u.status, completedAt, ""]);
+            appends.push([u.clientName, u.taskId, u.monthKey, u.status, completedAt, ""]);
+          } else {
+            const sheetRow = rowIdx + 2;
+            updateRequests.push({
+              range: `EomMonthlyStatus!D${sheetRow}:E${sheetRow}`,
+              values: [[u.status, completedAt]]
+            });
+            // Update virtual rows array
+            rows[rowIdx][3] = u.status;
+            rows[rowIdx][4] = completedAt;
+          }
+        }
+
+        // Execute API calls in highly efficient batches
+        if (appends.length > 0) {
+          await withRetry(() => sheets.spreadsheets.values.append({
+            spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:F", valueInputOption: "RAW",
+            requestBody: { values: appends },
+          }));
+        }
+        if (updateRequests.length > 0) {
+          await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: automationCommanderSheetId, requestBody: { valueInputOption: "RAW", data: updateRequests },
+          }));
+        }
+        
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ eom_update_task_status_batch error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

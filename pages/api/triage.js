@@ -2076,106 +2076,106 @@ async function ensureEomTabs_(sheets, spreadsheetId) {
   if (!eomTabsVerifyPromise) {
     eomTabsVerifyPromise = (async () => {
       try {
-        const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
+        const meta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" }));
         const existingTitles = new Set(meta.data.sheets.map(s => s.properties.title));
-    const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus", "EomBankAccounts", "EomExcludedClients"].filter(t => !existingTitles.has(t));
+        const toCreate = ["EomTemplates", "EomClientTasks", "EomMonthlyStatus", "EomBankAccounts", "EomExcludedClients"].filter(t => !existingTitles.has(t));
 
-    if (toCreate.length > 0) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: { requests: toCreate.map(title => ({ addSheet: { properties: { title } } })) },
-      });
+        if (toCreate.length > 0) {
+          await withRetry(() => sheets.spreadsheets.batchUpdate({
+            spreadsheetId,
+            requestBody: { requests: toCreate.map(title => ({ addSheet: { properties: { title } } })) },
+          }));
 
-      const headerWrites = [];
-      if (toCreate.includes("EomTemplates")) {
-        headerWrites.push({ range: "EomTemplates!A1:H1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt", "alertCategories", "sortOrder"]] });
-      }
-      if (toCreate.includes("EomClientTasks")) {
-        headerWrites.push({ range: "EomClientTasks!A1:H1", values: [["taskId", "clientName", "templateId", "taskName", "clientNotes", "active", "createdAt", "sortOrder"]] });
-      }
-      if (toCreate.includes("EomMonthlyStatus")) {
-        headerWrites.push({ range: "EomMonthlyStatus!A1:F1", values: [["clientName", "taskId", "monthKey", "status", "completedAt", "notelet"]] });
-      }
-      if (toCreate.includes("EomBankAccounts")) {
-        headerWrites.push({ range: "EomBankAccounts!A1:C1", values: [["clientName", "accountName", "loadedAt"]] });
-      }
-      if (toCreate.includes("EomExcludedClients")) {
-        headerWrites.push({ range: "EomExcludedClients!A1:C1", values: [["clientName", "excluded", "sortOrder"]] });
-      }
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId, requestBody: { valueInputOption: "RAW", data: headerWrites },
-      });
-    }
-
-    // sortOrder (column H) was added to EomClientTasks after that tab may
-    // already have been created on a live sheet — patch the header label in
-    // if it's missing, without disturbing anything else already there.
-    if (!toCreate.includes("EomMonthlyStatus")) {
-      const f1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomMonthlyStatus!F1" });
-      if (!f1.data.values || !f1.data.values[0] || !f1.data.values[0][0]) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId, range: "EomMonthlyStatus!F1", valueInputOption: "RAW", requestBody: { values: [["notelet"]] },
-        });
-      }
-    }
-    if (!toCreate.includes("EomClientTasks")) {
-      const h1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomClientTasks!H1" });
-      if (!h1.data.values || !h1.data.values[0] || !h1.data.values[0][0]) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId, range: "EomClientTasks!H1", valueInputOption: "RAW", requestBody: { values: [["sortOrder"]] },
-        });
-      }
-    }
-    // alertCategories (column G) was added to EomTemplates after that tab
-    // may already have been created — same patch pattern as sortOrder above.
-    if (!toCreate.includes("EomTemplates")) {
-      const g1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomTemplates!G1" });
-      if (!g1.data.values || !g1.data.values[0] || !g1.data.values[0][0]) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId, range: "EomTemplates!G1", valueInputOption: "RAW", requestBody: { values: [["alertCategories"]] },
-        });
-      }
-      const th1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomTemplates!H1" });
-      if (!th1.data.values || !th1.data.values[0] || !th1.data.values[0][0]) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId, range: "EomTemplates!H1", valueInputOption: "RAW", requestBody: { values: [["sortOrder"]] },
-        });
-      }
-    }
-    // EomExcludedClients gained "excluded" and "sortOrder" columns after
-    // that tab may already have been created and populated (19 Aug 2026) —
-    // under the old schema, a row's mere presence meant "excluded". Patch
-    // the header in, and for any existing row with no explicit "excluded"
-    // value yet, set it to TRUE — otherwise those clients would silently
-    // stop being excluded the moment this ran, since the new read logic
-    // checks the column explicitly rather than just row presence.
-    if (!toCreate.includes("EomExcludedClients")) {
-      const b1 = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomExcludedClients!B1" });
-      if (!b1.data.values || !b1.data.values[0] || !b1.data.values[0][0]) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId, range: "EomExcludedClients!B1:C1", valueInputOption: "RAW", requestBody: { values: [["excluded", "sortOrder"]] },
-        });
-        const existingRows = await sheets.spreadsheets.values.get({ spreadsheetId, range: "EomExcludedClients!A2:C1000" });
-        const rows = existingRows.data.values || [];
-        const migrateWrites = [];
-        rows.forEach((r, i) => {
-          if (r[0] && (r[1] === undefined || r[1] === "")) {
-            migrateWrites.push({ range: `EomExcludedClients!B${i + 2}`, values: [[true]] });
+          const headerWrites = [];
+          if (toCreate.includes("EomTemplates")) {
+            headerWrites.push({ range: "EomTemplates!A1:H1", values: [["templateId", "name", "defaultNotes", "linkedFunction", "active", "createdAt", "alertCategories", "sortOrder"]] });
           }
-        });
-        if (migrateWrites.length > 0) {
-          await sheets.spreadsheets.values.batchUpdate({
-            spreadsheetId, requestBody: { valueInputOption: "RAW", data: migrateWrites },
-          });
+          if (toCreate.includes("EomClientTasks")) {
+            headerWrites.push({ range: "EomClientTasks!A1:H1", values: [["taskId", "clientName", "templateId", "taskName", "clientNotes", "active", "createdAt", "sortOrder"]] });
+          }
+          if (toCreate.includes("EomMonthlyStatus")) {
+            headerWrites.push({ range: "EomMonthlyStatus!A1:F1", values: [["clientName", "taskId", "monthKey", "status", "completedAt", "notelet"]] });
+          }
+          if (toCreate.includes("EomBankAccounts")) {
+            headerWrites.push({ range: "EomBankAccounts!A1:C1", values: [["clientName", "accountName", "loadedAt"]] });
+          }
+          if (toCreate.includes("EomExcludedClients")) {
+            headerWrites.push({ range: "EomExcludedClients!A1:C1", values: [["clientName", "excluded", "sortOrder"]] });
+          }
+          await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId, requestBody: { valueInputOption: "RAW", data: headerWrites },
+          }));
         }
+
+        // sortOrder (column H) was added to EomClientTasks after that tab may
+        // already have been created on a live sheet — patch the header label in
+        // if it's missing, without disturbing anything else already there.
+        if (!toCreate.includes("EomMonthlyStatus")) {
+          const f1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomMonthlyStatus!F1" }));
+          if (!f1.data.values || !f1.data.values[0] || !f1.data.values[0][0]) {
+            await withRetry(() => sheets.spreadsheets.values.update({
+              spreadsheetId, range: "EomMonthlyStatus!F1", valueInputOption: "RAW", requestBody: { values: [["notelet"]] },
+            }));
+          }
+        }
+        if (!toCreate.includes("EomClientTasks")) {
+          const h1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomClientTasks!H1" }));
+          if (!h1.data.values || !h1.data.values[0] || !h1.data.values[0][0]) {
+            await withRetry(() => sheets.spreadsheets.values.update({
+              spreadsheetId, range: "EomClientTasks!H1", valueInputOption: "RAW", requestBody: { values: [["sortOrder"]] },
+            }));
+          }
+        }
+        // alertCategories (column G) was added to EomTemplates after that tab
+        // may already have been created — same patch pattern as sortOrder above.
+        if (!toCreate.includes("EomTemplates")) {
+          const g1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomTemplates!G1" }));
+          if (!g1.data.values || !g1.data.values[0] || !g1.data.values[0][0]) {
+            await withRetry(() => sheets.spreadsheets.values.update({
+              spreadsheetId, range: "EomTemplates!G1", valueInputOption: "RAW", requestBody: { values: [["alertCategories"]] },
+            }));
+          }
+          const th1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomTemplates!H1" }));
+          if (!th1.data.values || !th1.data.values[0] || !th1.data.values[0][0]) {
+            await withRetry(() => sheets.spreadsheets.values.update({
+              spreadsheetId, range: "EomTemplates!H1", valueInputOption: "RAW", requestBody: { values: [["sortOrder"]] },
+            }));
+          }
+        }
+        // EomExcludedClients gained "excluded" and "sortOrder" columns after
+        // that tab may already have been created and populated (19 Aug 2026) —
+        // under the old schema, a row's mere presence meant "excluded". Patch
+        // the header in, and for any existing row with no explicit "excluded"
+        // value yet, set it to TRUE — otherwise those clients would silently
+        // stop being excluded the moment this ran, since the new read logic
+        // checks the column explicitly rather than just row presence.
+        if (!toCreate.includes("EomExcludedClients")) {
+          const b1 = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomExcludedClients!B1" }));
+          if (!b1.data.values || !b1.data.values[0] || !b1.data.values[0][0]) {
+            await withRetry(() => sheets.spreadsheets.values.update({
+              spreadsheetId, range: "EomExcludedClients!B1:C1", valueInputOption: "RAW", requestBody: { values: [["excluded", "sortOrder"]] },
+            }));
+            const existingRows = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId, range: "EomExcludedClients!A2:C1000" }));
+            const rows = existingRows.data.values || [];
+            const migrateWrites = [];
+            rows.forEach((r, i) => {
+              if (r[0] && (r[1] === undefined || r[1] === "")) {
+                migrateWrites.push({ range: `EomExcludedClients!B${i + 2}`, values: [[true]] });
+              }
+            });
+            if (migrateWrites.length > 0) {
+              await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+                spreadsheetId, requestBody: { valueInputOption: "RAW", data: migrateWrites },
+              }));
+            }
+          }
+        }
+        eomTabsVerified = true;
+      } catch (e) {
+        console.error("ensureEomTabs_ error:", e.message);
+      } finally {
+        eomTabsVerifyPromise = null;
       }
-    }
-    eomTabsVerified = true;
-  } catch (e) {
-    console.error("ensureEomTabs_ error:", e.message);
-  } finally {
-    eomTabsVerifyPromise = null;
-  }
     })();
   }
   await eomTabsVerifyPromise;
@@ -2191,24 +2191,34 @@ let assignedExpensesTabVerified = false;
  * shared across devices/sessions rather than trapped in one browser.
  * AssignedExpenses columns: A=clientName, B=appId, C=assignedAt.
  */
+let assignedExpensesTabVerifyPromise = null;
+
 async function ensureAssignedExpensesTab_(sheets, spreadsheetId) {
   if (assignedExpensesTabVerified) return;
-  try {
-    const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" });
-    const exists = meta.data.sheets.some(s => s.properties.title === "AssignedExpenses");
-    if (!exists) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: "AssignedExpenses" } } }] },
-      });
-      await sheets.spreadsheets.values.update({
-        spreadsheetId, range: "AssignedExpenses!A1:C1", valueInputOption: "RAW",
-        requestBody: { values: [["clientName", "appId", "assignedAt"]] },
-      });
-    }
-    assignedExpensesTabVerified = true;
-  } catch (e) {
-    console.error("ensureAssignedExpensesTab_ error:", e.message);
+  
+  if (!assignedExpensesTabVerifyPromise) {
+    assignedExpensesTabVerifyPromise = (async () => {
+      try {
+        const meta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" }));
+        const exists = meta.data.sheets.some(s => s.properties.title === "AssignedExpenses");
+        if (!exists) {
+          await withRetry(() => sheets.spreadsheets.batchUpdate({
+            spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: "AssignedExpenses" } } }] },
+          }));
+          await withRetry(() => sheets.spreadsheets.values.update({
+            spreadsheetId, range: "AssignedExpenses!A1:C1", valueInputOption: "RAW",
+            requestBody: { values: [["clientName", "appId", "assignedAt"]] },
+          }));
+        }
+        assignedExpensesTabVerified = true;
+      } catch (e) {
+        console.error("ensureAssignedExpensesTab_ error:", e.message);
+      } finally {
+        assignedExpensesTabVerifyPromise = null;
+      }
+    })();
   }
+  await assignedExpensesTabVerifyPromise;
 }
 
 function colLetterToNum(col) {

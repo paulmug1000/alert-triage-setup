@@ -17657,7 +17657,7 @@ async function checkDeletedExpenses_(clientName, clientSheetId, masterSheetId, s
       const row = wideData[r];
       const appId = String(row[9] || "").trim();
       const missingFlag = String(row[55] || "").trim();
-      if (!appId || appId.toUpperCase().indexOf("MANUAL-ENTRY") === 0 || appId.toUpperCase().indexOf("UNRECON-GAP") === 0 || missingFlag !== "1") continue;
+      if (!appId || appId.toUpperCase().indexOf("MANUAL-ENTRY") === 0 || appId.toUpperCase().indexOf("UNRECON-GAP") === 0 || appId.toUpperCase().indexOf("MANUAL-GAP") === 0 || missingFlag !== "1") continue;
 
       const recDateRaw = row[6];
       const recDateObj = recDateRaw instanceof Date ? recDateRaw : new Date(recDateRaw);
@@ -17735,7 +17735,7 @@ async function checkUnreceivedExpenses_(clientName, clientSheetId, sharedData) {
           const amtNum = parseFloat(String(amtRaw).replace(/[£$€,\s]/g, "")) || 0;
           if (amtNum === 0) continue;
           const refVal = String(jRow[expSlots[s].ref] || "").trim().toUpperCase();
-          if (refVal.indexOf("MANUAL-ENTRY") === 0 || refVal.indexOf("UNRECON-GAP") === 0) {
+          if (refVal.indexOf("MANUAL-ENTRY") === 0 || refVal.indexOf("UNRECON-GAP") === 0 || refVal.indexOf("MANUAL-GAP") === 0) {
             placeholderCount++; placeholderTotal += amtNum;
           } else { totalRealReceived += amtNum; }
         }

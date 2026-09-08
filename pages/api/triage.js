@@ -3465,11 +3465,28 @@ export default async function handler(req, res) {
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 
     if (action === "emergency_flush_redis") {
-      // Temporary endpoint to clear OOM errors
-      await redisClient.flushDb();
-      return res.status(200).json({ success: true, message: "Redis database flushed successfully. You can now use the app normally." });
-      
-    } else if (action === "get_all_clients") {
+          // Temporary endpoint to clear OOM errors
+          await redisClient.flushDb();
+          return res.status(200).json({ success: true, message: "Redis database flushed successfully. You can now use the app normally." });
+          
+        } else if (action === "verify_pin") {
+          const { pin } = req.body;
+          const expectedPin = process.env.APP_ACCESS_PIN;
+          
+          // Failsafe: If no PIN is configured in Vercel, allow access so you don't get locked out
+          if (!expectedPin) {
+            return res.status(200).json({ success: true, token: "pulse_auth_unlocked" });
+          }
+          
+          if (pin === expectedPin) {
+            // High-entropy token stored locally
+            const token = `pulse_auth_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+            return res.status(200).json({ success: true, token });
+          } else {
+            return res.status(401).json({ success: false, error: "Incorrect PIN" });
+          }
+
+        } else if (action === "get_all_clients") {
       // Returns all clients from AutoUpdates as an array.
       // Used by the frontend for the Outgoings client selector, the Settings
       // "Run Client Automation" panel, and when clientsWithFlags is empty.

@@ -7736,6 +7736,7 @@ export default async function handler(req, res) {
                   checkDirectCostsMismatch_(client.clientName, client.clientSheetId, sharedData),
                   checkPipelineConfirmedOverlap_(client.clientName, client.clientSheetId, sharedData),
                   checkRetainerShrinkBlocked_(client.clientName, client.masterSheetId, sharedData),
+                  checkUninvoicedNewJobs_(client.clientName, client.clientSheetId, sharedData),
                   checkUninvoicedRevenue_(client.clientName, client.clientSheetId, sharedData),
                   checkDeletedInvoices_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
                   checkJobStructureErrors_(client.clientName, client.clientSheetId, sharedData),
@@ -7750,7 +7751,7 @@ export default async function handler(req, res) {
                 // so the auto-resolve logic knows we checked them and can safely clear stale ones.
                 const proactiveTypes = [
                   "retainer_invoice", "crm_wipe", "revenue_mismatch", "direct_costs_mismatch",
-                  "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_revenue",
+                  "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_new_job", "uninvoiced_revenue",
                   "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses"
                 ];
                 
@@ -17196,6 +17197,68 @@ async function checkRetainerShrinkBlocked_(clientName, masterSheetId, sharedData
         detail: `Retainer contract shrunk but the system was unable to automatically trim child row ${childRowNum} because the row contains actuals (expenses or invoices already recorded).\nJob: ${clientJobStr || clientName}.\nChild row ${childRowNum} is now an excess row that falls outside the new contract period but cannot be removed automatically.\nAction required: manually review row ${childRowNum} in the Confirmed tab and decide whether to keep, adjust, or remove it.\nFirst detected: ${tsStr ? tsStr.slice(0, 10) : "(unknown date)"}.`,
         jobName, endClientName: endClientStr, childRowNum, clientJobStr, timestamp: tsStr, confirmedRow: childRowNum,
       });
+    }
+  } catch(e) {}
+  return alerts;
+}
+
+async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedData) {
+  const alerts = [];
+  try {
+    const data = sharedData?.confirmedDataWide || sharedData?.confirmedData || [];
+    if (data.length < 2) return alerts;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const oneMonthAgo = new Date(today);
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const fmtDate = (d) => `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+
+    let r = 1;
+    while (r < data.length) {
+      const row = data[r];
+      const revenue = row[32], startVal = row[37], endVal = row[38];
+
+      if (!revenue || !startVal) { r++; continue; }
+
+      const revenueAmt = parseFloat(String(revenue).replace(/[£$€,\s]/g, "")) || 0;
+      if (revenueAmt <= 0) { r += collectJobRows_(data, r).length; continue; }
+
+      const startDate = parseConfirmedDate_(startVal);
+      if (!startDate || startDate > oneMonthAgo) { r += collectJobRows_(data, r).length; continue; }
+
+      const jobClient = String(row[0] || "").trim();
+      const jobName = String(row[1] || "").trim();
+      const projectCode = String(row[2] || "").trim();
+      if (!jobName) { r++; continue; }
+
+      const jobRows = collectJobRows_(data, r);
+      let hasRealInvoice = false;
+
+      for (let jr = 0; jr < jobRows.length; jr++) {
+        const jRow = jobRows[jr].row;
+        const slots = [{ ref: 42, amt: 41 }, { ref: 49, amt: 48 }, { ref: 56, amt: 55 }];
+        for (const s of slots) {
+          const ref = String(jRow[s.ref] || "").trim().toUpperCase();
+          const amtNum = parseFloat(String(jRow[s.amt] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          if (ref && !ref.startsWith("MANUAL-INV") && amtNum > 0) {
+            hasRealInvoice = true;
+            break;
+          }
+        }
+        if (hasRealInvoice) break;
+      }
+
+      if (!hasRealInvoice) {
+        const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
+        alerts.push({
+          alertType: "uninvoiced_new_job", alertKey: `uninvoiced_new_job|${stableKey}`, stableJobKey: stableKey,
+          heading: "Job started over a month ago with no invoices sent",
+          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job started ${fmtDate(startDate)} (over a month ago) but no real invoices have been recorded yet. All invoice slots are empty or contain manual placeholders.`,
+          jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate),
+          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate), stableJobKey: stableKey },
+        });
+      }
+      r += jobRows.length;
     }
   } catch(e) {}
   return alerts;

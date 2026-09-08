@@ -2628,6 +2628,7 @@ export default function TriageSystem({ onBack }) {
     direct_costs_mismatch:      "Direct costs / expenses mismatch",
     pipeline_confirmed_overlap: "Pipeline / Confirmed overlap",
     retainer_shrink_blocked:    "Retainer row blocked from trimming",
+    uninvoiced_new_job:         "Uninvoiced new job",
     uninvoiced_revenue:         "Uninvoiced revenue",
     deleted_invoice:            "Deleted invoice",
     job_structure_error:        "Job structure error",
@@ -8727,6 +8728,7 @@ export default function TriageSystem({ onBack }) {
                   { name: "Direct costs / total expenses mismatch", detail: "Compares each job's direct cost budget against total recorded expenses, across both Pipeline and Confirmed." },
                   { name: "Pipeline / Confirmed overlap", detail: "Finds jobs present in both tabs where the Pipeline entry hasn't been properly closed out (likelihood not 0%, not marked copied to Confirmed)." },
                   { name: "Retainer shrink blocked", detail: "Flags retainer child rows that couldn't be automatically trimmed after a contract shrank, because the row already has actuals recorded." },
+                  { name: "Uninvoiced new job", detail: "Flags jobs that started over a month ago but still have no real invoices recorded (only placeholders or empty slots)." },
                   { name: "Uninvoiced revenue on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have uninvoiced revenue, excluding placeholder invoices and Draft invoices that haven't been sent." },
                   { name: "Unreceived expenses on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have unreceived expenses against their direct cost budget, excluding manual estimates and unreconciled-gap placeholders." },
                   { name: "Deleted invoice detection", detail: "Flags invoices with a real reference on the Confirmed tab that no longer appear in the accounting system — a likely sign the invoice was deleted or voided." },
@@ -10081,7 +10083,7 @@ export default function TriageSystem({ onBack }) {
                                 {alert.heading}
                               </div>
                               <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                                {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_revenue" ? null : alert.detail}
+                                {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" ? null : alert.detail}
                               </div>
 
                               {alert.alertType === "retainer_invoice" && (
@@ -10134,6 +10136,17 @@ export default function TriageSystem({ onBack }) {
                                       )}
                                     </div>
                                   )}
+                                </div>
+                              )}
+
+                              {alert.alertType === "uninvoiced_new_job" && (
+                                <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  {m.endClientName && <div><strong>End client:</strong> {m.endClientName}</div>}
+                                  {m.jobName && <div><strong>Job:</strong> {m.jobName}{m.projectCode ? ` [${m.projectCode}]` : ""}</div>}
+                                  {m.confirmedRow && <div><strong>Confirmed tab row:</strong> {m.confirmedRow}</div>}
+                                  {m.startDate && <div><strong>Job started:</strong> {m.startDate}</div>}
+                                  {m.revenue && <div><strong>Revenue:</strong> £{parseFloat(m.revenue).toFixed(2)}</div>}
+                                  <div style={{ marginTop: "6px", fontWeight: "700", color: "#991b1b" }}>Over a month elapsed with zero real invoices sent.</div>
                                 </div>
                               )}
 

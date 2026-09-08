@@ -1064,11 +1064,13 @@ export default function TriageSystem({ onBack }) {
   const [retainersJobs, setRetainersJobs] = useState(null);
   const [retainersJobsLoading, setRetainersJobsLoading] = useState(false);
   const [isTidying, setIsTidying] = useState(false);
+  const [showTidyConfirm, setShowTidyConfirm] = useState(false);
+  const [tidyResult, setTidyResult] = useState(null);
   const [retainersEditJob, setRetainersEditJob] = useState(null); // the job object being edited
   const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(() => new Set()); // parentRowNum values currently expanded
 
   const handleTidyRetainers = async () => {
-    if (!window.confirm("This will rearrange rows to group and alphabetize retainers in the Confirmed tab. Proceed?")) return;
+    setShowTidyConfirm(false);
     setIsTidying(true);
     try {
       const res = await fetch("/api/triage", {
@@ -1077,13 +1079,13 @@ export default function TriageSystem({ onBack }) {
       });
       const data = await res.json();
       if (data.success) {
-        alert(`Success! Tidy up complete (${data.moves} moves executed).`);
+        setTidyResult({ success: true, moves: data.moves });
         loadRetainersJobs(retainersClient);
       } else {
-        alert("Error: " + data.error);
+        setTidyResult({ success: false, error: data.error });
       }
     } catch(e) {
-      alert("Error: " + e.message);
+      setTidyResult({ success: false, error: e.message });
     } finally {
       setIsTidying(false);
     }
@@ -5142,6 +5144,42 @@ export default function TriageSystem({ onBack }) {
             </div>
           </div>
         )}
+        {showTidyConfirm && (
+          <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setShowTidyConfirm(false); }}>
+            <div style={styles.modalCard}>
+              <h3 style={styles.modalTitle}>Tidy up retainers?</h3>
+              <p style={styles.modalSubtitle}>
+                This will rearrange rows in the Confirmed tab to group and alphabetize all finished and active retainers into two distinct blocks.
+              </p>
+              <div style={{ display: "flex", gap: "10px", marginTop: "14px" }}>
+                <button onClick={handleTidyRetainers}
+                  style={{ padding: "8px 16px", background: "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
+                  Proceed
+                </button>
+                <button onClick={() => setShowTidyConfirm(false)}
+                  style={{ padding: "8px 16px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {tidyResult && (
+          <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setTidyResult(null); }}>
+            <div style={styles.modalCard}>
+              <h3 style={styles.modalTitle}>{tidyResult.success ? "Tidy Up Complete" : "Error"}</h3>
+              <p style={styles.modalSubtitle}>
+                {tidyResult.success ? `Success! ${tidyResult.moves} moves executed.` : `Failed: ${tidyResult.error}`}
+              </p>
+              <div style={{ display: "flex", gap: "10px", marginTop: "14px" }}>
+                <button onClick={() => setTidyResult(null)}
+                  style={{ padding: "8px 16px", background: tidyResult.success ? "#16a34a" : "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600" }}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </>
     );
   };
@@ -7070,7 +7108,7 @@ export default function TriageSystem({ onBack }) {
             </h2>
             <div style={{ display: "flex", gap: "8px" }}>
               {retainersClient && (
-                <button className="triage-btn" onClick={handleTidyRetainers} disabled={isTidying}
+                <button className="triage-btn" onClick={() => setShowTidyConfirm(true)} disabled={isTidying}
                   style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
                   {isTidying ? <><Spinner size={12} color="#1d4ed8" />Tidying...</> : "🧹 Tidy up retainers"}
                 </button>

@@ -5745,6 +5745,7 @@ export default async function handler(req, res) {
 
         const parseDateLocal = (val) => {
           if (!val) return null;
+          if (typeof val === "number") return new Date((val - 25569) * 86400 * 1000);
           const s = String(val).trim();
           const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
           const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
@@ -5875,7 +5876,27 @@ export default async function handler(req, res) {
         finishedRetainers.sort(sortRetainers);
         activeRetainers.sort(sortRetainers);
 
-        let targetBlocks = [...baseBlocks];
+        // Build baseBlocks without Retainers and extract extraneous blanks
+        const filteredBaseBlocks = [];
+        const extraneousBlanks = [];
+        const nonRetainers = blocks.filter(b => b.type !== "Retainer");
+        let consecutiveBlanks = 0;
+        
+        for (const b of nonRetainers) {
+            if (b.type === "Blank") {
+                consecutiveBlanks++;
+                if (consecutiveBlanks > 2) {
+                    extraneousBlanks.push(b);
+                } else {
+                    filteredBaseBlocks.push(b);
+                }
+            } else {
+                consecutiveBlanks = 0;
+                filteredBaseBlocks.push(b);
+            }
+        }
+
+        let targetBlocks = [...filteredBaseBlocks];
 
         // Anchor Finished
         let finInsertIdx = finCluster ? getInsertIndex(finCluster) : 0;
@@ -5894,6 +5915,11 @@ export default async function handler(req, res) {
 
         if (activeRetainers.length > 0) {
             targetBlocks.splice(actInsertIdx, 0, spacers[2], ...activeRetainers, spacers[3]);
+        }
+
+        // Append extraneous blanks to the very bottom so they aren't lost
+        if (extraneousBlanks.length > 0) {
+            targetBlocks.push(...extraneousBlanks);
         }
 
         // 4. Move Engine (Virtual State Tracker)

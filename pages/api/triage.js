@@ -7895,6 +7895,60 @@ export default async function handler(req, res) {
             }
 
             if (!item.alerts || item.alerts.length === 0) continue;
+
+            // --- UPDATE EXISTING ALERTS ---
+            // If an alert's data changes but its fingerprint remains the same (common for Proactive Alerts),
+            // we must update the AlertMemory snapshot so the UI doesn't show frozen, stale text.
+            const existingAlertsToUpdate = item.alerts.filter(a => a._fingerprint && existingHashes.has(a._fingerprint));
+            for (const alert of existingAlertsToUpdate) {
+              const exRow = memoryRows.find(r => r.fingerprintHash === alert._fingerprint && r.clientName === item.clientName);
+              if (exRow && (exRow.status === "cached" || exRow.status === "task")) {
+                let summary = alert.summary;
+                if (typeof summary === "object" && summary !== null) {
+                  summary = summary.summary;
+                }
+                if (!summary && (item.alertType.startsWith("crmPipe") || item.alertType.startsWith("crmConf"))) {
+                  const crmArr = alert.data?.crmData || [];
+                  const shtArr = alert.data?.sheetData || [];
+                  const client = crmArr[0] || shtArr[1] || "";
+                  const job    = crmArr[1] || shtArr[2] || "";
+                  const code   = crmArr[2] || shtArr[0] || "";
+                  const jobDesc = [client, job, code].filter(Boolean).join(" — ");
+                  summary = `CRM ${item.alertType} ${jobDesc}`.trim();
+                }
+                summary = summary || `${item.alertType} — ${item.clientName} (row ${alert.rowNumber})`;
+
+                const { _fingerprint, ...alertForSnapshot } = alert;
+                const detectedAtIso = new Date().toISOString();
+                alertForSnapshot.detectedAt = detectedAtIso;
+                
+                let newSnapshotStr;
+                if (exRow.status === "task") {
+                  try {
+                    const oldSnap = JSON.parse(exRow.dataSnapshot || "{}");
+                    newSnapshotStr = JSON.stringify({ ...oldSnap, ...alertForSnapshot });
+                  } catch(e) { newSnapshotStr = JSON.stringify(alertForSnapshot); }
+                } else {
+                  newSnapshotStr = JSON.stringify(alertForSnapshot);
+                }
+
+                // If the detail text or summary changes, update the row in AlertMemory
+                if (exRow.dataSnapshot !== newSnapshotStr || exRow.alertSummary !== summary) {
+                  try {
+                    await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
+                      ...exRow,
+                      alertSummary: summary,
+                      dataSnapshot: newSnapshotStr,
+                      lastRechecked: detectedAtIso
+                    });
+                    console.log(`  🔄 Updated snapshot for existing alert: ${exRow.fingerprintHash}`);
+                  } catch(e) {
+                    console.log(`  ⚠️ Failed to update snapshot: ${e.message}`);
+                  }
+                }
+              }
+            }
+
             const newAlerts = item.alerts.filter(a => a._fingerprint && !existingHashes.has(a._fingerprint));
             if (newAlerts.length === 0) continue;
             flagsRaised++;
@@ -12249,20 +12303,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         // any of that per-type logic itself.
         if (targetLine) {
           autoLogRows = allAutoLogRows
-            .filter(row => String(row[3] || "").includes(targetLine))
-            .map(row => {
-              // Replace Details with just the target line — a row's Details
-              // can bundle several distinct lines from one automation run
-              // (joined with "\n\n"), so filtering by row alone isn't
-              // precise enough if the same row happens to contain more than
-              // one line matching a given type's pattern (e.g. two jobs
-              // copied in the same run). This guarantees every branch's
-              // internal line-splitting logic below sees exactly this one
-              // line, whatever else was originally bundled alongside it.
-              const copy = row.slice();
-              copy[3] = targetLine;
-              return copy;
-            });
+            .filter(row => String(row[3] || "").includes(targetLine));
           console.log(`  ✓ Narrowed to ${autoLogRows.length} AutoLog row(s) containing the target line`);
         }
 

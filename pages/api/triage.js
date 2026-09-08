@@ -12325,7 +12325,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           });
           console.log(`  ✓ ${allCRMEntries.length} CRM AutoLog entries total`);
 
-          cconst relevantEntries = allCRMEntries.filter(row => {
+          const relevantEntries = allCRMEntries.filter(row => {
             const details = String(row[3] || "");
             if (expectCopied) {
               // Pipeline DD changed to Yes, OR the job was skipped as a duplicate

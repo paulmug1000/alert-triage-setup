@@ -5684,6 +5684,269 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "tidy_up_retainers") {
+      const { clientSheetId, masterSheetId } = req.body;
+      if (!clientSheetId || !masterSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId or masterSheetId" });
+
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+        const masterIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+
+        // 0. Check for running automations to prevent data corruption
+        const allLocks = await checkAllGASLocks(sheets, masterIdClean);
+        if (allLocks.invoice.locked) return res.status(400).json({ success: false, error: allLocks.invoice.message });
+        if (allLocks.expense.locked) return res.status(400).json({ success: false, error: allLocks.expense.message });
+        if (allLocks.crm.locked) return res.status(400).json({ success: false, error: allLocks.crm.message });
+
+        const metaResp = await sheets.spreadsheets.get({
+          spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties)"
+        });
+        const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+        if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+        const gridSheetId = confirmedSheet.properties.sheetId;
+        let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: "Confirmed!A1:CR" + currentMaxRows,
+          valueRenderOption: "UNFORMATTED_VALUE",
+        });
+        const allRows = resp.data.values || [];
+
+        // 1. Find true last row
+        let trueLastRow = 0;
+        for (let r = allRows.length - 1; r >= 0; r--) {
+          const row = allRows[r] || [];
+          const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+          const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
+          const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+          const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
+          if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+        }
+
+        // Ensure we have exactly 4 blank rows at the absolute bottom to pluck as Spacers
+        if (currentMaxRows - trueLastRow < 4) {
+          const toAdd = 4 - (currentMaxRows - trueLastRow) + 5;
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: { requests: [{
+              insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd }, inheritFromBefore: true }
+            }] }
+          });
+          currentMaxRows += toAdd;
+        }
+
+        // 2. Map blocks
+        const blocks = [];
+        let r = 1; // start at row 2 (index 1)
+        let blockId = 0;
+        const today = new Date(); today.setHours(0,0,0,0);
+
+        const parseDateLocal = (val) => {
+          if (!val) return null;
+          const s = String(val).trim();
+          const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+          const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+          if (m) {
+            const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+            return new Date(yr, months[m[2].toLowerCase()], parseInt(m[1], 10));
+          }
+          const d = new Date(s);
+          return isNaN(d.getTime()) ? null : d;
+        };
+
+        while (r < trueLastRow) {
+          const row = allRows[r] || [];
+          const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+          const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
+          const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+          const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
+          const hasData = z1 || z2 || z3 || z4;
+
+          if (!hasData) {
+            blocks.push({ id: `b_${blockId++}`, type: "Blank", size: 1, originalStartIdx: r });
+            r++;
+            continue;
+          }
+
+          const client = String(row[0] || "").trim();
+          const jobName = String(row[1] || "").trim();
+          const revenue = row[32];
+          const projType = String(row[35] || "").toLowerCase();
+          const startVal = row[37];
+
+          if (revenue || startVal) {
+            const isRetainer = projType.includes("retainer");
+            const endDate = parseDateLocal(row[38]);
+            const isFinished = endDate && endDate < today;
+
+            // Collect child rows
+            let cj = r + 1;
+            while (cj < trueLastRow) {
+              const next = allRows[cj] || [];
+              const nc = String(next[0] || "").trim();
+              const nj = String(next[1] || "").trim();
+              if (nc === client && nj === jobName && !next[32] && !next[37]) {
+                cj++;
+              } else break;
+            }
+            
+            blocks.push({
+              id: `b_${blockId++}`,
+              type: isRetainer ? "Retainer" : "Project",
+              isFinished, client, jobName,
+              size: cj - r, originalStartIdx: r
+            });
+            r = cj;
+          } else {
+            blocks.push({ id: `b_${blockId++}`, type: "Project", size: 1, originalStartIdx: r, client, jobName });
+            r++;
+          }
+        }
+
+        // 3. Cluster and Anchor Detection
+        const clusters = [];
+        let currentCluster = null;
+
+        for (let i = 0; i < blocks.length; i++) {
+            const b = blocks[i];
+            if (b.type === "Project") {
+                if (currentCluster) { clusters.push(currentCluster); currentCluster = null; }
+            } else if (b.type === "Retainer" || b.type === "Blank") {
+                if (!currentCluster) currentCluster = { startIdx: i, active: 0, finished: 0 };
+                if (b.type === "Retainer") {
+                    if (b.isFinished) currentCluster.finished++;
+                    else currentCluster.active++;
+                }
+            }
+        }
+        if (currentCluster) clusters.push(currentCluster);
+
+        let maxFin = 0, finCluster = null;
+        let maxAct = 0, actCluster = null;
+
+        for (const c of clusters) {
+            if (c.finished > maxFin) { maxFin = c.finished; finCluster = c; }
+            if (c.active > maxAct) { maxAct = c.active; actCluster = c; }
+        }
+
+        const baseBlocks = blocks.filter(b => b.type !== "Retainer");
+
+        const getAnchorBlock = (cluster) => {
+            if (!cluster) return null;
+            for (let i = cluster.startIdx - 1; i >= 0; i--) {
+                if (blocks[i].type === "Project") return blocks[i];
+            }
+            return null;
+        };
+
+        const getInsertIndex = (cluster) => {
+            const anchor = getAnchorBlock(cluster);
+            if (!anchor) return 0;
+            const idx = baseBlocks.findIndex(b => b.id === anchor.id);
+            return idx === -1 ? 0 : idx + 1;
+        };
+
+        // Grab 4 spacers from the absolute bottom
+        const spacers = [
+            { id: `b_${blockId++}`, type: "Blank", size: 1, originalStartIdx: trueLastRow },
+            { id: `b_${blockId++}`, type: "Blank", size: 1, originalStartIdx: trueLastRow + 1 },
+            { id: `b_${blockId++}`, type: "Blank", size: 1, originalStartIdx: trueLastRow + 2 },
+            { id: `b_${blockId++}`, type: "Blank", size: 1, originalStartIdx: trueLastRow + 3 }
+        ];
+
+        const initialSheetState = [...blocks, ...spacers];
+
+        const finishedRetainers = blocks.filter(b => b.type === "Retainer" && b.isFinished);
+        const activeRetainers = blocks.filter(b => b.type === "Retainer" && !b.isFinished);
+
+        const sortRetainers = (a, b) => {
+            const cA = a.client.toLowerCase();
+            const cB = b.client.toLowerCase();
+            if (cA < cB) return -1;
+            if (cA > cB) return 1;
+            const jA = a.jobName.toLowerCase();
+            const jB = b.jobName.toLowerCase();
+            if (jA < jB) return -1;
+            if (jA > jB) return 1;
+            return 0;
+        };
+        finishedRetainers.sort(sortRetainers);
+        activeRetainers.sort(sortRetainers);
+
+        let targetBlocks = [...baseBlocks];
+
+        // Anchor Finished
+        let finInsertIdx = finCluster ? getInsertIndex(finCluster) : 0;
+        if (finishedRetainers.length > 0) {
+            targetBlocks.splice(finInsertIdx, 0, spacers[0], ...finishedRetainers, spacers[1]);
+        }
+
+        // Anchor Active (2 spacer gap if immediately following finished)
+        let actInsertIdx;
+        if (actCluster && actCluster !== finCluster) {
+            const anchor = getAnchorBlock(actCluster);
+            actInsertIdx = anchor ? targetBlocks.findIndex(b => b.id === anchor.id) + 1 : 0;
+        } else {
+            actInsertIdx = finishedRetainers.length > 0 ? targetBlocks.findIndex(b => b.id === spacers[1].id) + 1 : finInsertIdx;
+        }
+
+        if (activeRetainers.length > 0) {
+            targetBlocks.splice(actInsertIdx, 0, spacers[2], ...activeRetainers, spacers[3]);
+        }
+
+        // 4. Move Engine (Virtual State Tracker)
+        let currentState = [...initialSheetState];
+        const blockSizes = {};
+        for (const b of currentState) blockSizes[b.id] = b.size;
+
+        const getAbsoluteIndex = (state, index) => {
+            let sum = 1; // Row 1 is header
+            for (let i = 0; i < index; i++) sum += blockSizes[state[i].id];
+            return sum;
+        };
+
+        const moveRequests = [];
+
+        for (let i = 0; i < targetBlocks.length; i++) {
+            const targetBlock = targetBlocks[i];
+            const currIdx = currentState.findIndex(b => b.id === targetBlock.id);
+
+            // Math guarantee: because we build top-down, target block is ALWAYS below i in current state.
+            // Ergo we ONLY ever move blocks UP, sidestepping pre-removal index collision entirely.
+            if (currIdx > i) {
+                const startIndex = getAbsoluteIndex(currentState, currIdx);
+                const endIndex = startIndex + blockSizes[targetBlock.id];
+                const destinationIndex = getAbsoluteIndex(currentState, i);
+
+                moveRequests.push({
+                    moveDimension: {
+                        source: { sheetId: gridSheetId, dimension: "ROWS", startIndex, endIndex },
+                        destinationIndex
+                    }
+                });
+
+                const [moved] = currentState.splice(currIdx, 1);
+                currentState.splice(i, 0, moved);
+            }
+        }
+
+        if (moveRequests.length > 0) {
+            await sheets.spreadsheets.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: { requests: moveRequests }
+            });
+        }
+
+        console.log(`  ✅ tidy_up_retainers: executed ${moveRequests.length} block moves`);
+        return res.status(200).json({ success: true, moves: moveRequests.length });
+
+      } catch (err) {
+        console.error("❌ tidy_up_retainers error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "compute_retainer_alert_resolution") {
       // Given a retainer_invoice proactive alert's own data, computes what an
       // "End retainer" or "Change retainer amount" resolution WOULD do, without

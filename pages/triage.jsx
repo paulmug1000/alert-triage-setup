@@ -1063,8 +1063,31 @@ export default function TriageSystem({ onBack }) {
   const [retainersClient, setRetainersClient] = useState(null);
   const [retainersJobs, setRetainersJobs] = useState(null);
   const [retainersJobsLoading, setRetainersJobsLoading] = useState(false);
+  const [isTidying, setIsTidying] = useState(false);
   const [retainersEditJob, setRetainersEditJob] = useState(null); // the job object being edited
   const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(() => new Set()); // parentRowNum values currently expanded
+
+  const handleTidyRetainers = async () => {
+    if (!window.confirm("This will rearrange rows to group and alphabetize retainers in the Confirmed tab. Proceed?")) return;
+    setIsTidying(true);
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "tidy_up_retainers", clientSheetId: retainersClient.clientSheetId, masterSheetId: retainersClient.masterSheetId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`Success! Tidy up complete (${data.moves} moves executed).`);
+        loadRetainersJobs(retainersClient);
+      } else {
+        alert("Error: " + data.error);
+      }
+    } catch(e) {
+      alert("Error: " + e.message);
+    } finally {
+      setIsTidying(false);
+    }
+  };
   const [showCreateRetainerModal, setShowCreateRetainerModal] = useState(false);
   const [retainerAlertResolution, setRetainerAlertResolution] = useState(null); // { alert, resolutionType, computed... } while confirming
   const [retainerSplitInvoice, setRetainerSplitInvoice] = useState(null); // { alertMeta, alertKey, clientSheetId, masterSheetId } while confirming split
@@ -7046,6 +7069,12 @@ export default function TriageSystem({ onBack }) {
               {retainersClient ? retainersClient.clientName : "Retainers"}
             </h2>
             <div style={{ display: "flex", gap: "8px" }}>
+              {retainersClient && (
+                <button className="triage-btn" onClick={handleTidyRetainers} disabled={isTidying}
+                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
+                  {isTidying ? <><Spinner size={12} color="#1d4ed8" />Tidying...</> : "🧹 Tidy up retainers"}
+                </button>
+              )}
               {retainersClient && (
                 <button className="triage-btn" onClick={() => setShowCreateRetainerModal(true)}
                   style={{ ...styles.button, fontSize: "12px", padding: "5px 12px" }}>

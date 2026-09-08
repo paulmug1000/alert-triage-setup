@@ -2080,8 +2080,9 @@ function evaluateAutomationStatus_(alertType, category, clientMeta, detectedAtMs
   if (category !== "discrepancy" && category !== "proactive") return "cached";
   if (!clientMeta) return "cached";
   
-  // Failsafe: Use firstSeen if available to prevent an infinite 16-hour lock
-  const baseTimeMs = firstSeenMs || detectedAtMs;
+  // FIX: Prioritize the highly precise detectedAtMs over firstSeenMs (which often defaults to midnight)
+  // We only fall back to firstSeenMs if detectedAtMs is completely missing to prevent an infinite 16-hour lock.
+  const baseTimeMs = detectedAtMs || firstSeenMs;
   
   const nowMs = Date.now();
   if ((nowMs - baseTimeMs) > 16 * 60 * 60 * 1000) return "cached"; // 16 hour failsafe

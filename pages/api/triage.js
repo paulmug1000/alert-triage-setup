@@ -12324,13 +12324,13 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           });
           console.log(`  ✓ ${allCRMEntries.length} CRM AutoLog entries total`);
 
-          const relevantEntries = allCRMEntries.filter(row => {
+          cconst relevantEntries = allCRMEntries.filter(row => {
             const details = String(row[3] || "");
             if (expectCopied) {
-              // Pipeline DD changed to Yes — the direct trigger for this flag
-              return details.includes("Copied Status:") && (
+              // Pipeline DD changed to Yes, OR the job was skipped as a duplicate
+              return (details.includes("Copied Status:") && (
                 details.includes("-> 'Yes'") || details.includes("-> \"Yes\"")
-              );
+              )) || details.includes("Skipped Copy: Job with Project Code");
             } else {
               // Pipeline DD changed away from Yes
               return details.includes("Copied Status:") && (
@@ -12350,6 +12350,13 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               // We need to match the line that contains BOTH the job info AND the Copied Status change
               const lines = details.split('\n');
               for (const line of lines) {
+                if (line.includes("Skipped Copy: Job with Project Code")) {
+                  const codeMatch = line.match(/Project Code\s+"([^"]+)"/i);
+                  if (codeMatch) {
+                    affectedJobs.push({ jobName: "-", clientParsed: "", projectCodeFromLog: codeMatch[1].trim(), logTimestamp: String(entry[0] || "") });
+                  }
+                  continue;
+                }
                 if (!line.includes("Copied Status:")) continue;
                 if (!line.includes("-> 'Yes'") && !line.includes("-> \"Yes\"")) continue;
                 // Extract client | job from: "Updated Pipeline: Row N, ClientName | JobName - FieldName: ..."
@@ -12376,10 +12383,10 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 }
               }
             }
-            // Deduplicate by clientParsed + jobName
+            // Deduplicate by clientParsed + jobName or projectCodeFromLog
             const seen = new Set();
             const deduped = affectedJobs.filter(j => {
-              const key = `${j.clientParsed}|||${j.jobName}`;
+              const key = `${j.clientParsed}|||${j.jobName}|||${j.projectCodeFromLog || ""}`;
               if (seen.has(key)) return false;
               seen.add(key);
               return true;
@@ -12500,6 +12507,20 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                     const pr = pipelineRows[pri];
                     const pJobName    = String(pr[1] || "").trim();
                     const pClientName = String(pr[0] || "").trim();
+                    const pProjectCode = String(pr[2] || "").trim();
+                    
+                    if (job.projectCodeFromLog && pProjectCode.toLowerCase() === job.projectCodeFromLog.toLowerCase()) {
+                      pipelineJob = {
+                        clientName: pClientName,
+                        jobName: pJobName,
+                        projectCode: pProjectCode,
+                        copiedToConf: String(pr[107] || "").trim(),
+                        rowNumber: pri + 6,
+                      };
+                      break;
+                    }
+                    if (job.projectCodeFromLog) continue; // If looking strictly by code, don't fallback to name check for this iteration
+
                     // If job name is blank/placeholder, match on client name only (less reliable — only use as last resort)
                     if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
                     if (jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
@@ -12534,7 +12555,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
                 // Secondary check: job exists in Confirmed — search by project code first, then job+client name
                 // Row numbers are unreliable (rows can shift), so we match on col C (project code) or cols A+B
-                const pipelineProjectCode = pipelineJob?.projectCode || "";
+                const pipelineProjectCode = pipelineJob?.projectCode || job.projectCodeFromLog || "";
                 // Use the resolved client name from pipelineJob (more reliable than AutoLog-parsed clientParsed)
                 const resolvedClientLower = (pipelineJob?.clientName || "").toLowerCase() || clientParsedLower;
                 for (let cri = 0; cri < confirmedRows.length; cri++) {

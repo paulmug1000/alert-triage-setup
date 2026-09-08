@@ -12318,7 +12318,10 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           // as part of an "Updated Pipeline: Row N, Client | Job - ... Copied Status: ..." entry.
           // "Copied Pipeline Project to Confirmed:" is only written if B82="yes" (auto-copy enabled).
           // "Created New Confirmed Job:" is a direct Confirmed creation, unrelated to this flag.
-          const allCRMEntries = autoLogRows.filter(row => String(row[1] || "").toLowerCase().includes("crm"));
+          const allCRMEntries = autoLogRows.filter(row => {
+            const cat = String(row[1] || "").toLowerCase();
+            return cat.includes("crm") || cat.includes("pipeline") || cat.includes("confirmed");
+          });
           console.log(`  ✓ ${allCRMEntries.length} CRM AutoLog entries total`);
 
           const relevantEntries = allCRMEntries.filter(row => {

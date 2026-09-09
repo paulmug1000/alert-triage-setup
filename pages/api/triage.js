@@ -8140,7 +8140,9 @@ export default async function handler(req, res) {
               for (const stale of staleRows) {
                 try {
                   let updatedSnapshot = stale.dataSnapshot;
+                  let wasTask = false;
                   if (stale.status === "task") {
+                    wasTask = true;
                     try {
                       const snap = JSON.parse(stale.dataSnapshot || "{}");
                       snap.resolvedAt = new Date().toISOString();
@@ -8163,6 +8165,10 @@ export default async function handler(req, res) {
                   console.log(`  🩹 AUTO-RESOLVED stale ${item.alertType} ${stale.status} for ${item.clientName}: ${stale.fingerprintHash} -> ${newStatus}`);
                   stale.status = newStatus;
                   existingHashes.add(stale.fingerprintHash);
+                  
+                  if (wasTask) {
+                    await redisClient.del("triage_tasks_cache").catch(() => {});
+                  }
                 } catch(e) {
                   console.log(`  ⚠️ Failed to auto-resolve stale alert: ${e.message}`);
                 }

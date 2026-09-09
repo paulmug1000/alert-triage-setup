@@ -13340,25 +13340,22 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 return sentDate && sentDate <= endOfCurrentMonth;
               }).length;
 
-              const remainingTime = Math.max(0, endDate.getTime() - today.getTime());
-              const remainingDays = Math.round(remainingTime / (1000 * 60 * 60 * 24));
-              const monthsRemainingInContract = Math.round(remainingDays / 30.4375);
-
               const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
               const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
               const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
 
-              // futureRows = months remaining from today, but capped at total contract months.
-              // Without the cap, a future-starting contract counts months before its start date.
-              const futureRows = Math.min(18 / periodMonths, Math.ceil(Math.min(monthsRemainingInContract, monthsDiff) / periodMonths));
-              const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
+              const totalPeriods = Math.ceil(monthsDiff / periodMonths);
+              const futurePeriodsInContract = Math.max(0, totalPeriods - pastAndCurrentRows);
+              const futureRows = Math.min(18 / periodMonths, futurePeriodsInContract);
+              const expectedChildRows = pastAndCurrentRows + futureRows;
+
               const actualChildRows = childRows.length;
               const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
               const durationOk = actualChildRows >= expectedChildRows;
               checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
               checks.push({
                 ok: durationOk,
-                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${Math.ceil(futureRows)} forward) — ` + (durationOk ? "✓ full coverage" : `✗ ${Math.ceil(expectedChildRows - actualChildRows)} row(s) missing`),
+                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) — ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),
               });
 
               let allHaveInvoice = true;
@@ -13569,15 +13566,15 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 const sentDate = parseConfDate(cr[43]);
                 return sentDate && sentDate <= endOfCurrentMonth;
               }).length;
-              const remainingTime2 = Math.max(0, endDate.getTime() - today2.getTime());
-              const remainingDays2 = Math.round(remainingTime2 / (1000 * 60 * 60 * 24));
-              const monthsRemaining = Math.round(remainingDays2 / 30.4375);
               const diffTime2 = Math.abs(endDate.getTime() - startDate.getTime());
               const diffDays2 = Math.round(diffTime2 / (1000 * 60 * 60 * 24));
               const monthsDiff = Math.max(1, Math.round(diffDays2 / 30.4375));
-              // Cap at total contract months to avoid over-counting for future-starting retainers
-              const futureRows = Math.min(18 / periodMonths, Math.ceil(Math.min(monthsRemaining, monthsDiff) / periodMonths));
-              const expectedChildRows = pastAndCurrentRows + Math.ceil(futureRows);
+              
+              const totalPeriods = Math.ceil(monthsDiff / periodMonths);
+              const futurePeriodsInContract = Math.max(0, totalPeriods - pastAndCurrentRows);
+              const futureRows = Math.min(18 / periodMonths, futurePeriodsInContract);
+              const expectedChildRows = pastAndCurrentRows + futureRows;
+              
               const actualChildRows   = childRows.length;
               const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 
@@ -13586,8 +13583,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               checks.push({
                 ok: durationOk,
                 message: durationOk
-                  ? `✓ Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${Math.ceil(futureRows)} forward) — correct count`
-                  : `${actualChildRows > expectedChildRows ? "✗ Too many" : "✗ Too few"} child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${Math.ceil(futureRows)} forward)`,
+                  ? `✓ Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) — correct count`
+                  : `${actualChildRows > expectedChildRows ? "✗ Too many" : "✗ Too few"} child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward)`,
               });
 
               retainerChecks.push({

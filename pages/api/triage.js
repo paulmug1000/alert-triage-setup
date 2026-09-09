@@ -13627,6 +13627,13 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               message: "No stale invoice entries found in AutoLog since flag was last cleared.",
             });
           } else {
+            // Read Confirmed tab for live sheet verification
+            const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetIdClean,
+              range: "Confirmed!A1:CR5000",
+            }));
+            const confirmedRows = confirmedResp.data.values || [];
+
             // Each AutoLog row may contain multiple stale invoice lines in col D (details)
             // Parse each line of the form:
             // "[Confirmed] Stale Invoice - Row N, CLIENT | JOB, Slot N: Date moved DD-Mon-YY -> DD-Mon-YY"
@@ -13638,25 +13645,67 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               let match;
               while ((match = stalePattern.exec(details)) !== null) {
                 const tab       = match[1].trim();   // "Confirmed"
-                const rowNum    = match[2].trim();   // "118"
-                const jobClient = match[3].trim();   // "Shopify"
-                const jobName   = match[4].trim();   // "Mar 26 sales commission"
-                const slotNum   = match[5].trim();   // "1"
-                const oldDate   = match[6].trim();   // "28-Mar-26"
-                const newDate   = match[7].trim();   // "28-Apr-26"
+                const rowNum    = parseInt(match[2].trim(), 10);
+                const jobClient = match[3].trim();
+                const jobName   = match[4].trim();
+                const slotNum   = parseInt(match[5].trim(), 10);
+                const oldDate   = match[6].trim();
+                const newDate   = match[7].trim();
+                
+                let isResolved = false;
+                let resolutionMsg = "Slot is empty or contains a placeholder.";
+                const checks = [];
+
+                if (tab === "Confirmed" && rowNum > 0 && rowNum <= confirmedRows.length) {
+                  const sheetRow = confirmedRows[rowNum - 1] || [];
+                  const rClient = String(sheetRow[0] || "").trim();
+                  const rJob = String(sheetRow[1] || "").trim();
+                  
+                  // Verify we are on the right row
+                  if (rClient.toLowerCase() === jobClient.toLowerCase() && rJob.toLowerCase() === jobName.toLowerCase()) {
+                    const slotCols = {
+                      1: { ref: 42, sent: 43, status: 45 },
+                      2: { ref: 49, sent: 50, status: 52 },
+                      3: { ref: 56, sent: 57, status: 59 },
+                    }[slotNum];
+
+                    if (slotCols) {
+                      const currentRef = String(sheetRow[slotCols.ref] || "").trim();
+                      const currentSent = String(sheetRow[slotCols.sent] || "").trim();
+                      const currentStatus = String(sheetRow[slotCols.status] || "").trim();
+
+                      if (currentRef && !currentRef.toUpperCase().startsWith("MANUAL-INV")) {
+                        isResolved = true;
+                        resolutionMsg = `Slot ${slotNum} now contains a real invoice: #${currentRef} (Sent: ${currentSent || "unknown"}, Status: ${currentStatus || "unknown"}).`;
+                        checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+                      } else {
+                        checks.push({ ok: false, message: `✗ The slot still contains a placeholder or is blank (Ref: ${currentRef || "(blank)"}).` });
+                      }
+                    } else {
+                       checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
+                    }
+                  } else {
+                     checks.push({ ok: false, message: `✗ Row mismatch: Row ${rowNum} currently contains "${rClient} | ${rJob}", not "${jobClient} | ${jobName}".` });
+                  }
+                } else {
+                   checks.push({ ok: false, message: `✗ Could not verify: Row ${rowNum} is out of bounds or tab is not Confirmed.` });
+                }
 
                 results.push({
-                  status: "info",
+                  status: isResolved ? "ok" : "issue",
                   stale: true,
                   tab,
-                  rowNum: parseInt(rowNum, 10),
+                  rowNum: rowNum,
                   jobClient,
                   jobName,
-                  slotNum: parseInt(slotNum, 10),
+                  slotNum: slotNum,
                   oldDate,
                   newDate,
                   logTimestamp: timestamp,
-                  message: `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: date moved ${oldDate} → ${newDate}`,
+                  checks,
+                  message: isResolved 
+                    ? `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
+                    : `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: date moved ${oldDate} → ${newDate}.`,
                 });
               }
             }
@@ -13672,6 +13721,141 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           }
 
         } // end invoiceStaleUnsentChanges
+
+        // ── expenseAdded ───────────────────────────────────────────────────
+        else if (flagType === "expenseAdded") {
+          const addedLogEntries = autoLogRows.filter(row => String(row[3] || "").includes("Created New Row:"));
+          const entriesToUse = addedLogEntries.length > 0 ? addedLogEntries : allAutoLogRows.filter(row => String(row[3] || "").includes("Created New Row:"));
+
+          if (entriesToUse.length === 0) {
+            results.push({ status: "info", message: "No expense added entries found in AutoLog." });
+          } else {
+            const outgoingsResp = await withRetry(() => sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetIdClean,
+              range: "Outgoings!A13:A110",
+            }));
+            const outgoingsVendors = (outgoingsResp.data.values || []).map(r => String(r[0] || "").trim().toLowerCase());
+
+            // Regex matches: [Outgoings] Created New Row: {Vendor Name} (£{Amount})
+            const pattern = /\[Outgoings\] Created New Row:\s+(.+?)\s+\(£([0-9.,]+)\)/gi;
+
+            for (const entry of entriesToUse) {
+              const details = String(entry[3] || "");
+              const timestamp = String(entry[0] || "");
+              let match;
+              while ((match = pattern.exec(details)) !== null) {
+                const desc = match[1].trim();
+                const amt = match[2].trim();
+                const descLower = desc.toLowerCase();
+
+                const isStillPresent = outgoingsVendors.includes(descLower);
+                const isResolved = !isStillPresent;
+
+                results.push({
+                  status: isResolved ? "ok" : "issue",
+                  logTimestamp: timestamp,
+                  checks: [
+                    {
+                      ok: isResolved,
+                      message: isResolved
+                        ? `✓ Resolved: The vendor "${desc}" is no longer present in the Outgoings tab (Rows 13-110).`
+                        : `✗ Issue: The vendor "${desc}" is still present in the Outgoings tab.`[cite: 6]
+                    }
+                  ],
+                  message: isResolved 
+                    ? `Vendor "${desc}" no longer exists in Outgoings.` 
+                    : `Vendor "${desc}" remains in Outgoings.`[cite: 6]
+                });
+              }
+            }
+          }
+
+        } // end expenseAdded
+
+        // ── expenseUnreconGaps ─────────────────────────────────────────────
+        else if (flagType === "expenseUnreconGaps") {
+          const gapEntries = autoLogRows.filter(row => {
+            const d = String(row[3] || "");
+            return d.includes("Created Manual Gap:") || d.includes("Changed Manual Gap:") || d.includes("Removed Manual Gap:");
+          });
+          const entriesToUse = gapEntries.length > 0 ? gapEntries : allAutoLogRows.filter(row => {
+            const d = String(row[3] || "");
+            return d.includes("Created Manual Gap:") || d.includes("Changed Manual Gap:") || d.includes("Removed Manual Gap:");
+          });
+
+          if (entriesToUse.length === 0) {
+            results.push({ status: "info", message: "No expense gap entries found in AutoLog." });
+          } else {
+            const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
+              spreadsheetId: clientSheetIdClean,
+              range: "Confirmed!A1:CR5000",
+            }));
+            const confirmedRows = confirmedResp.data.values || [];
+
+            // Matches: [Confirmed] Created Manual Gap: Row {N}, {Client} | {Job} (Slot {N}) - ...
+            const pattern = /\[(Confirmed|Pipeline)\] (?:Created|Changed|Removed) Manual Gap:\s*Row\s*(\d+),\s*([^|]+)\|\s*([^(]+)\(Slot\s*(\d+)\)/gi;
+
+            for (const entry of entriesToUse) {
+              const details = String(entry[3] || "");
+              const timestamp = String(entry[0] || "");
+              let match;
+              while ((match = pattern.exec(details)) !== null) {
+                const tab = match[1].trim();
+                const rowNum = parseInt(match[2].trim(), 10);
+                const jobClient = match[3].trim();
+                const jobName = match[4].trim();
+                const slotNum = parseInt(match[5].trim(), 10);
+
+                let isResolved = false;
+                let resolutionMsg = "Slot is empty or contains a placeholder.";
+                const checks = [];
+
+                if (tab === "Confirmed" && rowNum > 0 && rowNum <= confirmedRows.length) {
+                  const sheetRow = confirmedRows[rowNum - 1] || [];
+                  const rClient = String(sheetRow[0] || "").trim();
+                  const rJob = String(sheetRow[1] || "").trim();
+
+                  if (rClient.toLowerCase() === jobClient.toLowerCase() && rJob.toLowerCase() === jobName.toLowerCase()) {
+                    const slotCols = {
+                      1: { id: 81 }, // CD (Index 81)
+                      2: { id: 88 }, // CK (Index 88)
+                      3: { id: 95 }, // CR (Index 95)
+                    }[slotNum];
+
+                    if (slotCols) {
+                      const currentId = String(sheetRow[slotCols.id] || "").trim();
+                      if (currentId && !currentId.toUpperCase().startsWith("MANUAL-ENTRY") && !currentId.toUpperCase().startsWith("UNRECON-GAP")) {
+                        isResolved = true;
+                        resolutionMsg = `Slot ${slotNum} now contains a real expense reference (App ID: ${currentId}).`;
+                        checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+                      } else {
+                        checks.push({ ok: false, message: `✗ The slot still contains a placeholder or is blank (App ID: ${currentId || "(blank)"}).` });
+                      }
+                    } else {
+                      checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
+                    }
+                  } else {
+                    checks.push({ ok: false, message: `✗ Row mismatch: Row ${rowNum} currently contains "${rClient} | ${rJob}", not "${jobClient} | ${jobName}".` });
+                  }
+                } else if (tab !== "Confirmed") {
+                   checks.push({ ok: false, message: `✗ Alert specifies ${tab} tab, but only Confirmed is verified.` });
+                } else {
+                  checks.push({ ok: false, message: `✗ Could not verify: Row ${rowNum} is out of bounds.` });
+                }
+
+                results.push({
+                  status: isResolved ? "ok" : "issue",
+                  logTimestamp: timestamp,
+                  checks,
+                  message: isResolved
+                    ? `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
+                    : `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Still requires reconciliation.`[cite: 6]
+                });
+              }
+            }
+          }
+
+        } // end expenseUnreconGaps
 
         // ── crmCopiedConfDelete ────────────────────────────────────────────────
         // Parse AutoLog entries where jobs were deleted from Confirmed via the

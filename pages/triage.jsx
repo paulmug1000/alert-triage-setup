@@ -2445,8 +2445,8 @@ export default function TriageSystem({ onBack }) {
         body: JSON.stringify({
           action: "analyze_noaction_flag",
           flagType: task.alertType || alertObj.flagType || alertObj.alertType || alertObj.type,
-          clientSheetId: alertObj.clientId || clientInfo.clientSheetId,
-          masterSheetId: alertObj.masterSheetId || clientInfo.masterSheetId,
+          clientSheetId: clientInfo.clientSheetId || alertObj.clientSheetId || alertObj.clientId,
+          masterSheetId: clientInfo.masterSheetId || alertObj.masterSheetId,
           automationCommanderSheetId,
           clientName: task.clientName,
           targetLine: alertObj.detail || alertObj.summary?.summary || task.alertSummary,

@@ -13661,47 +13661,89 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 let isResolved = false;
                 let resolutionMsg = "Slot is empty or contains a placeholder.";
                 const checks = [];
+                let targetSheetRow = null;
+                let actualRowNum = rowNum;
 
+                // 1. Try original row
                 if (tab === "Confirmed" && rowNum > 0 && rowNum <= confirmedRows.length) {
-                  const sheetRow = confirmedRows[rowNum - 1] || [];
-                  const rClient = String(sheetRow[0] || "").trim();
-                  const rJob = String(sheetRow[1] || "").trim();
+                  const r = confirmedRows[rowNum - 1] || [];
+                  if (String(r[0]||"").trim().toLowerCase() === jobClient.toLowerCase() && 
+                      String(r[1]||"").trim().toLowerCase() === jobName.toLowerCase()) {
+                    targetSheetRow = r;
+                  }
+                }
+
+                // 2. Fallback search (job moved)
+                if (!targetSheetRow && tab === "Confirmed") {
+                  const matchingRows = [];
+                  for (let i = 0; i < confirmedRows.length; i++) {
+                    const r = confirmedRows[i] || [];
+                    if (String(r[0]||"").trim().toLowerCase() === jobClient.toLowerCase() && 
+                        String(r[1]||"").trim().toLowerCase() === jobName.toLowerCase()) {
+                      matchingRows.push({ row: r, index: i + 1 });
+                    }
+                  }
                   
-                  // Verify we are on the right row
-                  if (rClient.toLowerCase() === jobClient.toLowerCase() && rJob.toLowerCase() === jobName.toLowerCase()) {
-                    const slotCols = {
-                      1: { ref: 42, sent: 43, status: 45 },
-                      2: { ref: 49, sent: 50, status: 52 },
-                      3: { ref: 56, sent: 57, status: 59 },
-                    }[slotNum];
-
+                  if (matchingRows.length === 1) {
+                    targetSheetRow = matchingRows[0].row;
+                    actualRowNum = matchingRows[0].index;
+                  } else if (matchingRows.length > 1) {
+                    // For multi-row retainers, find the specific child row by checking the date
+                    const slotCols = { 1: { sent: 43 }, 2: { sent: 50 }, 3: { sent: 57 } }[slotNum];
+                    let found = false;
                     if (slotCols) {
-                      const currentRef = String(sheetRow[slotCols.ref] || "").trim();
-                      const currentSent = String(sheetRow[slotCols.sent] || "").trim();
-                      const currentStatus = String(sheetRow[slotCols.status] || "").trim();
-
-                      if (currentRef && !currentRef.toUpperCase().startsWith("MANUAL-INV")) {
-                        isResolved = true;
-                        resolutionMsg = `Slot ${slotNum} now contains a real invoice: #${currentRef} (Sent: ${currentSent || "unknown"}, Status: ${currentStatus || "unknown"}).`;
-                        checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
-                      } else {
-                        checks.push({ ok: false, message: `✗ The slot still contains a placeholder or is blank (Ref: ${currentRef || "(blank)"}).` });
+                      const dateMatch = matchingRows.find(m => {
+                        const d = String(m.row[slotCols.sent] || "").trim();
+                        return d === oldDate || d === newDate;
+                      });
+                      if (dateMatch) {
+                        targetSheetRow = dateMatch.row;
+                        actualRowNum = dateMatch.index;
+                        found = true;
                       }
+                    }
+                    if (!found) {
+                      targetSheetRow = matchingRows[0].row;
+                      actualRowNum = matchingRows[0].index;
+                    }
+                  }
+                }
+
+                if (targetSheetRow) {
+                  const slotCols = {
+                    1: { ref: 42, sent: 43, status: 45 },
+                    2: { ref: 49, sent: 50, status: 52 },
+                    3: { ref: 56, sent: 57, status: 59 },
+                  }[slotNum];
+
+                  if (slotCols) {
+                    const currentRef = String(targetSheetRow[slotCols.ref] || "").trim();
+                    const currentSent = String(targetSheetRow[slotCols.sent] || "").trim();
+                    const currentStatus = String(targetSheetRow[slotCols.status] || "").trim();
+
+                    if (currentRef && !currentRef.toUpperCase().startsWith("MANUAL-INV")) {
+                      isResolved = true;
+                      resolutionMsg = `Slot ${slotNum} now contains a real invoice: #${currentRef} (Sent: ${currentSent || "unknown"}, Status: ${currentStatus || "unknown"}).`;
+                      checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
                     } else {
-                       checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
+                      checks.push({ ok: false, message: `✗ The slot still contains a placeholder or is blank (Ref: ${currentRef || "(blank)"}).` });
                     }
                   } else {
-                     checks.push({ ok: false, message: `✗ Row mismatch: Row ${rowNum} currently contains "${rClient} | ${rJob}", not "${jobClient} | ${jobName}".` });
+                     checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
+                  }
+
+                  if (actualRowNum !== rowNum) {
+                    checks.push({ ok: true, message: `ℹ️ Job safely located at row ${actualRowNum} (moved from original row ${rowNum})` });
                   }
                 } else {
-                   checks.push({ ok: false, message: `✗ Could not verify: Row ${rowNum} is out of bounds or tab is not Confirmed.` });
+                   checks.push({ ok: false, message: `✗ Could not locate job "${jobClient} | ${jobName}" anywhere in the Confirmed tab.` });
                 }
 
                 results.push({
                   status: isResolved ? "ok" : "issue",
                   stale: true,
                   tab,
-                  rowNum: rowNum,
+                  rowNum: actualRowNum,
                   jobClient,
                   jobName,
                   slotNum: slotNum,
@@ -13710,8 +13752,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                   logTimestamp: timestamp,
                   checks,
                   message: isResolved 
-                    ? `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
-                    : `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: date moved ${oldDate} → ${newDate}.`,
+                    ? `[${tab}] Row ${actualRowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
+                    : `[${tab}] Row ${actualRowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: date moved ${oldDate} → ${newDate}.`,
                 });
               }
             }
@@ -13827,38 +13869,61 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 let isResolved = false;
                 let resolutionMsg = "Slot is empty or contains a placeholder.";
                 const checks = [];
+                let targetSheetRow = null;
+                let actualRowNum = rowNum;
 
+                // 1. Try original row
                 if (tab === "Confirmed" && rowNum > 0 && rowNum <= confirmedRows.length) {
-                  const sheetRow = confirmedRows[rowNum - 1] || [];
-                  const rClient = String(sheetRow[0] || "").trim();
-                  const rJob = String(sheetRow[1] || "").trim();
+                  const r = confirmedRows[rowNum - 1] || [];
+                  if (String(r[0]||"").trim().toLowerCase() === jobClient.toLowerCase() && 
+                      String(r[1]||"").trim().toLowerCase() === jobName.toLowerCase()) {
+                    targetSheetRow = r;
+                  }
+                }
 
-                  if (rClient.toLowerCase() === jobClient.toLowerCase() && rJob.toLowerCase() === jobName.toLowerCase()) {
-                    const slotCols = {
-                      1: { id: 81 }, // CD (Index 81)
-                      2: { id: 88 }, // CK (Index 88)
-                      3: { id: 95 }, // CR (Index 95)
-                    }[slotNum];
+                // 2. Fallback search (job moved)
+                if (!targetSheetRow && tab === "Confirmed") {
+                  const matchingRows = [];
+                  for (let i = 0; i < confirmedRows.length; i++) {
+                    const r = confirmedRows[i] || [];
+                    if (String(r[0]||"").trim().toLowerCase() === jobClient.toLowerCase() && 
+                        String(r[1]||"").trim().toLowerCase() === jobName.toLowerCase()) {
+                      matchingRows.push({ row: r, index: i + 1 });
+                    }
+                  }
+                  if (matchingRows.length > 0) {
+                    targetSheetRow = matchingRows[0].row;
+                    actualRowNum = matchingRows[0].index;
+                  }
+                }
 
-                    if (slotCols) {
-                      const currentId = String(sheetRow[slotCols.id] || "").trim();
-                      if (currentId && !currentId.toUpperCase().startsWith("MANUAL-ENTRY") && !currentId.toUpperCase().startsWith("UNRECON-GAP")) {
-                        isResolved = true;
-                        resolutionMsg = `Slot ${slotNum} now contains a real expense reference (App ID: ${currentId}).`;
-                        checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
-                      } else {
-                        checks.push({ ok: false, message: `✗ The slot still contains a placeholder or is blank (App ID: ${currentId || "(blank)"}).` });
-                      }
+                if (targetSheetRow) {
+                  const slotCols = {
+                    1: { id: 81 }, // CD (Index 81)
+                    2: { id: 88 }, // CK (Index 88)
+                    3: { id: 95 }, // CR (Index 95)
+                  }[slotNum];
+
+                  if (slotCols) {
+                    const currentId = String(targetSheetRow[slotCols.id] || "").trim();
+                    if (currentId && !currentId.toUpperCase().startsWith("MANUAL-ENTRY") && !currentId.toUpperCase().startsWith("UNRECON-GAP")) {
+                      isResolved = true;
+                      resolutionMsg = `Slot ${slotNum} now contains a real expense reference (App ID: ${currentId}).`;
+                      checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
                     } else {
-                      checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
+                      checks.push({ ok: false, message: `✗ The slot still contains a placeholder or is blank (App ID: ${currentId || "(blank)"}).` });
                     }
                   } else {
-                    checks.push({ ok: false, message: `✗ Row mismatch: Row ${rowNum} currently contains "${rClient} | ${rJob}", not "${jobClient} | ${jobName}".` });
+                    checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
+                  }
+
+                  if (actualRowNum !== rowNum) {
+                    checks.push({ ok: true, message: `ℹ️ Job safely located at row ${actualRowNum} (moved from original row ${rowNum})` });
                   }
                 } else if (tab !== "Confirmed") {
                    checks.push({ ok: false, message: `✗ Alert specifies ${tab} tab, but only Confirmed is verified.` });
                 } else {
-                  checks.push({ ok: false, message: `✗ Could not verify: Row ${rowNum} is out of bounds.` });
+                  checks.push({ ok: false, message: `✗ Could not locate job "${jobClient} | ${jobName}" anywhere in the Confirmed tab.` });
                 }
 
                 results.push({
@@ -13866,8 +13931,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                   logTimestamp: timestamp,
                   checks,
                   message: isResolved
-                    ? `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
-                    : `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Still requires reconciliation.`
+                    ? `[${tab}] Row ${actualRowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
+                    : `[${tab}] Row ${actualRowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Still requires reconciliation.`
                 });
               }
             }

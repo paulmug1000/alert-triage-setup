@@ -8133,7 +8133,6 @@ export default async function handler(req, res) {
                 r.clientName === item.clientName && 
                 r.alertType === item.alertType && 
                 (r.status === "cached" || r.status === "pending_automation" || r.status === "ignored" || (item.category === "proactive" && r.status === "task")) && 
-                r.category === item.category &&
                 !freshHashes.has(r.fingerprintHash)
               );
 

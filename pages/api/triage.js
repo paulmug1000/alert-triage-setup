@@ -13759,12 +13759,12 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                       ok: isResolved,
                       message: isResolved
                         ? `✓ Resolved: The vendor "${desc}" is no longer present in the Outgoings tab (Rows 13-110).`
-                        : `✗ Issue: The vendor "${desc}" is still present in the Outgoings tab.`[cite: 6]
+                        : `✗ Issue: The vendor "${desc}" is still present in the Outgoings tab.`
                     }
                   ],
                   message: isResolved 
                     ? `Vendor "${desc}" no longer exists in Outgoings.` 
-                    : `Vendor "${desc}" remains in Outgoings.`[cite: 6]
+                    : `Vendor "${desc}" remains in Outgoings.`
                 });
               }
             }
@@ -13849,7 +13849,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                   checks,
                   message: isResolved
                     ? `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
-                    : `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Still requires reconciliation.`[cite: 6]
+                    : `[${tab}] Row ${rowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Still requires reconciliation.`
                 });
               }
             }
@@ -18089,4 +18089,3 @@ async function checkUnreceivedExpenses_(clientName, clientSheetId, sharedData) {
   } catch(e) {}
   return alerts;
 }
-

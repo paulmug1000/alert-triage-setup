@@ -2406,6 +2406,65 @@ export default function TriageSystem({ onBack }) {
     } catch (e) { setTaskActionError(e.message); }
   };
 
+  const handleRevertTaskToAlert = async (fingerprintHash) => {
+    try {
+      setTaskActionError("");
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "revert_task_to_alert", fingerprintHash, automationCommanderSheetId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const taskToRevert = tasks.find(t => t.fingerprintHash === fingerprintHash) || selectedTask;
+        const wasSnoozed = taskToRevert?.isSnoozed;
+        
+        setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
+        if (selectedTask?.fingerprintHash === fingerprintHash) setSelectedTask(null);
+        
+        if (wasSnoozed) setSnoozedTaskCount(prev => Math.max(0, prev - 1));
+        else setNavTaskCount(prev => Math.max(0, prev - 1));
+        
+        // Refresh triage to pull the alert back into the pipeline cache
+        refreshTriage();
+      } else {
+        setTaskActionError(data.error || "Failed to revert task");
+      }
+    } catch (e) { setTaskActionError(e.message); }
+  };
+
+  const handleAnalyzeTask = async (task) => {
+    setTaskDetailAnalyzing(true);
+    setTaskActionError("");
+    try {
+      const alertObj = JSON.parse(task.alertDataJSON || "{}");
+      const clientInfo = allClientsMap[task.clientName] || {};
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "analyze_noaction_flag",
+          flagType: task.alertType || alertObj.flagType || alertObj.alertType || alertObj.type,
+          clientSheetId: alertObj.clientId || clientInfo.clientSheetId,
+          masterSheetId: alertObj.masterSheetId || clientInfo.masterSheetId,
+          automationCommanderSheetId,
+          clientName: task.clientName,
+          targetLine: alertObj.detail || alertObj.summary?.summary || task.alertSummary,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSelectedTask(prev => ({ ...prev, analysisResult: data }));
+      } else {
+        setTaskActionError(data.error || "Analysis failed");
+      }
+    } catch (e) {
+      setTaskActionError(e.message);
+    } finally {
+      setTaskDetailAnalyzing(false);
+    }
+  };
+
   // Accept an option from within the task detail view
   const acceptTaskOption = async (option) => {
     if (!selectedTask?.alertDataJSON) return;
@@ -11711,11 +11770,18 @@ export default function TriageSystem({ onBack }) {
                   );
                 })()}
                 {!selectedTask.isResolved && (
-                  <button className="triage-btn"
-                    onClick={() => resolveTask(selectedTask.fingerprintHash)}
-                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#16a34a", borderColor: "#86efac" }}>
-                    ✓ Resolve Task
-                  </button>
+                  <>
+                    <button className="triage-btn"
+                      onClick={() => handleRevertTaskToAlert(selectedTask.fingerprintHash)}
+                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#d97706", borderColor: "#fcd34d" }}>
+                      ↩ Revert to Alert
+                    </button>
+                    <button className="triage-btn"
+                      onClick={() => resolveTask(selectedTask.fingerprintHash)}
+                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#16a34a", borderColor: "#86efac" }}>
+                      ✓ Resolve Task
+                    </button>
+                  </>
                 )}
               </div>
             </div>
@@ -11762,6 +11828,61 @@ export default function TriageSystem({ onBack }) {
               <div style={{ fontWeight: "700", fontSize: "13px", marginBottom: "8px", color: "#b45309" }}>ALERT DETAILS</div>
               <div style={{ fontSize: "13px", fontWeight: "600", marginBottom: "4px" }}>{taskAlert.heading}</div>
               {taskAlert.detail && <div style={{ fontSize: "13px", color: "#555", marginTop: "4px" }}>{taskAlert.detail}</div>}
+            </div>
+          )}
+
+          {/* Informational Analysis Block */}
+          {["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges", "expenseAdded", "expenseUnreconGaps"].includes(selectedTask.alertType) && (
+            <div style={{ ...styles.card, marginBottom: "16px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a" }}>Live Verification</div>
+                <button className="triage-btn" onClick={() => handleAnalyzeTask(selectedTask)} disabled={taskDetailAnalyzing} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}>
+                  {taskDetailAnalyzing ? <><Spinner size={12} />Analysing...</> : "↻ Re-run Analysis"}
+                </button>
+              </div>
+              
+              {selectedTask.analysisResult ? (() => {
+                const analysis = selectedTask.analysisResult;
+                const overallOk = analysis.overallOk;
+                return (
+                  <div>
+                    <div style={{
+                      padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
+                      background: overallOk ? "#e8f5e9" : "#fbe9e7", color: overallOk ? "#2e7d32" : "#bf360c",
+                    }}>
+                      {overallOk ? "✓ Everything looks correct" : "⚠ Issues found — review below"}
+                    </div>
+                    {(analysis.results || []).map((r, ri) => (
+                      <div key={ri} style={{
+                        marginBottom: "8px", padding: "8px 10px", borderRadius: "4px",
+                        border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
+                        background: r.status === "ok" ? "#f9fef9" : r.status === "issue" ? "#fff8f6" : "#fafafa",
+                      }}>
+                        {r.message && <div style={{ fontSize: "12px", color: "#333", fontWeight: "600", marginBottom: "4px" }}>{r.message}</div>}
+                        {(r.checks || []).map((chk, ci) => (
+                          <div key={ci} style={{ fontSize: "12px", color: chk.ok ? "#2e7d32" : "#c62828", marginTop: "2px" }}>
+                            {(() => {
+                              const parts = [];
+                              const re = /\(([^)]{17,})\)/g;
+                              let last = 0, m;
+                              const msg = chk.message || "";
+                              while ((m = re.exec(msg)) !== null) {
+                                if (m.index > last) parts.push(msg.slice(last, m.index));
+                                parts.push(<TruncatedCode key={m.index} code={m[1]} />);
+                                last = m.index + m[0].length;
+                              }
+                              if (last < msg.length) parts.push(msg.slice(last));
+                              return parts.length > 1 ? parts : msg;
+                            })()}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })() : (
+                <div style={{ fontSize: "13px", color: "#666" }}>Click to verify if the underlying issue has been resolved in the live sheet.</div>
+              )}
             </div>
           )}
 

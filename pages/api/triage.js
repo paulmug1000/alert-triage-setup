@@ -15389,6 +15389,29 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "revert_task_to_alert") {
+      // Revert a task back to a pending alert
+      const { fingerprintHash, automationCommanderSheetId: acId } = req.body;
+      if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
+
+      try {
+        const sheets = await getSheetsClient();
+        await ensureAlertMemoryTab(sheets, acId);
+        const memoryRows = await readAlertMemory(sheets, acId);
+        const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+        if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+
+        await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, {
+          ...memoryRow,
+          status: "cached",
+        });
+        await redisClient.del("triage_tasks_cache").catch(() => {});
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error(`❌ Error in revert_task_to_alert:`, err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "resolve_task") {
       // Mark a task as resolved (moves to completed archive)
       const { fingerprintHash, automationCommanderSheetId: acId } = req.body;

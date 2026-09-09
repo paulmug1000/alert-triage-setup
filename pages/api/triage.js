@@ -13644,6 +13644,12 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               const timestamp = String(entry[0] || "");
               let match;
               while ((match = stalePattern.exec(details)) !== null) {
+                if (targetLine) {
+                  const normMatch = match[0].replace(/\s+/g, " ").trim();
+                  const normTarget = targetLine.replace(/\s+/g, " ").trim();
+                  if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
+                }
+                
                 const tab       = match[1].trim();   // "Confirmed"
                 const rowNum    = parseInt(match[2].trim(), 10);
                 const jobClient = match[3].trim();
@@ -13744,6 +13750,12 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               const timestamp = String(entry[0] || "");
               let match;
               while ((match = pattern.exec(details)) !== null) {
+                if (targetLine) {
+                  const normMatch = match[0].replace(/\s+/g, " ").trim();
+                  const normTarget = targetLine.replace(/\s+/g, " ").trim();
+                  if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
+                }
+
                 const desc = match[1].trim();
                 const amt = match[2].trim();
                 const descLower = desc.toLowerCase();
@@ -13800,6 +13812,12 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               const timestamp = String(entry[0] || "");
               let match;
               while ((match = pattern.exec(details)) !== null) {
+                if (targetLine) {
+                  const normMatch = match[0].replace(/\s+/g, " ").trim();
+                  const normTarget = targetLine.replace(/\s+/g, " ").trim();
+                  if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
+                }
+
                 const tab = match[1].trim();
                 const rowNum = parseInt(match[2].trim(), 10);
                 const jobClient = match[3].trim();

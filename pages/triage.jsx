@@ -9250,7 +9250,8 @@ export default function TriageSystem({ onBack }) {
                 <button className="triage-btn" onClick={reloadFromCache} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
                   ⚡ Reload
                 </button>
-                <button className="triage-btn" onClick={refreshTriage} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
+                {/* Explicitly pass true to force proactive sweeps alongside actionable and informational */}
+                <button className="triage-btn" onClick={() => refreshTriage(true)} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
                   {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
                 </button>
               </div>
@@ -9438,8 +9439,9 @@ export default function TriageSystem({ onBack }) {
               >
                 ⚡ Reload
               </button>
+              {/* Explicitly pass true to force proactive sweeps alongside actionable and informational */}
               <button className="triage-btn"
-                onClick={refreshTriage}
+                onClick={() => refreshTriage(true)}
                 disabled={isLoading}
                 style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1 }}
                 title="Run full alert sweep"

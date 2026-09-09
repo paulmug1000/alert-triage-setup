@@ -13711,25 +13711,43 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
                 if (targetSheetRow) {
                   const slotCols = {
-                    1: { ref: 42, sent: 43, status: 45 },
-                    2: { ref: 49, sent: 50, status: 52 },
-                    3: { ref: 56, sent: 57, status: 59 },
+                    1: { ref: 42, sent: 43, status: 45, amt: 41 },
+                    2: { ref: 49, sent: 50, status: 52, amt: 48 },
+                    3: { ref: 56, sent: 57, status: 59, amt: 55 },
                   }[slotNum];
 
                   if (slotCols) {
                     const currentRef = String(targetSheetRow[slotCols.ref] || "").trim();
                     const currentSent = String(targetSheetRow[slotCols.sent] || "").trim();
                     const currentStatus = String(targetSheetRow[slotCols.status] || "").trim();
+                    const currentAmt = String(targetSheetRow[slotCols.amt] || "").trim();
 
                     if (currentRef && !currentRef.toUpperCase().startsWith("MANUAL-INV")) {
                       isResolved = true;
                       resolutionMsg = `Slot ${slotNum} now contains a real invoice: #${currentRef} (Sent: ${currentSent || "unknown"}, Status: ${currentStatus || "unknown"}).`;
                       checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+                    } else if (!currentRef && !currentAmt) {
+                      isResolved = true;
+                      resolutionMsg = `Slot ${slotNum} is now completely empty (stale placeholder was removed).`;
+                      checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+                      
+                      const otherInvoices = [];
+                      [ { s: 1, ref: 42 }, { s: 2, ref: 49 }, { s: 3, ref: 56 } ].forEach(idx => {
+                        if (idx.s !== slotNum) {
+                          const r = String(targetSheetRow[idx.ref] || "").trim();
+                          if (r && !r.toUpperCase().startsWith("MANUAL-INV")) {
+                            otherInvoices.push(`Slot ${idx.s} (#${r})`);
+                          }
+                        }
+                      });
+                      if (otherInvoices.length > 0) {
+                        checks.push({ ok: true, message: `ℹ️ Note: Real invoice(s) found in ${otherInvoices.join(" and ")}.` });
+                      }
                     } else {
-                      checks.push({ ok: false, message: `✗ The slot still contains a placeholder or is blank (Ref: ${currentRef || "(blank)"}).` });
+                      checks.push({ ok: false, message: `✗ Slot ${slotNum} still contains a placeholder (Ref: ${currentRef || "(blank)"}, Amount: ${currentAmt || "(blank)"}).` });
                     }
                   } else {
-                     checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
+                    checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
                   }
 
                   if (actualRowNum !== rowNum) {
@@ -13899,19 +13917,25 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
                 if (targetSheetRow) {
                   const slotCols = {
-                    1: { id: 81 }, // CD (Index 81)
-                    2: { id: 88 }, // CK (Index 88)
-                    3: { id: 95 }, // CR (Index 95)
+                    1: { id: 81, amt: 76 }, // CD (81), BY (76)
+                    2: { id: 88, amt: 83 }, // CK (88), CF (83)
+                    3: { id: 95, amt: 90 }, // CR (95), CM (90)
                   }[slotNum];
 
                   if (slotCols) {
                     const currentId = String(targetSheetRow[slotCols.id] || "").trim();
+                    const currentAmt = String(targetSheetRow[slotCols.amt] || "").trim();
+
                     if (currentId && !currentId.toUpperCase().startsWith("MANUAL-ENTRY") && !currentId.toUpperCase().startsWith("UNRECON-GAP")) {
                       isResolved = true;
                       resolutionMsg = `Slot ${slotNum} now contains a real expense reference (App ID: ${currentId}).`;
                       checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+                    } else if (!currentId && !currentAmt) {
+                      isResolved = true;
+                      resolutionMsg = `Slot ${slotNum} is now completely empty (placeholder was removed).`;
+                      checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
                     } else {
-                      checks.push({ ok: false, message: `✗ The slot still contains a placeholder or is blank (App ID: ${currentId || "(blank)"}).` });
+                      checks.push({ ok: false, message: `✗ Slot ${slotNum} still contains a placeholder (App ID: ${currentId || "(blank)"}, Amount: ${currentAmt || "(blank)"}).` });
                     }
                   } else {
                     checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });

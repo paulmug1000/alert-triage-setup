@@ -3896,20 +3896,23 @@ export default function TriageSystem({ onBack }) {
     if (!alerts.length) return;
     const alertKeys = alerts.map(a => a.alertKey);
     try {
-      setProactiveBulkSubmitting(true);
-      const res = await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "bulk_acknowledge_proactive_alerts", alertKeys, automationCommanderSheetId }),
-      });
-      const data = await res.json();
-      if (!data.success) {
-        console.error(`❌ bulk_acknowledge_proactive_alerts failed: ${data.error}`);
-        return;
-      }
-      const selectedRowIndexes = new Set(alerts.map(a => a.rowIndex));
+        setProactiveBulkSubmitting(true);
+        const res = await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "bulk_acknowledge_proactive_alerts", alertKeys, automationCommanderSheetId, sessionId }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          console.error(`❌ bulk_acknowledge_proactive_alerts failed: ${data.error}`);
+          return;
+        }
+        const selectedRowIndexes = new Set(alerts.map(a => a.rowIndex));
                   const remaining = proactiveAlerts.filter(a => !selectedRowIndexes.has(a.rowIndex));
                   const counts = {};
-                  remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+                  remaining.forEach(a => { 
+                    const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+                    if (cName) counts[cName] = (counts[cName] || 0) + 1; 
+                  });
                   setProactiveCountsByClient(counts);
                   setProactiveAlerts(remaining);
                   const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
@@ -3987,7 +3990,10 @@ export default function TriageSystem({ onBack }) {
 
                   const remaining = proactiveAlerts.filter(a => !successfulRowIndexes.has(a.rowIndex));
                   const counts = {};
-                  remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+                  remaining.forEach(a => { 
+                    const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+                    if (cName) counts[cName] = (counts[cName] || 0) + 1; 
+                  });
                   setProactiveCountsByClient(counts);
                   setProactiveAlerts(remaining);
                   const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;

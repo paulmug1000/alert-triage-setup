@@ -3817,20 +3817,17 @@ export default function TriageSystem({ onBack }) {
                     }).catch(() => {});
                   }
 
-                  let remainingProactiveCount = 0;
-                  setProactiveAlerts(prev => {
-                      const remaining = (rowIndex != null)
-                        ? prev.filter(a => a.rowIndex !== rowIndex)
-                        : prev.filter(a => a.alertKey !== alertKey);
-                      const counts = {};
-                      remaining.forEach(a => { 
-                        const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
-                        if (cName) counts[cName] = (counts[cName] || 0) + 1; 
-                      });
-                      setProactiveCountsByClient(counts);
-                      remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
-                      return remaining;
+                  const remaining = (rowIndex != null)
+                    ? proactiveAlerts.filter(a => a.rowIndex !== rowIndex)
+                    : proactiveAlerts.filter(a => a.alertKey !== alertKey);
+                  const counts = {};
+                  remaining.forEach(a => { 
+                    const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+                    if (cName) counts[cName] = (counts[cName] || 0) + 1; 
                   });
+                  setProactiveCountsByClient(counts);
+                  setProactiveAlerts(remaining);
+                  const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
 
                   const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
                   if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
@@ -3875,18 +3872,15 @@ export default function TriageSystem({ onBack }) {
                     } catch (resolveErr) { console.error("Failed to mark alert resolved:", resolveErr); }
                   }
 
-                  let remainingProactiveCount = 0;
-                  setProactiveAlerts(prev => {
-                      const remaining = prev.filter(a => a.rowIndex !== alert.rowIndex);
-                      const counts = {};
-                      remaining.forEach(a => { 
-                        const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
-                        if (cName) counts[cName] = (counts[cName] || 0) + 1; 
-                      });
-                      setProactiveCountsByClient(counts);
-                      remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
-                      return remaining;
+                  const remaining = proactiveAlerts.filter(a => a.rowIndex !== alert.rowIndex);
+                  const counts = {};
+                  remaining.forEach(a => { 
+                    const cName = a.clientName || a.metadata?.endClientName || a.metadata?.clientName;
+                    if (cName) counts[cName] = (counts[cName] || 0) + 1; 
                   });
+                  setProactiveCountsByClient(counts);
+                  setProactiveAlerts(remaining);
+                  const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
 
                   const infoDone = clientNoActionAlerts.every(na => resolvedNoActionFlags.has(na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`));
                   if (clientAlerts.length === 0 && infoDone && remainingProactiveCount === 0) {
@@ -3913,15 +3907,13 @@ export default function TriageSystem({ onBack }) {
         return;
       }
       const selectedRowIndexes = new Set(alerts.map(a => a.rowIndex));
-                  let remainingProactiveCount = 0;
-                  setProactiveAlerts(prev => {
-                    const remaining = prev.filter(a => !selectedRowIndexes.has(a.rowIndex));
-                    const counts = {};
-                    remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
-                    setProactiveCountsByClient(counts);
-                    remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
-                    return remaining;
-                  });
+                  const remaining = proactiveAlerts.filter(a => !selectedRowIndexes.has(a.rowIndex));
+                  const counts = {};
+                  remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+                  setProactiveCountsByClient(counts);
+                  setProactiveAlerts(remaining);
+                  const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
+
                   setProactiveBulkSelected(new Set());
                   setProactiveBulkMode(false);
 
@@ -3993,15 +3985,12 @@ export default function TriageSystem({ onBack }) {
                     return;
                   }
 
-                  let remainingProactiveCount = 0;
-                  setProactiveAlerts(prev => {
-                    const remaining = prev.filter(a => !successfulRowIndexes.has(a.rowIndex));
-                    const counts = {};
-                    remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
-                    setProactiveCountsByClient(counts);
-                    remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
-                    return remaining;
-                  });
+                  const remaining = proactiveAlerts.filter(a => !successfulRowIndexes.has(a.rowIndex));
+                  const counts = {};
+                  remaining.forEach(a => { counts[a.clientName] = (counts[a.clientName] || 0) + 1; });
+                  setProactiveCountsByClient(counts);
+                  setProactiveAlerts(remaining);
+                  const remainingProactiveCount = remaining.filter(a => a.clientName === selectedClient?.clientName).length;
 
                   if (!proactiveBulkTaskSnoozeDate) setNavTaskCount(prev => prev + successCount);
                   else setSnoozedTaskCount(prev => prev + successCount);

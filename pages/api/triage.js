@@ -4119,7 +4119,7 @@ export default async function handler(req, res) {
 
         const resp = await sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
-          range: `${tabName}!A1:CR5000`,
+          range: `${tabName}!A1:DD5000`,
           valueRenderOption: "FORMATTED_VALUE",
         });
         const rows = resp.data.values || [];

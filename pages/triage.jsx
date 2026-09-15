@@ -9018,9 +9018,25 @@ export default function TriageSystem({ onBack }) {
                                 </td>
                               )}
                               
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.revenue} colLetter="AG" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                              </td>
+                              {/* Calculate revenue background color for Pipeline overlap warning */}
+                              {(() => {
+                                let revBg = "transparent";
+                                if (jobsTab === "Pipeline" && isParent) {
+                                  const l = String(r.likelihood || "").trim();
+                                  const c = String(r.copiedToConf || "").trim().toLowerCase();
+                                  const isZero = l === "0%" || l === "0" || parseFloat(l.replace(/[^0-9.-]/g, "")) === 0;
+                                  
+                                  // Highlight light blue if likelihood is NOT zero AND copied to conf is NOT Yes
+                                  if (!isZero && l !== "" && c !== "yes") {
+                                    revBg = "#e0f2fe"; 
+                                  }
+                                }
+                                return (
+                                  <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: revBg }}>
+                                    {showFields && <EditableCell value={r.revenue} colLetter="AG" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                  </td>
+                                );
+                              })()}
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>

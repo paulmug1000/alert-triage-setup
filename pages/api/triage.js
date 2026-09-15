@@ -1024,6 +1024,7 @@ async function fetchJobRowsForDisplay(sheets, spreadsheetId, tabName, parentRowN
       client:        colVal(row, 0),
       jobName:       colVal(row, 1),
       projectCode:   colVal(row, 2),
+      unevenSplit:   colVal(row, 30), // AE
       revenue:       colVal(row, 32), // AG
       directCosts:   colVal(row, 33), // AH
       vat:           colVal(row, 34), // AI
@@ -4103,6 +4104,127 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, jobs });
       } catch (err) {
         console.error("❌ get_invoice_jobs error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "get_all_client_jobs") {
+      // Reads the specified tab (Confirmed or Pipeline) and returns all jobs
+      // grouped by parent + child rows. Used by the new Jobs screen.
+      const { clientSheetId, tabName } = req.body;
+      if (!clientSheetId || !tabName) return res.status(400).json({ success: false, error: "Missing clientSheetId or tabName" });
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `${tabName}!A1:CR5000`,
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        const rows = resp.data.values || [];
+
+        const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+        const buildRowData = (rowNum, row, isParent) => ({
+          rowNum, isParent,
+          client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+          unevenSplit: colVal(row, 30), // AE
+          revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
+          projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+          likelihood: tabName === "Pipeline" ? colVal(row, 39) : null,
+          copiedToConf: tabName === "Pipeline" ? colVal(row, 107) : null,
+          invoiceSlots: [1,2,3].map(n => {
+            const base = n === 1 ? 41 : n === 2 ? 48 : 55;
+            return { slotNum: n, amount: colVal(row,base), ref: colVal(row,base+1), sentDate: colVal(row,base+2),
+              daysToPay: colVal(row,base+3), status: colVal(row,base+4), highlighted: false };
+          }),
+          expenseSlots: [1,2,3].map(n => {
+            const base = n === 1 ? 75 : n === 2 ? 82 : 89;
+            return { slotNum: n, description: colVal(row,base), amount: colVal(row,base+1), vat: colVal(row,base+2),
+              date: colVal(row,base+3), daysToPay: colVal(row,base+4), status: colVal(row,base+5),
+              transactionId: colVal(row,base+6), highlighted: false };
+          }),
+        });
+
+        const jobs = [];
+        let ri = tabName === "Pipeline" ? 5 : 1; // Pipeline data typically starts at row 6
+        while (ri < rows.length) {
+          const row = rows[ri] || [];
+          const client = String(row[0] || "").trim();
+          const jobName = String(row[1] || "").trim();
+          if (!client && !jobName) { ri++; continue; }
+
+          const parentRowNum = ri + 1;
+          const jobRows = [buildRowData(parentRowNum, row, true)];
+          let cj = ri + 1;
+          while (cj < rows.length) {
+            const next = rows[cj] || [];
+            const nc = String(next[0]||"").trim();
+            const nj = String(next[1]||"").trim();
+            // Child row logic: same client+job name repeated, no revenue/start date of its own
+            const nRevenue = String(next[32]||"").trim();
+            const nStart = String(next[37]||"").trim();
+            if (nc === client && nj === jobName && !nRevenue && !nStart) {
+              jobRows.push(buildRowData(cj + 1, next, false));
+              cj++;
+            } else {
+              break;
+            }
+          }
+          ri = cj;
+          
+          jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows });
+        }
+
+        // Sort newest first by start date
+        const parseSheetDate = (d) => {
+          if (!d) return null;
+          const m = String(d).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+          if (!m) return null;
+          const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+          const mIdx = months[m[2].toLowerCase()];
+          if (mIdx === undefined) return null;
+          const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+          return new Date(yr, mIdx, parseInt(m[1]));
+        };
+
+        jobs.sort((a, b) => {
+          const da = parseSheetDate(a.rows[0]?.startDate);
+          const db = parseSheetDate(b.rows[0]?.startDate);
+          if (!da && !db) return 0;
+          if (!da) return 1;
+          if (!db) return -1;
+          return db - da;
+        });
+
+        console.log(`  ✅ get_all_client_jobs: ${jobs.length} jobs for ${tabName}`);
+        return res.status(200).json({ success: true, jobs });
+      } catch (err) {
+        console.error("❌ get_all_client_jobs error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "update_job_field") {
+      // Generic inline updater for the Jobs screen
+      const { clientSheetId, tabName, cellRef, value } = req.body;
+      if (!clientSheetId || !tabName || !cellRef) {
+        return res.status(400).json({ success: false, error: "Missing required fields" });
+      }
+      try {
+        const sheets = await getSheetsClient();
+        const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+        
+        // Use USER_ENTERED to preserve formatting (especially crucial for dates and percentages)
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: sheetIdClean,
+          range: `${tabName}!${cellRef}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [[value]] }
+        });
+        
+        console.log(`  ✅ update_job_field: Wrote "${value}" to ${tabName}!${cellRef}`);
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        console.error("❌ update_job_field error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

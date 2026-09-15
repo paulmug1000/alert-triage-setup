@@ -817,7 +817,7 @@ function eomTargetMonthToWorkMonth(targetMonthKey) {
 // ============================================================================
 
 // Persistent top bar — rendered around every screen
-function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, onInvoices, onRetainers, onTools, onSettings, homeAlertCount, taskCount, children }) {
+function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, onInvoices, onRetainers, onJobs, onTools, onSettings, homeAlertCount, taskCount, children }) {
   const [showMore, setShowMore] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(false);
 
@@ -8995,7 +8995,7 @@ export default function TriageSystem({ onBack }) {
                               </td>
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", textAlign: "center" }}>
                                 {showFields && !isRetainer && (
-                                  <button onClick={() => setJobsEditSplit({ jobRow: r })} style={{ background: r.unevenSplit?.toLowerCase().startsWith("[split]") ? "#0066cc" : "#f0f0f0", color: r.unevenSplit?.toLowerCase().startsWith("[split]") ? "#fff" : "#666", border: "none", borderRadius: "4px", padding: "2px 6px", fontSize: "10px", cursor: "pointer" }}>
+                                  <button onClick={() => setJobsEditSplit({ jobRow: r })} style={{ background: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#0066cc" : "#f0f0f0", color: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#fff" : "#666", border: "none", borderRadius: "4px", padding: "2px 6px", fontSize: "10px", cursor: "pointer" }}>
                                     Split
                                   </button>
                                 )}

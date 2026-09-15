@@ -6424,15 +6424,18 @@ export default function TriageSystem({ onBack }) {
                           const jobLastRow = job.rows[job.rows.length - 1].rowNum;
                           const isPlacing = !!outgoingsPlacing;
                           
-                          // Calculate unreceived direct costs for the whole job
-                          const jobTotalExpenses = job.rows.reduce((sum, r) => sum + r.expenseSlots.reduce((s, slot) => s + (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0), 0), 0);
+                          // Calculate unreceived direct costs for the whole job (Real expenses only)
+                          const jobTotalExpenses = job.rows.reduce((sum, r) => sum + r.expenseSlots.reduce((s, slot) => {
+                            const isReal = slot.transactionId && !String(slot.transactionId).toUpperCase().includes("MANUAL-ENTRY") && !String(slot.transactionId).toUpperCase().includes("UNRECON-GAP");
+                            return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
+                          }, 0), 0);
                           const jobBudget = parseFloat(String(job.rows[0].directCosts).replace(/[£$€,\s]/g, "")) || 0;
                           const unreceived = jobBudget - jobTotalExpenses;
 
                           return job.rows.map((jr, rIdx) => {
                           const isLastRowOfJob = rIdx === job.rows.length - 1;
                           return (
-                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
+                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.client : ""}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.jobName : ""}</td>
@@ -7030,13 +7033,16 @@ export default function TriageSystem({ onBack }) {
                       </thead>
                       <tbody>
                         {invoicesJobs.flatMap((job, jobIdx) => {
-                          // Calculate uninvoiced revenue for the whole job
-                          const jobTotalInvoiced = job.rows.reduce((sum, r) => sum + r.invoiceSlots.reduce((s, slot) => s + (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0), 0), 0);
+                          // Calculate uninvoiced revenue for the whole job (Real invoices only)
+                          const jobTotalInvoiced = job.rows.reduce((sum, r) => sum + r.invoiceSlots.reduce((s, slot) => {
+                            const isReal = slot.ref && !String(slot.ref).toUpperCase().includes("MANUAL-INV");
+                            return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
+                          }, 0), 0);
                           const jobRevenue = parseFloat(String(job.rows[0].revenue).replace(/[£$€,\s]/g, "")) || 0;
                           const uninvoiced = jobRevenue - jobTotalInvoiced;
                           
                           return job.rows.map((jr, rIdx) => (
-                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
+                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.client : ""}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.jobName : ""}</td>
@@ -7278,7 +7284,7 @@ export default function TriageSystem({ onBack }) {
                         const isExpanded = expandedRetainerJobs.has(job.parentRowNum);
                         const visibleRows = isExpanded ? job.rows : job.rows.slice(0, 1);
                         return visibleRows.map((jr, rIdx) => (
-                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
+                          <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
                             <td style={{ padding: "7px 4px", borderBottom: "1px solid #eee", textAlign: "center" }}>
                               {rIdx === 0 && job.rows.length > 1 && (
                                 <span
@@ -8855,6 +8861,8 @@ export default function TriageSystem({ onBack }) {
           if (colLetter === 'AM') updated.endDate = newValue;
           if (colLetter === 'AN') updated.likelihood = newValue;
           if (colLetter === 'DD') updated.copiedToConf = newValue;
+          if (colLetter === 'BW') updated.leftToInvoice = newValue;
+          if (colLetter === 'DC') updated.costsOutstanding = newValue;
           return updated;
         })
       })));
@@ -8925,7 +8933,7 @@ export default function TriageSystem({ onBack }) {
                 <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
               ) : jobsData && (
                 <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
-                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1600px", tableLayout: "fixed" }}>
+                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1700px", tableLayout: "fixed" }}>
                     <colgroup>
                       <col style={{ width: "24px" }} />
                       <col style={{ width: "50px" }} />
@@ -8933,7 +8941,7 @@ export default function TriageSystem({ onBack }) {
                       <col style={{ width: "160px" }} />
                       <col style={{ width: "80px" }} />
                       <col style={{ width: "90px" }} />
-                      <col style={{ width: "60px" }} />
+                      {jobsClient?.splitEnabled && <col style={{ width: "60px" }} />}
                       <col style={{ width: "80px" }} />
                       <col style={{ width: "80px" }} />
                       <col style={{ width: "60px" }} />
@@ -8943,15 +8951,20 @@ export default function TriageSystem({ onBack }) {
                       <col style={{ width: "140px" }} />
                       <col style={{ width: "140px" }} />
                       <col style={{ width: "140px" }} />
+                      <col style={{ width: "90px" }} />
                       <col style={{ width: "140px" }} />
                       <col style={{ width: "140px" }} />
                       <col style={{ width: "140px" }} />
+                      <col style={{ width: "90px" }} />
                     </colgroup>
                     <thead>
                       <tr style={{ background: "#f5f6fa" }}>
-                        {["", "Row", "Client", "Job name", "Code", "Type", "Split", "Revenue", "Costs", "VAT", "Start", "End",
+                        {["", "Row", "Client", "Job name", "Code", "Type", 
+                          ...(jobsClient?.splitEnabled ? ["Split"] : []),
+                          "Revenue", "Costs", "VAT", "Start", "End",
                           ...(jobsTab === "Pipeline" ? ["Likelihood", "Copied?"] : []),
-                          "InvSlot1", "InvSlot2", "InvSlot3", "ExpSlot1", "ExpSlot2", "ExpSlot3"].map((h, i) => (
+                          "InvSlot1", "InvSlot2", "InvSlot3", "Left to inv.",
+                          "ExpSlot1", "ExpSlot2", "ExpSlot3", "Costs outst."].map((h, i) => (
                           <th key={i} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
                         ))}
                       </tr>
@@ -8967,10 +8980,11 @@ export default function TriageSystem({ onBack }) {
                         return visibleRows.map((r, rIdx) => {
                           const isParent = r.isParent;
                           const showFields = !isRetainer || isParent; // Child rows of retainers hide scalar fields
+                          const showIdentity = isParent; // Projects and Retainers only show Client/Job on row 1
                           
                           return (
-                            <tr key={r.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#fafbfd" }}>
-                              <td style={{ padding: "7px 4px", borderBottom: "1px solid #eee", textAlign: "center" }}>
+                            <tr key={r.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
+                              <td style={{ padding: "7px 4px", borderBottom: "1px solid #eee", textAlign: "center", verticalAlign: "top" }}>
                                 {rIdx === 0 && isRetainer && job.rows.length > 1 && (
                                   <span
                                     onClick={() => setJobsExpanded(prev => { const n = new Set(prev); if (n.has(r.rowNum)) n.delete(r.rowNum); else n.add(r.rowNum); return n; })}
@@ -8980,47 +8994,51 @@ export default function TriageSystem({ onBack }) {
                                   </span>
                                 )}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{r.rowNum}</td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
-                                {showFields && <EditableCell value={r.client} colLetter="A" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888", verticalAlign: "top" }}>{r.rowNum}</td>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                {showIdentity && <EditableCell value={r.client} colLetter="A" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
-                                {showFields && <EditableCell value={r.jobName} colLetter="B" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                {showIdentity && <EditableCell value={r.jobName} colLetter="B" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.projectCode} colLetter="C" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.projectRetainer} colLetter="AJ" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", textAlign: "center" }}>
-                                {showFields && !isRetainer && (
-                                  <button onClick={() => setJobsEditSplit({ jobRow: r })} style={{ background: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#0066cc" : "#f0f0f0", color: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#fff" : "#666", border: "none", borderRadius: "4px", padding: "2px 6px", fontSize: "10px", cursor: "pointer" }}>
-                                    Split
-                                  </button>
-                                )}
-                              </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                              
+                              {jobsClient?.splitEnabled && (
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", textAlign: "center", verticalAlign: "top" }}>
+                                  {showFields && !isRetainer && isParent && (
+                                    <button onClick={() => setJobsEditSplit({ jobRow: r })} style={{ background: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#0066cc" : "#f0f0f0", color: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#fff" : "#666", border: "none", borderRadius: "4px", padding: "2px 6px", fontSize: "10px", cursor: "pointer" }}>
+                                      Split
+                                    </button>
+                                  )}
+                                </td>
+                              )}
+                              
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.revenue} colLetter="AG" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.vat} colLetter="AI" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.startDate} colLetter="AL" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.endDate} colLetter="AM" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
                               {jobsTab === "Pipeline" && (
                                 <>
-                                  <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                                  <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                     {showFields && <EditableCell value={r.likelihood} colLetter="AN" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                                   </td>
-                                  <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
+                                  <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                     {showFields && <EditableCell value={r.copiedToConf} colLetter="DD" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                                   </td>
                                 </>
@@ -9042,6 +9060,11 @@ export default function TriageSystem({ onBack }) {
                                 </td>
                               ))}
 
+                              {/* Amount Left to Invoice */}
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                {showFields && <EditableCell value={r.leftToInvoice} colLetter="BW" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                              </td>
+
                               {/* Expense Slots */}
                               {r.expenseSlots.map(s => (
                                 <td key={`exp${s.slotNum}`} onClick={() => {
@@ -9057,6 +9080,11 @@ export default function TriageSystem({ onBack }) {
                                   )}
                                 </td>
                               ))}
+
+                              {/* Direct Costs Outstanding */}
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                {showFields && <EditableCell value={r.costsOutstanding} colLetter="DC" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                              </td>
 
                             </tr>
                           );

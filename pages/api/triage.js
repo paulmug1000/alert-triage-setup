@@ -3499,7 +3499,7 @@ export default async function handler(req, res) {
         const sheets = await getSheetsClient();
         const resp = await withRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: automationCommanderSheetId,
-          range: "AutoUpdates!A2:N500",
+          range: "AutoUpdates!A2:DB500", // Expanded to catch DA (index 104)
         }));
         const rows = resp.data.values || [];
         // Build both array (for outgoings selector) and object (for proactive alerts compat)
@@ -3511,12 +3511,13 @@ export default async function handler(req, res) {
           const clientSheetUrl = row[11];
           const masterSheetUrl = row[12];
           const hasWebAppUrl = !!String(row[13] || "").trim(); // col N = Agent Web App URL
+          const splitEnabled = String(row[104] || "").trim().toLowerCase() === "yes"; // DA = index 104
           // Skip header row and any row where name looks like a header
           if (!clientName || !clientSheetUrl) continue;
           if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
           const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
           const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
-          clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl });
+          clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl, splitEnabled });
           if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl };
         }
         clientsArray.sort((a, b) => a.clientName.localeCompare(b.clientName));
@@ -4132,6 +4133,8 @@ export default async function handler(req, res) {
           projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
           likelihood: tabName === "Pipeline" ? colVal(row, 39) : null,
           copiedToConf: tabName === "Pipeline" ? colVal(row, 107) : null,
+          leftToInvoice: colVal(row, 74), // BW
+          costsOutstanding: colVal(row, 106), // DC
           invoiceSlots: [1,2,3].map(n => {
             const base = n === 1 ? 41 : n === 2 ? 48 : 55;
             return { slotNum: n, amount: colVal(row,base), ref: colVal(row,base+1), sentDate: colVal(row,base+2),

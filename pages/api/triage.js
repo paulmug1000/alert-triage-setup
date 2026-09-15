@@ -12440,11 +12440,12 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         }
         console.log(`  Rows to blank: ${rowsToBlank.map(r => r + 1).join(", ")} (${rowsToBlank.length} rows)`);
 
-        // Build column ranges to blank: A:G (1-7), AG:AM (33-39), AN (40), AP:BH (42-60), BX:CR (76-96), DD (108)
+        // Build column ranges to blank: A:G (1-7), AE (31), AG:AM (33-39), AN (40), AP:BH (42-60), BX:CR (76-96), DD (108)
         // AN = likelihood (40), DD = "Copied to Confirmed?" (108) — Pipeline-specific fields
         // In A1 notation: colNum is 1-indexed
         const colRanges = [
           [1, 7],    // A:G
+          [31, 31],  // AE (Uneven revenue splits)
           [33, 39],  // AG:AM
           [40, 40],  // AN (likelihood)
           [42, 60],  // AP:BH

@@ -9016,6 +9016,16 @@ export default function TriageSystem({ onBack }) {
                 const hasLeadSrc = jobsData.some(j => j.rows.some(r => r.leadSrc && String(r.leadSrc).trim() !== ""));
                 const hasProdLine = jobsData.some(j => j.rows.some(r => r.prodLine && String(r.prodLine).trim() !== ""));
 
+                const parseSheetDate = (dStr) => {
+                  if (!dStr) return null;
+                  const m = String(dStr).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+                  if (!m) return null;
+                  const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+                  let yr = parseInt(m[3], 10);
+                  if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+                  return new Date(yr, months[m[2].toLowerCase()], parseInt(m[1], 10));
+                };
+
                 return (
                 <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
                   <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1700px", tableLayout: "fixed" }}>
@@ -9143,11 +9153,11 @@ export default function TriageSystem({ onBack }) {
                                   const l = String(r.likelihood || "").trim();
                                   const c = String(r.copiedToConf || "").trim().toLowerCase();
                                   const isZero = l === "0%" || l === "0" || parseFloat(l.replace(/[^0-9.-]/g, "")) === 0;
-                                  
-                                  // Highlight light blue if likelihood is NOT zero AND copied to conf is NOT Yes
-                                  if (!isZero && l !== "" && c !== "yes") {
-                                    revBg = "#e0f2fe"; 
-                                  }
+                                  if (!isZero && l !== "" && c !== "yes") revBg = "#e0f2fe"; 
+                                }
+                                const leftToInvVal = parseFloat(String(r.leftToInvoice).replace(/[£$€,\s]/g,""));
+                                if (!isNaN(leftToInvVal) && Math.abs(leftToInvVal) > 0.01 && revBg === "transparent") {
+                                  revBg = "#fce8b2"; // Rule 5: Light orange
                                 }
                                 return (
                                   <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: revBg }}>
@@ -9155,18 +9165,37 @@ export default function TriageSystem({ onBack }) {
                                   </td>
                                 );
                               })()}
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                              </td>
+                              {(() => {
+                                let costsBg = "transparent";
+                                const costsOutVal = parseFloat(String(r.costsOutstanding).replace(/[£$€,\s]/g,""));
+                                if (!isNaN(costsOutVal) && Math.abs(costsOutVal) > 0.01) {
+                                  costsBg = "#fce8b2"; // Rule 6: Light orange
+                                }
+                                return (
+                                  <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: costsBg }}>
+                                    {showFields && <EditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                  </td>
+                                );
+                              })()}
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.vat} colLetter="AI" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.startDate} colLetter="AL" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.endDate} colLetter="AM" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                              </td>
+                              {(() => {
+                                let endBg = "transparent";
+                                const startDt = parseSheetDate(r.startDate);
+                                const endDt = parseSheetDate(r.endDate);
+                                if (startDt && endDt && endDt < startDt) {
+                                  endBg = "#f4c7c3"; // Custom AO logical mapping applied to AM: Red
+                                }
+                                return (
+                                  <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: endBg }}>
+                                    {showFields && <EditableCell value={r.endDate} colLetter="AM" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                  </td>
+                                );
+                              })()}
                               {jobsTab === "Pipeline" && (
                                 <>
                                   <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
@@ -9179,25 +9208,74 @@ export default function TriageSystem({ onBack }) {
                               )}
                               
                               {/* Invoice Slots */}
-                              {r.invoiceSlots.map(s => (
-                                <td key={`inv${s.slotNum}`} onClick={() => {
-                                  // Hack: invoicesClient needs to be set for the modal to use the correct clientSheetId
-                                  setInvoicesClient(jobsClient);
-                                  setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s });
-                                }} style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer", borderLeft: s.slotNum === 1 ? "2px solid #f0f0f0" : "none" }} onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                                  {!s.ref && !s.amount ? <span style={{ color: "#ccc" }}>—</span> : (
-                                    <div>
-                                      <div style={{ fontWeight: "600", color: s.ref?.toUpperCase().includes("MANUAL-INV") ? "#9333ea" : "inherit" }}>{s.ref}</div>
-                                      <div style={{ color: "#888", fontSize: "10px" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.sentDate}</div>
-                                    </div>
-                                  )}
-                                </td>
-                              ))}
+                              {r.invoiceSlots.map(s => {
+                                let sentStyle = {};
+                                let amtStyle = {};
+                                
+                                const sentDt = parseSheetDate(s.sentDate);
+                                if (sentDt) {
+                                  const today = new Date();
+                                  today.setHours(0,0,0,0);
+                                  const status = String(s.status || "").trim();
+                                  const isPaid = status === "Paid";
+                                  const isSent = status === "Sent";
+                                  const todayPlus30 = new Date(today);
+                                  todayPlus30.setDate(todayPlus30.getDate() + 30);
+                                  
+                                  const days = parseInt(s.daysToPay, 10) || 0;
+                                  const dueDt = new Date(sentDt);
+                                  dueDt.setDate(dueDt.getDate() + days);
+
+                                  if (sentDt < today && !isPaid && !isSent) {
+                                    sentStyle = { backgroundColor: "#f4c7c3", color: "#b71c1c", padding: "1px 4px", borderRadius: "3px" }; // Red (Rule 7)
+                                  } else if (sentDt < todayPlus30 && !isPaid && !isSent) {
+                                    sentStyle = { backgroundColor: "#fff2cc", color: "#f57f17", padding: "1px 4px", borderRadius: "3px" }; // Yellow (Rule 8)
+                                  } else if (dueDt < today && !isPaid) {
+                                    sentStyle = { backgroundColor: "#fce8b2", color: "#e65100", padding: "1px 4px", borderRadius: "3px" }; // Orange (Rule 9)
+                                  }
+                                }
+                                
+                                if (s.amount && String(s.amount).trim() !== "") {
+                                  const isRetainer = String(r.projectRetainer || "").trim() === "Retainer";
+                                  const startDt = parseSheetDate(r.startDate);
+                                  const endDt = parseSheetDate(r.endDate);
+                                  if (isRetainer && startDt && endDt) {
+                                    const eom = new Date(startDt.getFullYear(), startDt.getMonth() + 1, 0);
+                                    if (endDt > eom) {
+                                      amtStyle = { backgroundColor: "#ead1dc", color: "#4a148c", padding: "1px 4px", borderRadius: "3px" }; // Pink (Rule 10)
+                                    }
+                                  }
+                                }
+
+                                return (
+                                  <td key={`inv${s.slotNum}`} onClick={() => {
+                                    setInvoicesClient(jobsClient);
+                                    setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s });
+                                  }} style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer", borderLeft: s.slotNum === 1 ? "2px solid #f0f0f0" : "none" }} onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                                    {!s.ref && !s.amount ? <span style={{ color: "#ccc" }}>—</span> : (
+                                      <div>
+                                        <div style={{ fontWeight: "600", color: s.ref?.toUpperCase().includes("MANUAL-INV") ? "#9333ea" : "inherit" }}>{s.ref}</div>
+                                        <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
+                                          <span style={amtStyle}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`}</span>
+                                          {s.sentDate ? <><span style={{ margin: "0 2px" }}>·</span><span style={sentStyle}>{s.sentDate}</span></> : null}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </td>
+                                );
+                              })}
 
                               {/* Amount Left to Invoice */}
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && r.leftToInvoice}
-                              </td>
+                              {(() => {
+                                let varBg = "transparent";
+                                const val = parseFloat(String(r.leftToInvoice).replace(/[£$€,\s]/g,""));
+                                if (!isNaN(val) && (val > 1 || val < -1)) varBg = "#f4c7c3"; // Rules 1 & 2: Red
+                                return (
+                                  <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: varBg }}>
+                                    {showFields && r.leftToInvoice}
+                                  </td>
+                                );
+                              })()}
 
                               {/* Expense Slots */}
                               {r.expenseSlots.map(s => (
@@ -9216,9 +9294,16 @@ export default function TriageSystem({ onBack }) {
                               ))}
 
                               {/* Direct Costs Outstanding */}
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && r.costsOutstanding}
-                              </td>
+                              {(() => {
+                                let costsVarBg = "transparent";
+                                const val = parseFloat(String(r.costsOutstanding).replace(/[£$€,\s]/g,""));
+                                if (!isNaN(val) && (val > 1 || val < -1)) costsVarBg = "#f4c7c3"; // Rules 1 & 2: Red
+                                return (
+                                  <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: costsVarBg }}>
+                                    {showFields && r.costsOutstanding}
+                                  </td>
+                                );
+                              })()}
 
                             </tr>
                           );

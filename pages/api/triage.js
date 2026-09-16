@@ -4128,9 +4128,11 @@ export default async function handler(req, res) {
         const buildRowData = (rowNum, row, isParent) => ({
           rowNum, isParent,
           client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
+          dateConf: colVal(row, 3), // D
           unevenSplit: colVal(row, 30), // AE
           revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
-          projectRetainer: colVal(row, 35), startDate: colVal(row, 37), endDate: colVal(row, 38),
+          projectRetainer: colVal(row, 35), prodLine: colVal(row, 36), // AJ, AK
+          startDate: colVal(row, 37), endDate: colVal(row, 38),
           likelihood: tabName === "Pipeline" ? colVal(row, 39) : null,
           copiedToConf: tabName === "Pipeline" ? colVal(row, 107) : null,
           leftToInvoice: colVal(row, 74), // BW

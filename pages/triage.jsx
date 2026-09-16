@@ -8863,6 +8863,8 @@ export default function TriageSystem({ onBack }) {
           if (colLetter === 'DD') updated.copiedToConf = newValue;
           if (colLetter === 'BW') updated.leftToInvoice = newValue;
           if (colLetter === 'DC') updated.costsOutstanding = newValue;
+          if (colLetter === 'D')  updated.dateConf = newValue;
+          if (colLetter === 'AK') updated.prodLine = newValue;
           return updated;
         })
       })));
@@ -8931,7 +8933,13 @@ export default function TriageSystem({ onBack }) {
 
               {jobsLoading && !jobsData ? (
                 <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
-              ) : jobsData && (
+              ) : jobsData && (() => {
+                // Pre-calculate visibility for sparse columns across all jobs
+                const hasProjectCode = jobsData.some(j => j.rows.some(r => r.projectCode && String(r.projectCode).trim() !== ""));
+                const hasDateConf = jobsData.some(j => j.rows.some(r => r.dateConf && String(r.dateConf).trim() !== ""));
+                const hasProdLine = jobsData.some(j => j.rows.some(r => r.prodLine && String(r.prodLine).trim() !== ""));
+
+                return (
                 <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
                   <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1700px", tableLayout: "fixed" }}>
                     <colgroup>
@@ -8939,8 +8947,10 @@ export default function TriageSystem({ onBack }) {
                       <col style={{ width: "50px" }} />
                       <col style={{ width: "120px" }} />
                       <col style={{ width: "160px" }} />
-                      <col style={{ width: "80px" }} />
+                      {hasProjectCode && <col style={{ width: "80px" }} />}
+                      {hasDateConf && <col style={{ width: "80px" }} />}
                       <col style={{ width: "90px" }} />
+                      {hasProdLine && <col style={{ width: "90px" }} />}
                       {jobsClient?.splitEnabled && <col style={{ width: "60px" }} />}
                       <col style={{ width: "80px" }} />
                       <col style={{ width: "80px" }} />
@@ -8959,7 +8969,11 @@ export default function TriageSystem({ onBack }) {
                     </colgroup>
                     <thead>
                       <tr style={{ background: "#f5f6fa" }}>
-                        {["", "Row", "Client", "Job name", "Code", "Type", 
+                        {["", "Row", "Client", "Job name", 
+                          ...(hasProjectCode ? ["Code"] : []),
+                          ...(hasDateConf ? [jobsTab === "Pipeline" ? "Date Added" : "Date Conf"] : []),
+                          "Type", 
+                          ...(hasProdLine ? ["Prod. line"] : []),
                           ...(jobsClient?.splitEnabled ? ["Split"] : []),
                           "Revenue", "Costs", "VAT", "Start", "End",
                           ...(jobsTab === "Pipeline" ? ["Likelihood", "Copied?"] : []),
@@ -9001,12 +9015,24 @@ export default function TriageSystem({ onBack }) {
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showIdentity && <EditableCell value={r.jobName} colLetter="B" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.projectCode} colLetter="C" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                              </td>
+                              {hasProjectCode && (
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <EditableCell value={r.projectCode} colLetter="C" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                </td>
+                              )}
+                              {hasDateConf && (
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <EditableCell value={r.dateConf} colLetter="D" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                </td>
+                              )}
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.projectRetainer} colLetter="AJ" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
+                              {hasProdLine && (
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <EditableCell value={r.prodLine} colLetter="AK" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                </td>
+                              )}
                               
                               {jobsClient?.splitEnabled && (
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", textAlign: "center", verticalAlign: "top" }}>
@@ -9109,7 +9135,8 @@ export default function TriageSystem({ onBack }) {
                     </tbody>
                   </table>
                 </div>
-              )}
+                );
+              })()}
             </>
           )}
         </div>

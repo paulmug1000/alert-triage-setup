@@ -8861,8 +8861,6 @@ export default function TriageSystem({ onBack }) {
           if (colLetter === 'AM') updated.endDate = newValue;
           if (colLetter === 'AN') updated.likelihood = newValue;
           if (colLetter === 'DD') updated.copiedToConf = newValue;
-          if (colLetter === 'BW') updated.leftToInvoice = newValue;
-          if (colLetter === 'DC') updated.costsOutstanding = newValue;
           if (colLetter === 'D')  updated.dateConf = newValue;
           if (colLetter === 'E')  updated.leadSrc = newValue;
           if (colLetter === 'AK') updated.prodLine = newValue;
@@ -9113,7 +9111,7 @@ export default function TriageSystem({ onBack }) {
 
                               {/* Amount Left to Invoice */}
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.leftToInvoice} colLetter="BW" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                {showFields && r.leftToInvoice}
                               </td>
 
                               {/* Expense Slots */}
@@ -9134,7 +9132,7 @@ export default function TriageSystem({ onBack }) {
 
                               {/* Direct Costs Outstanding */}
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.costsOutstanding} colLetter="DC" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                {showFields && r.costsOutstanding}
                               </td>
 
                             </tr>

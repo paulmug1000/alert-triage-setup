@@ -4129,6 +4129,7 @@ export default async function handler(req, res) {
           rowNum, isParent,
           client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
           dateConf: colVal(row, 3), // D
+          leadSrc: colVal(row, 4), // E
           unevenSplit: colVal(row, 30), // AE
           revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
           projectRetainer: colVal(row, 35), prodLine: colVal(row, 36), // AJ, AK

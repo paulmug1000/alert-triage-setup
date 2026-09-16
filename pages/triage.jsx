@@ -8864,6 +8864,7 @@ export default function TriageSystem({ onBack }) {
           if (colLetter === 'BW') updated.leftToInvoice = newValue;
           if (colLetter === 'DC') updated.costsOutstanding = newValue;
           if (colLetter === 'D')  updated.dateConf = newValue;
+          if (colLetter === 'E')  updated.leadSrc = newValue;
           if (colLetter === 'AK') updated.prodLine = newValue;
           return updated;
         })
@@ -8937,6 +8938,7 @@ export default function TriageSystem({ onBack }) {
                 // Pre-calculate visibility for sparse columns across all jobs
                 const hasProjectCode = jobsData.some(j => j.rows.some(r => r.projectCode && String(r.projectCode).trim() !== ""));
                 const hasDateConf = jobsData.some(j => j.rows.some(r => r.dateConf && String(r.dateConf).trim() !== ""));
+                const hasLeadSrc = jobsData.some(j => j.rows.some(r => r.leadSrc && String(r.leadSrc).trim() !== ""));
                 const hasProdLine = jobsData.some(j => j.rows.some(r => r.prodLine && String(r.prodLine).trim() !== ""));
 
                 return (
@@ -8949,6 +8951,7 @@ export default function TriageSystem({ onBack }) {
                       <col style={{ width: "160px" }} />
                       {hasProjectCode && <col style={{ width: "80px" }} />}
                       {hasDateConf && <col style={{ width: "80px" }} />}
+                      {hasLeadSrc && <col style={{ width: "80px" }} />}
                       <col style={{ width: "90px" }} />
                       {hasProdLine && <col style={{ width: "90px" }} />}
                       {jobsClient?.splitEnabled && <col style={{ width: "60px" }} />}
@@ -8972,6 +8975,7 @@ export default function TriageSystem({ onBack }) {
                         {["", "Row", "Client", "Job name", 
                           ...(hasProjectCode ? ["Code"] : []),
                           ...(hasDateConf ? [jobsTab === "Pipeline" ? "Date Added" : "Date Conf"] : []),
+                          ...(hasLeadSrc ? ["Lead src"] : []),
                           "Type", 
                           ...(hasProdLine ? ["Prod. line"] : []),
                           ...(jobsClient?.splitEnabled ? ["Split"] : []),
@@ -9023,6 +9027,11 @@ export default function TriageSystem({ onBack }) {
                               {hasDateConf && (
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                   {showFields && <EditableCell value={r.dateConf} colLetter="D" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                </td>
+                              )}
+                              {hasLeadSrc && (
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <EditableCell value={r.leadSrc} colLetter="E" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                                 </td>
                               )}
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>

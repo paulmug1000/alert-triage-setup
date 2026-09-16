@@ -8694,8 +8694,18 @@ export default function TriageSystem({ onBack }) {
   if (activeNav === "jobs") {
     const noJobsClient = !jobsClient;
 
+    const formatCurrency = (val) => {
+      const s = String(val || "").trim();
+      if (!s) return "";
+      const hasSymbol = /^[£$€]/.test(s);
+      const symbol = hasSymbol ? s.charAt(0) : "£";
+      const num = parseFloat(s.replace(/[£$€,\s]/g, ""));
+      if (isNaN(num)) return s;
+      return symbol + num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+
     // Inline Editable Cell Component
-    const EditableCell = ({ value, colLetter, rowNum, type = "text", onSave, customStyle = {} }) => {
+    const EditableCell = ({ value, colLetter, rowNum, type = "text", onSave, customStyle = {}, isCurrency = false }) => {
       const [isEditing, setIsEditing] = React.useState(false);
       const [val, setVal] = React.useState(value || "");
       const inputRef = React.useRef(null);
@@ -8726,6 +8736,19 @@ export default function TriageSystem({ onBack }) {
           />
         );
       }
+
+      return (
+        <div
+          onClick={() => setIsEditing(true)}
+          style={{ minHeight: "20px", cursor: "text", padding: "2px", borderRadius: "3px", ...customStyle }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor ? customStyle.backgroundColor : "rgba(0,102,204,0.05)"}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor || "transparent"}
+          title="Click to edit"
+        >
+          {val ? (isCurrency ? formatCurrency(val) : val) : <span style={{ color: "#ccc" }}>—</span>}
+        </div>
+      );
+    };
 
       return (
         <div
@@ -9036,7 +9059,7 @@ export default function TriageSystem({ onBack }) {
 
                 return (
                 <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
-                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "1700px", tableLayout: "fixed" }}>
+                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "2000px", tableLayout: "fixed" }}>
                     <colgroup>
                       <col style={{ width: "24px" }} />
                       <col style={{ width: "50px" }} />
@@ -9051,16 +9074,16 @@ export default function TriageSystem({ onBack }) {
                       <col style={{ width: "80px" }} />
                       <col style={{ width: "80px" }} />
                       <col style={{ width: "60px" }} />
-                      <col style={{ width: "80px" }} />
-                      <col style={{ width: "80px" }} />
+                      <col style={{ width: "95px" }} />
+                      <col style={{ width: "95px" }} />
                       {jobsTab === "Pipeline" && <><col style={{ width: "70px" }}/><col style={{ width: "70px" }}/></>}
-                      <col style={{ width: "140px" }} />
-                      <col style={{ width: "140px" }} />
-                      <col style={{ width: "140px" }} />
+                      <col style={{ width: "175px" }} />
+                      <col style={{ width: "175px" }} />
+                      <col style={{ width: "175px" }} />
                       <col style={{ width: "90px" }} />
-                      <col style={{ width: "140px" }} />
-                      <col style={{ width: "140px" }} />
-                      <col style={{ width: "140px" }} />
+                      <col style={{ width: "175px" }} />
+                      <col style={{ width: "175px" }} />
+                      <col style={{ width: "175px" }} />
                       <col style={{ width: "90px" }} />
                     </colgroup>
                     <thead>
@@ -9113,8 +9136,12 @@ export default function TriageSystem({ onBack }) {
                                 {showIdentity && <EditableCell value={r.jobName} colLetter="B" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
                               </td>
                               {hasProjectCode && (
-                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                  {showFields && <EditableCell value={r.projectCode} colLetter="C" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", maxWidth: "80px" }}>
+                                  {showFields && (
+                                    <div style={{ overflowX: "auto", whiteSpace: "nowrap", scrollbarWidth: "thin", paddingBottom: "2px" }}>
+                                      <EditableCell value={r.projectCode} colLetter="C" rowNum={r.rowNum} onSave={handleInlineUpdate} />
+                                    </div>
+                                  )}
                                 </td>
                               )}
                               {hasDateConf && (
@@ -9169,7 +9196,7 @@ export default function TriageSystem({ onBack }) {
                                 }
                                 return (
                                   <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: revBg }}>
-                                    {showFields && <EditableCell value={r.revenue} colLetter="AG" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                    {showFields && <EditableCell value={r.revenue} colLetter="AG" rowNum={r.rowNum} onSave={handleInlineUpdate} isCurrency={true} />}
                                   </td>
                                 );
                               })()}
@@ -9181,12 +9208,12 @@ export default function TriageSystem({ onBack }) {
                                 }
                                 return (
                                   <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: costsBg }}>
-                                    {showFields && <EditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                    {showFields && <EditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleInlineUpdate} isCurrency={true} />}
                                   </td>
                                 );
                               })()}
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.vat} colLetter="AI" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                {showFields && <EditableCell value={r.vat} colLetter="AI" rowNum={r.rowNum} onSave={handleInlineUpdate} isCurrency={true} />}
                               </td>
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                 {showFields && <EditableCell value={r.startDate} colLetter="AL" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
@@ -9264,8 +9291,8 @@ export default function TriageSystem({ onBack }) {
                                       <div>
                                         <div style={{ fontWeight: "600", color: s.ref?.toUpperCase().includes("MANUAL-INV") ? "#9333ea" : "inherit" }}>{s.ref}</div>
                                         <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
-                                          <span style={amtStyle}>{/^\s*[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`}</span>
-                                          {s.sentDate ? <><span style={{ margin: "0 2px" }}>·</span><span style={sentStyle}>{s.sentDate}</span></> : null}
+                                          <span style={amtStyle}>{formatCurrency(s.amount)}</span>
+                                          {s.sentDate ? <><span style={{ margin: "0 2px" }}>·</span><span style={{ ...sentStyle, whiteSpace: "nowrap" }}>{s.sentDate}</span></> : null}
                                           {s.status ? <span style={getStatusPillStyle(s.status)}>{s.status}</span> : null}
                                         </div>
                                       </div>
@@ -9281,7 +9308,7 @@ export default function TriageSystem({ onBack }) {
                                 if (!isNaN(val) && (val > 1 || val < -1)) varBg = "#f4c7c3"; // Rules 1 & 2: Red
                                 return (
                                   <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: varBg }}>
-                                    {showFields && r.leftToInvoice}
+                                    {showFields && formatCurrency(r.leftToInvoice)}
                                   </td>
                                 );
                               })()}
@@ -9295,10 +9322,10 @@ export default function TriageSystem({ onBack }) {
                                 }} style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer", borderLeft: s.slotNum === 1 ? "2px solid #f0f0f0" : "none" }} onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                                   {!s.description && !s.amount ? <span style={{ color: "#ccc" }}>—</span> : (
                                     <div>
-                                      <div style={{ fontWeight: "600", color: s.transactionId?.toUpperCase().includes("MANUAL") ? "#9333ea" : "inherit", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "120px" }}>{s.description || s.transactionId}</div>
+                                      <div style={{ fontWeight: "600", color: s.transactionId?.toUpperCase().includes("MANUAL") ? "#9333ea" : "inherit", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "155px" }}>{s.description || s.transactionId}</div>
                                       <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
-                                        <span>{/^\s*[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`}</span>
-                                        {s.date ? <><span style={{ margin: "0 2px" }}>·</span><span>{s.date}</span></> : null}
+                                        <span>{formatCurrency(s.amount)}</span>
+                                        {s.date ? <><span style={{ margin: "0 2px" }}>·</span><span style={{ whiteSpace: "nowrap" }}>{s.date}</span></> : null}
                                         {s.status ? <span style={getStatusPillStyle(s.status)}>{s.status}</span> : null}
                                       </div>
                                     </div>
@@ -9313,7 +9340,7 @@ export default function TriageSystem({ onBack }) {
                                 if (!isNaN(val) && (val > 1 || val < -1)) costsVarBg = "#f4c7c3"; // Rules 1 & 2: Red
                                 return (
                                   <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: costsVarBg }}>
-                                    {showFields && r.costsOutstanding}
+                                    {showFields && formatCurrency(r.costsOutstanding)}
                                   </td>
                                 );
                               })()}~  

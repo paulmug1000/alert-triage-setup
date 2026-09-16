@@ -4579,9 +4579,12 @@ export default async function handler(req, res) {
 
     } else if (action === "assign_invoice_to_job") {
       // Writes an inbox invoice directly into a specific invoice slot on the Confirmed tab.
-      const { clientSheetId, rowNum, slotNum, invoice } = req.body;
-      if (!clientSheetId || !rowNum || !slotNum || !invoice) {
-        return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, slotNum, or invoice" });
+      const { clientSheetId, masterSheetId, rowNum, slotNum, invoice, createNewRow, jobLastRow, jobClient, jobName } = req.body;
+      if (!clientSheetId || !invoice) {
+        return res.status(400).json({ success: false, error: "Missing clientSheetId or invoice" });
+      }
+      if (!createNewRow && (!rowNum || !slotNum)) {
+        return res.status(400).json({ success: false, error: "Missing rowNum or slotNum" });
       }
       try {
         const sheets = await getSheetsClient();
@@ -4591,8 +4594,125 @@ export default async function handler(req, res) {
           1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
           2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
           3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
-        }[slotNum];
-        if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
+        };
+
+        let targetRowNum = rowNum;
+        let targetSlotNum = slotNum;
+
+        if (createNewRow) {
+          if (!jobLastRow) return res.status(400).json({ success: false, error: "Missing jobLastRow for createNewRow" });
+
+          const metaResp = await sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
+          });
+          const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+          if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+          const gridSheetId = confirmedSheet.properties.sheetId;
+          let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+          const existingRowGroups = confirmedSheet.rowGroups || [];
+
+          const fullResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: "Confirmed!A1:CR" + currentMaxRows,
+            valueRenderOption: "UNFORMATTED_VALUE",
+          });
+          const allRows = fullResp.data.values || [];
+          let trueLastRow = 0;
+          for (let r = allRows.length - 1; r >= 0; r--) {
+            const row = allRows[r] || [];
+            const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+            const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
+            const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+            const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
+            if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+          }
+
+          if (currentMaxRows - (trueLastRow + 1) < 1) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: {
+                requests: [{
+                  insertDimension: {
+                    range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + 5 },
+                    inheritFromBefore: true,
+                  },
+                }],
+              },
+            });
+            currentMaxRows += 5;
+          }
+
+          const sourceRowIndex0 = trueLastRow; 
+          const destRowIndex0 = jobLastRow;    
+
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: {
+              requests: [{
+                moveDimension: {
+                  source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: sourceRowIndex0, endIndex: sourceRowIndex0 + 1 },
+                  destinationIndex: destRowIndex0,
+                },
+              }],
+            },
+          });
+
+          targetRowNum = jobLastRow + 1; 
+          targetSlotNum = 1; 
+
+          try {
+            const destRowIndex1based0 = jobLastRow; 
+            const coveringGroup = existingRowGroups.find(g =>
+              g.range?.startIndex <= destRowIndex1based0 - 1 && g.range?.endIndex >= destRowIndex1based0
+            );
+            if (coveringGroup) {
+              await sheets.spreadsheets.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: {
+                  requests: [
+                    { deleteDimensionGroup: { range: {
+                        sheetId: gridSheetId, dimension: "ROWS",
+                        startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex,
+                      } } },
+                    { addDimensionGroup: { range: {
+                        sheetId: gridSheetId, dimension: "ROWS",
+                        startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex + 1,
+                      } } },
+                  ],
+                },
+              });
+            } else {
+              await sheets.spreadsheets.batchUpdate({
+                spreadsheetId: sheetIdClean,
+                requestBody: {
+                  requests: [{
+                    addDimensionGroup: {
+                      range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: destRowIndex1based0, endIndex: destRowIndex1based0 + 1 },
+                    },
+                  }],
+                },
+              });
+            }
+          } catch (groupErr) {
+            console.log(`  ⚠ Row grouping for new child row failed (non-fatal): ${groupErr.message}`);
+          }
+
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: {
+              valueInputOption: "RAW",
+              data: [
+                { range: `Confirmed!A${targetRowNum}`, values: [[jobClient || ""]] },
+                { range: `Confirmed!B${targetRowNum}`, values: [[jobName || ""]] },
+              ],
+            },
+          });
+          console.log(`  ✅ assign_invoice_to_job: created new child row ${targetRowNum} for "${jobClient} — ${jobName}"`);
+        }
+
+        const slotColsForSlot = slotCols[targetSlotNum];
+        if (!slotColsForSlot) return res.status(400).json({ success: false, error: "Invalid slotNum" });
 
         // Days to pay: derive from sent → due date if both present, else default 30
         let daysToPay = 30;
@@ -4615,10 +4735,10 @@ export default async function handler(req, res) {
           requestBody: {
             valueInputOption: "RAW",
             data: [
-              { range: `Confirmed!${slotCols.a}${rowNum}`,    values: [[invoice.amount || 0]] },
-              { range: `Confirmed!${slotCols.ref}${rowNum}`,  values: [[invoice.invoiceNo || ""]] },
-              { range: `Confirmed!${slotCols.days}${rowNum}`, values: [[daysToPay]] },
-              { range: `Confirmed!${slotCols.st}${rowNum}`,   values: [[invoice.status || "Sent"]] },
+              { range: `Confirmed!${slotColsForSlot.a}${targetRowNum}`,    values: [[invoice.amount || 0]] },
+              { range: `Confirmed!${slotColsForSlot.ref}${targetRowNum}`,  values: [[invoice.invoiceNo || ""]] },
+              { range: `Confirmed!${slotColsForSlot.days}${targetRowNum}`, values: [[daysToPay]] },
+              { range: `Confirmed!${slotColsForSlot.st}${targetRowNum}`,   values: [[invoice.status || "Sent"]] },
             ],
           },
         });
@@ -4630,7 +4750,7 @@ export default async function handler(req, res) {
           if (parsedSentDate) {
             await sheets.spreadsheets.values.update({
               spreadsheetId: sheetIdClean,
-              range: `Confirmed!${slotCols.sent}${rowNum}`,
+              range: `Confirmed!${slotColsForSlot.sent}${targetRowNum}`,
               valueInputOption: "USER_ENTERED",
               requestBody: { values: [[retFmtDate(parsedSentDate)]] },
             });
@@ -4639,8 +4759,8 @@ export default async function handler(req, res) {
           }
         }
 
-        console.log(`  ✅ assign_invoice_to_job: invoice ${invoice.invoiceNo} → Confirmed row ${rowNum} slot ${slotNum}`);
-        return res.status(200).json({ success: true });
+        console.log(`  ✅ assign_invoice_to_job: invoice ${invoice.invoiceNo} → Confirmed row ${targetRowNum} slot ${targetSlotNum}`);
+        return res.status(200).json({ success: true, newRowNum: createNewRow ? targetRowNum : undefined });
       } catch (err) {
         console.error("❌ assign_invoice_to_job error:", err);
         return res.status(500).json({ success: false, error: err.message });
@@ -6797,6 +6917,7 @@ export default async function handler(req, res) {
 
           const alertCountsByClientAndFlag = {};
           const activeExpenseIdsByClient = {};
+          const activeInvoiceIdsByClient = {};
           for (const alert of (fresh.alerts || [])) {
             const key = alert.clientName;
             let flagKey = alert.flagType || alert.alertType || alert.type;
@@ -6820,6 +6941,13 @@ export default async function handler(req, res) {
                 activeExpenseIdsByClient[key].push(txId);
              }
           }
+            if (flagKey === "invoiceDashboardDiscr") {
+             const invNo = alert.summary?.invoiceNo;
+             if (invNo) {
+                if (!activeInvoiceIdsByClient[key]) activeInvoiceIdsByClient[key] = [];
+                activeInvoiceIdsByClient[key].push(invNo);
+             }
+          }
         }
 
         // Tally counts for informational (noAction) alerts
@@ -6835,6 +6963,7 @@ export default async function handler(req, res) {
         const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
             ...c, alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
             activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
+            activeInvoiceIds: activeInvoiceIdsByClient[c.clientName] || [],
           }));
 
           const sessionId = Math.random().toString(36).substring(2, 15);
@@ -7531,6 +7660,7 @@ export default async function handler(req, res) {
         // Rebuild alertCounts after filtering
         const alertCountsByClientAndFlag = {};
         const activeExpenseIdsByClient = {};
+        const activeInvoiceIdsByClient = {};
         
         for (const alert of filteredAlerts) {
           const key = alert.clientName;
@@ -7554,6 +7684,13 @@ export default async function handler(req, res) {
                 activeExpenseIdsByClient[key].push(txId);
              }
           }
+          if (flagKey === "invoiceDashboardDiscr") {
+             const invNo = alert.summary?.invoiceNo;
+             if (invNo) {
+                if (!activeInvoiceIdsByClient[key]) activeInvoiceIdsByClient[key] = [];
+                activeInvoiceIdsByClient[key].push(invNo);
+             }
+          }
         }
 
         // Tally counts for informational (noAction) alerts using the safely defined filteredNoAction
@@ -7570,6 +7707,7 @@ export default async function handler(req, res) {
           ...c,
           alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
           activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
+          activeInvoiceIds: activeInvoiceIdsByClient[c.clientName] || [],
         }));
 
         // Rebuild the global dictionary dynamically from the filtered rows

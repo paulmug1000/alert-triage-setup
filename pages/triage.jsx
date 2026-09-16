@@ -3240,6 +3240,8 @@ export default function TriageSystem({ onBack }) {
     const filteredAlerts = (clientAlerts || []).filter(alert => {
       const txId = alert.summary?.transactionId || alert.summary?.appId;
       if (txId && (assignedAppIds.has(txId) || assignedByClient[selectedClient?.clientName]?.has(txId))) return false;
+      const invNo = alert.summary?.invoiceNo;
+      if (invNo && (assignedAppIds.has(invNo) || assignedByClient[selectedClient?.clientName]?.has(invNo))) return false;
       return true;
     });
     filteredAlerts.forEach(alert => {
@@ -3261,10 +3263,14 @@ export default function TriageSystem({ onBack }) {
     ]);
     const EXPENSE_TYPES = new Set(["expenseDashboardDiscr"]);
 
+    const INVOICE_TYPES = new Set(["invoiceDashboardDiscr"]);
+
     return clientsWithFlags.reduce((total, c) => {
       const assignedSet = assignedByClient[c.clientName] || new Set();
       const expenseIds = c.activeExpenseIds || [];
-      const validAssigned = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+      const invoiceIds = c.activeInvoiceIds || [];
+      const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+      const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
       
       let clientTotal = 0;
 
@@ -3274,9 +3280,12 @@ export default function TriageSystem({ onBack }) {
         let count = c.alertCounts?.[flagKey] || 0;
 
         if (ACTIONABLE_FLAG_KEYS_SET.has(flagKey)) {
-          // Actionable alerts: use the exact count (minus suppressed expenses)
+          // Actionable alerts: use the exact count (minus suppressed expenses/invoices)
           if (EXPENSE_TYPES.has(flagKey)) {
-            count = Math.max(0, count - validAssigned);
+            count = Math.max(0, count - validAssignedExp);
+          }
+          if (INVOICE_TYPES.has(flagKey)) {
+            count = Math.max(0, count - validAssignedInv);
           }
           clientTotal += count;
         } else {
@@ -3307,10 +3316,14 @@ export default function TriageSystem({ onBack }) {
     const client = (clientsWithFlags || []).find(c => c.clientName === clientName);
     if (!client) return 0; // not in clientsWithFlags at all means zero active flags for this client
     
-    let validAssigned = 0;
+    const assignedSet = assignedByClient[clientName] || new Set();
+    let validAssignedExp = 0;
+    let validAssignedInv = 0;
     if (client.activeExpenseIds && Array.isArray(client.activeExpenseIds)) {
-      const assignedSet = assignedByClient[clientName] || new Set();
-      validAssigned = client.activeExpenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+      validAssignedExp = client.activeExpenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+    }
+    if (client.activeInvoiceIds && Array.isArray(client.activeInvoiceIds)) {
+      validAssignedInv = client.activeInvoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
     }
 
     const categories = (categoriesStr || "").split(",").filter(Boolean);
@@ -3318,7 +3331,8 @@ export default function TriageSystem({ onBack }) {
     categories.forEach(cat => {
       (ALERT_CATEGORY_FLAGS[cat] || []).forEach(flagKey => {
         let count = client.alertCounts?.[flagKey] || 0;
-        if (EXPENSE_SUPPRESSIBLE.has(flagKey)) count = Math.max(0, count - validAssigned);
+        if (EXPENSE_SUPPRESSIBLE.has(flagKey)) count = Math.max(0, count - validAssignedExp);
+        if (flagKey === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
         total += count;
       });
     });
@@ -7022,11 +7036,12 @@ export default function TriageSystem({ onBack }) {
                         <col style={{ width: "150px" }} />
                         <col style={{ width: "150px" }} />
                         <col style={{ width: "150px" }} />
+                        <col style={{ width: "40px" }} />
                       </colgroup>
                       <thead>
                         <tr style={{ background: "#f5f6fa" }}>
                           {["Row","Client","Job name","Code","Revenue","Direct costs","Type","Start","End",
-                            "InvSlot1","InvSlot2","InvSlot3"].map(h => (
+                            "InvSlot1","InvSlot2","InvSlot3",""].map(h => (
                             <th key={h} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
                           ))}
                         </tr>
@@ -7041,7 +7056,13 @@ export default function TriageSystem({ onBack }) {
                           const jobRevenue = parseFloat(String(job.rows[0].revenue).replace(/[£$€,\s]/g, "")) || 0;
                           const uninvoiced = jobRevenue - jobTotalInvoiced;
                           
-                          return job.rows.map((jr, rIdx) => (
+                          const jobHasEmptySlot = job.rows.some(jr => jr.invoiceSlots.some(s => (!s.ref || String(s.ref).trim() === "") && !s.amount));
+                          const jobLastRow = job.rows[job.rows.length - 1].rowNum;
+                          const isPlacing = !!invoicesPlacing;
+                          
+                          return job.rows.map((jr, rIdx) => {
+                            const isLastRowOfJob = rIdx === job.rows.length - 1;
+                            return (
                           <tr key={jr.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888" }}>{jr.rowNum}</td>
                             <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>{rIdx === 0 ? jr.client : ""}</td>
@@ -7150,8 +7171,63 @@ export default function TriageSystem({ onBack }) {
                                 </td>
                               );
                             })}
+                            <td style={{ padding: "0", borderBottom: "1px solid #eee", textAlign: "center" }}>
+                              {invoicesSavingCell === `newrow-${job.client}|||${job.jobName}` ? (
+                                <div style={{ height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                  <Spinner size={12} color="#1a56db" />
+                                </div>
+                              ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
+                                <div
+                                  title="No spare invoice slot — click to add a new row for this job"
+                                  onClick={async () => {
+                                    const inv = invoicesPlacingRef.current;
+                                    if (!inv) return;
+                                    setInvoicesPlacing(null);
+                                    const savingKey = `newrow-${job.client}|||${job.jobName}`;
+                                    setInvoicesSavingCell(savingKey);
+                                    
+                                    setAssignedAppIds(prevSet => {
+                                      const next = new Set(prevSet); next.add(inv.invoiceNo);
+                                      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
+                                      return next;
+                                    });
+                                    setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
+                                    
+                                    setClientsWithFlags(prev => prev.map(c => {
+                                      if (c.clientName !== invoicesClient?.clientName) return c;
+                                      const updatedCounts = { ...c.alertCounts };
+                                      if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
+                                      return { ...c, alertCounts: updatedCounts };
+                                    }));
+
+                                    try {
+                                      await fetch("/api/triage", {
+                                        method: "POST", headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({
+                                          action: "assign_invoice_to_job",
+                                          clientSheetId: invoicesClient?.clientSheetId,
+                                          masterSheetId: invoicesClient?.masterSheetId || "",
+                                          createNewRow: true,
+                                          jobLastRow, jobClient: job.client, jobName: job.jobName,
+                                          invoice: inv,
+                                        }),
+                                      });
+                                      if (invoicesClient?.masterSheetId) {
+                                        outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
+                                      }
+                                      await loadInvoicesJobs(invoicesClient, invoicesShowAll);
+                                    } catch(e) { console.error("assign_invoice_to_job (new row) error:", e); }
+                                    finally { setInvoicesSavingCell(null); }
+                                  }}
+                                  style={{ cursor: "pointer", background: "#e8f0fe", border: "1.5px solid #1a56db",
+                                    height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center",
+                                    color: "#1a56db", fontWeight: "700", fontSize: "16px" }}>
+                                  +
+                                </div>
+                              )}
+                            </td>
                           </tr>
-                        ));
+                          );
                         })}
                       </tbody>
                     </table>
@@ -8618,7 +8694,7 @@ export default function TriageSystem({ onBack }) {
     const noJobsClient = !jobsClient;
 
     // Inline Editable Cell Component
-    const EditableCell = ({ value, colLetter, rowNum, type = "text", onSave }) => {
+    const EditableCell = ({ value, colLetter, rowNum, type = "text", onSave, customStyle = {} }) => {
       const [isEditing, setIsEditing] = React.useState(false);
       const [val, setVal] = React.useState(value || "");
       const inputRef = React.useRef(null);
@@ -8653,9 +8729,9 @@ export default function TriageSystem({ onBack }) {
       return (
         <div
           onClick={() => setIsEditing(true)}
-          style={{ minHeight: "20px", cursor: "text", padding: "2px", borderRadius: "3px" }}
-          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "rgba(0,102,204,0.05)"}
-          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+          style={{ minHeight: "20px", cursor: "text", padding: "2px", borderRadius: "3px", ...customStyle }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor ? customStyle.backgroundColor : "rgba(0,102,204,0.05)"}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor || "transparent"}
           title="Click to edit"
         >
           {val || <span style={{ color: "#ccc" }}>—</span>}
@@ -9033,7 +9109,15 @@ export default function TriageSystem({ onBack }) {
                                 </td>
                               )}
                               <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.projectRetainer} colLetter="AJ" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
+                                {showFields && (() => {
+                                  let typeStyle = {};
+                                  if (r.projectRetainer) {
+                                    const tStr = String(r.projectRetainer).toLowerCase();
+                                    if (tStr.includes("retainer")) typeStyle = { backgroundColor: "#e0f2fe", color: "#0284c7", fontWeight: "600", padding: "2px 6px", display: "inline-block" };
+                                    else if (tStr.includes("project")) typeStyle = { backgroundColor: "#f3e8ff", color: "#9333ea", fontWeight: "600", padding: "2px 6px", display: "inline-block" };
+                                  }
+                                  return <EditableCell value={r.projectRetainer} colLetter="AJ" rowNum={r.rowNum} onSave={handleInlineUpdate} customStyle={typeStyle} />;
+                                })()}
                               </td>
                               {hasProdLine && (
                                 <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
@@ -9971,13 +10055,18 @@ export default function TriageSystem({ onBack }) {
                 // Check if client has any visible alerts after applying assignedByClient suppression
                 const assignedSet = assignedByClient[client.clientName] || new Set();
                 const expenseIds = client.activeExpenseIds || [];
-                const validAssigned = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+                const invoiceIds = client.activeInvoiceIds || [];
+                const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+                const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
                 
                 const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
                   if (!client.flags?.[key]) return false;
                   let count = client.alertCounts?.[key] || 0;
                   if (key === "expenseDashboardDiscr") {
-                    count = Math.max(0, count - validAssigned);
+                    count = Math.max(0, count - validAssignedExp);
+                  }
+                  if (key === "invoiceDashboardDiscr") {
+                    count = Math.max(0, count - validAssignedInv);
                   }
                   return count > 0;
                 });
@@ -9987,15 +10076,20 @@ export default function TriageSystem({ onBack }) {
               }).map((client, idx) => {
                 const assignedSet = assignedByClient[client.clientName] || new Set();
                 const expenseIds = client.activeExpenseIds || [];
-                const validAssigned = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+                const invoiceIds = client.activeInvoiceIds || [];
+                const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+                const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
                 
                 const actionableLines = ACTIONABLE_FLAG_KEYS
                   .filter(key => client.flags?.[key])
                   .map(key => {
                     let count = client.alertCounts?.[key] || 0;
-                    // For expense alert types, subtract assigned IDs for THIS client
+                    // For expense/invoice alert types, subtract assigned IDs for THIS client
                     if (key === "expenseDashboardDiscr") {
-                      count = Math.max(0, count - validAssigned);
+                      count = Math.max(0, count - validAssignedExp);
+                    }
+                    if (key === "invoiceDashboardDiscr") {
+                      count = Math.max(0, count - validAssignedInv);
                     }
                     if (count === 0) return null; // suppress fully-resolved alert types
                     const label = getFlagName(key);
@@ -10446,9 +10540,10 @@ export default function TriageSystem({ onBack }) {
                             </button>
                           );
                         });
-                        return isExpenseGroup && selectedClient
+                        const isInvoiceGroup = type === "invoiceDashboardDiscr";
+                        const finalBtns = isExpenseGroup && selectedClient
                           ? [...alertBtns, (
-                              <div key="assign-btn" style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
+                              <div key="assign-btn-exp" style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
                                 <button className="triage-btn"
                                   onClick={() => { setActiveNav("outgoings"); loadOutgoings(selectedClient); }}
                                   style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#059669", borderColor: "#6ee7b7" }}>
@@ -10456,7 +10551,25 @@ export default function TriageSystem({ onBack }) {
                                 </button>
                               </div>
                             )]
+                          : isInvoiceGroup && selectedClient
+                          ? [...alertBtns, (
+                              <div key="assign-btn-inv" style={{ display: "flex", justifyContent: "flex-start", marginTop: "4px" }}>
+                                <button className="triage-btn"
+                                  onClick={() => { 
+                                    setActiveNav("invoices"); 
+                                    setInvoicesClient(selectedClient);
+                                    loadInvoicesInbox(selectedClient);
+                                    loadInvoicesJobs(selectedClient, false);
+                                    setInvoicesShowAll(false);
+                                  }}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}>
+                                  📥 Assign Invoices
+                                </button>
+                              </div>
+                            )]
                           : alertBtns;
+                        
+                        return finalBtns;
                       })()}
                     </div>
                   </div>
@@ -11086,6 +11199,21 @@ export default function TriageSystem({ onBack }) {
                                           }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
                                         )}
                                         {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
+                                          <button className="triage-btn" onClick={() => { setActiveNav("outgoings"); if (clientInfo) loadOutgoings(clientInfo); }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Outgoings</button>
+                                        )}
+                                        {alert.alertType === "invoiceDashboardDiscr" && clientInfo && (
+                                          <button className="triage-btn" onClick={() => { 
+                                            setActiveNav("invoices"); 
+                                            if (clientInfo) {
+                                              setInvoicesClient(clientInfo);
+                                              loadInvoicesInbox(clientInfo);
+                                              loadInvoicesJobs(clientInfo, false);
+                                              setInvoicesShowAll(false);
+                                            }
+                                          }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
+                                        )}
+                                      </>
+                                    );{alert.alertType === "expenseDashboardDiscr" && clientInfo && (
                                           <button className="triage-btn" onClick={() => { setActiveNav("outgoings"); if (clientInfo) loadOutgoings(clientInfo); }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Outgoings</button>
                                         )}
                                       </>

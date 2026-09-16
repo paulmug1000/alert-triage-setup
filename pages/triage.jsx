@@ -11214,10 +11214,6 @@ export default function TriageSystem({ onBack }) {
                                           }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
                                         )}
                                       </>
-                                    );{alert.alertType === "expenseDashboardDiscr" && clientInfo && (
-                                          <button className="triage-btn" onClick={() => { setActiveNav("outgoings"); if (clientInfo) loadOutgoings(clientInfo); }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Outgoings</button>
-                                        )}
-                                      </>
                                     );
                                   })()}
                                   <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>📋 Create Task</button>

@@ -9010,6 +9010,14 @@ export default function TriageSystem({ onBack }) {
               {jobsLoading && !jobsData ? (
                 <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
               ) : jobsData && (() => {
+                const getStatusPillStyle = (status) => {
+                  const s = String(status || "").trim();
+                  if (s === "Paid") return { backgroundColor: "#d9ead3", color: "#0c343d", padding: "1px 4px", borderRadius: "3px", marginLeft: "4px" };
+                  if (s === "Draft") return { backgroundColor: "#fce5cd", color: "#b45f06", padding: "1px 4px", borderRadius: "3px", marginLeft: "4px" };
+                  if (s === "Sent" || s === "Received") return { backgroundColor: "#cfe2f3", color: "#0b5394", padding: "1px 4px", borderRadius: "3px", marginLeft: "4px" };
+                  return s ? { backgroundColor: "#f1f5f9", color: "#64748b", padding: "1px 4px", borderRadius: "3px", marginLeft: "4px" } : null;
+                };
+
                 // Pre-calculate visibility for sparse columns across all jobs
                 const hasProjectCode = jobsData.some(j => j.rows.some(r => r.projectCode && String(r.projectCode).trim() !== ""));
                 const hasDateConf = jobsData.some(j => j.rows.some(r => r.dateConf && String(r.dateConf).trim() !== ""));
@@ -9256,8 +9264,9 @@ export default function TriageSystem({ onBack }) {
                                       <div>
                                         <div style={{ fontWeight: "600", color: s.ref?.toUpperCase().includes("MANUAL-INV") ? "#9333ea" : "inherit" }}>{s.ref}</div>
                                         <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
-                                          <span style={amtStyle}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`}</span>
+                                          <span style={amtStyle}>{/^\s*[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`}</span>
                                           {s.sentDate ? <><span style={{ margin: "0 2px" }}>·</span><span style={sentStyle}>{s.sentDate}</span></> : null}
+                                          {s.status ? <span style={getStatusPillStyle(s.status)}>{s.status}</span> : null}
                                         </div>
                                       </div>
                                     )}
@@ -9287,7 +9296,11 @@ export default function TriageSystem({ onBack }) {
                                   {!s.description && !s.amount ? <span style={{ color: "#ccc" }}>—</span> : (
                                     <div>
                                       <div style={{ fontWeight: "600", color: s.transactionId?.toUpperCase().includes("MANUAL") ? "#9333ea" : "inherit", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "120px" }}>{s.description || s.transactionId}</div>
-                                      <div style={{ color: "#888", fontSize: "10px" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.date}</div>
+                                      <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
+                                        <span>{/^\s*[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`}</span>
+                                        {s.date ? <><span style={{ margin: "0 2px" }}>·</span><span>{s.date}</span></> : null}
+                                        {s.status ? <span style={getStatusPillStyle(s.status)}>{s.status}</span> : null}
+                                      </div>
                                     </div>
                                   )}
                                 </td>
@@ -9303,7 +9316,7 @@ export default function TriageSystem({ onBack }) {
                                     {showFields && r.costsOutstanding}
                                   </td>
                                 );
-                              })()}
+                              })()}~  
 
                             </tr>
                           );

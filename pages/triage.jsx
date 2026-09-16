@@ -8750,19 +8750,6 @@ export default function TriageSystem({ onBack }) {
       );
     };
 
-      return (
-        <div
-          onClick={() => setIsEditing(true)}
-          style={{ minHeight: "20px", cursor: "text", padding: "2px", borderRadius: "3px", ...customStyle }}
-          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor ? customStyle.backgroundColor : "rgba(0,102,204,0.05)"}
-          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor || "transparent"}
-          title="Click to edit"
-        >
-          {val || <span style={{ color: "#ccc" }}>—</span>}
-        </div>
-      );
-    };
-
     // Uneven Split Editor Modal
     const UnevenSplitModal = () => {
       const { jobRow } = jobsEditSplit;
@@ -11328,20 +11315,20 @@ export default function TriageSystem({ onBack }) {
                                           <button className="triage-btn" onClick={() => { setActiveNav("outgoings"); if (clientInfo) loadOutgoings(clientInfo); }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Outgoings</button>
                                         )}
                                         {alert.alertType === "invoiceDashboardDiscr" && clientInfo && (
-                                          <button className="triage-btn" onClick={() => { 
-                                            setActiveNav("invoices"); 
-                                            if (clientInfo) {
-                                              setInvoicesClient(clientInfo);
-                                              loadInvoicesInbox(clientInfo);
-                                              loadInvoicesJobs(clientInfo, false);
-                                              setInvoicesShowAll(false);
-                                            }
-                                          }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
-                                        )}
-                                      </>
-                                    );
-                                  })()}
-                                  <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>📋 Create Task</button>
+                                              <button className="triage-btn" onClick={() => { 
+                                                setActiveNav("invoices"); 
+                                                if (clientInfo) {
+                                                  setInvoicesClient(clientInfo);
+                                                  loadInvoicesInbox(clientInfo);
+                                                  loadInvoicesJobs(clientInfo, false);
+                                                  setInvoicesShowAll(false);
+                                                }
+                                              }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#ea580c", borderColor: "#fdba74" }}>📥 Assign Invoices</button>
+                                            )}
+                                          </>
+                                        );
+                                      })()}
+                                      <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>📋 Create Task</button>
                                   <button className="triage-btn" onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}>✓ Acknowledge</button>
                                 </div>
                               </div>

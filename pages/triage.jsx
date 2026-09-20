@@ -319,6 +319,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
     if (activeNav === "tools") {
       return (
         <ToolsView
+          automationCommanderSheetId={automationCommanderSheetId}
           allOutgoingsClients={allOutgoingsClients}
           allClientsLoaded={allClientsLoaded}
           styles={styles}
@@ -341,6 +342,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
     if (activeNav === "settings") {
       return (
         <SettingsView
+          automationCommanderSheetId={automationCommanderSheetId}
           allOutgoingsClients={allOutgoingsClients}
           getFlagName={getFlagName}
           withModal={withModal}

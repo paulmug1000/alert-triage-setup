@@ -101,15 +101,7 @@ export default function ToolsView({
       .catch(e => console.error("eom_get_excluded_clients error:", e));
   }, [automationCommanderSheetId, eomClientSettings, setEomClientSettings]);
 
-  useEffect(() => {
-    if (eomTemplates) return;
-    reloadEomTemplatesForPicker();
-  }, [eomTemplates, reloadEomTemplatesForPicker]);
-
-  useEffect(() => {
-    if (!eomShowTemplateManager) return;
-    reloadEomTemplateManager();
-  }, [eomShowTemplateManager, reloadEomTemplateManager]);
+  // Template loading effects moved below useCallback definitions
 
   useEffect(() => {
     if (eomBankAccountsByClient !== null) return;
@@ -130,11 +122,7 @@ export default function ToolsView({
       .finally(() => setEomCashProgressLoading(false));
   }, [automationCommanderSheetId, eomCashMonthKey, setEomCashCompletedClients, setEomCashProgressLoading]);
 
-  useEffect(() => {
-    if (!eomCashPendingClient || eomBankAccountsByClient === null) return;
-    selectSingleCashClient(eomCashPendingClient);
-    setEomCashPendingClient("");
-  }, [eomBankAccountsByClient, eomCashPendingClient, selectSingleCashClient, setEomCashPendingClient]);
+  // Cash client effect moved below useCallback definitions
 
   useEffect(() => {
     if (sessionId) { setEomAlertDataReady(true); return; }
@@ -276,6 +264,24 @@ export default function ToolsView({
     setupEntryForClient(clientName);
     setEomCashSubView("single");
   }, [setEomCashSubView, setupEntryForClient]);
+
+  // --- EFFECTS THAT DEPEND ON CALLBACKS ---
+  
+  useEffect(() => {
+    if (eomTemplates) return;
+    reloadEomTemplatesForPicker();
+  }, [eomTemplates, reloadEomTemplatesForPicker]);
+
+  useEffect(() => {
+    if (!eomShowTemplateManager) return;
+    reloadEomTemplateManager();
+  }, [eomShowTemplateManager, reloadEomTemplateManager]);
+
+  useEffect(() => {
+    if (!eomCashPendingClient || eomBankAccountsByClient === null) return;
+    selectSingleCashClient(eomCashPendingClient);
+    setEomCashPendingClient("");
+  }, [eomBankAccountsByClient, eomCashPendingClient, selectSingleCashClient, setEomCashPendingClient]);
 
   const handleCashSkip = () => {
     const nextIndex = eomCashFlowIndex + 1;

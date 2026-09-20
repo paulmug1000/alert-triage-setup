@@ -38,3 +38,6 @@ yarn-error.log*
 *.swp
 *.swo
 *~
+
+.vercel
+.env*

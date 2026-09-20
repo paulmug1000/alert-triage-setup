@@ -12,6 +12,11 @@
 
 import { redisClient } from "../../services/redisClient";
 import { getSheetsClient } from "../../services/sheetsClient";
+import { 
+  readFlagSweepLog, 
+  readPrecomputeLog, 
+  readBuildOptionsLog 
+} from "../../services/systemLogs";
 import {
   handleBulkCreateTasks, handleCreateTask, handleGetTasks, handleAddTaskNote,
   handleSnoozeTask, handleRevertTaskToAlert, handleResolveTask, handleUpdateTask,
@@ -458,6 +463,16 @@ export default async function handler(req, res) {
       return await handleEomMarkMonthActual(req, res, sheets);
     } else if (action === "eom_seed_from_checklist") {
       return await handleEomSeedFromChecklist(req, res, sheets);
+
+    } else if (action === "get_flag_sweep_log") {
+      const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);
+      return res.status(200).json({ success: true, runs });
+    } else if (action === "get_precompute_log") {
+      const runs = await readPrecomputeLog(sheets, req.body.automationCommanderSheetId);
+      return res.status(200).json({ success: true, runs });
+    } else if (action === "get_build_options_log") {
+      const runs = await readBuildOptionsLog(sheets, req.body.automationCommanderSheetId);
+      return res.status(200).json({ success: true, runs });
 
     } else {
       res.status(400).json({ error: "Invalid action" });

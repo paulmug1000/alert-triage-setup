@@ -1,14 +1,13 @@
 import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
 import { useSettings } from "../hooks/useSettings";
-import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 
 export default function SettingsView({
+  automationCommanderSheetId,
   allOutgoingsClients,
   getFlagName
 }) {
-  const { automationCommanderSheetId } = useAppGlobals();
   const { clientsWithFlags, isLoading, refreshTriage } = useTriage();
 
   const [triggeringProactive, setTriggeringProactive] = useState(false);
@@ -41,6 +40,8 @@ export default function SettingsView({
 
   // Initialize data on mount
   useEffect(() => {
+    if (!automationCommanderSheetId) return;
+
     setSettingsLoading(true);
     if (!sweepScheduleLoaded) loadSweepSchedule();
     if (!flagSweepLogLoaded) loadFlagSweepLog();

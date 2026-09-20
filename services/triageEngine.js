@@ -1,13 +1,18 @@
 import { createHash } from "crypto";
-import { extractSheetIdFromUrl, withRetry, getSheetsClient } from "./sheetsClient";
+import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter } from "./sheetsClient";
 import { 
   buildAlertFingerprint, ensureAlertMemoryTab, readAlertMemory, 
   findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow, 
-  deleteAlertMemoryRows, purgeOldAlertMemoryRows 
+  deleteAlertMemoryRows, purgeOldAlertMemoryRows,
+  getHandledFingerprintHashes_, findPreviousIgnoreReason
 } from "./alertMemory";
-import { checkAllGASLocks, setCRMMode } from "./sharedHelpers";
+import { 
+  checkAllGASLocks, setCRMMode, getToleranceValues, 
+  getCRMMatchingMode, fetchJobRowsForDisplay 
+} from "./sharedHelpers";
 import { redisClient } from "./redisClient";
-import { logPrecomputeRun, logFlagSweepRun } from "./systemLogs";
+import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs";
+import { anthropic } from "./claudeClient";
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -7557,3 +7562,149 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
       }
 }
 
+// ============================================================================
+// LOCAL HELPER FUNCTIONS
+// ============================================================================
+
+export function fuzzyClientMatch_(nameA, nameB) {
+  if (!nameA || !nameB) return false;
+  const clean = s => String(s).toLowerCase().replace(/['"\-.,()/#]/g, " ").replace(/\s+/g, " ").trim();
+  const a = clean(nameA);
+  const b = clean(nameB);
+  if (a === b) return true;
+  if (a.includes(b) || b.includes(a)) return true;
+  
+  const NOISE = new Set(["ltd", "limited", "plc", "inc", "llc", "llp", "the", "and", "&", "group", "co", "corp", "corporation"]);
+  const wordsA = a.split(" ").filter(w => w.length > 1 && !NOISE.has(w));
+  const wordsB = b.split(" ").filter(w => w.length > 1 && !NOISE.has(w));
+  
+  if (wordsA.length === 0 || wordsB.length === 0) return false;
+  return wordsA.some(w => wordsB.includes(w)) || wordsB.some(w => wordsA.includes(w));
+}
+
+export function parseSheetOrJsDate_(val) {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  const s = String(val).trim();
+  
+  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if (m) {
+    const months = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+    const mIdx = months[m[2].toLowerCase()];
+    if (mIdx === undefined) return null;
+    const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+    return new Date(yr, mIdx, parseInt(m[1], 10));
+  }
+  
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+export function monthsWithinTolerance_(date1, date2, toleranceMonths) {
+  if (!date1 || !date2) return false;
+  const m1 = date1.getFullYear() * 12 + date1.getMonth();
+  const m2 = date2.getFullYear() * 12 + date2.getMonth();
+  return Math.abs(m1 - m2) <= Math.max(0, toleranceMonths);
+}
+
+// ============================================================================
+// SWEEP & LOGGING HELPER FUNCTIONS
+// ============================================================================
+
+const SWEEP_SCHEDULE_TAB = "SweepSchedule";
+const SWEEP_SCHEDULE_DEFAULTS = { actionable: 30, info: 60, proactive: 1440 };
+
+async function ensureSweepScheduleTab(sheets, automationCommanderSheetId) {
+  return;
+}
+
+// Returns { actionable: { rowIndex, frequencyMinutes, lastCheckedAt }, info: {...}, proactive: {...} }
+// Missing categories (e.g. a row deleted by hand) fall back to defaults with
+// no rowIndex — isCategoryDue_ below treats that as "always due" rather than
+// throwing, and the caller can decide whether to also re-create the row.
+async function readSweepSchedule_(sheets, automationCommanderSheetId) {
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: automationCommanderSheetId,
+    range: `${SWEEP_SCHEDULE_TAB}!A2:C10`,
+  });
+  const rows = resp.data.values || [];
+  const schedule = {};
+  rows.forEach((row, i) => {
+    const category = String(row[0] || "").trim().toLowerCase();
+    if (!category) return;
+    schedule[category] = {
+      rowIndex: i + 2,
+      frequencyMinutes: parseInt(row[1], 10) || SWEEP_SCHEDULE_DEFAULTS[category] || 30,
+      lastCheckedAt: row[2] || "",
+    };
+  });
+  for (const category of Object.keys(SWEEP_SCHEDULE_DEFAULTS)) {
+    if (!schedule[category]) {
+      schedule[category] = { rowIndex: null, frequencyMinutes: SWEEP_SCHEDULE_DEFAULTS[category], lastCheckedAt: "" };
+    }
+  }
+  return schedule;
+}
+
+// True if this category's configured interval has elapsed since it was last
+// checked (or has never been checked at all). A missing/unparseable
+// lastCheckedAt is treated as "always due" — safer than silently never
+// running a category because of a malformed timestamp.
+function isCategoryDue_(categoryEntry) {
+  if (!categoryEntry.lastCheckedAt) return true;
+  const last = new Date(categoryEntry.lastCheckedAt);
+  if (isNaN(last.getTime())) return true;
+  const elapsedMinutes = (Date.now() - last.getTime()) / 60000;
+  return elapsedMinutes >= categoryEntry.frequencyMinutes;
+}
+
+// Updates lastCheckedAt for one category — creates the row if it doesn't
+// exist yet (e.g. schedule tab was just created, or a row was deleted by
+// hand), rather than silently failing to persist the timestamp.
+async function markCategoryChecked_(sheets, automationCommanderSheetId, category, schedule) {
+  const nowISO = new Date().toISOString();
+  const entry = schedule[category];
+  if (entry && entry.rowIndex) {
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${SWEEP_SCHEDULE_TAB}!C${entry.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[nowISO]] },
+    }));
+  } else {
+    await withRetry(() => sheets.spreadsheets.values.append({
+      spreadsheetId: automationCommanderSheetId,
+      range: `${SWEEP_SCHEDULE_TAB}!A:C`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[category, (entry && entry.frequencyMinutes) || SWEEP_SCHEDULE_DEFAULTS[category] || 30, nowISO]] },
+    }));
+  }
+}
+
+async function ensureClaudeUsageTab_(sheets, automationCommanderSheetId) {
+  return; // Safe stub to prevent crashes if this was also orphaned
+}
+
+// Log a Claude API call directly to ClaudeUsage tab
+export async function logClaudeUsage_(sheets, automationCommanderSheetId, clientName, alertType, inputTokens, outputTokens, source) {
+  if (!automationCommanderSheetId) return;
+  const acIdClean = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
+  await ensureClaudeUsageTab_(sheets, acIdClean);
+  const costUsd = ((inputTokens || 0) / 1000000 * 3) + ((outputTokens || 0) / 1000000 * 15);
+  await withRetry(() => sheets.spreadsheets.values.append({
+    spreadsheetId: acIdClean,
+    range: "ClaudeUsage!A:F",
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        new Date().toISOString(),
+        source || "precompute",
+        clientName || "",
+        alertType || "",
+        (inputTokens || 0) + (outputTokens || 0),
+        costUsd.toFixed(6),
+      ]],
+    },
+  }));
+  console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} — ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
+}

@@ -27,13 +27,21 @@ import {
   PROACTIVE_TYPE_LABELS, 
   getFlagName 
 } from "../utils/helpers";
-import { useAppGlobals } from "../hooks/useAppGlobals";
+import { AppGlobalsProvider, useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriageEngine } from "../hooks/useTriageEngine";
 
 // Inject global styles into the document head
 injectGlobalStyles();
 
 export default function TriageSystem({ onBack }) {
+  return (
+    <AppGlobalsProvider>
+      <TriageSystemWithGlobals onBack={onBack} />
+    </AppGlobalsProvider>
+  );
+}
+
+function TriageSystemWithGlobals({ onBack }) {
   const appGlobals = useAppGlobals();
   return (
     <TaskProvider automationCommanderSheetId={appGlobals.automationCommanderSheetId}>
@@ -74,13 +82,14 @@ function TriageSystemContent({ onBack, appGlobals }) {
   
   const triageEngine = useTriageEngine({
     automationCommanderSheetId, screen, setScreen, activeNav, assignedAppIds,
-    assignedByClient, setExistingTaskBanner, allClientsMap, isLoading, setIsLoading,
+    assignedByClient, existingTaskBanner, setExistingTaskBanner, allClientsMap, isLoading, setIsLoading,
     error, setError, setBulkMode: () => {}, setBulkSelected: () => {}
   });
 
   const {
     sessionId, selectedClient, clientAlerts, proactiveAlerts, 
-    liveAlertCount, startTriage, acceptError, setAcceptError
+    liveAlertCount, startTriage, acceptError, setAcceptError,
+    isAccepting, setIsAccepting, refreshTriage
   } = triageEngine;
 
   // --- INITIAL DATA LOAD ---
@@ -111,11 +120,17 @@ function TriageSystemContent({ onBack, appGlobals }) {
 
   // Fire the deferred GAS outgoings notes pull if one is pending.
   const fireOutgoingsPullIfPending = () => {
-    const masterSheetId = outgoingsPullPendingRef.current;
-    if (!masterSheetId) return;
+    const pending = outgoingsPullPendingRef.current;
+    if (!pending) return;
     outgoingsPullPendingRef.current = null;
-    const clientSheetId = outgoingsClient?.clientSheetId || "";
-    if (!clientSheetId) return;
+    let clientSheetId = typeof pending === "object" ? (pending.clientSheetId || "") : "";
+    let masterSheetId = typeof pending === "object" ? (pending.masterSheetId || "") : pending;
+    if (!clientSheetId && masterSheetId) {
+      const match = (allOutgoingsClients || []).find(c => c.masterSheetId === masterSheetId) ||
+        Object.values(allClientsMap || {}).find(c => c.masterSheetId === masterSheetId);
+      if (match) clientSheetId = match.clientSheetId || "";
+    }
+    if (!clientSheetId || !masterSheetId) return;
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "fire_outgoings_pull", clientSheetId, masterSheetId }),

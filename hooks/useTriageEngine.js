@@ -8,6 +8,7 @@ export function useTriageEngine({
   activeNav,
   assignedAppIds,
   assignedByClient,
+  existingTaskBanner,
   setExistingTaskBanner,
   allClientsMap,
   isLoading,
@@ -836,6 +837,7 @@ export function useTriageEngine({
     precomputedNoActionResults, setPrecomputedNoActionResults,
     refreshTriage, startTriage, reloadFromCache, selectClient, selectAlert, acceptOption,
     allNoActionResolved, autoClearFlags, handlePostClear, groupedAlerts, liveAlertCount,
-    computeAlertCheckCount, analyzeNoActionFlag, ignoreAlert, loadProactiveAlerts, checkExistingTask
+    computeAlertCheckCount, analyzeNoActionFlag, ignoreAlert, loadProactiveAlerts, checkExistingTask,
+    setScreen, isLoading, existingTaskBanner, setExistingTaskBanner
   };
 }

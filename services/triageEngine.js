@@ -4,8 +4,15 @@ import {
   buildAlertFingerprint, ensureAlertMemoryTab, readAlertMemory, 
   findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow, 
   deleteAlertMemoryRows, purgeOldAlertMemoryRows,
-  getHandledFingerprintHashes_, findPreviousIgnoreReason
+  getHandledFingerprintHashes_, findPreviousIgnoreReason,
+  normaliseArrayForFingerprint
 } from "./alertMemory";
+import {
+  checkRetainerInvoices_, checkCRMWipe_, checkRevenueMismatch_, checkDirectCostsMismatch_,
+  checkPipelineConfirmedOverlap_, checkRetainerShrinkBlocked_, checkUninvoicedNewJobs_,
+  checkUninvoicedRevenue_, checkDeletedInvoices_, checkJobStructureErrors_,
+  checkDeletedExpenses_, checkUnreceivedExpenses_
+} from "./proactiveChecks";
 import { 
   checkAllGASLocks, setCRMMode, getToleranceValues, 
   getCRMMatchingMode, fetchJobRowsForDisplay 
@@ -773,6 +780,67 @@ export async function handleRehashAlertMemory(req, res, sheets) {
     });
   } catch (err) {
     console.error("❌ rehash_alert_memory error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleRehashIgnoredAlerts(req, res, sheets) {
+  const { automationCommanderSheetId: acId } = req.body;
+  if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  try {
+    const memoryRows = await readAlertMemory(sheets, acId);
+    const ignoredRows = memoryRows.filter(r => r.status === "ignored");
+    if (ignoredRows.length === 0) return res.status(200).json({ success: true, updated: 0, message: "No ignored rows to update" });
+
+    // Get all clients so we can read their comparison tabs
+    const flagResp = await sheets.spreadsheets.values.get({
+      spreadsheetId: acId,
+      range: "AutoUpdates!A2:M100",
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const clientRows = (flagResp.data.values || []).slice(1).filter(r => r[0] && r[11] && r[12]);
+
+    // Build map of alertSummary → fresh fingerprint by reading each client's InvComp
+    const freshHashByInvNo = {}; // invoiceNo → { hash, clientName }
+    for (const cr of clientRows) {
+      const clientName = String(cr[0] || "").trim();
+      const clientSheetId = extractSheetIdFromUrl(String(cr[11] || "")) || String(cr[11] || "");
+      if (!clientSheetId) continue;
+      try {
+        const alerts = await readInvCompAlerts(sheets, clientSheetId);
+        for (const alert of alerts) {
+          alert.fingerprintHash = buildAlertFingerprint(alert);
+          const invNo = alert.summary?.invoiceNo || "";
+          if (invNo) freshHashByInvNo[`${clientName}|${invNo}`] = alert.fingerprintHash;
+        }
+      } catch (e) { /* skip client on error */ }
+    }
+
+    // Match ignored rows to fresh hashes and update
+    const writes = [];
+    let updated = 0;
+    for (const row of ignoredRows) {
+      const invMatch = (row.alertSummary || "").match(/Invoice\s+#?(\S+)/i);
+      if (!invMatch) continue;
+      const key = `${row.clientName}|${invMatch[1]}`;
+      const freshHash = freshHashByInvNo[key];
+      if (freshHash && freshHash !== row.fingerprintHash) {
+        console.log(`  Rehashing "${row.clientName}" inv ${invMatch[1]}: ${row.fingerprintHash} → ${freshHash}`);
+        writes.push({ range: `AlertMemory!A${row.rowIndex}`, values: [[freshHash]] });
+        updated++;
+      }
+    }
+
+    if (writes.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: acId,
+        requestBody: { data: writes, valueInputOption: "RAW" },
+      });
+    }
+    console.log(`  ✅ rehash_ignored_alerts: ${updated} updated of ${ignoredRows.length} ignored rows`);
+    return res.status(200).json({ success: true, updated, total: ignoredRows.length });
+  } catch (err) {
+    console.error("❌ rehash_ignored_alerts:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }
@@ -2077,7 +2145,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
 
 export async function handleAnalyzeAlert(req, res, sheets) {
 // Generate matching options for an alert
-      const { alert, sharedData } = req.body;
+      const { alert, sharedData, automationCommanderSheetId = req.body.automationCommanderSheetId } = req.body;
       
       if (!alert) {
         res.status(400).json({ success: false, error: "Missing alert data" });

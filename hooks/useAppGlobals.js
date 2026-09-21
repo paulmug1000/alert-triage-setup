@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 
-export function useAppGlobals() {
+const AppGlobalsContext = createContext(null);
+
+export function AppGlobalsProvider({ children }) {
   const AUTOMATION_COMMANDER_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
   const [automationCommanderSheetId] = useState(AUTOMATION_COMMANDER_SHEET_ID);
   
@@ -74,7 +76,7 @@ export function useAppGlobals() {
     }
   };
 
-  return {
+  const value = {
     automationCommanderSheetId,
     assignedAppIds, setAssignedAppIds,
     assignedByClient, setAssignedByClient,
@@ -87,4 +89,18 @@ export function useAppGlobals() {
     debugLoading, setDebugLoading,
     runDebug
   };
+
+  return (
+    <AppGlobalsContext.Provider value={value}>
+      {children}
+    </AppGlobalsContext.Provider>
+  );
+}
+
+export function useAppGlobals() {
+  const context = useContext(AppGlobalsContext);
+  if (!context) {
+    throw new Error("useAppGlobals must be used within an AppGlobalsProvider");
+  }
+  return context;
 }

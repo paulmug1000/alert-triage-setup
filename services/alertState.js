@@ -371,3 +371,48 @@ export async function handleGetIgnoredAlerts(req, res, sheets) {
     return res.status(500).json({ success: false, error: err.message });
   }
 }
+
+export async function handleGetProactiveAlerts(req, res, sheets) {
+  const acId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+  if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  try {
+    await ensureAlertMemoryTab(sheets, acId);
+    const all = await readAlertMemory(sheets, acId);
+    const metaFields = [
+      "jobName","endClientName","confirmedRow","revenue","startDate","endDate",
+      "frequencyDays","lastInvoiceDate","expectedByDate","timestamp","sequenceType","summary","jobInfo","detailsSnippet",
+      "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
+      "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
+      "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
+      "directCosts","unreceivedAmount","placeholderCount","placeholderTotal"
+    ];
+      
+    const active = all
+      .filter(r => r.category === "proactive" && r.status === "cached")
+      .map(r => {
+        let alert = {};
+        try { alert = JSON.parse(r.dataSnapshot || "{}"); } catch (e) { alert = {}; }
+        const metadata = {};
+        for (const f of metaFields) { if (alert[f] !== undefined) metadata[f] = alert[f]; }
+        return {
+          ...alert,
+          rowIndex: r.rowIndex,
+          clientName: alert.clientName || r.clientName,
+          alertType: alert.alertType || r.alertType,
+          metadata,
+          firstSeen: r.firstSeen,
+          lastSeen: r.lastSeen
+        };
+      });
+    const countsByClient = {};
+    for (const a of active) {
+      countsByClient[a.clientName] = (countsByClient[a.clientName] || 0) + 1;
+    }
+    const clientFilter = req.body.clientName;
+    const alerts = clientFilter ? active.filter(a => a.clientName === clientFilter) : active;
+    return res.status(200).json({ success: true, alerts, countsByClient });
+  } catch (err) {
+    console.error(`❌ Error in get_proactive_alerts:`, err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}

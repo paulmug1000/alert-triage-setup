@@ -60,13 +60,15 @@ import {
   handleBustCache, handleGetAlerts, handleRemoveAlert, handleIgnoreAlert, 
   handleUnignoreAlert, handleGetIgnoredAlerts, handleUpdateSessionFlags,
   handleResolveNoActionFlag, handleRecordDecision, handleBulkIgnoreAlerts,
-  handleAcknowledgeProactiveAlert, handleResolveProactiveAlert, handleBulkAcknowledgeProactiveAlerts
+  handleAcknowledgeProactiveAlert, handleResolveProactiveAlert, handleBulkAcknowledgeProactiveAlerts,
+  handleGetProactiveAlerts
 } from "../../services/alertState";
 import {
   handleDebugCompareTriage, handleDebugTriageState, handleCleanupAlertMemory,
   handleRehashAlertMemory, handleGetPrecomputed, handleStorePrecomputed,
   handleRunFlagSweep, handleBuildCachedAlertOptions, handleAnalyzeAlert,
-  handleAcceptOption, handleDeleteJob, handleAnalyzeNoActionFlag
+  handleAcceptOption, handleDeleteJob, handleAnalyzeNoActionFlag,
+  handleRehashIgnoredAlerts, PRECOMPUTED_KEY
 } from "../../services/triageEngine";
 
 // eomTabsVerified moved to eomTools.js
@@ -396,6 +398,10 @@ export default async function handler(req, res) {
       return await handleUnignoreAlert(req, res, sheets);
     } else if (action === "get_ignored_alerts") {
       return await handleGetIgnoredAlerts(req, res, sheets);
+    } else if (action === "get_proactive_alerts") {
+      return await handleGetProactiveAlerts(req, res, sheets);
+    } else if (action === "rehash_ignored_alerts") {
+      return await handleRehashIgnoredAlerts(req, res, sheets);
     } else if (action === "update_session_flags") {
       return await handleUpdateSessionFlags(req, res);
     } else if (action === "resolve_noaction_flag") {

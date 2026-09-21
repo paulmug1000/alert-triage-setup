@@ -63,7 +63,7 @@ export default function OutgoingsView({
         }),
       });
       if (outgoingsClient?.masterSheetId) {
-        outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
+        outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
       }
     } catch(e) { console.error("updateCell error:", e); }
   };
@@ -588,7 +588,7 @@ export default function OutgoingsView({
                                         }),
                                       });
                                       if (outgoingsClient?.masterSheetId) {
-                                        outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
+                                        outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
                                       }
                                       setDirectCostsJobs(prev => prev && prev.map(j => ({
                                         ...j,
@@ -666,7 +666,7 @@ export default function OutgoingsView({
                                       }),
                                     });
                                     if (outgoingsClient?.masterSheetId) {
-                                      outgoingsPullPendingRef.current = outgoingsClient.masterSheetId;
+                                      outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
                                     }
                                     await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
                                   } catch(e) { console.error("assign_expense_to_job (new row) error:", e); }

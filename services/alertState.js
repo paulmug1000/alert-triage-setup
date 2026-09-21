@@ -201,6 +201,15 @@ export async function handleRecordDecision(req, res, sheets) {
   }
 }
 
+export async function handleIgnoreAlert(req, res, sheets) {
+  const { alert, automationCommanderSheetId } = req.body;
+  if (!alert || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing alert or acId" });
+  
+  // Wrap the single alert in an array and reuse the bulk ignore logic
+  req.body.alerts = [alert];
+  return handleBulkIgnoreAlerts(req, res, sheets);
+}
+
 export async function handleBulkIgnoreAlerts(req, res, sheets) {
   const { alerts: alertsToIgnore, ignoreReason, automationCommanderSheetId: acId } = req.body;
   if (!alertsToIgnore?.length || !acId) return res.status(400).json({ success: false, error: "Missing alerts or acId" });

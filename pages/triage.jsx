@@ -85,12 +85,12 @@ function TriageSystemContent({ onBack, appGlobals }) {
 
   // --- INITIAL DATA LOAD ---
   // Explicitly trigger the initial triage data load on mount.
-  // (This was previously triggered implicitly by the EoM tasks preload effect we extracted).
   useEffect(() => {
     if (!sessionId && !isLoading) {
       startTriage();
     }
-  }, [sessionId, isLoading, startTriage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]); // STRICT DEPS: Do not add startTriage or isLoading, to prevent infinite loops if initialization fails.
 
   const { overviewData, setOverviewData, overviewLoading, setOverviewLoading, loadOverview } = useOverview(automationCommanderSheetId);
 

@@ -642,7 +642,7 @@ export default function OutgoingsView({
                               <div style={{ height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <Spinner size={12} color="#1a56db" />
                               </div>
-                            ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
+                            ) : isLastRowOfJob && !jobHasEmptySlot && !!outgoingsPlacing && (
                               <div
                                 title="No spare expense slot — click to add a new row for this job"
                                 onClick={async () => {

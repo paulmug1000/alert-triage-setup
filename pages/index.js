@@ -5,7 +5,7 @@ export default function Index() {
   return (
     <>
       <Head>
-        <title>Pulse Triage System</title>
+        <title>PMS - Pulse Management System</title>
         <link rel="icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" />
         <link rel="apple-touch-icon" href="https://pulsedashboard.co.uk/wp-content/uploads/2026/03/pulsefavicon.png" />
         <meta name="apple-mobile-web-app-capable" content="yes" />

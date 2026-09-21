@@ -565,11 +565,12 @@ export default function ToolsView({
     <div style={{ padding: "20px", maxWidth: "900px" }}>
       {eomEditingNotelet && (() => {
         const [y, m] = eomMonthKey.split("-").map(Number);
+        const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
         return (
           <div style={styles.modalOverlay} onClick={e => { if (e.target === e.currentTarget) setEomEditingNotelet(null); }}>
             <div style={styles.modalCard}>
               <h3 style={styles.modalTitle}>Month-specific note</h3>
-              <p style={styles.modalSubtitle}>Applies only to {eomEditingNotelet.clientName} for {monthName}.</p>
+              <p style={styles.modalSubtitle}>Applies only to {eomEditingNotelet.clientName} for {monthLabel}.</p>
               <textarea value={eomNoteletDraft} onChange={e => setEomNoteletDraft(e.target.value)}
                 placeholder="e.g. Waiting on client for X..." style={styles.modalTextarea} autoFocus />
               <div style={styles.modalButtons}>

@@ -3,7 +3,7 @@ import { getSheetsClient, extractSheetIdFromUrl } from "./sheetsClient";
 import {
   readAlertMemory, updateAlertMemoryRow, appendAlertMemoryRow,
   ensureAlertMemoryTab, findMemoryRow, buildAlertFingerprint,
-  extractCrmComparisonSnapshot
+  extractCrmComparisonSnapshot, deleteAlertMemoryRows
 } from "./alertMemory";
 import { createHash } from "crypto";
 
@@ -321,6 +321,61 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
       }
     }
     return res.status(200).json({ success: true, count: alertKeys.length });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleIgnoreAlert(req, res, sheets) {
+  const { alert, automationCommanderSheetId } = req.body;
+  if (!alert || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing alert or acId" });
+  
+  // Wrap the single alert in an array and reuse the bulk ignore logic
+  req.body.alerts = [alert];
+  return handleBulkIgnoreAlerts(req, res, sheets);
+}
+
+export async function handleUnignoreAlert(req, res, sheets) {
+  const { fingerprintHash, automationCommanderSheetId } = req.body;
+  if (!fingerprintHash || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing required fields" });
+  try {
+    await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+    const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+    const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
+    if (!memoryRow) return res.status(404).json({ success: false, error: "Alert not found in memory" });
+
+    if (memoryRow.cachedOptionsJSON) {
+      await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
+        ...memoryRow, status: "cached", ignoreReason: "",
+      });
+    } else {
+      await deleteAlertMemoryRows(sheets, automationCommanderSheetId, [memoryRow.rowIndex]);
+    }
+    return res.status(200).json({ success: true, message: "Alert un-ignored" });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleGetIgnoredAlerts(req, res, sheets) {
+  const automationCommanderSheetId = req.body.automationCommanderSheetId || req.query.automationCommanderSheetId;
+  if (!automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  try {
+    await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+    const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
+    const ignoredAlerts = memoryRows
+      .filter(r => r.status === "ignored" || (r.status === "superseded" && r.ignoreReason))
+      .map(r => ({
+        fingerprintHash: r.fingerprintHash,
+        alertType:       r.alertType,
+        clientName:      r.clientName,
+        alertSummary:    r.alertSummary,
+        ignoreReason:    r.ignoreReason,
+        firstSeen:       r.firstSeen,
+        lastSeen:        r.lastSeen,
+        status:          r.status,
+      }));
+    return res.status(200).json({ success: true, ignoredAlerts });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }

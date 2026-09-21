@@ -170,6 +170,16 @@ export default async function handler(req, res) {
       return await handleGetAllClientJobs(req, res, sheets);
     } else if (action === "update_job_field") {
       return await handleUpdateJobField(req, res, sheets);
+    } else if (action === "assign_expense_to_job") {
+      return await handleAssignExpenseToJob(req, res, sheets);
+    } else if (action === "update_expense_slot") {
+      return await handleUpdateExpenseSlot(req, res, sheets);
+    } else if (action === "assign_invoice_to_job") {
+      return await handleAssignInvoiceToJob(req, res, sheets);
+    } else if (action === "update_invoice_slot") {
+      return await handleUpdateInvoiceSlot(req, res, sheets);
+    } else if (action === "create_job_from_invoice") {
+      return await handleCreateJobFromInvoice(req, res, sheets);
     } else if (action === "mark_pipeline_copied") {
       return await handleMarkPipelineCopied(req, res, sheets);
     } else if (action === "get_retainer_jobs") {

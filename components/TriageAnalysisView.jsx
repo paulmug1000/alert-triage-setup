@@ -24,6 +24,24 @@ export default function TriageAnalysisView({
   const alert = clientAlerts[currentClientAlertIndex];
   const progress = currentClientAlertIndex + 1;
 
+  const otherDuplicateAlerts = (alert && (alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr") && alert.summary?.invoiceNo)
+    ? clientAlerts.filter(a => {
+        const thisId = alert.fingerprintHash || `${alert.sheetName}-${alert.rowNumber}`;
+        const otherId = a.fingerprintHash || `${a.sheetName}-${a.rowNumber}`;
+        if (thisId === otherId) return false;
+        const otherInvNo = String(a.summary?.invoiceNo || a.data?.accounting?.[5] || "").trim();
+        return otherInvNo && otherInvNo.toLowerCase() === String(alert.summary.invoiceNo).trim().toLowerCase();
+      })
+    : [];
+
+  const isDuplicateInvoice = Boolean(
+    alert?.isDuplicateInvoice ||
+    String(alert?.data?.flags?.[4] || "").trim() === "1" ||
+    (alert?.spreadsheetItems && alert.spreadsheetItems.length > 1) ||
+    otherDuplicateAlerts.length > 0
+  );
+  const spreadsheetItems = alert?.spreadsheetItems || [];
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -133,6 +151,105 @@ export default function TriageAnalysisView({
           </div>
         )}
 
+        {isDuplicateInvoice && (
+          <div style={{
+            backgroundColor: "#fffbeb", border: "1.5px solid #f59e0b",
+            borderRadius: "6px", padding: "14px 16px", marginBottom: "16px",
+            color: "#92400e"
+          }}>
+            <div style={{ fontWeight: "700", fontSize: "14px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <span>⚠️ Duplicate Invoice in Spreadsheet Notice</span>
+              <span style={{ background: "#d97706", color: "white", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
+                {spreadsheetItems.length > 0 ? `${spreadsheetItems.length} SPREADSHEET ITEMS` : "DUPLICATE INVOICE NO"}
+              </span>
+              {alert.summary?.invoiceNo && <span style={{ fontSize: "13px", color: "#78350f" }}>Invoice #{alert.summary.invoiceNo}</span>}
+            </div>
+            <div style={{ fontSize: "13px", marginTop: "6px", lineHeight: "1.5" }}>
+              {spreadsheetItems.length > 0 ? (
+                <>This invoice number appears in <strong>{spreadsheetItems.length} distinct items/jobs in the spreadsheet</strong>, but only <strong>once in accounting</strong> (InvComp Row {alert.rowNumber}).</>
+              ) : otherDuplicateAlerts.length > 0 ? (
+                <>Invoice <strong>#{alert.summary?.invoiceNo}</strong> also appears in <strong>{otherDuplicateAlerts.length}</strong> other entry/entries in this triage batch (InvComp Row{otherDuplicateAlerts.length > 1 ? "s" : ""}: {otherDuplicateAlerts.map(a => a.rowNumber).join(", ")}).</>
+              ) : (
+                <>This invoice number is flagged as having multiple entries in the spreadsheet (InvComp Column W, Row {alert.rowNumber}).</>
+              )}
+            </div>
+
+            {/* Spreadsheet Line Items Table */}
+            {spreadsheetItems.length > 0 && (
+              <div style={{ marginTop: "12px", background: "white", border: "1px solid #fcd34d", borderRadius: "6px", overflow: "hidden" }}>
+                <div style={{ background: "#fef3c7", padding: "6px 10px", fontWeight: "700", fontSize: "12px", color: "#92400e", borderBottom: "1px solid #fde68a" }}>
+                  📊 Spreadsheet Breakdown ({spreadsheetItems.length} items for Invoice #{alert.summary?.invoiceNo})
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse", textAlign: "left" }}>
+                    <thead>
+                      <tr style={{ background: "#fffdf5", borderBottom: "1px solid #fde68a", fontSize: "11px", color: "#78350f" }}>
+                        <th style={{ padding: "6px 8px" }}>Spreadsheet Job / Item</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right" }}>Excl VAT</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right" }}>VAT</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right" }}>Gross</th>
+                        <th style={{ padding: "6px 8px" }}>Sent</th>
+                        <th style={{ padding: "6px 8px" }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {spreadsheetItems.map((item, idx) => (
+                        <tr key={idx} style={{ borderBottom: "1px solid #fef3c7" }}>
+                          <td style={{ padding: "6px 8px", fontWeight: "600", color: "#111827" }}>
+                            {item.job || "(No job name)"}
+                            {item.client && <div style={{ fontSize: "10px", color: "#6b7280", fontWeight: "normal" }}>{item.client}</div>}
+                          </td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>£{item.netAmount.toFixed(2)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>£{item.vatAmount.toFixed(2)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: "600" }}>£{item.grossAmount.toFixed(2)}</td>
+                          <td style={{ padding: "6px 8px", color: "#4b5563" }}>{item.sentDate || "—"}</td>
+                          <td style={{ padding: "6px 8px" }}>
+                            <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "3px", background: "#f3f4f6", color: "#374151" }}>
+                              {item.status || "—"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ background: "#fff7ed", fontWeight: "700", borderTop: "1.5px solid #fed7aa", color: "#9a3412" }}>
+                        <td style={{ padding: "6px 8px" }}>Spreadsheet Total ({spreadsheetItems.length} items):</td>
+                        <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                          £{spreadsheetItems.reduce((s, it) => s + it.netAmount, 0).toFixed(2)}
+                        </td>
+                        <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                          £{spreadsheetItems.reduce((s, it) => s + it.vatAmount, 0).toFixed(2)}
+                        </td>
+                        <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                          £{spreadsheetItems.reduce((s, it) => s + it.grossAmount, 0).toFixed(2)}
+                        </td>
+                        <td colSpan={2}></td>
+                      </tr>
+                      <tr style={{ background: "#eff6ff", fontWeight: "700", borderTop: "1px solid #bfdbfe", color: "#1e40af" }}>
+                        <td style={{ padding: "6px 8px" }}>Accounting Total (Row {alert.rowNumber}):</td>
+                        <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                          £{(parseFloat(String(alert.data?.accounting?.[3] || "0").replace(/,/g, "")) || alert.summary?.amount || 0).toFixed(2)}
+                        </td>
+                        <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                          £{(parseFloat(String(alert.data?.accounting?.[4] || "0").replace(/,/g, "")) || 0).toFixed(2)}
+                        </td>
+                        <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                          £{(parseFloat(String(alert.data?.accounting?.[2] || "0").replace(/,/g, "")) || 0).toFixed(2)}
+                        </td>
+                        <td colSpan={2}></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div style={{ fontSize: "12px", marginTop: "8px", color: "#b45309" }}>
+              Review all spreadsheet entries against accounting before resolving this discrepancy.
+            </div>
+          </div>
+        )}
+
         {alert.summary && alert.type !== "locked" && (
           <div style={{ ...styles.alertSummary, marginBottom: "20px",
             backgroundColor: alert.type === "expense" ? "#f0fdf4" : "#eff6ff",
@@ -150,7 +267,7 @@ export default function TriageAnalysisView({
                     const flags = alert.data?.flags || [];
                     const isMissing = String(flags[0]||"").trim() === "1";
                     if (isMissing) return "Missing invoice — in accounting system, not in Confirmed tab";
-                    const invFlagNames2 = [null,"Client mismatch","Amount mismatch","Sent date mismatch",null,"Pay date mismatch","Status mismatch"];
+                    const invFlagNames2 = [null,"Client mismatch","Amount mismatch","Sent date mismatch","Duplicate invoice in sheet","Pay date mismatch","Status mismatch"];
                     const active = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames2[i] ? invFlagNames2[i] : null).filter(Boolean);
                     return active.length > 0 ? `Field mismatch: ${active.join(", ")}` : "Invoice Discrepancy";
                   })()
@@ -204,12 +321,13 @@ export default function TriageAnalysisView({
                 ];
                 mismatchLines = FIELD_DEFS.filter(f => activeFlags.includes(f.name));
               } else {
-                const invFlagNames = ["Missing invoice","Client mismatch","Amount mismatch","Sent date mismatch",null,"Pay date mismatch","Status mismatch"];
+                const invFlagNames = ["Missing invoice","Client mismatch","Amount mismatch","Sent date mismatch","Duplicate invoice in sheet","Pay date mismatch","Status mismatch"];
                 const activeFlags = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames[i] ? invFlagNames[i] : null).filter(Boolean);
                 const FIELD_DEFS = [
                   { name: "Client mismatch",    line: `Client in accounting: ${acc[0] || "(blank)"}. Client in Confirmed tab: ${conf[1] || "(blank)"}.` },
                   { name: "Amount mismatch",    line: `Amount in accounting: ${acc[2] ? `£${acc[2]}` : "£0"}. Amount in Confirmed tab: ${conf[2] ? `£${conf[2]}` : "£0"}.` },
                   { name: "Sent date mismatch", line: `Sent date in accounting: ${acc[6] || "(blank)"}. Sent date in Confirmed tab: ${conf[3] || "(blank)"}.` },
+                  { name: "Duplicate invoice in sheet", line: `Duplicate invoice number: Invoice #${alert.summary?.invoiceNo || acc[5] || conf[0]} appears in multiple rows in the spreadsheet (${spreadsheetItems.length > 0 ? spreadsheetItems.length : 2} entries).` },
                   { name: "Pay date mismatch",  line: `Pay date in accounting: ${acc[8] || "(blank)"}. Pay date in Confirmed tab: ${conf[4] || "(blank)"}.` },
                   { name: "Status mismatch",    line: `Status in accounting: ${acc[9] || "(blank)"}. Status in Confirmed tab: ${conf[5] || "(blank)"}.` },
                 ];

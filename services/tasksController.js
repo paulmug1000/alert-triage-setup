@@ -53,7 +53,7 @@ export async function handleBulkCreateTasks(req, res, sheets) {
 }
 
 export async function handleCreateTask(req, res, sheets) {
-  const { alert, taskNote, automationCommanderSheetId: acId, isProactive, proactiveAlertKey } = req.body;
+  const { alert, taskNote, automationCommanderSheetId: acId, isProactive, proactiveAlertKey, isInfo } = req.body;
   if (!alert || !acId) return res.status(400).json({ success: false, error: "Missing alert or automationCommanderSheetId" });
 
   try {
@@ -115,7 +115,7 @@ export async function handleCreateTask(req, res, sheets) {
         cachedOptionsJSON,
         status: "task",
         ignoreReason: "",
-        category: isProactive ? "proactive" : "discrepancy",
+        category: isProactive ? "proactive" : (isInfo ? "informational" : "discrepancy"),
         dataSnapshot: JSON.stringify({ ...alertFieldsSnapshot, ...taskMeta }),
       });
     }

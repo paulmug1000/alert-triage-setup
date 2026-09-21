@@ -815,10 +815,20 @@ export default function AlertSelectionView({
                             })}
                           </div>
                         );
+
                         return (
                           <div>
                             {renderGroup(nonDrafts, "Sent / non-draft", 0)}
                             {renderGroup(drafts, "Draft", nonDrafts.length)}
+                            {selectedClient && (
+                              <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "8px" }}>
+                                <button className="triage-btn"
+                                  onClick={() => setActiveNav("invoices")}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", color: "#ea580c", borderColor: "#fdba74" }}>
+                                  📥 Assign Invoices
+                                </button>
+                              </div>
+                            )}
                           </div>
                         );
                       }
@@ -1056,6 +1066,12 @@ export default function AlertSelectionView({
                                     </button>
                                   )}
                                   <button className="triage-btn"
+                                    onClick={() => openCreateTaskModal(na, false, true)}
+                                    style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#7c3aed", borderColor: "#c4b5fd" }}
+                                  >
+                                    📋 Create Task
+                                  </button>
+                                  <button className="triage-btn"
                                     onClick={handleMarkResolved}
                                     style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
                                   >
@@ -1158,12 +1174,20 @@ export default function AlertSelectionView({
                             {isResolved ? (
                               <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
                             ) : (
-                              <button className="triage-btn"
-                                onClick={handleMarkResolved}
-                                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", whiteSpace: "nowrap", flexShrink: 0 }}
-                              >
-                                Mark resolved
-                              </button>
+                              <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                                <button className="triage-btn"
+                                  onClick={() => openCreateTaskModal(na, false, true)}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}
+                                >
+                                  📋 Create Task
+                                </button>
+                                <button className="triage-btn"
+                                  onClick={handleMarkResolved}
+                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", whiteSpace: "nowrap" }}
+                                >
+                                  Mark resolved
+                                </button>
+                              </div>
                             )}
                           </div>
                         );

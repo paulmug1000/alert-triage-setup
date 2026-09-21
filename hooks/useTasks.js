@@ -14,6 +14,7 @@ export function useTasks() {
   const [taskModalSubmitting, setTaskModalSubmitting] = useState(false);
   const [taskModalAlert, setTaskModalAlert] = useState(null);
   const [taskModalIsProactive, setTaskModalIsProactive] = useState(false);
+  const [taskModalIsInfo, setTaskModalIsInfo] = useState(false);
   const [taskModalSnoozeDate, setTaskModalSnoozeDate] = useState("");
   const [taskModalSnoozeTime, setTaskModalSnoozeTime] = useState("07:00");
   const [taskSnoozeDate, setTaskSnoozeDate] = useState("");
@@ -29,6 +30,7 @@ export function useTasks() {
     taskNoteSubmitting, setTaskNoteSubmitting, showTaskModal, setShowTaskModal,
     taskModalNote, setTaskModalNote, taskModalSubmitting, setTaskModalSubmitting,
     taskModalAlert, setTaskModalAlert, taskModalIsProactive, setTaskModalIsProactive,
+    taskModalIsInfo, setTaskModalIsInfo,
     taskModalSnoozeDate, setTaskModalSnoozeDate, taskModalSnoozeTime, setTaskModalSnoozeTime,
     taskSnoozeDate, setTaskSnoozeDate, taskSnoozeTime, setTaskSnoozeTime,
     taskSnoozeSubmitting, setTaskSnoozeSubmitting, taskActionError, setTaskActionError,

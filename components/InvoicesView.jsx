@@ -27,11 +27,153 @@ export default function InvoicesView({
 
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [invoicesNewJob, setInvoicesNewJob] = useState(null);
+  const [clientMismatchPrompt, setClientMismatchPrompt] = useState(null);
+
+  const executePlacement = async (promptData, shouldUpdateClientName) => {
+    const { job, inv, isNewRow, rowNum, slotNum, jobLastRow, savingKey } = promptData;
+    setClientMismatchPrompt(null);
+    setInvoicesPlacing(null);
+    setInvoicesSavingCell(savingKey);
+
+    setAssignedAppIds(prevSet => {
+      const next = new Set(prevSet); next.add(inv.invoiceNo);
+      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
+      return next;
+    });
+    setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
+
+    setClientsWithFlags(prev => prev.map(c => {
+      if (c.clientName !== invoicesClient?.clientName) return c;
+      const updatedCounts = { ...c.alertCounts };
+      if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
+      return { ...c, alertCounts: updatedCounts };
+    }));
+
+    const jobRowNums = job?.rows ? job.rows.map(r => r.rowNum) : (rowNum ? [rowNum] : []);
+    const effectiveClientName = shouldUpdateClientName ? String(inv.client || "").trim() : job.client;
+
+    try {
+      if (isNewRow) {
+        await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "assign_invoice_to_job",
+            clientSheetId: invoicesClient?.clientSheetId,
+            masterSheetId: invoicesClient?.masterSheetId || "",
+            createNewRow: true,
+            jobLastRow,
+            jobClient: effectiveClientName,
+            jobName: job.jobName,
+            invoice: inv,
+            updateClientName: shouldUpdateClientName,
+            newClientName: shouldUpdateClientName ? effectiveClientName : undefined,
+            jobRowNums,
+          }),
+        });
+        if (invoicesClient?.masterSheetId) {
+          outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
+        }
+        await loadInvoicesJobs(invoicesClient, invoicesShowAll);
+      } else {
+        await fetch("/api/triage", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "assign_invoice_to_job",
+            clientSheetId: invoicesClient?.clientSheetId,
+            rowNum, slotNum, invoice: inv,
+            jobClient: effectiveClientName,
+            jobName: job.jobName,
+            updateClientName: shouldUpdateClientName,
+            newClientName: shouldUpdateClientName ? effectiveClientName : undefined,
+            jobRowNums,
+          }),
+        });
+        if (invoicesClient?.masterSheetId) {
+          outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
+        }
+        setInvoicesJobs(prev => prev && prev.map(j => {
+          if (j.jobName !== job.jobName || j.client !== job.client) return j;
+          const updatedClient = shouldUpdateClientName ? effectiveClientName : j.client;
+          return {
+            ...j,
+            client: updatedClient,
+            rows: j.rows.map(r => {
+              const baseR = shouldUpdateClientName ? { ...r, client: updatedClient } : r;
+              if (r.rowNum !== rowNum) return baseR;
+              return {
+                ...baseR,
+                invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== slotNum ? sl : {
+                  ...sl,
+                  amount: inv.amount || 0,
+                  ref: inv.invoiceNo || "",
+                  sentDate: inv.sentDate || "",
+                  status: inv.status || "Sent",
+                }),
+              };
+            }),
+          };
+        }));
+      }
+    } catch(e) {
+      console.error("assign_invoice_to_job error:", e);
+    } finally {
+      setInvoicesSavingCell(null);
+    }
+  };
 
   const noInvClient = !invoicesClient;
 
   return (
     <>
+      {clientMismatchPrompt && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setClientMismatchPrompt(null); }}>
+          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+              <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e3a8a", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>🏢 Client Name Difference</span>
+              </h3>
+              <button onClick={() => setClientMismatchPrompt(null)} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
+            </div>
+            <p style={{ fontSize: "13px", color: "#555", lineHeight: "1.5", marginTop: 0, marginBottom: "14px" }}>
+              The client name on the invoice differs from the client name on the sheet for <strong>{clientMismatchPrompt.job.jobName}</strong>:
+            </p>
+            <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "12px", marginBottom: "14px", fontSize: "13px" }}>
+              <div style={{ marginBottom: "6px" }}>
+                <span style={{ color: "#64748b", fontWeight: "600", display: "inline-block", width: "70px" }}>Sheet:</span>
+                <strong style={{ color: "#334155" }}>{clientMismatchPrompt.sheetClientName}</strong>
+              </div>
+              <div>
+                <span style={{ color: "#64748b", fontWeight: "600", display: "inline-block", width: "70px" }}>Invoice:</span>
+                <strong style={{ color: "#2563eb" }}>{clientMismatchPrompt.invoiceClientName}</strong>
+              </div>
+            </div>
+            <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "18px" }}>
+              Updating will change the client name across all rows for this job in the Confirmed sheet.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <button className="triage-btn"
+                onClick={() => executePlacement(clientMismatchPrompt, true)}
+                style={{ background: "#2563eb", color: "white", border: "none", padding: "10px 14px", borderRadius: "6px", fontWeight: "600", fontSize: "13px", cursor: "pointer" }}
+              >
+                ✓ Update sheet to &ldquo;{clientMismatchPrompt.invoiceClientName}&rdquo;
+              </button>
+              <button className="triage-btn"
+                onClick={() => executePlacement(clientMismatchPrompt, false)}
+                style={{ ...styles.buttonSecondary, padding: "10px 14px", fontSize: "13px", textAlign: "center" }}
+              >
+                Keep existing name &ldquo;{clientMismatchPrompt.sheetClientName}&rdquo;
+              </button>
+              <button className="triage-btn"
+                onClick={() => setClientMismatchPrompt(null)}
+                style={{ padding: "8px 14px", fontSize: "12px", color: "#64748b", background: "none", border: "none", cursor: "pointer", textAlign: "center" }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {invoicesEditSlot && (
         <InvoicesEditModal 
           editSlot={invoicesEditSlot}
@@ -258,49 +400,19 @@ export default function InvoicesView({
                                   if (isPlacing && isEmpty) {
                                     const inv = invoicesPlacingRef.current;
                                     if (!inv) return;
-                                    setInvoicesPlacing(null);
-                                    setInvoicesSavingCell(cellSavingKey);
-                                    setAssignedAppIds(prevSet => {
-                                      const next = new Set(prevSet); next.add(inv.invoiceNo);
-                                      try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
-                                      return next;
-                                    });
-                                    setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
-                                    
-                                    setClientsWithFlags(prev => prev.map(c => {
-                                      if (c.clientName !== invoicesClient?.clientName) return c;
-                                      const updatedCounts = { ...c.alertCounts };
-                                      if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
-                                      return { ...c, alertCounts: updatedCounts };
-                                    }));
-
-                                    try {
-                                      await fetch("/api/triage", {
-                                        method: "POST", headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({
-                                          action: "assign_invoice_to_job",
-                                          clientSheetId: invoicesClient?.clientSheetId,
-                                          rowNum: jr.rowNum, slotNum: s.slotNum, invoice: inv,
-                                        }),
-                                      });
-                                      if (invoicesClient?.masterSheetId) {
-                                        outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
-                                      }
-                                      setInvoicesJobs(prev => prev && prev.map(j => ({
-                                        ...j,
-                                        rows: j.rows.map(r => r.rowNum !== jr.rowNum ? r : {
-                                          ...r,
-                                          invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== s.slotNum ? sl : {
-                                            ...sl,
-                                            amount: inv.amount || 0,
-                                            ref: inv.invoiceNo || "",
-                                            sentDate: inv.sentDate || "",
-                                            status: inv.status || "Sent",
-                                          }),
-                                        }),
-                                      })));
-                                    } catch(e) { console.error("assign_invoice_to_job error:", e); }
-                                    finally { setInvoicesSavingCell(null); }
+                                    const sheetClient = String(job.client || "").trim();
+                                    const invClient = String(inv.client || "").trim();
+                                    const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
+                                    const promptPayload = {
+                                      job, inv, isNewRow: false, rowNum: jr.rowNum, slotNum: s.slotNum,
+                                      sheetClientName: sheetClient, invoiceClientName: invClient,
+                                      savingKey: cellSavingKey,
+                                    };
+                                    if (hasMismatch) {
+                                      setClientMismatchPrompt(promptPayload);
+                                    } else {
+                                      executePlacement(promptPayload, false);
+                                    }
                                   } else if (!isPlacing && !isGenuinelyBlank) {
                                     setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s });
                                   }
@@ -343,42 +455,20 @@ export default function InvoicesView({
                                 onClick={async () => {
                                   const inv = invoicesPlacingRef.current;
                                   if (!inv) return;
-                                  setInvoicesPlacing(null);
                                   const savingKey = `newrow-${job.client}|||${job.jobName}`;
-                                  setInvoicesSavingCell(savingKey);
-                                  
-                                  setAssignedAppIds(prevSet => {
-                                    const next = new Set(prevSet); next.add(inv.invoiceNo);
-                                    try { localStorage.setItem("pulse_assignedAppIds", JSON.stringify([...next])); } catch {}
-                                    return next;
-                                  });
-                                  setInvoicesInbox(prev => prev.filter(e => e.invoiceNo !== inv.invoiceNo));
-                                  
-                                  setClientsWithFlags(prev => prev.map(c => {
-                                    if (c.clientName !== invoicesClient?.clientName) return c;
-                                    const updatedCounts = { ...c.alertCounts };
-                                    if (updatedCounts["invoiceDashboardDiscr"] > 0) updatedCounts["invoiceDashboardDiscr"]--;
-                                    return { ...c, alertCounts: updatedCounts };
-                                  }));
-
-                                  try {
-                                    await fetch("/api/triage", {
-                                      method: "POST", headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify({
-                                        action: "assign_invoice_to_job",
-                                        clientSheetId: invoicesClient?.clientSheetId,
-                                        masterSheetId: invoicesClient?.masterSheetId || "",
-                                        createNewRow: true,
-                                        jobLastRow, jobClient: job.client, jobName: job.jobName,
-                                        invoice: inv,
-                                      }),
-                                    });
-                                    if (invoicesClient?.masterSheetId) {
-                                      outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
-                                    }
-                                    await loadInvoicesJobs(invoicesClient, invoicesShowAll);
-                                  } catch(e) { console.error("assign_invoice_to_job (new row) error:", e); }
-                                  finally { setInvoicesSavingCell(null); }
+                                  const sheetClient = String(job.client || "").trim();
+                                  const invClient = String(inv.client || "").trim();
+                                  const hasMismatch = !!(sheetClient && invClient && sheetClient.toLowerCase() !== invClient.toLowerCase());
+                                  const promptPayload = {
+                                    job, inv, isNewRow: true, jobLastRow,
+                                    sheetClientName: sheetClient, invoiceClientName: invClient,
+                                    savingKey,
+                                  };
+                                  if (hasMismatch) {
+                                    setClientMismatchPrompt(promptPayload);
+                                  } else {
+                                    executePlacement(promptPayload, false);
+                                  }
                                 }}
                                 style={{ cursor: "pointer", background: "#e8f0fe", border: "1.5px solid #1a56db",
                                   height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center",

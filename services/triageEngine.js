@@ -250,21 +250,68 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
   try {
     console.log(`\n📖 Reading InvComp alerts from ${spreadsheetId}...`);
     let allRows = [];
-    if (cachedData) {
+    if (cachedData && cachedData.length > 0) {
       allRows = cachedData;
+      // If cachedData only had columns A to Y, fetch right-hand columns AT to BD
+      if (allRows[0] && allRows[0].length < 51) {
+        try {
+          const rightResp = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId, range: "InvComp!AT5:BD1000",
+          }));
+          const rightRows = rightResp.data.values || [];
+          for (let i = 0; i < allRows.length; i++) {
+            const rRow = rightRows[i] || [];
+            while (allRows[i].length < 45) allRows[i].push("");
+            for (let j = 0; j < rRow.length; j++) {
+              allRows[i][45 + j] = rRow[j];
+            }
+          }
+        } catch (e) {
+          console.warn("Could not fetch right columns for InvComp cachedData:", e.message);
+        }
+      }
     } else {
       const dataResponse = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId, range: "InvComp!A5:Y1000",
+        spreadsheetId, range: "InvComp!A5:BD1000",
       }));
       allRows = dataResponse.data.values || [];
     }
     const headers = allRows[0] || [];
     const rows = allRows.slice(1);
+
+    // Index all spreadsheet items from columns AT through BD (col 45 to 55)
+    // AT: Client (45), AU: Job (46), AV: Invoice amount gross (47), AW: Total excl VAT net (48),
+    // AX: VAT included (49), AY: Invoice no (50), AZ: Sent date (51), BA: Pay date (52),
+    // BB: Status (53), BC: InvSeq (54), BD: CellRef (55)
+    const spreadsheetItemsByInv = {};
+    for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+      const row = rows[rIdx];
+      if (!row || row.length <= 50) continue;
+      const sInvNo = String(row[50] || "").trim();
+      if (!sInvNo || sInvNo === "(blank)" || sInvNo === "-") continue;
+      const key = sInvNo.toLowerCase();
+      if (!spreadsheetItemsByInv[key]) spreadsheetItemsByInv[key] = [];
+      spreadsheetItemsByInv[key].push({
+        invCompRow: 6 + rIdx,
+        client: String(row[45] || "").trim(),
+        job: String(row[46] || "").trim(),
+        grossAmount: parseFloat(String(row[47] || "0").replace(/,/g, "")) || 0,
+        netAmount: parseFloat(String(row[48] || "0").replace(/,/g, "")) || 0,
+        vatAmount: parseFloat(String(row[49] || "0").replace(/,/g, "")) || 0,
+        invoiceNo: sInvNo,
+        sentDate: String(row[51] || "").trim(),
+        payDate: String(row[52] || "").trim(),
+        status: String(row[53] || "").trim(),
+        invSeq: String(row[54] || "").trim(),
+        cellRef: String(row[55] || "").trim(),
+      });
+    }
+
     const alerts = [];
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
       const row = rows[rowIdx];
       if (!row || row.length === 0) continue;
-      const hasDiscrepancy = [18, 19, 20, 21, 23, 24].some((idx) => String(row[idx] || "").trim() === "1");
+      const hasDiscrepancy = [18, 19, 20, 21, 22, 23, 24].some((idx) => String(row[idx] || "").trim() === "1");
       if (hasDiscrepancy) {
         const alert = {
           type: "invoice",
@@ -278,6 +325,15 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
           flagColumns: headers.slice(18, 25),
         };
         alert.summary = buildInvCompSummary(alert);
+
+        const invNo = String(alert.summary?.invoiceNo || alert.data.accounting?.[5] || alert.data.confirmed?.[0] || "").trim();
+        const items = (invNo && invNo !== "(no reference)" && invNo !== "(unknown)")
+          ? (spreadsheetItemsByInv[invNo.toLowerCase()] || [])
+          : [];
+        alert.spreadsheetItems = items;
+        const isDuplicate = String(alert.data.flags[4] || "").trim() === "1" || items.length > 1;
+        alert.isDuplicateInvoice = isDuplicate;
+
         alerts.push(alert);
       }
     }
@@ -1306,7 +1362,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
             spreadsheetId: client.masterSheetId,
             ranges: [
               "DataChgAlert!B4:I4",
-              (hasInvoice && actionableDue) ? "InvComp!A5:Y1000" : "DataChgAlert!A1",
+              (hasInvoice && actionableDue) ? "InvComp!A5:BD1000" : "DataChgAlert!A1",
               (hasExpense && actionableDue) ? "DirComp!A5:AV1000" : "DataChgAlert!A1",
               (infoDue || proactiveDue) ? "AutoLog!A2:D200" : "DataChgAlert!A1"
             ]

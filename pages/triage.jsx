@@ -73,7 +73,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const {
     navTaskCount, setNavTaskCount, snoozedTaskCount, setSnoozedTaskCount,
     showTaskModal, setShowTaskModal, taskModalAlert, setTaskModalAlert,
-    taskModalIsProactive, setTaskModalIsProactive, taskModalNote, setTaskModalNote,
+    taskModalIsProactive, setTaskModalIsProactive, taskModalIsInfo, setTaskModalIsInfo, taskModalNote, setTaskModalNote,
     taskModalSnoozeDate, setTaskModalSnoozeDate, taskModalSnoozeTime, setTaskModalSnoozeTime,
     taskModalSubmitting, setTaskModalSubmitting, taskActionError, setTaskActionError,
     existingTaskBanner, setExistingTaskBanner,
@@ -108,9 +108,10 @@ function TriageSystemContent({ onBack, appGlobals }) {
   
   const { ignoredAlerts, isLoadingIgnored, isUnignoring, loadIgnoredAlerts, unignoreAlert } = useIgnoredAlerts(automationCommanderSheetId, setAcceptError);
 
-  const openCreateTaskModal = (alert, isProactive = false) => {
+  const openCreateTaskModal = (alert, isProactive = false, isInfo = false) => {
     setTaskModalAlert(alert);
     setTaskModalIsProactive(isProactive);
+    setTaskModalIsInfo(isInfo);
     setTaskModalNote("");
     setShowTaskModal(true);
     setTaskActionError("");

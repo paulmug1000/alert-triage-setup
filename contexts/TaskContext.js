@@ -10,9 +10,10 @@ export function TaskProvider({ children, automationCommanderSheetId }) {
   const [snoozedTaskCount, setSnoozedTaskCount] = useState(0);
   const [tasksLoadedAt, setTasksLoadedAt] = useState(0);
 
-  const openCreateTaskModal = (alert, isProactive = false) => {
+  const openCreateTaskModal = (alert, isProactive = false, isInfo = false) => {
     taskState.setTaskModalAlert(alert);
     taskState.setTaskModalIsProactive(isProactive);
+    taskState.setTaskModalIsInfo(isInfo);
     taskState.setTaskModalNote("");
     taskState.setShowTaskModal(true);
     taskState.setTaskActionError("");

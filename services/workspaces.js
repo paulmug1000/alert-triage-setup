@@ -933,7 +933,10 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
 }
 
 export async function handleAssignInvoiceToJob(req, res, sheets) {
-  const { clientSheetId, masterSheetId, rowNum, slotNum, invoice, createNewRow, jobLastRow, jobClient, jobName } = req.body;
+  const {
+    clientSheetId, masterSheetId, rowNum, slotNum, invoice, createNewRow,
+    jobLastRow, jobClient, jobName, updateClientName, newClientName, jobRowNums
+  } = req.body;
   if (!clientSheetId || !invoice) return res.status(400).json({ success: false, error: "Missing clientSheetId or invoice" });
   if (!createNewRow && (!rowNum || !slotNum)) return res.status(400).json({ success: false, error: "Missing rowNum or slotNum" });
   try {
@@ -975,6 +978,10 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
         const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
         if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
       }
+
+      const jobVAT = allRows[jobLastRow - 1]?.[34] ?? "";
+      const vatAmountVal = parseFloat(String(invoice.vatAmount || invoice.vatIncluded || 0)) || 0;
+      const vatVal = vatAmountVal > 0 ? "Yes" : (invoice.vatYesNo || jobVAT || "No");
 
       if (currentMaxRows - (trueLastRow + 1) < 1) {
         await sheets.spreadsheets.batchUpdate({
@@ -1045,16 +1052,38 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
         console.log(`  ⚠ Row grouping for new child row failed (non-fatal): ${groupErr.message}`);
       }
 
+      const effectiveClientName = (updateClientName && newClientName) ? newClientName : (jobClient || "");
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
         requestBody: {
           valueInputOption: "RAW",
           data: [
-            { range: `Confirmed!A${targetRowNum}`, values: [[jobClient || ""]] },
+            { range: `Confirmed!A${targetRowNum}`, values: [[effectiveClientName]] },
             { range: `Confirmed!B${targetRowNum}`, values: [[jobName || ""]] },
+            { range: `Confirmed!AI${targetRowNum}`, values: [[vatVal]] },
           ],
         },
       });
+    }
+
+    if (updateClientName && newClientName) {
+      const rowsToUpdate = new Set(Array.isArray(jobRowNums) ? jobRowNums : []);
+      if (rowNum) rowsToUpdate.add(rowNum);
+      if (targetRowNum) rowsToUpdate.add(targetRowNum);
+
+      if (rowsToUpdate.size > 0) {
+        const clientUpdates = Array.from(rowsToUpdate).map(r => ({
+          range: `Confirmed!A${r}`,
+          values: [[newClientName]]
+        }));
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: {
+            valueInputOption: "RAW",
+            data: clientUpdates,
+          },
+        });
+      }
     }
 
     const slotColsForSlot = slotCols[targetSlotNum];

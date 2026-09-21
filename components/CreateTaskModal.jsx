@@ -3,27 +3,29 @@ import Spinner from "./Spinner";
 import { useTasks } from "../contexts/TaskContext";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
-import { getAlertSummary } from "../utils/helpers";
+import { getAlertSummary, getFlagName } from "../utils/helpers";
 import { styles } from "../utils/styles";
 
 export default function CreateTaskModal() {
   const {
     navTaskCount, setNavTaskCount, snoozedTaskCount, setSnoozedTaskCount,
     showTaskModal, setShowTaskModal, taskModalAlert,
-    taskModalIsProactive, taskModalNote, setTaskModalNote,
+    taskModalIsProactive, taskModalIsInfo, taskModalNote, setTaskModalNote,
     taskModalSnoozeDate, setTaskModalSnoozeDate, taskModalSnoozeTime, setTaskModalSnoozeTime,
     taskModalSubmitting, setTaskModalSubmitting, taskActionError, setTaskActionError
   } = useTasks();
 
   const {
     sessionId, selectedClient, clientAlerts, setClientAlerts, setProcessedAlerts,
-    setClientsWithFlags, allNoActionResolved, resolvedNoActionFlags, setScreen,
+    setClientsWithFlags, allNoActionResolved, resolvedNoActionFlags, setResolvedNoActionFlags, setScreen,
     handlePostClear, setProactiveAlerts, setProactiveCountsByClient, clientNoActionAlerts
   } = useTriage();
 
   const { automationCommanderSheetId } = useAppGlobals();
 
   if (!showTaskModal) return null;
+
+  const isInfo = !!(taskModalIsInfo || (taskModalAlert && (taskModalAlert.isNoAction || taskModalAlert.noAction || (!taskModalIsProactive && !taskModalAlert.sheetName && taskModalAlert.flagType))));
 
   const submitCreateTask = async () => {
     if (!taskModalAlert) return;
@@ -35,6 +37,7 @@ export default function CreateTaskModal() {
         body: JSON.stringify({
           action: "create_task", alert: taskModalAlert, taskNote: taskModalNote, automationCommanderSheetId,
           isProactive: taskModalIsProactive, proactiveAlertKey: taskModalIsProactive ? taskModalAlert.alertKey : undefined,
+          isInfo,
         }),
       });
       const data = await res.json();
@@ -51,7 +54,57 @@ export default function CreateTaskModal() {
       setShowTaskModal(false); setTaskModalNote(""); setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("07:00");
       if (!taskModalSnoozeDate) setNavTaskCount(prev => prev + 1); else setSnoozedTaskCount(prev => prev + 1);
 
-      if (!taskModalIsProactive) {
+      if (isInfo) {
+        const na = taskModalAlert;
+        const infoKey = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
+        if (sessionId && selectedClient) {
+          await fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "resolve_noaction_flag",
+              sessionId,
+              clientName: selectedClient.clientName,
+              flagType: na.flagType,
+              fingerprintHash: na.fingerprintHash,
+              automationCommanderSheetId,
+            }),
+          }).catch(() => {});
+        }
+        const newResolved = new Set(resolvedNoActionFlags);
+        newResolved.add(infoKey);
+        setResolvedNoActionFlags(newResolved);
+
+        const typesToClear = new Set();
+        setClientsWithFlags(prev => prev.map(c => {
+          if (c.clientName !== selectedClient?.clientName) return c;
+          const updatedCounts = { ...c.alertCounts };
+          const updatedFlags = { ...c.flags };
+          if (updatedCounts[na.flagType] > 0) updatedCounts[na.flagType]--;
+          const remainingOfType = clientNoActionAlerts.filter(n =>
+            n.flagType === na.flagType && !newResolved.has(n.fingerprintHash || `${n.flagType}-${n.flagDetail || ""}`)
+          );
+          if (remainingOfType.length === 0) {
+            updatedFlags[na.flagType] = false;
+            typesToClear.add(na.flagType);
+          }
+          return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+        }));
+
+        if (sessionId && selectedClient && typesToClear.size > 0) {
+          fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "update_session_flags", sessionId, clientName: selectedClient.clientName, clearedFlagKeys: Array.from(typesToClear) }),
+          }).catch(() => {});
+        }
+
+        const allResolved = clientNoActionAlerts.every(n => newResolved.has(n.fingerprintHash || `${n.flagType}-${n.flagDetail || ""}`));
+        const proactiveDone = proactiveAlerts.filter(a => a.clientName === selectedClient?.clientName).length === 0;
+        if (allResolved && proactiveDone && clientAlerts.length === 0) {
+          handlePostClear([], newResolved);
+        } else {
+          setScreen("alertSelection");
+        }
+      } else if (!taskModalIsProactive) {
         const alertId = `${taskModalAlert.sheetName}-${taskModalAlert.rowNumber}`;
         const uniqueId = taskModalAlert.fingerprintHash || `${taskModalAlert.flagType || taskModalAlert.type}-${alertId}`;
         setProcessedAlerts(prev => new Set([...prev, uniqueId]));
@@ -95,13 +148,15 @@ export default function CreateTaskModal() {
         <h3 style={styles.modalTitle}>Create Task</h3>
         <p style={styles.modalSubtitle}>
           This alert will be marked as resolved and added to your task list for follow-up.
-          {taskModalIsProactive ? " (Proactive alert)" : ""}
+          {taskModalIsProactive ? " (Proactive alert)" : isInfo ? " (Informational alert)" : ""}
         </p>
         {taskModalAlert && (
           <div style={{ fontSize: "13px", color: "#555", marginBottom: "12px", padding: "8px 10px", background: "#f5f5f5", borderRadius: "4px" }}>
             <strong>{taskModalAlert.clientName}</strong>
             {taskModalIsProactive
               ? ` · ${taskModalAlert.heading || taskModalAlert.alertType || "Proactive alert"}`
+              : isInfo
+              ? ` · ${taskModalAlert.flagDetail ? `${getFlagName(taskModalAlert.flagType)}: ${taskModalAlert.flagDetail}` : (getFlagName(taskModalAlert.flagType) || taskModalAlert.flagType)}`
               : ` · ${getAlertSummary(taskModalAlert)}`}
           </div>
         )}

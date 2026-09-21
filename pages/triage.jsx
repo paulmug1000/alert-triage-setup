@@ -79,21 +79,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
   });
 
   const {
-    sessionId, setSessionId, totalAlerts, setTotalAlerts, noActionCount, setNoActionCount,
-    acknowledgedNoAction, setAcknowledgedNoAction, triageComplete, setTriageComplete,
-    claudeAnalysis, setClaudeAnalysis, isAnalyzing, setIsAnalyzing, refreshStatus, setRefreshStatus,
-    clientsWithFlags, setClientsWithFlags, selectedClient, setSelectedClient, clientAlerts, setClientAlerts,
-    currentClientAlertIndex, setCurrentClientAlertIndex, isAccepting, setIsAccepting, acceptError, setAcceptError,
-    processedAlerts, setProcessedAlerts, showIgnoreModal, setShowIgnoreModal, ignoreReason, setIgnoreReason,
-    isIgnoring, setIsIgnoring, selectingClient, setSelectingClient, previousIgnoreReason, setPreviousIgnoreReason,
-    proactiveAlerts, setProactiveAlerts, proactiveCountsByClient, setProactiveCountsByClient,
-    proactiveLoading, setProactiveLoading, proactiveLoadedAt, setProactiveLoadedAt, fromCache, setFromCache,
-    clientNoActionAlerts, setClientNoActionAlerts, resolvedNoActionFlags, setResolvedNoActionFlags,
-    noActionAnalysis, setNoActionAnalysis, noActionAnalysisLoading, setNoActionAnalysisLoading,
-    precomputedNoActionResults, setPrecomputedNoActionResults,
-    refreshTriage, startTriage, reloadFromCache, selectClient, selectAlert, acceptOption,
-    allNoActionResolved, autoClearFlags, handlePostClear, groupedAlerts, liveAlertCount,
-    computeAlertCheckCount, analyzeNoActionFlag, ignoreAlert, loadProactiveAlerts, checkExistingTask
+    sessionId, selectedClient, clientAlerts, proactiveAlerts, 
+    liveAlertCount, startTriage, acceptError, setAcceptError
   } = triageEngine;
 
   // --- INITIAL DATA LOAD ---

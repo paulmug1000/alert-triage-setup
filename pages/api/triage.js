@@ -57,7 +57,7 @@ import {
   handleProcessPayrollDocument, handleProcessTimeDocument
 } from "../../services/importTools";
 import {
-  handleBustCache, handleGetAlerts, handleRemoveAlert, handleUpdateSessionFlags,
+  handleBustCache, handleGetAlerts, handleRemoveAlert, handleIgnoreAlert, handleUpdateSessionFlags,
   handleResolveNoActionFlag, handleRecordDecision, handleBulkIgnoreAlerts,
   handleAcknowledgeProactiveAlert, handleResolveProactiveAlert, handleBulkAcknowledgeProactiveAlerts
 } from "../../services/alertState";
@@ -389,6 +389,8 @@ export default async function handler(req, res) {
       return await handleAnalyzeNoActionFlag(req, res, sheets);
     } else if (action === "remove_alert") {
       return await handleRemoveAlert(req, res);
+    } else if (action === "ignore_alert") {
+      return await handleIgnoreAlert(req, res, sheets);
     } else if (action === "update_session_flags") {
       return await handleUpdateSessionFlags(req, res);
     } else if (action === "resolve_noaction_flag") {

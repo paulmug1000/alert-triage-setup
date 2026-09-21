@@ -365,35 +365,11 @@ function TriageSystemContent({ onBack, appGlobals }) {
         <ClientSelectionView
           styles={styles}
           isLoading={isLoading}
-          refreshStatus={refreshStatus}
           error={error}
-          acceptError={acceptError}
-          setAcceptError={setAcceptError}
-          clientsWithFlags={clientsWithFlags}
-          proactiveAlerts={proactiveAlerts}
-          proactiveCountsByClient={proactiveCountsByClient}
-          proactiveLoadedAt={proactiveLoadedAt}
-          allClientsMap={allClientsMap}
-          assignedByClient={assignedByClient}
-          assignedAppIds={assignedAppIds}
           getFlagName={getFlagName}
           PROACTIVE_TYPE_LABELS={PROACTIVE_TYPE_LABELS}
-          selectingClient={selectingClient}
-          selectClient={selectClient}
           setScreen={setScreen}
           loadIgnoredAlerts={loadIgnoredAlerts}
-          showDebugPanel={showDebugPanel}
-          setShowDebugPanel={setShowDebugPanel}
-          reloadFromCache={reloadFromCache}
-          refreshTriage={refreshTriage}
-          debugClientName={debugClientName}
-          setDebugClientName={setDebugClientName}
-          runDebug={runDebug}
-          debugLoading={debugLoading}
-          setDebugLoading={setDebugLoading}
-          automationCommanderSheetId={automationCommanderSheetId}
-          setDebugResult={setDebugResult}
-          debugResult={debugResult}
         />
       );
     }
@@ -403,37 +379,12 @@ function TriageSystemContent({ onBack, appGlobals }) {
       return (
         <AlertSelectionView
           styles={styles}
-          selectedClient={selectedClient}
-          clientAlerts={clientAlerts}
-          setClientAlerts={setClientAlerts}
-          clientNoActionAlerts={clientNoActionAlerts}
-          proactiveAlerts={proactiveAlerts}
-          setProactiveAlerts={setProactiveAlerts}
-          setProactiveCountsByClient={setProactiveCountsByClient}
-          groupedAlerts={groupedAlerts}
-          clientsWithFlags={clientsWithFlags}
-          allClientsMap={allClientsMap}
-          acceptError={acceptError}
-          setAcceptError={setAcceptError}
           setScreen={setScreen}
-          selectAlert={selectAlert}
           getFlagName={getFlagName}
           getAlertSummary={getAlertSummary}
           PROACTIVE_TYPE_LABELS={PROACTIVE_TYPE_LABELS}
           openCreateTaskModal={openCreateTaskModal}
           setActiveNav={setActiveNav}
-          resolvedNoActionFlags={resolvedNoActionFlags} 
-          setResolvedNoActionFlags={setResolvedNoActionFlags}
-          setClientsWithFlags={setClientsWithFlags}
-          sessionId={sessionId}
-          automationCommanderSheetId={automationCommanderSheetId}
-          autoClearFlags={autoClearFlags}
-          handlePostClear={handlePostClear}
-          noActionAnalysis={noActionAnalysis}
-          noActionAnalysisLoading={noActionAnalysisLoading}
-          analyzeNoActionFlag={analyzeNoActionFlag}
-          setProcessedAlerts={setProcessedAlerts}
-          allNoActionResolved={allNoActionResolved}
         />
       );
     }
@@ -443,46 +394,11 @@ function TriageSystemContent({ onBack, appGlobals }) {
       return (
         <TriageAnalysisView
           styles={styles}
-          selectedClient={selectedClient}
-          clientAlerts={clientAlerts}
-          currentClientAlertIndex={currentClientAlertIndex}
-          setCurrentClientAlertIndex={setCurrentClientAlertIndex}
-          acceptError={acceptError}
-          setAcceptError={setAcceptError}
           setScreen={setScreen}
-          clientsWithFlags={clientsWithFlags}
-          allClientsMap={allClientsMap}
-          fromCache={fromCache}
-          setFromCache={setFromCache}
-          automationCommanderSheetId={automationCommanderSheetId}
-          selectAlert={selectAlert}
-          setClientAlerts={setClientAlerts}
           getFlagName={getFlagName}
-          claudeAnalysis={claudeAnalysis}
-          setClaudeAnalysis={setClaudeAnalysis}
-          previousIgnoreReason={previousIgnoreReason}
-          setPreviousIgnoreReason={setPreviousIgnoreReason}
-          acceptOption={acceptOption}
-          isAccepting={isAccepting}
-          isAnalyzing={isAnalyzing}
-          setIsAnalyzing={setIsAnalyzing}
-          existingTaskBanner={existingTaskBanner}
-          setExistingTaskBanner={setExistingTaskBanner}
-          showIgnoreModal={showIgnoreModal}
-          setShowIgnoreModal={setShowIgnoreModal}
-          ignoreReason={ignoreReason}
-          setIgnoreReason={setIgnoreReason}
-          isIgnoring={isIgnoring}
-          ignoreAlert={ignoreAlert}
           openCreateTaskModal={openCreateTaskModal}
           setActiveNav={setActiveNav}
           handleNavTasks={handleNavTasks}
-          sessionId={sessionId}
-          processedAlerts={processedAlerts}
-          setProcessedAlerts={setProcessedAlerts}
-          allNoActionResolved={allNoActionResolved}
-          resolvedNoActionFlags={resolvedNoActionFlags}
-          handlePostClear={handlePostClear}
         />
       );
     }

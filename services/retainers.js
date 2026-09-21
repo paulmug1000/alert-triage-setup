@@ -1123,29 +1123,6 @@ export async function handleTidyUpRetainers(req, res, sheets) {
         }
     }
 
-    let targetBlocks = [...filteredBaseBlocks];
-
-    let finInsertIdx = finCluster ? getInsertIndex(finCluster) : 0;
-    if (finishedRetainers.length > 0) {
-        targetBlocks.splice(finInsertIdx, 0, spacers[0], ...finishedRetainers, spacers[1]);
-    }
-
-    let actInsertIdx;
-    if (actCluster && actCluster !== finCluster) {
-        const anchor = getAnchorBlock(actCluster);
-        actInsertIdx = anchor ? targetBlocks.findIndex(b => b.id === anchor.id) + 1 : 0;
-    } else {
-        actInsertIdx = finishedRetainers.length > 0 ? targetBlocks.findIndex(b => b.id === spacers[1].id) + 1 : finInsertIdx;
-    }
-
-    if (activeRetainers.length > 0) {
-        targetBlocks.splice(actInsertIdx, 0, spacers[2], ...activeRetainers, spacers[3]);
-    }
-
-    if (extraneousBlanks.length > 0) {
-        targetBlocks.push(...extraneousBlanks);
-    }
-
     let currentState = [...initialSheetState];
     const blockSizes = {};
     for (const b of currentState) blockSizes[b.id] = b.size;
@@ -1158,32 +1135,136 @@ export async function handleTidyUpRetainers(req, res, sheets) {
 
     const moveRequests = [];
 
-    for (let i = 0; i < targetBlocks.length; i++) {
-        const targetBlock = targetBlocks[i];
-        const currIdx = currentState.findIndex(b => b.id === targetBlock.id);
+    // Phase 1: Move contiguous runs of extraneous blanks (> 2 consecutive) to the end of the sheet.
+    // Moving from bottom-to-top ensures that moving lower rows does not alter row coordinates of runs above them.
+    const extraneousSet = new Set(extraneousBlanks.map(b => b.id));
+    const runs = [];
+    let currentRun = null;
+    for (let i = 0; i < currentState.length; i++) {
+      if (extraneousSet.has(currentState[i].id)) {
+        if (!currentRun) currentRun = { startIdx: i, count: 1 };
+        else currentRun.count++;
+      } else {
+        if (currentRun) { runs.push(currentRun); currentRun = null; }
+      }
+    }
+    if (currentRun) runs.push(currentRun);
 
-        if (currIdx > i) {
-            const startIndex = getAbsoluteIndex(currentState, currIdx);
-            const endIndex = startIndex + blockSizes[targetBlock.id];
-            const destinationIndex = getAbsoluteIndex(currentState, i);
+    for (let r = runs.length - 1; r >= 0; r--) {
+      const run = runs[r];
+      let runSize = 0;
+      for (let k = 0; k < run.count; k++) runSize += blockSizes[currentState[run.startIdx + k].id];
+      const startIndex = getAbsoluteIndex(currentState, run.startIdx);
+      const endIndex = startIndex + runSize;
+      const destinationIndex = getAbsoluteIndex(currentState, currentState.length);
 
-            moveRequests.push({
-                moveDimension: {
-                    source: { sheetId: gridSheetId, dimension: "ROWS", startIndex, endIndex },
-                    destinationIndex
-                }
-            });
-
-            const [moved] = currentState.splice(currIdx, 1);
-            currentState.splice(i, 0, moved);
+      moveRequests.push({
+        moveDimension: {
+          source: { sheetId: gridSheetId, dimension: "ROWS", startIndex, endIndex },
+          destinationIndex
         }
+      });
+
+      const removed = currentState.splice(run.startIdx, run.count);
+      currentState.push(...removed);
+    }
+
+    // Helper: Relocates a specific block in Google Sheets and currentState to sit immediately after prevBlockId
+    const placeBlockAfter = (item, prevBlockId) => {
+      const currIdx = currentState.findIndex(b => b.id === item.id);
+      if (currIdx === -1) return;
+
+      if (!prevBlockId) {
+        if (currIdx === 0) return;
+        const startIndex = getAbsoluteIndex(currentState, currIdx);
+        const endIndex = startIndex + blockSizes[item.id];
+        const destinationIndex = getAbsoluteIndex(currentState, 0);
+
+        moveRequests.push({
+          moveDimension: {
+            source: { sheetId: gridSheetId, dimension: "ROWS", startIndex, endIndex },
+            destinationIndex
+          }
+        });
+
+        const [moved] = currentState.splice(currIdx, 1);
+        currentState.unshift(moved);
+        return;
+      }
+
+      const prevIdx = currentState.findIndex(b => b.id === prevBlockId);
+      if (prevIdx === -1 || currIdx === prevIdx + 1) return; // already in place
+
+      const startIndex = getAbsoluteIndex(currentState, currIdx);
+      const endIndex = startIndex + blockSizes[item.id];
+
+      let destinationIndex;
+      let insertAt;
+
+      if (currIdx > prevIdx) {
+        // Moving upward: target is prevIdx + 1
+        const targetIdx = prevIdx + 1;
+        destinationIndex = getAbsoluteIndex(currentState, targetIdx);
+        insertAt = targetIdx;
+      } else {
+        // Moving downward: insert after prevIdx
+        const targetIdx = prevIdx + 1;
+        destinationIndex = targetIdx < currentState.length
+          ? getAbsoluteIndex(currentState, targetIdx)
+          : getAbsoluteIndex(currentState, currentState.length);
+        insertAt = prevIdx; // removing item at currIdx < prevIdx shifts prevIdx left by 1
+      }
+
+      moveRequests.push({
+        moveDimension: {
+          source: { sheetId: gridSheetId, dimension: "ROWS", startIndex, endIndex },
+          destinationIndex
+        }
+      });
+
+      const [moved] = currentState.splice(currIdx, 1);
+      currentState.splice(insertAt, 0, moved);
+    };
+
+    // Phase 2: Relocate finished retainers cluster (bracketed by spacers[0] and spacers[1])
+    if (finishedRetainers.length > 0) {
+      const finAnchor = getAnchorBlock(finCluster);
+      let lastFinId = finAnchor ? finAnchor.id : null;
+      const finishedClusterItems = [spacers[0], ...finishedRetainers, spacers[1]];
+      for (const item of finishedClusterItems) {
+        placeBlockAfter(item, lastFinId);
+        lastFinId = item.id;
+      }
+    }
+
+    // Phase 3: Relocate active retainers cluster (bracketed by spacers[2] and spacers[3])
+    if (activeRetainers.length > 0) {
+      let actAnchor;
+      if (actCluster && actCluster !== finCluster) {
+        actAnchor = getAnchorBlock(actCluster);
+      } else {
+        actAnchor = finishedRetainers.length > 0 ? spacers[1] : (getAnchorBlock(finCluster) || null);
+      }
+
+      let lastActId = actAnchor ? actAnchor.id : null;
+      const activeClusterItems = [spacers[2], ...activeRetainers, spacers[3]];
+      for (const item of activeClusterItems) {
+        placeBlockAfter(item, lastActId);
+        lastActId = item.id;
+      }
     }
 
     if (moveRequests.length > 0) {
+      const CHUNK_SIZE = 10;
+      console.log(`  🚀 tidy_up_retainers: executing ${moveRequests.length} targeted block moves in chunks of ${CHUNK_SIZE}...`);
+      for (let i = 0; i < moveRequests.length; i += CHUNK_SIZE) {
+        const chunk = moveRequests.slice(i, i + CHUNK_SIZE);
+        console.log(`    📦 batchUpdate chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(moveRequests.length / CHUNK_SIZE)} (${chunk.length} moves)...`);
         await sheets.spreadsheets.batchUpdate({
-            spreadsheetId: sheetIdClean,
-            requestBody: { requests: moveRequests }
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: chunk }
         });
+      }
     }
 
     return res.status(200).json({ success: true, moves: moveRequests.length });

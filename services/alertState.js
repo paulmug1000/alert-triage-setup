@@ -326,15 +326,6 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
   }
 }
 
-export async function handleIgnoreAlert(req, res, sheets) {
-  const { alert, automationCommanderSheetId } = req.body;
-  if (!alert || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing alert or acId" });
-  
-  // Wrap the single alert in an array and reuse the bulk ignore logic
-  req.body.alerts = [alert];
-  return handleBulkIgnoreAlerts(req, res, sheets);
-}
-
 export async function handleUnignoreAlert(req, res, sheets) {
   const { fingerprintHash, automationCommanderSheetId } = req.body;
   if (!fingerprintHash || !automationCommanderSheetId) return res.status(400).json({ success: false, error: "Missing required fields" });

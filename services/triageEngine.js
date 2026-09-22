@@ -311,7 +311,7 @@ export async function readInvCompAlerts(sheets, spreadsheetId, cachedData = null
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
       const row = rows[rowIdx];
       if (!row || row.length === 0) continue;
-      const hasDiscrepancy = [18, 19, 20, 21, 22, 23, 24].some((idx) => String(row[idx] || "").trim() === "1");
+      const hasDiscrepancy = [18, 19, 20, 21, 23, 24].some((idx) => String(row[idx] || "").trim() === "1");
       if (hasDiscrepancy) {
         const alert = {
           type: "invoice",

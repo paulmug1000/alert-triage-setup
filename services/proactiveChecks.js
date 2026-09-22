@@ -301,9 +301,11 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         if (possibleMatch1) {
           detail1 += `\nPossible match: invoice ${possibleMatch1.invoiceNo} for £${possibleMatch1.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch1.sentDate} (confidence: ${possibleMatch1.confidence})${possibleMatch1.attachedToRow ? ` — already attached to Confirmed row ${possibleMatch1.attachedToRow}` : " — not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;
         }
+        const expectedDateStr1 = unsentSendDate ? fmtDate(unsentSendDate) : "";
         alerts.push({
           alertType: "retainer_invoice",
-          alertKey: `retainer_invoice|${clientName}|${clientNameRow}|${jobName}`,
+          alertKey: `retainer_invoice|${clientName}|${clientNameRow}|${jobName}|${expectedDateStr1}`,
+          legacyAlertKey: `retainer_invoice|${clientName}|${clientNameRow}|${jobName}`,
           heading: "Retainer invoice not sent",
           detail: detail1, jobName, endClientName: clientNameRow, confirmedRow: r + 1,
           stableJobKey: `${clientNameRow}|${jobName}`, revenue: String(revenue || ""),
@@ -383,9 +385,11 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
             detail2 += `\nNote: invoice ${possibleMatch2.invoiceNo} for £${possibleMatch2.amount.toFixed(2)}${possibleMatch2.attachedToRow ? ` already exists on Confirmed row ${possibleMatch2.attachedToRow}` : " already exists"} but is still marked "${possibleMatch2.status || "unsent"}" — it likely just needs sending.`;
           }
         }
+        const expectedDateStr2 = expectedBy ? fmtDate(expectedBy) : "";
         alerts.push({
           alertType: "retainer_invoice",
-          alertKey: `retainer_invoice|${clientName}|${clientNameRow}|${jobName}`,
+          alertKey: `retainer_invoice|${clientName}|${clientNameRow}|${jobName}|${expectedDateStr2}`,
+          legacyAlertKey: `retainer_invoice|${clientName}|${clientNameRow}|${jobName}`,
           heading: "Retainer job expected invoice not sent",
           detail: detail2, jobName, endClientName: clientNameRow, confirmedRow: r + 1,
           stableJobKey: `${clientNameRow}|${jobName}`, revenue: String(revenue || ""),
@@ -792,7 +796,10 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
       if (!hasRealInvoice) {
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
         alerts.push({
-          alertType: "uninvoiced_new_job", alertKey: `uninvoiced_new_job|${stableKey}`, stableJobKey: stableKey,
+          alertType: "uninvoiced_new_job",
+          alertKey: `uninvoiced_new_job|${clientName}|${jobClient || ""}|${stableKey}`,
+          legacyAlertKey: `uninvoiced_new_job|${stableKey}`,
+          stableJobKey: stableKey,
           heading: "Job started over a month ago with no invoices sent",
           detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job started ${fmtDate(startDate)} (over a month ago) but no real invoices have been recorded yet. All invoice slots are empty or contain manual placeholders.`,
           jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), startDate: fmtDate(startDate),
@@ -851,7 +858,10 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
         const draftNote = draftCount > 0 ? ` Note: ${draftCount} invoice(s) totalling £${draftTotal.toFixed(2)} have a reference but are still Draft (not yet sent) — these are not counted as invoiced.` : "";
         alerts.push({
-          alertType: "uninvoiced_revenue", alertKey: `uninvoiced_revenue|${stableKey}`, stableJobKey: stableKey,
+          alertType: "uninvoiced_revenue",
+          alertKey: `uninvoiced_revenue|${clientName}|${jobClient || ""}|${stableKey}`,
+          legacyAlertKey: `uninvoiced_revenue|${stableKey}`,
+          stableJobKey: stableKey,
           heading: "Completed job has uninvoiced revenue",
           detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, revenue = £${revenueAmt.toFixed(2)}, real sent/paid invoiced (excl. placeholders and drafts) = £${totalRealInvoiced.toFixed(2)} — £${uninvoiced.toFixed(2)} uninvoiced.${draftNote}`,
           jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)),
@@ -1124,7 +1134,10 @@ export async function checkUnreceivedExpenses_(clientName, clientSheetId, shared
         const placeholderNote = placeholderCount > 0 ? ` Note: ${placeholderCount} expense(s) totalling £${placeholderTotal.toFixed(2)} are manual estimates or unreconciled-gap placeholders — these are not counted as received.` : "";
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
         alerts.push({
-          alertType: "unreceived_expenses", alertKey: `unreceived_expenses|${stableKey}`, stableJobKey: stableKey,
+          alertType: "unreceived_expenses",
+          alertKey: `unreceived_expenses|${clientName}|${jobClient || ""}|${stableKey}`,
+          legacyAlertKey: `unreceived_expenses|${stableKey}`,
+          stableJobKey: stableKey,
           heading: "Completed job has unreceived expenses",
           detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, direct cost budget = £${directCostsAmt.toFixed(2)}, real received expenses (excl. estimates/gaps) = £${totalRealReceived.toFixed(2)} — £${unreceived.toFixed(2)} unreceived.${placeholderNote}`,
           jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, directCosts: String(directCostsAmt), endDate: fmtDate(endDate), unreceivedAmount: String(unreceived.toFixed(2)), placeholderCount: String(placeholderCount), placeholderTotal: String(placeholderTotal.toFixed(2)),

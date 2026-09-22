@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter } from "./sheetsClient";
 import { 
-  buildAlertFingerprint, ensureAlertMemoryTab, readAlertMemory, 
+  buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory, 
   findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow, 
   deleteAlertMemoryRows, purgeOldAlertMemoryRows,
   getHandledFingerprintHashes_, findPreviousIgnoreReason,
@@ -1388,6 +1388,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
               a.masterSheetId = client.masterSheetId;
               a.flagType = "invoiceDashboardDiscr"; 
               a._fingerprint = buildAlertFingerprint(a); 
+              a._legacyFingerprint = buildAlertFingerprintLegacy(a);
             });
             sweepItems.push({
               clientName: client.clientName, alertType: "invoiceDashboardDiscr",
@@ -1411,6 +1412,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
               a.masterSheetId = client.masterSheetId;
               a.flagType = "expenseDashboardDiscr"; 
               a._fingerprint = buildAlertFingerprint(a); 
+              a._legacyFingerprint = buildAlertFingerprintLegacy(a);
             });
             sweepItems.push({
               clientName: client.clientName, alertType: "expenseDashboardDiscr",
@@ -1431,6 +1433,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 a.clientId = client.clientSheetId;
                 a.masterSheetId = client.masterSheetId;
                 a._fingerprint = buildAlertFingerprint(a); 
+                a._legacyFingerprint = buildAlertFingerprintLegacy(a);
               });
               const dashAlerts = crmAlerts.filter(a => (a.flagType || a.alertType) === dashKey);
               const appAlerts  = crmAlerts.filter(a => (a.flagType || a.alertType) === appKey);
@@ -1515,6 +1518,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
             proAlerts.forEach(a => {
               const fpInput = a.alertKey;
               a._fingerprint = createHash("sha256").update(fpInput).digest("hex").substring(0, 16);
+              if (a.legacyAlertKey) {
+                a._legacyFingerprint = createHash("sha256").update(a.legacyAlertKey).digest("hex").substring(0, 16);
+              }
               a.summary = a.heading || a.detail || a.alertType;
               if (groupedProactive[a.alertType]) groupedProactive[a.alertType].push(a);
             });
@@ -1557,7 +1563,11 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
       for (const item of sweepItems) {
         if (item.category === "discrepancy" || item.category === "proactive") {
-          const freshHashes = new Set((item.alerts || []).map(a => a._fingerprint).filter(Boolean));
+          const freshHashes = new Set();
+          (item.alerts || []).forEach(a => {
+            if (a._fingerprint) freshHashes.add(a._fingerprint);
+            if (a._legacyFingerprint) freshHashes.add(a._legacyFingerprint);
+          });
           const staleRows = memoryRows.filter(r => 
             r.clientName === item.clientName && 
             r.alertType === item.alertType && 
@@ -1592,7 +1602,6 @@ export async function handleRunFlagSweep(req, res, sheets) {
               });
               console.log(`  🩹 AUTO-RESOLVED stale ${item.alertType} ${stale.status} for ${item.clientName}: ${stale.fingerprintHash} -> ${newStatus}`);
               stale.status = newStatus;
-              existingHashes.add(stale.fingerprintHash);
               
               if (wasTask) {
                 await redisClient.del("triage_tasks_cache").catch(() => {});
@@ -1637,69 +1646,12 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
         if (!item.alerts || item.alerts.length === 0) continue;
 
-        const existingAlertsToUpdate = item.alerts.filter(a => a._fingerprint && existingHashes.has(a._fingerprint));
-        for (const alert of existingAlertsToUpdate) {
-          const exRow = memoryRows.find(r => r.fingerprintHash === alert._fingerprint && r.clientName === item.clientName);
-          if (exRow && (exRow.status === "cached" || exRow.status === "task")) {
-            let summary = alert.summary;
-            if (typeof summary === "object" && summary !== null) {
-              summary = summary.summary;
-            }
-            if (!summary && (item.alertType.startsWith("crmPipe") || item.alertType.startsWith("crmConf"))) {
-              const crmArr = alert.data?.crmData || [];
-              const shtArr = alert.data?.sheetData || [];
-              const client = crmArr[0] || shtArr[1] || "";
-              const job    = crmArr[1] || shtArr[2] || "";
-              const code   = crmArr[2] || shtArr[0] || "";
-              const jobDesc = [client, job, code].filter(Boolean).join(" — ");
-              summary = `CRM ${item.alertType} ${jobDesc}`.trim();
-            }
-            summary = summary || `${item.alertType} — ${item.clientName} (row ${alert.rowNumber})`;
-
-            const { _fingerprint, ...alertForSnapshot } = alert;
-            const detectedAtIso = new Date().toISOString();
-            alertForSnapshot.detectedAt = detectedAtIso;
-            
-            let newSnapshotStr;
-            if (exRow.status === "task") {
-              try {
-                const oldSnap = JSON.parse(exRow.dataSnapshot || "{}");
-                newSnapshotStr = JSON.stringify({ ...oldSnap, ...alertForSnapshot });
-              } catch(e) { newSnapshotStr = JSON.stringify(alertForSnapshot); }
-            } else {
-              newSnapshotStr = JSON.stringify(alertForSnapshot);
-            }
-
-            if (exRow.dataSnapshot !== newSnapshotStr || exRow.alertSummary !== summary) {
-              try {
-                await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
-                  ...exRow,
-                  alertSummary: summary,
-                  dataSnapshot: newSnapshotStr,
-                  lastRechecked: detectedAtIso
-                });
-                console.log(`  🔄 Updated snapshot for existing alert: ${exRow.fingerprintHash}`);
-              } catch(e) {
-                console.log(`  ⚠️ Failed to update snapshot: ${e.message}`);
-              }
-            }
-          }
-        }
-
-        const newAlerts = item.alerts.filter(a => a._fingerprint && !existingHashes.has(a._fingerprint));
-        if (newAlerts.length === 0) continue;
-        flagsRaised++;
-        console.log(`  ✅ ${item.clientName} / ${item.alertType} → TRUE (fingerprint: ${newAlerts.length} of ${item.alerts.length} new)`);
-
-        const clientMeta = clientMetaMap.get(item.clientName);
-
-        for (const alert of newAlerts) {
+        for (const alert of item.alerts) {
           try {
             let summary = alert.summary;
             if (typeof summary === "object" && summary !== null) {
               summary = summary.summary;
             }
-
             if (!summary && (item.alertType.startsWith("crmPipe") || item.alertType.startsWith("crmConf"))) {
               const crmArr = alert.data?.crmData || [];
               const shtArr = alert.data?.sheetData || [];
@@ -1710,15 +1662,128 @@ export async function handleRunFlagSweep(req, res, sheets) {
               summary = `CRM ${item.alertType} ${jobDesc}`.trim();
             }
             summary = summary || `${item.alertType} — ${item.clientName} (row ${alert.rowNumber})`;
-            const { _fingerprint, ...alertForSnapshot } = alert;
-            
+
+            // Dual-hash match: check modern hash first, then legacy hash
+            let exRow = memoryRows.find(r => r.clientName === item.clientName && r.fingerprintHash === alert._fingerprint);
+            if (!exRow && alert._legacyFingerprint) {
+              exRow = memoryRows.find(r => r.clientName === item.clientName && r.fingerprintHash === alert._legacyFingerprint);
+            }
+
             const detectedAtIso = new Date().toISOString();
+            const { _fingerprint, _legacyFingerprint, ...alertForSnapshot } = alert;
             alertForSnapshot.detectedAt = detectedAtIso;
-            
+
+            if (exRow) {
+              // Case 1: Auto-resolved Task that returned
+              if (exRow.status === "task_resolved") {
+                let snap = {};
+                try { snap = JSON.parse(exRow.dataSnapshot || "{}"); } catch(e) {}
+                if (snap.autoResolvedReason) {
+                  delete snap.resolvedAt;
+                  delete snap.autoResolvedReason;
+                  const furtherNotes = Array.isArray(snap.furtherNotes) ? snap.furtherNotes : [];
+                  furtherNotes.push({
+                    date: detectedAtIso,
+                    note: "[Auto-Reopened] Underlying alert condition detected again on sheet"
+                  });
+                  snap.furtherNotes = furtherNotes;
+                  snap.detectedAt = detectedAtIso;
+
+                  await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
+                    ...exRow,
+                    fingerprintHash: alert._fingerprint,
+                    status: "task",
+                    alertSummary: summary,
+                    lastRechecked: detectedAtIso,
+                    dataSnapshot: JSON.stringify(snap)
+                  });
+                  exRow.status = "task";
+                  exRow.fingerprintHash = alert._fingerprint;
+                  await redisClient.del("triage_tasks_cache").catch(() => {});
+                  flagsRaised++;
+                  console.log(`  🔄 REVIVED auto-resolved task for ${item.clientName}: ${summary}`);
+                  raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "task_reopened" });
+                  continue;
+                }
+              }
+
+              // Case 2: Auto-resolved regular alert that returned
+              if (exRow.status === "auto_resolved" || exRow.status === "superseded") {
+                const clientMeta = clientMetaMap.get(item.clientName);
+                const newStatus = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, new Date(detectedAtIso).getTime(), null);
+
+                await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
+                  ...exRow,
+                  fingerprintHash: alert._fingerprint,
+                  status: newStatus,
+                  alertSummary: summary,
+                  lastRechecked: detectedAtIso,
+                  dataSnapshot: JSON.stringify(alertForSnapshot)
+                });
+                exRow.status = newStatus;
+                exRow.fingerprintHash = alert._fingerprint;
+
+                if (newStatus === "pending_automation") {
+                  alertsDelayed++;
+                  raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "delayed" });
+                } else {
+                  flagsRaised++;
+                  raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "revived" });
+                }
+                console.log(`  🔄 REVIVED auto-resolved alert for ${item.clientName} (${item.alertType}): ${alert._fingerprint} -> ${newStatus}`);
+                continue;
+              }
+
+              // Case 3: Previously ignored or accepted
+              if (exRow.status === "ignored" || exRow.status === "accepted") {
+                if (exRow.fingerprintHash !== alert._fingerprint) {
+                  await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
+                    ...exRow,
+                    fingerprintHash: alert._fingerprint,
+                    lastRechecked: detectedAtIso
+                  });
+                  exRow.fingerprintHash = alert._fingerprint;
+                  console.log(`  🏷️ Migrated ${exRow.status} alert hash for ${item.clientName}: ${alert._fingerprint}`);
+                }
+                continue;
+              }
+
+              // Case 4: Already active (cached, task, pending_automation)
+              let newSnapshotStr;
+              if (exRow.status === "task") {
+                try {
+                  const oldSnap = JSON.parse(exRow.dataSnapshot || "{}");
+                  newSnapshotStr = JSON.stringify({ ...oldSnap, ...alertForSnapshot });
+                } catch(e) { newSnapshotStr = JSON.stringify(alertForSnapshot); }
+              } else {
+                newSnapshotStr = JSON.stringify(alertForSnapshot);
+              }
+
+              const hashNeedsMigration = exRow.fingerprintHash !== alert._fingerprint;
+              if (exRow.dataSnapshot !== newSnapshotStr || exRow.alertSummary !== summary || hashNeedsMigration) {
+                try {
+                  await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
+                    ...exRow,
+                    fingerprintHash: alert._fingerprint,
+                    alertSummary: summary,
+                    dataSnapshot: newSnapshotStr,
+                    lastRechecked: detectedAtIso
+                  });
+                  exRow.fingerprintHash = alert._fingerprint;
+                  exRow.dataSnapshot = newSnapshotStr;
+                  console.log(`  🔄 Updated active alert for ${item.clientName}: ${exRow.fingerprintHash}`);
+                } catch(e) {
+                  console.log(`  ⚠️ Failed to update snapshot: ${e.message}`);
+                }
+              }
+              continue;
+            }
+
+            // Case 5: Brand new alert!
             const clientMeta = clientMetaMap.get(item.clientName);
             const status = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, new Date(detectedAtIso).getTime(), null);
 
-            await appendAlertMemoryRow(sheets, acIdSweep, {
+            const newRow = {
               fingerprintHash: alert._fingerprint,
               alertType: item.alertType,
               clientName: item.clientName,
@@ -1727,8 +1792,11 @@ export async function handleRunFlagSweep(req, res, sheets) {
               status: status,
               category: item.category || "discrepancy",
               dataSnapshot: JSON.stringify(alertForSnapshot),
-            });
-            
+            };
+            await appendAlertMemoryRow(sheets, acIdSweep, newRow);
+            memoryRows.push(newRow);
+
+            flagsRaised++;
             if (status === "pending_automation") {
               console.log(`  💤 Alert ${alert._fingerprint} is pending automation run`);
               alertsDelayed++;
@@ -1736,8 +1804,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
             } else {
               raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "raised" });
             }
+            console.log(`  ✅ NEW alert for ${item.clientName} / ${item.alertType}: ${alert._fingerprint}`);
           } catch (memErr) {
-            console.log(`  ⚠️ Could not write AlertMemory row for ${item.clientName}/${item.alertType}: ${memErr.message}`);
+            console.log(`  ⚠️ Could not process AlertMemory row for ${item.clientName}/${item.alertType}: ${memErr.message}`);
           }
         }
       }
@@ -1836,26 +1905,44 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
             console.log(`  ⚠️ Failed to fetch shared data for ${clientName}: ${e.message}`);
           }
 
-          let currentAlerts = [];
+        let currentAlerts = [];
         if (alertType === "invoiceDashboardDiscr" || alertType === "invoice") {
           currentAlerts = await readInvCompAlerts(sheets, client.masterSheetId);
-          currentAlerts.forEach(a => { a.flagType = "invoiceDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
+          currentAlerts.forEach(a => { 
+            a.clientName = client.clientName;
+            a.flagType = "invoiceDashboardDiscr"; 
+            a._fingerprint = buildAlertFingerprint(a); 
+            a._legacyFingerprint = buildAlertFingerprintLegacy(a);
+          });
         } else if (alertType === "expenseDashboardDiscr" || alertType === "expense") {
           currentAlerts = await readDirCompAlerts(sheets, client.masterSheetId);
-          currentAlerts.forEach(a => { a.flagType = "expenseDashboardDiscr"; a._fingerprint = buildAlertFingerprint(a); });
+          currentAlerts.forEach(a => { 
+            a.clientName = client.clientName;
+            a.flagType = "expenseDashboardDiscr"; 
+            a._fingerprint = buildAlertFingerprint(a); 
+            a._legacyFingerprint = buildAlertFingerprintLegacy(a);
+          });
         } else if (["crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr", "crm"].includes(alertType)) {
           if (alertType === "crm") {
             const pipeAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, "Pipeline", ["crmPipeDashDiscr", "crmPipeAppDiscr"], client.masterSheetId);
             const confAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, "Confirmed", ["crmConfDashDiscr", "crmConfAppDiscr"], client.masterSheetId);
             currentAlerts = [...pipeAlerts, ...confAlerts];
-            currentAlerts.forEach(a => { a._fingerprint = buildAlertFingerprint(a); });
+            currentAlerts.forEach(a => { 
+              a.clientName = client.clientName;
+              a._fingerprint = buildAlertFingerprint(a); 
+              a._legacyFingerprint = buildAlertFingerprintLegacy(a);
+            });
           } else {
             const mode = alertType.startsWith("crmPipe") ? "Pipeline" : "Confirmed";
             const pairKey = alertType.endsWith("DashDiscr")
               ? [alertType, alertType.replace("DashDiscr", "AppDiscr")]
               : [alertType.replace("AppDiscr", "DashDiscr"), alertType];
             currentAlerts = await readCRMCompAlerts(sheets, client.masterSheetId, mode, pairKey, client.masterSheetId);
-            currentAlerts.forEach(a => { a._fingerprint = buildAlertFingerprint(a); });
+            currentAlerts.forEach(a => { 
+              a.clientName = client.clientName;
+              a._fingerprint = buildAlertFingerprint(a); 
+              a._legacyFingerprint = buildAlertFingerprintLegacy(a);
+            });
             currentAlerts = currentAlerts.filter(a => (a.flagType || a.alertType) === alertType);
           }
         } else {
@@ -1865,7 +1952,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
         }
 
         for (const row of rows) {
-          const match = currentAlerts.find(a => a._fingerprint === row.fingerprintHash);
+          const match = currentAlerts.find(a => a._fingerprint === row.fingerprintHash || a._legacyFingerprint === row.fingerprintHash);
           if (!match) {
             console.log(`  ⏭ ${clientName}/${alertType}: fingerprint ${row.fingerprintHash.slice(0, 8)}… no longer found — marking auto_resolved`);
             try {
@@ -1877,6 +1964,15 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
             }
             notFound++;
             continue;
+          }
+
+          if (row.fingerprintHash !== match._fingerprint) {
+            try {
+              await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
+                ...row, fingerprintHash: match._fingerprint
+              });
+              row.fingerprintHash = match._fingerprint;
+            } catch(e) {}
           }
 
           match.clientId = client.clientSheetId;

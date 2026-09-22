@@ -140,11 +140,27 @@ export function retFindRetainerJobs(rows, options) {
   return jobs;
 }
 
-const RET_INV_SLOTS = [
+export const RET_INV_SLOTS = [
   { amt: 41, ref: 42, sent: 43, days: 44, status: 45 },
   { amt: 48, ref: 49, sent: 50, days: 51, status: 52 },
   { amt: 55, ref: 56, sent: 57, days: 58, status: 59 },
 ];
+
+export function retRowHasRealData(row) {
+  if (!row) return false;
+  for (const s of RET_INV_SLOTS) {
+    const ref = String(row[s.ref] || "").trim().toUpperCase();
+    if (ref && !ref.startsWith("MANUAL-INV")) return true;
+    const status = String(row[s.status] || "").trim().toLowerCase();
+    if (status.includes("sent") || status.includes("paid")) return true;
+  }
+  const expSlots = [{ id: 81 }, { id: 88 }, { id: 95 }]; 
+  for (const s of expSlots) {
+    const id = String(row[s.id] || "").trim().toUpperCase();
+    if (id && !id.startsWith("MANUAL-ENTRY") && !id.startsWith("UNRECON-GAP")) return true;
+  }
+  return false;
+}
 
 export async function handleGetRetainerJobs(req, res, sheets) {
   const { clientSheetId } = req.body;
@@ -296,19 +312,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         }
       }
 
-      const hasRealData = (row) => {
-        for (const s of RET_INV_SLOTS) {
-          const ref = String(row[s.ref] || "").trim().toUpperCase();
-          if (ref && !ref.startsWith("MANUAL-INV")) return true;
-        }
-        const expSlots = [{ id: 81 }, { id: 88 }, { id: 95 }]; 
-        for (const s of expSlots) {
-          const id = String(row[s.id] || "").trim().toUpperCase();
-          if (id && !id.startsWith("MANUAL-ENTRY") && !id.startsWith("UNRECON-GAP")) return true;
-        }
-        return false;
-      };
-      const blockedRow = toTrim.find(cr => hasRealData(cr.row));
+      const blockedRow = toTrim.find(cr => retRowHasRealData(cr.row));
       if (blockedRow) {
         return res.status(200).json({
           success: false, blocked: true,
@@ -550,13 +554,321 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
   }
 }
 
+export async function handleChangeRetainerStartDate(req, res, sheets) {
+  const {
+    clientSheetId, masterSheetId, client, jobName, parentRowNum,
+    newStartDate, newEndDate, newMonthlyAmount,
+  } = req.body;
+  if (!clientSheetId || !jobName || !parentRowNum || !newStartDate) {
+    return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetIdClean,
+      range: "Confirmed!A1:CR5000",
+      valueRenderOption: "FORMATTED_VALUE",
+    });
+    const rows = resp.data.values || [];
+    const parentRow = rows[parentRowNum - 1] || [];
+    if (String(parentRow[0] || "").trim() !== client || String(parentRow[1] || "").trim() !== jobName) {
+      return res.status(400).json({ success: false, error: "Row mismatch — job may have moved." });
+    }
+
+    const newStart = retParseSheetDate(newStartDate);
+    if (!newStart) return res.status(400).json({ success: false, error: "Invalid new start date" });
+
+    const currentEndDate = retParseSheetDate(parentRow[38]);
+    const finalEnd = newEndDate ? retParseSheetDate(newEndDate) : currentEndDate;
+    if (finalEnd && newStart > finalEnd) {
+      return res.status(400).json({ success: false, error: "Start date cannot be after end date." });
+    }
+
+    // Find child rows
+    const childRows = [];
+    let cj = parentRowNum;
+    while (cj < rows.length) {
+      const next = rows[cj] || [];
+      if (String(next[0] || "").trim() === client && String(next[1] || "").trim() === jobName &&
+          !String(next[32] || "").trim() && !String(next[37] || "").trim()) {
+        childRows.push({ rowNum: cj + 1, row: next });
+        cj++;
+      } else break;
+    }
+
+    // Safety check: ensure NO real invoices or expenses exist on parent or child rows
+    const allRows = [{ rowNum: parentRowNum, row: parentRow }].concat(childRows);
+    const blockedRow = allRows.find(r => retRowHasRealData(r.row));
+    if (blockedRow) {
+      return res.status(200).json({
+        success: false,
+        blocked: true,
+        error: `Cannot change start date — row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
+      });
+    }
+
+    const oldStartDate = retParseSheetDate(parentRow[37]);
+    const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
+    const intervalMonths = retDetectIntervalMonths(childDates) || 1;
+    const defaultSendDay = childDates.length > 0 ? childDates[0].getDate() : newStart.getDate();
+    const invoiceTimingOffset = retDetectInvoiceTimingOffset_(childDates, oldStartDate, intervalMonths);
+    const timingMonthAdjust = invoiceTimingOffset === "before" ? -1 : 0;
+
+    const revenue = (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "")
+      ? parseFloat(newMonthlyAmount)
+      : retParseMoney(parentRow[32]);
+    const perInvoiceAmount = revenue * intervalMonths;
+    const vat = parentRow[34];
+
+    const { defaultDaysToPay: rawDefaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
+    const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay).replace(/[^\d.-]/g, ""), 10) || 30;
+
+    // Calculate target periods
+    const periodStarts = [];
+    let cursor = new Date(newStart.getFullYear(), newStart.getMonth(), 1);
+    const endMonthVal = finalEnd ? (finalEnd.getFullYear() * 12 + finalEnd.getMonth()) : (cursor.getFullYear() * 12 + cursor.getMonth() + 11);
+    while (true) {
+      const cursorMonthVal = cursor.getFullYear() * 12 + cursor.getMonth();
+      if (cursorMonthVal > endMonthVal) break;
+      periodStarts.push(new Date(cursor));
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + intervalMonths, 1);
+    }
+
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
+    const pastCount = periodStarts.filter(d => (d.getFullYear() * 12 + d.getMonth()) <= currentMonthVal).length;
+    const targetPeriodCount = Math.min(periodStarts.length, pastCount + 18);
+
+    const newRowDates = periodStarts.slice(0, targetPeriodCount).map(p => {
+      return new Date(p.getFullYear(), p.getMonth() + timingMonthAdjust, defaultSendDay);
+    });
+
+    const targetCount = newRowDates.length;
+    const currentCount = childRows.length;
+
+    const metaResp = await sheets.spreadsheets.get({
+      spreadsheetId: sheetIdClean,
+      fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
+    });
+    const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+    const gridSheetId = confirmedSheet.properties.sheetId;
+    let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+    const rowGroups = confirmedSheet.rowGroups || [];
+
+    if (targetCount < currentCount) {
+      // Need to trim excess rows from the end of childRows
+      const toTrim = childRows.slice(targetCount);
+      const groupTrimCounts = new Map();
+      for (const cr of toTrim) {
+        const rowIdx0 = cr.rowNum - 1;
+        const coveringGroup = rowGroups.find(g => g.range?.startIndex <= rowIdx0 && g.range?.endIndex > rowIdx0);
+        if (!coveringGroup) continue;
+        const alreadyCounted = groupTrimCounts.get(coveringGroup) || 0;
+        if (rowIdx0 === coveringGroup.range.endIndex - 1 - alreadyCounted) {
+          groupTrimCounts.set(coveringGroup, alreadyCounted + 1);
+        }
+      }
+
+      const requests = [];
+      for (const [group, trimCount] of groupTrimCounts.entries()) {
+        const groupSize = group.range.endIndex - group.range.startIndex;
+        requests.push({ deleteDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: group.range.startIndex, endIndex: group.range.endIndex } } });
+        if (trimCount < groupSize) {
+          const newEnd = group.range.endIndex - trimCount;
+          requests.push({
+            addDimensionGroup: {
+              range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: group.range.startIndex, endIndex: newEnd },
+            },
+          });
+        }
+      }
+      if (requests.length > 0) {
+        await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { requests } });
+      }
+
+      const trimRowNums = toTrim.map(cr => cr.rowNum).sort((a, b) => a - b);
+      const clearRanges = [];
+      for (const rn of trimRowNums) {
+        clearRanges.push(`Confirmed!A${rn}:AM${rn}`, `Confirmed!AP${rn}:BH${rn}`, `Confirmed!BX${rn}:CR${rn}`);
+      }
+      await sheets.spreadsheets.values.batchClear({
+        spreadsheetId: sheetIdClean, requestBody: { ranges: clearRanges },
+      });
+
+      const freshResp = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+
+      const blockStartIdx0 = trimRowNums[0] - 1;
+      const blockEndIdx0 = trimRowNums[trimRowNums.length - 1];
+      if (blockStartIdx0 <= trueLastRow) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: [{
+            moveDimension: {
+              source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: blockStartIdx0, endIndex: blockEndIdx0 },
+              destinationIndex: trueLastRow + 1,
+            },
+          }] },
+        });
+      }
+
+      // Update remaining child rows with new dates & amounts
+      const dateUpdates = [];
+      const rawUpdates = [];
+      for (let i = 0; i < targetCount; i++) {
+        const rn = childRows[i].rowNum;
+        dateUpdates.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[i])]] });
+        rawUpdates.push({ range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] });
+      }
+      if (rawUpdates.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: rawUpdates } });
+      }
+      if (dateUpdates.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateUpdates } });
+      }
+
+    } else if (targetCount > currentCount) {
+      // Need to add extra child rows
+      const rowsNeeded = targetCount - currentCount;
+      const insertAfterRowNum = childRows.length > 0 ? childRows[childRows.length - 1].rowNum : parentRowNum;
+
+      const freshResp = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      let trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+
+      if ((currentMaxRows - (trueLastRow + 1)) < rowsNeeded) {
+        const toAdd = rowsNeeded - (currentMaxRows - (trueLastRow + 1)) + 5;
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: [{
+            insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd }, inheritFromBefore: true },
+          }] },
+        });
+        currentMaxRows += toAdd;
+      }
+
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: { requests: [{
+          moveDimension: {
+            source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + rowsNeeded },
+            destinationIndex: insertAfterRowNum,
+          },
+        }] },
+      });
+
+      // Update existing child rows
+      const dateUpdates = [];
+      const rawUpdates = [];
+      for (let i = 0; i < currentCount; i++) {
+        const rn = childRows[i].rowNum;
+        dateUpdates.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[i])]] });
+        rawUpdates.push({ range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] });
+      }
+
+      // Populate new child rows
+      for (let m = 0; m < rowsNeeded; m++) {
+        const rn = insertAfterRowNum + 1 + m;
+        const dateIdx = currentCount + m;
+        rawUpdates.push(
+          { range: `Confirmed!A${rn}`, values: [[client]] },
+          { range: `Confirmed!B${rn}`, values: [[jobName]] },
+          { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
+          { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] },
+          { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
+        );
+        dateUpdates.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[dateIdx])]] });
+      }
+
+      await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: rawUpdates } });
+      await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateUpdates } });
+
+      // Update row grouping
+      try {
+        const anchorIdx0 = insertAfterRowNum - 1;
+        const coveringGroup = rowGroups.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
+        const newRangeEnd = insertAfterRowNum + rowsNeeded;
+        if (coveringGroup) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: { requests: [
+              { deleteDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex } } },
+              { addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: coveringGroup.range.startIndex, endIndex: newRangeEnd } } },
+            ] },
+          });
+        } else {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: { requests: [{
+              addDimensionGroup: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: insertAfterRowNum, endIndex: newRangeEnd } },
+            }] },
+          });
+        }
+      } catch (groupErr) {
+        console.log(`  ⚠ Row grouping for grown retainer rows failed:`, groupErr.message);
+      }
+
+    } else {
+      // Exactly same number of rows: update dates & amounts in place
+      const dateUpdates = [];
+      const rawUpdates = [];
+      for (let i = 0; i < targetCount; i++) {
+        const rn = childRows[i].rowNum;
+        dateUpdates.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[i])]] });
+        rawUpdates.push({ range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] });
+      }
+      if (rawUpdates.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: rawUpdates } });
+      }
+      if (dateUpdates.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateUpdates } });
+      }
+    }
+
+    // Update parent row: AL (start date), AM (end date if changed), AG (monthly revenue)
+    const parentDateUpdates = [{ range: `Confirmed!AL${parentRowNum}`, values: [[newStartDate]] }];
+    if (newEndDate) {
+      parentDateUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[newEndDate]] });
+    }
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetIdClean,
+      requestBody: { valueInputOption: "USER_ENTERED", data: parentDateUpdates },
+    });
+
+    if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetIdClean,
+        range: `Confirmed!AG${parentRowNum}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[revenue]] },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      trimmed: Math.max(0, currentCount - targetCount),
+      grown: Math.max(0, targetCount - currentCount),
+    });
+  } catch (err) {
+    console.error("❌ change_retainer_start_date error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
   const {
     clientSheetId, client, jobName, parentRowNum, changeMonth, changeYear, newMonthlyAmount,
+    changeWholeRetainer,
     sourceInvoiceRef, sourceInvoiceSentDate, sourceInvoiceDaysToPay, sourceInvoiceStatus, sourceConfirmedRow,
   } = req.body;
-  if (!clientSheetId || !jobName || !parentRowNum || changeMonth === undefined || !changeYear || !newMonthlyAmount) {
+  if (!clientSheetId || !jobName || !parentRowNum || !newMonthlyAmount) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+  if (!changeWholeRetainer && (changeMonth === undefined || !changeYear)) {
+    return res.status(400).json({ success: false, error: "Missing required fields: changeMonth and changeYear" });
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
@@ -572,7 +884,9 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
     }
 
     const oldEndDate = retParseSheetDate(parentRow[38]);
-    const changeMonthVal = changeYear * 12 + changeMonth;
+    const startDateObj = retParseSheetDate(parentRow[37]);
+    const startMonthVal = startDateObj ? (startDateObj.getFullYear() * 12 + startDateObj.getMonth()) : null;
+    const changeMonthVal = (changeYear !== undefined && changeMonth !== undefined) ? (changeYear * 12 + changeMonth) : null;
 
     const childRows = [];
     let cj = parentRowNum;
@@ -584,6 +898,44 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
         cj++;
       } else break;
     }
+
+    const isWholeRetainerUpdate = !!changeWholeRetainer || (changeMonthVal !== null && startMonthVal !== null && changeMonthVal <= startMonthVal);
+
+    if (isWholeRetainerUpdate) {
+      const allRows = [{ rowNum: parentRowNum, row: parentRow }].concat(childRows);
+      const blockedRow = allRows.find(r => retRowHasRealData(r.row));
+      if (blockedRow) {
+        return res.status(400).json({
+          success: false,
+          error: `Cannot change the whole retainer monthly amount because row ${blockedRow.rowNum} already has a real invoice or expense recorded. Please select a future month to split.`,
+        });
+      }
+
+      const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
+      const intervalMonths = retDetectIntervalMonths(childDates) || 1;
+      const parsedAmount = parseFloat(newMonthlyAmount);
+      const perInvoiceAmount = parsedAmount * intervalMonths;
+
+      const updateData = [
+        { range: `Confirmed!AG${parentRowNum}`, values: [[parsedAmount]] },
+        ...childRows.map(cr => ({
+          range: `Confirmed!AP${cr.rowNum}`,
+          values: [[perInvoiceAmount]],
+        })),
+      ];
+
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: { valueInputOption: "RAW", data: updateData },
+      });
+
+      return res.status(200).json({
+        success: true,
+        updatedInPlace: true,
+        rowsUpdated: childRows.length + 1,
+      });
+    }
+
     const allRows = [{ rowNum: parentRowNum, row: parentRow, isParent: true }].concat(childRows);
     const datedRows = allRows.map(r => ({ ...r, invDate: retParseSheetDate(r.row[43]) })).filter(r => r.invDate);
     const intervalMonths = retDetectIntervalMonths(datedRows.map(r => r.invDate));

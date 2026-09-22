@@ -38,7 +38,7 @@ import {
   handleFireOutgoingsPull, handleMarkPipelineCopied
 } from "../../services/workspaces";
 import {
-  handleGetRetainerJobs, handleRenameRetainerJob, handleChangeRetainerEndDate,
+  handleGetRetainerJobs, handleRenameRetainerJob, handleChangeRetainerStartDate, handleChangeRetainerEndDate,
   handleChangeRetainerMonthlyAmount, handleCreateRetainerJob, handleTidyUpRetainers,
   handleComputeRetainerAlertResolution, handleComputeRetainerSplitInvoicePreview,
   handleApplyRetainerSplitInvoice
@@ -189,6 +189,8 @@ export default async function handler(req, res) {
       return await handleGetRetainerJobs(req, res, sheets);
     } else if (action === "rename_retainer_job") {
       return await handleRenameRetainerJob(req, res, sheets);
+    } else if (action === "change_retainer_start_date") {
+      return await handleChangeRetainerStartDate(req, res, sheets);
     } else if (action === "change_retainer_end_date") {
       return await handleChangeRetainerEndDate(req, res, sheets);
     } else if (action === "change_retainer_monthly_amount") {

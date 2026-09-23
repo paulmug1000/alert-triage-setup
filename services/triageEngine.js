@@ -991,12 +991,22 @@ export async function handleGetPrecomputed(req, res, sheets) {
       }
     }
 
-    const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => ({
-      ...c,
-      alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
-      activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
-      activeInvoiceIds: activeInvoiceIdsByClient[c.clientName] || [],
-    }));
+    const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => {
+      const counts = alertCountsByClientAndFlag[c.clientName] || {};
+      const updatedFlags = { ...(c.flags || {}) };
+      for (const flagKey of Object.keys(updatedFlags)) {
+        if (!counts[flagKey] || counts[flagKey] <= 0) {
+          updatedFlags[flagKey] = false;
+        }
+      }
+      return {
+        ...c,
+        flags: updatedFlags,
+        alertCounts: counts,
+        activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
+        activeInvoiceIds: activeInvoiceIdsByClient[c.clientName] || [],
+      };
+    });
 
     let aggregatedNoActionResults = {};
     for (const na of filteredNoAction) {

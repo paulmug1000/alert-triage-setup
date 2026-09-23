@@ -486,8 +486,10 @@ export function useTriageEngine({
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient?.clientName) return c;
         const updatedCounts = { ...c.alertCounts };
+        const updatedFlags = { ...c.flags };
         if (updatedCounts[acceptedFlagType] > 0) updatedCounts[acceptedFlagType]--;
-        return { ...c, alertCounts: updatedCounts };
+        if ((updatedCounts[acceptedFlagType] || 0) === 0) updatedFlags[acceptedFlagType] = false;
+        return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
       }));
       
       if (updatedAlerts.length === 0) {
@@ -632,7 +634,7 @@ export function useTriageEngine({
           }
           clientTotal += count;
         } else {
-          clientTotal += (count > 0 ? count : 1);
+          clientTotal += (count > 0 ? count : 0);
         }
       });
 
@@ -771,8 +773,10 @@ export function useTriageEngine({
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient.clientName) return c;
         const updatedCounts = { ...c.alertCounts };
+        const updatedFlags = { ...c.flags };
         if (updatedCounts[ignoredFlagType] > 0) updatedCounts[ignoredFlagType]--;
-        return { ...c, alertCounts: updatedCounts };
+        if ((updatedCounts[ignoredFlagType] || 0) === 0) updatedFlags[ignoredFlagType] = false;
+        return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
       }));
 
       if (updatedAlerts.length === 0) {

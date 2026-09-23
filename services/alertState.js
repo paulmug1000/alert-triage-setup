@@ -47,40 +47,109 @@ export async function handleGetAlerts(req, res) {
   }
 }
 
+export function applyAlertRemovalToTriageData(data, targetIds) {
+  if (!data) return { removedCount: 0 };
+  const targetList = Array.isArray(targetIds) ? targetIds : Array.from(targetIds || []);
+  const targetSet = new Set(targetList.map(String));
+  
+  const removedAlerts = [];
+  const keptAlerts = [];
+  for (const a of (data.alerts || [])) {
+    const isTarget = targetSet.has(`${a.sheetName}-${a.rowNumber}`)
+      || (a.fingerprintHash && targetSet.has(a.fingerprintHash))
+      || (a.id && targetSet.has(a.id))
+      || targetSet.has(`${a.flagType || a.type}-${a.sheetName}-${a.rowNumber}`);
+    if (isTarget) removedAlerts.push(a);
+    else keptAlerts.push(a);
+  }
+
+  const removedNoAction = [];
+  const keptNoAction = [];
+  for (const na of (data.noActionAlerts || [])) {
+    const isTarget = (na.fingerprintHash && targetSet.has(na.fingerprintHash))
+      || (na.id && targetSet.has(na.id))
+      || targetSet.has(`${na.flagType}-${na.flagDetail || ""}`)
+      || targetSet.has(`${na.clientName}___${na.flagType}`);
+    if (isTarget) removedNoAction.push(na);
+    else keptNoAction.push(na);
+  }
+
+  const removedProactive = [];
+  const keptProactive = [];
+  for (const pa of (data.proactiveAlerts || [])) {
+    const isTarget = (pa.alertKey && targetSet.has(pa.alertKey))
+      || (pa.fingerprintHash && targetSet.has(pa.fingerprintHash))
+      || (pa.rowIndex != null && targetSet.has(String(pa.rowIndex)));
+    if (isTarget) removedProactive.push(pa);
+    else keptProactive.push(pa);
+  }
+
+  const totalRemoved = removedAlerts.length + removedNoAction.length + removedProactive.length;
+  if (totalRemoved === 0) return { removedCount: 0 };
+
+  data.alerts = keptAlerts;
+  data.noActionAlerts = keptNoAction;
+  data.proactiveAlerts = keptProactive;
+  if (data.totalAlerts != null) data.totalAlerts = keptAlerts.length;
+  if (data.noActionCount != null) data.noActionCount = keptNoAction.length;
+
+  const removedCountsByClientFlag = {};
+  for (const a of [...removedAlerts, ...removedNoAction]) {
+    const cName = a.clientName;
+    if (!cName) continue;
+    let flagKey = a.flagType || a.alertType || a.type;
+    if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
+    if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
+    if (flagKey === "crm") flagKey = a.alertType || "crmPipeAppDiscr";
+    if (!removedCountsByClientFlag[cName]) removedCountsByClientFlag[cName] = {};
+    removedCountsByClientFlag[cName][flagKey] = (removedCountsByClientFlag[cName][flagKey] || 0) + 1;
+  }
+
+  if (data.clientsWithFlags) {
+    data.clientsWithFlags = data.clientsWithFlags.map(c => {
+      const clientRemovals = removedCountsByClientFlag[c.clientName];
+      if (!clientRemovals) return c;
+      const updatedCounts = { ...(c.alertCounts || {}) };
+      const updatedFlags = { ...(c.flags || {}) };
+      for (const [fKey, countRemoved] of Object.entries(clientRemovals)) {
+        if (updatedCounts[fKey] != null) {
+          updatedCounts[fKey] = Math.max(0, updatedCounts[fKey] - countRemoved);
+          if (updatedCounts[fKey] === 0) {
+            updatedFlags[fKey] = false;
+          }
+        }
+      }
+      return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
+    });
+  }
+
+  return { removedCount: totalRemoved };
+}
+
 export async function handleRemoveAlert(req, res) {
-  const { sessionId, alertId } = req.body;
-  if (!sessionId || !alertId) return res.status(400).json({ success: false, error: "Missing sessionId or alertId" });
+  const { sessionId, alertId, alertIds } = req.body;
+  const targetIds = Array.isArray(alertIds) ? alertIds : (alertId ? [alertId] : []);
+  if (!sessionId || !targetIds.length) return res.status(400).json({ success: false, error: "Missing sessionId or alertId(s)" });
   try {
     const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
     if (!sessionData) return res.status(200).json({ success: true, notFound: true });
     const parsed = JSON.parse(sessionData);
-    const before = parsed.alerts.length + (parsed.proactiveAlerts?.length || 0);
     
-    const alertToRemove = parsed.alerts.find(a => `${a.sheetName}-${a.rowNumber}` === alertId) 
-                       || (parsed.proactiveAlerts || []).find(a => a.alertKey === alertId || a.fingerprintHash === alertId);
-                       
-    if (alertToRemove && parsed.clientsWithFlags) {
-      let flagKey = alertToRemove.flagType || alertToRemove.alertType || alertToRemove.type;
-      if (flagKey === "invoice") flagKey = "invoiceDashboardDiscr";
-      if (flagKey === "expense") flagKey = "expenseDashboardDiscr";
-      if (flagKey === "crm") flagKey = alertToRemove.alertType || "crmPipeAppDiscr";
-
-      parsed.clientsWithFlags = parsed.clientsWithFlags.map(c => {
-        if (c.clientName === alertToRemove.clientName && c.alertCounts && c.alertCounts[flagKey]) {
-          c.alertCounts[flagKey] = Math.max(0, c.alertCounts[flagKey] - 1);
-        }
-        return c;
-      });
-    }
-
-    parsed.alerts = parsed.alerts.filter(a => `${a.sheetName}-${a.rowNumber}` !== alertId);
-    if (parsed.proactiveAlerts) {
-      parsed.proactiveAlerts = parsed.proactiveAlerts.filter(a => a.alertKey !== alertId && a.fingerprintHash !== alertId);
-    }
-    
-    const removed = before - (parsed.alerts.length + (parsed.proactiveAlerts?.length || 0));
+    const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds);
     await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
-    return res.status(200).json({ success: true, removed });
+
+    try {
+      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+      if (preRaw) {
+        const pre = JSON.parse(preRaw);
+        applyAlertRemovalToTriageData(pre, targetIds);
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 3600 });
+      }
+    } catch (e) {
+      console.warn("Could not sync PRECOMPUTED_KEY in handleRemoveAlert:", e.message);
+    }
+
+    return res.status(200).json({ success: true, removed: removedCount });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -250,7 +319,7 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
 }
 
 export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
-  const { alertKey, automationCommanderSheetId: acId } = req.body;
+  const { alertKey, clientName, sessionId, automationCommanderSheetId: acId } = req.body;
   if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
   try {
     const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
@@ -259,13 +328,33 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
     const row = findMemoryRow(memoryRows, fingerprintHash);
     
     if (row) {
-      await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted" });
+      await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted", clientName: clientName || row.clientName || "" });
     } else {
       await appendAlertMemoryRow(sheets, acId, {
-        fingerprintHash, alertType: "proactive", clientName: "", alertSummary: "Acknowledged proactive alert",
+        fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",
         cachedOptionsJSON: "", status: "accepted", ignoreReason: ""
       });
     }
+
+    if (sessionId) {
+      try {
+        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+        if (sessionData) {
+          const parsed = JSON.parse(sessionData);
+          applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash]);
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
+        }
+      } catch (e) {}
+    }
+    try {
+      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+      if (preRaw) {
+        const pre = JSON.parse(preRaw);
+        applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash]);
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 3600 });
+      }
+    } catch (e) {}
+
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -273,7 +362,7 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
 }
 
 export async function handleResolveProactiveAlert(req, res, sheets) {
-  const { alertKey, resolution, automationCommanderSheetId: acId } = req.body;
+  const { alertKey, clientName, sessionId, resolution, automationCommanderSheetId: acId } = req.body;
   if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
   try {
     const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
@@ -288,13 +377,33 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
         parsed.resolution = resolution;
         snap = JSON.stringify(parsed);
       } catch(e) {}
-      await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted", dataSnapshot: snap });
+      await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted", clientName: clientName || row.clientName || "", dataSnapshot: snap });
     } else {
       await appendAlertMemoryRow(sheets, acId, {
-        fingerprintHash, alertType: "proactive", clientName: "", alertSummary: resolution || "Resolved proactive alert",
+        fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: resolution || "Resolved proactive alert",
         cachedOptionsJSON: "", status: "accepted", ignoreReason: "", dataSnapshot: JSON.stringify({ resolution })
       });
     }
+
+    if (sessionId) {
+      try {
+        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+        if (sessionData) {
+          const parsed = JSON.parse(sessionData);
+          applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash]);
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
+        }
+      } catch (e) {}
+    }
+    try {
+      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+      if (preRaw) {
+        const pre = JSON.parse(preRaw);
+        applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash]);
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 3600 });
+      }
+    } catch (e) {}
+
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -302,24 +411,46 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
 }
 
 export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
-  const { alertKeys, automationCommanderSheetId: acId } = req.body;
+  const { alertKeys, clientName, sessionId, automationCommanderSheetId: acId } = req.body;
   if (!alertKeys || !alertKeys.length || !acId) return res.status(400).json({ success: false, error: "Missing alertKeys or automationCommanderSheetId" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
+    const hashesToRemove = [];
     
     for (const alertKey of alertKeys) {
       const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
+      hashesToRemove.push(alertKey, fingerprintHash);
       const row = findMemoryRow(memoryRows, fingerprintHash);
       if (row) {
-        await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted" });
+        await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted", clientName: clientName || row.clientName || "" });
       } else {
         await appendAlertMemoryRow(sheets, acId, {
-          fingerprintHash, alertType: "proactive", clientName: "", alertSummary: "Acknowledged proactive alert",
+          fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",
           cachedOptionsJSON: "", status: "accepted", ignoreReason: ""
         });
       }
     }
+
+    if (sessionId) {
+      try {
+        const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
+        if (sessionData) {
+          const parsed = JSON.parse(sessionData);
+          applyAlertRemovalToTriageData(parsed, hashesToRemove);
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
+        }
+      } catch (e) {}
+    }
+    try {
+      const preRaw = await redisClient.get(PRECOMPUTED_KEY);
+      if (preRaw) {
+        const pre = JSON.parse(preRaw);
+        applyAlertRemovalToTriageData(pre, hashesToRemove);
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 3600 });
+      }
+    } catch (e) {}
+
     return res.status(200).json({ success: true, count: alertKeys.length });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });

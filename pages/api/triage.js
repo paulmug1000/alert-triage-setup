@@ -319,11 +319,22 @@ export default async function handler(req, res) {
           }
         }
 
-        const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => ({
-            ...c, alertCounts: alertCountsByClientAndFlag[c.clientName] || {},
+        const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => {
+          const counts = alertCountsByClientAndFlag[c.clientName] || {};
+          const updatedFlags = { ...(c.flags || {}) };
+          for (const flagKey of Object.keys(updatedFlags)) {
+            if (!counts[flagKey] || counts[flagKey] <= 0) {
+              updatedFlags[flagKey] = false;
+            }
+          }
+          return {
+            ...c,
+            flags: updatedFlags,
+            alertCounts: counts,
             activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
             activeInvoiceIds: activeInvoiceIdsByClient[c.clientName] || [],
-          }));
+          };
+        });
 
           const sessionId = Math.random().toString(36).substring(2, 15);
           await redisClient.set(

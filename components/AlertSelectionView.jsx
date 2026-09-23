@@ -56,7 +56,7 @@ export default function AlertSelectionView({
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "acknowledge_proactive_alert", alertKey, automationCommanderSheetId }),
+        body: JSON.stringify({ action: "acknowledge_proactive_alert", alertKey, clientName: selectedClient?.clientName, sessionId, automationCommanderSheetId }),
       });
       const data = await res.json();
       if (!data.success) {
@@ -117,7 +117,7 @@ export default function AlertSelectionView({
         try {
           await fetch("/api/triage", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "resolve_proactive_alert", automationCommanderSheetId, alertKey: alert.alertKey, resolution: "Marked \"Copied to confirmed?\" = Yes in Pipeline" }),
+            body: JSON.stringify({ action: "resolve_proactive_alert", automationCommanderSheetId, alertKey: alert.alertKey, clientName: selectedClient?.clientName, sessionId, resolution: "Marked \"Copied to confirmed?\" = Yes in Pipeline" }),
           });
         } catch (resolveErr) { console.error("Failed to mark alert resolved:", resolveErr); }
       }
@@ -186,11 +186,12 @@ export default function AlertSelectionView({
 
       if (sessionId) {
         setProcessedAlerts(prev => new Set([...prev, ...hashesToRemove]));
-        for (const alert of alerts) {
-          const alertId = `${alert.sheetName}-${alert.rowNumber}`;
-          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "remove_alert", sessionId, alertId }) }).catch(() => {});
-        }
+        const alertIds = alerts.map(a => `${a.sheetName}-${a.rowNumber}`);
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "remove_alert", sessionId, alertIds }),
+        }).catch(() => {});
       }
 
       const countDeltas = {};
@@ -204,10 +205,16 @@ export default function AlertSelectionView({
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient?.clientName) return c;
         const updatedCounts = { ...c.alertCounts };
+        const updatedFlags = { ...c.flags };
         for (const [ft, delta] of Object.entries(countDeltas)) {
-          if ((updatedCounts[ft] || 0) > 0) updatedCounts[ft] -= delta;
+          if ((updatedCounts[ft] || 0) > 0) {
+            updatedCounts[ft] = Math.max(0, updatedCounts[ft] - delta);
+            if (updatedCounts[ft] === 0) {
+              updatedFlags[ft] = false;
+            }
+          }
         }
-        return { ...c, alertCounts: updatedCounts };
+        return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
       }));
 
       setClientAlerts(updatedAlerts);
@@ -247,11 +254,12 @@ export default function AlertSelectionView({
 
       if (sessionId) {
         setProcessedAlerts(prev => new Set([...prev, ...hashesToRemove]));
-        for (const alert of alerts) {
-          const alertId = `${alert.sheetName}-${alert.rowNumber}`;
-          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "remove_alert", sessionId, alertId }) }).catch(() => {});
-        }
+        const alertIds = alerts.map(a => `${a.sheetName}-${a.rowNumber}`);
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "remove_alert", sessionId, alertIds }),
+        }).catch(() => {});
       }
 
       const countDeltas = {};
@@ -265,10 +273,16 @@ export default function AlertSelectionView({
       setClientsWithFlags(prev => prev.map(c => {
         if (c.clientName !== selectedClient?.clientName) return c;
         const updatedCounts = { ...c.alertCounts };
+        const updatedFlags = { ...c.flags };
         for (const [ft, delta] of Object.entries(countDeltas)) {
-          if ((updatedCounts[ft] || 0) > 0) updatedCounts[ft] -= delta;
+          if ((updatedCounts[ft] || 0) > 0) {
+            updatedCounts[ft] = Math.max(0, updatedCounts[ft] - delta);
+            if (updatedCounts[ft] === 0) {
+              updatedFlags[ft] = false;
+            }
+          }
         }
-        return { ...c, alertCounts: updatedCounts };
+        return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
       }));
 
       const tasksAdded = (data.results || []).filter(r => !r.error).length;
@@ -465,7 +479,7 @@ export default function AlertSelectionView({
         setProactiveBulkSubmitting(true);
         const res = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "bulk_acknowledge_proactive_alerts", alertKeys, automationCommanderSheetId, sessionId }),
+          body: JSON.stringify({ action: "bulk_acknowledge_proactive_alerts", alertKeys, clientName: selectedClient?.clientName, automationCommanderSheetId, sessionId }),
         });
         const data = await res.json();
         if (!data.success) {

@@ -138,7 +138,7 @@ export default function ClientSelectionView({
                 if (key === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
                 return count > 0;
               });
-              const hasInfoFlags = Object.entries(client.flags || {}).some(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key));
+              const hasInfoFlags = Object.entries(client.flags || {}).some(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key) && (client.alertCounts?.[key] || 0) > 0);
               return hasVisibleActionable || hasInfoFlags || proactiveCountsByClient[client.clientName] > 0;
             }).map((client, idx) => {
               const assignedSet = assignedByClient[client.clientName] || new Set();
@@ -160,11 +160,11 @@ export default function ClientSelectionView({
                 .filter(Boolean);
 
               const infoLines = Object.entries(client.flags || {})
-                .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key))
+                .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key) && (client.alertCounts?.[key] || 0) > 0)
                 .map(([key]) => {
                   const count = client.alertCounts?.[key] || 0;
                   const label = getFlagName(key);
-                  return count > 0 ? `${label} (${count} alert${count !== 1 ? "s" : ""})` : label;
+                  return `${label} (${count} alert${count !== 1 ? "s" : ""})`;
                 });
 
               const proactiveLines = Object.entries(

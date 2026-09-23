@@ -80,6 +80,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
             body: JSON.stringify({
               action: "resolve_proactive_alert",
               automationCommanderSheetId, alertKey,
+              clientName: alertMeta?.clientName || alertMeta?.endClientName || "",
               resolution: resolutionType === "end" ? "Retainer ended" : "Retainer amount changed",
             }),
           });

@@ -68,6 +68,7 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
             body: JSON.stringify({
               action: "resolve_proactive_alert",
               automationCommanderSheetId, alertKey,
+              clientName: alertMeta?.clientName || alertMeta?.endClientName || "",
               resolution: "Invoice split between retainer and extra revenue job",
             }),
           });

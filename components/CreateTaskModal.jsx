@@ -119,8 +119,10 @@ export default function CreateTaskModal() {
         setClientsWithFlags(prev => prev.map(c => {
           if (c.clientName !== selectedClient?.clientName) return c;
           const updatedCounts = { ...c.alertCounts };
+          const updatedFlags = { ...c.flags };
           if (updatedCounts[ft] > 0) updatedCounts[ft]--;
-          return { ...c, alertCounts: updatedCounts };
+          if ((updatedCounts[ft] || 0) === 0) updatedFlags[ft] = false;
+          return { ...c, alertCounts: updatedCounts, flags: updatedFlags };
         }));
         if (updatedAlerts.length === 0) {
           if (allNoActionResolved()) handlePostClear([], resolvedNoActionFlags); else setScreen("alertSelection");

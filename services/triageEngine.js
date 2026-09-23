@@ -11,7 +11,7 @@ import {
   checkRetainerInvoices_, checkCRMWipe_, checkRevenueMismatch_, checkDirectCostsMismatch_,
   checkPipelineConfirmedOverlap_, checkRetainerShrinkBlocked_, checkUninvoicedNewJobs_,
   checkUninvoicedRevenue_, checkDeletedInvoices_, checkJobStructureErrors_,
-  checkDeletedExpenses_, checkUnreceivedExpenses_
+  checkDeletedExpenses_, checkUnreceivedExpenses_, checkAutoLogErrors_, checkAutoLogInfiniteLoops_
 } from "./proactiveChecks";
 import { 
   checkAllGASLocks, setCRMMode, getToleranceValues, 
@@ -1172,7 +1172,8 @@ export async function handleStorePrecomputed(req, res, sheets) {
                 "childRowNum","clientJobStr","pipelineRow","likelihood","copiedToConf","jobType",
                 "possibleMatchInvoiceNo","possibleMatchAmount","possibleMatchSentDate","possibleMatchConfidence","possibleMatchConfirmedRow","possibleMatchVatAmount","possibleMatchStatus","possibleMatchCase",
                 "uninvoicedAmount","projectCode","draftCount","draftTotal","stableJobKey","isRetainer","tab",
-                "directCosts","unreceivedAmount","placeholderCount","placeholderTotal"];
+                "directCosts","unreceivedAmount","placeholderCount","placeholderTotal",
+                "errorSnippet","occurrenceCount","category","entityKey","fieldName","transition1","transition2","conflictType","suggestion","rawLogSnippet","invoiceNo"];
               const metadata = {};
               for (const f of metaFields) { if (alertObj[f] !== undefined) metadata[f] = alertObj[f]; }
               newProactiveFromMemory.push({
@@ -1510,7 +1511,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
               checkDeletedInvoices_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
               checkJobStructureErrors_(client.clientName, client.clientSheetId, sharedData),
               checkDeletedExpenses_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
-              checkUnreceivedExpenses_(client.clientName, client.clientSheetId, sharedData)
+              checkUnreceivedExpenses_(client.clientName, client.clientSheetId, sharedData),
+              checkAutoLogErrors_(client.clientName, client.masterSheetId, sharedData),
+              checkAutoLogInfiniteLoops_(client.clientName, client.masterSheetId, sharedData)
             ];
 
             const proResults = await Promise.all(proChecks);
@@ -1519,7 +1522,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
             const proactiveTypes = [
               "retainer_invoice", "crm_wipe", "revenue_mismatch", "direct_costs_mismatch",
               "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_new_job", "uninvoiced_revenue",
-              "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses"
+              "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses",
+              "autolog_error", "infinite_loop"
             ];
             
             const groupedProactive = {};

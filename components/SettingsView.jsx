@@ -190,7 +190,7 @@ export default function SettingsView({
                 {[
                   { key: "actionable", label: "Actionable", hint: "Discrepancies needing review — invoice, CRM, expense" },
                   { key: "info", label: "Informational", hint: "Acknowledge-only events from AutoLog" },
-                  { key: "proactive", label: "Proactive", hint: "The 11 overnight checks" },
+                  { key: "proactive", label: "Proactive", hint: "The 14 proactive checks" },
                 ].map(cat => {
                   const entry = sweepSchedule?.[cat.key];
                   return (
@@ -448,6 +448,8 @@ export default function SettingsView({
                 { name: "Deleted invoice detection", detail: "Flags invoices with a real reference on the Confirmed tab that no longer appear in the accounting system — a likely sign the invoice was deleted or voided." },
                 { name: "Job structure errors", detail: "Flags jobs whose invoice/expense slots don't match the expected layout — e.g. a multi-row retainer with an invoice on the parent row, or slots filled out of sequence." },
                 { name: "Deleted expense detection", detail: "Flags expenses with a real reference that no longer appear in the accounting system — the expense equivalent of deleted invoice detection." },
+                { name: "Automation error detection", detail: "Watches the last 100 AutoLog entries for any occurrences of 'Error:', highlighting the error and the text that follows." },
+                { name: "Infinite loop & automation conflict detection", detail: "Detects situations where automation routines fight each other, such as within-run inverted changes (e.g. days to pay extended then shortened) or recurring multi-run flip-flops (e.g. client name differing between Xero and CRM)." },
               ].map((c, i) => (
                 <div key={c.name} style={{ display: "flex", gap: "10px", padding: "8px 0", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
                   <span style={{ color: "#16a34a", fontSize: "14px", lineHeight: "20px" }}>✓</span>

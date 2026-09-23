@@ -1522,6 +1522,68 @@ export default function AlertSelectionView({
                               );
                             })()}
 
+                            {alert.alertType === "autolog_error" && (() => {
+                              const md = alert.metadata || {};
+                              return (
+                                <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  {md.category && <div style={{ marginBottom: "2px" }}><strong>Category / Step:</strong> {md.category}</div>}
+                                  {md.occurrenceCount && <div style={{ marginBottom: "2px" }}><strong>Occurrences (last 100 log rows):</strong> {md.occurrenceCount}</div>}
+                                  {md.timestamp && <div style={{ marginBottom: "2px" }}><strong>Last seen in log:</strong> {md.timestamp}</div>}
+                                  {md.errorSnippet && (
+                                    <div style={{ marginTop: "6px" }}>
+                                      <strong>Extracted error:</strong>
+                                      <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#991b1b", backgroundColor: "#fff", border: "1px solid #fca5a5", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                        {md.errorSnippet}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {md.rawSnippet && md.rawSnippet !== md.errorSnippet && (
+                                    <div style={{ marginTop: "6px" }}>
+                                      <strong>AutoLog context:</strong>
+                                      <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                        {md.rawSnippet}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            {alert.alertType === "infinite_loop" && (() => {
+                              const md = alert.metadata || {};
+                              return (
+                                <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginBottom: "6px", background: md.conflictType === "intra_run_oscillation" ? "#fee2e2" : "#fef3c7", color: md.conflictType === "intra_run_oscillation" ? "#991b1b" : "#92400e", border: `1px solid ${md.conflictType === "intra_run_oscillation" ? "#fca5a5" : "#fcd34d"}` }}>
+                                    {md.conflictType === "intra_run_oscillation" ? "Within-run oscillation" : "Multi-run flip-flop"}
+                                  </div>
+                                  {md.invoiceNo && <div style={{ marginBottom: "2px" }}><strong>Invoice:</strong> {md.invoiceNo}</div>}
+                                  {md.fieldName && <div style={{ marginBottom: "2px" }}><strong>Conflicting field:</strong> {md.fieldName}</div>}
+                                  {(md.transition1 || md.transition2) && (
+                                    <div style={{ marginTop: "6px" }}>
+                                      <strong>Conflicting transitions:</strong>
+                                      <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#b45309", backgroundColor: "#fff", border: "1px solid #fde68a", borderRadius: "4px", padding: "6px 8px", marginTop: "3px" }}>
+                                        {md.transition1 && <div>1. {md.transition1}</div>}
+                                        {md.transition2 && <div>2. {md.transition2}</div>}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {md.suggestion && (
+                                    <div style={{ marginTop: "6px", color: "#92400e", fontStyle: "italic" }}>
+                                      💡 {md.suggestion}
+                                    </div>
+                                  )}
+                                  {md.rawSnippet && (
+                                    <div style={{ marginTop: "6px" }}>
+                                      <strong>AutoLog context:</strong>
+                                      <div style={{ fontFamily: "monospace", fontSize: "11px", color: "#666", backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: "4px", padding: "6px 8px", marginTop: "3px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                        {md.rawSnippet}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                               <div style={{ fontSize: "11px", color: "#aaa" }}>First seen: {alert.firstSeen} · Last seen: {alert.lastSeen}</div>
                               <div style={{ display: "flex", gap: "8px" }}>

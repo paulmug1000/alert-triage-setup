@@ -54,6 +54,8 @@ export const PROACTIVE_TYPE_LABELS = {
   job_structure_error:        "Job structure error",
   deleted_expense:            "Deleted expense",
   unreceived_expenses:        "Unreceived expenses",
+  autolog_error:              "Automation error",
+  infinite_loop:              "Infinite loop / automation conflict",
 };
 
 export const getFlagName = (flagKey) => {

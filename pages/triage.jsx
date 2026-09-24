@@ -3,6 +3,7 @@ import Spinner from "../components/Spinner";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
 import AppLogView from "../components/AppLogView";
+import ActivityView from "../components/ActivityView";
 import IgnoredAlertsView from "../components/IgnoredAlertsView";
 import TasksView from "../components/TasksView";
 import CreateTaskModal from "../components/CreateTaskModal";
@@ -141,7 +142,22 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const handleNavHome = () => { fireOutgoingsPullIfPending(); setActiveNav("home"); setScreen("clientSelection"); };
   const handleNavOverview = () => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
-  const handleNavAppLog = () => { fireOutgoingsPullIfPending(); setActiveNav("appLog"); };
+  const handleNavActivity = () => {
+    fireOutgoingsPullIfPending();
+    setActiveNav("activity");
+    if (!allClientsLoaded) {
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
+      }).then(r => r.json()).then(data => {
+        if (data.success && Array.isArray(data.clients)) {
+          setAllOutgoingsClients(data.clients);
+          setAllClientsLoaded(true);
+        }
+      }).catch(e => console.error("get_all_clients error:", e));
+    }
+  };
+  const handleNavAppLog = handleNavActivity;
   
   const handleNavSettings = () => {
     fireOutgoingsPullIfPending();
@@ -353,11 +369,13 @@ function TriageSystemContent({ onBack, appGlobals }) {
       );
     }
 
-    // ── APP LOG SCREEN ──────────────────────────────────────────────────────────
-    if (activeNav === "appLog") {
+    // ── ACTIVITY / APP LOG SCREEN ──────────────────────────────────────────────
+    if (activeNav === "activity" || activeNav === "appLog") {
       return (
-        <AppLogView 
+        <ActivityView 
           automationCommanderSheetId={automationCommanderSheetId}
+          allOutgoingsClients={allOutgoingsClients}
+          styles={styles}
         />
       );
     }
@@ -447,6 +465,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
       onHome={handleNavHome} 
       onOverview={handleNavOverview} 
       onTasks={handleNavTasks} 
+      onActivity={handleNavActivity}
       onAppLog={handleNavAppLog} 
       onOutgoings={handleNavOutgoings} 
       onInvoices={handleNavInvoices} 

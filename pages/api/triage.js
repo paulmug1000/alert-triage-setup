@@ -56,6 +56,7 @@ import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
   handleProcessPayrollDocument, handleProcessTimeDocument
 } from "../../services/importTools";
+import { handleGetActivity } from "../../services/activityService";
 import {
   handleBustCache, handleGetAlerts, handleRemoveAlert, handleIgnoreAlert, 
   handleUnignoreAlert, handleGetIgnoredAlerts, handleUpdateSessionFlags,
@@ -218,6 +219,8 @@ export default async function handler(req, res) {
       return await handleLogClaudeUsage(req, res, sheets);
     } else if (action === "get_app_log") {
       return await handleGetAppLog(req, res, sheets);
+    } else if (action === "get_activity") {
+      return await handleGetActivity(req, res, sheets);
 
     } else if (action === "start_triage") {
       // Proxy orchestrator for frontend chunking. Protects CRON_SECRET.

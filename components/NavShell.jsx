@@ -27,7 +27,7 @@ if (typeof document !== "undefined") {
 }
 
 // Persistent top bar — rendered around every screen
-export default function NavShell({ activeNav, onHome, onOverview, onTasks, onAppLog, onOutgoings, onInvoices, onRetainers, onJobs, onTools, onSettings, homeAlertCount, taskCount, children }) {
+export default function NavShell({ activeNav, onHome, onOverview, onTasks, onActivity, onAppLog, onOutgoings, onInvoices, onRetainers, onJobs, onTools, onSettings, homeAlertCount, taskCount, children }) {
   const [showMore, setShowMore] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
@@ -59,12 +59,14 @@ export default function NavShell({ activeNav, onHome, onOverview, onTasks, onApp
     }}>{count > 99 ? "99+" : count}</span>
   ) : null;
 
+  const isTabActive = (name) => activeNav === name || (name === "activity" && activeNav === "appLog");
+
   const navBtnStyle = (name) => ({
     background: "none", border: "none", cursor: "pointer",
     padding: isMobile ? "12px 12px" : "12px 14px",
-    fontSize: "14px", fontWeight: activeNav === name ? "600" : "400",
-    color: activeNav === name ? "#0066cc" : "#444",
-    borderBottom: activeNav === name ? "2px solid #0066cc" : "2px solid transparent",
+    fontSize: "14px", fontWeight: isTabActive(name) ? "600" : "400",
+    color: isTabActive(name) ? "#0066cc" : "#444",
+    borderBottom: isTabActive(name) ? "2px solid #0066cc" : "2px solid transparent",
     borderRadius: "0", display: "flex", alignItems: "center", whiteSpace: "nowrap",
   });
 
@@ -72,7 +74,7 @@ export default function NavShell({ activeNav, onHome, onOverview, onTasks, onApp
     { key: "jobs", label: "Jobs", handler: onJobs },
     { key: "invoices", label: "Invoices", handler: onInvoices },
     { key: "retainers", label: "Retainers", handler: onRetainers },
-    { key: "appLog", label: "App Log", handler: onAppLog },
+    { key: "activity", label: "Activity", handler: onActivity || onAppLog },
     { key: "tools", label: "EoM", handler: onTools },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];

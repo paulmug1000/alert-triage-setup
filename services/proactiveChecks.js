@@ -1171,8 +1171,14 @@ function normalizeAutoLogFieldName_(rawField) {
 }
 
 function extractEntityFromAutoLogLine_(line) {
-  const invMatch = line.match(/(?:Inv\s*(?:#|no\.?|oice)?\s*([A-Za-z0-9\-_]+))/i);
-  const invNo = invMatch ? invMatch[1].replace(/^#/, "").trim() : "";
+  const invMatch = line.match(/(?:Inv(?:oice)?\s*(?:#|no\.?)?\s*[:#]?\s*([A-Za-z0-9\-_]+))/i);
+  let invNo = "";
+  if (invMatch) {
+    const candidate = invMatch[1].replace(/^#/, "").trim();
+    if (candidate.toLowerCase() !== "s" && candidate.toLowerCase() !== "summary" && /\d/.test(candidate)) {
+      invNo = candidate;
+    }
+  }
 
   const rowMatch = line.match(/Row\s*(\d+)/i);
   const rowNo = rowMatch ? rowMatch[1].trim() : "";
@@ -1297,8 +1303,8 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
     const data = rawData.slice(0, 100);
     if (!data.length) return alerts;
 
-    const detectedConflicts = new Map();
     const chronologicalRows = [...data].reverse();
+    const transitionHistory = new Map();
 
     for (let r = 0; r < chronologicalRows.length; r++) {
       const row = chronologicalRows[r];
@@ -1308,7 +1314,6 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
       const lines = details.split(/\r?\n/);
       const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
 
-      const entryTransitions = [];
       let currentContext = { invNo: "", rowNo: "", endClientName: "", jobName: "", slotNo: "" };
 
       for (const rawLine of lines) {
@@ -1325,105 +1330,6 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
         const transitions = parseAutoLogLineTransitions_(line);
         if (!transitions.length) continue;
 
-        for (const t of transitions) {
-          const invNo = lineEntity.invNo || currentContext.invNo;
-          const rowNo = lineEntity.rowNo || currentContext.rowNo;
-          const endClientName = lineEntity.endClientName || currentContext.endClientName;
-          const jobName = lineEntity.jobName || currentContext.jobName;
-
-          const entityKey = rowNo ? `row_${rowNo}`
-            : (invNo ? `inv_${invNo}`
-            : (jobName ? `job_${jobName.toLowerCase()}` : "unknown"));
-
-          const displayEntity = invNo
-            ? `Invoice #${invNo}${rowNo ? ` (Row ${rowNo})` : ""}`
-            : (rowNo
-            ? `Row ${rowNo}${jobName ? ` (${jobName})` : ""}`
-            : (jobName || "Job"));
-
-          const normalizedField = normalizeAutoLogFieldName_(t.rawField);
-
-          entryTransitions.push({
-            entityKey,
-            displayEntity,
-            endClientName: endClientName || "",
-            jobName: jobName || "",
-            rowNo: rowNo || "",
-            invNo: invNo || "",
-            rawField: t.rawField,
-            normalizedField,
-            fromVal: t.fromVal,
-            toVal: t.toVal,
-            line,
-            category,
-            tsStr,
-          });
-        }
-      }
-
-      // Check for Intra-Run conflict within this single entry
-      for (let i = 0; i < entryTransitions.length; i++) {
-        for (let j = i + 1; j < entryTransitions.length; j++) {
-          const t1 = entryTransitions[i];
-          const t2 = entryTransitions[j];
-          if (t1.entityKey === t2.entityKey && t1.normalizedField === t2.normalizedField && t1.entityKey !== "unknown") {
-            const isInverted = t1.fromVal.toLowerCase() === t2.toVal.toLowerCase() && t1.toVal.toLowerCase() === t2.fromVal.toLowerCase();
-            if (isInverted) {
-              const conflictKey = `${t1.entityKey}|${t1.normalizedField}`;
-              if (!detectedConflicts.has(conflictKey)) {
-                let suggestion = "";
-                if (t1.normalizedField === "invoice_days_to_pay" || t1.normalizedField === "invoice_paid_date") {
-                  suggestion = "Likely caused by invoice having a pay date recorded without a 'Paid' status, causing payment terms to fight with the overdue date extender.";
-                } else if (t1.normalizedField === "client_name") {
-                  suggestion = "Likely caused by a naming mismatch between accounting software (Xero) and CRM.";
-                } else if (t1.normalizedField === "copied_status") {
-                  suggestion = "Likely caused by Pipeline source data reverting copied status.";
-                }
-
-                detectedConflicts.set(conflictKey, {
-                  conflictType: "intra_run",
-                  entityKey: t1.entityKey,
-                  displayEntity: t1.displayEntity,
-                  endClientName: t1.endClientName || t2.endClientName,
-                  jobName: t1.jobName || t2.jobName,
-                  confirmedRow: t1.rowNo || t2.rowNo,
-                  invoiceNo: t1.invNo || t2.invNo,
-                  fieldName: t1.rawField,
-                  normalizedField: t1.normalizedField,
-                  transition1: `${t1.rawField}: ${t1.fromVal} -> ${t1.toVal}`,
-                  transition2: `${t2.rawField}: ${t2.fromVal} -> ${t2.toVal}`,
-                  timestamp: tsStr,
-                  suggestion,
-                });
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Check for Inter-Run flip-flops across chronological entries
-    const transitionHistory = new Map();
-    for (let r = 0; r < chronologicalRows.length; r++) {
-      const row = chronologicalRows[r];
-      const timestamp = row[0];
-      const category = String(row[1] || "").trim();
-      const details = String(row[3] || "");
-      const lines = details.split(/\r?\n/);
-      const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
-
-      let currentContext = { invNo: "", rowNo: "", endClientName: "", jobName: "", slotNo: "" };
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) continue;
-        const lineEntity = extractEntityFromAutoLogLine_(line);
-        if (lineEntity.invNo) currentContext.invNo = lineEntity.invNo;
-        if (lineEntity.rowNo) currentContext.rowNo = lineEntity.rowNo;
-        if (lineEntity.endClientName) currentContext.endClientName = lineEntity.endClientName;
-        if (lineEntity.jobName) currentContext.jobName = lineEntity.jobName;
-        if (lineEntity.slotNo) currentContext.slotNo = lineEntity.slotNo;
-
-        const transitions = parseAutoLogLineTransitions_(line);
         for (const t of transitions) {
           const invNo = lineEntity.invNo || currentContext.invNo;
           const rowNo = lineEntity.rowNo || currentContext.rowNo;
@@ -1464,62 +1370,86 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
       }
     }
 
+    // Evaluate full oscillations / flip-flops for each entity & field
     for (const [key, history] of transitionHistory.entries()) {
-      if (detectedConflicts.has(key)) continue;
       if (history.length < 2) continue;
 
-      for (let i = 0; i < history.length - 1; i++) {
-        const t1 = history[i];
-        const t2 = history[i + 1];
-        if (t1.fromVal.toLowerCase() === t2.toVal.toLowerCase() && t1.toVal.toLowerCase() === t2.fromVal.toLowerCase()) {
-          const [entityKey, normalizedField] = key.split("|");
-          let suggestion = "";
-          if (normalizedField === "client_name") {
-            suggestion = "Likely caused by a naming mismatch between accounting software (Xero) and CRM.";
-          } else if (normalizedField === "invoice_days_to_pay" || normalizedField === "invoice_paid_date") {
-            suggestion = "Likely caused by an unpaid invoice repeatedly fighting with automated payment term extensions.";
-          } else if (normalizedField === "copied_status") {
-            suggestion = "Likely caused by Pipeline source data reverting copied status.";
+      const completedOscillations = [];
+      let i = 0;
+      while (i < history.length) {
+        const tStart = history[i];
+        let revIdx = -1;
+        for (let j = i + 1; j < history.length; j++) {
+          const tNext = history[j];
+          if (
+            tNext.fromVal.toLowerCase() === tStart.toVal.toLowerCase() &&
+            tNext.toVal.toLowerCase() === tStart.fromVal.toLowerCase()
+          ) {
+            revIdx = j;
+            break;
           }
+        }
 
-          detectedConflicts.set(key, {
-            conflictType: "inter_run",
-            entityKey,
-            displayEntity: t2.displayEntity,
-            endClientName: t2.endClientName || t1.endClientName,
-            jobName: t2.jobName || t1.jobName,
-            confirmedRow: t2.rowNo || t1.rowNo,
-            invoiceNo: t2.invNo || t1.invNo,
-            fieldName: t2.rawField,
-            normalizedField,
-            transition1: `At ${t1.tsStr}: ${t1.rawField} '${t1.fromVal}' -> '${t1.toVal}'`,
-            transition2: `At ${t2.tsStr}: ${t2.rawField} '${t2.fromVal}' -> '${t2.toVal}'`,
-            timestamp: t2.tsStr,
-            suggestion,
+        if (revIdx !== -1) {
+          const tEnd = history[revIdx];
+          completedOscillations.push({
+            tStart,
+            tEnd,
+            intraRun: tStart.runIndex === tEnd.runIndex,
           });
-          break;
+          // Advance past the reversing transition to ensure distinct cycles
+          i = revIdx + 1;
+        } else {
+          i++;
         }
       }
-    }
 
-    for (const [conflictKey, conf] of detectedConflicts.entries()) {
-      const hint = conf.suggestion ? ` Possible cause: ${conf.suggestion}` : "";
+      // Require at least TWO full oscillations / flip-flops
+      if (completedOscillations.length < 2) continue;
+
+      const [entityKey, normalizedField] = key.split("|");
+      const latestOsc = completedOscillations[completedOscillations.length - 1];
+      const t1 = latestOsc.tStart;
+      const t2 = latestOsc.tEnd;
+      const allIntraRun = completedOscillations.every(o => o.intraRun);
+      const conflictType = allIntraRun ? "intra_run" : "inter_run";
+
+      let suggestion = "";
+      if (normalizedField === "invoice_days_to_pay" || normalizedField === "invoice_paid_date") {
+        suggestion = "Likely caused by invoice having a pay date recorded without a 'Paid' status, causing payment terms to fight with the overdue date extender.";
+      } else if (normalizedField === "client_name") {
+        suggestion = "Likely caused by a naming mismatch between accounting software (Xero) and CRM.";
+      } else if (normalizedField === "copied_status") {
+        suggestion = "Likely caused by Pipeline source data reverting copied status.";
+      }
+
+      const transition1 = allIntraRun
+        ? `${t1.rawField}: ${t1.fromVal} -> ${t1.toVal}`
+        : `At ${t1.tsStr}: ${t1.rawField} '${t1.fromVal}' -> '${t1.toVal}'`;
+      const transition2 = allIntraRun
+        ? `${t2.rawField}: ${t2.fromVal} -> ${t2.toVal}`
+        : `At ${t2.tsStr}: ${t2.rawField} '${t2.fromVal}' -> '${t2.toVal}'`;
+
+      const hint = suggestion ? ` Possible cause: ${suggestion}` : "";
+      const countNote = `${completedOscillations.length} full oscillations detected across recent runs`;
+
       alerts.push({
         alertType: "infinite_loop",
-        alertKey: `infinite_loop|${clientName}|${conflictKey}`,
-        heading: `Automation conflict: ${conf.displayEntity}`,
-        detail: `The automation is fighting itself on ${conf.displayEntity} (${conf.fieldName}). ${conf.transition1} was reversed by ${conf.transition2}.${hint}`,
+        alertKey: `infinite_loop|${clientName}|${key}`,
+        heading: `Automation conflict: ${t2.displayEntity}`,
+        detail: `The automation is fighting itself on ${t2.displayEntity} (${t2.rawField}). ${transition1} was reversed by ${transition2} (${countNote}).${hint}`,
         clientName,
-        timestamp: conf.timestamp,
-        jobName: conf.jobName,
-        endClientName: conf.endClientName,
-        confirmedRow: conf.confirmedRow,
-        invoiceNo: conf.invoiceNo,
-        fieldName: conf.fieldName,
-        conflictType: conf.conflictType,
-        transition1: conf.transition1,
-        transition2: conf.transition2,
-        suggestion: conf.suggestion,
+        timestamp: t2.tsStr,
+        jobName: t2.jobName || t1.jobName,
+        endClientName: t2.endClientName || t1.endClientName,
+        confirmedRow: t2.rowNo || t1.rowNo,
+        invoiceNo: t2.invNo || t1.invNo,
+        fieldName: t2.rawField,
+        conflictType,
+        transition1,
+        transition2,
+        suggestion,
+        occurrenceCount: String(completedOscillations.length),
       });
     }
   } catch (e) {

@@ -27,12 +27,16 @@ if (typeof document !== "undefined") {
 }
 
 // Persistent top bar — rendered around every screen
-export default function NavShell({ activeNav, onHome, onOverview, onTasks, onActivity, onAppLog, onOutgoings, onInvoices, onRetainers, onJobs, onTools, onSettings, homeAlertCount, taskCount, children }) {
+export default function NavShell({ 
+  activeNav, onHome, onOverview, onTasks, onActivity, onAppLog, 
+  onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onSettings, 
+  homeAlertCount, taskCount, children 
+}) {
   const [showMore, setShowMore] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth <= 600);
+    const check = () => setIsMobile(window.innerWidth <= 840);
     check();
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
@@ -63,18 +67,24 @@ export default function NavShell({ activeNav, onHome, onOverview, onTasks, onAct
 
   const navBtnStyle = (name) => ({
     background: "none", border: "none", cursor: "pointer",
-    padding: isMobile ? "12px 12px" : "12px 14px",
+    padding: isMobile ? "12px 10px" : "12px 13px",
     fontSize: "14px", fontWeight: isTabActive(name) ? "600" : "400",
     color: isTabActive(name) ? "#0066cc" : "#444",
     borderBottom: isTabActive(name) ? "2px solid #0066cc" : "2px solid transparent",
     borderRadius: "0", display: "flex", alignItems: "center", whiteSpace: "nowrap",
   });
 
-  const secondaryNavs = [
+  // Strict requested menu order:
+  // Home, Jobs, Vendors, Invoices, Retainers, Tasks, Activity, Views, EoM, Settings
+  const allNavItems = [
+    { key: "home", label: "Home", handler: onHome, badge: homeAlertCount },
     { key: "jobs", label: "Jobs", handler: onJobs },
+    { key: "outgoings", label: "Vendors", handler: onOutgoings },
     { key: "invoices", label: "Invoices", handler: onInvoices },
     { key: "retainers", label: "Retainers", handler: onRetainers },
+    { key: "tasks", label: "Tasks", handler: onTasks, badge: taskCount },
     { key: "activity", label: "Activity", handler: onActivity || onAppLog },
+    { key: "views", label: "Views", handler: onViews },
     { key: "tools", label: "EoM", handler: onTools },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
@@ -83,36 +93,56 @@ export default function NavShell({ activeNav, onHome, onOverview, onTasks, onAct
     <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
       <style dangerouslySetInnerHTML={{ __html: GLOBAL_STYLES }} />
       <div style={{ background: "#1a1a2e", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Management System</span>
+        <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Management Application</span>
       </div>
-      <div style={{ background: "#fff", borderBottom: "1px solid #e0e0e0", padding: "0 8px", display: "flex", alignItems: "stretch", position: "relative" }}>
-        <button className="triage-btn pulse-nav-item" onClick={onHome} style={navBtnStyle("home")}>Home<Badge count={homeAlertCount} /></button>
-        <button className="triage-btn pulse-nav-item" onClick={onOutgoings} style={navBtnStyle("outgoings")}>Vendors</button>
-        {!isMobile && secondaryNavs.slice(0, 2).map(({ key, label, handler }) => (
-          <button key={key} className="triage-btn pulse-nav-item" onClick={handler} style={navBtnStyle(key)}>{label}</button>
+      <div style={{ 
+        background: "#fff", 
+        borderBottom: "1px solid #e0e0e0", 
+        padding: "0 8px", 
+        display: "flex", 
+        alignItems: "stretch", 
+        position: "relative",
+        overflowX: isMobile ? "visible" : "auto",
+        scrollbarWidth: "none"
+      }}>
+        {!isMobile && allNavItems.map(({ key, label, handler, badge }) => (
+          <button key={key} className="triage-btn pulse-nav-item" onClick={handler} style={navBtnStyle(key)}>
+            {label}
+            {badge !== undefined && <Badge count={badge} />}
+          </button>
         ))}
-        <button className="triage-btn pulse-nav-item" onClick={onTasks} style={navBtnStyle("tasks")}>Tasks<Badge count={taskCount} /></button>
-        {!isMobile && secondaryNavs.slice(2).map(({ key, label, handler }) => (
-          <button key={key} className="triage-btn pulse-nav-item" onClick={handler} style={navBtnStyle(key)}>{label}</button>
-        ))}
+
         {isMobile && (
           <>
-            {secondaryNavs.filter(n => n.key === activeNav).map(({ key, label, handler }) => (
-              <button key={key} className="triage-btn pulse-nav-item" onClick={handler} style={navBtnStyle(key)}>{label}</button>
-            ))}
+            <button className="triage-btn pulse-nav-item" onClick={onHome} style={navBtnStyle("home")}>
+              Home<Badge count={homeAlertCount} />
+            </button>
+            {activeNav !== "home" && (
+              (() => {
+                const current = allNavItems.find(n => isTabActive(n.key));
+                if (!current) return null;
+                return (
+                  <button className="triage-btn pulse-nav-item" onClick={current.handler} style={navBtnStyle(current.key)}>
+                    {current.label}
+                    {current.badge !== undefined && <Badge count={current.badge} />}
+                  </button>
+                );
+              })()
+            )}
             <button className="nav-more-btn triage-btn"
               onClick={(e) => { e.stopPropagation(); setShowMore(v => !v); }}
               style={{ background: "none", border: "none", cursor: "pointer", padding: "12px 14px", fontSize: "16px", color: "#666", borderBottom: "2px solid transparent", marginLeft: "auto" }}>
-              {showMore ? "✕" : "•••"}
+              {showMore ? "✕" : "••• Menu"}
             </button>
             {showMore && (
               <div className="nav-more-dropdown"
-                style={{ position: "absolute", top: "100%", right: "0", background: "#fff", border: "1px solid #ddd", borderRadius: "0 0 8px 8px", boxShadow: "0 6px 20px rgba(0,0,0,0.15)", zIndex: 200, minWidth: "150px" }}>
-                {secondaryNavs.map(({ key, label, handler }) => (
+                style={{ position: "absolute", top: "100%", right: "0", background: "#fff", border: "1px solid #ddd", borderRadius: "0 0 8px 8px", boxShadow: "0 6px 20px rgba(0,0,0,0.15)", zIndex: 200, minWidth: "180px" }}>
+                {allNavItems.map(({ key, label, handler, badge }) => (
                   <button key={key} className="triage-btn"
                     onClick={() => { handler(); setShowMore(false); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", width: "100%", justifyContent: "flex-start", borderBottom: "1px solid #f0f0f0", padding: "14px 18px", fontSize: "14px", fontWeight: activeNav === key ? "600" : "400", color: activeNav === key ? "#0066cc" : "#444", display: "flex", alignItems: "center" }}>
-                    {label}
+                    style={{ background: "none", border: "none", cursor: "pointer", width: "100%", justifyContent: "flex-start", borderBottom: "1px solid #f0f0f0", padding: "12px 16px", fontSize: "14px", fontWeight: isTabActive(key) ? "600" : "400", color: isTabActive(key) ? "#0066cc" : "#444", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span>{label}</span>
+                    {badge !== undefined && <Badge count={badge} />}
                   </button>
                 ))}
               </div>

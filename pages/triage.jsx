@@ -16,6 +16,7 @@ import SettingsView from "../components/SettingsView";
 import ClientSelectionView from "../components/ClientSelectionView";
 import AlertSelectionView from "../components/AlertSelectionView";
 import TriageAnalysisView from "../components/TriageAnalysisView";
+import ViewsScreen from "../components/ViewsScreen";
 import AuthGateView from "../components/AuthGateView";
 import { useAuth } from "../hooks/useAuth";
 import { useOverview } from "../hooks/useOverview";
@@ -249,6 +250,21 @@ function TriageSystemContent({ onBack, appGlobals }) {
     }
   };
 
+  const handleNavViews = () => {
+    setActiveNav("views");
+    if (!allClientsLoaded) {
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
+      }).then(r => r.json()).then(data => {
+        if (data.success && Array.isArray(data.clients)) {
+          setAllOutgoingsClients(data.clients);
+          setAllClientsLoaded(true);
+        }
+      }).catch(e => console.error("get_all_clients error:", e));
+    }
+  };
+
   // Page title and favicon are handled globally by Next.js <Head> in index.js
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -369,6 +385,16 @@ function TriageSystemContent({ onBack, appGlobals }) {
       );
     }
 
+    // ── VIEWS SCREEN ────────────────────────────────────────────────────────────
+    if (activeNav === "views") {
+      return (
+        <ViewsScreen
+          allClients={allOutgoingsClients}
+          styles={styles}
+        />
+      );
+    }
+
     // ── ACTIVITY / APP LOG SCREEN ──────────────────────────────────────────────
     if (activeNav === "activity" || activeNav === "appLog") {
       return (
@@ -471,6 +497,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
       onInvoices={handleNavInvoices} 
       onRetainers={handleNavRetainers} 
       onJobs={handleNavJobs} 
+      onViews={handleNavViews}
       onTools={handleNavTools} 
       onSettings={handleNavSettings} 
       homeAlertCount={liveAlertCount + proactiveAlerts.length} 

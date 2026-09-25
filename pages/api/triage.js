@@ -71,6 +71,7 @@ import {
   handleAcceptOption, handleDeleteJob, handleAnalyzeNoActionFlag,
   handleRehashIgnoredAlerts, PRECOMPUTED_KEY
 } from "../../services/triageEngine";
+import { getClientViewData } from "../../services/viewsService";
 
 // eomTabsVerified moved to eomTools.js
 
@@ -221,6 +222,15 @@ export default async function handler(req, res) {
       return await handleGetAppLog(req, res, sheets);
     } else if (action === "get_activity") {
       return await handleGetActivity(req, res, sheets);
+    } else if (action === "get_client_view_data") {
+      try {
+        const { clientSheetId, tab } = req.body;
+        const data = await getClientViewData({ clientSheetId, tab });
+        return res.status(200).json(data);
+      } catch (err) {
+        console.error("❌ get_client_view_data error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
 
     } else if (action === "start_triage") {
       // Proxy orchestrator for frontend chunking. Protects CRON_SECRET.

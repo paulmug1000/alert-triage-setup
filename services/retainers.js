@@ -1,5 +1,7 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter } from "./sheetsClient";
 import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers";
+import { logPmaActivity } from "./pmaLogger";
+import { resolveClientNameBySheetId } from "./workspaces";
 
 const RET_MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
 
@@ -247,6 +249,23 @@ export async function handleRenameRetainerJob(req, res, sheets) {
       requestBody: { valueInputOption: "RAW", data },
     });
 
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const endClient = oldClient || "";
+    const jobIdentifier = endClient ? `"${endClient} - ${oldJobName}"` : `"${oldJobName}"`;
+    const newJobIdentifier = endClient ? `"${endClient} - ${newJobName}"` : `"${newJobName}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "RETAINER",
+      action: "Retainer Renamed",
+      summary: `Renamed retainer ${jobIdentifier} to ${newJobIdentifier}`,
+      details: { oldJobName, newJobName, endClient, clientName: tenantClient, rowsUpdated: targetRows.length }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true, rowsUpdated: targetRows.length });
   } catch (err) {
     console.error("❌ rename_retainer_job error:", err);
@@ -397,6 +416,22 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
       });
 
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+      }
+      const endClient = client || "";
+      const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
+
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "RETAINER",
+        action: "Retainer End Date Changed",
+        summary: `Shortened end date for ${jobIdentifier} to ${newEndDate} (${trimRowNums.length} rows trimmed)`,
+        details: { jobName, newEndDate, endClient, clientName: tenantClient, trimmed: trimRowNums.length, grown: 0 }
+      }).catch(e => console.error("PMA log failed:", e));
+
       return res.status(200).json({ success: true, trimmed: trimRowNums.length, grown: 0 });
 
     } else {
@@ -545,6 +580,22 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
         valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
       });
+
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+      }
+      const endClient = client || "";
+      const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
+
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "RETAINER",
+        action: "Retainer End Date Changed",
+        summary: `Extended end date for ${jobIdentifier} to ${newEndDate} (${newRowDates.length} rows added)`,
+        details: { jobName, newEndDate, endClient, clientName: tenantClient, trimmed: 0, grown: newRowDates.length }
+      }).catch(e => console.error("PMA log failed:", e));
 
       return res.status(200).json({ success: true, trimmed: 0, grown: newRowDates.length });
     }
@@ -847,6 +898,22 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
       });
     }
 
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const endClient = client || "";
+    const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "RETAINER",
+      action: "Retainer Start Date Changed",
+      summary: `Changed start date for ${jobIdentifier} to ${newStartDate}`,
+      details: { jobName, newStartDate, newEndDate, newMonthlyAmount, endClient, clientName: tenantClient }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({
       success: true,
       trimmed: Math.max(0, currentCount - targetCount),
@@ -1145,6 +1212,22 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       console.log(`  ⚠ Row grouping for retainer split failed`);
     }
 
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const endClient = client || "";
+    const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "RETAINER",
+      action: "Retainer Monthly Amount Changed",
+      summary: `Changed monthly amount for ${jobIdentifier} to £${newMonthlyAmount}`,
+      details: { jobName, newMonthlyAmount, endClient, clientName: tenantClient, changeMonth, changeYear, changeWholeRetainer: !!changeWholeRetainer }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true, newParentRowNum, newJobName, relabelledRows: relabelRows.length });
   } catch (err) {
     console.error("❌ change_retainer_monthly_amount error:", err);
@@ -1265,6 +1348,22 @@ export async function handleCreateRetainerJob(req, res, sheets) {
         console.log(`  ⚠ Row grouping for new retainer failed`);
       }
     }
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const endClient = client || "";
+    const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "RETAINER",
+      action: "Retainer Created",
+      summary: `Created new retainer ${jobIdentifier} at £${monthlyRevenue}/month`,
+      details: { jobName, endClient, clientName: tenantClient, monthlyRevenue, monthlyDirectCosts, startDate, endDate, invoiceFrequency }
+    }).catch(e => console.error("PMA log failed:", e));
 
     return res.status(200).json({ success: true, parentRowNum: newParentRowNum, childRowCount: childSendDates.length });
   } catch (err) {
@@ -1619,6 +1718,20 @@ export async function handleTidyUpRetainers(req, res, sheets) {
       }
     }
 
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "RETAINER",
+      action: "Retainers Tidied",
+      summary: `Completed retainer tidy-up routine for ${tenantClient || "Client"} (${moveRequests.length} blocks relocated)`,
+      details: { clientName: tenantClient, movesCount: moveRequests.length }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true, moves: moveRequests.length });
 
   } catch (err) {
@@ -1955,6 +2068,23 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: newDateWriteData },
       });
+
+      let tenantClient = req.body.clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+      }
+      const endClient = client || "";
+      const jobIdentifier = endClient ? `"${endClient} - ${jobName || extraJobName || "Retainer"}"` : `"${jobName || extraJobName || "Retainer"}"`;
+
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: req.body.automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "RETAINER",
+        action: "Retainer Split Invoice Applied",
+        summary: `Applied retainer invoice split for #${altInvoiceNo || "Invoice"} on ${jobIdentifier}`,
+        details: { clientName: tenantClient, endClient, altInvoiceNo, difference, extraJobName }
+      }).catch(e => console.error("PMA log failed:", e));
+
       return res.status(200).json({ success: true, mode: "created", extraJobRow: newRowNum });
     }
   } catch (err) {

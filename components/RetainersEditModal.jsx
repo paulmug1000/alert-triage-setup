@@ -37,7 +37,7 @@ function isoToSheetDate(iso) {
   return `${d}-${months[m-1]}-${y}`;
 }
 
-export default function RetainersEditModal({ job, clientSheetId, masterSheetId, onClose, onRenamedInPlace, onNeedsReload }) {
+export default function RetainersEditModal({ job, clientName, clientSheetId, masterSheetId, onClose, onRenamedInPlace, onNeedsReload }) {
   const jobStartISO = sheetDateToISO(job.rows[0]?.startDate);
   const jobEndISO = sheetDateToISO(job.rows[0]?.endDate);
 
@@ -125,6 +125,7 @@ export default function RetainersEditModal({ job, clientSheetId, masterSheetId, 
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "rename_retainer_job",
+            clientName: clientName || "",
             clientSheetId, oldClient: job.client, oldJobName: job.jobName, newJobName: jobName.trim(),
             parentRowNum: job.parentRowNum,
           }),
@@ -139,6 +140,7 @@ export default function RetainersEditModal({ job, clientSheetId, masterSheetId, 
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "change_retainer_start_date",
+            clientName: clientName || "",
             clientSheetId, masterSheetId,
             client: job.client, jobName: nameChanged ? jobName.trim() : job.jobName, parentRowNum: job.parentRowNum,
             newStartDate: isoToSheetDate(startDate),
@@ -160,6 +162,7 @@ export default function RetainersEditModal({ job, clientSheetId, masterSheetId, 
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "change_retainer_end_date",
+            clientName: clientName || "",
             clientSheetId, masterSheetId,
             client: job.client, jobName: nameChanged ? jobName.trim() : job.jobName, parentRowNum: job.parentRowNum,
             newEndDate: isoToSheetDate(endDate),
@@ -175,6 +178,7 @@ export default function RetainersEditModal({ job, clientSheetId, masterSheetId, 
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "change_retainer_monthly_amount",
+            clientName: clientName || "",
             clientSheetId, client: job.client, jobName: nameChanged ? jobName.trim() : job.jobName, parentRowNum: job.parentRowNum,
             changeWholeRetainer: true,
             newMonthlyAmount: parsedWholeAmount,
@@ -219,6 +223,7 @@ export default function RetainersEditModal({ job, clientSheetId, masterSheetId, 
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "change_retainer_monthly_amount",
+          clientName: clientName || "",
           clientSheetId, client: job.client, jobName: job.jobName, parentRowNum: job.parentRowNum,
           changeMonth: mo - 1, changeYear: yr, newMonthlyAmount: parsedAmount,
         }),

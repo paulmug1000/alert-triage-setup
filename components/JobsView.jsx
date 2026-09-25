@@ -85,6 +85,39 @@ export default function JobsView({
   };
 
   const handleInlineUpdate = async (colLetter, rowNum, newValue) => {
+    // Find target job and row identity from current jobsData
+    let targetEndClient = "";
+    let targetJobName = "";
+    if (jobsData) {
+      for (const job of jobsData) {
+        const matchRow = (job.rows || []).find(r => r.rowNum === rowNum);
+        if (matchRow) {
+          targetEndClient = matchRow.client || job.client || "";
+          targetJobName = matchRow.jobName || job.jobName || "";
+          break;
+        }
+      }
+    }
+
+    const FIELD_NAMES = {
+      A: "Client",
+      B: "Job Name",
+      C: "Project Code",
+      D: "Date Confirmed",
+      E: "Lead Source",
+      AE: "Revenue Split",
+      AG: "Revenue",
+      AH: "Direct Costs",
+      AI: "VAT",
+      AJ: "Type",
+      AK: "Product Line",
+      AL: "Start Date",
+      AM: "End Date",
+      AN: "Likelihood",
+      DD: "Copied to Confirmed"
+    };
+    const fieldName = FIELD_NAMES[colLetter] || `Field ${colLetter}`;
+
     // Optimistic local update
     setJobsData(prev => prev.map(job => ({
       ...job,
@@ -112,7 +145,19 @@ export default function JobsView({
     try {
       await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "update_job_field", clientSheetId: jobsClient.clientSheetId, tabName: jobsTab, cellRef: `${colLetter}${rowNum}`, value: newValue })
+        body: JSON.stringify({
+          action: "update_job_field",
+          clientSheetId: jobsClient.clientSheetId,
+          clientName: jobsClient.clientName || jobsClient.name || "",
+          tabName: jobsTab,
+          cellRef: `${colLetter}${rowNum}`,
+          colLetter,
+          rowNum,
+          fieldName,
+          endClientName: targetEndClient,
+          jobName: targetJobName,
+          value: newValue
+        })
       });
     } catch (e) {
       console.error("Inline update failed:", e);

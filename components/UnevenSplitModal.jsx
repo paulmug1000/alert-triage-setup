@@ -85,7 +85,19 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
       
       await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "update_job_field", clientSheetId: client.clientSheetId, tabName, cellRef: `AE${jobRow.rowNum}`, value: splitStr })
+        body: JSON.stringify({
+          action: "update_job_field",
+          clientSheetId: client?.clientSheetId,
+          clientName: client?.clientName || client?.name || "",
+          tabName,
+          cellRef: `AE${jobRow.rowNum}`,
+          colLetter: "AE",
+          rowNum: jobRow.rowNum,
+          fieldName: "Revenue Split",
+          endClientName: jobRow.client,
+          jobName: jobRow.jobName,
+          value: splitStr
+        })
       });
       
       onUpdateJobsData(jobRow.rowNum, splitStr);

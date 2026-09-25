@@ -30,6 +30,7 @@ export default function InvoicesNewJobModal({
         body: JSON.stringify({
           action: "create_job_from_invoice",
           clientSheetId: invoicesClient?.clientSheetId,
+          clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           jobName: jobName.trim(), projectCode: projectCode.trim(),
           revenue: parseFloat(revenue) || 0, directCosts: parseFloat(directCosts) || 0,
           vatYesNo, projectType, startDate, endDate,

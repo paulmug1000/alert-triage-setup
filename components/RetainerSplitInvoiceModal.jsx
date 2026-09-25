@@ -49,6 +49,7 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
         body: JSON.stringify({
           action: "apply_retainer_split_invoice",
           clientSheetId, masterSheetId,
+          clientName: alertMeta.clientName || "",
           client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
           missingRowNum: preview.missingRowNum,
           standardMonthlyAmount: preview.standardMonthlyAmount,

@@ -15,6 +15,7 @@
 
 import { withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
+import { fetchPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
 
 const REDIS_ACTIVITY_PREFIX = "pulse:activity:";
 const CACHE_TTL_SECONDS = 7 * 24 * 3600; // 7 days permanent cache
@@ -1109,9 +1110,9 @@ function deduplicateEvents(events) {
 /**
  * Fetch and parse activity for a single client with Redis caching
  */
-export async function fetchClientActivity(sheets, client, includeRoutine = false, forceRefresh = false) {
+export async function fetchClientActivity(sheets, client, includeRoutine = false, forceRefresh = false, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, skipPma = false) {
   const { clientName, clientSheetId, masterSheetId } = client;
-  if (!clientSheetId && !masterSheetId) {
+  if (!clientName && !clientSheetId && !masterSheetId) {
     return { clientName, events: [], totalEvents: 0 };
   }
 
@@ -1176,6 +1177,16 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
     }
   }
 
+  // 3. Read PMA Activity from Automation Commander PmaActivityLog (if not skipped by bulk fetch)
+  if (!skipPma) {
+    try {
+      const pmaEvents = await fetchPmaActivity(sheets, automationCommanderSheetId, clientName);
+      events.push(...pmaEvents);
+    } catch (err) {
+      console.warn(`⚠️ Could not read PMA activity for ${clientName}:`, err.message);
+    }
+  }
+
   // Sort newest first
   events.sort((a, b) => b.timestampMs - a.timestampMs);
 
@@ -1202,7 +1213,7 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
  * - Checks Redis cache first (TTL 30m)
  * - Paced batch execution (batch size: 2, 400ms delay) to avoid quota spikes
  */
-export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh = false, includeRoutine = false) {
+export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh = false, includeRoutine = false, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
   if (!Array.isArray(clientsList) || clientsList.length === 0) {
     return { clients: {}, allEvents: [], cachedAt: null };
   }
@@ -1233,7 +1244,7 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
   for (let i = 0; i < clientsList.length; i += BATCH_SIZE) {
     const batch = clientsList.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.all(
-      batch.map(client => fetchClientActivity(sheets, client, includeRoutine, forceRefresh))
+      batch.map(client => fetchClientActivity(sheets, client, includeRoutine, forceRefresh, automationCommanderSheetId, true))
     );
 
     for (const res of batchResults) {
@@ -1250,12 +1261,28 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
     }
   }
 
-  // Sort overall allEvents newest first
+  // 2. Fetch PMA Activity across all clients from Automation Commander in 1 single call
+  try {
+    const pmaEvents = await fetchPmaActivity(sheets, automationCommanderSheetId, null);
+    for (const ev of pmaEvents) {
+      if (ev.clientName && clientsData[ev.clientName]) {
+        clientsData[ev.clientName].events.push(ev);
+        clientsData[ev.clientName].events.sort((a, b) => b.timestampMs - a.timestampMs);
+        clientsData[ev.clientName].totalEvents = clientsData[ev.clientName].events.length;
+      }
+      allEvents.push(ev);
+    }
+  } catch (err) {
+    console.warn("⚠️ Could not fetch all PMA activity in fetchAllClientsActivity:", err.message);
+  }
+
+  // Sort overall allEvents newest first and deduplicate
   allEvents.sort((a, b) => b.timestampMs - a.timestampMs);
+  const cleanAllEvents = deduplicateEvents(allEvents);
 
   const payload = {
     clients: clientsData,
-    allEvents,
+    allEvents: cleanAllEvents,
     cachedAt: new Date().toISOString()
   };
 
@@ -1275,15 +1302,16 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
  */
 export async function handleGetActivity(req, res, sheets) {
   const { automationCommanderSheetId, clientName, forceRefresh, includeRoutine, clients } = req.body;
+  const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
 
   try {
     let clientsList = Array.isArray(clients) ? clients : [];
 
     // If client list was not supplied by caller, load it from AutoUpdates
-    if (clientsList.length === 0 && automationCommanderSheetId) {
+    if (clientsList.length === 0 && acId) {
       const resp = await withRetry(() =>
         sheets.spreadsheets.values.get({
-          spreadsheetId: automationCommanderSheetId,
+          spreadsheetId: acId,
           range: "AutoUpdates!A2:N500",
         })
       );
@@ -1307,12 +1335,12 @@ export async function handleGetActivity(req, res, sheets) {
         // Fallback: search row directly
         targetClient = { clientName };
       }
-      const data = await fetchClientActivity(sheets, targetClient, !!includeRoutine, !!forceRefresh);
+      const data = await fetchClientActivity(sheets, targetClient, !!includeRoutine, !!forceRefresh, acId);
       return res.status(200).json({ success: true, clientName, data });
     }
 
     // 2. All Clients View
-    const data = await fetchAllClientsActivity(sheets, clientsList, !!forceRefresh, !!includeRoutine);
+    const data = await fetchAllClientsActivity(sheets, clientsList, !!forceRefresh, !!includeRoutine, acId);
     return res.status(200).json({ success: true, data });
   } catch (err) {
     console.error("❌ handleGetActivity error:", err);

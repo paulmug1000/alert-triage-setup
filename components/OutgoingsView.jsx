@@ -56,6 +56,8 @@ export default function OutgoingsView({
         body: JSON.stringify({
           action: "update_outgoing_note",
           clientSheetId: outgoingsClient?.clientSheetId,
+          clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
+          contractorName: contractor?.name || "",
           masterSheetId: outgoingsClient?.masterSheetId || "",
           sheetRow: contractor.sheetRow,
           colLetter,
@@ -583,8 +585,11 @@ export default function OutgoingsView({
                                         body: JSON.stringify({
                                           action: "assign_expense_to_job",
                                           clientSheetId: outgoingsClient?.clientSheetId,
+                                          clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
                                           masterSheetId: outgoingsClient?.masterSheetId || "",
                                           rowNum: jr.rowNum, slotNum: s.slotNum, expense: exp,
+                                          jobClient: job.client,
+                                          jobName: job.jobName,
                                         }),
                                       });
                                       if (outgoingsClient?.masterSheetId) {
@@ -659,6 +664,7 @@ export default function OutgoingsView({
                                       body: JSON.stringify({
                                         action: "assign_expense_to_job",
                                         clientSheetId: outgoingsClient?.clientSheetId,
+                                        clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
                                         masterSheetId: outgoingsClient?.masterSheetId || "",
                                         createNewRow: true,
                                         jobLastRow, jobClient: job.client, jobName: job.jobName,

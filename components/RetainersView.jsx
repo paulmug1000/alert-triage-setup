@@ -67,6 +67,7 @@ export default function RetainersView({
         <RetainersEditModal
           key={retainersEditJob.parentRowNum}
           job={retainersEditJob}
+          clientName={retainersClient?.clientName}
           clientSheetId={retainersClient?.clientSheetId}
           masterSheetId={retainersClient?.masterSheetId}
           onClose={() => setRetainersEditJob(null)}

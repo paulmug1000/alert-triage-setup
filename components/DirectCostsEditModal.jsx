@@ -30,6 +30,7 @@ export default function DirectCostsEditModal({
         body: JSON.stringify({
           action: "update_expense_slot",
           clientSheetId: client?.clientSheetId,
+          clientName: client?.clientName || client?.name || "",
           rowNum, slotNum,
           expense: { description, amount: parseFloat(amount) || 0, vat, date, daysToPay: parseInt(daysToPay) || 30, status, transactionId },
         }),
@@ -53,6 +54,7 @@ export default function DirectCostsEditModal({
         body: JSON.stringify({
           action: "update_expense_slot",
           clientSheetId: client?.clientSheetId,
+          clientName: client?.clientName || client?.name || "",
           rowNum, slotNum, deleteSlot: true,
         }),
       });

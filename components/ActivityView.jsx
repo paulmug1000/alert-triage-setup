@@ -170,44 +170,65 @@ export default function ActivityView({
     const c = String(cat).trim();
     if (!c) return "";
     if (c.toUpperCase() === "CRM") return "CRM";
+    if (c.toUpperCase() === "EOM") return "EoM";
+    if (c.toUpperCase() === "PMA") return "PMA";
     return c.charAt(0).toUpperCase() + c.slice(1).toLowerCase();
   };
 
   // Render Category Badge:
-  // - No icon
-  // - Description: "Invoices (auto)", "Job (user)", etc.
-  // - Exact spreadsheet highlight colours:
-  //     Expenses (auto): Soft pink/peach (#feebeb)
-  //     CRM (auto): Soft periwinkle/blue (#e8f0fe)
-  //     Invoices (auto): Soft mint green (#e6f4ea)
-  //     User items: Light yellow (#fef3c7)
+  // - Description: "Invoices (auto)", "Invoices (PMA)", "Job (user)", etc.
+  // - Exact spreadsheet highlight colours based on activity type (consistent across sources):
+  //     Invoices: Soft mint green (#e6f4ea)
+  //     Expenses / Outgoings / Vendors: Soft pink/peach (#feebeb)
+  //     CRM: Soft periwinkle/blue (#e8f0fe)
+  //     Job: Soft yellow/amber (#fef3c7)
+  //     Retainers: Soft purple (#f3e8ff)
+  //     EoM: Soft teal/cyan (#e0f2fe)
+  //     Triage / Alerts: Soft orange/coral (#ffedd5)
+  //     System / Other: Neutral slate (#f1f5f9)
   // - Text colour: Always black (#000000)
   const renderBadge = (ev) => {
-    const isUser = ev.source === "user" || ["JOB", "SESSION", "OUTGOINGS", "SALARIES"].includes(ev.category);
+    const catUpper = String(ev.category || "").toUpperCase();
     let bg = "#f1f5f9";
     let border = "#e2e8f0";
 
-    if (isUser) {
+    if (catUpper === "INVOICES") {
+      bg = "#e6f4ea";
+      border = "#ceead6";
+    } else if (catUpper === "CRM") {
+      bg = "#e8f0fe";
+      border = "#d2e3fc";
+    } else if (catUpper === "EXPENSES" || catUpper === "OUTGOINGS" || catUpper === "VENDORS") {
+      bg = "#feebeb";
+      border = "#fad2cf";
+    } else if (catUpper === "JOB" || catUpper === "JOBS" || catUpper === "SALARIES") {
       bg = "#fef3c7";
       border = "#fde68a";
+    } else if (catUpper === "RETAINER" || catUpper === "RETAINERS") {
+      bg = "#f3e8ff";
+      border = "#e9d5ff";
+    } else if (catUpper === "EOM") {
+      bg = "#e0f2fe";
+      border = "#bae6fd";
+    } else if (catUpper === "TRIAGE" || catUpper === "ALERTS") {
+      bg = "#ffedd5";
+      border = "#fed7aa";
     } else {
-      if (ev.category === "INVOICES") {
-        bg = "#e6f4ea";
-        border = "#ceead6";
-      } else if (ev.category === "CRM") {
-        bg = "#e8f0fe";
-        border = "#d2e3fc";
-      } else if (ev.category === "EXPENSES") {
-        bg = "#feebeb";
-        border = "#fad2cf";
-      } else {
-        bg = "#f1f5f9";
-        border = "#e2e8f0";
-      }
+      bg = "#f1f5f9";
+      border = "#e2e8f0";
     }
 
     const categoryTitle = formatCategory(ev.category);
-    const sourceText = (ev.source || (isUser ? "user" : "auto")).toLowerCase();
+    let sourceText = "auto";
+    if (ev.source === "pma" || ev.source === "PMA") {
+      sourceText = "PMA";
+    } else if (ev.source === "user") {
+      sourceText = "user";
+    } else if (ev.source === "auto") {
+      sourceText = "auto";
+    } else if (["JOB", "SESSION", "OUTGOINGS", "SALARIES"].includes(catUpper)) {
+      sourceText = "user";
+    }
     const badgeLabel = `${categoryTitle} (${sourceText})`;
 
     return (
@@ -231,6 +252,7 @@ export default function ActivityView({
   // Render Details Drawer
   const renderEventDetails = (ev) => {
     const details = ev.structuredDetails || {};
+    const isPma = ev.source === "PMA" || ev.source === "pma";
 
     // Invoices segmentation (handles both new structured keys and legacy cached events)
     const accountingInvoices = details.accountingInvoices || 
@@ -271,6 +293,54 @@ export default function ActivityView({
         fontSize: "12px",
         color: "#334155"
       }}>
+        {/* PMA ACTION DETAILS DRAWER */}
+        {isPma && (
+          <div style={{ marginBottom: "12px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "6px" }}>
+              <div style={{ fontWeight: "700", color: "#0f172a", fontSize: "12.5px" }}>
+                {ev.action || "Pulse Management Action"}
+              </div>
+              <span style={{
+                fontSize: "11px",
+                fontWeight: "600",
+                color: "#475569",
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                padding: "2px 8px",
+                borderRadius: "4px"
+              }}>
+                Performed by: {ev.userEmail || "PMA Admin"}
+              </span>
+            </div>
+            {/* Key-Value Attribute Cards */}
+            {details && Object.keys(details).filter(k => !["raw", "pmaAction", "pmaUser", "pmaTimestamp", "changes"].includes(k)).length > 0 && (
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: "8px",
+                marginTop: "6px"
+              }}>
+                {Object.entries(details)
+                  .filter(([k]) => !["raw", "pmaAction", "pmaUser", "pmaTimestamp", "changes"].includes(k))
+                  .map(([k, v], i) => (
+                    <div key={i} style={{
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "4px",
+                      padding: "6px 10px"
+                    }}>
+                      <div style={{ fontSize: "10px", color: "#64748b", textTransform: "capitalize", fontWeight: "600" }}>
+                        {k.replace(/([A-Z])/g, " $1").toLowerCase()}
+                      </div>
+                      <div style={{ fontSize: "11.5px", color: "#0f172a", fontWeight: "600", marginTop: "2px" }}>
+                        {typeof v === "object" ? JSON.stringify(v) : String(v ?? "—")}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
         {/* INVOICE GAPS (Clean Bullet Cards) */}
         {hasInvoiceGaps && (
           <div style={{ marginBottom: "14px" }}>

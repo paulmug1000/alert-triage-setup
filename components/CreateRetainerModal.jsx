@@ -48,6 +48,7 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
         body: JSON.stringify({
           action: "create_retainer_job",
           clientSheetId, masterSheetId,
+          clientName: agencyClientName || "",
           client: endClientName.trim(), jobName: jobName.trim(),
           monthlyRevenue: revenue, monthlyDirectCosts: directCosts, vat,
           startDate: isoToSheetDate(startDate), endDate: isoToSheetDate(endDate),

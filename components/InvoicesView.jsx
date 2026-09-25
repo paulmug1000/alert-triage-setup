@@ -59,6 +59,7 @@ export default function InvoicesView({
           body: JSON.stringify({
             action: "assign_invoice_to_job",
             clientSheetId: invoicesClient?.clientSheetId,
+            clientName: invoicesClient?.clientName || invoicesClient?.name || "",
             masterSheetId: invoicesClient?.masterSheetId || "",
             createNewRow: true,
             jobLastRow,
@@ -80,6 +81,7 @@ export default function InvoicesView({
           body: JSON.stringify({
             action: "assign_invoice_to_job",
             clientSheetId: invoicesClient?.clientSheetId,
+            clientName: invoicesClient?.clientName || invoicesClient?.name || "",
             rowNum, slotNum, invoice: inv,
             jobClient: effectiveClientName,
             jobName: job.jobName,

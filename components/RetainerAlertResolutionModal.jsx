@@ -50,6 +50,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
           body: JSON.stringify({
             action: "change_retainer_end_date",
             clientSheetId, masterSheetId,
+            clientName: alertMeta?.clientName || "",
             client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
             newEndDate: preview.computedEndDate,
           }),
@@ -60,6 +61,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
           body: JSON.stringify({
             action: "change_retainer_monthly_amount",
             clientSheetId,
+            clientName: alertMeta?.clientName || "",
             client: alertMeta.endClientName, jobName: alertMeta.jobName, parentRowNum: alertMeta.confirmedRow,
             changeMonth: preview.changeMonth, changeYear: preview.changeYear, newMonthlyAmount: preview.newMonthlyAmount,
             sourceInvoiceRef: preview.sourceInvoiceRef,

@@ -29,6 +29,7 @@ export default function InvoicesEditModal({
         body: JSON.stringify({
           action: "update_invoice_slot",
           clientSheetId: invoicesClient?.clientSheetId,
+          clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           rowNum, slotNum,
           invoice: { invoiceNo, amount: parseFloat(amount) || 0, sentDate, daysToPay: parseInt(daysToPay) || 30, status },
         }),
@@ -56,6 +57,7 @@ export default function InvoicesEditModal({
         body: JSON.stringify({
           action: "update_invoice_slot",
           clientSheetId: invoicesClient?.clientSheetId,
+          clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           rowNum, slotNum, deleteSlot: true,
         }),
       });

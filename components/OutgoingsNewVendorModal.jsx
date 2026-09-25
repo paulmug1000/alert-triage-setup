@@ -19,6 +19,7 @@ export default function OutgoingsNewVendorModal({ newVendorData, outgoingsClient
         body: JSON.stringify({
           action: "create_outgoings_vendor",
           clientSheetId: outgoingsClient?.clientSheetId,
+          clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
           vendorName: vendorName.trim(),
           vatFlag, invTiming, payTiming, deliveryPct: parseFloat(deliveryPct) || 100,
         }),

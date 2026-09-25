@@ -18,6 +18,7 @@ import {
   getCRMMatchingMode, fetchJobRowsForDisplay 
 } from "./sharedHelpers";
 import { redisClient } from "./redisClient";
+import { logPmaActivity } from "./pmaLogger";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs";
 import { anthropic } from "./claudeClient";
 
@@ -6011,6 +6012,30 @@ export async function handleAcceptOption(req, res, sheets) {
           console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
         }
         
+        const alertCat = (() => {
+          const t = String(alert.type || alert.alertType || alert.flagType || "").toLowerCase();
+          if (t.includes("inv")) return "INVOICES";
+          if (t.includes("exp") || t.includes("dir") || t.includes("cost") || t.includes("vendor")) return "EXPENSES";
+          if (t.includes("crm")) return "CRM";
+          if (t.includes("ret")) return "RETAINER";
+          return "TRIAGE";
+        })();
+
+        logPmaActivity(sheets, {
+          automationCommanderSheetId,
+          clientName: alert.clientName || "",
+          category: alertCat,
+          action: "Alert Option Accepted",
+          summary: `Accepted option for ${alert.clientName || "Client"} (${alert.type || alert.flagType || "alert"}): "${option.title || option.label || "Option"}"`,
+          details: {
+            alertType: alert.type || alert.alertType || alert.flagType,
+            optionTitle: option.title || option.label,
+            matchType: option.matchType,
+            clientName: alert.clientName,
+            cellsWritten: cellUpdates.length
+          }
+        }).catch(e => console.error("PMA log failed:", e));
+
         return res.status(200).json({
           success: true,
           message: "Option accepted and written to sheet",
@@ -6180,6 +6205,20 @@ export async function handleDeleteJob(req, res, sheets) {
             console.log(`  ⚠ AlertMemory update failed (non-fatal): ${memErr.message}`);
           }
   
+          logPmaActivity(sheets, {
+            automationCommanderSheetId,
+            clientName: alert.clientName || "",
+            category: "JOB",
+            action: "Job Deleted via Triage",
+            summary: `Deleted job '${option.jobName || "Job"}' for ${alert.clientName || "Client"} from ${tabName}`,
+            details: {
+              jobName: option.jobName,
+              tabName,
+              clientName: alert.clientName,
+              rowsBlanked: rowsToBlank.length
+            }
+          }).catch(e => console.error("PMA log failed:", e));
+
           return res.status(200).json({
             success: true,
             message: `Job "${option.jobName}" blanked across ${rowsToBlank.length} row(s) in ${tabName} tab`,

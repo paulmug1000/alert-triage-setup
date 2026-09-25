@@ -4,6 +4,7 @@ import {
   buildAlertFingerprint, ensureAlertMemoryTab, readAlertMemory,
   findMemoryRow, updateAlertMemoryRow, appendAlertMemoryRow
 } from "./alertMemory";
+import { logPmaActivity } from "./pmaLogger";
 
 export async function handleBulkCreateTasks(req, res, sheets) {
   const { alerts: alertsToTask, taskNote, snoozedUntil, automationCommanderSheetId: acId } = req.body;
@@ -46,6 +47,19 @@ export async function handleBulkCreateTasks(req, res, sheets) {
         results.push({ fingerprintHash: null, error: alertErr.message });
       }
     }
+
+    const createdCount = results.filter(r => r.taskKey).length;
+    if (createdCount > 0) {
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: alertsToTask[0]?.clientName || "",
+        category: "TRIAGE",
+        action: "Tasks Created",
+        summary: `Bulk created ${createdCount} task${createdCount > 1 ? "s" : ""}: ${taskNote || "Alert Tasks"}`,
+        details: { count: createdCount, taskNote, clientName: alertsToTask[0]?.clientName }
+      });
+    }
+
     return res.status(200).json({ success: true, results });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -121,6 +135,25 @@ export async function handleCreateTask(req, res, sheets) {
     }
 
     await redisClient.del("triage_tasks_cache").catch(() => {});
+
+    const taskCat = (() => {
+      const t = String(alert.type || alert.flagType || alert.alertType || "").toLowerCase();
+      if (t.includes("inv")) return "INVOICES";
+      if (t.includes("exp") || t.includes("dir") || t.includes("cost") || t.includes("vendor") || t.includes("out")) return "EXPENSES";
+      if (t.includes("crm")) return "CRM";
+      if (t.includes("ret")) return "RETAINER";
+      return "TRIAGE";
+    })();
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: alert.clientName || "",
+      category: taskCat,
+      action: "Task Created",
+      summary: `Created task for ${alert.clientName || "Client"}: ${taskNote || alert.type || "Alert Task"}`,
+      details: { taskNote, alertType: alert.type || alert.flagType, clientName: alert.clientName }
+    });
+
     return res.status(200).json({ success: true, taskKey, fingerprintHash });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -212,6 +245,16 @@ export async function handleAddTaskNote(req, res, sheets) {
 
     await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, dataSnapshot: JSON.stringify(taskMeta) });
     await redisClient.del("triage_tasks_cache").catch(() => {});
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: memoryRow.clientName || "",
+      category: "TRIAGE",
+      action: "Task Note Added",
+      summary: `Added note to task for ${memoryRow.clientName || "Client"}: "${noteText}"`,
+      details: { fingerprintHash, noteText, clientName: memoryRow.clientName }
+    });
+
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -242,6 +285,18 @@ export async function handleSnoozeTask(req, res, sheets) {
       dataSnapshot: JSON.stringify(taskMeta),
     });
     await redisClient.del("triage_tasks_cache").catch(() => {});
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: memoryRow.clientName || "",
+      category: "TRIAGE",
+      action: unsnooze ? "Task Unsnoozed" : "Task Snoozed",
+      summary: unsnooze
+        ? `Unsnoozed task for ${memoryRow.clientName || "Client"}: ${memoryRow.alertSummary || "Task"}`
+        : `Snoozed task for ${memoryRow.clientName || "Client"} until ${snoozedUntil}: ${memoryRow.alertSummary || "Task"}`,
+      details: { fingerprintHash, snoozedUntil, unsnooze: !!unsnooze, clientName: memoryRow.clientName }
+    });
+
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -280,6 +335,16 @@ export async function handleResolveTask(req, res, sheets) {
 
     await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, status: "task_resolved", dataSnapshot: JSON.stringify(taskMeta) });
     await redisClient.del("triage_tasks_cache").catch(() => {});
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: memoryRow.clientName || "",
+      category: "TRIAGE",
+      action: "Task Resolved",
+      summary: `Resolved task for ${memoryRow.clientName || "Client"}: ${memoryRow.alertSummary || "Task"}`,
+      details: { fingerprintHash, clientName: memoryRow.clientName }
+    });
+
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });

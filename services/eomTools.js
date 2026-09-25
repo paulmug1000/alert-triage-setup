@@ -1,5 +1,6 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient";
 import { redisClient } from "./redisClient";
+import { logPmaActivity } from "./pmaLogger";
 
 // Moved from triage.js local scope
 let eomTabsVerified = false;
@@ -400,6 +401,16 @@ export async function handleEomUpdateTaskStatus(req, res, sheets) {
         valueInputOption: "RAW", requestBody: { values: [[uStatus, completedAt]] },
       }));
     }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: uClientName,
+      category: "EOM",
+      action: "EoM Task Updated",
+      summary: `Updated EoM task '${uTaskId}' status to ${uStatus} for ${uClientName} (${uMonthKey})`,
+      details: { clientName: uClientName, taskId: uTaskId, monthKey: uMonthKey, status: uStatus }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -658,6 +669,15 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
     const cashWorkMonthKey = eomTargetMonthToWorkMonth_(cashTargetMonthKey);
     await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashWorkMonthKey);
 
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: cashClientName,
+      category: "EOM",
+      action: "Cash Balance Saved",
+      summary: `Saved cash balance formula ${formula} on Cash!${targetColLetter}${targetRow} for ${cashClientName}`,
+      details: { clientName: cashClientName, formula, targetCol: targetColLetter, targetRow }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true, formula, targetCol: targetColLetter, targetRow });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -720,6 +740,15 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
 
     await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, backupClientName, "create_backup", backupWorkMonthKey);
 
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: backupClientName,
+      category: "EOM",
+      action: "Dashboard Backup Created",
+      summary: `Created dashboard backup sheet '${tabName}' for ${backupClientName}`,
+      details: { clientName: backupClientName, tabName }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true, tabName });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -748,6 +777,15 @@ export async function handleEomMarkMonthActual(req, res, sheets) {
     });
 
     await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, perfClientName, "mark_actual", perfWorkMonthKey);
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: perfClientName,
+      category: "EOM",
+      action: "Month Marked Actual",
+      summary: `Marked month ${monthLabel} as Actual on Performance tab for ${perfClientName}`,
+      details: { clientName: perfClientName, month: monthLabel, col: targetColLetter }
+    }).catch(e => console.error("PMA log failed:", e));
 
     return res.status(200).json({ success: true, monthLabel, targetCol: targetColLetter });
   } catch (err) {

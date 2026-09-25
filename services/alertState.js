@@ -6,6 +6,7 @@ import {
   extractCrmComparisonSnapshot, deleteAlertMemoryRows
 } from "./alertMemory";
 import { createHash } from "crypto";
+import { logPmaActivity } from "./pmaLogger";
 
 const PRECOMPUTED_KEY = "triage_precomputed";
 
@@ -243,6 +244,26 @@ export async function handleResolveNoActionFlag(req, res, sheets) {
         }
       } catch (amErr) {}
     }
+
+    const flagCat = (() => {
+      const t = String(flagType || "").toLowerCase();
+      if (t.includes("inv")) return "INVOICES";
+      if (t.includes("exp") || t.includes("dir") || t.includes("cost") || t.includes("vendor") || t.includes("out")) return "EXPENSES";
+      if (t.includes("crm")) return "CRM";
+      if (t.includes("ret")) return "RETAINER";
+      if (t.includes("job") || t.includes("sal")) return "JOB";
+      return "TRIAGE";
+    })();
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acIdResolve,
+      clientName,
+      category: flagCat,
+      action: "Flag Resolved",
+      summary: `Resolved flag: ${flagType} for ${clientName}`,
+      details: { flagType, fingerprintHash, clientName }
+    });
+
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -312,6 +333,26 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
     }
     for (const u of rowsToUpdate) await updateAlertMemoryRow(sheets, acId, u.rowIndex, u.row);
     for (const a of rowsToAppend) await appendAlertMemoryRow(sheets, acId, a);
+
+    const firstAlert = alertsToIgnore[0];
+    const alertCat = (() => {
+      const t = String(firstAlert?.type || firstAlert?.flagType || "").toLowerCase();
+      if (t.includes("inv")) return "INVOICES";
+      if (t.includes("exp") || t.includes("dir") || t.includes("cost") || t.includes("vendor") || t.includes("out")) return "EXPENSES";
+      if (t.includes("crm")) return "CRM";
+      if (t.includes("ret")) return "RETAINER";
+      return "TRIAGE";
+    })();
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: firstAlert?.clientName || "",
+      category: alertCat,
+      action: "Alert(s) Ignored",
+      summary: `Ignored ${alertsToIgnore.length} alert${alertsToIgnore.length > 1 ? "s" : ""} (${firstAlert?.clientName || "Client"}): ${ignoreReason || "No reason specified"}`,
+      details: { count: alertsToIgnore.length, ignoreReason, clientName: firstAlert?.clientName }
+    });
+
     return res.status(200).json({ success: true, count: alertsToIgnore.length });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -354,6 +395,24 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
         await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 3600 });
       }
     } catch (e) {}
+
+    const alertCat = (() => {
+      const t = String(alertKey || "").toLowerCase();
+      if (t.includes("inv")) return "INVOICES";
+      if (t.includes("exp") || t.includes("dir") || t.includes("cost") || t.includes("vendor") || t.includes("out")) return "EXPENSES";
+      if (t.includes("crm")) return "CRM";
+      if (t.includes("ret")) return "RETAINER";
+      return "TRIAGE";
+    })();
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: clientName || "",
+      category: alertCat,
+      action: "Proactive Alert Acknowledged",
+      summary: `Acknowledged proactive alert (${alertKey}) for ${clientName || "Client"}`,
+      details: { alertKey, clientName }
+    });
 
     return res.status(200).json({ success: true });
   } catch (err) {
@@ -404,6 +463,24 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
       }
     } catch (e) {}
 
+    const alertCat = (() => {
+      const t = String(alertKey || "").toLowerCase();
+      if (t.includes("inv")) return "INVOICES";
+      if (t.includes("exp") || t.includes("dir") || t.includes("cost") || t.includes("vendor") || t.includes("out")) return "EXPENSES";
+      if (t.includes("crm")) return "CRM";
+      if (t.includes("ret")) return "RETAINER";
+      return "TRIAGE";
+    })();
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: clientName || "",
+      category: alertCat,
+      action: "Proactive Alert Resolved",
+      summary: `Resolved proactive alert (${alertKey}) for ${clientName || "Client"}: ${resolution || "Resolved"}`,
+      details: { alertKey, resolution, clientName }
+    });
+
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -451,6 +528,15 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
       }
     } catch (e) {}
 
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: acId,
+      clientName: clientName || "",
+      category: "TRIAGE",
+      action: "Proactive Alerts Acknowledged",
+      summary: `Acknowledged ${alertKeys.length} proactive alerts for ${clientName || "Client"}`,
+      details: { alertKeysCount: alertKeys.length, clientName }
+    });
+
     return res.status(200).json({ success: true, count: alertKeys.length });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -473,6 +559,16 @@ export async function handleUnignoreAlert(req, res, sheets) {
     } else {
       await deleteAlertMemoryRows(sheets, automationCommanderSheetId, [memoryRow.rowIndex]);
     }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: memoryRow.clientName || "",
+      category: "TRIAGE",
+      action: "Unignore Alert",
+      summary: `Unignored alert: ${memoryRow.alertType || memoryRow.alertSummary}`,
+      details: { fingerprintHash, alertType: memoryRow.alertType, clientName: memoryRow.clientName }
+    });
+
     return res.status(200).json({ success: true, message: "Alert un-ignored" });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });

@@ -1,10 +1,45 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId } from "./sheetsClient";
 import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay } from "./sharedHelpers";
+import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger";
 
 export let assignedExpensesTabVerified = false;
 
 export async function ensureAssignedExpensesTab_(sheets, spreadsheetId) {
   return;
+}
+
+const clientSheetIdToNameCache = new Map();
+
+export async function resolveClientNameBySheetId(sheets, sheetId, acId = DEFAULT_AC_SHEET_ID) {
+  if (!sheetId) return "";
+  const cleanId = extractSheetIdFromUrl(sheetId) || sheetId;
+  if (clientSheetIdToNameCache.has(cleanId)) {
+    return clientSheetIdToNameCache.get(cleanId);
+  }
+  try {
+    const resp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: acId || DEFAULT_AC_SHEET_ID,
+        range: "AutoUpdates!A2:L70"
+      })
+    );
+    const rows = resp.data.values || [];
+    for (const r of rows) {
+      const cName = String(r[0] || "").trim();
+      const clientUrl = String(r[11] || "").trim();
+      const masterUrl = String(r[12] || "").trim();
+      const cId = extractSheetIdFromUrl(clientUrl) || clientUrl;
+      const mId = extractSheetIdFromUrl(masterUrl) || masterUrl;
+      if (cId && cName) clientSheetIdToNameCache.set(cId, cName);
+      if (mId && cName) clientSheetIdToNameCache.set(mId, cName);
+      if ((cId === cleanId || mId === cleanId) && cName) {
+        return cName;
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ Error resolving clientName by sheetId:", err.message);
+  }
+  return "";
 }
 
 export async function handleGetAllClients(req, res, sheets) {
@@ -259,6 +294,28 @@ export async function handleCreateOutgoingsVendor(req, res, sheets) {
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [[vendorName, vatFlag || "Yes", invTiming || "Next", payTiming || "Next", pctString]] },
     });
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "EXPENSES",
+      action: "Vendor Created",
+      summary: `Created new contractor/vendor '${vendorName}' for ${tenantClient || "Client"} (Row ${newRow})`,
+      details: {
+        vendorName,
+        vatFlag: vatFlag || "Yes",
+        invTiming: invTiming || "Next",
+        payTiming: payTiming || "Next",
+        deliveryPct: pctString,
+        row: newRow,
+        clientName: tenantClient
+      }
+    }).catch(e => console.error("PMA log failed:", e));
 
     return res.status(200).json({ success: true, sheetRow: newRow });
   } catch (err) {
@@ -655,7 +712,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
 }
 
 export async function handleUpdateJobField(req, res, sheets) {
-  const { clientSheetId, tabName, cellRef, value } = req.body;
+  const { clientSheetId, tabName, cellRef, value, colLetter, rowNum, fieldName, endClientName, jobName } = req.body;
   if (!clientSheetId || !tabName || !cellRef) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
@@ -667,6 +724,91 @@ export async function handleUpdateJobField(req, res, sheets) {
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [[value]] }
     });
+
+    const targetCol = (colLetter || cellRef.replace(/[0-9]/g, "")).toUpperCase();
+    const targetRow = rowNum || cellRef.replace(/[^0-9]/g, "");
+
+    const FIELD_NAMES = {
+      A: "Client",
+      B: "Job Name",
+      C: "Project Code",
+      D: "Date Confirmed",
+      E: "Lead Source",
+      AE: "Revenue Split",
+      AG: "Revenue",
+      AH: "Direct Costs",
+      AI: "VAT",
+      AJ: "Type",
+      AK: "Product Line",
+      AL: "Start Date",
+      AM: "End Date",
+      AN: "Likelihood",
+      DD: "Copied to Confirmed"
+    };
+    const resolvedFieldName = fieldName || FIELD_NAMES[targetCol] || `Field ${targetCol}`;
+
+    // Resolve clientName (the Pulse tenant, e.g. "Ayefour Design")
+    let resolvedClient = req.body.clientName || "";
+    if (!resolvedClient) {
+      resolvedClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+
+    // Resolve endClient and jobName
+    let resolvedEndClient = endClientName || "";
+    let resolvedJobName = jobName || "";
+
+    if ((!resolvedEndClient || !resolvedJobName) && targetRow) {
+      try {
+        const nameResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `${tabName}!A${targetRow}:B${targetRow}`,
+            valueRenderOption: "FORMATTED_VALUE"
+          })
+        );
+        const rowVals = nameResp.data.values?.[0] || [];
+        if (!resolvedEndClient && rowVals[0]) resolvedEndClient = String(rowVals[0]).trim();
+        if (!resolvedJobName && rowVals[1]) resolvedJobName = String(rowVals[1]).trim();
+      } catch (nameErr) {
+        console.warn("⚠️ Could not read job row identity:", nameErr.message);
+      }
+    }
+
+    // If the edit itself changed column A (End Client) or B (Job Name), reflect the new value
+    if (targetCol === "A" && value) resolvedEndClient = value;
+    if (targetCol === "B" && value) resolvedJobName = value;
+
+    let jobIdentifier = "";
+    if (resolvedEndClient && resolvedJobName) {
+      jobIdentifier = `"${resolvedEndClient} - ${resolvedJobName}"`;
+    } else if (resolvedJobName) {
+      jobIdentifier = `"${resolvedJobName}"`;
+    } else if (resolvedEndClient) {
+      jobIdentifier = `"${resolvedEndClient}"`;
+    } else {
+      jobIdentifier = `Row ${targetRow || cellRef}`;
+    }
+
+    const valStr = value !== "" && value !== null && value !== undefined ? ` to "${value}"` : " (cleared)";
+    const summary = `Updated ${resolvedFieldName} for ${jobIdentifier}${valStr}`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "JOB",
+      action: `Job ${resolvedFieldName} Updated`,
+      summary,
+      details: {
+        tabName,
+        cellRef,
+        field: resolvedFieldName,
+        endClient: resolvedEndClient,
+        jobName: resolvedJobName,
+        newValue: value,
+        clientName: resolvedClient
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ update_job_field error:", err);
@@ -850,6 +992,30 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
       }
     }
 
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const jobIdentifier = (jobClient && jobName) ? `"${jobClient} - ${jobName}"` : `"${jobName || jobClient || "Job"}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "EXPENSES",
+      action: createNewRow ? "Expense Placed (New Row)" : "Expense Placed",
+      summary: `Placed expense '${expense.description || expense.accountName || "Expense"}' (£${expense.amount || 0}) into ${jobIdentifier} (Row ${targetRowNum}, Slot ${targetSlotNum})`,
+      details: {
+        vendor: expense.description || expense.accountName,
+        amount: expense.amount,
+        endClient: jobClient,
+        jobName,
+        clientName: tenantClient,
+        slot: targetSlotNum,
+        row: targetRowNum,
+        isNewRow: !!createNewRow
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true, newRowNum: createNewRow ? targetRowNum : undefined });
   } catch (err) {
     console.error("❌ assign_expense_to_job error:", err);
@@ -925,6 +1091,50 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
         });
       }
     }
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    let endClient = req.body.endClientName || "";
+    let job = req.body.jobName || "";
+    if (!endClient || !job) {
+      try {
+        const nameResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `Confirmed!A${rowNum}:B${rowNum}`,
+            valueRenderOption: "FORMATTED_VALUE"
+          })
+        );
+        const rowVals = nameResp.data.values?.[0] || [];
+        if (!endClient && rowVals[0]) endClient = String(rowVals[0]).trim();
+        if (!job && rowVals[1]) job = String(rowVals[1]).trim();
+      } catch (e) {}
+    }
+    const jobIdentifier = (endClient && job) ? `"${endClient} - ${job}"` : `"${job || endClient || `Row ${rowNum}`}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "EXPENSES",
+      action: deleteSlot ? "Expense Slot Cleared" : "Expense Slot Updated",
+      summary: deleteSlot
+        ? `Cleared expense slot #${slotNum} on Row ${rowNum} for ${jobIdentifier}`
+        : `Updated expense slot #${slotNum} on Row ${rowNum} for ${jobIdentifier} (${expense?.description || "Expense"}, £${expense?.amount || 0})`,
+      details: {
+        slotNum,
+        rowNum,
+        endClient,
+        jobName: job,
+        clientName: tenantClient,
+        deleteSlot: !!deleteSlot,
+        description: expense?.description,
+        amount: expense?.amount,
+        status: expense?.status
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ update_expense_slot error:", err);
@@ -1138,6 +1348,32 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
         });
       }
     }
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const endClient = effectiveClientName || jobClient || "";
+    const jobIdentifier = (endClient && jobName) ? `"${endClient} - ${jobName}"` : `"${jobName || endClient || "Job"}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "INVOICES",
+      action: createNewRow ? "Invoice Placed (New Row)" : "Invoice Placed",
+      summary: `Placed invoice #${invoice.invoiceNo} (£${invoice.amount || 0}) into ${jobIdentifier} (Row ${targetRowNum}, Slot ${targetSlotNum})`,
+      details: {
+        invoiceNumber: invoice.invoiceNo,
+        amount: invoice.amount,
+        jobName,
+        endClient,
+        clientName: tenantClient,
+        slot: targetSlotNum,
+        row: targetRowNum,
+        isNewRow: !!createNewRow
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true, newRowNum: createNewRow ? targetRowNum : undefined });
   } catch (err) {
     console.error("❌ assign_invoice_to_job error:", err);
@@ -1209,6 +1445,50 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         });
       }
     }
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    let endClient = req.body.endClientName || "";
+    let job = req.body.jobName || "";
+    if (!endClient || !job) {
+      try {
+        const nameResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `Confirmed!A${rowNum}:B${rowNum}`,
+            valueRenderOption: "FORMATTED_VALUE"
+          })
+        );
+        const rowVals = nameResp.data.values?.[0] || [];
+        if (!endClient && rowVals[0]) endClient = String(rowVals[0]).trim();
+        if (!job && rowVals[1]) job = String(rowVals[1]).trim();
+      } catch (e) {}
+    }
+    const jobIdentifier = (endClient && job) ? `"${endClient} - ${job}"` : `"${job || endClient || `Row ${rowNum}`}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "INVOICES",
+      action: deleteSlot ? "Invoice Slot Cleared" : "Invoice Slot Updated",
+      summary: deleteSlot
+        ? `Cleared invoice slot #${slotNum} on Row ${rowNum} for ${jobIdentifier}`
+        : `Updated invoice slot #${slotNum} on Row ${rowNum} for ${jobIdentifier} (Inv #${invoice?.invoiceNo || ""}, £${invoice?.amount || 0})`,
+      details: {
+        slotNum,
+        rowNum,
+        endClient,
+        jobName: job,
+        clientName: tenantClient,
+        deleteSlot: !!deleteSlot,
+        invoiceNumber: invoice?.invoiceNo,
+        amount: invoice?.amount,
+        status: invoice?.status
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ update_invoice_slot error:", err);
@@ -1297,6 +1577,33 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
         spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateWriteData },
       });
     }
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const endClient = invoice?.client || "";
+    const createdJob = jobName || invoice?.job || "Job";
+    const jobIdentifier = endClient ? `"${endClient} - ${createdJob}"` : `"${createdJob}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "INVOICES",
+      action: "Job Created from Invoice",
+      summary: `Created new job ${jobIdentifier} from invoice #${invoice?.invoiceNo} (£${invoice?.amount || 0}) (Row ${newRow})`,
+      details: {
+        jobName: createdJob,
+        endClient,
+        clientName: tenantClient,
+        invoiceNumber: invoice?.invoiceNo,
+        amount: invoice?.amount,
+        projectCode,
+        revenue,
+        row: newRow
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true, newRowNum: newRow });
   } catch (err) {
     console.error("❌ create_job_from_invoice error:", err);
@@ -1347,6 +1654,43 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
     });
 
     console.log(`  ✅ Outgoings note updated: ${cellRef}`);
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    let contractor = req.body.contractorName || "";
+    if (!contractor && sheetRow) {
+      try {
+        const vResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: `Outgoings!A${sheetRow}`,
+            valueRenderOption: "FORMATTED_VALUE"
+          })
+        );
+        contractor = String(vResp.data.values?.[0]?.[0] || "").trim();
+      } catch (e) {}
+    }
+    const contractorIdentifier = contractor ? `"${contractor}" (${cellRef})` : cellRef;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "EXPENSES",
+      action: "Outgoing Note Updated",
+      summary: `Updated outgoings note for ${contractorIdentifier} (${(blocks || []).length} item${(blocks || []).length !== 1 ? "s" : ""}, Total: £${cellTotal.toFixed(2)})`,
+      details: {
+        vendor: contractor,
+        cellRef,
+        sheetRow,
+        colLetter,
+        itemCount: (blocks || []).length,
+        total: cellTotal,
+        clientName: tenantClient
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
     return res.status(200).json({ success: true, cellRef, blockCount: (blocks || []).length, cellTotal });
   } catch (err) {
     console.error("❌ update_outgoing_note error:", err);

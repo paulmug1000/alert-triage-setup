@@ -1,6 +1,61 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Spinner from "./Spinner";
 import { useActivity } from "../hooks/useActivity";
+
+/**
+ * CardScrollContainer:
+ * Solves the "scroll trap" by using an 800ms hover-intent timer.
+ * - While cursor is moving across cards: overflow is hidden so mousewheel scrolls page unimpeded.
+ * - If cursor pauses over card >= 800ms: activates inner scroll.
+ * - Clicking inside card activates immediately.
+ * - overscrollBehavior: auto ensures no trapped scroll lock at top or bottom.
+ */
+function CardScrollContainer({ children, hasEvents }) {
+  const [isActive, setIsActive] = useState(false);
+  const hoverTimerRef = useRef(null);
+
+  const handleMouseEnter = () => {
+    if (!hasEvents) return;
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      setIsActive(true);
+    }, 800);
+  };
+
+  const handleMouseLeave = () => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    setIsActive(false);
+  };
+
+  const handleClick = () => {
+    if (!hasEvents) return;
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    setIsActive(true);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    };
+  }, []);
+
+  return (
+    <div
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      onClick={handleClick}
+      style={{
+        maxHeight: "360px",
+        overflowY: isActive ? "auto" : "hidden",
+        overscrollBehavior: "auto",
+        flex: 1,
+        position: "relative"
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 export default function ActivityView({
   automationCommanderSheetId,
@@ -21,14 +76,24 @@ export default function ActivityView({
     loadActivity
   } = useActivity(automationCommanderSheetId, allOutgoingsClients);
 
-  // SWR: Trigger full background refresh on mount
-  const revalidatedRef = React.useRef(false);
+  // SWR: Instant render from cache + automatic live background revalidation from Google Sheets
+  const revalidatedRef = useRef(false);
   useEffect(() => {
     if (!revalidatedRef.current) {
       revalidatedRef.current = true;
-      loadActivity({ forceRefresh: true });
+      const hasCached = (activityData?.allEvents?.length > 0) || (Object.keys(activityData?.clients || {}).length > 0);
+      if (hasCached) {
+        // Cached data is already rendering on screen (via localStorage).
+        // Trigger live automatic background refresh against Google Sheets!
+        loadActivity({ forceRefresh: true });
+      } else {
+        // First visit on this device: load Redis snapshot first (<50ms), then revalidate in background
+        loadActivity({ forceRefresh: false }).then(() => {
+          loadActivity({ forceRefresh: true });
+        });
+      }
     }
-  }, [loadActivity]);
+  }, [loadActivity, activityData]);
 
   // Handle client change
   const handleClientChange = (e) => {
@@ -62,61 +127,103 @@ export default function ActivityView({
 
   const lastRefreshStr = formatCachedTime(activityData.cachedAt);
 
-  // Render Category Badge
-  const renderBadge = (ev) => {
-    const isAuto = ev.source === "auto";
-    let bg = "#eef2ff";
-    let color = "#3730a3";
-    let icon = "🤖";
+  // Helper for normalizing action badge text to concise labels (e.g., "New", "Updated", "Paid")
+  const getActionBadgeLabel = (text = "", defaultLabel = "Updated") => {
+    const t = String(text).toLowerCase();
+    if (t.includes("new")) return "New";
+    if (t.includes("paid")) return "Paid";
+    if (t.includes("gap")) return "Gap";
+    if (t.includes("match")) return "Matched";
+    if (t.includes("vat")) return "VAT Updated";
+    if (t.includes("overdue")) return "Overdue";
+    if (t.includes("manual")) return "Manual";
+    if (t.includes("date")) return "Date Moved";
+    if (t.includes("update") || t.includes("adjust") || t.includes("import")) return "Updated";
+    return text || defaultLabel;
+  };
 
-    if (isAuto) {
-      if (ev.category === "INVOICES") {
-        bg = "#e0f2fe";
-        color = "#0369a1";
-        icon = "🧾";
-      } else if (ev.category === "CRM") {
-        bg = "#f3e8ff";
-        color = "#7e22ce";
-        icon = "🎯";
-      } else if (ev.category === "EXPENSES") {
-        bg = "#fef3c7";
-        color = "#b45309";
-        icon = "💳";
-      } else if (ev.category === "CLIENT_AUTH") {
-        bg = "#dcfce7";
-        color = "#15803d";
-        icon = "🔗";
-      }
+  // Helper for action badge colors
+  const getActionBadgeStyle = (actionType = "", text = "") => {
+    const t = (text + " " + actionType).toLowerCase();
+    if (t.includes("paid")) {
+      return { bg: "#dcfce7", color: "#166534", border: "#bbf7d0" };
+    }
+    if (t.includes("overdue") || t.includes("sent (was")) {
+      return { bg: "#fee2e2", color: "#991b1b", border: "#fecaca" };
+    }
+    if (t.includes("new")) {
+      return { bg: "#e0f2fe", color: "#0369a1", border: "#bae6fd" };
+    }
+    if (t.includes("vat")) {
+      return { bg: "#e0e7ff", color: "#3730a3", border: "#c7d2fe" };
+    }
+    if (t.includes("match") || t.includes("created")) {
+      return { bg: "#f0fdf4", color: "#15803d", border: "#bbf7d0" };
+    }
+    if (t.includes("manual") || t.includes("date")) {
+      return { bg: "#fef3c7", color: "#92400e", border: "#fde68a" };
+    }
+    return { bg: "#f3e8ff", color: "#6b21a8", border: "#e9d5ff" };
+  };
+
+  const formatCategory = (cat = "") => {
+    const c = String(cat).trim();
+    if (!c) return "";
+    if (c.toUpperCase() === "CRM") return "CRM";
+    return c.charAt(0).toUpperCase() + c.slice(1).toLowerCase();
+  };
+
+  // Render Category Badge:
+  // - No icon
+  // - Description: "Invoices (auto)", "Job (user)", etc.
+  // - Exact spreadsheet highlight colours:
+  //     Expenses (auto): Soft pink/peach (#feebeb)
+  //     CRM (auto): Soft periwinkle/blue (#e8f0fe)
+  //     Invoices (auto): Soft mint green (#e6f4ea)
+  //     User items: Light yellow (#fef3c7)
+  // - Text colour: Always black (#000000)
+  const renderBadge = (ev) => {
+    const isUser = ev.source === "user" || ["JOB", "SESSION", "OUTGOINGS", "SALARIES"].includes(ev.category);
+    let bg = "#f1f5f9";
+    let border = "#e2e8f0";
+
+    if (isUser) {
+      bg = "#fef3c7";
+      border = "#fde68a";
     } else {
-      icon = "👤";
-      if (ev.category === "JOB") {
-        bg = "#dcfce7";
-        color = "#166534";
-      } else if (ev.category === "SESSION") {
-        bg = "#f0fdf4";
-        color = "#047857";
-      } else if (ev.category === "OUTGOINGS") {
-        bg = "#ffedd5";
-        color = "#c2410c";
+      if (ev.category === "INVOICES") {
+        bg = "#e6f4ea";
+        border = "#ceead6";
+      } else if (ev.category === "CRM") {
+        bg = "#e8f0fe";
+        border = "#d2e3fc";
+      } else if (ev.category === "EXPENSES") {
+        bg = "#feebeb";
+        border = "#fad2cf";
+      } else {
+        bg = "#f1f5f9";
+        border = "#e2e8f0";
       }
     }
+
+    const categoryTitle = formatCategory(ev.category);
+    const sourceText = (ev.source || (isUser ? "user" : "auto")).toLowerCase();
+    const badgeLabel = `${categoryTitle} (${sourceText})`;
 
     return (
       <span style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: "4px",
-        padding: "2px 7px",
+        padding: "2px 8px",
         borderRadius: "4px",
         fontSize: "11px",
         fontWeight: "600",
         background: bg,
-        color: color,
-        letterSpacing: "0.2px",
-        textTransform: "uppercase"
+        border: `1px solid ${border}`,
+        color: "#000000",
+        letterSpacing: "0.2px"
       }}>
-        <span>{icon}</span>
-        <span>{isAuto ? "Auto" : "User"} • {ev.category}</span>
+        {badgeLabel}
       </span>
     );
   };
@@ -124,9 +231,30 @@ export default function ActivityView({
   // Render Details Drawer
   const renderEventDetails = (ev) => {
     const details = ev.structuredDetails || {};
-    const hasInvoices = Array.isArray(details.invoices) && details.invoices.length > 0;
-    const hasInvoiceGaps = Array.isArray(details.invoiceGaps) && details.invoiceGaps.length > 0;
-    const hasExpenses = Array.isArray(details.expenses) && details.expenses.length > 0;
+
+    // Invoices segmentation (handles both new structured keys and legacy cached events)
+    const accountingInvoices = details.accountingInvoices || 
+      (Array.isArray(details.invoices) ? details.invoices.filter(inv => !inv.sheet && !inv.slot && !inv.row) : []);
+    const matchedInvoices = details.matchedInvoices || 
+      (Array.isArray(details.invoices) ? details.invoices.filter(inv => inv.sheet || inv.slot || inv.row) : []);
+    const invoiceGaps = Array.isArray(details.invoiceGaps) ? details.invoiceGaps : [];
+
+    // Expenses segmentation (handles both new structured keys and legacy cached events)
+    const accountingExpenses = details.accountingExpenses || 
+      (Array.isArray(details.expenses) ? details.expenses.filter(e => !e.sheet) : []);
+    const matchedExpenses = details.matchedExpenses || 
+      (Array.isArray(details.expenses) ? details.expenses.filter(e => e.sheet && !e.statusType?.includes("manual") && !e.action?.toLowerCase().includes("manual")) : []);
+    const manualAdjustments = details.manualAdjustments || 
+      (Array.isArray(details.expenses) ? details.expenses.filter(e => e.sheet && (e.statusType?.includes("manual") || e.action?.toLowerCase().includes("manual") || e.action === "Date Moved")) : []);
+
+    const hasAccountingInvoices = accountingInvoices.length > 0;
+    const hasMatchedInvoices = matchedInvoices.length > 0;
+    const hasInvoiceGaps = invoiceGaps.length > 0;
+
+    const hasAccountingExpenses = accountingExpenses.length > 0;
+    const hasMatchedExpenses = matchedExpenses.length > 0;
+    const hasManualAdjustments = manualAdjustments.length > 0;
+
     const hasOpportunities = Array.isArray(details.opportunities) && details.opportunities.length > 0;
     const hasCreatedJobs = Array.isArray(details.createdJobs) && details.createdJobs.length > 0;
     const hasSkippedJobs = Array.isArray(details.skippedJobs) && details.skippedJobs.length > 0;
@@ -145,12 +273,12 @@ export default function ActivityView({
       }}>
         {/* INVOICE GAPS (Clean Bullet Cards) */}
         {hasInvoiceGaps && (
-          <div style={{ marginBottom: "12px" }}>
+          <div style={{ marginBottom: "14px" }}>
             <div style={{ fontWeight: "600", color: "#1e293b", marginBottom: "8px" }}>
-              Created Invoice Gaps ({details.invoiceGaps.length}):
+              {invoiceGaps.length} invoice gap{invoiceGaps.length > 1 ? "s" : ""} created / adjusted in Pulse:
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {details.invoiceGaps.map((gap, i) => (
+              {invoiceGaps.map((gap, i) => (
                 <div key={i} style={{
                   background: "#ffffff",
                   border: "1px solid #e2e8f0",
@@ -219,11 +347,11 @@ export default function ActivityView({
           </div>
         )}
 
-        {/* INVOICES TABLE */}
-        {hasInvoices && (
-          <div style={{ marginBottom: "12px" }}>
+        {/* INVOICES TABLE 1: ACCOUNTING TOOL DOWNLOAD */}
+        {hasAccountingInvoices && (
+          <div style={{ marginBottom: "14px" }}>
             <div style={{ fontWeight: "600", color: "#1e293b", marginBottom: "8px" }}>
-              Invoices Adjusted / Imported ({details.invoices.length}):
+              {accountingInvoices.length} invoice{accountingInvoices.length > 1 ? "s" : ""} adjusted / imported from accounting tool:
             </div>
             <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "6px" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", background: "#fff" }}>
@@ -234,30 +362,33 @@ export default function ActivityView({
                   </tr>
                 </thead>
                 <tbody>
-                  {details.invoices.map((inv, i) => {
-                    let badgeBg = "#f1f5f9";
-                    let badgeColor = "#475569";
-                    if (inv.statusType === "paid" || inv.status?.toLowerCase().includes("paid")) {
-                      badgeBg = "#dcfce7";
-                      badgeColor = "#166534";
-                    } else if (inv.statusType === "overdue" || inv.status?.toLowerCase().includes("overdue") || inv.status?.toLowerCase().includes("sent (was")) {
-                      badgeBg = "#fee2e2";
-                      badgeColor = "#991b1b";
-                    } else if (inv.statusType === "new" || inv.status?.toLowerCase().includes("new")) {
-                      badgeBg = "#e0f2fe";
-                      badgeColor = "#0369a1";
-                    } else if (inv.statusType === "transition" || inv.status?.toLowerCase().includes("authorised")) {
-                      badgeBg = "#f3e8ff";
-                      badgeColor = "#6b21a8";
-                    }
-
+                  {accountingInvoices.map((inv, i) => {
+                    const actionText = inv.action || inv.status || "Updated";
+                    const badgeLabel = getActionBadgeLabel(actionText, "Updated");
+                    const bStyle = getActionBadgeStyle(inv.statusType, actionText);
                     return (
-                      <tr key={i} style={{ borderBottom: i < details.invoices.length - 1 ? "1px solid #f1f5f9" : "none" }}>
-                        <td style={{ padding: "8px 10px", fontWeight: "600", color: "#1e293b", fontFamily: "monospace", verticalAlign: "top" }}>
-                          {inv.invoiceNumber || "—"}
+                      <tr key={i} style={{ borderBottom: i < accountingInvoices.length - 1 ? "1px solid #f1f5f9" : "none" }}>
+                        <td style={{ padding: "8px 10px", verticalAlign: "top", width: "95px" }}>
+                          <div style={{ fontWeight: "700", color: "#1e293b", fontFamily: "monospace", fontSize: "11.5px" }}>
+                            {inv.invoiceNumber || "—"}
+                          </div>
+                          <div style={{ marginTop: "4px" }}>
+                            <span style={{
+                              display: "inline-block",
+                              padding: "2px 6px",
+                              borderRadius: "4px",
+                              fontSize: "10px",
+                              fontWeight: "600",
+                              background: bStyle.bg,
+                              color: bStyle.color,
+                              border: `1px solid ${bStyle.border}`,
+                              lineHeight: "1.3"
+                            }}>
+                              {badgeLabel}
+                            </span>
+                          </div>
                         </td>
-                        <td style={{ padding: "8px 10px" }}>
-                          {/* Client & Job Title */}
+                        <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
                           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
                             <strong style={{ color: "#0f172a", fontSize: "12px" }}>
                               {inv.clientName || inv.description || "Invoice"}
@@ -266,22 +397,7 @@ export default function ActivityView({
                               <span style={{ color: "#64748b", fontSize: "11.5px" }}>• {inv.jobName}</span>
                             )}
                           </div>
-
-                          {/* Status, Amount, Dates, and Sheet Info Badges */}
                           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "5px" }}>
-                            {/* Status Badge */}
-                            <span style={{
-                              padding: "2px 7px",
-                              borderRadius: "4px",
-                              fontSize: "10.5px",
-                              fontWeight: "600",
-                              background: badgeBg,
-                              color: badgeColor
-                            }}>
-                              {inv.status || "Updated"}
-                            </span>
-
-                            {/* Amount Badge */}
                             {inv.amount && inv.amount !== "—" && (
                               <span style={{
                                 padding: "2px 7px",
@@ -295,8 +411,6 @@ export default function ActivityView({
                                 {inv.amount}
                               </span>
                             )}
-
-                            {/* Date Badges */}
                             {Array.isArray(inv.dates) && inv.dates.map((d, dIdx) => (
                               <span key={dIdx} style={{
                                 padding: "2px 6px",
@@ -310,23 +424,7 @@ export default function ActivityView({
                                 {d}
                               </span>
                             ))}
-
-                            {/* Location / Sheet Tag */}
-                            {(inv.sheet || inv.slot) && (
-                              <span style={{
-                                padding: "1px 6px",
-                                borderRadius: "3px",
-                                background: "#fef3c7",
-                                color: "#92400e",
-                                fontSize: "10.5px",
-                                fontWeight: "500"
-                              }}>
-                                {inv.sheet || "Confirmed"}{inv.slot ? ` • ${inv.slot}` : ""}{inv.row ? ` (Row ${inv.row})` : ""}
-                              </span>
-                            )}
                           </div>
-
-                          {/* Raw Changes Details */}
                           {inv.rawChanges && inv.rawChanges !== inv.status && !inv.rawChanges.startsWith("Amount:") && (
                             <div style={{ fontSize: "10.5px", color: "#64748b", marginTop: "4px", fontStyle: "italic" }}>
                               {inv.rawChanges}
@@ -342,45 +440,153 @@ export default function ActivityView({
           </div>
         )}
 
-        {/* EXPENSES TABLE */}
-        {hasExpenses && (
-          <div style={{ marginBottom: "12px" }}>
+        {/* INVOICES TABLE 2: PULSE MATCHED & UPDATED */}
+        {hasMatchedInvoices && (
+          <div style={{ marginBottom: "14px" }}>
             <div style={{ fontWeight: "600", color: "#1e293b", marginBottom: "8px" }}>
-              Expenses Adjusted / Matched ({details.expenses.length}):
+              {matchedInvoices.length} invoice{matchedInvoices.length > 1 ? "s" : ""} matched & updated in Pulse:
             </div>
             <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "6px" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", background: "#fff" }}>
                 <thead>
                   <tr style={{ background: "#f1f5f9", textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>
-                    <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569" }}>Expense / Supplier & Status Details</th>
+                    <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "95px" }}>Invoice #</th>
+                    <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569" }}>Client / Job & Status Details</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {details.expenses.map((exp, i) => {
-                    let badgeBg = "#f1f5f9";
-                    let badgeColor = "#475569";
-                    const st = (exp.status || "").toLowerCase();
-                    if (st.includes("paid")) {
-                      badgeBg = "#dcfce7";
-                      badgeColor = "#166534";
-                    } else if (st.includes("vat")) {
-                      badgeBg = "#e0e7ff";
-                      badgeColor = "#3730a3";
-                    } else if (st.includes("manual") || st.includes("date moved") || st.includes("date")) {
-                      badgeBg = "#fef3c7";
-                      badgeColor = "#92400e";
-                    } else if (st.includes("new")) {
-                      badgeBg = "#e0f2fe";
-                      badgeColor = "#0369a1";
-                    } else if (st.includes("matched") || st.includes("created")) {
-                      badgeBg = "#f0fdf4";
-                      badgeColor = "#15803d";
-                    }
-
+                  {matchedInvoices.map((inv, i) => {
+                    const actionText = inv.action || inv.status || "Updated in Pulse";
+                    const badgeLabel = getActionBadgeLabel(actionText, "Matched");
+                    const bStyle = getActionBadgeStyle(inv.statusType, actionText);
                     return (
-                      <tr key={i} style={{ borderBottom: i < details.expenses.length - 1 ? "1px solid #f1f5f9" : "none" }}>
-                        <td style={{ padding: "8px 10px" }}>
-                          {/* Supplier / Description & Context */}
+                      <tr key={i} style={{ borderBottom: i < matchedInvoices.length - 1 ? "1px solid #f1f5f9" : "none" }}>
+                        <td style={{ padding: "8px 10px", verticalAlign: "top", width: "95px" }}>
+                          <div style={{ fontWeight: "700", color: "#1e293b", fontFamily: "monospace", fontSize: "11.5px" }}>
+                            {inv.invoiceNumber || "—"}
+                          </div>
+                          <div style={{ marginTop: "4px" }}>
+                            <span style={{
+                              display: "inline-block",
+                              padding: "2px 6px",
+                              borderRadius: "4px",
+                              fontSize: "10px",
+                              fontWeight: "600",
+                              background: bStyle.bg,
+                              color: bStyle.color,
+                              border: `1px solid ${bStyle.border}`,
+                              lineHeight: "1.3"
+                            }}>
+                              {badgeLabel}
+                            </span>
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
+                            <strong style={{ color: "#0f172a", fontSize: "12px" }}>
+                              {inv.clientName || inv.description || "Invoice"}
+                            </strong>
+                            {inv.jobName && (
+                              <span style={{ color: "#64748b", fontSize: "11.5px" }}>• {inv.jobName}</span>
+                            )}
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "5px" }}>
+                            {(inv.sheet || inv.slot) && (
+                              <span style={{
+                                padding: "1px 6px",
+                                borderRadius: "3px",
+                                background: "#fef3c7",
+                                color: "#92400e",
+                                fontSize: "10.5px",
+                                fontWeight: "600"
+                              }}>
+                                {inv.sheet || "Confirmed"}{inv.slot ? ` • ${inv.slot}` : ""}{inv.row ? ` (Row ${inv.row})` : ""}
+                              </span>
+                            )}
+                            {inv.amount && inv.amount !== "—" && (
+                              <span style={{
+                                padding: "2px 7px",
+                                borderRadius: "4px",
+                                fontSize: "11px",
+                                fontWeight: "700",
+                                background: "#f0fdf4",
+                                color: "#0f766e",
+                                border: "1px solid #bbf7d0"
+                              }}>
+                                {inv.amount}
+                              </span>
+                            )}
+                            {Array.isArray(inv.dates) && inv.dates.map((d, dIdx) => (
+                              <span key={dIdx} style={{
+                                padding: "2px 6px",
+                                borderRadius: "3px",
+                                fontSize: "10.5px",
+                                fontWeight: "500",
+                                background: "#f8fafc",
+                                border: "1px solid #e2e8f0",
+                                color: "#475569"
+                              }}>
+                                {d}
+                              </span>
+                            ))}
+                          </div>
+                          {inv.rawChanges && inv.rawChanges !== inv.status && (
+                            <div style={{ fontSize: "10.5px", color: "#64748b", marginTop: "4px", fontStyle: "italic" }}>
+                              {inv.rawChanges}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* EXPENSES TABLE 1: ACCOUNTING TOOL DOWNLOAD */}
+        {hasAccountingExpenses && (
+          <div style={{ marginBottom: "14px" }}>
+            <div style={{ fontWeight: "600", color: "#1e293b", marginBottom: "8px" }}>
+              {accountingExpenses.length} expense{accountingExpenses.length > 1 ? "s" : ""} adjusted / imported from accounting tool:
+            </div>
+            <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "6px" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", background: "#fff" }}>
+                <thead>
+                  <tr style={{ background: "#f1f5f9", textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>
+                    <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "105px" }}>Supplier / Ref</th>
+                    <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569" }}>Supplier / Job & Status Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accountingExpenses.map((exp, i) => {
+                    const actionText = exp.action || exp.status || "Updated";
+                    const badgeLabel = getActionBadgeLabel(actionText, "Updated");
+                    const bStyle = getActionBadgeStyle(exp.statusType, actionText);
+                    return (
+                      <tr key={i} style={{ borderBottom: i < accountingExpenses.length - 1 ? "1px solid #f1f5f9" : "none" }}>
+                        <td style={{ padding: "8px 10px", verticalAlign: "top", width: "105px" }}>
+                          <div style={{ fontWeight: "700", color: "#1e293b", fontFamily: "monospace", fontSize: "11.5px" }}>
+                            {exp.ref || exp.supplier || "—"}
+                          </div>
+                          <div style={{ marginTop: "4px" }}>
+                            <span style={{
+                              display: "inline-block",
+                              padding: "2px 6px",
+                              borderRadius: "4px",
+                              fontSize: "10px",
+                              fontWeight: "600",
+                              background: bStyle.bg,
+                              color: bStyle.color,
+                              border: `1px solid ${bStyle.border}`,
+                              lineHeight: "1.3"
+                            }}>
+                              {badgeLabel}
+                            </span>
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
                           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
                             <strong style={{ color: "#0f172a", fontSize: "12px" }}>
                               {exp.supplier || exp.description || "Expense"}
@@ -389,22 +595,7 @@ export default function ActivityView({
                               <span style={{ color: "#64748b", fontSize: "11.5px" }}>• {exp.jobOrRef}</span>
                             )}
                           </div>
-
-                          {/* Status, Amount, Dates, and Sheet Info Badges */}
                           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "5px" }}>
-                            {/* Status Badge */}
-                            <span style={{
-                              padding: "2px 7px",
-                              borderRadius: "4px",
-                              fontSize: "10.5px",
-                              fontWeight: "600",
-                              background: badgeBg,
-                              color: badgeColor
-                            }}>
-                              {exp.status || "Updated"}
-                            </span>
-
-                            {/* Amount Badge */}
                             {exp.amount && exp.amount !== "—" && (
                               <span style={{
                                 padding: "2px 7px",
@@ -418,8 +609,6 @@ export default function ActivityView({
                                 {exp.amount}
                               </span>
                             )}
-
-                            {/* Date Badges */}
                             {Array.isArray(exp.dates) && exp.dates.map((d, dIdx) => (
                               <span key={dIdx} style={{
                                 padding: "2px 6px",
@@ -433,23 +622,186 @@ export default function ActivityView({
                                 {d}
                               </span>
                             ))}
+                          </div>
+                          {exp.rawChanges && exp.rawChanges !== exp.status && (
+                            <div style={{ fontSize: "10.5px", color: "#64748b", marginTop: "4px", fontStyle: "italic" }}>
+                              {exp.rawChanges}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
-                            {/* Sheet Info (NEVER UUIDs) */}
-                            {exp.sheet && exp.sheet !== "Accounting" && (
+        {/* EXPENSES TABLE 2: PULSE MATCHED & UPDATED */}
+        {hasMatchedExpenses && (
+          <div style={{ marginBottom: "14px" }}>
+            <div style={{ fontWeight: "600", color: "#1e293b", marginBottom: "8px" }}>
+              {matchedExpenses.length} expense{matchedExpenses.length > 1 ? "s" : ""} matched & updated in Pulse:
+            </div>
+            <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "6px" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", background: "#fff" }}>
+                <thead>
+                  <tr style={{ background: "#f1f5f9", textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>
+                    <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "110px" }}>Supplier / Item</th>
+                    <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569" }}>Location & Status Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {matchedExpenses.map((exp, i) => {
+                    const actionText = exp.action || exp.status || "Matched in Pulse";
+                    const badgeLabel = getActionBadgeLabel(actionText, "Matched");
+                    const bStyle = getActionBadgeStyle(exp.statusType, actionText);
+                    return (
+                      <tr key={i} style={{ borderBottom: i < matchedExpenses.length - 1 ? "1px solid #f1f5f9" : "none" }}>
+                        <td style={{ padding: "8px 10px", verticalAlign: "top", width: "110px" }}>
+                          <div style={{ fontWeight: "700", color: "#1e293b", fontSize: "11.5px" }}>
+                            {exp.supplier || exp.description || "—"}
+                          </div>
+                          <div style={{ marginTop: "4px" }}>
+                            <span style={{
+                              display: "inline-block",
+                              padding: "2px 6px",
+                              borderRadius: "4px",
+                              fontSize: "10px",
+                              fontWeight: "600",
+                              background: bStyle.bg,
+                              color: bStyle.color,
+                              border: `1px solid ${bStyle.border}`,
+                              lineHeight: "1.3"
+                            }}>
+                              {badgeLabel}
+                            </span>
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                            {exp.sheet && (
                               <span style={{
                                 padding: "1px 6px",
                                 borderRadius: "3px",
                                 background: "#fef3c7",
                                 color: "#92400e",
                                 fontSize: "10.5px",
-                                fontWeight: "500"
+                                fontWeight: "600"
                               }}>
                                 {exp.sheet}{exp.slot ? ` • ${exp.slot}` : ""}{exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
                               </span>
                             )}
+                            {exp.amount && exp.amount !== "—" && (
+                              <span style={{
+                                padding: "2px 7px",
+                                borderRadius: "4px",
+                                fontSize: "11px",
+                                fontWeight: "700",
+                                background: "#f0fdf4",
+                                color: "#0f766e",
+                                border: "1px solid #bbf7d0"
+                              }}>
+                                {exp.amount}
+                              </span>
+                            )}
                           </div>
+                          {exp.rawChanges && exp.rawChanges !== exp.status && (
+                            <div style={{ fontSize: "10.5px", color: "#64748b", marginTop: "4px", fontStyle: "italic" }}>
+                              {exp.rawChanges}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
-                          {/* Raw Changes Details */}
+        {/* EXPENSES TABLE 3: MANUAL EXPENSE ENTRIES & GAPS ADJUSTED IN OUTGOINGS */}
+        {hasManualAdjustments && (
+          <div style={{ marginBottom: "14px" }}>
+            <div style={{ fontWeight: "600", color: "#1e293b", marginBottom: "8px" }}>
+              {manualAdjustments.length} manual entry / gap adjustment{manualAdjustments.length > 1 ? "s" : ""} in Pulse:
+            </div>
+            <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "6px" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", background: "#fff" }}>
+                <thead>
+                  <tr style={{ background: "#f1f5f9", textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>
+                    <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569", width: "115px" }}>Entry / Description</th>
+                    <th style={{ padding: "6px 10px", fontWeight: "600", color: "#475569" }}>Location & Amount Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {manualAdjustments.map((exp, i) => {
+                    const actionText = exp.action || exp.status || "Manual Adjusted";
+                    const badgeLabel = getActionBadgeLabel(actionText, "Manual");
+                    const bStyle = getActionBadgeStyle(exp.statusType, actionText);
+                    return (
+                      <tr key={i} style={{ borderBottom: i < manualAdjustments.length - 1 ? "1px solid #f1f5f9" : "none" }}>
+                        <td style={{ padding: "8px 10px", verticalAlign: "top", width: "115px" }}>
+                          <div style={{ fontWeight: "600", color: "#0f172a", fontSize: "11.5px" }}>
+                            {exp.entry || exp.supplier || exp.description || "Manual Entry"}
+                          </div>
+                          <div style={{ marginTop: "4px" }}>
+                            <span style={{
+                              display: "inline-block",
+                              padding: "2px 6px",
+                              borderRadius: "4px",
+                              fontSize: "10px",
+                              fontWeight: "600",
+                              background: bStyle.bg,
+                              color: bStyle.color,
+                              border: `1px solid ${bStyle.border}`,
+                              lineHeight: "1.3"
+                            }}>
+                              {badgeLabel}
+                            </span>
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                            <span style={{
+                              padding: "1px 6px",
+                              borderRadius: "3px",
+                              background: "#fef3c7",
+                              color: "#92400e",
+                              fontSize: "10.5px",
+                              fontWeight: "600"
+                            }}>
+                              {exp.sheet || "Outgoings"}{exp.slot ? ` • ${exp.slot}` : ""}{exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
+                            </span>
+                            {exp.amount && exp.amount !== "—" && (
+                              <span style={{
+                                padding: "2px 7px",
+                                borderRadius: "4px",
+                                fontSize: "11px",
+                                fontWeight: "700",
+                                background: "#f0fdf4",
+                                color: "#0f766e",
+                                border: "1px solid #bbf7d0"
+                              }}>
+                                {exp.amount}
+                              </span>
+                            )}
+                            {Array.isArray(exp.dates) && exp.dates.map((d, dIdx) => (
+                              <span key={dIdx} style={{
+                                padding: "2px 6px",
+                                borderRadius: "3px",
+                                fontSize: "10.5px",
+                                fontWeight: "500",
+                                background: "#f8fafc",
+                                border: "1px solid #e2e8f0",
+                                color: "#475569"
+                              }}>
+                                {d}
+                              </span>
+                            ))}
+                          </div>
                           {exp.rawChanges && exp.rawChanges !== exp.status && (
                             <div style={{ fontSize: "10.5px", color: "#64748b", marginTop: "4px", fontStyle: "italic" }}>
                               {exp.rawChanges}
@@ -659,53 +1011,61 @@ export default function ActivityView({
         transition: "background 0.15s ease",
         background: isExpanded ? "#f8fafc" : "transparent"
       }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-            {renderBadge(ev)}
-            <span style={{ fontSize: "11.5px", color: "#64748b", fontWeight: "500" }}>
-              {ev.relativeTime}
-            </span>
-            {ev.userEmail && (
-              <span style={{
-                fontSize: "10.5px",
-                color: "#475569",
-                background: "#f1f5f9",
-                padding: "1px 6px",
-                borderRadius: "3px",
-                fontFamily: "monospace"
-              }}>
-                {ev.userEmail}
+        {/* Whole Summary Item is Clickable to Expand / Collapse */}
+        <div
+          onClick={() => toggleExpand(ev.id)}
+          style={{
+            cursor: "pointer",
+            borderRadius: "4px",
+            userSelect: "none"
+          }}
+          title={isExpanded ? "Click to collapse" : "Click to view details"}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              {renderBadge(ev)}
+              <span style={{ fontSize: "11.5px", color: "#64748b", fontWeight: "500" }}>
+                {ev.relativeTime}
               </span>
-            )}
+              {ev.userEmail && (
+                <span style={{
+                  fontSize: "10.5px",
+                  color: "#475569",
+                  background: "#f1f5f9",
+                  padding: "1px 6px",
+                  borderRadius: "3px",
+                  fontFamily: "monospace"
+                }}>
+                  {ev.userEmail}
+                </span>
+              )}
+            </div>
+
+            <div
+              style={{
+                color: "#0284c7",
+                fontSize: "11px",
+                fontWeight: "600",
+                padding: "2px 4px",
+                display: "flex",
+                alignItems: "center",
+                gap: "2px",
+                flexShrink: 0
+              }}
+            >
+              {isExpanded ? "▲ Less" : "▼ Detail"}
+            </div>
           </div>
 
-          <button
-            onClick={() => toggleExpand(ev.id)}
-            style={{
-              background: "none",
-              border: "none",
-              color: "#0284c7",
-              fontSize: "11px",
-              fontWeight: "600",
-              cursor: "pointer",
-              padding: "2px 4px",
-              display: "flex",
-              alignItems: "center",
-              gap: "2px"
-            }}
-          >
-            {isExpanded ? "▲ Less" : "▼ Detail"}
-          </button>
-        </div>
-
-        <div style={{
-          marginTop: "6px",
-          fontSize: compact ? "12px" : "13.5px",
-          fontWeight: "500",
-          color: "#1e293b",
-          lineHeight: "1.4"
-        }}>
-          {ev.summary}
+          <div style={{
+            marginTop: "6px",
+            fontSize: compact ? "12px" : "13.5px",
+            fontWeight: "500",
+            color: "#1e293b",
+            lineHeight: "1.4"
+          }}>
+            {ev.summary}
+          </div>
         </div>
 
         {isExpanded && renderEventDetails(ev)}
@@ -713,7 +1073,7 @@ export default function ActivityView({
     );
   };
 
-  // Sort clients: active clients first (newest timestamp first), zero-event clients LAST
+  // Sort clients: active clients first (alphabetical A-Z), zero-event clients LAST (alphabetical A-Z)
   const sortedClients = [...allOutgoingsClients].sort((a, b) => {
     const infoA = activityData.clients[a.clientName] || { events: [] };
     const infoB = activityData.clients[b.clientName] || { events: [] };
@@ -723,12 +1083,9 @@ export default function ActivityView({
     // Clients with events come first, clients without events come LAST
     if (hasA && !hasB) return -1;
     if (!hasA && hasB) return 1;
-    if (!hasA && !hasB) return a.clientName.localeCompare(b.clientName);
 
-    // Both have events: sort by most recent activity timestamp (newest first)
-    const timeA = infoA.events[0]?.timestampMs || 0;
-    const timeB = infoB.events[0]?.timestampMs || 0;
-    return timeB - timeA;
+    // Within both groups (active or inactive), sort alphabetically A-Z
+    return a.clientName.localeCompare(b.clientName);
   });
 
   return (
@@ -766,6 +1123,18 @@ export default function ActivityView({
           <div style={{ fontSize: "12.5px", color: "#64748b", marginTop: "4px" }}>
             Real-time unified timeline of automated runs, invoice syncs, and client user actions.
             {lastRefreshStr && <span style={{ marginLeft: "6px" }}>• Last synced {lastRefreshStr}</span>}
+            {isRefreshing && (
+              <span style={{
+                marginLeft: "8px",
+                color: "#0284c7",
+                fontWeight: "600",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px"
+              }}>
+                <Spinner size={11} color="#0284c7" /> Checking Google Sheets for updates...
+              </span>
+            )}
           </div>
         </div>
 
@@ -968,12 +1337,8 @@ export default function ActivityView({
                   </button>
                 </div>
 
-                {/* IN-CARD SCROLLABLE CONTAINER (SHOWS LATEST UP TO 15 ENTRIES) */}
-                <div style={{
-                  maxHeight: "360px",
-                  overflowY: "auto",
-                  flex: 1
-                }}>
+                {/* IN-CARD SCROLLABLE CONTAINER WITH HOVER-INTENT ACTIVATION */}
+                <CardScrollContainer hasEvents={hasEvents}>
                   {!hasEvents ? (
                     <div style={{ padding: "30px 16px", textAlign: "center", color: "#94a3b8", fontSize: "12px" }}>
                       No recent activity recorded
@@ -981,7 +1346,7 @@ export default function ActivityView({
                   ) : (
                     displayEvents.map(ev => renderEventItem(ev, true))
                   )}
-                </div>
+                </CardScrollContainer>
 
                 {/* CARD FOOTER */}
                 {hasEvents && (

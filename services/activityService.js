@@ -142,7 +142,8 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
     const gapsCount = gapsMatch ? parseInt(gapsMatch[1], 10) : 0;
 
     // Parse individual invoice items and gaps from lines
-    const invoiceItems = [];
+    const accountingInvoices = [];
+    const matchedInvoices = [];
     const invoiceGaps = [];
     const lines = rawDetails.split("\n");
 
@@ -153,6 +154,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
       if (/^Matched\/Updated\s*\d+\s*Invoices/i.test(line)) continue;
       if (/^No new or updated invoices/i.test(line)) continue;
       if (/^No invoices matched/i.test(line)) continue;
+      if (/^\[Accounting Download\]/i.test(line)) continue;
 
       // 1. Inv #RV-1214 (Omnis Intelligence Limited | Phase 2 - September) - Amount: ...
       // Handles nested parens like Inv #INV-1817 (Outside In (Cambridge) Ltd | Klaviyo support) - ...
@@ -204,8 +206,9 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         const paidDateM = rest.match(/Fully\s*Paid\s*Date:\s*(?:'[^']+'\s*->\s*)?'?(\d{1,2}-[A-Za-z]{3}-\d{2,4})'?/i);
         if (paidDateM) dates.push(`Paid: ${paidDateM[1]}`);
 
-        // Status
+        // Status & Action
         let status = "Updated";
+        let action = "Invoice Updated";
         let statusType = "updated";
         const statusMatch = rest.match(/Status:\s*'([^\']+)'\s*->\s*'([^\']+)'/i);
         if (statusMatch) {
@@ -213,25 +216,32 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
           const to = statusMatch[2].toUpperCase();
           if (to === "PAID") {
             status = "Paid";
+            action = `Paid (was ${from === "AUTHORISED" ? "Authorised" : from})`;
             statusType = "paid";
           } else if (to === "OVERDUE") {
-            status = "Overdue (was Paid)";
+            status = "Overdue";
+            action = `Overdue (was ${from})`;
             statusType = "overdue";
           } else {
             status = `${to} (was ${from})`;
+            action = `${to} (was ${from})`;
             statusType = "transition";
           }
         } else if (rest.includes("Amount:")) {
           status = "New Invoice";
+          action = "New Invoice";
           statusType = "new";
+        } else if (totalChangeMatch || amtDueChangeMatch) {
+          action = "Amount Updated";
         }
 
-        invoiceItems.push({
+        accountingInvoices.push({
           invoiceNumber: invNum,
           clientName: cName,
           jobName: jName,
           amount,
           dates,
+          action,
           status,
           statusType,
           rawChanges: rest
@@ -240,29 +250,38 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
       }
 
       // 2. [Confirmed|Pipeline] Updated Invoice 2181-1: Row 362, BW&P Ltd | RMO Outsource, Slot 1 - Status: 'Paid' -> 'Sent'
-      const updatedInvMatch = line.match(/^\[(Pipeline|Confirmed)\]\s*Updated\s*Invoice\s*([^:]+):\s*Row\s*(\d+),\s*([^,|]+)(?:\|\s*([^,]+))?,\s*Slot\s*(\d+)(?:\s*-\s*(.+))?/i);
+      const updatedInvMatch = line.match(/^\[(Pipeline|Confirmed)\]\s*Updated\s*Invoice\s*([^:]+):\s*Row\s*(\d+),\s*([^,|]+)(?:\|\s*([^,]+))?(?:,\s*Slot\s*(\d+))?(?:\s*-\s*(.+))?/i);
       if (updatedInvMatch) {
         const rest = updatedInvMatch[7] ? updatedInvMatch[7].trim() : "";
         let status = "Updated";
+        let action = "Updated in Pulse";
         let statusType = "updated";
         const statusMatch = rest.match(/Status:\s*'([^\']+)'\s*->\s*'([^\']+)'/i);
         if (statusMatch) {
-          const from = statusMatch[1].toUpperCase();
-          const to = statusMatch[2].toUpperCase();
-          if (to === "PAID") {
+          const from = statusMatch[1];
+          const to = statusMatch[2];
+          const toUpper = to.toUpperCase();
+          const fromUpper = from.toUpperCase();
+          if (toUpper === "PAID") {
             status = "Paid";
+            action = `Paid (was ${from})`;
             statusType = "paid";
-          } else if (to === "SENT") {
+          } else if (toUpper === "SENT") {
             status = `Sent (was ${from})`;
-            statusType = from === "PAID" ? "overdue" : "transition";
+            action = `Sent (was ${from})`;
+            statusType = fromUpper === "PAID" ? "overdue" : "transition";
           } else {
             status = `${to} (was ${from})`;
+            action = `${to} (was ${from})`;
             statusType = "transition";
           }
         } else if (rest.includes("Client (Block Update)")) {
           status = "Client Name Updated";
+          action = "Client Name Updated";
           statusType = "updated";
         } else if (rest.includes("Days to Pay")) {
+          const dtpMatch = rest.match(/Days to Pay:\s*(\d+\s*->\s*\d+)/i);
+          action = dtpMatch ? `Days to Pay: ${dtpMatch[1]}` : "Days to Pay Updated";
           status = rest;
           statusType = "updated";
         }
@@ -275,15 +294,16 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         const movedM = rest.match(/Date\s*moved\s*([0-9a-zA-Z-]+)\s*->\s*([0-9a-zA-Z-]+)/i);
         if (movedM) dates.push(`Date Moved: ${movedM[1]} -> ${movedM[2]}`);
 
-        invoiceItems.push({
+        matchedInvoices.push({
           sheet: updatedInvMatch[1],
           invoiceNumber: updatedInvMatch[2].trim(),
           row: updatedInvMatch[3],
           clientName: updatedInvMatch[4].trim(),
           jobName: updatedInvMatch[5] ? updatedInvMatch[5].trim() : "",
-          slot: `Slot ${updatedInvMatch[6]}`,
+          slot: updatedInvMatch[6] ? `Slot ${updatedInvMatch[6]}` : "",
           amount,
           dates,
+          action,
           status,
           statusType,
           rawChanges: rest
@@ -297,6 +317,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         invoiceGaps.push({
           sheet: gapMatch[1],
           invoiceType: gapMatch[2] ? `${gapMatch[2]} Invoice` : "Invoice",
+          action: "Gap Created/Adjusted",
           row: gapMatch[3],
           client: gapMatch[4].trim(),
           jobName: gapMatch[5] ? gapMatch[5].trim() : "",
@@ -310,7 +331,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
       // 4. Stale invoices: [Confirmed] Stale Invoice - Row 382, Northoaks Capital Ltd | Brand identity and sales enablement, Slot 1: Date moved 05-Sep-26 -> 28-Sep-26
       const staleMatch = line.match(/^\[(Pipeline|Confirmed)\]\s*Stale\s*Invoice\s*-\s*Row\s*(\d+),\s*([^|]+)\|\s*([^,]+),\s*Slot\s*(\d+):\s*(.+)/i);
       if (staleMatch) {
-        invoiceItems.push({
+        matchedInvoices.push({
           sheet: staleMatch[1],
           invoiceNumber: "Stale",
           row: staleMatch[2],
@@ -318,6 +339,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
           jobName: staleMatch[4].trim(),
           slot: `Slot ${staleMatch[5]}`,
           amount: "—",
+          action: "Stale Date Moved",
           status: "Stale Date Moved",
           statusType: "updated",
           rawChanges: staleMatch[6].trim()
@@ -327,21 +349,27 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
 
       // 5. Fallback for bullet line
       if (line.startsWith("•") || line.startsWith("-")) {
-        invoiceItems.push({ description: line.replace(/^[•\-]\s*/, "") });
+        const desc = line.replace(/^[•\-]\s*/, "");
+        if (desc.includes("Inv #")) {
+          accountingInvoices.push({ description: desc, invoiceNumber: "—", action: "Updated" });
+        } else {
+          matchedInvoices.push({ description: desc, invoiceNumber: "—", action: "Updated" });
+        }
       }
     }
 
-    const totalUpdated = Math.max(updatedCount, matchedCount, invoiceItems.length);
-    const totalGaps = Math.max(gapsCount, invoiceGaps.length);
+    const totalAccounting = accountingInvoices.length;
+    const totalMatched = matchedInvoices.length;
+    const totalGaps = invoiceGaps.length;
 
-    if (newCount > 0 && totalUpdated > 0) {
-      summary = `${newCount} new invoice${newCount > 1 ? "s" : ""}, ${totalUpdated} updated`;
-    } else if (newCount > 0) {
-      summary = `${newCount} new invoice${newCount > 1 ? "s" : ""} imported`;
-    } else if (totalUpdated > 0 && totalGaps > 0) {
-      summary = `${totalUpdated} invoice${totalUpdated > 1 ? "s" : ""} adjusted, ${totalGaps} gap${totalGaps > 1 ? "s" : ""} created`;
-    } else if (totalUpdated > 0) {
-      summary = `${totalUpdated} invoice${totalUpdated > 1 ? "s" : ""} adjusted / updated`;
+    if (totalAccounting > 0 && totalMatched > 0) {
+      summary = `${totalAccounting} invoice${totalAccounting > 1 ? "s" : ""} updated from accounting, ${totalMatched} matched in Pulse`;
+    } else if (totalAccounting > 0) {
+      summary = `${totalAccounting} invoice${totalAccounting > 1 ? "s" : ""} adjusted / imported from accounting tool`;
+    } else if (totalMatched > 0 && totalGaps > 0) {
+      summary = `${totalMatched} invoice${totalMatched > 1 ? "s" : ""} matched in Pulse, ${totalGaps} gap${totalGaps > 1 ? "s" : ""} created/adjusted`;
+    } else if (totalMatched > 0) {
+      summary = `${totalMatched} invoice${totalMatched > 1 ? "s" : ""} matched & updated in Pulse`;
     } else if (totalGaps > 0) {
       summary = `${totalGaps} invoice gap${totalGaps > 1 ? "s" : ""} created / adjusted`;
     } else if (isRoutine) {
@@ -350,8 +378,10 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
       summary = rawSummary || "Invoice sync completed";
     }
 
-    if (invoiceItems.length > 0) structuredDetails.invoices = invoiceItems;
+    if (accountingInvoices.length > 0) structuredDetails.accountingInvoices = accountingInvoices;
+    if (matchedInvoices.length > 0) structuredDetails.matchedInvoices = matchedInvoices;
     if (invoiceGaps.length > 0) structuredDetails.invoiceGaps = invoiceGaps;
+    structuredDetails.invoices = [...accountingInvoices, ...matchedInvoices];
   } else if (category === "CRM") {
     const updatedMatch = rawDetails.match(/Updated Opportunities \((\d+)\)/i);
     const newMatch = rawDetails.match(/New Opportunities \((\d+)\)/i);
@@ -416,14 +446,14 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
     } else if (newCount > 0 && createdJobs.length > 0) {
       summary = `${newCount} new opportunit${newCount > 1 ? "ies" : "y"} imported, ${createdJobs.length} job${createdJobs.length > 1 ? "s" : ""} created in Confirmed`;
     } else if (newCount > 0 && updatedCount > 0) {
-      summary = `${newCount} new opportunity${newCount > 1 ? "s" : ""}, ${updatedCount} updated`;
+      summary = `${newCount} new opportunit${newCount > 1 ? "ies" : "y"}, ${updatedCount} updated`;
     } else if (newCount > 0) {
       summary = `${newCount} new opportunit${newCount > 1 ? "ies" : "y"} imported`;
     } else if (createdJobs.length > 0) {
       summary = `${createdJobs.length} new job${createdJobs.length > 1 ? "s" : ""} created in Confirmed from CRM`;
     } else if (updatedCount > 0) {
       if (rawDetails.toLowerCase().includes("project start")) {
-        summary = `${updatedCount} opportunity updated (project start date changed)`;
+        summary = `${updatedCount} opportunit${updatedCount > 1 ? "ies" : "y"} updated (project start date changed)`;
       } else {
         summary = `${updatedCount} opportunit${updatedCount > 1 ? "ies" : "y"} updated`;
       }
@@ -451,7 +481,9 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
     const overdueCount = overdueMatch ? parseInt(overdueMatch[1], 10) : 0;
     const gapsCount = gapsMatch ? parseInt(gapsMatch[1], 10) : 0;
 
-    const expenseItems = [];
+    const accountingExpenses = [];
+    const matchedExpenses = [];
+    const manualAdjustments = [];
     const lines = rawDetails.split("\n");
 
     for (const rawLine of lines) {
@@ -460,6 +492,101 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
       if (/^(?:Updated|New)\s*Expenses\s*\(\d+\):?$/i.test(line)) continue;
       if (/^No new or updated expenses/i.test(line)) continue;
       if (/^No new expenses matched/i.test(line)) continue;
+      if (/^\[Expenses Download\]/i.test(line)) continue;
+
+      // 0a. [Confirmed|Pipeline|Outgoings] (Created|Changed|Adjusted|Removed) Manual Gap: Row 45, Client | Job (Slot X) - Changes
+      // e.g.: [Confirmed] Changed Manual Gap: Row 45, Acme Corp | Website Refresh (Slot 2) - Amt: £500.00 -> £750.00
+      // e.g.: [Confirmed] Created Manual Gap: Row 45, Acme Corp | Website Refresh (Slot 2) - Amt: £750.00
+      // e.g.: [Confirmed] Removed Manual Gap: Row 45, Acme Corp | Website Refresh (Slot 2) - Balanced
+      const gapMatch = line.match(/^\[(Confirmed|Pipeline|Outgoings)\]\s*(Created|Changed|Adjusted|Removed)\s*Manual\s*Gap:\s*Row\s*(\d+),\s*([^|:]+)(?:\|\s*([^(\n]+))?(?:\((Slot\s*\d+)\))?\s*-\s*(.+)/i);
+      if (gapMatch) {
+        const sheet = gapMatch[1];
+        const actionVerb = gapMatch[2].trim();
+        const row = gapMatch[3].trim();
+        const cName = gapMatch[4].trim();
+        const jName = gapMatch[5] ? gapMatch[5].trim() : "";
+        const slot = gapMatch[6] ? gapMatch[6].trim() : "";
+        const changes = gapMatch[7].trim();
+
+        let amount = "";
+        const amtChange = changes.match(/Amt:\s*[£Â]?([\d,]+(?:\.\d{2})?)\s*(?:->\s*[£Â]?([\d,]+(?:\.\d{2})?))?/i);
+        if (amtChange) {
+          amount = amtChange[2] ? `£${amtChange[2]} (was £${amtChange[1]})` : `£${amtChange[1]}`;
+        }
+
+        const dates = [];
+        const dateMatch = changes.match(/Date:\s*([0-9a-zA-Z-]+)\s*(?:->\s*([0-9a-zA-Z-]+))?/i);
+        if (dateMatch) {
+          dates.push(dateMatch[2] ? `${dateMatch[1]} -> ${dateMatch[2]}` : dateMatch[1]);
+        }
+
+        const actionText = actionVerb.toLowerCase() === "created" 
+          ? "Manual Gap Created" 
+          : actionVerb.toLowerCase() === "removed" 
+            ? "Manual Gap Removed" 
+            : "Manual Gap Changed";
+
+        const actionType = actionVerb.toLowerCase() === "created"
+          ? "new"
+          : actionVerb.toLowerCase() === "removed"
+            ? "removed"
+            : "updated";
+
+        manualAdjustments.push({
+          sheet,
+          row,
+          slot,
+          entry: cName,
+          supplier: cName,
+          jobOrRef: jName,
+          description: `${cName}${jName ? ` • ${jName}` : ""}${slot ? ` (${slot})` : ""}`,
+          action: actionText,
+          actionType,
+          amount,
+          dates,
+          status: actionText,
+          statusType: actionType,
+          rawChanges: changes
+        });
+        continue;
+      }
+
+      // 0b. [Outgoings] (Created|Adjusted|Removed) Gap - Nov 2026 Row 12, John Doe: £200.00 -> £250.00
+      const outGapMatch = line.match(/^\[Outgoings\]\s*(Created|Adjusted|Removed)\s*Gap\s*-\s*([A-Za-z]{3}\s*\d{4})\s*(?:Row\s*(\d+))?,\s*([^:]+):\s*(.+)/i);
+      if (outGapMatch) {
+        const actionVerb = outGapMatch[1].trim();
+        const dateStr = outGapMatch[2].trim();
+        const row = outGapMatch[3] ? outGapMatch[3].trim() : "";
+        const contractor = outGapMatch[4].trim();
+        const rest = outGapMatch[5].trim();
+
+        let amount = "";
+        const amtChange = rest.match(/[£Â]?([\d,]+(?:\.\d{2})?)\s*->\s*[£Â]?([\d,]+(?:\.\d{2})?)/);
+        if (amtChange) {
+          amount = `£${amtChange[2]} (was £${amtChange[1]})`;
+        } else {
+          const singleAmt = rest.match(/[£Â]?([\d,]+(?:\.\d{2})?)/);
+          if (singleAmt) amount = `£${singleAmt[1]}`;
+        }
+
+        const actionText = `Gap ${actionVerb}`;
+        manualAdjustments.push({
+          sheet: "Outgoings",
+          row,
+          entry: contractor,
+          supplier: contractor,
+          jobOrRef: dateStr,
+          description: `${contractor} (${dateStr})`,
+          action: actionText,
+          actionType: actionVerb.toLowerCase() === "created" ? "new" : "updated",
+          amount,
+          dates: [dateStr],
+          status: actionText,
+          statusType: actionVerb.toLowerCase() === "created" ? "new" : "updated",
+          rawChanges: rest
+        });
+        continue;
+      }
 
       // 1. [Outgoings|Confirmed] Adjusted Manual Entry - Oct 2026 row 111, Making up CoS to 55.%: £4015.46 -> £4627.33
       const manualMatch = line.match(/^\[(Confirmed|Outgoings)\]\s*Adjusted\s*Manual\s*Entry\s*-\s*([A-Za-z]{3}\s*\d{4})\s*row\s*(\d+),\s*([^:]+):\s*(.+)/i);
@@ -476,12 +603,15 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
           amount = `£${amtChange[2]} (was £${amtChange[1]})`;
         }
 
-        expenseItems.push({
+        manualAdjustments.push({
           sheet,
           row,
+          entry: desc,
           supplier: desc,
           jobOrRef: dateStr,
           description: desc,
+          action: "Manual Adjusted",
+          actionType: "manual",
           amount,
           dates: [dateStr],
           status: "Manual Adjusted",
@@ -507,13 +637,16 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         const dateMoved = changes.match(/([0-9a-zA-Z-]+)\s*->\s*([0-9a-zA-Z-]+)/);
         if (dateMoved) dates.push(`${dateMoved[1]} -> ${dateMoved[2]}`);
 
-        expenseItems.push({
+        manualAdjustments.push({
           sheet,
           row,
           slot,
+          entry: cName,
           supplier: cName,
           jobOrRef: jName,
           description: `${cName}${jName ? ` • ${jName}` : ""}${slot ? ` (${slot})` : ""}`,
+          action: "Date Moved",
+          actionType: "updated",
           amount: "",
           dates,
           status: "Date Moved",
@@ -538,15 +671,27 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         const amtM = rest.match(/£([\d,]+(?:\.\d{2})?)/);
         if (amtM) amt = `£${amtM[1]}`;
 
-        const cleanDesc = rest.replace(/\(£[\d,]+(?:\.\d{2})?\)/, "").trim();
+        let cleanDesc = rest.replace(/\(£[\d,]+(?:\.\d{2})?\)/, "").trim();
+        let slot = "";
+        const slotMatch = cleanDesc.match(/-\s*(Slot\s*\d+(?:\s*updated)?)/i);
+        if (slotMatch) {
+          slot = slotMatch[1];
+          cleanDesc = cleanDesc.replace(/-\s*Slot\s*\d+(?:\s*updated)?/i, "").trim().replace(/\s+-\s*$/, "");
+        }
 
-        expenseItems.push({
+        const action = actionType.toLowerCase().includes("matched")
+          ? `Matched in ${sheet}`
+          : `${actionType} in ${sheet}`;
+
+        matchedExpenses.push({
           sheet,
           row,
-          action: actionType,
+          slot,
           supplier: cleanDesc || rest,
           jobOrRef: "",
           description: cleanDesc || rest,
+          action,
+          actionType: actionType.toLowerCase().includes("created") ? "new" : "updated",
           amount: amt,
           dates: [],
           status: actionType,
@@ -581,6 +726,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
 
         let amount = "";
         let status = "Updated";
+        let action = "Expense Updated";
         let statusType = "updated";
         const dates = [];
 
@@ -588,6 +734,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         const vatMatch = rawRest.match(/VAT:\s*(?:'([^']+)'|([^\s->]+))\s*->\s*(?:'([^']+)'|([^\s,]+))/i);
         if (vatMatch) {
           status = "VAT Adjusted";
+          action = "VAT Adjusted";
           statusType = "transition";
           const toVal = vatMatch[3] || vatMatch[4] || "";
           amount = `VAT: £${toVal}`;
@@ -600,6 +747,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
           const toVal = amtChangeMatch[2].trim();
           amount = `£${toVal} (was £${fromVal})`;
           status = "Amount Adjusted";
+          action = "Amount Adjusted";
         } else if (!amount) {
           const standaloneAmt = rawRest.match(/Amount:\s*(£[\d,]+(?:\.\d{2})?(?:\s*\+VAT)?)/i) || rawRest.match(/£([\d,]+(?:\.\d{2})?)/);
           if (standaloneAmt) {
@@ -616,22 +764,27 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         if (statusMatch) {
           if (statusMatch[2]) {
             status = `${statusMatch[2]} (was ${statusMatch[1]})`;
+            action = `${statusMatch[2]} (was ${statusMatch[1]})`;
             statusType = "transition";
           } else {
             status = statusMatch[1];
+            action = statusMatch[1];
             statusType = status.toUpperCase() === "PAID" ? "paid" : "updated";
           }
         } else if (rawRest.includes("Amount:") && !statusMatch) {
           status = "New Expense";
+          action = "New Expense";
           statusType = "new";
         }
 
-        expenseItems.push({
+        accountingExpenses.push({
+          ref: `ID: ${idMatch[1].trim()}`,
           supplier: supplier.trim(),
           jobOrRef: jobOrRef.trim(),
           description: supplier.trim(),
           amount,
           dates,
+          action,
           status,
           statusType,
           rawChanges: changes.trim() || rawRest
@@ -639,53 +792,59 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         continue;
       }
 
-      // 5. Pre-Match / Post-Match adjustments
+      // 5. Pre-Match / Post-Match adjustments (fallback only if no individual entries found)
       if (line.includes("Adjusted/Refreshed") || line.includes("Unreconciled Gaps") || line.includes("overdue expenses")) {
-        expenseItems.push({
+        if (/\[(Confirmed|Pipeline|Outgoings)\]/i.test(rawDetails)) {
+          continue;
+        }
+        manualAdjustments.push({
           sheet: "Outgoings",
+          entry: line,
           supplier: line,
           description: line,
+          action: "Adjustment",
+          actionType: "updated",
           amount: "",
-          dates: [],
-          status: "Adjustment",
-          statusType: "updated"
+          dates: []
         });
         continue;
       }
 
-      // 5. Fallback bullet line
+      // 6. Fallback bullet line
       if (line.startsWith("•") || line.startsWith("-")) {
-        expenseItems.push({
-          sheet: "Outgoings",
-          description: line.replace(/^[•\-]\s*/, ""),
-          amount: "—",
-          status: "Adjustment"
-        });
+        const desc = line.replace(/^[•\-]\s*/, "");
+        if (desc.includes("[ID:") || desc.toLowerCase().includes("vat:") || desc.toLowerCase().includes("status:")) {
+          accountingExpenses.push({ description: desc, supplier: desc, action: "Updated" });
+        } else {
+          matchedExpenses.push({ sheet: "Outgoings", description: desc, supplier: desc, action: "Updated" });
+        }
       }
     }
 
-    const totalChanges = Math.max(newCount + updatedCount + pushedCount + adjCount + overdueCount + gapsCount, expenseItems.length);
-    if (newCount > 0 && totalChanges > newCount) {
-      summary = `${newCount} new expense${newCount > 1 ? "s" : ""}, ${totalChanges - newCount} adjusted`;
-    } else if (newCount > 0) {
-      summary = `${newCount} new expense${newCount > 1 ? "s" : ""} imported`;
-    } else if (pushedCount > 0) {
-      summary = `${pushedCount} expense update${pushedCount > 1 ? "s" : ""} matched`;
-    } else if (adjCount > 0) {
-      summary = `Adjusted ${adjCount} manual expense entr${adjCount > 1 ? "ies" : "y"}`;
-    } else if (overdueCount > 0) {
-      summary = `Fixed ${overdueCount} overdue expense${overdueCount > 1 ? "s" : ""}`;
-    } else if (totalChanges > 0) {
-      summary = `${totalChanges} expense adjustment${totalChanges > 1 ? "s" : ""}`;
+    const totalAccounting = accountingExpenses.length;
+    const totalMatched = matchedExpenses.length;
+    const totalManual = manualAdjustments.length;
+
+    if (totalAccounting > 0 && totalMatched > 0) {
+      summary = `${totalAccounting} expense${totalAccounting > 1 ? "s" : ""} adjusted from accounting, ${totalMatched} matched in Pulse`;
+    } else if (totalAccounting > 0) {
+      summary = `${totalAccounting} expense${totalAccounting > 1 ? "s" : ""} adjusted / imported from accounting tool`;
+    } else if (totalMatched > 0 && totalManual > 0) {
+      summary = `${totalMatched} expense${totalMatched > 1 ? "s" : ""} matched in Pulse, ${totalManual} manual entr${totalManual > 1 ? "ies" : "y"} adjusted`;
+    } else if (totalMatched > 0) {
+      summary = `${totalMatched} expense${totalMatched > 1 ? "s" : ""} matched & updated in Pulse`;
+    } else if (totalManual > 0) {
+      summary = `${totalManual} manual expense entr${totalManual > 1 ? "ies" : "y"} / gap${totalManual > 1 ? "s" : ""} adjusted in Pulse`;
     } else if (isRoutine) {
       summary = "Routine expense sync (no changes)";
     } else {
       summary = rawSummary || "Expenses sync completed";
     }
 
-    if (expenseItems.length > 0) {
-      structuredDetails.expenses = expenseItems;
-    }
+    if (accountingExpenses.length > 0) structuredDetails.accountingExpenses = accountingExpenses;
+    if (matchedExpenses.length > 0) structuredDetails.matchedExpenses = matchedExpenses;
+    if (manualAdjustments.length > 0) structuredDetails.manualAdjustments = manualAdjustments;
+    structuredDetails.expenses = [...accountingExpenses, ...matchedExpenses, ...manualAdjustments];
   } else if (category === "CLIENT_AUTH") {
     summary = rawSummary || "Third-party integration authorized";
     structuredDetails.portalNote = rawDetails;

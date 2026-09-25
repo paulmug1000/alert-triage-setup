@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
 const STORAGE_KEY_PREFIX = "pulse_activity_swr_v1:";
 
@@ -26,6 +26,18 @@ export function useActivity(automationCommanderSheetId, allOutgoingsClients) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [expandedEvents, setExpandedEvents] = useState(new Set());
+
+  // Keep live references so loadActivity can stay completely stable
+  const activityDataRef = useRef(activityData);
+  activityDataRef.current = activityData;
+  const selectedClientRef = useRef(selectedClient);
+  selectedClientRef.current = selectedClient;
+  const includeRoutineRef = useRef(includeRoutine);
+  includeRoutineRef.current = includeRoutine;
+  const automationCommanderSheetIdRef = useRef(automationCommanderSheetId);
+  automationCommanderSheetIdRef.current = automationCommanderSheetId;
+  const allOutgoingsClientsRef = useRef(allOutgoingsClients);
+  allOutgoingsClientsRef.current = allOutgoingsClients;
 
   // 2. Load cached data from localStorage when client or routine filter changes
   useEffect(() => {
@@ -57,13 +69,19 @@ export function useActivity(automationCommanderSheetId, allOutgoingsClients) {
 
   const loadActivity = useCallback(
     async (options = {}) => {
-      const targetClient = options.clientName !== undefined ? options.clientName : selectedClient;
-      const targetRoutine = options.includeRoutine !== undefined ? options.includeRoutine : includeRoutine;
+      const currentSelectedClient = selectedClientRef.current;
+      const currentIncludeRoutine = includeRoutineRef.current;
+      const currentSheetId = automationCommanderSheetIdRef.current;
+      const currentClients = allOutgoingsClientsRef.current;
+      const currentData = activityDataRef.current;
+
+      const targetClient = options.clientName !== undefined ? options.clientName : currentSelectedClient;
+      const targetRoutine = options.includeRoutine !== undefined ? options.includeRoutine : currentIncludeRoutine;
       const isForce = !!options.forceRefresh;
 
       try {
-        const hasExisting = activityData.allEvents?.length > 0 || Object.keys(activityData.clients || {}).length > 0;
-        if (hasExisting || isForce) {
+        const hasExisting = (currentData?.allEvents?.length > 0) || (Object.keys(currentData?.clients || {}).length > 0);
+        if (hasExisting) {
           setIsRefreshing(true);
         } else {
           setIsLoading(true);
@@ -73,11 +91,11 @@ export function useActivity(automationCommanderSheetId, allOutgoingsClients) {
 
         const payload = {
           action: "get_activity",
-          automationCommanderSheetId,
+          automationCommanderSheetId: currentSheetId,
           clientName: targetClient,
           includeRoutine: targetRoutine,
           forceRefresh: isForce,
-          clients: (allOutgoingsClients || []).map(c => ({
+          clients: (currentClients || []).map(c => ({
             clientName: c.clientName,
             clientSheetId: c.clientSheetId,
             masterSheetId: c.masterSheetId
@@ -109,7 +127,7 @@ export function useActivity(automationCommanderSheetId, allOutgoingsClients) {
                   totalEvents: clientResult.totalEvents || 0
                 }
               },
-              cachedAt: clientResult.cachedAt || new Date().toISOString()
+              cachedAt: clientResult.cachedAt || prev.cachedAt || new Date().toISOString()
             };
             return updatedData;
           });
@@ -136,7 +154,7 @@ export function useActivity(automationCommanderSheetId, allOutgoingsClients) {
         setIsRefreshing(false);
       }
     },
-    [automationCommanderSheetId, allOutgoingsClients, selectedClient, includeRoutine, activityData]
+    []
   );
 
   return {

@@ -1,6 +1,68 @@
 import React, { useState, useEffect, useRef } from "react";
 import Spinner from "./Spinner";
 
+// Columns checked to determine if a row is blank:
+// Column A (0), G:R (6..17), V:AG (21..32), and AK:AV (36..47)
+const BLANK_CHECK_COLS = [
+  0,
+  ...Array.from({ length: 12 }, (_, i) => 6 + i),  // G:R (6..17)
+  ...Array.from({ length: 12 }, (_, i) => 21 + i), // V:AG (21..32)
+  ...Array.from({ length: 12 }, (_, i) => 36 + i), // AK:AV (36..47)
+];
+
+function isRowBlank(row) {
+  if (!row || row.length === 0) return true;
+  for (const colIdx of BLANK_CHECK_COLS) {
+    const val = row[colIdx]?.v;
+    if (val !== undefined && val !== null && String(val).trim() !== "") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function colIndexToLetter(colNum) {
+  let letter = "";
+  let n = colNum;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    n = Math.floor((n - 1) / 26);
+  }
+  return letter;
+}
+
+function isCellEditable(sheetRow, colIdx, screenTab) {
+  const isAllowedCol =
+    (colIdx >= 0 && colIdx <= 5) ||   // A:F
+    (colIdx >= 6 && colIdx <= 17) ||  // G:R
+    (colIdx >= 21 && colIdx <= 32) || // V:AG
+    (colIdx >= 36 && colIdx <= 47);   // AK:AV
+
+  if (screenTab === "contractors") {
+    return sheetRow >= 13 && sheetRow <= 110 && isAllowedCol;
+  }
+  if (screenTab === "outgoings") {
+    return sheetRow >= 126 && sheetRow <= 225 && isAllowedCol;
+  }
+  return false;
+}
+
+function formatCurrency(val) {
+  if (val === "" || val === null || val === undefined) return "";
+  const str = String(val).trim();
+  if (str === "-" || str === "£-") return "-";
+  const clean = str.replace(/[£,\s]/g, "");
+  if (!isNaN(clean) && clean !== "") {
+    const num = Math.round(Number(clean));
+    if (num < 0) {
+      return `-£${Math.abs(num).toLocaleString("en-GB")}`;
+    }
+    return `£${num.toLocaleString("en-GB")}`;
+  }
+  return str;
+}
+
 export default function ViewsScreen({ allClients, styles }) {
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientSearch, setClientSearch] = useState("");
@@ -16,8 +78,8 @@ export default function ViewsScreen({ allClients, styles }) {
   const [contractorsFyIdx, setContractorsFyIdx] = useState(0);
   const [outgoingsFyIdx, setOutgoingsFyIdx] = useState(0);
 
-  // Optional filter: hide blank rows
-  const [hideBlankRows, setHideBlankRows] = useState(false);
+  // Optional filter: show blank rows (default false = hidden)
+  const [showBlankRows, setShowBlankRows] = useState(false);
 
   // Container refs for horizontal scrolling
   const cashContainerRef = useRef(null);
@@ -108,6 +170,139 @@ export default function ViewsScreen({ allClients, styles }) {
     }
   };
 
+  const handleUpdateCell = async (tabName, sheetRow, colIdx, newValue) => {
+    if (!selectedClient || !selectedClient.clientSheetId) return;
+    const clientKey = selectedClient.clientSheetId;
+    const colLetter = colIndexToLetter(colIdx + 1);
+
+    // Format newValue optimistically if amount or percentage
+    let displayVal = newValue;
+    if (colIdx >= 6 && newValue !== "") {
+      displayVal = formatCurrency(newValue);
+    } else if ((colIdx === 4 || colIdx === 5) && newValue !== "") {
+      const clean = String(newValue).replace(/%/g, "").trim();
+      const num = parseFloat(clean);
+      if (!isNaN(num)) {
+        displayVal = `${num}%`;
+      }
+    }
+
+    // Optimistically update cache
+    setCache(prev => {
+      const clientData = prev[clientKey];
+      if (!clientData || !clientData[tabName]) return prev;
+      const tabData = clientData[tabName];
+
+      const updateRowList = (rows, startRow) => {
+        return (rows || []).map((row, idx) => {
+          if (startRow + idx !== sheetRow) return row;
+          const newRow = [...(row || [])];
+          newRow[colIdx] = { ...(newRow[colIdx] || {}), v: displayVal };
+          return newRow;
+        });
+      };
+
+      const updatedTabData = { ...tabData };
+      if (tabName === "contractors") {
+        if (updatedTabData.contractorRows) {
+          updatedTabData.contractorRows = updateRowList(updatedTabData.contractorRows, 13);
+        }
+        if (updatedTabData.mainRows) {
+          updatedTabData.mainRows = updateRowList(updatedTabData.mainRows, 13);
+        }
+      } else if (tabName === "outgoings") {
+        if (updatedTabData.outgoingRows) {
+          updatedTabData.outgoingRows = updateRowList(updatedTabData.outgoingRows, 126);
+        }
+        if (updatedTabData.mainRows) {
+          updatedTabData.mainRows = updateRowList(updatedTabData.mainRows, 126);
+        }
+      }
+
+      return {
+        ...prev,
+        [clientKey]: {
+          ...clientData,
+          [tabName]: updatedTabData,
+        }
+      };
+    });
+
+    try {
+      const currentTab = cache[clientKey]?.[tabName];
+      let rowDesc = "";
+      if (tabName === "contractors") {
+        const r = currentTab?.contractorRows?.[sheetRow - 13] || currentTab?.mainRows?.[sheetRow - 13];
+        rowDesc = r?.[0]?.v || "";
+      } else if (tabName === "outgoings") {
+        const r = currentTab?.outgoingRows?.[sheetRow - 126] || currentTab?.mainRows?.[sheetRow - 126];
+        rowDesc = r?.[0]?.v || "";
+      }
+
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_view_cell",
+          clientSheetId: selectedClient.clientSheetId,
+          clientName: selectedClient.clientName,
+          tab: "Outgoings",
+          screenTab: tabName,
+          sheetRow,
+          colLetter,
+          colIdx,
+          value: displayVal,
+          contractorName: tabName === "contractors" ? (colIdx === 0 ? displayVal : rowDesc) : undefined,
+          rowDescription: tabName === "outgoings" ? (colIdx === 0 ? displayVal : rowDesc) : undefined,
+        })
+      });
+
+      let data;
+      const rawText = await res.text();
+      try {
+        data = JSON.parse(rawText);
+      } catch (parseErr) {
+        throw new Error(`Server error (${res.status}): ${rawText.slice(0, 100) || res.statusText}`);
+      }
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || `Failed to update cell (status ${res.status})`);
+      }
+
+      // If backend returns sheet's formatted value and it differs, update cache with it
+      if (data.value !== undefined && data.value !== displayVal) {
+        setCache(prev => {
+          const clientData = prev[clientKey];
+          if (!clientData || !clientData[tabName]) return prev;
+          const tabData = clientData[tabName];
+          const updateRowList = (rows, startRow) => {
+            return (rows || []).map((row, idx) => {
+              if (startRow + idx !== sheetRow) return row;
+              const newRow = [...(row || [])];
+              newRow[colIdx] = { ...(newRow[colIdx] || {}), v: data.value };
+              return newRow;
+            });
+          };
+          const updatedTabData = { ...tabData };
+          if (tabName === "contractors") {
+            if (updatedTabData.contractorRows) updatedTabData.contractorRows = updateRowList(updatedTabData.contractorRows, 13);
+            if (updatedTabData.mainRows) updatedTabData.mainRows = updateRowList(updatedTabData.mainRows, 13);
+          } else if (tabName === "outgoings") {
+            if (updatedTabData.outgoingRows) updatedTabData.outgoingRows = updateRowList(updatedTabData.outgoingRows, 126);
+            if (updatedTabData.mainRows) updatedTabData.mainRows = updateRowList(updatedTabData.mainRows, 126);
+          }
+          return {
+            ...prev,
+            [clientKey]: { ...clientData, [tabName]: updatedTabData }
+          };
+        });
+      }
+    } catch (err) {
+      console.error("Error updating cell:", err);
+      fetchData(selectedClient, tabName, true);
+      alert(`Could not save change: ${err.message}`);
+    }
+  };
+
   // Cash horizontal scroll effect
   const cashData = selectedClient ? cache[selectedClient.clientSheetId]?.cash : null;
   useEffect(() => {
@@ -132,6 +327,13 @@ export default function ViewsScreen({ allClients, styles }) {
 
   return (
     <div style={{ padding: "20px 24px", minHeight: "calc(100vh - 60px)", background: "#f8fafc" }}>
+      <style>{`
+        .editable-view-cell:hover {
+          background-color: #eff6ff !important;
+          outline: 1.5px dashed #3b82f6;
+          outline-offset: -1.5px;
+        }
+      `}</style>
       {/* Top Header Bar */}
       <div style={{
         display: "flex",
@@ -325,16 +527,16 @@ export default function ViewsScreen({ allClients, styles }) {
               })}
             </div>
 
-            {/* Optional Controls on Right (Hide blank rows toggle) */}
+            {/* Optional Controls on Right (Show blank rows toggle) */}
             {(activeTab === "contractors" || activeTab === "outgoings") && (
-              <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748b", cursor: "pointer", userSelect: "none" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569", cursor: "pointer", userSelect: "none", fontWeight: "500" }}>
                 <input
                   type="checkbox"
-                  checked={hideBlankRows}
-                  onChange={(e) => setHideBlankRows(e.target.checked)}
+                  checked={showBlankRows}
+                  onChange={(e) => setShowBlankRows(e.target.checked)}
                   style={{ cursor: "pointer" }}
                 />
-                Hide empty rows
+                Show blank rows
               </label>
             )}
           </div>
@@ -377,7 +579,8 @@ export default function ViewsScreen({ allClients, styles }) {
                     data={currentTabData}
                     fyIdx={contractorsFyIdx}
                     onFyChange={setContractorsFyIdx}
-                    hideBlankRows={hideBlankRows}
+                    showBlankRows={showBlankRows}
+                    onUpdateCell={handleUpdateCell}
                   />
                 )}
 
@@ -386,7 +589,8 @@ export default function ViewsScreen({ allClients, styles }) {
                     data={currentTabData}
                     fyIdx={outgoingsFyIdx}
                     onFyChange={setOutgoingsFyIdx}
-                    hideBlankRows={hideBlankRows}
+                    showBlankRows={showBlankRows}
+                    onUpdateCell={handleUpdateCell}
                   />
                 )}
               </>
@@ -404,7 +608,7 @@ export default function ViewsScreen({ allClients, styles }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // SPREADSHEET CELL HELPER
 // ─────────────────────────────────────────────────────────────────────────────
-function renderCell(cell, isSticky = false, stickyLeft = 0, isHeader = false, customStyle = {}) {
+function renderCell(cell, isSticky = false, stickyLeft = 0, isHeader = false, customStyle = {}, editableOpts = null) {
   const v = cell?.v ?? "";
   const bg = customStyle.backgroundColor || cell?.bg;
   const fg = customStyle.color || cell?.c;
@@ -414,8 +618,133 @@ function renderCell(cell, isSticky = false, stickyLeft = 0, isHeader = false, cu
   const isItalic = !!cell?.i;
   const align = customStyle.textAlign || cell?.a || (v && (v.startsWith("£") || v.startsWith("-") || !isNaN(v.replace(/[£,%\s-]/g, ""))) ? "right" : "left");
 
+  const isEditable = !!editableOpts?.isEditable;
+  const isEditing = !!editableOpts?.isEditing;
+  const isSaving = !!editableOpts?.isSaving;
+
+  if (isEditing) {
+    if (editableOpts.inputType === "select") {
+      return (
+        <td
+          style={{
+            padding: "0",
+            fontSize: "11px",
+            fontFamily: "'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif",
+            backgroundColor: "#ffffff",
+            textAlign: "center",
+            verticalAlign: "middle",
+            boxSizing: "border-box",
+            ...(isSticky ? {
+              position: "sticky",
+              left: stickyLeft,
+              zIndex: 5,
+              boxShadow: stickyLeft === 0 ? "2px 0 4px -1px rgba(0,0,0,0.12)" : undefined,
+            } : {}),
+            ...customStyle,
+            border: "2px solid #2563eb",
+          }}
+        >
+          <select
+            autoFocus
+            value={editableOpts.editValue ?? ""}
+            onChange={(e) => {
+              const val = e.target.value;
+              editableOpts.onChangeEditValue?.(val);
+              editableOpts.onCommitEdit?.(val);
+            }}
+            onBlur={() => editableOpts.onCommitEdit?.()}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                editableOpts.onCancelEdit?.();
+              }
+            }}
+            style={{
+              width: "100%",
+              height: "100%",
+              minHeight: "24px",
+              border: "none",
+              outline: "none",
+              padding: "1px 2px",
+              fontSize: "10.5px",
+              fontWeight: "600",
+              fontFamily: "inherit",
+              textAlign: "center",
+              backgroundColor: "#ffffff",
+              color: "#0f172a",
+              cursor: "pointer",
+            }}
+          >
+            <option value="">—</option>
+            {(editableOpts.options || []).map(opt => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
+        </td>
+      );
+    }
+
+    return (
+      <td
+        style={{
+          padding: "0",
+          fontSize: "11px",
+          fontFamily: "'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif",
+          border: "2px solid #2563eb",
+          backgroundColor: "#ffffff",
+          textAlign: align,
+          verticalAlign: "middle",
+          boxSizing: "border-box",
+          ...(isSticky ? {
+            position: "sticky",
+            left: stickyLeft,
+            zIndex: 5,
+            boxShadow: stickyLeft === 0 ? "2px 0 4px -1px rgba(0,0,0,0.12)" : undefined,
+          } : {}),
+          ...customStyle,
+        }}
+      >
+        <input
+          type="text"
+          autoFocus
+          value={editableOpts.editValue ?? ""}
+          onChange={(e) => editableOpts.onChangeEditValue?.(e.target.value)}
+          onFocus={(e) => e.target.select()}
+          onBlur={() => editableOpts.onCommitEdit?.()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              editableOpts.onCommitEdit?.();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              editableOpts.onCancelEdit?.();
+            }
+          }}
+          style={{
+            width: "100%",
+            height: "100%",
+            minHeight: "24px",
+            border: "none",
+            outline: "none",
+            padding: "2px 5px",
+            fontSize: "inherit",
+            fontFamily: "inherit",
+            fontWeight: isBold ? "700" : "400",
+            textAlign: align,
+            backgroundColor: "#ffffff",
+            color: "#0f172a",
+            boxSizing: "border-box",
+          }}
+        />
+      </td>
+    );
+  }
+
   return (
     <td
+      onClick={isEditable && !isSaving ? editableOpts.onStartEdit : undefined}
+      title={isEditable ? "Click to edit cell" : undefined}
+      className={isEditable ? "editable-view-cell" : undefined}
       style={{
         padding: "4px 6px",
         fontSize: "11px",
@@ -431,8 +760,10 @@ function renderCell(cell, isSticky = false, stickyLeft = 0, isHeader = false, cu
         fontStyle: isItalic ? "italic" : "normal",
         backgroundColor: bg || (isSticky ? (isHeader ? "#f1f5f9" : "#ffffff") : "inherit"),
         color: fg || (isHeader ? "#0f172a" : "#1e293b"),
+        cursor: isEditable ? "pointer" : "default",
+        position: isSticky ? "sticky" : "relative",
+        transition: "background-color 0.15s ease",
         ...(isSticky ? {
-          position: "sticky",
           left: stickyLeft,
           zIndex: isHeader ? 5 : 2,
           boxShadow: stickyLeft === 0 ? "2px 0 4px -1px rgba(0,0,0,0.08)" : undefined,
@@ -440,7 +771,14 @@ function renderCell(cell, isSticky = false, stickyLeft = 0, isHeader = false, cu
         ...customStyle,
       }}
     >
-      {v}
+      {isSaving ? (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", opacity: 0.7 }}>
+          <Spinner size={10} color="#2563eb" />
+          <span>{v}</span>
+        </span>
+      ) : (
+        v !== "" ? v : (isEditable ? <span style={{ opacity: 0.25 }}>—</span> : "")
+      )}
     </td>
   );
 }
@@ -521,7 +859,7 @@ function DashboardView({ data, fyIdx, onFyChange }) {
       </div>
 
       {/* Spreadsheet Table: Compact widths so the whole FY fits on desktop */}
-      <div style={{ overflowX: "auto", border: "1px solid #cbd5e1", borderRadius: "8px", maxHeight: "74vh" }}>
+      <div style={{ overflowX: "auto", border: "1px solid #cbd5e1", borderRadius: "8px" }}>
         <table style={{ borderCollapse: "collapse", width: "100%", background: "#ffffff" }}>
           <thead>
             {/* Header Row 1: Month names + FY Total (Dark Blue Background, White Text) */}
@@ -800,7 +1138,7 @@ function CashView({ data, containerRef }) {
       </div>
 
       {/* Spreadsheet Table */}
-      <div ref={containerRef} style={{ overflowX: "auto", border: "1px solid #cbd5e1", borderRadius: "8px", maxHeight: "74vh" }}>
+      <div ref={containerRef} style={{ overflowX: "auto", border: "1px solid #cbd5e1", borderRadius: "8px" }}>
         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "11px", background: "#ffffff" }}>
           <thead>
             {/* Row 1: Month Headers (Whole row has dark green background, all text white, NO "PREV MO") */}
@@ -810,30 +1148,26 @@ function CashView({ data, containerRef }) {
                 backgroundColor: DARK_GREEN, color: "#ffffff", fontWeight: "700",
                 borderBottom: "2px solid #0b381e"
               })}
-              {allDataCols.map((colIdx) => {
-                const isTarget = colIdx === prevMonthColIdx;
-                return (
-                  <th
-                    key={colIdx}
-                    data-cash-col={colIdx}
-                    style={{
-                      padding: "5px 8px",
-                      fontSize: "11px",
-                      whiteSpace: "nowrap",
-                      fontWeight: "700",
-                      backgroundColor: DARK_GREEN,
-                      color: "#ffffff",
-                      borderBottom: "2px solid #0b381e",
-                      borderRight: "1px solid rgba(255,255,255,0.15)",
-                      textAlign: "right",
-                      minWidth: "78px",
-                      boxShadow: isTarget ? "inset 0 -3px 0 #86efac" : undefined
-                    }}
-                  >
-                    {matrix[0]?.[colIdx]?.v || ""}
-                  </th>
-                );
-              })}
+              {allDataCols.map((colIdx) => (
+                <th
+                  key={colIdx}
+                  data-cash-col={colIdx}
+                  style={{
+                    padding: "5px 8px",
+                    fontSize: "11px",
+                    whiteSpace: "nowrap",
+                    fontWeight: "700",
+                    backgroundColor: DARK_GREEN,
+                    color: "#ffffff",
+                    borderBottom: "2px solid #0b381e",
+                    borderRight: "1px solid rgba(255,255,255,0.15)",
+                    textAlign: "right",
+                    minWidth: "78px",
+                  }}
+                >
+                  {matrix[0]?.[colIdx]?.v || ""}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -846,18 +1180,14 @@ function CashView({ data, containerRef }) {
                     width: "240px", minWidth: "220px", maxWidth: "260px",
                     padding: "3px 6px"
                   })}
-                  {allDataCols.map((colIdx) => {
-                    const isTarget = colIdx === prevMonthColIdx;
-                    return (
-                      <React.Fragment key={colIdx}>
-                        {renderCell(row?.[colIdx], false, 0, false, {
-                          minWidth: "78px",
-                          padding: "3px 5px",
-                          backgroundColor: isTarget ? (row?.[colIdx]?.bg || "#f8faff") : undefined
-                        })}
-                      </React.Fragment>
-                    );
-                  })}
+                  {allDataCols.map((colIdx) => (
+                    <React.Fragment key={colIdx}>
+                      {renderCell(row?.[colIdx], false, 0, false, {
+                        minWidth: "78px",
+                        padding: "3px 5px",
+                      })}
+                    </React.Fragment>
+                  ))}
                 </tr>
               );
             })}
@@ -871,10 +1201,14 @@ function CashView({ data, containerRef }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. CONTRACTORS VIEW (Dark red header, white text, 50% narrower info cols)
 // ─────────────────────────────────────────────────────────────────────────────
-function ContractorsView({ data, fyIdx, onFyChange, hideBlankRows }) {
+function ContractorsView({ data, fyIdx, onFyChange, showBlankRows, onUpdateCell }) {
+  const [editingCell, setEditingCell] = useState(null); // { sheetRow, colIdx, editValue }
+  const [savingKey, setSavingKey] = useState(null); // `${sheetRow}_${colIdx}`
+  const committingRef = useRef(false);
+
   if (!data || !data.fyConfigs) return null;
 
-  const { headerRow, mainRows, section1Rows, section2Rows, fyConfigs } = data;
+  const { headerRow, contractorRows, totalRows, mainRows, section1Rows, section2Rows, fyConfigs } = data;
   const currentFy = fyConfigs[fyIdx] || fyConfigs[0];
   const maxFyIdx = fyConfigs.length - 1;
 
@@ -885,15 +1219,18 @@ function ContractorsView({ data, fyIdx, onFyChange, hideBlankRows }) {
 
   const DARK_RED = "#7f1d1d";
 
-  // Helper to filter blank rows if toggle enabled
-  const filterRows = (rows) => {
-    if (!hideBlankRows) return rows;
-    return rows.filter(r => (r?.[0]?.v && r[0].v.trim() !== "") || allActiveFyCols.some(c => r?.[c]?.v));
-  };
+  // Rows 13 to 110 (Contractor data rows)
+  const rawContractors = (contractorRows || (mainRows ? mainRows.slice(0, 98) : [])).map((row, idx) => ({
+    row,
+    sheetRow: 13 + idx,
+  }));
 
-  const filteredMain = filterRows(mainRows || []);
-  const filteredSec1 = filterRows(section1Rows || []);
-  const filteredSec2 = filterRows(section2Rows || []);
+  const visibleContractors = showBlankRows
+    ? rawContractors
+    : rawContractors.filter(item => !isRowBlank(item.row));
+
+  // Summary / totals rows (Rows 111 to 114)
+  const contractorTotals = totalRows || (mainRows ? mainRows.slice(98, 102) : []);
 
   // 5 info columns made MUCH narrower (at least 50% narrower) with smaller text
   const metaCols = [
@@ -904,6 +1241,92 @@ function ContractorsView({ data, fyIdx, onFyChange, hideBlankRows }) {
     { idx: 4, label: headerRow?.[4]?.v || "Del", width: "24px", minWidth: "22px", maxWidth: "28px" },
     { idx: 5, label: headerRow?.[5]?.v || "Likl. %", width: "30px", minWidth: "26px", maxWidth: "34px" },
   ];
+
+  const getEditableOpts = (sheetRow, colIdx, cellValue) => {
+    const isEditable = isCellEditable(sheetRow, colIdx, "contractors");
+    if (!isEditable) return null;
+
+    const isEditing = editingCell?.sheetRow === sheetRow && editingCell?.colIdx === colIdx;
+    const isSaving = savingKey === `${sheetRow}_${colIdx}`;
+
+    // Determine input type and options based on column index
+    let inputType = "text";
+    let options = null;
+    let initialEditVal = cellValue ?? "";
+
+    if (colIdx === 1) { // VAT?
+      inputType = "select";
+      options = ["Yes", "No"];
+    } else if (colIdx === 2 || colIdx === 3) { // Inv? or Pay?
+      inputType = "select";
+      options = ["Curr", "Next"];
+    } else if (colIdx === 4 || colIdx === 5) { // Del or Likl. %
+      inputType = "text";
+      initialEditVal = String(cellValue ?? "").replace(/%/g, "").trim();
+    } else if (colIdx >= 6) { // Month amount columns
+      inputType = "text";
+      initialEditVal = String(cellValue ?? "").replace(/[£,]/g, "").trim();
+    }
+
+    return {
+      isEditable,
+      isEditing,
+      isSaving,
+      inputType,
+      options,
+      editValue: isEditing ? editingCell.editValue : initialEditVal,
+      onChangeEditValue: (val) => setEditingCell(prev => prev ? { ...prev, editValue: val } : null),
+      onCommitEdit: async (overrideVal) => {
+        if (committingRef.current) return;
+        committingRef.current = true;
+        const cur = editingCell;
+        setEditingCell(null);
+        setTimeout(() => { committingRef.current = false; }, 100);
+        if (!cur && overrideVal === undefined) return;
+
+        let rawVal = overrideVal !== undefined ? overrideVal : (cur ? cur.editValue : "");
+        let finalVal = String(rawVal ?? "").trim();
+
+        // Validation for Del & Likl. % (colIdx 4 & 5)
+        if (colIdx === 4 || colIdx === 5) {
+          if (finalVal !== "") {
+            const clean = finalVal.replace(/%/g, "").trim();
+            const num = parseFloat(clean);
+            if (isNaN(num) || num < 0 || num > 100) {
+              alert("Percentage must be a number between 0 and 100 (e.g. 50% or 100).");
+              return;
+            }
+            finalVal = `${num}%`;
+          }
+        }
+
+        // Formatting for month currency columns (colIdx >= 6)
+        if (colIdx >= 6) {
+          if (finalVal !== "") {
+            const clean = finalVal.replace(/[£,\s]/g, "");
+            if (!isNaN(clean) && clean !== "") {
+              finalVal = formatCurrency(clean);
+            }
+          }
+        }
+
+        const oldVal = cellValue ?? "";
+        if (String(finalVal).trim() === String(oldVal).trim()) return;
+
+        const key = `${sheetRow}_${colIdx}`;
+        setSavingKey(key);
+        try {
+          if (onUpdateCell) {
+            await onUpdateCell("contractors", sheetRow, colIdx, finalVal);
+          }
+        } finally {
+          setSavingKey(null);
+        }
+      },
+      onCancelEdit: () => setEditingCell(null),
+      onStartEdit: () => setEditingCell({ sheetRow, colIdx, editValue: initialEditVal }),
+    };
+  };
 
   return (
     <div>
@@ -965,7 +1388,7 @@ function ContractorsView({ data, fyIdx, onFyChange, hideBlankRows }) {
       </div>
 
       {/* Spreadsheet Table: Fits full FY on desktop */}
-      <div style={{ overflowX: "auto", border: "1px solid #cbd5e1", borderRadius: "8px", maxHeight: "74vh" }}>
+      <div style={{ overflowX: "auto", border: "1px solid #cbd5e1", borderRadius: "8px" }}>
         <table style={{ borderCollapse: "collapse", width: "100%", background: "#ffffff" }}>
           <thead>
             {/* Header Row: Dark Red Background, White Text */}
@@ -1003,31 +1426,121 @@ function ContractorsView({ data, fyIdx, onFyChange, hideBlankRows }) {
             </tr>
           </thead>
           <tbody>
-            {/* Main Contractors Table (Rows 13 to 114) */}
-            {filteredMain.map((row, rIdx) => (
-              <tr key={`main-${rIdx}`}>
+            {/* Main Contractors Table (Rows 13 to 110) */}
+            {visibleContractors.map(({ row, sheetRow }) => (
+              <tr key={`contractor-${sheetRow}`}>
                 {metaCols.map((c, i) => (
                   <React.Fragment key={c.idx}>
-                    {renderCell(row?.[c.idx], i === 0, 0, false, {
-                      width: c.width, minWidth: c.minWidth, maxWidth: c.maxWidth,
-                      fontSize: c.isName ? "11px" : "9.5px",
-                      padding: c.isName ? "2.5px 6px" : "2px 1px",
-                      textAlign: c.isName ? "left" : "center"
-                    })}
+                    {renderCell(
+                      row?.[c.idx],
+                      i === 0,
+                      0,
+                      false,
+                      {
+                        width: c.width,
+                        minWidth: c.minWidth,
+                        maxWidth: c.maxWidth,
+                        fontSize: c.isName ? "11px" : "9.5px",
+                        padding: c.isName ? "2.5px 6px" : "2px 1px",
+                        textAlign: c.isName ? "left" : "center"
+                      },
+                      getEditableOpts(sheetRow, c.idx, row?.[c.idx]?.v)
+                    )}
                   </React.Fragment>
                 ))}
                 {fyCols.map((colIdx) => (
                   <React.Fragment key={colIdx}>
-                    {renderCell(row?.[colIdx], false, 0, false, {
-                      width: "56px", minWidth: "50px", maxWidth: "66px",
-                      fontSize: "10.5px", padding: "2.5px 3px"
-                    })}
+                    {renderCell(
+                      row?.[colIdx],
+                      false,
+                      0,
+                      false,
+                      {
+                        width: "56px",
+                        minWidth: "50px",
+                        maxWidth: "66px",
+                        fontSize: "10.5px",
+                        padding: "2.5px 3px"
+                      },
+                      getEditableOpts(sheetRow, colIdx, row?.[colIdx]?.v)
+                    )}
                   </React.Fragment>
                 ))}
-                {renderCell(row?.[totalCol], false, 0, false, {
-                  width: "72px", minWidth: "65px", maxWidth: "80px",
-                  fontSize: "11px", padding: "2.5px 6px", fontWeight: "700"
-                })}
+                {renderCell(
+                  row?.[totalCol],
+                  false,
+                  0,
+                  false,
+                  {
+                    width: "72px",
+                    minWidth: "65px",
+                    maxWidth: "80px",
+                    fontSize: "11px",
+                    padding: "2.5px 6px",
+                    fontWeight: "700"
+                  },
+                  null
+                )}
+              </tr>
+            ))}
+
+            {/* Contractor Summary / Totals (Rows 111 to 114) */}
+            {contractorTotals.map((row, idx) => (
+              <tr key={`total-${idx}`}>
+                {metaCols.map((c, i) => (
+                  <React.Fragment key={c.idx}>
+                    {renderCell(
+                      row?.[c.idx],
+                      i === 0,
+                      0,
+                      false,
+                      {
+                        width: c.width,
+                        minWidth: c.minWidth,
+                        maxWidth: c.maxWidth,
+                        fontSize: c.isName ? "11px" : "9.5px",
+                        padding: c.isName ? "2.5px 6px" : "2px 1px",
+                        textAlign: c.isName ? "left" : "center",
+                        fontWeight: "700"
+                      },
+                      null
+                    )}
+                  </React.Fragment>
+                ))}
+                {fyCols.map((colIdx) => (
+                  <React.Fragment key={colIdx}>
+                    {renderCell(
+                      row?.[colIdx],
+                      false,
+                      0,
+                      false,
+                      {
+                        width: "56px",
+                        minWidth: "50px",
+                        maxWidth: "66px",
+                        fontSize: "10.5px",
+                        padding: "2.5px 3px",
+                        fontWeight: "700"
+                      },
+                      null
+                    )}
+                  </React.Fragment>
+                ))}
+                {renderCell(
+                  row?.[totalCol],
+                  false,
+                  0,
+                  false,
+                  {
+                    width: "72px",
+                    minWidth: "65px",
+                    maxWidth: "80px",
+                    fontSize: "11px",
+                    padding: "2.5px 6px",
+                    fontWeight: "700"
+                  },
+                  null
+                )}
               </tr>
             ))}
 
@@ -1040,7 +1553,7 @@ function ContractorsView({ data, fyIdx, onFyChange, hideBlankRows }) {
                 Div in Lieu of Salary & Staff Costs (Rows 118–123)
               </td>
             </tr>
-            {filteredSec1.map((row, rIdx) => (
+            {(section1Rows || []).map((row, rIdx) => (
               <tr key={`sec1-${rIdx}`}>
                 {metaCols.map((c, i) => (
                   <React.Fragment key={c.idx}>
@@ -1076,7 +1589,7 @@ function ContractorsView({ data, fyIdx, onFyChange, hideBlankRows }) {
                 Profit Share Calculations (Rows 231–237)
               </td>
             </tr>
-            {filteredSec2.map((row, rIdx) => (
+            {(section2Rows || []).map((row, rIdx) => (
               <tr key={`sec2-${rIdx}`}>
                 {metaCols.map((c, i) => (
                   <React.Fragment key={c.idx}>
@@ -1112,10 +1625,14 @@ function ContractorsView({ data, fyIdx, onFyChange, hideBlankRows }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. OUTGOINGS VIEW (Dark red header, white text, 50% narrower info cols)
 // ─────────────────────────────────────────────────────────────────────────────
-function OutgoingsTableView({ data, fyIdx, onFyChange, hideBlankRows }) {
+function OutgoingsTableView({ data, fyIdx, onFyChange, showBlankRows, onUpdateCell }) {
+  const [editingCell, setEditingCell] = useState(null); // { sheetRow, colIdx, editValue }
+  const [savingKey, setSavingKey] = useState(null); // `${sheetRow}_${colIdx}`
+  const committingRef = useRef(false);
+
   if (!data || !data.fyConfigs) return null;
 
-  const { headerRow, mainRows, fyConfigs } = data;
+  const { headerRow, outgoingRows, totalRows, mainRows, fyConfigs } = data;
   const currentFy = fyConfigs[fyIdx] || fyConfigs[0];
   const maxFyIdx = fyConfigs.length - 1;
 
@@ -1126,10 +1643,18 @@ function OutgoingsTableView({ data, fyIdx, onFyChange, hideBlankRows }) {
 
   const DARK_RED = "#7f1d1d";
 
-  // Helper to filter blank rows if toggle enabled
-  const filteredRows = (!hideBlankRows ? (mainRows || []) : (mainRows || []).filter(r => {
-    return (r?.[0]?.v && r[0].v.trim() !== "") || allActiveFyCols.some(c => r?.[c]?.v);
+  // Rows 126 to 225 (Outgoing data rows)
+  const rawOutgoings = (outgoingRows || (mainRows ? mainRows.slice(0, 100) : [])).map((row, idx) => ({
+    row,
+    sheetRow: 126 + idx,
   }));
+
+  const visibleOutgoings = showBlankRows
+    ? rawOutgoings
+    : rawOutgoings.filter(item => !isRowBlank(item.row));
+
+  // Summary / totals rows (Rows 226 to 228)
+  const outgoingTotals = totalRows || (mainRows ? mainRows.slice(100, 103) : []);
 
   const metaCols = [
     { idx: 0, label: headerRow?.[0]?.v || "Description", width: "180px", minWidth: "160px", isName: true },
@@ -1139,6 +1664,92 @@ function OutgoingsTableView({ data, fyIdx, onFyChange, hideBlankRows }) {
     { idx: 4, label: headerRow?.[4]?.v || "Del", width: "24px", minWidth: "22px", maxWidth: "28px" },
     { idx: 5, label: headerRow?.[5]?.v || "Likl. %", width: "30px", minWidth: "26px", maxWidth: "34px" },
   ];
+
+  const getEditableOpts = (sheetRow, colIdx, cellValue) => {
+    const isEditable = isCellEditable(sheetRow, colIdx, "outgoings");
+    if (!isEditable) return null;
+
+    const isEditing = editingCell?.sheetRow === sheetRow && editingCell?.colIdx === colIdx;
+    const isSaving = savingKey === `${sheetRow}_${colIdx}`;
+
+    // Determine input type and options based on column index
+    let inputType = "text";
+    let options = null;
+    let initialEditVal = cellValue ?? "";
+
+    if (colIdx === 1) { // VAT?
+      inputType = "select";
+      options = ["Yes", "No"];
+    } else if (colIdx === 2 || colIdx === 3) { // Inv? or Pay?
+      inputType = "select";
+      options = ["Curr", "Next"];
+    } else if (colIdx === 4 || colIdx === 5) { // Del or Likl. %
+      inputType = "text";
+      initialEditVal = String(cellValue ?? "").replace(/%/g, "").trim();
+    } else if (colIdx >= 6) { // Month amount columns
+      inputType = "text";
+      initialEditVal = String(cellValue ?? "").replace(/[£,]/g, "").trim();
+    }
+
+    return {
+      isEditable,
+      isEditing,
+      isSaving,
+      inputType,
+      options,
+      editValue: isEditing ? editingCell.editValue : initialEditVal,
+      onChangeEditValue: (val) => setEditingCell(prev => prev ? { ...prev, editValue: val } : null),
+      onCommitEdit: async (overrideVal) => {
+        if (committingRef.current) return;
+        committingRef.current = true;
+        const cur = editingCell;
+        setEditingCell(null);
+        setTimeout(() => { committingRef.current = false; }, 100);
+        if (!cur && overrideVal === undefined) return;
+
+        let rawVal = overrideVal !== undefined ? overrideVal : (cur ? cur.editValue : "");
+        let finalVal = String(rawVal ?? "").trim();
+
+        // Validation for Del & Likl. % (colIdx 4 & 5)
+        if (colIdx === 4 || colIdx === 5) {
+          if (finalVal !== "") {
+            const clean = finalVal.replace(/%/g, "").trim();
+            const num = parseFloat(clean);
+            if (isNaN(num) || num < 0 || num > 100) {
+              alert("Percentage must be a number between 0 and 100 (e.g. 50% or 100).");
+              return;
+            }
+            finalVal = `${num}%`;
+          }
+        }
+
+        // Formatting for month currency columns (colIdx >= 6)
+        if (colIdx >= 6) {
+          if (finalVal !== "") {
+            const clean = finalVal.replace(/[£,\s]/g, "");
+            if (!isNaN(clean) && clean !== "") {
+              finalVal = formatCurrency(clean);
+            }
+          }
+        }
+
+        const oldVal = cellValue ?? "";
+        if (String(finalVal).trim() === String(oldVal).trim()) return;
+
+        const key = `${sheetRow}_${colIdx}`;
+        setSavingKey(key);
+        try {
+          if (onUpdateCell) {
+            await onUpdateCell("outgoings", sheetRow, colIdx, finalVal);
+          }
+        } finally {
+          setSavingKey(null);
+        }
+      },
+      onCancelEdit: () => setEditingCell(null),
+      onStartEdit: () => setEditingCell({ sheetRow, colIdx, editValue: initialEditVal }),
+    };
+  };
 
   return (
     <div>
@@ -1200,7 +1811,7 @@ function OutgoingsTableView({ data, fyIdx, onFyChange, hideBlankRows }) {
       </div>
 
       {/* Spreadsheet Table: Fits full FY on desktop */}
-      <div style={{ overflowX: "auto", border: "1px solid #cbd5e1", borderRadius: "8px", maxHeight: "74vh" }}>
+      <div style={{ overflowX: "auto", border: "1px solid #cbd5e1", borderRadius: "8px" }}>
         <table style={{ borderCollapse: "collapse", width: "100%", background: "#ffffff" }}>
           <thead>
             {/* Header Row: Dark Red Background, White Text */}
@@ -1238,30 +1849,121 @@ function OutgoingsTableView({ data, fyIdx, onFyChange, hideBlankRows }) {
             </tr>
           </thead>
           <tbody>
-            {filteredRows.map((row, rIdx) => (
-              <tr key={rIdx}>
+            {/* Main Outgoings (Rows 126 to 225) */}
+            {visibleOutgoings.map(({ row, sheetRow }) => (
+              <tr key={`outgoing-${sheetRow}`}>
                 {metaCols.map((c, i) => (
                   <React.Fragment key={c.idx}>
-                    {renderCell(row?.[c.idx], i === 0, 0, false, {
-                      width: c.width, minWidth: c.minWidth, maxWidth: c.maxWidth,
-                      fontSize: c.isName ? "11px" : "9.5px",
-                      padding: c.isName ? "2.5px 6px" : "2px 1px",
-                      textAlign: c.isName ? "left" : "center"
-                    })}
+                    {renderCell(
+                      row?.[c.idx],
+                      i === 0,
+                      0,
+                      false,
+                      {
+                        width: c.width,
+                        minWidth: c.minWidth,
+                        maxWidth: c.maxWidth,
+                        fontSize: c.isName ? "11px" : "9.5px",
+                        padding: c.isName ? "2.5px 6px" : "2px 1px",
+                        textAlign: c.isName ? "left" : "center"
+                      },
+                      getEditableOpts(sheetRow, c.idx, row?.[c.idx]?.v)
+                    )}
                   </React.Fragment>
                 ))}
                 {fyCols.map((colIdx) => (
                   <React.Fragment key={colIdx}>
-                    {renderCell(row?.[colIdx], false, 0, false, {
-                      width: "56px", minWidth: "50px", maxWidth: "66px",
-                      fontSize: "10.5px", padding: "2.5px 3px"
-                    })}
+                    {renderCell(
+                      row?.[colIdx],
+                      false,
+                      0,
+                      false,
+                      {
+                        width: "56px",
+                        minWidth: "50px",
+                        maxWidth: "66px",
+                        fontSize: "10.5px",
+                        padding: "2.5px 3px"
+                      },
+                      getEditableOpts(sheetRow, colIdx, row?.[colIdx]?.v)
+                    )}
                   </React.Fragment>
                 ))}
-                {renderCell(row?.[totalCol], false, 0, false, {
-                  width: "72px", minWidth: "65px", maxWidth: "80px",
-                  fontSize: "11px", padding: "2.5px 6px", fontWeight: "700"
-                })}
+                {renderCell(
+                  row?.[totalCol],
+                  false,
+                  0,
+                  false,
+                  {
+                    width: "72px",
+                    minWidth: "65px",
+                    maxWidth: "80px",
+                    fontSize: "11px",
+                    padding: "2.5px 6px",
+                    fontWeight: "700"
+                  },
+                  null
+                )}
+              </tr>
+            ))}
+
+            {/* Outgoing Totals (Rows 226 to 228) */}
+            {outgoingTotals.map((row, idx) => (
+              <tr key={`total-${idx}`}>
+                {metaCols.map((c, i) => (
+                  <React.Fragment key={c.idx}>
+                    {renderCell(
+                      row?.[c.idx],
+                      i === 0,
+                      0,
+                      false,
+                      {
+                        width: c.width,
+                        minWidth: c.minWidth,
+                        maxWidth: c.maxWidth,
+                        fontSize: c.isName ? "11px" : "9.5px",
+                        padding: c.isName ? "2.5px 6px" : "2px 1px",
+                        textAlign: c.isName ? "left" : "center",
+                        fontWeight: "700"
+                      },
+                      null
+                    )}
+                  </React.Fragment>
+                ))}
+                {fyCols.map((colIdx) => (
+                  <React.Fragment key={colIdx}>
+                    {renderCell(
+                      row?.[colIdx],
+                      false,
+                      0,
+                      false,
+                      {
+                        width: "56px",
+                        minWidth: "50px",
+                        maxWidth: "66px",
+                        fontSize: "10.5px",
+                        padding: "2.5px 3px",
+                        fontWeight: "700"
+                      },
+                      null
+                    )}
+                  </React.Fragment>
+                ))}
+                {renderCell(
+                  row?.[totalCol],
+                  false,
+                  0,
+                  false,
+                  {
+                    width: "72px",
+                    minWidth: "65px",
+                    maxWidth: "80px",
+                    fontSize: "11px",
+                    padding: "2.5px 6px",
+                    fontWeight: "700"
+                  },
+                  null
+                )}
               </tr>
             ))}
           </tbody>

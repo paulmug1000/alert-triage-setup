@@ -5,6 +5,7 @@ import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import { useJobs } from "../hooks/useJobs";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
 
 export default function JobsView({
   allOutgoingsClients,
@@ -514,7 +515,7 @@ export default function JobsView({
                                 }} style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer", borderLeft: s.slotNum === 1 ? "2px solid #f0f0f0" : "none" }} onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                                   {!s.ref && !s.amount ? <span style={{ color: "#ccc" }}>—</span> : (
                                     <div>
-                                      <div style={{ fontWeight: "600", color: s.ref?.toUpperCase().includes("MANUAL-INV") ? "#9333ea" : "inherit" }}>{s.ref}</div>
+                                      <div style={{ fontWeight: "600", color: isPlaceholderInvoice(s.ref) ? "#9333ea" : "inherit" }}>{s.ref}</div>
                                       <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
                                         <span style={amtStyle}>{formatCurrency(s.amount)}</span>
                                         {s.sentDate ? <><span style={{ margin: "0 2px" }}>·</span><span style={{ ...sentStyle, whiteSpace: "nowrap" }}>{s.sentDate}</span></> : null}
@@ -543,7 +544,7 @@ export default function JobsView({
                               }} style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer", borderLeft: s.slotNum === 1 ? "2px solid #f0f0f0" : "none" }} onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                                 {!s.description && !s.amount ? <span style={{ color: "#ccc" }}>—</span> : (
                                   <div>
-                                    <div style={{ fontWeight: "600", color: s.transactionId?.toUpperCase().includes("MANUAL") ? "#9333ea" : "inherit", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "155px" }}>{s.description || s.transactionId}</div>
+                                    <div style={{ fontWeight: "600", color: isPlaceholderExpense(s.transactionId) ? "#9333ea" : "inherit", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "155px" }}>{s.description || s.transactionId}</div>
                                     <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
                                       <span>{formatCurrency(s.amount)}</span>
                                       {s.date ? <><span style={{ margin: "0 2px" }}>·</span><span style={{ whiteSpace: "nowrap" }}>{s.date}</span></> : null}

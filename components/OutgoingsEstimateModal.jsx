@@ -24,7 +24,7 @@ export default function OutgoingsEstimateModal({ estimateData, outgoingsData, up
   const save = async () => {
     if (!amount || !selectedMonth) return;
     setSaving(true);
-    const manualId = `MANUAL-ENTRY-${Date.now()}`;
+    const manualId = `PLACE-EXP-${Date.now()}`;
     const existing = (contractor.cells[selectedMonth.colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"));
     await updateCell(contractor, selectedMonth.colLetter, [...existing, {
       appId: manualId, amount: parseFloat(amount), status: "", recDate: "", payDate: payDate || "",

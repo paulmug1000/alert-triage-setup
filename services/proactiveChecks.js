@@ -1,3 +1,5 @@
+import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers.js";
+
 export function parseConfirmedDate_(val) {
   if (!val) return null;
   if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
@@ -44,7 +46,7 @@ export function sumRealInvSlotAmounts_(row) {
   ];
   for (let s = 0; s < slots.length; s++) {
     const ref = String(row[slots[s].refIdx] || "").trim();
-    if (!ref || ref.toUpperCase().indexOf("MANUAL-INV") === 0) continue;
+    if (!ref || isPlaceholderInvoice(ref)) continue;
     const raw = row[slots[s].amtIdx];
     if (raw === "" || raw === null || raw === undefined) continue;
     const amt = parseFloat(String(raw).replace(/[£$€,\s]/g, "")) || 0;
@@ -783,9 +785,9 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
         const jRow = jobRows[jr].row;
         const slots = [{ ref: 42, amt: 41 }, { ref: 49, amt: 48 }, { ref: 56, amt: 55 }];
         for (const s of slots) {
-          const ref = String(jRow[s.ref] || "").trim().toUpperCase();
+          const ref = String(jRow[s.ref] || "").trim();
           const amtNum = parseFloat(String(jRow[s.amt] || "0").replace(/[£$€,\s]/g, "")) || 0;
-          if (ref && !ref.startsWith("MANUAL-INV") && amtNum > 0) {
+          if (ref && !isPlaceholderInvoice(ref) && amtNum > 0) {
             hasRealInvoice = true;
             break;
           }
@@ -887,7 +889,7 @@ export async function checkDeletedInvoices_(clientName, clientSheetId, masterShe
     for (let r = 0; r < rightData.length; r++) {
       const ref = String(rightData[r][5] || "").trim();
       const missingFlag = String(rightData[r][21] || "").trim();
-      if (!ref || ref.toUpperCase().indexOf("MANUAL-INV") === 0 || missingFlag !== "1") continue;
+      if (!ref || isPlaceholderInvoice(ref) || missingFlag !== "1") continue;
       candidateRefs.push(ref);
     }
     if (candidateRefs.length === 0) return alerts;
@@ -1045,7 +1047,7 @@ export async function checkDeletedExpenses_(clientName, clientSheetId, masterShe
       const row = wideData[r];
       const appId = String(row[9] || "").trim();
       const missingFlag = String(row[55] || "").trim();
-      if (!appId || appId.toUpperCase().indexOf("MANUAL-ENTRY") === 0 || appId.toUpperCase().indexOf("UNRECON-GAP") === 0 || appId.toUpperCase().indexOf("MANUAL-GAP") === 0 || missingFlag !== "1") continue;
+      if (!appId || isPlaceholderExpense(appId) || missingFlag !== "1") continue;
 
       const recDateRaw = row[6];
       const recDateObj = recDateRaw instanceof Date ? recDateRaw : new Date(recDateRaw);
@@ -1122,8 +1124,8 @@ export async function checkUnreceivedExpenses_(clientName, clientSheetId, shared
           if (amtRaw === "" || amtRaw === null || amtRaw === undefined) continue;
           const amtNum = parseFloat(String(amtRaw).replace(/[£$€,\s]/g, "")) || 0;
           if (amtNum === 0) continue;
-          const refVal = String(jRow[expSlots[s].ref] || "").trim().toUpperCase();
-          if (refVal.indexOf("MANUAL-ENTRY") === 0 || refVal.indexOf("UNRECON-GAP") === 0 || refVal.indexOf("MANUAL-GAP") === 0) {
+          const refVal = String(jRow[expSlots[s].ref] || "").trim();
+          if (isPlaceholderExpense(refVal)) {
             placeholderCount++; placeholderTotal += amtNum;
           } else { totalRealReceived += amtNum; }
         }

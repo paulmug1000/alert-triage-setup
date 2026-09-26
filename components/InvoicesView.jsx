@@ -5,6 +5,7 @@ import InvoicesNewJobModal from "./InvoicesNewJobModal";
 import { useInvoices } from "../hooks/useInvoices";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
+import { isPlaceholderInvoice } from "../utils/helpers";
 
 export default function InvoicesView({
   allOutgoingsClients,
@@ -356,7 +357,7 @@ export default function InvoicesView({
                     <tbody>
                       {invoicesJobs.flatMap((job, jobIdx) => {
                         const jobTotalInvoiced = job.rows.reduce((sum, r) => sum + r.invoiceSlots.reduce((s, slot) => {
-                          const isReal = slot.ref && !String(slot.ref).toUpperCase().includes("MANUAL-INV");
+                          const isReal = slot.ref && !isPlaceholderInvoice(slot.ref);
                           return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
                         }, 0), 0);
                         const jobRevenue = parseFloat(String(job.rows[0].revenue).replace(/[£$€,\s]/g, "")) || 0;
@@ -387,7 +388,7 @@ export default function InvoicesView({
                           <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
                           <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
                           {jr.invoiceSlots.map(s => {
-                            const isManualEntry = String(s.ref || "").toUpperCase().includes("MANUAL-INV");
+                            const isManualEntry = isPlaceholderInvoice(s.ref);
                             const isBlankRef = !s.ref || String(s.ref).trim() === "";
                             const isGenuinelyBlank = isBlankRef && !s.amount;
                             const isPlaceholder = isBlankRef && !!s.amount;

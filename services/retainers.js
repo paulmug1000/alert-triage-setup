@@ -2,6 +2,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl, colIndexToLetter } f
 import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers";
 import { logPmaActivity } from "./pmaLogger";
 import { resolveClientNameBySheetId } from "./workspaces";
+import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
 
 const RET_MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
 
@@ -151,15 +152,15 @@ export const RET_INV_SLOTS = [
 export function retRowHasRealData(row) {
   if (!row) return false;
   for (const s of RET_INV_SLOTS) {
-    const ref = String(row[s.ref] || "").trim().toUpperCase();
-    if (ref && !ref.startsWith("MANUAL-INV")) return true;
+    const ref = String(row[s.ref] || "").trim();
+    if (ref && !isPlaceholderInvoice(ref)) return true;
     const status = String(row[s.status] || "").trim().toLowerCase();
     if (status.includes("sent") || status.includes("paid")) return true;
   }
   const expSlots = [{ id: 81 }, { id: 88 }, { id: 95 }]; 
   for (const s of expSlots) {
-    const id = String(row[s.id] || "").trim().toUpperCase();
-    if (id && !id.startsWith("MANUAL-ENTRY") && !id.startsWith("UNRECON-GAP")) return true;
+    const id = String(row[s.id] || "").trim();
+    if (id && !isPlaceholderExpense(id)) return true;
   }
   return false;
 }

@@ -312,8 +312,8 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         continue;
       }
 
-      // 3. Invoice gaps (Created or Adjusted): [Pipeline|Confirmed] (Created|Adjusted) (Manual|Retainer)? Invoice: Row ...
-      const gapMatch = line.match(/^\[(Pipeline|Confirmed)\]\s*(?:Created|Adjusted)\s*(Manual|Retainer)?\s*Invoice:\s*Row\s*(\d+),\s*([^,-]+)(?:,\s*([^,]+))?(?:,\s*(£[\d,]+(?:\.\d{2})?))?(?:,\s*Slot\s*(\d+))?(?:\s*-\s*(.+))?/i);
+      // 3. Invoice gaps (Created or Adjusted): [Pipeline|Confirmed] (Created|Adjusted) (Manual|Placeholder|Retainer)? Invoice: Row ...
+      const gapMatch = line.match(/^\[(Pipeline|Confirmed)\]\s*(?:Created|Adjusted)\s*(Manual|Placeholder|Retainer)?\s*Invoice:\s*Row\s*(\d+),\s*([^,-]+)(?:,\s*([^,]+))?(?:,\s*(£[\d,]+(?:\.\d{2})?))?(?:,\s*Slot\s*(\d+))?(?:\s*-\s*(.+))?/i);
       if (gapMatch) {
         invoiceGaps.push({
           sheet: gapMatch[1],
@@ -470,7 +470,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
   } else if (category === "EXPENSES") {
     const newMatch = rawDetails.match(/New Expenses \((\d+)\)/i);
     const updatedExpMatch = rawDetails.match(/Updated Expenses \((\d+)\)/i);
-    const adjMatch = rawDetails.match(/Adjusted\/Refreshed (\d+) Manual Entries/i);
+    const adjMatch = rawDetails.match(/Adjusted\/Refreshed (\d+) (?:Manual|Placeholder) Entries/i);
     const pushedMatch = rawDetails.match(/Pushed (\d+) Expense Updates/i);
     const overdueMatch = rawDetails.match(/Fixed (\d+) overdue expenses/i);
     const gapsMatch = rawDetails.match(/Created (\d+) Unreconciled Gaps/i);
@@ -495,11 +495,8 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
       if (/^No new expenses matched/i.test(line)) continue;
       if (/^\[Expenses Download\]/i.test(line)) continue;
 
-      // 0a. [Confirmed|Pipeline|Outgoings] (Created|Changed|Adjusted|Removed) Manual Gap: Row 45, Client | Job (Slot X) - Changes
-      // e.g.: [Confirmed] Changed Manual Gap: Row 45, Acme Corp | Website Refresh (Slot 2) - Amt: £500.00 -> £750.00
-      // e.g.: [Confirmed] Created Manual Gap: Row 45, Acme Corp | Website Refresh (Slot 2) - Amt: £750.00
-      // e.g.: [Confirmed] Removed Manual Gap: Row 45, Acme Corp | Website Refresh (Slot 2) - Balanced
-      const gapMatch = line.match(/^\[(Confirmed|Pipeline|Outgoings)\]\s*(Created|Changed|Adjusted|Removed)\s*Manual\s*Gap:\s*Row\s*(\d+),\s*([^|:]+)(?:\|\s*([^(\n]+))?(?:\((Slot\s*\d+)\))?\s*-\s*(.+)/i);
+      // 0a. [Confirmed|Pipeline|Outgoings] (Created|Changed|Adjusted|Removed) (Manual|Placeholder) Gap: Row 45, Client | Job (Slot X) - Changes
+      const gapMatch = line.match(/^\[(Confirmed|Pipeline|Outgoings)\]\s*(Created|Changed|Adjusted|Removed)\s*(?:Manual|Placeholder)\s*Gap:\s*Row\s*(\d+),\s*([^|:]+)(?:\|\s*([^(\n]+))?(?:\((Slot\s*\d+)\))?\s*-\s*(.+)/i);
       if (gapMatch) {
         const sheet = gapMatch[1];
         const actionVerb = gapMatch[2].trim();
@@ -522,10 +519,10 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         }
 
         const actionText = actionVerb.toLowerCase() === "created" 
-          ? "Manual Gap Created" 
+          ? "Placeholder Gap Created" 
           : actionVerb.toLowerCase() === "removed" 
-            ? "Manual Gap Removed" 
-            : "Manual Gap Changed";
+            ? "Placeholder Gap Removed" 
+            : "Placeholder Gap Changed";
 
         const actionType = actionVerb.toLowerCase() === "created"
           ? "new"
@@ -589,8 +586,8 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
         continue;
       }
 
-      // 1. [Outgoings|Confirmed] Adjusted Manual Entry - Oct 2026 row 111, Making up CoS to 55.%: £4015.46 -> £4627.33
-      const manualMatch = line.match(/^\[(Confirmed|Outgoings)\]\s*Adjusted\s*Manual\s*Entry\s*-\s*([A-Za-z]{3}\s*\d{4})\s*row\s*(\d+),\s*([^:]+):\s*(.+)/i);
+      // 1. [Outgoings|Confirmed] Adjusted/Created Manual/Placeholder Entry - Oct 2026 row 111, Making up CoS to 55.%: £4015.46 -> £4627.33
+      const manualMatch = line.match(/^\[(Confirmed|Outgoings)\]\s*(?:Adjusted|Created)\s*(?:Manual|Placeholder)\s*Entry\s*-\s*([A-Za-z]{3}\s*\d{4})\s*row\s*(\d+),\s*([^:]+):\s*(.+)/i);
       if (manualMatch) {
         const sheet = manualMatch[1];
         const dateStr = manualMatch[2];
@@ -611,11 +608,11 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
           supplier: desc,
           jobOrRef: dateStr,
           description: desc,
-          action: "Manual Adjusted",
+          action: "Placeholder Adjusted",
           actionType: "manual",
           amount,
           dates: [dateStr],
-          status: "Manual Adjusted",
+          status: "Placeholder Adjusted",
           statusType: "manual",
           rawChanges: rest
         });
@@ -831,11 +828,11 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
     } else if (totalAccounting > 0) {
       summary = `${totalAccounting} expense${totalAccounting > 1 ? "s" : ""} adjusted / imported from accounting tool`;
     } else if (totalMatched > 0 && totalManual > 0) {
-      summary = `${totalMatched} expense${totalMatched > 1 ? "s" : ""} matched in Pulse, ${totalManual} manual entr${totalManual > 1 ? "ies" : "y"} adjusted`;
+      summary = `${totalMatched} expense${totalMatched > 1 ? "s" : ""} matched in Pulse, ${totalManual} placeholder entr${totalManual > 1 ? "ies" : "y"} adjusted`;
     } else if (totalMatched > 0) {
       summary = `${totalMatched} expense${totalMatched > 1 ? "s" : ""} matched & updated in Pulse`;
     } else if (totalManual > 0) {
-      summary = `${totalManual} manual expense entr${totalManual > 1 ? "ies" : "y"} / gap${totalManual > 1 ? "s" : ""} adjusted in Pulse`;
+      summary = `${totalManual} placeholder expense entr${totalManual > 1 ? "ies" : "y"} / gap${totalManual > 1 ? "s" : ""} adjusted in Pulse`;
     } else if (isRoutine) {
       summary = "Routine expense sync (no changes)";
     } else {

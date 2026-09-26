@@ -792,11 +792,11 @@ export default function ActivityView({
           </div>
         )}
 
-        {/* EXPENSES TABLE 3: MANUAL EXPENSE ENTRIES & GAPS ADJUSTED IN OUTGOINGS */}
+        {/* EXPENSES TABLE 3: PLACEHOLDER EXPENSE ENTRIES & GAPS ADJUSTED IN OUTGOINGS */}
         {hasManualAdjustments && (
           <div style={{ marginBottom: "14px" }}>
             <div style={{ fontWeight: "600", color: "#1e293b", marginBottom: "8px" }}>
-              {manualAdjustments.length} manual entry / gap adjustment{manualAdjustments.length > 1 ? "s" : ""} in Pulse:
+              {manualAdjustments.length} placeholder entry / gap adjustment{manualAdjustments.length > 1 ? "s" : ""} in Pulse:
             </div>
             <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "6px" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", background: "#fff" }}>
@@ -808,14 +808,14 @@ export default function ActivityView({
                 </thead>
                 <tbody>
                   {manualAdjustments.map((exp, i) => {
-                    const actionText = exp.action || exp.status || "Manual Adjusted";
-                    const badgeLabel = getActionBadgeLabel(actionText, "Manual");
+                    const actionText = exp.action || exp.status || "Placeholder Adjusted";
+                    const badgeLabel = getActionBadgeLabel(actionText, "Placeholder");
                     const bStyle = getActionBadgeStyle(exp.statusType, actionText);
                     return (
                       <tr key={i} style={{ borderBottom: i < manualAdjustments.length - 1 ? "1px solid #f1f5f9" : "none" }}>
                         <td style={{ padding: "8px 10px", verticalAlign: "top", width: "115px" }}>
                           <div style={{ fontWeight: "600", color: "#0f172a", fontSize: "11.5px" }}>
-                            {exp.entry || exp.supplier || exp.description || "Manual Entry"}
+                            {exp.entry || exp.supplier || exp.description || "Placeholder Entry"}
                           </div>
                           <div style={{ marginTop: "4px" }}>
                             <span style={{

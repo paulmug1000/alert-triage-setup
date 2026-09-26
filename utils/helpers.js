@@ -1,3 +1,21 @@
+export function isPlaceholderInvoice(ref) {
+  if (!ref) return false;
+  const s = String(ref).trim().toUpperCase();
+  return s.startsWith("PLACE-INV") || s.startsWith("MANUAL-INV");
+}
+
+export function isPlaceholderExpense(appId) {
+  if (!appId) return false;
+  const s = String(appId).trim().toUpperCase();
+  return (
+    s.startsWith("PLACE-EXP") ||
+    s.startsWith("MANUAL-ENTRY") ||
+    s.startsWith("PLACE-GAP") ||
+    s.startsWith("MANUAL-GAP") ||
+    s.startsWith("UNRECON-GAP")
+  );
+}
+
 export function getAlertSummary(alert) {
   if (alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr") {
     const inv = alert.summary;

@@ -1,5 +1,6 @@
 import React from "react";
 import Spinner from "./Spinner";
+import { isPlaceholderInvoice } from "../utils/helpers";
 
 // Converts a sheet-formatted date string like "15-Mar-26" (or a few other common
 // shapes) to ISO "YYYY-MM-DD" for use with a native <input type="date">.
@@ -45,9 +46,9 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
     if (!job || !job.rows) return false;
     return job.rows.some(r =>
       (r.invoiceSlots || []).some(s => {
-        const ref = String(s.ref || "").trim().toUpperCase();
+        const ref = String(s.ref || "").trim();
         const status = String(s.status || "").trim().toLowerCase();
-        return (ref && !ref.startsWith("MANUAL-INV")) || status.includes("sent") || status.includes("paid");
+        return (ref && !isPlaceholderInvoice(ref)) || status.includes("sent") || status.includes("paid");
       })
     );
   }, [job]);
@@ -57,9 +58,9 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
     if (job?.rows) {
       for (const r of job.rows) {
         for (const s of (r.invoiceSlots || [])) {
-          const ref = String(s.ref || "").trim().toUpperCase();
+          const ref = String(s.ref || "").trim();
           const status = String(s.status || "").trim().toLowerCase();
-          if ((ref && !ref.startsWith("MANUAL-INV")) || status.includes("sent") || status.includes("paid")) {
+          if ((ref && !isPlaceholderInvoice(ref)) || status.includes("sent") || status.includes("paid")) {
             const sentISO = sheetDateToISO(s.sentDate);
             if (sentISO && sentISO.slice(0, 7) > latestMonth) {
               latestMonth = sentISO.slice(0, 7);

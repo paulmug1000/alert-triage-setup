@@ -1,6 +1,7 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId } from "./sheetsClient";
 import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay } from "./sharedHelpers";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger";
+import { isPlaceholderInvoice } from "../utils/helpers";
 
 export let assignedExpensesTabVerified = false;
 
@@ -588,7 +589,7 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
       for (const jr of jobRows) {
         for (const slot of jr.invoiceSlots) {
           const ref = String(slot.ref || "").trim();
-          const isReal = ref && !ref.toUpperCase().startsWith("MANUAL-INV");
+          const isReal = ref && !isPlaceholderInvoice(ref);
           if (isReal) realInvoicedTotal += parseFloat(String(slot.amount||"").replace(/[£$€,\s]/g,"")) || 0;
         }
       }

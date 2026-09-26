@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { isPlaceholderExpense } from "../utils/helpers";
 
 const STATUS_COLOURS = {
   "Paid":     { bg: "#e8f5e9", border: "#4caf50", text: "#2e7d32" },
@@ -105,13 +106,13 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
 
         {blocks.map((b, i) => {
           const sc = getStatusColour(b.status);
-          const isManual = b.appId.startsWith("MANUAL-ENTRY");
+          const isManual = isPlaceholderExpense(b.appId);
           return (
             <div key={i} style={{ border: `1px solid ${sc.border}`, background: sc.bg, borderRadius: "8px", padding: "14px", marginBottom: "14px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
                 <div style={{ fontSize: "13px", color: "#888", fontFamily: "monospace", wordBreak: "break-all", flex: 1, marginRight: "8px" }}>{b.appId}</div>
                 <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px" }}>Remove</button>
-                {!b.appId.startsWith("MANUAL-ENTRY") && !b.appId.startsWith("UNRECON-GAP") && (
+                {!isPlaceholderExpense(b.appId) && (
                   <button onClick={async () => {
                     // Remove block from cell, write immediately, return to inbox, close modal
                     const newBlocks = blocksRef.current.filter((_, idx) => idx !== i);

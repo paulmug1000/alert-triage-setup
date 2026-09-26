@@ -21,6 +21,7 @@ import { redisClient } from "./redisClient";
 import { logPmaActivity } from "./pmaLogger";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs";
 import { anthropic } from "./claudeClient";
+import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -211,7 +212,10 @@ export function buildDirCompSummary(alert) {
 export const AUTOLOG_TYPE_PATTERNS = {
   retainerInvoicesCreated:   ["[Retainers - Confirmed] Added"],
   retainerInvoicesDeleted:   ["[Retainers - Confirmed] Trimmed"],
-  expenseUnreconGaps:        ["[Confirmed] Created Manual Gap:", "[Confirmed] Changed Manual Gap:", "[Confirmed] Removed Manual Gap"],
+  expenseUnreconGaps:        [
+    "[Confirmed] Created Manual Gap:", "[Confirmed] Changed Manual Gap:", "[Confirmed] Removed Manual Gap",
+    "[Confirmed] Created Placeholder Gap:", "[Confirmed] Changed Placeholder Gap:", "[Confirmed] Removed Placeholder Gap"
+  ],
   expenseAdded:              ["Created New Row:"],
   invoiceStaleUnsentChanges: ["Stale Invoice - Row"],
   crmCopiedConfChecked:      [
@@ -2919,7 +2923,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                       continue;
                     }
                     const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
-                    const isAllocated = !!(appId && !appId.toUpperCase().includes('MANUAL-ENTRY'));
+                    const isAllocated = !!(appId && !isPlaceholderExpense(appId));
                     if (isAllocated) childAllocated += amtNum;
                     childSlots.push({ label: `Row ${childSheetRow} ExpSlot${s+1}`, descr, amt, amtNum, date, appId, isAllocated, empty: false, sheetRow: childSheetRow, slotNum: s+1 });
                   }
@@ -2953,7 +2957,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                       continue;
                     }
                     const amtNum = parseFloat(String(amt).replace(/[£$€,]/g, '')) || 0;
-                    const isAllocated = !!(appId && !appId.toUpperCase().includes('MANUAL-ENTRY'));
+                    const isAllocated = !!(appId && !isPlaceholderExpense(appId));
                     if (isAllocated) totalAllocated += amtNum;
                     slots.push({ label: `Row ${sheetRow} ExpSlot${s+1}`, descr, amt, amtNum, date, appId, isAllocated, empty: false, sheetRow, slotNum: s+1 });
                   }
@@ -4203,7 +4207,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             // The matched row may be a child row — scan upwards to find the parent
             const isRealSlot = (ref) => {
               const r = String(ref || "").trim();
-              return r && !r.toUpperCase().startsWith("MANUAL-INV");
+              return r && !isPlaceholderInvoice(r);
             };
             const parseSlotAmt = (v) => parseFloat(String(v || "0").replace(/[£$€,]/g, "")) || 0;
 
@@ -4360,14 +4364,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 const ref = String(row[refIdx] || "").trim();
                 const rawAmt = row[amtIdx];
                 if (!ref && (rawAmt === undefined || rawAmt === "")) continue;
-                const isManual = ref.toUpperCase().startsWith("MANUAL-INV");
+                const isManual = isPlaceholderInvoice(ref);
                 const isMatched = rowNum === matchedRowNum && slotNum === matchedSlot;
                 const amt = isMatched
                   ? `£${correctAmount.toFixed(2)} (corrected from £${currentSlotAmt})`
                   : rawAmt !== undefined && rawAmt !== ""
                     ? `£${parseSlotAmt(rawAmt).toFixed(2)}`
                     : "(no amount)";
-                const label = isManual ? `[MANUAL-INV]` : ref || "(blank ref)";
+                const label = isManual ? (ref.toUpperCase().startsWith("PLACE-INV") ? `[PLACE-INV]` : `[MANUAL-INV]`) : ref || "(blank ref)";
                 const tag = isMatched ? " ← this invoice" : "";
                 slotBreakdownLines.push(`Row ${rowNum} Inv${slotNum}: ${label} ${amt}${tag}`);
               }
@@ -4626,8 +4630,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               const rawAmt = row[sd.amtIdx];
               const slotDate = String(row[sd.sentIdx] || "").trim();
 
-              // Non-real: blank ref OR MANUAL-INV prefix
-              const isManual = ref.toUpperCase().startsWith("MANUAL-INV");
+              // Non-real: blank ref OR placeholder prefix
+              const isManual = isPlaceholderInvoice(ref);
               const isNonReal = !ref || isManual;
               if (!isNonReal) continue;
 
@@ -4670,7 +4674,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               const key = `${rowClient}||${rowJob}`;
               for (const sd of INV_SLOT_DEFS) {
                 const ref = String(row[sd.refIdx] || "").trim();
-                if (!ref.toUpperCase().startsWith("MANUAL-INV")) continue;
+                if (!isPlaceholderInvoice(ref)) continue;
                 const rawAmt = row[sd.amtIdx];
                 const slotAmt = parseFloat(String(rawAmt || "").replace(/[£$€,]/g, "")) || 0;
                 if (slotAmt === 0) continue;
@@ -4793,7 +4797,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                   const rawAmt = r[sd.amtIdx];
                   const slotDate = String(r[sd.sentIdx] || "").trim();
                   const amt    = rawAmt !== undefined && rawAmt !== "" ? parseFloat(String(rawAmt).replace(/[£$€,]/g,"")) || 0 : null;
-                  const isManual  = ref.toUpperCase().startsWith("MANUAL-INV");
+                  const isManual  = isPlaceholderInvoice(ref);
                   const isReal    = ref && !isManual;
                   const isEmpty   = !ref && (amt === null || amt === 0);
 
@@ -4807,10 +4811,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                     slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [REAL — do not overwrite]`;
                   } else if (isManual) {
                     const manualAmtMatch = amt && Math.abs(amt - invoiceAmount) < 0.01;
-                    // Check if this is part of a job-total match (invoice covers full job revenue via multiple MANUAL-INV slots)
+                    // Check if this is part of a job-total match (invoice covers full job revenue via multiple placeholder slots)
                     const isJobTotalMatch = group.matchingSlots.some(m => m.isJobTotalMatch && m.rowNum === sheetRow && m.slotNum === sd.slotNum);
-                    const jobTotalNote = isJobTotalMatch ? ` ← INVOICE COVERS FULL JOB REVENUE — PLACE HERE AND CLEAR ALL OTHER MANUAL-INV SLOTS` : (manualAmtMatch ? " ← AMOUNT MATCHES THIS INVOICE" : "");
-                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [MANUAL-INV placeholder${jobTotalNote}]`;
+                    const jobTotalNote = isJobTotalMatch ? ` ← INVOICE COVERS FULL JOB REVENUE — PLACE HERE AND CLEAR ALL OTHER PLACEHOLDER SLOTS` : (manualAmtMatch ? " ← AMOUNT MATCHES THIS INVOICE" : "");
+                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [placeholder${jobTotalNote}]`;
                   } else {
                     // Blank-ref placeholder — show explicit date comparison vs invoice sent date
                     const dateResult = dateWithinTolerance(slotDate);
@@ -4863,7 +4867,7 @@ ${jobContextLines.join("\n\n")}
 
 INSTRUCTIONS FOR USING THESE MATCHES:
 - Slots marked "← AMOUNT MATCHES THIS INVOICE" are the backend-confirmed candidates
-- Slots marked "← INVOICE COVERS FULL JOB REVENUE — PLACE HERE AND CLEAR ALL OTHER MANUAL-INV SLOTS" mean the invoice amount equals the total of all MANUAL-INV placeholders on this job. In this case: place the invoice in that slot (slot 1), write all 5 invoice fields to it, and clear ALL other MANUAL-INV slots on this job (write blank to all 5 fields of each remaining MANUAL-INV slot).
+- Slots marked "← INVOICE COVERS FULL JOB REVENUE — PLACE HERE AND CLEAR ALL OTHER PLACEHOLDER SLOTS" mean the invoice amount equals the total of all placeholders on this job. In this case: place the invoice in that slot (slot 1), write all 5 invoice fields to it, and clear ALL other placeholder slots on this job (write blank to all 5 fields of each remaining placeholder slot).
 - A slot with both amount match AND date match (✓) is the most likely target
 - A slot with amount match but date mismatch (✗) is still a valid option, with lower confidence — state the actual date difference
 - NEVER describe a date-tolerance match as "exact" — state the actual difference in months
@@ -4911,12 +4915,12 @@ INSTRUCTIONS FOR USING THESE MATCHES:
           const slotNum = m.slotNum;
           const isManual = m.isManual;
           const slotLabel = `${m.client} — ${m.jobName} (Row ${rowNum} Slot ${slotNum})`;
-          const slotDesc = isManual ? "replacing the MANUAL-INV placeholder" : "replacing the blank placeholder";
+          const slotDesc = isManual ? "replacing placeholder" : "replacing the blank placeholder";
           console.log(`  ✅ Tier 1 match — generating option without Claude: ${slotLabel}`);
 
           const tier1Option = {
             optionId: 1,
-            title: `Place in ${m.client} — ${m.jobName} slot ${slotNum} (Row ${rowNum}) — exact amount match, ${isManual ? "replacing MANUAL-INV placeholder" : "slot date match"}`,
+            title: `Place in ${m.client} — ${m.jobName} slot ${slotNum} (Row ${rowNum}) — exact amount match, ${isManual ? "replacing placeholder" : "slot date match"}`,
             matchType: "existing_job",
             jobRow: rowNum,
             jobName: m.jobName,
@@ -5052,7 +5056,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             for (const sd of INV_SLOT_DEFS2) {
               const ref = String(r[sd.refIdx]||"").trim();
               const amt = parseFloat(String(r[sd.amtIdx]||"").replace(/[£$€,]/g,"")) || 0;
-              const isReal = ref && !ref.toUpperCase().startsWith("MANUAL-INV");
+              const isReal = ref && !isPlaceholderInvoice(ref);
               if (isReal) realTotal += amt;
             }
           }
@@ -5062,7 +5066,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const budgetFits = revNum === 0 || newTotal <= revNum; // no known revenue = don't penalise
           const isExactClient = String(best.client||"").trim().toLowerCase() === String(invClient||"").trim().toLowerCase();
           const confidence = best.dateMatch ? "High" : "Medium";
-          const slotDesc   = best.isManual ? "replacing MANUAL-INV placeholder" : "replacing blank placeholder";
+          const slotDesc   = best.isManual ? "replacing placeholder" : "replacing blank placeholder";
           const dateNote   = best.dateMatch
             ? `Invoice sent ${sentDate}, slot date ${best.slotDate} — within tolerance`
             : `Invoice sent ${sentDate}, slot date ${best.slotDate} — outside date tolerance`;
@@ -5167,7 +5171,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             let sd = null, ref = "", rawAmt = "", isManual = false;
             for (const cand of INV_SLOT_DEFS2) {
               const candRef = String(r[cand.refIdx]||"").trim();
-              const candIsManual = candRef.toUpperCase().startsWith("MANUAL-INV");
+              const candIsManual = isPlaceholderInvoice(candRef);
               const candIsNonReal = !candRef || candIsManual;
               if (!candIsNonReal) continue;
               const candKey = `${ri+1}-${cand.slotNum}`;
@@ -5195,7 +5199,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 for (const sd2 of INV_SLOT_DEFS2) {
                   const ref2 = String(r2[sd2.refIdx]||"").trim();
                   const amt2 = parseFloat(String(r2[sd2.amtIdx]||"").replace(/[£$€,]/g,"")) || 0;
-                  if (ref2 && !ref2.toUpperCase().startsWith("MANUAL-INV")) bRealTotal += amt2;
+                  if (ref2 && !isPlaceholderInvoice(ref2)) bRealTotal += amt2;
                 }
               }
               const bNewTotal = bRealTotal + invoiceAmtForMatch;
@@ -5210,7 +5214,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                   : `slot is £${slotAmt.toFixed(2)}, invoice is £${invoiceAmtForMatch.toFixed(2)} — diff £${Math.abs(amtDiff||0).toFixed(2)}`)
                 : "slot amount unknown";
               const overUnder = bRevNum > 0 ? (bNewTotal > bRevNum ? ` (over budget by £${(bNewTotal-bRevNum).toFixed(2)})` : ` (£${(bRevNum-bNewTotal).toFixed(2)} remaining)`) : "";
-              const slotLabel = isManual ? "MANUAL-INV placeholder" : "blank placeholder";
+              const slotLabel = isManual ? "placeholder" : "blank placeholder";
               // This path had slotDate available but never actually checked
               // it against the invoice's sent date — dateRangeMatch was
               // hardcoded to "UNKNOWN"/"N/A" regardless of actual
@@ -7426,7 +7430,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                     const currentStatus = String(targetSheetRow[slotCols.status] || "").trim();
                     const currentAmt = String(targetSheetRow[slotCols.amt] || "").trim();
 
-                    if (currentRef && !currentRef.toUpperCase().startsWith("MANUAL-INV")) {
+                    if (currentRef && !isPlaceholderInvoice(currentRef)) {
                       isResolved = true;
                       resolutionMsg = `Slot ${slotNum} now contains a real invoice: #${currentRef} (Sent: ${currentSent || "unknown"}, Status: ${currentStatus || "unknown"}).`;
                       checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
@@ -7439,7 +7443,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                       [ { s: 1, ref: 42 }, { s: 2, ref: 49 }, { s: 3, ref: 56 } ].forEach(idx => {
                         if (idx.s !== slotNum) {
                           const r = String(targetSheetRow[idx.ref] || "").trim();
-                          if (r && !r.toUpperCase().startsWith("MANUAL-INV")) {
+                          if (r && !isPlaceholderInvoice(r)) {
                             otherInvoices.push(`Slot ${idx.s} (#${r})`);
                           }
                         }
@@ -7630,7 +7634,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                     const currentId = String(targetSheetRow[slotCols.id] || "").trim();
                     const currentAmt = String(targetSheetRow[slotCols.amt] || "").trim();
 
-                    if (currentId && !currentId.toUpperCase().startsWith("MANUAL-ENTRY") && !currentId.toUpperCase().startsWith("UNRECON-GAP")) {
+                    if (currentId && !isPlaceholderExpense(currentId)) {
                       isResolved = true;
                       resolutionMsg = `Slot ${slotNum} now contains a real expense reference (App ID: ${currentId}).`;
                       checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });

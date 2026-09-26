@@ -7,6 +7,7 @@ import OutgoingsNewVendorModal from "./OutgoingsNewVendorModal";
 import { useOutgoings } from "../hooks/useOutgoings";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
+import { isPlaceholderExpense } from "../utils/helpers";
 
 export default function OutgoingsView({
   allOutgoingsClients,
@@ -173,7 +174,7 @@ export default function OutgoingsView({
         };
         const doUseUp = async () => {
           setOutgoingsReplacePrompt(null);
-          const manualBlocksList = realBlocks.filter(b => b.appId && (b.appId.startsWith("MANUAL-ENTRY") || b.appId.startsWith("MANUAL-GAP")));
+          const manualBlocksList = realBlocks.filter(b => b.appId && isPlaceholderExpense(b.appId));
           const exactIdx = manualBlocksList.findIndex(mb => Math.abs((parseFloat(mb.amount) || 0) - expenseAmount) < 0.01);
           let reducedManualBlocks;
           if (exactIdx !== -1) {
@@ -436,12 +437,12 @@ export default function OutgoingsView({
                               const ok = window.confirm("Vendor mismatch?\n\nExpense: \"" + (exp.description || exp.accountName) + "\"\nContractor: \"" + contractor.name + "\"\n\nPlace anyway?");
                               if (!ok) return;
                             }
-                            const manualBlocks = realBlocks.filter(b => b.appId && (b.appId.startsWith("MANUAL-ENTRY") || b.appId.startsWith("MANUAL-GAP")));
+                            const manualBlocks = realBlocks.filter(b => b.appId && isPlaceholderExpense(b.appId));
                             if (manualBlocks.length > 0) {
                               const totalManual = manualBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
                               setOutgoingsReplacePrompt({
                                 exp, contractor, colLetter: m.colLetter, realBlocks, totalManual,
-                                blocksWithoutManual: realBlocks.filter(b => !b.appId || !(b.appId.startsWith("MANUAL-ENTRY") || b.appId.startsWith("MANUAL-GAP"))),
+                                blocksWithoutManual: realBlocks.filter(b => !b.appId || !isPlaceholderExpense(b.appId)),
                               });
                               return;
                             }
@@ -473,7 +474,7 @@ export default function OutgoingsView({
                                     <div key={bi}
                                       style={{ fontSize: "10px", background: sc.bg, border: `1px solid ${sc.border}`, borderRadius: "3px", padding: "2px 5px", marginBottom: "2px", color: sc.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                       £{parseFloat(b.amount).toLocaleString("en-GB", { minimumFractionDigits: 0 })}{b.status ? ` · ${b.status}` : ""}{
-                                        !b.appId.startsWith("MANUAL-ENTRY") && !b.appId.startsWith("UNRECON-GAP") &&
+                                        !isPlaceholderExpense(b.appId) &&
                                         (outgoingsData?.months || []).some(mo =>
                                           mo.colLetter !== m.colLetter &&
                                           (contractor.cells[mo.colLetter]?.blocks || []).some(ob => ob.appId === b.appId)
@@ -535,7 +536,7 @@ export default function OutgoingsView({
                         const jobLastRow = job.rows[job.rows.length - 1].rowNum;
                         
                         const jobTotalExpenses = job.rows.reduce((sum, r) => sum + r.expenseSlots.reduce((s, slot) => {
-                          const isReal = slot.transactionId && !String(slot.transactionId).toUpperCase().includes("MANUAL-ENTRY") && !String(slot.transactionId).toUpperCase().includes("UNRECON-GAP");
+                          const isReal = slot.transactionId && !isPlaceholderExpense(slot.transactionId);
                           return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
                         }, 0), 0);
                         const jobBudget = parseFloat(String(job.rows[0].directCosts).replace(/[£$€,\s]/g, "")) || 0;
@@ -562,7 +563,7 @@ export default function OutgoingsView({
                           <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.startDate}</td>
                           <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>{jr.endDate}</td>
                           {jr.expenseSlots.map(s => {
-                            const isManualEntry = String(s.transactionId || "").toUpperCase().includes("MANUAL-ENTRY");
+                            const isManualEntry = isPlaceholderExpense(s.transactionId);
                             const isGenuinelyBlank = !s.description && !s.amount;
                             const isEmpty = isGenuinelyBlank || isManualEntry;
                             const isPlacing = !!outgoingsPlacing;

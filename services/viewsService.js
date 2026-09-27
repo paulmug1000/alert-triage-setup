@@ -7,6 +7,11 @@ const MONTH_NAMES = {
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
 };
 
+export const FULL_MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+];
+
 export function parseMonthHeader(label) {
   if (!label || typeof label !== "string") return null;
   const match = label.trim().match(/^([A-Za-z]{3})\s*'?(\d{2,4})$/);
@@ -17,6 +22,14 @@ export function parseMonthHeader(label) {
   let year = parseInt(match[2], 10);
   if (year < 100) year += 2000;
   return { month, year, label: `${match[1]} ${String(year).slice(-2)}` };
+}
+
+export function getFullMonthYear(label) {
+  const parsed = parseMonthHeader(label);
+  if (parsed && FULL_MONTH_NAMES[parsed.month] !== undefined) {
+    return `${FULL_MONTH_NAMES[parsed.month]} ${parsed.year}`;
+  }
+  return label ? String(label).trim() : "";
 }
 
 function colorToCss(rgbColor) {
@@ -302,21 +315,25 @@ export async function handleUpdateViewCell(req, res, sheets) {
       })
     );
 
-    // Fetch the updated cell's formatted value so the UI displays the exact formatted representation (e.g. £1,010 or 50%)
+    // Fetch the updated cell's formatted value and header row in a single batchGet
     let formattedValue = value ?? "";
+    let rawHeader = req.body.headerLabel || req.body.monthLabel || "";
     try {
       const getRes = await withRetry(() =>
-        sheets.spreadsheets.values.get({
+        sheets.spreadsheets.values.batchGet({
           spreadsheetId: sheetIdClean,
-          range: cellRange,
+          ranges: [cellRange, `${targetTab}!${colLetter}1`],
           valueRenderOption: "FORMATTED_VALUE"
         })
       );
-      if (getRes.data.values?.[0]?.[0] !== undefined) {
-        formattedValue = getRes.data.values[0][0];
+      if (getRes.data.valueRanges?.[0]?.values?.[0]?.[0] !== undefined) {
+        formattedValue = getRes.data.valueRanges[0].values[0][0];
+      }
+      if (!rawHeader && getRes.data.valueRanges?.[1]?.values?.[0]?.[0]) {
+        rawHeader = getRes.data.valueRanges[1].values[0][0];
       }
     } catch (e) {
-      console.warn("Could not fetch formatted cell value:", e);
+      console.warn("Could not fetch formatted cell value and header:", e);
     }
 
     let resolvedClient = req.body.clientName || "";
@@ -325,8 +342,52 @@ export async function handleUpdateViewCell(req, res, sheets) {
     }
 
     const ident = contractorName || rowDescription || `Row ${rowNum}`;
-    const valStr = value !== "" && value !== null && value !== undefined ? ` to "${value}"` : " (cleared)";
-    const summary = `Updated ${targetTab}!${colLetter}${rowNum} for ${ident}${valStr}`;
+    const isCleared = formattedValue === "" || formattedValue === null || formattedValue === undefined;
+    let summary = "";
+    let monthText = "";
+
+    if (colIndex >= 6) {
+      // Month forecast / actual column
+      monthText = getFullMonthYear(rawHeader);
+      if (monthText) {
+        summary = isCleared
+          ? `Updated ${ident} for ${monthText} (cleared)`
+          : `Updated ${ident} for ${monthText} to ${formattedValue}`;
+      } else {
+        summary = isCleared
+          ? `Updated ${ident} (cleared)`
+          : `Updated ${ident} to ${formattedValue}`;
+      }
+    } else if (colIndex === 0) {
+      const typeLabel = screenTab === "contractors" ? "contractor name" : "outgoing description";
+      summary = isCleared
+        ? `Cleared ${typeLabel} (was "${ident}")`
+        : `Updated ${typeLabel} to "${formattedValue}"`;
+    } else if (colIndex === 1) {
+      summary = isCleared
+        ? `Cleared VAT? for ${ident}`
+        : `Updated VAT? for ${ident} to "${formattedValue}"`;
+    } else if (colIndex === 2) {
+      summary = isCleared
+        ? `Cleared Inv? for ${ident}`
+        : `Updated Inv? for ${ident} to "${formattedValue}"`;
+    } else if (colIndex === 3) {
+      summary = isCleared
+        ? `Cleared Pay? for ${ident}`
+        : `Updated Pay? for ${ident} to "${formattedValue}"`;
+    } else if (colIndex === 4) {
+      summary = isCleared
+        ? `Cleared Del for ${ident}`
+        : `Updated Del for ${ident} to "${formattedValue}"`;
+    } else if (colIndex === 5) {
+      summary = isCleared
+        ? `Cleared Likl. % for ${ident}`
+        : `Updated Likl. % for ${ident} to "${formattedValue}"`;
+    } else {
+      summary = isCleared
+        ? `Updated ${ident} (cleared)`
+        : `Updated ${ident} to ${formattedValue}`;
+    }
 
     logPmaActivity(sheets, {
       automationCommanderSheetId: req.body.automationCommanderSheetId,
@@ -339,7 +400,8 @@ export async function handleUpdateViewCell(req, res, sheets) {
         cellRef: `${colLetter}${rowNum}`,
         sheetRow: rowNum,
         colLetter,
-        fieldName: colLetter,
+        month: monthText || undefined,
+        fieldName: monthText || rawHeader || colLetter,
         rowIdentifier: ident,
         newValue: formattedValue,
         screenTab,
@@ -347,7 +409,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true, cellRef: `${colLetter}${rowNum}`, value: formattedValue });
+    return res.status(200).json({ success: true, cellRef: `${colLetter}${rowNum}`, value: formattedValue, monthText });
   } catch (err) {
     console.error("❌ handleUpdateViewCell error:", err);
     return res.status(500).json({ success: false, error: err.message });

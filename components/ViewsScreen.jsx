@@ -238,6 +238,7 @@ export default function ViewsScreen({ allClients, styles }) {
         const r = currentTab?.outgoingRows?.[sheetRow - 126] || currentTab?.mainRows?.[sheetRow - 126];
         rowDesc = r?.[0]?.v || "";
       }
+      const headerLabel = currentTab?.headerRow?.[colIdx]?.v || "";
 
       const res = await fetch("/api/triage", {
         method: "POST",
@@ -254,6 +255,8 @@ export default function ViewsScreen({ allClients, styles }) {
           value: displayVal,
           contractorName: tabName === "contractors" ? (colIdx === 0 ? displayVal : rowDesc) : undefined,
           rowDescription: tabName === "outgoings" ? (colIdx === 0 ? displayVal : rowDesc) : undefined,
+          headerLabel,
+          monthLabel: headerLabel,
         })
       });
 

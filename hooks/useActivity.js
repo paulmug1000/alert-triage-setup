@@ -81,9 +81,9 @@ export function useActivity(automationCommanderSheetId, allOutgoingsClients) {
 
       try {
         const hasExisting = (currentData?.allEvents?.length > 0) || (Object.keys(currentData?.clients || {}).length > 0);
-        if (hasExisting) {
+        if (isForce) {
           setIsRefreshing(true);
-        } else {
+        } else if (!hasExisting) {
           setIsLoading(true);
         }
 
@@ -146,6 +146,8 @@ export function useActivity(automationCommanderSheetId, allOutgoingsClients) {
         } catch {
           // Local storage quota or unavailable fallback
         }
+
+        return updatedData;
       } catch (err) {
         console.error("loadActivity error:", err);
         setError(err.message || "Failed to load activity feed");

@@ -76,24 +76,16 @@ export default function ActivityView({
     loadActivity
   } = useActivity(automationCommanderSheetId, allOutgoingsClients);
 
-  // SWR: Instant render from cache + automatic live background revalidation from Google Sheets
+  // Instant load: On mount, load from Redis cache (forceRefresh: false).
+  // The frontend relies on the automated background runs.
+  // The user can click "Refresh" anytime to force a live Google Sheets scrape.
   const revalidatedRef = useRef(false);
   useEffect(() => {
     if (!revalidatedRef.current) {
       revalidatedRef.current = true;
-      const hasCached = (activityData?.allEvents?.length > 0) || (Object.keys(activityData?.clients || {}).length > 0);
-      if (hasCached) {
-        // Cached data is already rendering on screen (via localStorage).
-        // Trigger live automatic background refresh against Google Sheets!
-        loadActivity({ forceRefresh: true });
-      } else {
-        // First visit on this device: load Redis snapshot first (<50ms), then revalidate in background
-        loadActivity({ forceRefresh: false }).then(() => {
-          loadActivity({ forceRefresh: true });
-        });
-      }
+      loadActivity({ forceRefresh: false });
     }
-  }, [loadActivity, activityData]);
+  }, [loadActivity]);
 
   // Handle client change
   const handleClientChange = (e) => {

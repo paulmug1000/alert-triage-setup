@@ -7,6 +7,9 @@ export function useJobs() {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsExpanded, setJobsExpanded] = useState(() => new Set());
   const [jobsEditSplit, setJobsEditSplit] = useState(null);
+  const [productLines, setProductLines] = useState([]);
+  const [leadSources, setLeadSources] = useState([]);
+  const [existingClients, setExistingClients] = useState([]);
 
   const loadJobsData = async (client, tabName) => {
     if (!client?.clientSheetId) return;
@@ -17,7 +20,12 @@ export function useJobs() {
         body: JSON.stringify({ action: "get_all_client_jobs", clientSheetId: client.clientSheetId, tabName }),
       });
       const data = await res.json();
-      if (data.success) setJobsData(data.jobs);
+      if (data.success) {
+        setJobsData(data.jobs);
+        if (data.productLines) setProductLines(data.productLines);
+        if (data.leadSources) setLeadSources(data.leadSources);
+        if (data.existingClients) setExistingClients(data.existingClients);
+      }
     } catch (e) {
       console.error("loadJobsData error:", e);
     } finally {
@@ -32,6 +40,9 @@ export function useJobs() {
     jobsLoading,
     jobsExpanded, setJobsExpanded,
     jobsEditSplit, setJobsEditSplit,
+    productLines, setProductLines,
+    leadSources, setLeadSources,
+    existingClients, setExistingClients,
     loadJobsData
   };
 }

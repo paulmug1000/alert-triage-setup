@@ -16,6 +16,8 @@
 import { withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { fetchPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
+import { getSessionUser } from "./authService.js";
+import { isUserAuthorizedForClient, filterClientsForUser, matchesClientName } from "./userPermissions.js";
 
 const REDIS_ACTIVITY_PREFIX = "pulse:activity:";
 const CACHE_TTL_SECONDS = 7 * 24 * 3600; // 7 days permanent cache
@@ -1325,8 +1327,13 @@ export async function handleGetActivity(req, res, sheets) {
       }
     }
 
+    const sessionUser = getSessionUser(req);
+
     // 1. Single Client View
     if (clientName && clientName !== "ALL") {
+      if (sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+        return res.status(403).json({ success: false, error: "Access denied to this client" });
+      }
       let targetClient = clientsList.find(c => c.clientName.toLowerCase() === clientName.toLowerCase());
       if (!targetClient) {
         // Fallback: search row directly
@@ -1337,7 +1344,28 @@ export async function handleGetActivity(req, res, sheets) {
     }
 
     // 2. All Clients View
+    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      clientsList = filterClientsForUser(clientsList, sessionUser);
+    }
     const data = await fetchAllClientsActivity(sheets, clientsList, !!forceRefresh, !!includeRoutine, acId);
+
+    // Filter aggregated data for non-admins to prevent cache bleeding
+    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      if (data && data.allEvents) {
+        data.allEvents = data.allEvents.filter(e =>
+          assignedList.some(assigned => matchesClientName(assigned, e.clientName))
+        );
+      }
+      if (data && data.clients) {
+        data.clients = Object.fromEntries(
+          Object.entries(data.clients).filter(([k]) =>
+            assignedList.some(assigned => matchesClientName(assigned, k))
+          )
+        );
+      }
+    }
+
     return res.status(200).json({ success: true, data });
   } catch (err) {
     console.error("❌ handleGetActivity error:", err);

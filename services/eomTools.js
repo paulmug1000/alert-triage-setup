@@ -826,6 +826,7 @@ export const EOM_SEED_DATA = {
     },
     {
       "name": "Use PLComp to add actual outgoings for current and prev month",
+      "linkedFunction": "push_outgoings",
       "clients": {
         "Thrive": "Use PLComp to add actual outgoings for current and prev month",
         "Eleven": "Use PLComp to add actual outgoings for current and prev month",
@@ -1201,6 +1202,379 @@ export async function handleEomSeedFromChecklist(req, res, sheets) {
     });
   } catch (err) {
     console.error("❌ eom_seed_from_checklist error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function autoCompletePlcompTaskByName_(sheets, automationCommanderSheetId, clientName, workMonthKey) {
+  try {
+    if (!workMonthKey || !automationCommanderSheetId) return false;
+    const clientTasksR = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "EomClientTasks!A2:H5000"
+    }));
+    const clientTasks = clientTasksR.data.values || [];
+    const plcompTask = clientTasks.find(r =>
+      r[0] && r[1] === clientName && String(r[3] || "").toLowerCase().includes("plcomp") && (r[5] !== "FALSE" && r[5] !== false)
+    );
+    if (!plcompTask) return false;
+
+    const taskId = plcompTask[0];
+    const statusResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "EomMonthlyStatus!A2:E200000"
+    }));
+    const statusRows = statusResp.data.values || [];
+    const existingIdx = statusRows.findIndex(r => r[0] === clientName && r[1] === taskId && r[2] === workMonthKey);
+    if (existingIdx === -1) {
+      await withRetry(() => sheets.spreadsheets.values.append({
+        spreadsheetId: automationCommanderSheetId, range: "EomMonthlyStatus!A:E", valueInputOption: "RAW",
+        requestBody: { values: [[clientName, taskId, workMonthKey, "done", new Date().toISOString()]] },
+      }));
+    } else {
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: automationCommanderSheetId, range: `EomMonthlyStatus!D${existingIdx + 2}:E${existingIdx + 2}`,
+        valueInputOption: "RAW", requestBody: { values: [["done", new Date().toISOString()]] },
+      }));
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export async function handleEomGetPlCompData(req, res, sheets) {
+  const { clientName, automationCommanderSheetId } = req.body;
+  if (!clientName || !automationCommanderSheetId) {
+    return res.status(400).json({ success: false, error: "Missing clientName or automationCommanderSheetId" });
+  }
+
+  try {
+    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!A2:N500"
+    }));
+    const rows = clientResp.data.values || [];
+    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
+    if (!clientRow) {
+      return res.status(404).json({ success: false, error: `Client "${clientName}" not found in AutoUpdates` });
+    }
+    const masterSheetUrl = clientRow[12];
+    const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
+    if (!masterSheetId) {
+      return res.status(400).json({ success: false, error: `No Master Sheet ID found for client "${clientName}"` });
+    }
+
+    const [c1Resp, dataResp, f87Resp] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "PLComp!C1",
+        valueRenderOption: "FORMATTED_VALUE"
+      })),
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "PLComp!D1:J595",
+        valueRenderOption: "FORMATTED_VALUE"
+      })),
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "PLComp!F87:J87",
+        valueRenderOption: "FORMATTED_VALUE"
+      }))
+    ]);
+
+    const lastUpdated = c1Resp.data.values?.[0]?.[0] || "";
+    const allData = dataResp.data.values || [];
+
+    const row1 = allData[0] || [];
+    const monthHeaders = [
+      row1[2] || "",
+      row1[3] || "",
+      row1[4] || "",
+      row1[5] || "",
+      row1[6] || ""
+    ];
+
+    const f87Values = f87Resp.data.values?.[0] || [];
+    const monthCols = ["F", "G", "H", "I", "J"];
+    const months = monthCols.map((colLetter, idx) => ({
+      colIndex: idx,
+      colLetter,
+      header: monthHeaders[idx] || `Month ${idx + 1}`,
+      checked: String(f87Values[idx] || "").toUpperCase() === "TRUE"
+    }));
+
+    let cosStart = -1, cosEnd = -1;
+    let overheadStart = -1;
+    let nonOpIncStart = -1, nonOpIncEnd = -1;
+    let nonOpExpStart = -1, nonOpExpEnd = -1;
+
+    for (let r = 0; r < allData.length; r++) {
+      const row = allData[r] || [];
+      const colD = String(row[0] || "").trim().toLowerCase();
+      const colE = String(row[1] || "").trim().toLowerCase();
+
+      if (colD === "costs of sale" && cosStart === -1) {
+        cosStart = r;
+      }
+      if (cosStart !== -1 && cosEnd === -1 && colE === "costs of sale total") {
+        cosEnd = r;
+      }
+
+      if (colD === "non-operating income" && nonOpIncStart === -1) {
+        nonOpIncStart = r;
+      }
+      if (nonOpIncStart !== -1 && nonOpIncEnd === -1 && colE === "non-operating income total") {
+        nonOpIncEnd = r;
+      }
+
+      if (colD === "non-operating expenses" && nonOpExpStart === -1) {
+        nonOpExpStart = r;
+      }
+      if (nonOpExpStart !== -1 && nonOpExpEnd === -1 && colE === "non-operating expenses total") {
+        nonOpExpEnd = r;
+      }
+
+      if (colE === "overheads" && overheadStart === -1) {
+        overheadStart = r;
+      }
+    }
+
+    const extractRows = (startIdx, endIdx) => {
+      if (startIdx === -1 || endIdx === -1 || startIdx >= endIdx) return [];
+      const result = [];
+      for (let i = startIdx; i < endIdx && i < allData.length; i++) {
+        const row = allData[i] || [];
+        const label = String(row[1] || "").trim();
+        if (!label) continue;
+        const values = [
+          row[2] || "0.00",
+          row[3] || "0.00",
+          row[4] || "0.00",
+          row[5] || "0.00",
+          row[6] || "0.00"
+        ];
+        result.push({ label, values, rowNumber: i + 1 });
+      }
+      return result;
+    };
+
+    const sections = [];
+
+    // 1. Costs of sale
+    if (cosStart !== -1 && cosEnd !== -1) {
+      const rows = extractRows(cosStart, cosEnd);
+      if (rows.length > 0) {
+        sections.push({ title: "Costs of sale", rows });
+      }
+    }
+
+    // 2. Overhead expenses (actual expense accounts start after Overheads label down to row 595)
+    if (overheadStart !== -1) {
+      const rows = extractRows(overheadStart + 1, Math.min(allData.length, 595));
+      if (rows.length > 0) {
+        sections.push({ title: "Overhead expenses", rows });
+      }
+    }
+
+    // 3. Non-operating income
+    if (nonOpIncStart !== -1 && nonOpIncEnd !== -1) {
+      const rows = extractRows(nonOpIncStart, nonOpIncEnd);
+      if (rows.length > 0) {
+        sections.push({ title: "Non-operating income", rows });
+      }
+    }
+
+    // 4. Non-operating expenses
+    if (nonOpExpStart !== -1 && nonOpExpEnd !== -1) {
+      const rows = extractRows(nonOpExpStart, nonOpExpEnd);
+      if (rows.length > 0) {
+        sections.push({ title: "Non-operating expenses", rows });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      lastUpdated,
+      months,
+      sections
+    });
+  } catch (err) {
+    console.error("❌ eom_get_plcomp_data error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleEomPullFreshPl(req, res, sheets) {
+  const { clientName, automationCommanderSheetId } = req.body;
+  if (!clientName || !automationCommanderSheetId) {
+    return res.status(400).json({ success: false, error: "Missing clientName or automationCommanderSheetId" });
+  }
+
+  try {
+    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!A2:N500"
+    }));
+    const rows = clientResp.data.values || [];
+    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
+    if (!clientRow) {
+      return res.status(404).json({ success: false, error: `Client "${clientName}" not found in AutoUpdates` });
+    }
+    const webAppUrl = String(clientRow[13] || "").trim();
+    if (!webAppUrl) {
+      return res.status(400).json({ success: false, error: `No Master Web App URL configured for "${clientName}" (AutoUpdates column N)` });
+    }
+
+    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+    const gasResp = await fetch(webAppUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret, action: "pull_pl", clientName }),
+    });
+
+    const gasText = await gasResp.text();
+    let gasData = null;
+    try { gasData = JSON.parse(gasText); } catch (e) {}
+    if (!gasData) {
+      console.error(`❌ Master Web App pull_pl failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
+      return res.status(502).json({
+        success: false,
+        error: `Client Master Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify deployment permissions.`
+      });
+    }
+    if (!gasData.success) {
+      return res.status(200).json({ success: false, error: gasData.error || "P&L pull failed" });
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName,
+      category: "EOM",
+      action: "Pulled Fresh P&L",
+      summary: `Pulled fresh P&L data for ${clientName}`,
+      details: { clientName }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({ success: true, message: gasData.message || "Fresh P&L pulled successfully" });
+  } catch (err) {
+    console.error("❌ eom_pull_fresh_pl error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleEomPushOutgoings(req, res, sheets) {
+  const { clientName, selectedMonths, automationCommanderSheetId, workMonthKey } = req.body;
+  if (!clientName || !automationCommanderSheetId || !Array.isArray(selectedMonths)) {
+    return res.status(400).json({ success: false, error: "Missing clientName, automationCommanderSheetId, or selectedMonths" });
+  }
+
+  try {
+    const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: automationCommanderSheetId,
+      range: "AutoUpdates!A2:N500"
+    }));
+    const rows = clientResp.data.values || [];
+    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
+    if (!clientRow) {
+      return res.status(404).json({ success: false, error: `Client "${clientName}" not found in AutoUpdates` });
+    }
+    const masterSheetUrl = clientRow[12];
+    const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
+    const webAppUrl = String(clientRow[13] || "").trim();
+    if (!masterSheetId || !webAppUrl) {
+      return res.status(400).json({ success: false, error: `Missing master sheet ID or Web App URL for "${clientName}"` });
+    }
+
+    // 1. Write checkboxes to PLComp!F87:K87
+    // Columns F..J correspond to selectedMonths. Col K set to FALSE.
+    const checkboxRow = [
+      selectedMonths.includes("F") ? true : false,
+      selectedMonths.includes("G") ? true : false,
+      selectedMonths.includes("H") ? true : false,
+      selectedMonths.includes("I") ? true : false,
+      selectedMonths.includes("J") ? true : false,
+      false
+    ];
+
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: masterSheetId,
+      range: "PLComp!F87:K87",
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [checkboxRow] }
+    }));
+
+    // 2. Call Master Web App to run pushOutgoingsToClientSheet(true)
+    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+    const gasResp = await fetch(webAppUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret, action: "push_outgoings", clientName }),
+    });
+
+    const gasText = await gasResp.text();
+    let gasData = null;
+    try { gasData = JSON.parse(gasText); } catch (e) {}
+    if (!gasData) {
+      console.error(`❌ Master Web App push_outgoings failed (HTTP ${gasResp.status}):`, gasText.slice(0, 300));
+      return res.status(502).json({
+        success: false,
+        error: `Client Master Web App returned HTTP ${gasResp.status} (${gasText.slice(0, 120).replace(/<[^>]*>/g, '').trim() || 'non-JSON'}). Please verify deployment permissions.`
+      });
+    }
+    if (!gasData.success) {
+      return res.status(200).json({ success: false, error: gasData.error || "Push outgoings failed" });
+    }
+
+    // 3. Check if the relevant EoM month was pushed
+    let markedTaskDone = false;
+    let relevantColLetter = null;
+    let targetMonthLabel = "";
+    if (workMonthKey) {
+      const targetMonthKey = eomWorkMonthToTargetMonth_(workMonthKey);
+      targetMonthLabel = eomKeyToMonthStr_(targetMonthKey) || "";
+      
+      const headersResp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "PLComp!F1:J1",
+        valueRenderOption: "FORMATTED_VALUE"
+      }));
+      const headers = headersResp.data.values?.[0] || [];
+      const colLetters = ["F", "G", "H", "I", "J"];
+
+      for (let i = 0; i < headers.length; i++) {
+        if (headers[i] && isDateMatchJs_(headers[i], targetMonthLabel)) {
+          relevantColLetter = colLetters[i];
+          break;
+        }
+      }
+
+      if (relevantColLetter && selectedMonths.includes(relevantColLetter)) {
+        markedTaskDone = await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, "push_outgoings", workMonthKey);
+        if (!markedTaskDone) {
+          markedTaskDone = await autoCompletePlcompTaskByName_(sheets, automationCommanderSheetId, clientName, workMonthKey);
+        }
+      }
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId,
+      clientName,
+      category: "EOM",
+      action: "Pushed Outgoings",
+      summary: `Pushed outgoings for ${clientName} (${selectedMonths.join(", ")})${markedTaskDone ? " — EoM task marked Done" : ""}`,
+      details: { clientName, selectedMonths, markedTaskDone }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({
+      success: true,
+      message: gasData.message || "Outgoings pushed successfully.",
+      warnings: gasData.warnings || [],
+      markedTaskDone,
+      targetMonthLabel
+    });
+  } catch (err) {
+    console.error("❌ eom_push_outgoings error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

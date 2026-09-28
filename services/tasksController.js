@@ -5,6 +5,8 @@ import {
   findMemoryRow, updateAlertMemoryRow, appendAlertMemoryRow
 } from "./alertMemory";
 import { logPmaActivity } from "./pmaLogger";
+import { getSessionUser } from "./authService";
+import { matchesClientName } from "./userPermissions";
 
 export async function handleBulkCreateTasks(req, res, sheets) {
   const { alerts: alertsToTask, taskNote, snoozedUntil, automationCommanderSheetId: acId } = req.body;
@@ -211,14 +213,23 @@ export async function handleGetTasks(req, res, sheets) {
       };
     });
 
+    const sessionUser = getSessionUser(req);
+    let scopedTasks = parsed;
+    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      scopedTasks = parsed.filter(t =>
+        assignedList.some(assigned => matchesClientName(assigned, t.clientName))
+      );
+    }
+
     const requestedFilter = filter || "active";
     let filtered;
     if (requestedFilter === "snoozed") {
-      filtered = parsed.filter(t => t.isSnoozed && !t.isResolved);
+      filtered = scopedTasks.filter(t => t.isSnoozed && !t.isResolved);
     } else if (requestedFilter === "resolved") {
-      filtered = parsed.filter(t => t.isResolved);
+      filtered = scopedTasks.filter(t => t.isResolved);
     } else {
-      filtered = parsed.filter(t => !t.isSnoozed && !t.isResolved);
+      filtered = scopedTasks.filter(t => !t.isSnoozed && !t.isResolved);
     }
 
     filtered.sort((a, b) => new Date(a.taskCreatedAt || 0) - new Date(b.taskCreatedAt || 0));

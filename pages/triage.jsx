@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "../components/Spinner";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
@@ -64,9 +64,10 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
+  const auth = useAuth();
   const {
-    isAuthenticated, authChecking, pinInput, pinError, pinVerifying, handlePinInput, setPinInput
-  } = useAuth();
+    isAuthenticated, authChecking, user, logout
+  } = auth;
 
   const [screen, setScreen] = useState("initial"); 
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
@@ -140,130 +141,47 @@ function TriageSystemContent({ onBack, appGlobals }) {
     }).catch(e => console.error("fireOutgoingsPull error:", e));
   };
 
+  const loadClients = useCallback((force = false) => {
+    if (!force && allClientsLoaded && allOutgoingsClients.length > 0) return;
+    fetch("/api/triage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success && Array.isArray(data.clients)) {
+          setAllOutgoingsClients(data.clients);
+          if (data.clientsMap && setAllClientsMap) {
+            setAllClientsMap(data.clientsMap);
+          }
+          setAllClientsLoaded(true);
+        }
+      })
+      .catch(e => console.error("get_all_clients error:", e));
+  }, [allClientsLoaded, allOutgoingsClients.length, automationCommanderSheetId, setAllClientsMap]);
+
+  useEffect(() => {
+    if (isAuthenticated && user?.email) {
+      loadClients(true);
+    } else {
+      setAllOutgoingsClients([]);
+      setAllClientsLoaded(false);
+    }
+  }, [isAuthenticated, user?.email, loadClients]);
+
   const handleNavHome = () => { fireOutgoingsPullIfPending(); setActiveNav("home"); setScreen("clientSelection"); };
   const handleNavOverview = () => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
-  const handleNavActivity = () => {
-    fireOutgoingsPullIfPending();
-    setActiveNav("activity");
-    if (!allClientsLoaded) {
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
-      }).then(r => r.json()).then(data => {
-        if (data.success && Array.isArray(data.clients)) {
-          setAllOutgoingsClients(data.clients);
-          setAllClientsLoaded(true);
-        }
-      }).catch(e => console.error("get_all_clients error:", e));
-    }
-  };
+  const handleNavActivity = () => { fireOutgoingsPullIfPending(); setActiveNav("activity"); loadClients(); };
   const handleNavAppLog = handleNavActivity;
-  
-  const handleNavSettings = () => {
-    fireOutgoingsPullIfPending();
-    setActiveNav("settings");
-    if (!allClientsLoaded) {
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
-      }).then(r => r.json()).then(data => {
-        if (data.success && Array.isArray(data.clients)) {
-          setAllOutgoingsClients(data.clients);
-          setAllClientsLoaded(true);
-        }
-      }).catch(e => console.error("get_all_clients error:", e));
-    }
-  };
-  const handleNavTools = () => {
-    setActiveNav("tools");
-    if (!allClientsLoaded) {
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
-      }).then(r => r.json()).then(data => {
-        if (data.success && Array.isArray(data.clients)) {
-          setAllOutgoingsClients(data.clients);
-          setAllClientsLoaded(true);
-        }
-      }).catch(e => console.error("get_all_clients error:", e));
-    }
-  };
-
-  const handleNavOutgoings = () => {
-    setActiveNav("outgoings");
-    if (!allClientsLoaded) {
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
-      }).then(r => r.json()).then(data => {
-        if (data.success && Array.isArray(data.clients)) {
-          setAllOutgoingsClients(data.clients);
-          setAllClientsLoaded(true);
-        }
-      }).catch(e => console.error("get_all_clients error:", e));
-    }
-  };
-
-  const handleNavInvoices = () => {
-    setActiveNav("invoices");
-    if (!allClientsLoaded) {
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
-      }).then(r => r.json()).then(data => {
-        if (data.success && Array.isArray(data.clients)) {
-          setAllOutgoingsClients(data.clients);
-          setAllClientsLoaded(true);
-        }
-      }).catch(e => console.error("get_all_clients error:", e));
-    }
-  };
-
-  const handleNavJobs = () => {
-    setActiveNav("jobs");
-    if (!allClientsLoaded) {
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
-      }).then(r => r.json()).then(data => {
-        if (data.success && Array.isArray(data.clients)) {
-          setAllOutgoingsClients(data.clients);
-          setAllClientsLoaded(true);
-        }
-      }).catch(e => console.error("get_all_clients error:", e));
-    }
-  };
-
-  const handleNavRetainers = () => {
-    setActiveNav("retainers");
-    if (!allClientsLoaded) {
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
-      }).then(r => r.json()).then(data => {
-        if (data.success && Array.isArray(data.clients)) {
-          setAllOutgoingsClients(data.clients);
-          setAllClientsLoaded(true);
-        }
-      }).catch(e => console.error("get_all_clients error:", e));
-    }
-  };
-
-  const handleNavViews = () => {
-    setActiveNav("views");
-    if (!allClientsLoaded) {
-      fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
-      }).then(r => r.json()).then(data => {
-        if (data.success && Array.isArray(data.clients)) {
-          setAllOutgoingsClients(data.clients);
-          setAllClientsLoaded(true);
-        }
-      }).catch(e => console.error("get_all_clients error:", e));
-    }
-  };
+  const handleNavSettings = () => { fireOutgoingsPullIfPending(); setActiveNav("settings"); loadClients(); };
+  const handleNavTools = () => { setActiveNav("tools"); loadClients(); };
+  const handleNavOutgoings = () => { setActiveNav("outgoings"); loadClients(); };
+  const handleNavInvoices = () => { setActiveNav("invoices"); loadClients(); };
+  const handleNavJobs = () => { setActiveNav("jobs"); loadClients(); };
+  const handleNavRetainers = () => { setActiveNav("retainers"); loadClients(); };
+  const handleNavViews = () => { setActiveNav("views"); loadClients(); };
 
   // Page title and favicon are handled globally by Next.js <Head> in index.js
   useEffect(() => {
@@ -282,11 +200,19 @@ function TriageSystemContent({ onBack, appGlobals }) {
   if (!isAuthenticated) {
     return (
       <AuthGateView
-        pinInput={pinInput}
-        pinVerifying={pinVerifying}
-        pinError={pinError}
-        handlePinInput={handlePinInput}
-        setPinInput={setPinInput}
+        authStep={auth.authStep}
+        emailInput={auth.emailInput}
+        setEmailInput={auth.setEmailInput}
+        codeInput={auth.codeInput}
+        setCodeInput={auth.setCodeInput}
+        authError={auth.authError}
+        setAuthError={auth.setAuthError}
+        authLoading={auth.authLoading}
+        statusMessage={auth.statusMessage}
+        cooldown={auth.cooldown}
+        sendVerificationCode={auth.sendVerificationCode}
+        verifyCode={auth.verifyCode}
+        resetToEmailStep={auth.resetToEmailStep}
       />
     );
   }
@@ -502,6 +428,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
       onSettings={handleNavSettings} 
       homeAlertCount={liveAlertCount + proactiveAlerts.length} 
       taskCount={navTaskCount}
+      user={user}
+      onLogout={logout}
     >
         {renderActiveView()}
       </NavShell>

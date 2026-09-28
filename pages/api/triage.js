@@ -34,7 +34,7 @@ import {
   handleCreateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
-  handleUpdateInvoiceSlot, handleCreateJobFromInvoice, handleUpdateOutgoingNote,
+  handleUpdateInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
   handleFireOutgoingsPull, handleMarkPipelineCopied
 } from "../../services/workspaces";
 import {
@@ -50,7 +50,8 @@ import {
   handleEomUpdateTaskStatus, handleEomUpdateTaskStatusBatch, handleEomUpdateTaskNotelet,
   handleEomReorderTasks, handleEomReorderTemplates, handleEomLoadBankAccounts,
   handleEomGetBankAccounts, handleEomGetCashBalanceProgress, handleEomSaveCashBalance,
-  handleEomCreateDashboardBackup, handleEomMarkMonthActual, handleEomSeedFromChecklist
+  handleEomCreateDashboardBackup, handleEomMarkMonthActual, handleEomSeedFromChecklist,
+  handleEomGetPlCompData, handleEomPullFreshPl, handleEomPushOutgoings
 } from "../../services/eomTools";
 import {
   handleUploadPayrollChunk, handleIdentifyPayrollClient, handleIdentifyTimeClient,
@@ -72,6 +73,8 @@ import {
   handleRehashIgnoredAlerts, PRECOMPUTED_KEY
 } from "../../services/triageEngine";
 import { getClientViewData, handleUpdateViewCell } from "../../services/viewsService";
+import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
+import { getAllUsers, isUserAuthorizedForClient } from "../../services/userPermissions";
 
 // eomTabsVerified moved to eomTools.js
 
@@ -129,7 +132,33 @@ export default async function handler(req, res) {
 
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 
-    if (action === "emergency_flush_redis") {
+    const sessionUser = getSessionUser(req);
+
+    if (action === "send_otp") {
+      const { email } = req.body || {};
+      const result = await sendOtp(email, automationCommanderSheetId);
+      return res.status(200).json(result);
+
+    } else if (action === "verify_otp") {
+      const { email, code } = req.body || {};
+      const result = await verifyOtp(email, code, automationCommanderSheetId, res);
+      return res.status(result.success ? 200 : 401).json(result);
+
+    } else if (action === "get_session") {
+      return res.status(200).json({ authenticated: !!sessionUser, user: sessionUser });
+
+    } else if (action === "logout") {
+      clearSessionCookie(res);
+      return res.status(200).json({ success: true, message: "Logged out" });
+
+    } else if (action === "get_users") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Unauthorized" });
+      }
+      const users = await getAllUsers(sheets, automationCommanderSheetId);
+      return res.status(200).json({ success: true, users });
+
+    } else if (action === "emergency_flush_redis") {
           // Temporary endpoint to clear OOM errors
           await redisClient.flushDb();
           return res.status(200).json({ success: true, message: "Redis database flushed successfully. You can now use the app normally." });
@@ -185,6 +214,8 @@ export default async function handler(req, res) {
       return await handleUpdateInvoiceSlot(req, res, sheets);
     } else if (action === "create_job_from_invoice") {
       return await handleCreateJobFromInvoice(req, res, sheets);
+    } else if (action === "add_new_job") {
+      return await handleAddNewJob(req, res, sheets);
     } else if (action === "mark_pipeline_copied") {
       return await handleMarkPipelineCopied(req, res, sheets);
     } else if (action === "get_retainer_jobs") {
@@ -514,6 +545,12 @@ export default async function handler(req, res) {
       return await handleEomMarkMonthActual(req, res, sheets);
     } else if (action === "eom_seed_from_checklist") {
       return await handleEomSeedFromChecklist(req, res, sheets);
+    } else if (action === "eom_get_plcomp_data") {
+      return await handleEomGetPlCompData(req, res, sheets);
+    } else if (action === "eom_pull_fresh_pl") {
+      return await handleEomPullFreshPl(req, res, sheets);
+    } else if (action === "eom_push_outgoings") {
+      return await handleEomPushOutgoings(req, res, sheets);
 
     } else if (action === "get_flag_sweep_log") {
       const runs = await readFlagSweepLog(sheets, req.body.automationCommanderSheetId);

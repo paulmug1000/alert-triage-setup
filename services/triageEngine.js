@@ -22,6 +22,8 @@ import { logPmaActivity } from "./pmaLogger";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs";
 import { anthropic } from "./claudeClient";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
+import { getSessionUser } from "./authService";
+import { matchesClientName } from "./userPermissions";
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -949,15 +951,33 @@ export async function handleGetPrecomputed(req, res, sheets) {
       return memRow.status === "cached" || memRow.status === "pending_automation";
     });
 
-    if (filteredAlerts.length < data.alerts.length || filteredProactive.length < (data.proactiveAlerts || []).length || filteredNoAction.length < (data.noActionAlerts || []).length) {
-      console.log(`  Filtered ignored alert(s) from precomputed data`);
+    const sessionUser = getSessionUser(req);
+    let scopedAlerts = filteredAlerts;
+    let scopedProactive = filteredProactive;
+    let scopedNoAction = filteredNoAction;
+
+    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      scopedAlerts = filteredAlerts.filter(a =>
+        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+      );
+      scopedProactive = filteredProactive.filter(a =>
+        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+      );
+      scopedNoAction = filteredNoAction.filter(a =>
+        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+      );
+    }
+
+    if (scopedAlerts.length < data.alerts.length || scopedProactive.length < (data.proactiveAlerts || []).length || scopedNoAction.length < (data.noActionAlerts || []).length) {
+      console.log(`  Filtered alerts from precomputed data`);
     }
 
     const alertCountsByClientAndFlag = {};
     const activeExpenseIdsByClient = {};
     const activeInvoiceIdsByClient = {};
     
-    for (const alert of filteredAlerts) {
+    for (const alert of scopedAlerts) {
       const key = alert.clientName;
       let flagKey = alert.flagType || alert.alertType || alert.type;
       
@@ -987,7 +1007,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       }
     }
 
-    for (const alert of filteredNoAction) {
+    for (const alert of scopedNoAction) {
       const key = alert.clientName;
       const flagKey = alert.flagType;
       if (key && flagKey) {
@@ -996,7 +1016,15 @@ export async function handleGetPrecomputed(req, res, sheets) {
       }
     }
 
-    const clientsWithUpdatedCounts = data.clientsWithFlags.map(c => {
+    let clientsSource = data.clientsWithFlags || [];
+    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      clientsSource = clientsSource.filter(c =>
+        assignedList.some(assigned => matchesClientName(assigned, c.clientName))
+      );
+    }
+
+    const clientsWithUpdatedCounts = clientsSource.map(c => {
       const counts = alertCountsByClientAndFlag[c.clientName] || {};
       const updatedFlags = { ...(c.flags || {}) };
       for (const flagKey of Object.keys(updatedFlags)) {
@@ -1014,7 +1042,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
     });
 
     let aggregatedNoActionResults = {};
-    for (const na of filteredNoAction) {
+    for (const na of scopedNoAction) {
       if (na.analysisResult && na.analysisResult.results) {
         const key = `${na.clientName}___${na.flagType}`;
         if (!aggregatedNoActionResults[key]) {
@@ -1031,9 +1059,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
     await redisClient.set(
       `triage_alerts:${sessionId}`,
       JSON.stringify({
-        alerts: filteredAlerts,
-        noActionAlerts: filteredNoAction,
-        proactiveAlerts: filteredProactive,
+        alerts: scopedAlerts,
+        noActionAlerts: scopedNoAction,
+        proactiveAlerts: scopedProactive,
         clientsWithFlags: clientsWithUpdatedCounts,
       }),
       { EX: 3600 } 

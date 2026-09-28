@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
+import JobsNewJobModal from "./JobsNewJobModal";
 import { useJobs } from "../hooks/useJobs";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
@@ -20,12 +21,16 @@ export default function JobsView({
     jobsLoading,
     jobsExpanded, setJobsExpanded,
     jobsEditSplit, setJobsEditSplit,
+    productLines,
+    leadSources,
+    existingClients,
     loadJobsData
   } = useJobs();
 
   // Local state for modals rendered by this view
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null);
+  const [showAddJobModal, setShowAddJobModal] = useState(false);
 
   const noJobsClient = !jobsClient;
 
@@ -215,6 +220,25 @@ export default function JobsView({
           }}
         />
       )}
+      {showAddJobModal && (
+        <JobsNewJobModal
+          jobsClient={jobsClient}
+          initialTab={jobsTab}
+          productLines={productLines}
+          leadSources={leadSources}
+          existingClients={existingClients}
+          onClose={() => setShowAddJobModal(false)}
+          onSuccess={(targetTab) => {
+            setShowAddJobModal(false);
+            if (targetTab && targetTab !== jobsTab) {
+              setJobsTab(targetTab);
+              loadJobsData(jobsClient, targetTab);
+            } else {
+              loadJobsData(jobsClient, jobsTab);
+            }
+          }}
+        />
+      )}
       
       <div style={{ padding: "20px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
@@ -246,7 +270,7 @@ export default function JobsView({
 
         {!noJobsClient && (
           <>
-            <div style={{ display: "flex", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0" }}>
+            <div style={{ display: "flex", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0", alignItems: "center" }}>
               {["Confirmed", "Pipeline"].map(tab => (
                 <button key={tab} onClick={() => { setJobsTab(tab); loadJobsData(jobsClient, tab); }}
                   style={{ padding: "8px 16px", background: "none", border: "none",
@@ -256,6 +280,30 @@ export default function JobsView({
                   {tab}
                 </button>
               ))}
+              <button
+                className="triage-btn"
+                onClick={() => setShowAddJobModal(true)}
+                style={{
+                  marginLeft: "8px",
+                  marginBottom: "4px",
+                  padding: "5px 13px",
+                  backgroundColor: "#0066cc",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "5px",
+                  boxShadow: "0 1px 2px rgba(0, 102, 204, 0.2)"
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#0052a3"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#0066cc"; }}
+              >
+                <span style={{ fontSize: "15px", fontWeight: "bold", lineHeight: "1" }}>+</span> Add Job
+              </button>
               <button onClick={() => loadJobsData(jobsClient, jobsTab)} disabled={jobsLoading} style={{ marginLeft: "auto", background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "13px" }}>
                 {jobsLoading ? <><Spinner size={12}/> Refreshing</> : "↻ Refresh"}
               </button>

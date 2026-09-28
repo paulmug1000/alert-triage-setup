@@ -1,0 +1,360 @@
+import nodemailer from "nodemailer";
+import jwt from "jsonwebtoken";
+import { redisClient } from "./redisClient.js";
+import { getSheetsClient } from "./sheetsClient.js";
+import { getUserByEmail, updateUserLastLogin } from "./userPermissions.js";
+import { logPmaActivity } from "./pmaLogger.js";
+
+const DEFAULT_JWT_SECRET = "pma_jwt_secret_pulse_mgmt_auth_2026_x89a74bf20ec91";
+const OTP_EXPIRY_SECS = 600; // 10 minutes
+const COOLDOWN_SECS = 60; // 60 seconds
+const SESSION_MAX_AGE_SECS = 90 * 24 * 60 * 60; // 90 days
+
+function serializeCookie(name, val, options = {}) {
+  let str = `${encodeURIComponent(name)}=${encodeURIComponent(val)}`;
+  if (options.maxAge != null) str += `; Max-Age=${Math.floor(options.maxAge)}`;
+  if (options.domain) str += `; Domain=${options.domain}`;
+  if (options.path) str += `; Path=${options.path}`;
+  if (options.expires) str += `; Expires=${options.expires.toUTCString()}`;
+  if (options.httpOnly) str += `; HttpOnly`;
+  if (options.secure) str += `; Secure`;
+  if (options.sameSite) {
+    const s = typeof options.sameSite === 'string' ? options.sameSite.toLowerCase() : options.sameSite;
+    if (s === true || s === 'strict') str += `; SameSite=Strict`;
+    else if (s === 'lax') str += `; SameSite=Lax`;
+    else if (s === 'none') str += `; SameSite=None`;
+  }
+  return str;
+}
+
+function parseCookies(cookieHeader) {
+  if (!cookieHeader) return {};
+  return cookieHeader.split(";").reduce((acc, pair) => {
+    const idx = pair.indexOf("=");
+    if (idx === -1) return acc;
+    const key = pair.slice(0, idx).trim();
+    const val = pair.slice(idx + 1).trim();
+    acc[decodeURIComponent(key)] = decodeURIComponent(val);
+    return acc;
+  }, {});
+}
+
+/**
+ * Get JWT Secret from environment or fallback
+ */
+function getJwtSecret() {
+  return process.env.PMA_JWT_SECRET || DEFAULT_JWT_SECRET;
+}
+
+/**
+ * Send an OTP verification code to the given email address
+ */
+export async function sendOtp(email, automationCommanderSheetId) {
+  const normalizedEmail = String(email || "").toLowerCase().trim();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  if (!emailRegex.test(normalizedEmail)) {
+    return { success: false, message: "Invalid email address format" };
+  }
+
+  // Check if user is in Users sheet
+  let user = null;
+  try {
+    const sheets = await getSheetsClient();
+    user = await getUserByEmail(normalizedEmail, sheets, automationCommanderSheetId);
+  } catch (err) {
+    console.error("⚠️ Error checking user in Users sheet:", err.message);
+  }
+
+  if (!user || user.status === "Suspended") {
+    console.log(`❌ Auth check failed for email: ${normalizedEmail} (not in Users tab or Suspended)`);
+    // Generic message to avoid email enumeration
+    return {
+      success: true,
+      message: "If this email address is registered, a verification code has been sent. Please check your inbox."
+    };
+  }
+
+  // Rate limiting cooldown check
+  const cooldownKey = `pma_otp_cooldown:${normalizedEmail}`;
+  try {
+    const inCooldown = await redisClient.get(cooldownKey);
+    if (inCooldown) {
+      const ttl = await redisClient.ttl(cooldownKey);
+      return {
+        success: false,
+        message: `Please wait ${ttl > 0 ? ttl : 60} seconds before requesting another code.`
+      };
+    }
+  } catch (e) {
+    console.warn("⚠️ Redis cooldown check warning:", e.message);
+  }
+
+  // Generate 6-digit numeric OTP code
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  console.log(`📧 Generated OTP code for ${normalizedEmail}: ${code}`);
+
+  // Store OTP in Redis
+  const otpKey = `pma_otp:${normalizedEmail}`;
+  try {
+    await redisClient.set(otpKey, JSON.stringify({ code, attempts: 0 }), { EX: OTP_EXPIRY_SECS });
+    await redisClient.set(cooldownKey, "1", { EX: COOLDOWN_SECS });
+  } catch (e) {
+    console.error("❌ Redis OTP storage error:", e.message);
+    return { success: false, message: "Internal server error storing verification code." };
+  }
+
+  // Dispatch Email
+  const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
+  const emailPass = process.env.PMA_EMAIL_APP_PASSWORD;
+
+  const subject = `Pulse Management App Secure Access: Your Verification Code (${code})`;
+  const textBody = `Hello,\n\nYour secure verification code for the Pulse Management Appis: ${code}\n\nThis code will expire in 10 minutes. If you did not request this code, please ignore this email.\n\nBest regards,\nThe Pulse Team\n\n---\nThrive Organisational Consulting Ltd\nThis is an automated security message. Please do not reply.`;
+
+  const htmlBody = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333333;">
+      <h2 style="color: #0047AB; border-bottom: 2px solid #f3f4f6; padding-bottom: 10px; margin-top: 0;">Pulse Management App Secure Access</h2>
+      <p style="font-size: 16px; line-height: 1.5;">Hello,</p>
+      <p style="font-size: 16px; line-height: 1.5;">Your secure verification code to access the Pulse Management App is:</p>
+      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; margin: 25px 0; text-align: center;">
+        <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #0047AB;">${code}</span>
+      </div>
+      <p style="font-size: 14px; line-height: 1.5; color: #666666;">This code is valid for the next 10 minutes. For security reasons, please do not share this code with anyone. If you did not request access to the dashboard, you can safely ignore this email.</p>
+      <p style="font-size: 16px; line-height: 1.5; margin-top: 30px;">Best regards,<br><strong>The Pulse Team</strong></p>
+      
+      <!-- Corporate Trust & Compliance Markers -->
+      <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #9ca3af; line-height: 1.6;">
+        <p style="margin: 0 0 5px 0;">&copy; ${new Date().getFullYear()} Thrive Organisational Consulting Ltd. All rights reserved.</p>
+        <p style="margin: 0 0 5px 0;">This is an automated transactional security message. Replies to this mailbox are unmonitored.</p>
+        <p style="margin: 0;"><em>Confidentiality Notice: This email and any attachments are confidential and intended solely for the use of the individual or entity to whom they are addressed.</em></p>
+      </div>
+    </div>
+  `;
+
+  if (emailPass) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: "smtp.gmail.com",
+        port: 465,
+        secure: true,
+        auth: {
+          user: emailUser,
+          pass: emailPass
+        }
+      });
+
+      await transporter.sendMail({
+        from: `"Pulse" <${emailUser}>`,
+        to: normalizedEmail,
+        subject: subject,
+        text: textBody,
+        html: htmlBody
+      });
+      console.log(`✅ Verification email sent to ${normalizedEmail} via Gmail SMTP.`);
+      return { success: true, message: `Verification code sent to ${normalizedEmail}.` };
+    } catch (sendErr) {
+      console.error(`❌ Gmail SMTP sending failed:`, sendErr.message);
+      // In dev mode or until App Password is saved, print to console so login is possible
+      console.log(`🔑 [PMA OTP CODE FOR DEV]: ${code}`);
+      return {
+        success: true,
+        message: `Verification code generated. (SMTP Notice: ${sendErr.message})`,
+        devCode: process.env.NODE_ENV !== "production" ? code : undefined
+      };
+    }
+  } else {
+    // No app password configured yet
+    console.warn(`⚠️ PMA_EMAIL_APP_PASSWORD is not configured in .env.local.`);
+    console.log(`🔑 ==========================================`);
+    console.log(`🔑 [PMA OTP CODE]: ${code} (for ${normalizedEmail})`);
+    console.log(`🔑 ==========================================`);
+    return {
+      success: true,
+      message: `Verification code generated. (Configure PMA_EMAIL_APP_PASSWORD in .env.local to send live emails).`,
+      devCode: process.env.NODE_ENV !== "production" ? code : undefined
+    };
+  }
+}
+
+/**
+ * Verify OTP code and issue session token & cookie
+ */
+export async function verifyOtp(email, code, automationCommanderSheetId, res) {
+  const normalizedEmail = String(email || "").toLowerCase().trim();
+  const enteredCode = String(code || "").trim();
+
+  if (!normalizedEmail || !enteredCode) {
+    return { success: false, message: "Email and verification code are required" };
+  }
+
+  const otpKey = `pma_otp:${normalizedEmail}`;
+  let cachedData = null;
+  try {
+    const raw = await redisClient.get(otpKey);
+    if (raw) cachedData = JSON.parse(raw);
+  } catch (e) {
+    console.error("❌ Redis get OTP error:", e.message);
+  }
+
+  if (!cachedData) {
+    return {
+      success: false,
+      message: "Verification code has expired or is invalid. Please request a new code."
+    };
+  }
+
+  const currentAttempts = parseInt(cachedData.attempts || 0, 10);
+  if (currentAttempts >= 4) {
+    // 5th failed attempt purges code
+    try { await redisClient.del(otpKey); } catch { }
+    return {
+      success: false,
+      message: "Too many failed attempts. Please request a new verification code."
+    };
+  }
+
+  if (String(cachedData.code) !== enteredCode) {
+    const newAttempts = currentAttempts + 1;
+    cachedData.attempts = newAttempts;
+    const ttl = await redisClient.ttl(otpKey);
+    try {
+      await redisClient.set(otpKey, JSON.stringify(cachedData), { EX: ttl > 0 ? ttl : 300 });
+    } catch { }
+
+    const remaining = 5 - newAttempts;
+    return {
+      success: false,
+      message: `Invalid verification code. You have ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`
+    };
+  }
+
+  // Code matches! Destroy OTP from Redis
+  try { await redisClient.del(otpKey); } catch { }
+
+  // Invalidate Redis user cache so fresh spreadsheet permissions are always loaded
+  try { await redisClient.del("pma:users:list"); } catch { }
+
+  // Fetch full user record directly from spreadsheet
+  const sheets = await getSheetsClient();
+  const user = await getUserByEmail(normalizedEmail, sheets, automationCommanderSheetId, true);
+
+  if (!user || user.status === "Suspended") {
+    return {
+      success: false,
+      message: "This user account is not active or has been suspended."
+    };
+  }
+
+  // Update last login
+  updateUserLastLogin(normalizedEmail, sheets, automationCommanderSheetId).catch(err => {
+    console.warn("⚠️ Failed to update user last login:", err.message);
+  });
+
+  // Log activity
+  logPmaActivity(sheets, {
+    automationCommanderSheetId,
+    clientName: "System",
+    category: "Auth",
+    action: "USER_LOGIN",
+    summary: `User signed in: ${user.name} (${user.email})`,
+    details: `Role: ${user.role}, Assigned Clients: ${Array.isArray(user.assignedClients) ? user.assignedClients.join(", ") : user.assignedClients}`,
+    user: user.name || user.email
+  }).catch(() => { });
+
+  // Sign JWT session
+  const payload = {
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    assignedClients: user.assignedClients
+  };
+
+  const secret = getJwtSecret();
+  const token = jwt.sign(payload, secret, { expiresIn: `${SESSION_MAX_AGE_SECS}s` });
+  // Set HTTP-only Cookie if response object is provided
+  if (res && typeof res.setHeader === "function") {
+    const isProd = process.env.NODE_ENV === "production";
+    const sessionCookie = serializeCookie("pma_session", token, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: "lax",
+      path: "/",
+      maxAge: SESSION_MAX_AGE_SECS
+    });
+    res.setHeader("Set-Cookie", sessionCookie);
+  }
+
+  return {
+    success: true,
+    message: "Login successful",
+    token,
+    user: {
+      ...payload,
+      isAdmin: user.role === "Admin" || user.assignedClients === "*"
+    }
+  };
+}
+
+/**
+ * Extract and verify session user from Next.js req object
+ */
+export function getSessionUser(req) {
+  if (!req) return null;
+
+  let token = null;
+
+  // 1. Check HTTP-only cookie
+  if (req.headers && req.headers.cookie) {
+    const cookies = parseCookies(req.headers.cookie);
+    if (cookies.pma_session) {
+      token = cookies.pma_session;
+    }
+  }
+
+  // 2. Check Authorization header
+  if (!token && req.headers && req.headers.authorization) {
+    const parts = req.headers.authorization.split(" ");
+    if (parts.length === 2 && parts[0].toLowerCase() === "bearer") {
+      token = parts[1];
+    }
+  }
+
+  // 3. Check custom header x-pma-token
+  if (!token && req.headers && req.headers["x-pma-token"]) {
+    token = req.headers["x-pma-token"];
+  }
+
+  if (!token) return null;
+
+  try {
+    const secret = getJwtSecret();
+    const decoded = jwt.verify(token, secret);
+    if (!decoded || !decoded.email) return null;
+
+    return {
+      email: decoded.email,
+      name: decoded.name || decoded.email.split("@")[0],
+      role: decoded.role || "ClientManager",
+      assignedClients: decoded.assignedClients || "*",
+      isAdmin: decoded.role === "Admin" || decoded.assignedClients === "*"
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Invalidate session cookie on logout
+ */
+export function clearSessionCookie(res) {
+  if (res && typeof res.setHeader === "function") {
+    res.setHeader("Set-Cookie", serializeCookie("pma_session", "", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0
+    }));
+  }
+}
+

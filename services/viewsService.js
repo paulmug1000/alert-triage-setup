@@ -1,6 +1,8 @@
 import { getSheetsClient, withRetry, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient";
 import { resolveClientNameBySheetId } from "./workspaces";
 import { logPmaActivity } from "./pmaLogger";
+import { getSessionUser } from "./authService";
+import { isUserAuthorizedForClient } from "./userPermissions";
 
 const MONTH_NAMES = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,

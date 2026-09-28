@@ -2,6 +2,8 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl, colLetterToNum, colI
 import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay } from "./sharedHelpers";
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger";
 import { isPlaceholderInvoice } from "../utils/helpers";
+import { getSessionUser } from "./authService";
+import { isUserAuthorizedForClient, matchesClientName } from "./userPermissions";
 
 export let assignedExpensesTabVerified = false;
 
@@ -70,8 +72,25 @@ export async function handleGetAllClients(req, res, sheets) {
       clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl, splitEnabled });
       if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl };
     }
-    clientsArray.sort((a, b) => a.clientName.localeCompare(b.clientName));
-    return res.status(200).json({ success: true, clients: clientsArray, clientsMap: clientsObj });
+
+    const sessionUser = getSessionUser(req);
+    let finalClientsArray = clientsArray;
+    let finalClientsObj = clientsObj;
+
+    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      finalClientsArray = clientsArray.filter(c =>
+        assignedList.some(assigned => matchesClientName(assigned, c.clientName))
+      );
+      finalClientsObj = Object.fromEntries(
+        Object.entries(clientsObj).filter(([k]) =>
+          assignedList.some(assigned => matchesClientName(assigned, k))
+        )
+      );
+    }
+
+    finalClientsArray.sort((a, b) => a.clientName.localeCompare(b.clientName));
+    return res.status(200).json({ success: true, clients: finalClientsArray, clientsMap: finalClientsObj });
   } catch (err) {
     console.error("❌ get_all_clients error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -705,7 +724,39 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       return db - da;
     });
 
-    return res.status(200).json({ success: true, jobs });
+    // Fetch KeyInfo dropdown options (Product Lines from C23:C26, Lead Sources from G32:G75)
+    let productLines = [];
+    let leadSources = [];
+    try {
+      const keyInfoResp = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId: sheetIdClean,
+        ranges: ["KeyInfo!C23:C26", "KeyInfo!G32:G75"],
+        valueRenderOption: "FORMATTED_VALUE"
+      });
+      const plData = keyInfoResp.data.valueRanges?.[0]?.values || [];
+      const lsData = keyInfoResp.data.valueRanges?.[1]?.values || [];
+      productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
+      leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
+    } catch (e) {
+      // KeyInfo tab may not exist or differs
+    }
+
+    const distinctPl = new Set(productLines);
+    const distinctLs = new Set(leadSources);
+    const distinctClients = new Set();
+    jobs.forEach(j => {
+      if (j.client) distinctClients.add(String(j.client).trim());
+      j.rows?.forEach(r => {
+        if (r.client) distinctClients.add(String(r.client).trim());
+        if (r.prodLine) distinctPl.add(String(r.prodLine).trim());
+        if (r.leadSrc) distinctLs.add(String(r.leadSrc).trim());
+      });
+    });
+    productLines = Array.from(distinctPl).filter(Boolean).sort();
+    leadSources = Array.from(distinctLs).filter(Boolean).sort();
+    const existingClients = Array.from(distinctClients).filter(Boolean).sort();
+
+    return res.status(200).json({ success: true, jobs, productLines, leadSources, existingClients });
   } catch (err) {
     console.error("❌ get_all_client_jobs error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -1715,6 +1766,147 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
     return res.status(200).json({ success: true, newRowNum: newRow });
   } catch (err) {
     console.error("❌ create_job_from_invoice error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleAddNewJob(req, res, sheets) {
+  const { clientSheetId, tabName, jobData } = req.body;
+  if (!clientSheetId || !jobData || !jobData.jobName) {
+    return res.status(400).json({ success: false, error: "Missing clientSheetId or required job data" });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const targetTab = (jobData.status || tabName || "Confirmed") === "Pipeline" ? "Pipeline" : "Confirmed";
+    const startRow = targetTab === "Pipeline" ? 6 : 2;
+
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetIdClean,
+      range: `${targetTab}!A1:BH5000`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const allRows = resp.data.values || [];
+
+    // Step 1: Find the last row with active job data
+    let lastJobRow = startRow - 1;
+    for (let i = startRow - 1; i < allRows.length; i++) {
+      const row = allRows[i] || [];
+      const hasA = row[0] !== undefined && String(row[0]).trim() !== "";
+      const hasB = row[1] !== undefined && String(row[1]).trim() !== "";
+      const hasRev = row[32] !== undefined && String(row[32]).trim() !== "";
+      const hasDates = (row[37] !== undefined && String(row[37]).trim() !== "") || (row[38] !== undefined && String(row[38]).trim() !== "");
+      
+      let hasSlotData = false;
+      for (let c = 41; c <= 60; c++) {
+        if (row[c] !== undefined && String(row[c]).trim() !== "") { hasSlotData = true; break; }
+      }
+      if (!hasSlotData) {
+        for (let c = 75; c <= 95; c++) {
+          if (row[c] !== undefined && String(row[c]).trim() !== "") { hasSlotData = true; break; }
+        }
+      }
+
+      if (hasA || hasB || hasRev || hasDates || hasSlotData) {
+        lastJobRow = i + 1; // 1-indexed
+      }
+    }
+
+    // Step 2: Find the FIRST blank row beneath all existing jobs
+    let targetRow = Math.max(startRow, lastJobRow + 1);
+    for (let r = lastJobRow; r < allRows.length; r++) {
+      const row = allRows[r] || [];
+      const isBlank = [0, 1, 2, 3, 4, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 48, 55, 75, 82, 89].every(idx => {
+        const v = row[idx];
+        return v === undefined || v === null || String(v).trim() === "";
+      });
+      if (isBlank) {
+        targetRow = r + 1; // 1-indexed
+        break;
+      }
+    }
+
+    const formatSheetDate = (dStr) => {
+      if (!dStr) return "";
+      const s = String(dStr).trim();
+      const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      if (isoMatch) {
+        const yr = isoMatch[1].slice(-2);
+        const mIdx = parseInt(isoMatch[2], 10) - 1;
+        const day = parseInt(isoMatch[3], 10);
+        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        return `${day}-${months[mIdx]}-${yr}`;
+      }
+      return s;
+    };
+
+    const updateData = [
+      { range: `${targetTab}!A${targetRow}`,  values: [[jobData.client || ""]] },
+      { range: `${targetTab}!B${targetRow}`,  values: [[jobData.jobName || ""]] },
+      { range: `${targetTab}!C${targetRow}`,  values: [[jobData.projectCode || ""]] },
+      { range: `${targetTab}!D${targetRow}`,  values: [[formatSheetDate(jobData.dateConfirmed || jobData.dateAdded)]] },
+      { range: `${targetTab}!E${targetRow}`,  values: [[jobData.leadSource || ""]] },
+      { range: `${targetTab}!AG${targetRow}`, values: [[parseFloat(jobData.revenue) || 0]] },
+      { range: `${targetTab}!AH${targetRow}`, values: [[parseFloat(jobData.directCosts) || 0]] },
+      { range: `${targetTab}!AI${targetRow}`, values: [[jobData.vat || "Yes"]] },
+      { range: `${targetTab}!AJ${targetRow}`, values: [[jobData.projectRetainer || "Project"]] },
+      { range: `${targetTab}!AK${targetRow}`, values: [[jobData.productLine || ""]] },
+      { range: `${targetTab}!AL${targetRow}`, values: [[formatSheetDate(jobData.startDate)]] },
+      { range: `${targetTab}!AM${targetRow}`, values: [[formatSheetDate(jobData.endDate)]] },
+    ];
+
+    if (targetTab === "Pipeline" && jobData.likelihood !== undefined && jobData.likelihood !== null && jobData.likelihood !== "") {
+      let lNum = parseFloat(jobData.likelihood);
+      if (!isNaN(lNum)) {
+        if (lNum > 1) lNum = lNum / 100;
+        updateData.push({ range: `${targetTab}!AN${targetRow}`, values: [[lNum]] });
+      }
+    }
+
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetIdClean,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data: updateData
+      }
+    });
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const endClient = jobData.client || "";
+    const createdJob = jobData.jobName || "Job";
+    const jobIdentifier = endClient ? `"${endClient} - ${createdJob}"` : `"${createdJob}"`;
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "JOB",
+      action: "Job Created",
+      summary: `Created new ${targetTab} job ${jobIdentifier} (£${parseFloat(jobData.revenue) || 0}) (Row ${targetRow})`,
+      details: {
+        tabName: targetTab,
+        row: targetRow,
+        client: endClient,
+        jobName: createdJob,
+        projectCode: jobData.projectCode,
+        revenue: jobData.revenue,
+        directCosts: jobData.directCosts,
+        vat: jobData.vat,
+        projectRetainer: jobData.projectRetainer,
+        productLine: jobData.productLine,
+        leadSource: jobData.leadSource,
+        startDate: jobData.startDate,
+        endDate: jobData.endDate,
+        likelihood: jobData.likelihood,
+        clientName: tenantClient
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({ success: true, targetRow, targetTab });
+  } catch (err) {
+    console.error("❌ add_new_job error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

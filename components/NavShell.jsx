@@ -30,7 +30,7 @@ if (typeof document !== "undefined") {
 export default function NavShell({ 
   activeNav, onHome, onOverview, onTasks, onActivity, onAppLog, 
   onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onSettings, 
-  homeAlertCount, taskCount, children 
+  homeAlertCount, taskCount, user, onLogout, children 
 }) {
   const [showMore, setShowMore] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -75,7 +75,7 @@ export default function NavShell({
   });
 
   // Strict requested menu order:
-  // Home, Jobs, Vendors, Invoices, Retainers, Tasks, Activity, Views, EoM, Settings
+  // Home, Jobs, Vendors, Invoices, Retainers, Tasks, Activity, Views, EoM, Settings (Admin only)
   const allNavItems = [
     { key: "home", label: "Home", handler: onHome, badge: homeAlertCount },
     { key: "jobs", label: "Jobs", handler: onJobs },
@@ -86,14 +86,57 @@ export default function NavShell({
     { key: "activity", label: "Activity", handler: onActivity || onAppLog },
     { key: "views", label: "Views", handler: onViews },
     { key: "tools", label: "EoM", handler: onTools },
-    { key: "settings", label: "⚙ Settings", handler: onSettings },
+    ...(!user || user.isAdmin ? [{ key: "settings", label: "⚙ Settings", handler: onSettings }] : []),
   ];
 
   return (
     <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
       <style dangerouslySetInnerHTML={{ __html: GLOBAL_STYLES }} />
       <div style={{ background: "#1a1a2e", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Management Application</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <div style={{ width: "24px", height: "24px", background: "#0066cc", borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700", fontSize: "14px" }}>P</div>
+          <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Management Application</span>
+        </div>
+        {user && (
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", background: "rgba(255,255,255,0.08)", padding: "4px 10px", borderRadius: "20px" }}>
+              <div style={{ width: "22px", height: "22px", borderRadius: "50%", background: "#0066cc", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: "600" }}>
+                {(user.name || user.email || "U")[0].toUpperCase()}
+              </div>
+              <span style={{ fontSize: "13px", fontWeight: "500", color: "#e2e8f0" }}>{user.name || user.email}</span>
+              <span style={{ 
+                fontSize: "11px", 
+                padding: "1px 6px", 
+                borderRadius: "10px", 
+                background: user.isAdmin ? "rgba(56, 189, 248, 0.2)" : "rgba(245, 158, 11, 0.2)", 
+                color: user.isAdmin ? "#7dd3fc" : "#fcd34d",
+                fontWeight: "600" 
+              }}>
+                {user.isAdmin ? "Admin" : (Array.isArray(user.assignedClients) ? `${user.assignedClients.length} clients` : "User")}
+              </span>
+            </div>
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                style={{
+                  background: "transparent",
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  borderRadius: "6px",
+                  color: "#cbd5e1",
+                  fontSize: "12px",
+                  padding: "4px 10px",
+                  cursor: "pointer",
+                  transition: "all 0.15s ease"
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)"; e.currentTarget.style.borderColor = "#ef4444"; e.currentTarget.style.color = "#fca5a5"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = "#cbd5e1"; }}
+                title="Sign out of Pulse"
+              >
+                Sign out
+              </button>
+            )}
+          </div>
+        )}
       </div>
       <div style={{ 
         background: "#fff", 

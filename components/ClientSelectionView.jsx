@@ -17,6 +17,7 @@ export default function ClientSelectionView({
 }) {
   const auth = useAuth();
   const currentUser = user || auth.user;
+  const isAdmin = !!(currentUser?.isAdmin || currentUser?.role === "Admin" || currentUser?.assignedClients === "*");
 
   const {
     refreshStatus, acceptError, clientsWithFlags, proactiveAlerts,
@@ -62,9 +63,11 @@ export default function ClientSelectionView({
             <button className="triage-btn" onClick={reloadFromCache} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
               ⚡ Reload
             </button>
-            <button className="triage-btn" onClick={() => refreshTriage(true)} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
-              {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
-            </button>
+            {isAdmin && (
+              <button className="triage-btn" onClick={() => refreshTriage(true)} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
+                {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -236,20 +239,24 @@ export default function ClientSelectionView({
           </div>
         )}
 
-        <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <button className="triage-btn"
-            onClick={() => { setScreen("ignoredAlerts"); loadIgnoredAlerts(); }}
-            style={styles.linkButton}
-          >
-            View ignored alerts →
-          </button>
-          <div style={{ display: "flex", gap: "8px" }}>
+        <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #eee", display: "flex", justifyContent: isAdmin ? "space-between" : "flex-end", alignItems: "center" }}>
+          {isAdmin && (
             <button className="triage-btn"
-              onClick={() => setShowDebugPanel(v => !v)}
-              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#888" }}
+              onClick={() => { setScreen("ignoredAlerts"); loadIgnoredAlerts(); }}
+              style={styles.linkButton}
             >
-              🔍 Debug
+              View ignored alerts →
             </button>
+          )}
+          <div style={{ display: "flex", gap: "8px" }}>
+            {isAdmin && (
+              <button className="triage-btn"
+                onClick={() => setShowDebugPanel(v => !v)}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#888" }}
+              >
+                🔍 Debug
+              </button>
+            )}
             <button className="triage-btn"
               onClick={reloadFromCache}
               disabled={isLoading}
@@ -258,18 +265,20 @@ export default function ClientSelectionView({
             >
               ⚡ Reload
             </button>
-            <button className="triage-btn"
-              onClick={() => refreshTriage(true)}
-              disabled={isLoading}
-              style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1 }}
-              title="Run full alert sweep"
-            >
-              {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
-            </button>
+            {isAdmin && (
+              <button className="triage-btn"
+                onClick={() => refreshTriage(true)}
+                disabled={isLoading}
+                style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "6px 14px", opacity: isLoading ? 0.5 : 1 }}
+                title="Run full alert sweep"
+              >
+                {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
+              </button>
+            )}
           </div>
         </div>
 
-        {showDebugPanel && (
+        {isAdmin && showDebugPanel && (
           <div style={{ marginTop: "16px", padding: "16px", background: "#1a1a2e", borderRadius: "6px", color: "#e0e0e0" }}>
             <div style={{ fontSize: "13px", fontWeight: "700", marginBottom: "10px", color: "#7dd3fc" }}>🔍 Triage State Debugger</div>
             <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>

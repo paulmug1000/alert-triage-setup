@@ -68,6 +68,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const {
     isAuthenticated, authChecking, user, logout
   } = auth;
+  const isAdmin = !!(user?.isAdmin || user?.role === "Admin" || user?.assignedClients === "*");
 
   const [screen, setScreen] = useState("initial"); 
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
@@ -235,6 +236,10 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const renderActiveView = () => {
     // Screen: Ignored Alerts
     if (screen === "ignoredAlerts" && activeNav === "home") {
+      if (!isAdmin) {
+        setScreen("clientSelection");
+        return null;
+      }
       return (
         <IgnoredAlertsView 
           styles={styles}

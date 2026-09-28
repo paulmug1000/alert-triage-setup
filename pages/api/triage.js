@@ -269,12 +269,14 @@ export default async function handler(req, res) {
     } else if (action === "start_triage") {
       // Proxy orchestrator for frontend chunking. Protects CRON_SECRET.
       try {
-        const { step } = req.body;
+        const { step } = req.body || {};
+        const host = req.headers?.host || "localhost:3000";
+        const protocol = req.headers?.["x-forwarded-proto"] || (host.startsWith("localhost") ? "http" : "https");
         const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
           ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
           : process.env.VERCEL_URL
             ? `https://${process.env.VERCEL_URL}`
-            : "http://localhost:3000";
+            : `${protocol}://${host}`;
         const cronSecret = process.env.CRON_SECRET;
 
         // Step 1: Sweep

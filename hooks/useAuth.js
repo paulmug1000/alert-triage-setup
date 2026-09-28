@@ -57,12 +57,10 @@ export function useAuth() {
         }
       }
 
-      // 3. Fallback check for localStorage legacy token
-      const legacyToken = localStorage.getItem("pulse_access_token");
-      if (legacyToken) {
-        setIsAuthenticated(true);
-        setUser({ email: "admin@pulse", name: "Administrator", role: "Admin", assignedClients: "*", isAdmin: true });
-      }
+      // If no valid session found, clear legacy tokens
+      try {
+        localStorage.removeItem("pulse_access_token");
+      } catch {}
     } catch (e) {
       console.warn("Session check error:", e);
     } finally {

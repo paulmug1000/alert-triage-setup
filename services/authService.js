@@ -5,7 +5,6 @@ import { getSheetsClient } from "./sheetsClient.js";
 import { getUserByEmail, updateUserLastLogin } from "./userPermissions.js";
 import { logPmaActivity } from "./pmaLogger.js";
 
-const DEFAULT_JWT_SECRET = "pma_jwt_secret_pulse_mgmt_auth_2026_x89a74bf20ec91";
 const OTP_EXPIRY_SECS = 600; // 10 minutes
 const COOLDOWN_SECS = 60; // 60 seconds
 const SESSION_MAX_AGE_SECS = 90 * 24 * 60 * 60; // 90 days
@@ -40,10 +39,18 @@ function parseCookies(cookieHeader) {
 }
 
 /**
- * Get JWT Secret from environment or fallback
+ * Get JWT Secret from environment
  */
 function getJwtSecret() {
-  return process.env.PMA_JWT_SECRET || DEFAULT_JWT_SECRET;
+  const secret = process.env.PMA_JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("Missing PMA_JWT_SECRET environment variable in production");
+    }
+    // Fallback for local development only if missing
+    return "dev-secret";
+  }
+  return secret;
 }
 
 /**

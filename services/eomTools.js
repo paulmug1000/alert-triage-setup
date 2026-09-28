@@ -1426,7 +1426,7 @@ export async function handleEomPullFreshPl(req, res, sheets) {
       return res.status(400).json({ success: false, error: `No Master Web App URL configured for "${clientName}" (AutoUpdates column N)` });
     }
 
-    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
     const gasResp = await fetch(webAppUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1505,7 +1505,7 @@ export async function handleEomPushOutgoings(req, res, sheets) {
     }));
 
     // 2. Call Master Web App to run pushOutgoingsToClientSheet(true)
-    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+    const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "";
     const gasResp = await fetch(webAppUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

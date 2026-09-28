@@ -75,6 +75,7 @@ import {
 import { getClientViewData, handleUpdateViewCell } from "../../services/viewsService";
 import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
 import { getAllUsers, isUserAuthorizedForClient } from "../../services/userPermissions";
+import { matchesClientName } from "../../utils/helpers";
 
 // eomTabsVerified moved to eomTools.js
 
@@ -320,10 +321,31 @@ export default async function handler(req, res) {
           if (!freshRaw) return res.status(500).json({ success: false, error: "No precomputed data was found afterwards" });
           const fresh = JSON.parse(freshRaw);
 
+          let scopedAlerts = fresh.alerts || [];
+          let scopedNoAction = fresh.noActionAlerts || [];
+          let scopedProactive = fresh.proactiveAlerts || [];
+          let clientsSource = fresh.clientsWithFlags || [];
+
+          if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+            const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+            scopedAlerts = scopedAlerts.filter(a =>
+              assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+            );
+            scopedProactive = scopedProactive.filter(a =>
+              assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+            );
+            scopedNoAction = scopedNoAction.filter(a =>
+              assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+            );
+            clientsSource = clientsSource.filter(c =>
+              assignedList.some(assigned => matchesClientName(assigned, c.clientName))
+            );
+          }
+
           const alertCountsByClientAndFlag = {};
           const activeExpenseIdsByClient = {};
           const activeInvoiceIdsByClient = {};
-          for (const alert of (fresh.alerts || [])) {
+          for (const alert of scopedAlerts) {
             const key = alert.clientName;
             let flagKey = alert.flagType || alert.alertType || alert.type;
             
@@ -356,7 +378,7 @@ export default async function handler(req, res) {
         }
 
         // Tally counts for informational (noAction) alerts
-        for (const alert of (fresh.noActionAlerts || [])) {
+        for (const alert of scopedNoAction) {
           const key = alert.clientName;
           const flagKey = alert.flagType;
           if (key && flagKey) {
@@ -365,7 +387,7 @@ export default async function handler(req, res) {
           }
         }
 
-        const clientsWithUpdatedCounts = (fresh.clientsWithFlags || []).map(c => {
+        const clientsWithUpdatedCounts = clientsSource.map(c => {
           const counts = alertCountsByClientAndFlag[c.clientName] || {};
           const updatedFlags = { ...(c.flags || {}) };
           for (const flagKey of Object.keys(updatedFlags)) {
@@ -385,14 +407,14 @@ export default async function handler(req, res) {
           const sessionId = Math.random().toString(36).substring(2, 15);
           await redisClient.set(
             `triage_alerts:${sessionId}`,
-            JSON.stringify({ alerts: fresh.alerts || [], noActionAlerts: fresh.noActionAlerts || [], proactiveAlerts: fresh.proactiveAlerts || [], clientsWithFlags: clientsWithUpdatedCounts }),
+            JSON.stringify({ alerts: scopedAlerts, noActionAlerts: scopedNoAction, proactiveAlerts: scopedProactive, clientsWithFlags: clientsWithUpdatedCounts }),
             { EX: 3600 } // Reduced from 24h to 1h to prevent Redis OOM
           );
 
           console.log(`✅ start_triage: refresh complete`);
           return res.status(200).json({
-            success: true, sessionId, totalAlerts: (fresh.alerts || []).length,
-            noActionCount: (fresh.noActionAlerts || []).length, proactiveAlerts: fresh.proactiveAlerts || [], clientsWithFlags: clientsWithUpdatedCounts,
+            success: true, sessionId, totalAlerts: scopedAlerts.length,
+            noActionCount: scopedNoAction.length, proactiveAlerts: scopedProactive, clientsWithFlags: clientsWithUpdatedCounts,
           });
         }
 

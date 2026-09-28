@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
-import { ALERT_CATEGORY_FLAGS, EXPENSE_SUPPRESSIBLE } from "../utils/helpers";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { ALERT_CATEGORY_FLAGS, EXPENSE_SUPPRESSIBLE, isUserAuthorizedForClient } from "../utils/helpers";
 
 export function useTriageEngine({
   automationCommanderSheetId,
@@ -16,7 +16,8 @@ export function useTriageEngine({
   error,
   setError,
   setBulkMode,
-  setBulkSelected
+  setBulkSelected,
+  user
 }) {
   const [sessionId, setSessionId] = useState("");
   const [totalAlerts, setTotalAlerts] = useState(0);
@@ -27,7 +28,28 @@ export function useTriageEngine({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [refreshStatus, setRefreshStatus] = useState("");
 
+  const scopeClients = useCallback((clients) => {
+    if (!user || user.isAdmin || user.assignedClients === "*") return clients || [];
+    return (clients || []).filter(c => isUserAuthorizedForClient(user, c.clientName));
+  }, [user]);
+
+  const scopeProactive = useCallback((alerts) => {
+    if (!user || user.isAdmin || user.assignedClients === "*") return alerts || [];
+    return (alerts || []).filter(a => isUserAuthorizedForClient(user, a.clientName));
+  }, [user]);
+
   const [clientsWithFlags, setClientsWithFlags] = useState([]);
+
+  useEffect(() => {
+    setSessionId("");
+    setClientsWithFlags([]);
+    setProactiveAlerts([]);
+    setProactiveCountsByClient({});
+    setSelectedClient(null);
+    setClientAlerts([]);
+    setTotalAlerts(0);
+    setNoActionCount(0);
+  }, [user?.email]);
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientAlerts, setClientAlerts] = useState([]);
   const [currentClientAlertIndex, setCurrentClientAlertIndex] = useState(0);
@@ -117,12 +139,13 @@ export function useTriageEngine({
       setSessionId(data.sessionId);
       setTotalAlerts(data.totalAlerts || 0);
       setNoActionCount(data.noActionCount || 0);
-      setProactiveAlerts(data.proactiveAlerts || []);
+      const scopedProactiveAlerts = scopeProactive(data.proactiveAlerts || []);
+      setProactiveAlerts(scopedProactiveAlerts);
       const pCounts = {};
-      (data.proactiveAlerts || []).forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
+      scopedProactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
       setProactiveCountsByClient(pCounts);
       setProactiveLoadedAt(Date.now());
-      setClientsWithFlags(data.clientsWithFlags || []);
+      setClientsWithFlags(scopeClients(data.clientsWithFlags || []));
       setProcessedAlerts(new Set());
       setAcknowledgedNoAction(new Set());
       setSelectedClient(null);
@@ -157,12 +180,13 @@ export function useTriageEngine({
           setSessionId(preData.sessionId);
           setTotalAlerts(preData.totalAlerts || 0);
           setNoActionCount(preData.noActionCount || 0);
-          setProactiveAlerts(preData.proactiveAlerts || []);
+          const scopedProactiveAlerts = scopeProactive(preData.proactiveAlerts || []);
+          setProactiveAlerts(scopedProactiveAlerts);
           const pCounts = {};
-          (preData.proactiveAlerts || []).forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
+          scopedProactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
           setProactiveCountsByClient(pCounts);
           setProactiveLoadedAt(Date.now());
-          setClientsWithFlags(preData.clientsWithFlags || []);
+          setClientsWithFlags(scopeClients(preData.clientsWithFlags || []));
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());
 
@@ -219,12 +243,13 @@ export function useTriageEngine({
         setSessionId(preData.sessionId);
         setTotalAlerts(preData.totalAlerts || 0);
         setNoActionCount(preData.noActionCount || 0);
-        setProactiveAlerts(preData.proactiveAlerts || []);
+        const scopedProactiveAlerts = scopeProactive(preData.proactiveAlerts || []);
+        setProactiveAlerts(scopedProactiveAlerts);
         const pCounts = {};
-        (preData.proactiveAlerts || []).forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
+        scopedProactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
         setProactiveCountsByClient(pCounts);
         setProactiveLoadedAt(Date.now());
-        setClientsWithFlags(preData.clientsWithFlags || []);
+        setClientsWithFlags(scopeClients(preData.clientsWithFlags || []));
         setAcknowledgedNoAction(new Set());
         setProcessedAlerts(new Set());
 

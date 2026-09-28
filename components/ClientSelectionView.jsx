@@ -2,6 +2,8 @@ import React from "react";
 import Spinner from "./Spinner";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
+import { useAuth } from "../hooks/useAuth";
+import { isUserAuthorizedForClient } from "../utils/helpers";
 
 export default function ClientSelectionView({
   styles,
@@ -10,13 +12,29 @@ export default function ClientSelectionView({
   getFlagName,
   PROACTIVE_TYPE_LABELS,
   setScreen,
-  loadIgnoredAlerts
+  loadIgnoredAlerts,
+  user
 }) {
+  const auth = useAuth();
+  const currentUser = user || auth.user;
+
   const {
     refreshStatus, acceptError, clientsWithFlags, proactiveAlerts,
     proactiveCountsByClient, proactiveLoadedAt, selectingClient,
     selectClient, reloadFromCache, refreshTriage
   } = useTriage();
+
+  const authorizedClientsWithFlags = (clientsWithFlags || []).filter(c =>
+    isUserAuthorizedForClient(currentUser, c.clientName)
+  );
+  const authorizedProactiveAlerts = (proactiveAlerts || []).filter(a =>
+    isUserAuthorizedForClient(currentUser, a.clientName)
+  );
+  const authorizedProactiveCountsByClient = Object.fromEntries(
+    Object.entries(proactiveCountsByClient || {}).filter(([name]) =>
+      isUserAuthorizedForClient(currentUser, name)
+    )
+  );
 
   const {
     allClientsMap, assignedByClient, assignedAppIds, showDebugPanel, setShowDebugPanel,
@@ -28,10 +46,10 @@ export default function ClientSelectionView({
     "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
   ];
 
-  const activeClients = clientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
+  const activeClients = authorizedClientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
 
   // State 1: All alerts and flags have been resolved
-  if (activeClients.length === 0 && proactiveAlerts.length === 0 && proactiveLoadedAt > 0) {
+  if (activeClients.length === 0 && authorizedProactiveAlerts.length === 0 && proactiveLoadedAt > 0) {
     return (
       <div style={styles.container}>
         <div style={styles.header}>
@@ -72,7 +90,7 @@ export default function ClientSelectionView({
         <h1 style={styles.title}>Alerts</h1>
         <p style={styles.subtitle}>
           Choose a client to review their alerts (
-          {clientsWithFlags.reduce((total, c) => {
+          {authorizedClientsWithFlags.reduce((total, c) => {
             const assignedSet = assignedByClient[c.clientName] || new Set();
             const expenseIds = c.activeExpenseIds || [];
             const invoiceIds = c.activeInvoiceIds || [];
@@ -91,7 +109,7 @@ export default function ClientSelectionView({
               }
             });
             return total + clientTotal;
-          }, 0) + proactiveAlerts.length} total)
+          }, 0) + authorizedProactiveAlerts.length} total)
         </p>
       </div>
 
@@ -113,16 +131,16 @@ export default function ClientSelectionView({
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             {(() => {
-              const proactiveOnlyNames = Object.keys(proactiveCountsByClient).filter(
-                name => proactiveCountsByClient[name] > 0 && !clientsWithFlags.some(c => c.clientName === name)
+              const proactiveOnlyNames = Object.keys(authorizedProactiveCountsByClient).filter(
+                name => (authorizedProactiveCountsByClient[name] || 0) > 0 && !authorizedClientsWithFlags.some(c => c.clientName === name)
               );
               const combinedClientList = [
-                ...clientsWithFlags,
+                ...authorizedClientsWithFlags,
                 ...proactiveOnlyNames.map(name => {
                   const info = allClientsMap[name] || {};
                   return { clientName: name, masterSheetId: info.masterSheetId, clientSheetId: info.clientSheetId, flags: {}, alertCounts: {} };
                 }),
-              ];
+              ].filter(c => isUserAuthorizedForClient(currentUser, c.clientName));
               return combinedClientList;
             })().filter(client => {
               const assignedSet = assignedByClient[client.clientName] || new Set();
@@ -139,7 +157,7 @@ export default function ClientSelectionView({
                 return count > 0;
               });
               const hasInfoFlags = Object.entries(client.flags || {}).some(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key) && (client.alertCounts?.[key] || 0) > 0);
-              return hasVisibleActionable || hasInfoFlags || proactiveCountsByClient[client.clientName] > 0;
+              return hasVisibleActionable || hasInfoFlags || (authorizedProactiveCountsByClient[client.clientName] || 0) > 0;
             }).map((client, idx) => {
               const assignedSet = assignedByClient[client.clientName] || new Set();
               const expenseIds = client.activeExpenseIds || [];
@@ -168,7 +186,7 @@ export default function ClientSelectionView({
                 });
 
               const proactiveLines = Object.entries(
-                (proactiveAlerts || []).filter(a => a.clientName === client.clientName).reduce((acc, a) => {
+                (authorizedProactiveAlerts || []).filter(a => a.clientName === client.clientName).reduce((acc, a) => {
                   const label = PROACTIVE_TYPE_LABELS[a.alertType] || a.alertType || "Alert";
                   acc[label] = (acc[label] || 0) + 1;
                   return acc;

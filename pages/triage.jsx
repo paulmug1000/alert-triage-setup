@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import Spinner from "../components/Spinner";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
@@ -86,7 +86,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const triageEngine = useTriageEngine({
     automationCommanderSheetId, screen, setScreen, activeNav, assignedAppIds,
     assignedByClient, existingTaskBanner, setExistingTaskBanner, allClientsMap, isLoading, setIsLoading,
-    error, setError, setBulkMode: () => {}, setBulkSelected: () => {}
+    error, setError, setBulkMode: () => {}, setBulkSelected: () => {},
+    user
   });
 
   const {
@@ -96,13 +97,21 @@ function TriageSystemContent({ onBack, appGlobals }) {
   } = triageEngine;
 
   // --- INITIAL DATA LOAD ---
-  // Explicitly trigger the initial triage data load on mount.
+  // Explicitly trigger triage data load only when authenticated and scoped to current user.
+  const currentAuthEmail = user?.email || "";
+  const prevAuthEmailRef = useRef("");
+
   useEffect(() => {
-    if (!sessionId && !isLoading) {
+    if (!isAuthenticated || authChecking) return;
+
+    if (prevAuthEmailRef.current !== currentAuthEmail) {
+      prevAuthEmailRef.current = currentAuthEmail;
+      startTriage();
+    } else if (!sessionId && !isLoading) {
       startTriage();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]); // STRICT DEPS: Do not add startTriage or isLoading, to prevent infinite loops if initialization fails.
+  }, [isAuthenticated, authChecking, currentAuthEmail, sessionId]);
 
   const { overviewData, setOverviewData, overviewLoading, setOverviewLoading, loadOverview } = useOverview(automationCommanderSheetId);
 
@@ -343,6 +352,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
           PROACTIVE_TYPE_LABELS={PROACTIVE_TYPE_LABELS}
           setScreen={setScreen}
           loadIgnoredAlerts={loadIgnoredAlerts}
+          user={user}
         />
       );
     }

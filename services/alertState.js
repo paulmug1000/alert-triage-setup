@@ -7,6 +7,8 @@ import {
 } from "./alertMemory";
 import { createHash } from "crypto";
 import { logPmaActivity } from "./pmaLogger";
+import { getSessionUser } from "./authService";
+import { matchesClientName } from "../utils/helpers";
 
 const PRECOMPUTED_KEY = "triage_precomputed";
 
@@ -37,11 +39,21 @@ export async function handleGetAlerts(req, res) {
   try {
     const sessionData = await redisClient.get(`triage_alerts:${sessionId}`);
     if (!sessionData) return res.status(404).json({ success: false, error: "Session not found" });
-    const { alerts, noActionAlerts, proactiveAlerts, clientsWithFlags, resolvedNoActionFlags } = JSON.parse(sessionData);
-    console.log(`✅ Retrieved ${alerts.length} alerts from Redis for session ${sessionId}`);
+    let { alerts, noActionAlerts, proactiveAlerts, clientsWithFlags, resolvedNoActionFlags } = JSON.parse(sessionData);
+    
+    const sessionUser = getSessionUser(req);
+    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      alerts = (alerts || []).filter(a => assignedList.some(assigned => matchesClientName(assigned, a.clientName)));
+      noActionAlerts = (noActionAlerts || []).filter(a => assignedList.some(assigned => matchesClientName(assigned, a.clientName)));
+      proactiveAlerts = (proactiveAlerts || []).filter(a => assignedList.some(assigned => matchesClientName(assigned, a.clientName)));
+      clientsWithFlags = (clientsWithFlags || []).filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
+    }
+
+    console.log(`✅ Retrieved ${(alerts || []).length} alerts from Redis for session ${sessionId}`);
     return res.status(200).json({
-      success: true, alerts, noActionAlerts, proactiveAlerts: proactiveAlerts || [],
-      clientsWithFlags, resolvedNoActionFlags: resolvedNoActionFlags || [],
+      success: true, alerts: alerts || [], noActionAlerts: noActionAlerts || [], proactiveAlerts: proactiveAlerts || [],
+      clientsWithFlags: clientsWithFlags || [], resolvedNoActionFlags: resolvedNoActionFlags || [],
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -581,7 +593,7 @@ export async function handleGetIgnoredAlerts(req, res, sheets) {
   try {
     await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
     const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-    const ignoredAlerts = memoryRows
+    let ignoredAlerts = memoryRows
       .filter(r => r.status === "ignored" || (r.status === "superseded" && r.ignoreReason))
       .map(r => ({
         fingerprintHash: r.fingerprintHash,
@@ -593,6 +605,15 @@ export async function handleGetIgnoredAlerts(req, res, sheets) {
         lastSeen:        r.lastSeen,
         status:          r.status,
       }));
+
+    const sessionUser = getSessionUser(req);
+    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      ignoredAlerts = ignoredAlerts.filter(a =>
+        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+      );
+    }
+
     return res.status(200).json({ success: true, ignoredAlerts });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -614,7 +635,7 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
       "directCosts","unreceivedAmount","placeholderCount","placeholderTotal"
     ];
       
-    const active = all
+    let active = all
       .filter(r => r.category === "proactive" && r.status === "cached")
       .map(r => {
         let alert = {};
@@ -631,6 +652,15 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
           lastSeen: r.lastSeen
         };
       });
+
+    const sessionUser = getSessionUser(req);
+    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+      const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+      active = active.filter(a =>
+        assignedList.some(assigned => matchesClientName(assigned, a.clientName))
+      );
+    }
+
     const countsByClient = {};
     for (const a of active) {
       countsByClient[a.clientName] = (countsByClient[a.clientName] || 0) + 1;

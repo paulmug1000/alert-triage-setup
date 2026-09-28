@@ -121,3 +121,56 @@ export const ALERT_CATEGORY_FLAGS = {
 };
 
 export const EXPENSE_SUPPRESSIBLE = new Set(["expenseDashboardDiscr"]);
+
+/**
+ * Robust client name matcher for authorization.
+ * Matches:
+ * - Exact equality ("Eleven" === "Eleven")
+ * - Case and whitespace tolerance (" eleven " === "eleven")
+ * - Alphanumeric stripped tolerance ("ayefourdesign" === "ayefour design")
+ * - Prefix / Substring tolerance ("Orinoco" matches "Orinoco Communications", "Ayefour" matches "Ayefour Design")
+ */
+export function matchesClientName(assignedIdentifier, actualClientName) {
+  if (!assignedIdentifier || !actualClientName) return false;
+  const sa = String(assignedIdentifier).trim().toLowerCase();
+  const sb = String(actualClientName).trim().toLowerCase();
+  if (sa === sb) return true;
+
+  const clean = n => String(n || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const ca = clean(sa);
+  const cb = clean(sb);
+  if (ca && cb && ca === cb) return true;
+
+  if (sa.length >= 3 && (sb.includes(sa) || sa.includes(sb))) return true;
+  if (ca.length >= 3 && (cb.includes(ca) || ca.includes(cb))) return true;
+
+  return false;
+}
+
+/**
+ * Check if a user is authorized to view or edit data for a given client
+ */
+export function isUserAuthorizedForClient(user, clientName) {
+  if (!user) return false;
+  if (user.role === "Admin" || user.isAdmin || user.assignedClients === "*") return true;
+  if (!clientName) return false;
+
+  const assignedList = Array.isArray(user.assignedClients) ? user.assignedClients : [];
+  return assignedList.some(assigned => matchesClientName(assigned, clientName));
+}
+
+/**
+ * Filter an array of client objects so non-admins only see assigned clients.
+ * Expects client objects to have a `name` or `clientName` property.
+ */
+export function filterClientsForUser(allClients, user) {
+  if (!allClients || !Array.isArray(allClients)) return [];
+  if (!user) return [];
+  if (user.role === "Admin" || user.isAdmin || user.assignedClients === "*") return allClients;
+
+  const assignedList = Array.isArray(user.assignedClients) ? user.assignedClients : [];
+  return allClients.filter(c => {
+    const name = String(c.name || c.clientName || "").trim();
+    return assignedList.some(assigned => matchesClientName(assigned, name));
+  });
+}

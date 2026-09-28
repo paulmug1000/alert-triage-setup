@@ -1071,9 +1071,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
       success: true,
       available: true,
       sessionId,
-      totalAlerts: filteredAlerts.length,
-      noActionCount: filteredNoAction.length,
-      proactiveAlerts: filteredProactive,
+      totalAlerts: scopedAlerts.length,
+      noActionCount: scopedNoAction.length,
+      proactiveAlerts: scopedProactive,
       clientsWithFlags: clientsWithUpdatedCounts.map(c => ({
         clientName: c.clientName,
         clientSheetId: c.clientSheetId,

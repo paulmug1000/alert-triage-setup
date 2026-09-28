@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import Spinner from "./Spinner";
+import { stripCurrency } from "../utils/helpers";
 
 export default function InvoicesEditModal({ 
   editSlot, 
@@ -8,8 +9,7 @@ export default function InvoicesEditModal({
   onUpdateInvoiceJobs, 
   onMarkPullPending 
 }) {
-  const { rowNum, slotNum, slot } = editSlot;
-  const stripCurrency = v => String(v ?? "").replace(/^[£$€]/, "").trim();
+  const { rowNum, slotNum, slot, jobClient, jobName } = editSlot;
   
   const [invoiceNo, setInvoiceNo] = useState(slot.ref || "");
   const [amount, setAmount] = useState(stripCurrency(slot.amount));
@@ -31,6 +31,7 @@ export default function InvoicesEditModal({
           clientSheetId: invoicesClient?.clientSheetId,
           clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           rowNum, slotNum,
+          jobClient, jobName,
           invoice: { invoiceNo, amount: parseFloat(amount) || 0, sentDate, daysToPay: parseInt(daysToPay) || 30, status },
         }),
       });
@@ -59,6 +60,7 @@ export default function InvoicesEditModal({
           clientSheetId: invoicesClient?.clientSheetId,
           clientName: invoicesClient?.clientName || invoicesClient?.name || "",
           rowNum, slotNum, deleteSlot: true,
+          jobClient, jobName,
         }),
       });
       if (invoicesClient?.masterSheetId) {

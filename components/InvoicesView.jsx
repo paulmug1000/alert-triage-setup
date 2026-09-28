@@ -55,7 +55,7 @@ export default function InvoicesView({
 
     try {
       if (isNewRow) {
-        await fetch("/api/triage", {
+        const res = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "assign_invoice_to_job",
@@ -72,12 +72,18 @@ export default function InvoicesView({
             jobRowNums,
           }),
         });
+        const data = await res.json();
+        if (!data.success) {
+          alert(data.error || "Failed to add new row for invoice");
+          await loadInvoicesJobs(invoicesClient, invoicesShowAll);
+          return;
+        }
         if (invoicesClient?.masterSheetId) {
           outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
         }
         await loadInvoicesJobs(invoicesClient, invoicesShowAll);
       } else {
-        await fetch("/api/triage", {
+        const res = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "assign_invoice_to_job",
@@ -91,31 +97,42 @@ export default function InvoicesView({
             jobRowNums,
           }),
         });
+        const data = await res.json();
+        if (!data.success) {
+          alert(data.error || "Failed to place invoice");
+          await loadInvoicesJobs(invoicesClient, invoicesShowAll);
+          return;
+        }
         if (invoicesClient?.masterSheetId) {
           outgoingsPullPendingRef.current = invoicesClient.masterSheetId;
         }
-        setInvoicesJobs(prev => prev && prev.map(j => {
-          if (j.jobName !== job.jobName || j.client !== job.client) return j;
-          const updatedClient = shouldUpdateClientName ? effectiveClientName : j.client;
-          return {
-            ...j,
-            client: updatedClient,
-            rows: j.rows.map(r => {
-              const baseR = shouldUpdateClientName ? { ...r, client: updatedClient } : r;
-              if (r.rowNum !== rowNum) return baseR;
-              return {
-                ...baseR,
-                invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== slotNum ? sl : {
-                  ...sl,
-                  amount: inv.amount || 0,
-                  ref: inv.invoiceNo || "",
-                  sentDate: inv.sentDate || "",
-                  status: inv.status || "Sent",
-                }),
-              };
-            }),
-          };
-        }));
+        if (data.rowShifted) {
+          // If rows shifted on the sheet, reload the live jobs list to guarantee 100% accurate row numbers
+          await loadInvoicesJobs(invoicesClient, invoicesShowAll);
+        } else {
+          setInvoicesJobs(prev => prev && prev.map(j => {
+            if (j.jobName !== job.jobName || j.client !== job.client) return j;
+            const updatedClient = shouldUpdateClientName ? effectiveClientName : j.client;
+            return {
+              ...j,
+              client: updatedClient,
+              rows: j.rows.map(r => {
+                const baseR = shouldUpdateClientName ? { ...r, client: updatedClient } : r;
+                if (r.rowNum !== rowNum) return baseR;
+                return {
+                  ...baseR,
+                  invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== slotNum ? sl : {
+                    ...sl,
+                    amount: inv.amount || 0,
+                    ref: inv.invoiceNo || "",
+                    sentDate: inv.sentDate || "",
+                    status: inv.status || "Sent",
+                  }),
+                };
+              }),
+            };
+          }));
+        }
       }
     } catch(e) {
       console.error("assign_invoice_to_job error:", e);
@@ -224,10 +241,20 @@ export default function InvoicesView({
             {invoicesClient ? invoicesClient.clientName : "Invoices"}
           </h2>
           {invoicesClient && (
-            <button className="triage-btn" onClick={() => { setInvoicesClient(null); setInvoicesInbox([]); setInvoicesJobs(null); }}
-              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
-              ← Back to Clients
-            </button>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <button className="triage-btn" onClick={() => {
+                loadInvoicesInbox(invoicesClient);
+                loadInvoicesJobs(invoicesClient, invoicesShowAll);
+              }}
+              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}
+              title="Refresh jobs and invoices from live sheets">
+                ↻ Refresh
+              </button>
+              <button className="triage-btn" onClick={() => { setInvoicesClient(null); setInvoicesInbox([]); setInvoicesJobs(null); }}
+                style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
+                ← Back to Clients
+              </button>
+            </div>
           )}
         </div>
 
@@ -417,7 +444,7 @@ export default function InvoicesView({
                                       executePlacement(promptPayload, false);
                                     }
                                   } else if (!isPlacing && !isGenuinelyBlank) {
-                                    setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s });
+                                    setInvoicesEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s, jobClient: job.client, jobName: job.jobName });
                                   }
                                 }}
                                 style={{ padding: "7px 10px", borderBottom: "1px solid #eee",

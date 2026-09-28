@@ -1158,28 +1158,59 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
     };
 
+    const effectiveClientName = (updateClientName && newClientName) ? newClientName : (jobClient || "");
+
+    const metaResp = await sheets.spreadsheets.get({
+      spreadsheetId: sheetIdClean,
+      fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
+    });
+    const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+    if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+    const gridSheetId = confirmedSheet.properties.sheetId;
+    let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+    const existingRowGroups = confirmedSheet.rowGroups || [];
+
+    const fullResp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetIdClean,
+      range: "Confirmed!A1:CR" + Math.min(currentMaxRows, 5000),
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const allRows = fullResp.data.values || [];
+
+    const norm = (s) => String(s || "").trim().toLowerCase();
+    const targetClient = norm(jobClient);
+    const targetJobName = norm(jobName);
+
+    // Locate all rows currently in the sheet that belong to this job
+    const matchingRowIndices = [];
+    for (let i = 1; i < allRows.length; i++) {
+      const r = allRows[i] || [];
+      const c = norm(r[0]);
+      const j = norm(r[1]);
+      if (targetClient && targetJobName && c === targetClient && j === targetJobName) {
+        matchingRowIndices.push(i + 1);
+      }
+    }
+    // If no exact client+job match, check jobName match alone as fallback
+    if (matchingRowIndices.length === 0 && targetJobName) {
+      for (let i = 1; i < allRows.length; i++) {
+        const r = allRows[i] || [];
+        const j = norm(r[1]);
+        if (j === targetJobName) {
+          matchingRowIndices.push(i + 1);
+        }
+      }
+    }
+
     let targetRowNum = rowNum;
     let targetSlotNum = slotNum;
 
     if (createNewRow) {
-      if (!jobLastRow) return res.status(400).json({ success: false, error: "Missing jobLastRow for createNewRow" });
+      const actualJobLastRow = matchingRowIndices.length > 0
+        ? matchingRowIndices[matchingRowIndices.length - 1]
+        : jobLastRow;
+      if (!actualJobLastRow) return res.status(400).json({ success: false, error: "Missing jobLastRow for createNewRow" });
 
-      const metaResp = await sheets.spreadsheets.get({
-        spreadsheetId: sheetIdClean,
-        fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
-      });
-      const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
-      if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
-      const gridSheetId = confirmedSheet.properties.sheetId;
-      let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
-      const existingRowGroups = confirmedSheet.rowGroups || [];
-
-      const fullResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetIdClean,
-        range: "Confirmed!A1:CR" + currentMaxRows,
-        valueRenderOption: "UNFORMATTED_VALUE",
-      });
-      const allRows = fullResp.data.values || [];
       let trueLastRow = 0;
       for (let r = allRows.length - 1; r >= 0; r--) {
         const row = allRows[r] || [];
@@ -1190,7 +1221,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
         if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
       }
 
-      const jobVAT = allRows[jobLastRow - 1]?.[34] ?? "";
+      const jobVAT = allRows[actualJobLastRow - 1]?.[34] ?? "";
       const vatAmountVal = parseFloat(String(invoice.vatAmount || invoice.vatIncluded || 0)) || 0;
       const vatVal = vatAmountVal > 0 ? "Yes" : (invoice.vatYesNo || jobVAT || "No");
 
@@ -1206,10 +1237,11 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
             }],
           },
         });
+        currentMaxRows += 5;
       }
 
       const sourceRowIndex0 = trueLastRow; 
-      const destRowIndex0 = jobLastRow;    
+      const destRowIndex0 = actualJobLastRow;    
 
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId: sheetIdClean,
@@ -1223,11 +1255,11 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
         },
       });
 
-      targetRowNum = jobLastRow + 1; 
+      targetRowNum = actualJobLastRow + 1; 
       targetSlotNum = 1; 
 
       try {
-        const destRowIndex1based0 = jobLastRow; 
+        const destRowIndex1based0 = actualJobLastRow; 
         const coveringGroup = existingRowGroups.find(g =>
           g.range?.startIndex <= destRowIndex1based0 - 1 && g.range?.endIndex >= destRowIndex1based0
         );
@@ -1263,7 +1295,6 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
         console.log(`  ⚠ Row grouping for new child row failed (non-fatal): ${groupErr.message}`);
       }
 
-      const effectiveClientName = (updateClientName && newClientName) ? newClientName : (jobClient || "");
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
         requestBody: {
@@ -1275,10 +1306,41 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
           ],
         },
       });
+    } else {
+      // Existing row slot placement: defensively verify targetRowNum
+      if (!matchingRowIndices.includes(rowNum)) {
+        if (matchingRowIndices.length > 0) {
+          const origJobRows = Array.isArray(jobRowNums) ? jobRowNums : [rowNum];
+          const relIdx = origJobRows.indexOf(rowNum);
+          if (relIdx >= 0 && matchingRowIndices[relIdx]) {
+            targetRowNum = matchingRowIndices[relIdx];
+          } else {
+            const slotBaseCol = targetSlotNum === 1 ? 41 : targetSlotNum === 2 ? 48 : 55;
+            const foundRow = matchingRowIndices.find(rNum => {
+              const r = allRows[rNum - 1] || [];
+              const amt = String(r[slotBaseCol] || "").trim();
+              const ref = String(r[slotBaseCol + 1] || "").trim();
+              return !ref || isPlaceholderInvoice(ref) || !amt;
+            });
+            targetRowNum = foundRow || matchingRowIndices[0];
+          }
+          console.log(`ℹ Reconciled shifted row from ${rowNum} to ${targetRowNum} for job "${jobName}"`);
+        } else {
+          const candJob = norm(allRows[rowNum - 1]?.[1]);
+          if (targetJobName && candJob === targetJobName) {
+            targetRowNum = rowNum;
+          } else {
+            return res.status(400).json({
+              success: false,
+              error: `Could not verify job "${jobName}" on Confirmed sheet (expected row ${rowNum}). Rows may have been moved or deleted. Please refresh the page.`
+            });
+          }
+        }
+      }
     }
 
     if (updateClientName && newClientName) {
-      const rowsToUpdate = new Set(Array.isArray(jobRowNums) ? jobRowNums : []);
+      const rowsToUpdate = new Set(matchingRowIndices.length > 0 ? matchingRowIndices : (Array.isArray(jobRowNums) ? jobRowNums : []));
       if (rowNum) rowsToUpdate.add(rowNum);
       if (targetRowNum) rowsToUpdate.add(targetRowNum);
 
@@ -1296,6 +1358,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
         });
       }
     }
+
 
     const slotColsForSlot = slotCols[targetSlotNum];
     if (!slotColsForSlot) return res.status(400).json({ success: false, error: "Invalid slotNum" });
@@ -1375,7 +1438,12 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true, newRowNum: createNewRow ? targetRowNum : undefined });
+    return res.status(200).json({
+      success: true,
+      newRowNum: createNewRow ? targetRowNum : undefined,
+      targetRowNum,
+      rowShifted: targetRowNum !== rowNum
+    });
   } catch (err) {
     console.error("❌ assign_invoice_to_job error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -1383,7 +1451,7 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
 }
 
 export async function handleUpdateInvoiceSlot(req, res, sheets) {
-  const { clientSheetId, rowNum, slotNum, invoice, deleteSlot } = req.body;
+  const { clientSheetId, rowNum, slotNum, invoice, deleteSlot, jobClient, jobName } = req.body;
   if (!clientSheetId || !rowNum || !slotNum) return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
   if (!deleteSlot && !invoice) return res.status(400).json({ success: false, error: "Missing invoice (or set deleteSlot: true)" });
   try {
@@ -1394,6 +1462,45 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
     }[slotNum];
     if (!slotCols) return res.status(400).json({ success: false, error: "Invalid slotNum" });
+
+    let actualRowNum = rowNum;
+    if (jobClient || jobName) {
+      try {
+        const checkResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetIdClean,
+          range: `Confirmed!A${rowNum}:B${rowNum}`,
+          valueRenderOption: "UNFORMATTED_VALUE"
+        });
+        const currentVals = checkResp.data.values?.[0] || [];
+        const norm = (s) => String(s || "").trim().toLowerCase();
+        const curClient = norm(currentVals[0]);
+        const curJob = norm(currentVals[1]);
+        const targetClient = norm(jobClient);
+        const targetJobName = norm(jobName);
+
+        if ((targetClient && curClient !== targetClient) || (targetJobName && curJob !== targetJobName)) {
+          const searchResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: "Confirmed!A1:B5000",
+            valueRenderOption: "UNFORMATTED_VALUE"
+          });
+          const searchRows = searchResp.data.values || [];
+          const matches = [];
+          for (let i = 1; i < searchRows.length; i++) {
+            const r = searchRows[i] || [];
+            if (norm(r[0]) === targetClient && norm(r[1]) === targetJobName) {
+              matches.push(i + 1);
+            }
+          }
+          if (matches.length > 0) {
+            actualRowNum = matches[0];
+            console.log(`ℹ Reconciled update_invoice_slot row from ${rowNum} to ${actualRowNum} for job "${jobName}"`);
+          }
+        }
+      } catch (checkErr) {
+        console.warn("Row verification check failed in update_invoice_slot:", checkErr.message);
+      }
+    }
 
     const values = deleteSlot
       ? ["", "", "", "", ""]
@@ -1410,10 +1517,10 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       requestBody: {
         valueInputOption: "RAW",
         data: [
-          { range: `Confirmed!${slotCols.a}${rowNum}`,    values: [[values[0]]] },
-          { range: `Confirmed!${slotCols.ref}${rowNum}`,  values: [[values[1]]] },
-          { range: `Confirmed!${slotCols.days}${rowNum}`, values: [[values[3]]] },
-          { range: `Confirmed!${slotCols.st}${rowNum}`,   values: [[values[4]]] },
+          { range: `Confirmed!${slotCols.a}${actualRowNum}`,    values: [[values[0]]] },
+          { range: `Confirmed!${slotCols.ref}${actualRowNum}`,  values: [[values[1]]] },
+          { range: `Confirmed!${slotCols.days}${actualRowNum}`, values: [[values[3]]] },
+          { range: `Confirmed!${slotCols.st}${actualRowNum}`,   values: [[values[4]]] },
         ],
       },
     });
@@ -1421,7 +1528,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
     if (deleteSlot) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
-        range: `Confirmed!${slotCols.sent}${rowNum}`,
+        range: `Confirmed!${slotCols.sent}${actualRowNum}`,
         valueInputOption: "RAW",
         requestBody: { values: [[""]] },
       });
@@ -1440,7 +1547,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         const fmt = (d) => { const ms = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return d.getDate() + "-" + ms[d.getMonth()] + "-" + d.getFullYear(); };
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean,
-          range: `Confirmed!${slotCols.sent}${rowNum}`,
+          range: `Confirmed!${slotCols.sent}${actualRowNum}`,
           valueInputOption: "USER_ENTERED",
           requestBody: { values: [[fmt(parsedSentDate)]] },
         });

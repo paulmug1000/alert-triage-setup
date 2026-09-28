@@ -1,3 +1,12 @@
+export function stripCurrency(v) {
+  if (v === null || v === undefined) return "";
+  const s = String(v).trim();
+  if (s.toLowerCase() === "undefined" || s.toLowerCase() === "null") return "";
+  // Strip currency symbols (£, $, €), commas, and any non-numeric chars except dot and minus
+  const clean = s.replace(/[^\d.-]/g, "").trim();
+  return isNaN(Number(clean)) || clean === "" ? "" : clean;
+}
+
 export function isPlaceholderInvoice(ref) {
   if (!ref) return false;
   const s = String(ref).trim().toUpperCase();

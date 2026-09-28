@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { stripCurrency } from "../utils/helpers";
 
 export default function InvoicesNewJobModal({ 
   newJobData, 
@@ -10,7 +11,7 @@ export default function InvoicesNewJobModal({
   const { inv } = newJobData;
   const [jobName, setJobName] = useState(inv.job || "");
   const [projectCode, setProjectCode] = useState("");
-  const [revenue, setRevenue] = useState(String(inv.amount || ""));
+  const [revenue, setRevenue] = useState(stripCurrency(inv.amount));
   const [directCosts, setDirectCosts] = useState("0");
   const [vatYesNo, setVatYesNo] = useState(inv.vatAmount > 0 ? "Yes" : "No");
   const [projectType, setProjectType] = useState("Project");

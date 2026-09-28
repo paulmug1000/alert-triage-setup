@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import Spinner from "./Spinner";
+import { stripCurrency } from "../utils/helpers";
 
 export default function DirectCostsEditModal({
   editSlot,
@@ -9,7 +10,6 @@ export default function DirectCostsEditModal({
   onUpdateJobs
 }) {
   const { rowNum, slotNum, slot } = editSlot;
-  const stripCurrency = v => String(v ?? "").replace(/^[£$€]/, "").trim();
   const [description, setDescription] = useState(slot.description || "");
   const [amount, setAmount] = useState(stripCurrency(slot.amount));
   const [vat, setVat] = useState(/^[£$€]?\d/.test(String(slot.vat||"")) ? "" : (slot.vat || "No"));

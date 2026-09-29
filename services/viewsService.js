@@ -89,9 +89,33 @@ export function parseCell(cell) {
 
 const FIELDS = "sheets(properties.title,data.rowData.values(formattedValue,effectiveFormat(backgroundColor,textFormat(bold,italic,foregroundColor),horizontalAlignment,borders)))";
 
-export async function getClientViewData({ clientSheetId, tab }) {
-  if (!clientSheetId) {
-    throw new Error("Missing clientSheetId");
+export function isBudgetCellEditable(sheetRow, colIdx) {
+  const isMonthCol =
+    (colIdx >= 6 && colIdx <= 17) ||
+    (colIdx >= 21 && colIdx <= 32) ||
+    (colIdx >= 36 && colIdx <= 47);
+
+  // Rows 5-7: months
+  if (sheetRow >= 5 && sheetRow <= 7) return isMonthCol;
+  // Rows 13-15: months
+  if (sheetRow >= 13 && sheetRow <= 15) return isMonthCol;
+  // Employees: A59:E111
+  if (sheetRow >= 59 && sheetRow <= 111) return colIdx >= 0 && colIdx <= 4;
+  // Dividends: Row 119, Col E (4) + months
+  if (sheetRow === 119) return colIdx === 4 || isMonthCol;
+  // Contractors: Rows 127-140, Cols A (0) & E (4) + months
+  if (sheetRow >= 127 && sheetRow <= 140) return colIdx === 0 || colIdx === 4 || isMonthCol;
+  // Making up CoS: B142 (Col B = 1)
+  if (sheetRow === 142) return colIdx === 1;
+  // Other expenses: Rows 150-250, Cols A (0) & E (4) + months
+  if (sheetRow >= 150 && sheetRow <= 250) return colIdx === 0 || colIdx === 4 || isMonthCol;
+
+  return false;
+}
+
+export async function getClientViewData({ clientSheetId, masterSheetId, tab }) {
+  if (!clientSheetId && !masterSheetId) {
+    throw new Error("Missing clientSheetId or masterSheetId");
   }
 
   const sheets = await getSheetsClient();
@@ -233,12 +257,79 @@ export async function getClientViewData({ clientSheetId, tab }) {
     }
   }
 
+  if (tab === "budget") {
+    let targetMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+    if (!targetMasterId && clientSheetId) {
+      try {
+        const d1Res = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: extractSheetIdFromUrl(clientSheetId) || clientSheetId,
+          range: "KeyInfo!D1",
+        }));
+        const d1Val = d1Res.data.values?.[0]?.[0];
+        if (d1Val) targetMasterId = extractSheetIdFromUrl(d1Val) || String(d1Val).trim();
+      } catch (e) {
+        console.warn("Could not read KeyInfo!D1 for masterSheetId fallback:", e);
+      }
+    }
+
+    if (!targetMasterId) {
+      throw new Error("Missing masterSheetId for Budget view");
+    }
+
+    const [budgetRes, keyInfoRes] = await Promise.all([
+      withRetry(() => sheets.spreadsheets.get({
+        spreadsheetId: targetMasterId,
+        ranges: ["Budget!A1:AX253"],
+        fields: FIELDS,
+      })),
+      withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: targetMasterId,
+        range: "KeyInfo!B15",
+      })).catch(() => ({ data: { values: [["Revenue"]] } }))
+    ]);
+
+    const rowData = budgetRes.data.sheets[0]?.data[0]?.rowData || [];
+    const matrix = rowData.map(r => (r.values || []).map(parseCell));
+    const row0 = (rowData[0]?.values || []).map(c => c?.formattedValue || "");
+
+    const fyConfigs = [
+      { label: row0[19] || "FY1", totalCol: 19, monthCols: Array.from({ length: 12 }, (_, i) => 6 + i) },
+      { label: row0[34] || "FY2", totalCol: 34, monthCols: Array.from({ length: 12 }, (_, i) => 21 + i) },
+      { label: row0[49] || "FY3", totalCol: 49, monthCols: Array.from({ length: 12 }, (_, i) => 36 + i) },
+    ];
+
+    let defaultFyIndex = 0;
+    fyConfigs.forEach((fy, idx) => {
+      fy.months = fy.monthCols.map(colIdx => {
+        const label = row0[colIdx];
+        const parsed = parseMonthHeader(label);
+        if (parsed && parsed.year === curYear && parsed.month === curMonth) {
+          defaultFyIndex = idx;
+        }
+        return { colIdx, label, parsed };
+      });
+    });
+
+    const rawMode = String(keyInfoRes.data?.values?.[0]?.[0] || "").trim();
+    const isIncomeMode = rawMode.toLowerCase() === "income";
+
+    return {
+      success: true,
+      tab: "budget",
+      fyConfigs,
+      defaultFyIndex,
+      isIncomeMode,
+      matrix, // rows 0 to 252 (Budget rows 1 to 253)
+    };
+  }
+
   throw new Error(`Unsupported tab: ${tab}`);
 }
 
 export async function handleUpdateViewCell(req, res, sheets) {
   const {
     clientSheetId,
+    masterSheetId,
     tab,
     sheetRow,
     colLetter,
@@ -249,7 +340,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
     rowDescription
   } = req.body;
 
-  if (!clientSheetId || !sheetRow || !colLetter) {
+  if ((!clientSheetId && !masterSheetId) || !sheetRow || !colLetter) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
 
@@ -259,6 +350,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
   // Validate allowed ranges:
   // Contractors: A13:F110, G13:R110, V13:AG110, AK13:AV110
   // Outgoings: A126:F225, G126:R225, V126:AG225, AK126:AV225
+  // Budget: custom via isBudgetCellEditable
   const isAllowedCol =
     (colIndex >= 0 && colIndex <= 5) ||   // A:F
     (colIndex >= 6 && colIndex <= 17) ||  // G:R
@@ -270,6 +362,8 @@ export async function handleUpdateViewCell(req, res, sheets) {
     isAllowed = rowNum >= 13 && rowNum <= 110 && isAllowedCol;
   } else if (screenTab === "outgoings") {
     isAllowed = rowNum >= 126 && rowNum <= 225 && isAllowedCol;
+  } else if (screenTab === "budget") {
+    isAllowed = isBudgetCellEditable(rowNum, colIndex);
   }
 
   if (!isAllowed) {
@@ -281,31 +375,60 @@ export async function handleUpdateViewCell(req, res, sheets) {
 
   // Column-specific data validation
   const strVal = String(value ?? "").trim();
-  if (colIndex === 1) { // VAT?
-    const lower = strVal.toLowerCase();
-    if (lower !== "" && lower !== "yes" && lower !== "no") {
-      return res.status(400).json({ success: false, error: "VAT? must be 'Yes' or 'No'" });
+  if (screenTab === "budget") {
+    if (colIndex === 4 || (rowNum === 142 && colIndex === 1)) {
+      if (strVal !== "") {
+        const cleanNum = parseFloat(strVal.replace(/%/g, ""));
+        if (isNaN(cleanNum) || cleanNum < 0 || cleanNum > 100) {
+          return res.status(400).json({
+            success: false,
+            error: `${rowNum === 142 && colIndex === 1 ? "Des. CoS %" : "Del %"} must be a percentage between 0 and 100`
+          });
+        }
+      }
     }
-  } else if (colIndex === 2 || colIndex === 3) { // Inv? or Pay?
-    const lower = strVal.toLowerCase();
-    if (lower !== "" && lower !== "curr" && lower !== "next") {
-      return res.status(400).json({ success: false, error: `${colIndex === 2 ? "Inv?" : "Pay?"} must be 'Curr' or 'Next'` });
-    }
-  } else if (colIndex === 4 || colIndex === 5) { // Del or Likl. %
-    if (strVal !== "") {
-      const cleanNum = parseFloat(strVal.replace(/%/g, ""));
-      if (isNaN(cleanNum) || cleanNum < 0 || cleanNum > 100) {
-        return res.status(400).json({
-          success: false,
-          error: `${colIndex === 4 ? "Del" : "Likl. %"} must be a percentage between 0 and 100`
-        });
+  } else {
+    if (colIndex === 1) { // VAT?
+      const lower = strVal.toLowerCase();
+      if (lower !== "" && lower !== "yes" && lower !== "no") {
+        return res.status(400).json({ success: false, error: "VAT? must be 'Yes' or 'No'" });
+      }
+    } else if (colIndex === 2 || colIndex === 3) { // Inv? or Pay?
+      const lower = strVal.toLowerCase();
+      if (lower !== "" && lower !== "curr" && lower !== "next") {
+        return res.status(400).json({ success: false, error: `${colIndex === 2 ? "Inv?" : "Pay?"} must be 'Curr' or 'Next'` });
+      }
+    } else if (colIndex === 4 || colIndex === 5) { // Del or Likl. %
+      if (strVal !== "") {
+        const cleanNum = parseFloat(strVal.replace(/%/g, ""));
+        if (isNaN(cleanNum) || cleanNum < 0 || cleanNum > 100) {
+          return res.status(400).json({
+            success: false,
+            error: `${colIndex === 4 ? "Del" : "Likl. %"} must be a percentage between 0 and 100`
+          });
+        }
       }
     }
   }
 
   try {
-    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-    const targetTab = tab || "Outgoings";
+    let targetSpreadsheetId = clientSheetId;
+    if (screenTab === "budget") {
+      targetSpreadsheetId = masterSheetId || clientSheetId;
+      if (clientSheetId && (!masterSheetId || masterSheetId === clientSheetId)) {
+        try {
+          const d1Res = await withRetry(() => sheets.spreadsheets.values.get({
+            spreadsheetId: extractSheetIdFromUrl(clientSheetId) || clientSheetId,
+            range: "KeyInfo!D1",
+          }));
+          const d1Val = d1Res.data.values?.[0]?.[0];
+          if (d1Val) targetSpreadsheetId = extractSheetIdFromUrl(d1Val) || String(d1Val).trim();
+        } catch (e) {}
+      }
+    }
+
+    const sheetIdClean = extractSheetIdFromUrl(targetSpreadsheetId) || targetSpreadsheetId;
+    const targetTab = screenTab === "budget" ? "Budget" : (tab || "Outgoings");
     const cellRange = `${targetTab}!${colLetter}${rowNum}`;
 
     await withRetry(() =>
@@ -338,6 +461,23 @@ export async function handleUpdateViewCell(req, res, sheets) {
       console.warn("Could not fetch formatted cell value and header:", e);
     }
 
+    let updatedMatrix = null;
+    if (screenTab === "budget") {
+      try {
+        const getBudgetRes = await withRetry(() =>
+          sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            ranges: ["Budget!A1:AX253"],
+            fields: FIELDS,
+          })
+        );
+        const rData = getBudgetRes.data.sheets[0]?.data[0]?.rowData || [];
+        updatedMatrix = rData.map(r => (r.values || []).map(parseCell));
+      } catch (e) {
+        console.warn("Could not fetch updated budget matrix:", e);
+      }
+    }
+
     let resolvedClient = req.body.clientName || "";
     if (!resolvedClient) {
       resolvedClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
@@ -361,22 +501,44 @@ export async function handleUpdateViewCell(req, res, sheets) {
           : `Updated ${ident} to ${formattedValue}`;
       }
     } else if (colIndex === 0) {
-      const typeLabel = screenTab === "contractors" ? "contractor name" : "outgoing description";
+      const typeLabel = screenTab === "contractors" ? "contractor name" : (screenTab === "budget" ? "name / description" : "outgoing description");
       summary = isCleared
         ? `Cleared ${typeLabel} (was "${ident}")`
         : `Updated ${typeLabel} to "${formattedValue}"`;
     } else if (colIndex === 1) {
-      summary = isCleared
-        ? `Cleared VAT? for ${ident}`
-        : `Updated VAT? for ${ident} to "${formattedValue}"`;
+      if (screenTab === "budget" && rowNum === 142) {
+        summary = isCleared
+          ? `Cleared Des. CoS % for Making up CoS`
+          : `Updated Des. CoS % for Making up CoS to "${formattedValue}"`;
+      } else if (screenTab === "budget" && rowNum >= 59 && rowNum <= 111) {
+        summary = isCleared
+          ? `Cleared Equiv salary for ${ident}`
+          : `Updated Equiv salary for ${ident} to "${formattedValue}"`;
+      } else {
+        summary = isCleared
+          ? `Cleared VAT? for ${ident}`
+          : `Updated VAT? for ${ident} to "${formattedValue}"`;
+      }
     } else if (colIndex === 2) {
-      summary = isCleared
-        ? `Cleared Inv? for ${ident}`
-        : `Updated Inv? for ${ident} to "${formattedValue}"`;
+      if (screenTab === "budget" && rowNum >= 59 && rowNum <= 111) {
+        summary = isCleared
+          ? `Cleared start month for ${ident}`
+          : `Updated start month for ${ident} to "${formattedValue}"`;
+      } else {
+        summary = isCleared
+          ? `Cleared Inv? for ${ident}`
+          : `Updated Inv? for ${ident} to "${formattedValue}"`;
+      }
     } else if (colIndex === 3) {
-      summary = isCleared
-        ? `Cleared Pay? for ${ident}`
-        : `Updated Pay? for ${ident} to "${formattedValue}"`;
+      if (screenTab === "budget" && rowNum >= 59 && rowNum <= 111) {
+        summary = isCleared
+          ? `Cleared end month for ${ident}`
+          : `Updated end month for ${ident} to "${formattedValue}"`;
+      } else {
+        summary = isCleared
+          ? `Cleared Pay? for ${ident}`
+          : `Updated Pay? for ${ident} to "${formattedValue}"`;
+      }
     } else if (colIndex === 4) {
       summary = isCleared
         ? `Cleared Del for ${ident}`
@@ -394,8 +556,8 @@ export async function handleUpdateViewCell(req, res, sheets) {
     logPmaActivity(sheets, {
       automationCommanderSheetId: req.body.automationCommanderSheetId,
       clientName: resolvedClient,
-      category: "EXPENSES",
-      action: screenTab === "contractors" ? "Contractor Cell Updated" : "Outgoing Cell Updated",
+      category: screenTab === "budget" ? "BUDGET" : "EXPENSES",
+      action: screenTab === "budget" ? "Budget Cell Updated" : (screenTab === "contractors" ? "Contractor Cell Updated" : "Outgoing Cell Updated"),
       summary,
       details: {
         tab: targetTab,
@@ -411,7 +573,13 @@ export async function handleUpdateViewCell(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true, cellRef: `${colLetter}${rowNum}`, value: formattedValue, monthText });
+    return res.status(200).json({
+      success: true,
+      cellRef: `${colLetter}${rowNum}`,
+      value: formattedValue,
+      monthText,
+      updatedMatrix
+    });
   } catch (err) {
     console.error("❌ handleUpdateViewCell error:", err);
     return res.status(500).json({ success: false, error: err.message });

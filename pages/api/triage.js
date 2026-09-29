@@ -263,8 +263,8 @@ export default async function handler(req, res) {
       return await handleGetActivity(req, res, sheets);
     } else if (action === "get_client_view_data") {
       try {
-        const { clientSheetId, tab } = req.body;
-        const data = await getClientViewData({ clientSheetId, tab });
+        const { clientSheetId, masterSheetId, tab } = req.body;
+        const data = await getClientViewData({ clientSheetId, masterSheetId, tab });
         return res.status(200).json(data);
       } catch (err) {
         console.error("❌ get_client_view_data error:", err);

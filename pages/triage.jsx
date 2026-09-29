@@ -334,6 +334,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
         <ViewsScreen
           allClients={allOutgoingsClients}
           styles={styles}
+          isAdmin={isAdmin}
         />
       );
     }

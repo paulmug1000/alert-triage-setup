@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import Spinner from "./Spinner";
+import { useAuth } from "../hooks/useAuth";
 
 // Columns checked to determine if a row is blank:
 // Column A (0), G:R (6..17), V:AG (21..32), and AK:AV (36..47)
@@ -32,6 +33,30 @@ function colIndexToLetter(colNum) {
   return letter;
 }
 
+function isBudgetCellEditable(sheetRow, colIdx) {
+  const isMonthCol =
+    (colIdx >= 6 && colIdx <= 17) ||
+    (colIdx >= 21 && colIdx <= 32) ||
+    (colIdx >= 36 && colIdx <= 47);
+
+  // Rows 5-7: months
+  if (sheetRow >= 5 && sheetRow <= 7) return isMonthCol;
+  // Rows 13-15: months
+  if (sheetRow >= 13 && sheetRow <= 15) return isMonthCol;
+  // Employees: A59:E111
+  if (sheetRow >= 59 && sheetRow <= 111) return colIdx >= 0 && colIdx <= 4;
+  // Dividends: Row 119, Col E (4) + months
+  if (sheetRow === 119) return colIdx === 4 || isMonthCol;
+  // Contractors: Rows 127-140, Cols A (0) & E (4) + months
+  if (sheetRow >= 127 && sheetRow <= 140) return colIdx === 0 || colIdx === 4 || isMonthCol;
+  // Making up CoS: B142 (Col B = 1)
+  if (sheetRow === 142) return colIdx === 1;
+  // Other expenses: Rows 150-250, Cols A (0) & E (4) + months
+  if (sheetRow >= 150 && sheetRow <= 250) return colIdx === 0 || colIdx === 4 || isMonthCol;
+
+  return false;
+}
+
 function isCellEditable(sheetRow, colIdx, screenTab) {
   const isAllowedCol =
     (colIdx >= 0 && colIdx <= 5) ||   // A:F
@@ -44,6 +69,9 @@ function isCellEditable(sheetRow, colIdx, screenTab) {
   }
   if (screenTab === "outgoings") {
     return sheetRow >= 126 && sheetRow <= 225 && isAllowedCol;
+  }
+  if (screenTab === "budget") {
+    return isBudgetCellEditable(sheetRow, colIdx);
   }
   return false;
 }
@@ -63,12 +91,14 @@ function formatCurrency(val) {
   return str;
 }
 
-export default function ViewsScreen({ allClients, styles }) {
+export default function ViewsScreen({ allClients, styles, isAdmin: propIsAdmin }) {
+  const { user } = useAuth();
+  const isAdmin = propIsAdmin !== undefined ? propIsAdmin : !!(user?.isAdmin || user?.role === "Admin" || user?.assignedClients === "*");
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientSearch, setClientSearch] = useState("");
-  const [activeTab, setActiveTab] = useState("dashboard"); // 'dashboard' | 'cash' | 'contractors' | 'outgoings'
+  const [activeTab, setActiveTab] = useState("dashboard"); // 'dashboard' | 'cash' | 'contractors' | 'outgoings' | 'budget'
   
-  // Data caches: { [clientSheetId]: { dashboard: data, cash: data, contractors: data, outgoings: data } }
+  // Data caches: { [clientSheetId]: { dashboard: data, cash: data, contractors: data, outgoings: data, budget: data } }
   const [cache, setCache] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -77,6 +107,7 @@ export default function ViewsScreen({ allClients, styles }) {
   const [dashboardFyIdx, setDashboardFyIdx] = useState(0);
   const [contractorsFyIdx, setContractorsFyIdx] = useState(0);
   const [outgoingsFyIdx, setOutgoingsFyIdx] = useState(0);
+  const [budgetFyIdx, setBudgetFyIdx] = useState(0);
 
   // Optional filter: show blank rows (default false = hidden)
   const [showBlankRows, setShowBlankRows] = useState(false);
@@ -121,6 +152,7 @@ export default function ViewsScreen({ allClients, styles }) {
         body: JSON.stringify({
           action: "get_client_view_data",
           clientSheetId: client.clientSheetId,
+          masterSheetId: client.masterSheetId,
           tab,
         }),
       });
@@ -147,6 +179,9 @@ export default function ViewsScreen({ allClients, styles }) {
       }
       if (tab === "outgoings" && data.defaultFyIndex !== undefined) {
         setOutgoingsFyIdx(data.defaultFyIndex);
+      }
+      if (tab === "budget" && data.defaultFyIndex !== undefined) {
+        setBudgetFyIdx(data.defaultFyIndex);
       }
     } catch (err) {
       console.error(`Error loading view [${tab}]:`, err);
@@ -179,7 +214,10 @@ export default function ViewsScreen({ allClients, styles }) {
     let displayVal = newValue;
     if (colIdx >= 6 && newValue !== "") {
       displayVal = formatCurrency(newValue);
-    } else if ((colIdx === 4 || colIdx === 5) && newValue !== "") {
+    } else if (tabName === "budget" && sheetRow >= 59 && sheetRow <= 111 && colIdx === 1 && newValue !== "") {
+      displayVal = formatCurrency(newValue);
+    } else if (((tabName === "budget" && (colIdx === 4 || (sheetRow === 142 && colIdx === 1))) ||
+                ((tabName === "contractors" || tabName === "outgoings") && (colIdx === 4 || colIdx === 5))) && newValue !== "") {
       const clean = String(newValue).replace(/%/g, "").trim();
       const num = parseFloat(clean);
       if (!isNaN(num)) {
@@ -217,6 +255,17 @@ export default function ViewsScreen({ allClients, styles }) {
         if (updatedTabData.mainRows) {
           updatedTabData.mainRows = updateRowList(updatedTabData.mainRows, 126);
         }
+      } else if (tabName === "budget") {
+        if (updatedTabData.matrix) {
+          const newMatrix = [...updatedTabData.matrix];
+          const rIdx = sheetRow - 1;
+          if (newMatrix[rIdx]) {
+            const newRow = [...newMatrix[rIdx]];
+            newRow[colIdx] = { ...(newRow[colIdx] || {}), v: displayVal };
+            newMatrix[rIdx] = newRow;
+            updatedTabData.matrix = newMatrix;
+          }
+        }
       }
 
       return {
@@ -237,8 +286,13 @@ export default function ViewsScreen({ allClients, styles }) {
       } else if (tabName === "outgoings") {
         const r = currentTab?.outgoingRows?.[sheetRow - 126] || currentTab?.mainRows?.[sheetRow - 126];
         rowDesc = r?.[0]?.v || "";
+      } else if (tabName === "budget") {
+        const r = currentTab?.matrix?.[sheetRow - 1];
+        rowDesc = r?.[0]?.v || `Row ${sheetRow}`;
       }
-      const headerLabel = currentTab?.headerRow?.[colIdx]?.v || "";
+      const headerLabel = tabName === "budget"
+        ? (currentTab?.matrix?.[0]?.[colIdx]?.v || "")
+        : (currentTab?.headerRow?.[colIdx]?.v || "");
 
       const res = await fetch("/api/triage", {
         method: "POST",
@@ -246,15 +300,16 @@ export default function ViewsScreen({ allClients, styles }) {
         body: JSON.stringify({
           action: "update_view_cell",
           clientSheetId: selectedClient.clientSheetId,
+          masterSheetId: selectedClient.masterSheetId,
           clientName: selectedClient.clientName,
-          tab: "Outgoings",
+          tab: tabName === "budget" ? "Budget" : "Outgoings",
           screenTab: tabName,
           sheetRow,
           colLetter,
           colIdx,
           value: displayVal,
           contractorName: tabName === "contractors" ? (colIdx === 0 ? displayVal : rowDesc) : undefined,
-          rowDescription: tabName === "outgoings" ? (colIdx === 0 ? displayVal : rowDesc) : undefined,
+          rowDescription: (tabName === "outgoings" || tabName === "budget") ? (colIdx === 0 ? displayVal : rowDesc) : undefined,
           headerLabel,
           monthLabel: headerLabel,
         })
@@ -271,8 +326,23 @@ export default function ViewsScreen({ allClients, styles }) {
         throw new Error(data?.error || `Failed to update cell (status ${res.status})`);
       }
 
-      // If backend returns sheet's formatted value and it differs, update cache with it
-      if (data.value !== undefined && data.value !== displayVal) {
+      // If backend returns updatedMatrix for budget, update entire matrix immediately
+      if (tabName === "budget" && data.updatedMatrix) {
+        setCache(prev => {
+          const clientData = prev[clientKey];
+          if (!clientData || !clientData.budget) return prev;
+          return {
+            ...prev,
+            [clientKey]: {
+              ...clientData,
+              budget: {
+                ...clientData.budget,
+                matrix: data.updatedMatrix,
+              }
+            }
+          };
+        });
+      } else if (data.value !== undefined && data.value !== displayVal) {
         setCache(prev => {
           const clientData = prev[clientKey];
           if (!clientData || !clientData[tabName]) return prev;
@@ -355,7 +425,6 @@ export default function ViewsScreen({ allClients, styles }) {
         <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
           <div>
             <h1 style={{ margin: 0, fontSize: "20px", fontWeight: "700", color: "#0f172a" }}>Views</h1>
-            <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>Live mirror of client spreadsheet</p>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -413,9 +482,9 @@ export default function ViewsScreen({ allClients, styles }) {
               {loading ? "Refreshing..." : "Refresh Live Data"}
             </button>
 
-            {selectedClient.clientSheetId && (
+            {isAdmin && (selectedClient.clientSheetId || selectedClient.masterSheetId) && (
               <a
-                href={`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`}
+                href={`https://docs.google.com/spreadsheets/d/${(activeTab === "budget" && selectedClient.masterSheetId) ? selectedClient.masterSheetId : selectedClient.clientSheetId}/edit`}
                 target="_blank"
                 rel="noreferrer"
                 className="triage-btn"
@@ -432,6 +501,7 @@ export default function ViewsScreen({ allClients, styles }) {
                   borderRadius: "6px",
                   textDecoration: "none",
                 }}
+                title={activeTab === "budget" ? "Open Master Sheet in Google Sheets" : "Open Client Sheet in Google Sheets"}
               >
                 📊 Open in Sheets
               </a>
@@ -441,45 +511,7 @@ export default function ViewsScreen({ allClients, styles }) {
       </div>
 
       {/* Main Content Area */}
-      {!selectedClient ? (
-        <div style={{
-          background: "#ffffff",
-          borderRadius: "10px",
-          border: "1px solid #e2e8f0",
-          padding: "48px 24px",
-          textAlign: "center",
-          maxWidth: "600px",
-          margin: "40px auto",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.04)"
-        }}>
-          <div style={{ fontSize: "40px", marginBottom: "12px" }}>📑</div>
-          <h2 style={{ fontSize: "18px", fontWeight: "700", color: "#1e293b", margin: "0 0 8px" }}>Select a Client to View</h2>
-          <p style={{ fontSize: "14px", color: "#64748b", margin: "0 0 24px" }}>
-            Choose a client from the dropdown above to view their live Dashboard, Cash, Contractors, and Outgoings tabs.
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "center", maxHeight: "240px", overflowY: "auto" }}>
-            {(allClients || []).map(c => (
-              <button
-                key={c.clientName}
-                onClick={() => handleSelectClient(c)}
-                className="triage-btn"
-                style={{
-                  padding: "8px 14px",
-                  fontSize: "13px",
-                  fontWeight: "500",
-                  background: "#f1f5f9",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "6px",
-                  cursor: "pointer",
-                  color: "#334155"
-                }}
-              >
-                {c.clientName}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : (
+      {selectedClient && (
         <div style={{ background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", boxShadow: "0 2px 6px rgba(0,0,0,0.03)", overflow: "hidden" }}>
           {/* Tabs Navigation */}
           <div style={{
@@ -498,6 +530,7 @@ export default function ViewsScreen({ allClients, styles }) {
                 { id: "cash", label: "Cash" },
                 { id: "contractors", label: "Contractors" },
                 { id: "outgoings", label: "Outgoings" },
+                { id: "budget", label: "Budget" },
               ].map(tab => {
                 const isActive = activeTab === tab.id;
                 return (
@@ -593,6 +626,15 @@ export default function ViewsScreen({ allClients, styles }) {
                     fyIdx={outgoingsFyIdx}
                     onFyChange={setOutgoingsFyIdx}
                     showBlankRows={showBlankRows}
+                    onUpdateCell={handleUpdateCell}
+                  />
+                )}
+
+                {activeTab === "budget" && (
+                  <BudgetView
+                    data={currentTabData}
+                    fyIdx={budgetFyIdx}
+                    onFyChange={setBudgetFyIdx}
                     onUpdateCell={handleUpdateCell}
                   />
                 )}
@@ -1025,7 +1067,7 @@ function DashboardView({ data, fyIdx, onFyChange }) {
                       </td>
                     </tr>
                   )}
-                  <tr style={{ background: isSectionHeader ? "#f8fafc" : undefined }}>
+                  <tr style={{ background: undefined }}>
                     {renderCell(labelCell, true, 0, false, {
                       width: "180px", minWidth: "160px", maxWidth: "200px",
                       fontSize: rowFontSize, padding: isPrimaryHeadline ? "3.5px 6px" : (isSubtotalRow ? "3px 6px" : "2.5px 6px"),
@@ -1971,6 +2013,982 @@ function OutgoingsTableView({ data, fyIdx, onFyChange, showBlankRows, onUpdateCe
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. BUDGET VIEW (Master Sheet Budget Tab, FY breakdown, live edit & recalc)
+// ─────────────────────────────────────────────────────────────────────────────
+function BudgetView({ data, fyIdx, onFyChange, onUpdateCell }) {
+  const [editingCell, setEditingCell] = useState(null); // { sheetRow, colIdx, editValue }
+  const [savingKey, setSavingKey] = useState(null); // `${sheetRow}_${colIdx}`
+  const committingRef = useRef(false);
+
+  if (!data || !data.matrix || !data.fyConfigs) return null;
+
+  const { matrix, fyConfigs, isIncomeMode } = data;
+  const currentFy = fyConfigs[fyIdx] || fyConfigs[0];
+  const maxFyIdx = fyConfigs.length - 1;
+
+  // Selected FY month columns (12) + Total column
+  const fyCols = currentFy.monthCols;
+  const totalCol = currentFy.totalCol;
+
+  const THEME_HEADER_BG = "#1e1b4b"; // Midnight Indigo
+
+  const getEditableOpts = (sheetRow, colIdx, cellValue) => {
+    const isEditable = isBudgetCellEditable(sheetRow, colIdx);
+    if (!isEditable) return null;
+
+    const isEditing = editingCell?.sheetRow === sheetRow && editingCell?.colIdx === colIdx;
+    const isSaving = savingKey === `${sheetRow}_${colIdx}`;
+
+    let initialEditVal = cellValue ?? "";
+    if (colIdx === 4 || (sheetRow === 142 && colIdx === 1)) {
+      initialEditVal = String(cellValue ?? "").replace(/%/g, "").trim();
+    } else if (colIdx >= 6 || (sheetRow >= 59 && sheetRow <= 111 && colIdx === 1)) {
+      initialEditVal = String(cellValue ?? "").replace(/[£,]/g, "").trim();
+    }
+
+    return {
+      isEditable,
+      isEditing,
+      isSaving,
+      inputType: "text",
+      editValue: isEditing ? editingCell.editValue : initialEditVal,
+      onChangeEditValue: (val) => setEditingCell(prev => prev ? { ...prev, editValue: val } : null),
+      onCommitEdit: async (overrideVal) => {
+        if (committingRef.current) return;
+        committingRef.current = true;
+        const cur = editingCell;
+        setEditingCell(null);
+        setTimeout(() => { committingRef.current = false; }, 100);
+        if (!cur && overrideVal === undefined) return;
+
+        let rawVal = overrideVal !== undefined ? overrideVal : (cur ? cur.editValue : "");
+        let finalVal = String(rawVal ?? "").trim();
+
+        // Validation for Del % & Des. CoS %
+        if (colIdx === 4 || (sheetRow === 142 && colIdx === 1)) {
+          if (finalVal !== "") {
+            const clean = finalVal.replace(/%/g, "").trim();
+            const num = parseFloat(clean);
+            if (isNaN(num) || num < 0 || num > 100) {
+              alert("Percentage must be a number between 0 and 100 (e.g. 50% or 50).");
+              return;
+            }
+            finalVal = `${num}%`;
+          }
+        }
+
+        const originalClean = String(cellValue ?? "").trim();
+        if (finalVal === originalClean && !savingKey) return;
+
+        setSavingKey(`${sheetRow}_${colIdx}`);
+        try {
+          await onUpdateCell("budget", sheetRow, colIdx, finalVal);
+        } finally {
+          setSavingKey(null);
+        }
+      },
+      onCancelEdit: () => setEditingCell(null),
+      onStartEdit: () => setEditingCell({ sheetRow, colIdx, editValue: initialEditVal }),
+    };
+  };
+
+  // Helper: check if a row has meaningful month data across any FY
+  const allMonthCols = [
+    ...Array.from({ length: 12 }, (_, i) => 6 + i),  // FY1 (6..17)
+    ...Array.from({ length: 12 }, (_, i) => 21 + i), // FY2 (21..32)
+    ...Array.from({ length: 12 }, (_, i) => 36 + i), // FY3 (36..47)
+  ];
+
+  const hasMonthData = (r) => {
+    return allMonthCols.some(c => {
+      const v = r?.[c]?.v;
+      if (!v) return false;
+      const str = String(v).trim();
+      return str !== "" && str !== "£0" && str !== "0" && str !== "-" && str !== "£-";
+    });
+  };
+
+  // Helper: return all populated items + exactly ONE blank item beneath all existing content
+  const getPopulatedWithOneBlank = (rawRows, isBlankFn) => {
+    // 1. Find the index of the last populated row in rawRows
+    let lastPopulatedIdx = -1;
+    for (let i = 0; i < rawRows.length; i++) {
+      if (!isBlankFn(rawRows[i].row)) {
+        lastPopulatedIdx = i;
+      }
+    }
+
+    const result = [];
+
+    // 2. Add all populated items
+    for (let i = 0; i < rawRows.length; i++) {
+      const item = rawRows[i];
+      if (!isBlankFn(item.row)) {
+        result.push({ ...item, isBlank: false });
+      }
+    }
+
+    // 3. Add exactly ONE blank item at the first blank row beneath all existing content
+    let nextBlankItem = null;
+    const searchStart = lastPopulatedIdx === -1 ? 0 : lastPopulatedIdx + 1;
+    for (let i = searchStart; i < rawRows.length; i++) {
+      if (isBlankFn(rawRows[i].row)) {
+        nextBlankItem = rawRows[i];
+        break;
+      }
+    }
+
+    if (nextBlankItem) {
+      result.push({ ...nextBlankItem, isBlank: true });
+    }
+
+    return result;
+  };
+
+  // 1. Salaries & Staff Costs (Rows 59 to 111)
+  const rawSalaries = Array.from({ length: 53 }, (_, i) => ({
+    row: matrix[58 + i],
+    sheetRow: 59 + i,
+  }));
+  const visibleSalaries = getPopulatedWithOneBlank(rawSalaries, (r) => {
+    const name = r?.[0]?.v;
+    const equiv = r?.[1]?.v;
+    if ((name && String(name).trim() !== "") || (equiv && String(equiv).trim() !== "")) return false;
+    return !hasMonthData(r);
+  });
+  const salaryTotals = [
+    { row: matrix[112], sheetRow: 113, label: matrix[112]?.[0]?.v || "Total salary cost - delivery" },
+    { row: matrix[113], sheetRow: 114, label: matrix[113]?.[0]?.v || "Total salary cost - non-delivery" },
+  ];
+
+  // 2. Dividends in Lieu of Salary (Row 119)
+  const dividendRow = { row: matrix[118], sheetRow: 119 };
+  const dividendTotals = [
+    { row: matrix[120], sheetRow: 121, label: matrix[120]?.[0]?.v || "Total dividends - delivery" },
+    { row: matrix[121], sheetRow: 122, label: matrix[121]?.[0]?.v || "Total dividends - non-delivery" },
+  ];
+
+  // 3. Contractors (Rows 127 to 140) & Making up CoS (Row 142)
+  const rawContractors = Array.from({ length: 14 }, (_, i) => ({
+    row: matrix[126 + i],
+    sheetRow: 127 + i,
+  }));
+  const visibleContractors = getPopulatedWithOneBlank(rawContractors, (r) => {
+    const name = r?.[0]?.v;
+    if (name && String(name).trim() !== "") return false;
+    return !hasMonthData(r);
+  });
+  const makingUpCosRow = { row: matrix[141], sheetRow: 142 };
+  const contractorTotals = [
+    { row: matrix[143], sheetRow: 144, label: matrix[143]?.[0]?.v || "Total contractor cost - delivery" },
+    { row: matrix[144], sheetRow: 145, label: matrix[144]?.[0]?.v || "Total contractor cost - non-delivery" },
+  ];
+
+  // 4. Other Expenses (Rows 150 to 250)
+  const rawExpenses = Array.from({ length: 101 }, (_, i) => ({
+    row: matrix[149 + i],
+    sheetRow: 150 + i,
+  }));
+  const visibleExpenses = getPopulatedWithOneBlank(rawExpenses, (r) => {
+    const desc = r?.[0]?.v;
+    if (desc && String(desc).trim() !== "") return false;
+    return !hasMonthData(r);
+  });
+  const expenseTotals = [
+    { row: matrix[251], sheetRow: 252, label: matrix[251]?.[0]?.v || "Total other expenses - delivery" },
+    { row: matrix[252], sheetRow: 253, label: matrix[252]?.[0]?.v || "Total other expenses - non-del" },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+      {/* Top FY Switcher & Mode Indicator Bar */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        background: "#f8fafc",
+        padding: "8px 16px",
+        borderRadius: "8px",
+        border: "1px solid #e2e8f0",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+        flexWrap: "wrap",
+        gap: "10px"
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <button
+            onClick={() => onFyChange(Math.max(0, fyIdx - 1))}
+            disabled={fyIdx === 0}
+            className="triage-btn"
+            style={{
+              padding: "5px 12px",
+              fontSize: "12px",
+              fontWeight: "600",
+              background: fyIdx === 0 ? "#e2e8f0" : "#ffffff",
+              color: fyIdx === 0 ? "#94a3b8" : "#0f172a",
+              border: "1px solid #cbd5e1",
+              borderRadius: "6px",
+              cursor: fyIdx === 0 ? "not-allowed" : "pointer",
+            }}
+          >
+            ◀ Previous FY
+          </button>
+
+          <span style={{ fontSize: "14px", fontWeight: "700", color: "#0f172a" }}>
+            {currentFy.label || `Financial Year ${fyIdx + 1}`}
+          </span>
+          <span style={{ fontSize: "12px", color: "#64748b" }}>
+            ({currentFy.months?.[0]?.label || ""} – {currentFy.months?.[11]?.label || ""})
+          </span>
+
+          <button
+            onClick={() => onFyChange(Math.min(maxFyIdx, fyIdx + 1))}
+            disabled={fyIdx === maxFyIdx}
+            className="triage-btn"
+            style={{
+              padding: "5px 12px",
+              fontSize: "12px",
+              fontWeight: "600",
+              background: fyIdx === maxFyIdx ? "#e2e8f0" : "#ffffff",
+              color: fyIdx === maxFyIdx ? "#94a3b8" : "#0f172a",
+              border: "1px solid #cbd5e1",
+              borderRadius: "6px",
+              cursor: fyIdx === maxFyIdx ? "not-allowed" : "pointer",
+            }}
+          >
+            Next FY ▶
+          </button>
+        </div>
+      </div>
+
+      {/* ─────────────────────────────────────────────────────────────────────────────
+          SECTION 1: BUDGET P&L SUMMARY TABLE (Rows 3 to 49)
+      ───────────────────────────────────────────────────────────────────────────── */}
+      <div style={{
+        background: "#ffffff",
+        borderRadius: "8px",
+        border: "1px solid #cbd5e1",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+        overflow: "hidden"
+      }}>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "8px 14px",
+          background: "#f1f5f9",
+          borderBottom: "1px solid #cbd5e1"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b" }}>
+              1. Budget Summary (P&amp;L)
+            </span>
+          </div>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", background: "#ffffff" }}>
+            <thead>
+              {/* Header Row: Month Names + FY Total */}
+              <tr style={{ position: "sticky", top: 0, zIndex: 6 }}>
+                {renderCell(matrix[0]?.[0] || { v: "Description" }, true, 0, true, {
+                  width: "190px", minWidth: "170px", maxWidth: "220px",
+                  backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700",
+                  borderBottom: "1px solid #0f0d26"
+                })}
+                {fyCols.map((colIdx) => (
+                  <React.Fragment key={colIdx}>
+                    {renderCell(matrix[0]?.[colIdx] || { v: "" }, false, 0, true, {
+                      width: "58px", minWidth: "52px", maxWidth: "68px",
+                      padding: "4px 2px", textAlign: "right",
+                      backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700",
+                      borderBottom: "1px solid #0f0d26"
+                    })}
+                  </React.Fragment>
+                ))}
+                {renderCell(matrix[0]?.[totalCol] || { v: currentFy.label ? `${currentFy.label} total` : "Total" }, false, 0, true, {
+                  width: "75px", minWidth: "70px", maxWidth: "85px",
+                  padding: "4px 6px", textAlign: "right",
+                  backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700",
+                  borderBottom: "1px solid #0f0d26"
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {matrix.slice(2, 49).map((row, rIdx) => {
+                const sheetRow = 3 + rIdx;
+                const labelCell = row?.[0];
+                const labelText = labelCell?.v || "";
+                const labelLower = labelText.trim().toLowerCase();
+
+                // 1. If sheet is in revenue mode, hide rows 20 to 25 entirely
+                if (!isIncomeMode && sheetRow >= 20 && sheetRow <= 25) {
+                  return null;
+                }
+
+                // 2. Hide row if label is "hide" or "hide from here"
+                if (labelLower === "hide" || labelLower === "hide from here") {
+                  return null;
+                }
+
+                const isSpacerRow = !labelText && !row.slice(1).some(c => c?.v);
+                const isSectionHeader = labelText && !row.slice(1).some(c => c?.v);
+
+                // Styling tiers
+                const isPrimaryHeadline =
+                  labelLower === "total income" ||
+                  labelLower === "total revenue" ||
+                  labelLower === "gross profit" ||
+                  labelLower === "operating profit";
+
+                const isMarginRow =
+                  labelLower.includes("gross profit margin") ||
+                  labelLower === "operating profit %" ||
+                  labelLower.includes("operating profit margin") ||
+                  labelLower.includes("overheads as %");
+
+                const isSubtotalRow = !isPrimaryHeadline && !isMarginRow && (
+                  !!labelCell?.b ||
+                  labelLower.startsWith("total") ||
+                  labelLower.includes("net profit") ||
+                  row.some(c => c?.bb && c.bb.includes("double"))
+                );
+
+                let rowFontSize = "10.5px";
+                let rowFontWeight = "400";
+                let rowPadding = "2.5px 3px";
+
+                if (isPrimaryHeadline) {
+                  rowFontSize = "13px";
+                  rowFontWeight = "700";
+                  rowPadding = "3.5px 4px";
+                } else if (isMarginRow) {
+                  rowFontSize = "9.5px";
+                  rowFontWeight = "400";
+                  rowPadding = "2px 3px";
+                } else if (isSubtotalRow) {
+                  rowFontSize = "11.5px";
+                  rowFontWeight = "700";
+                  rowPadding = "3px 4px";
+                }
+
+                const rowBg = undefined;
+
+                return (
+                  <tr key={`pl-${sheetRow}`} style={{ background: rowBg }}>
+                    {renderCell(labelCell, true, 0, false, {
+                      width: "190px", minWidth: "170px", maxWidth: "220px",
+                      fontSize: rowFontSize,
+                      padding: isPrimaryHeadline ? "3.5px 6px" : "2.5px 6px",
+                      fontWeight: rowFontWeight,
+                      borderBottom: isSpacerRow ? "none" : undefined,
+                      color: isPrimaryHeadline ? "#0f172a" : undefined
+                    })}
+                    {fyCols.map((colIdx) => {
+                      const cell = row?.[colIdx];
+                      const editableOpts = getEditableOpts(sheetRow, colIdx, cell?.v);
+                      return (
+                        <React.Fragment key={colIdx}>
+                          {renderCell(cell, false, 0, false, {
+                            width: "58px", minWidth: "52px", maxWidth: "68px",
+                            fontSize: rowFontSize,
+                            padding: rowPadding,
+                            fontWeight: rowFontWeight,
+                            borderBottom: isSpacerRow ? "none" : undefined,
+                            color: isPrimaryHeadline ? "#0f172a" : undefined
+                          }, editableOpts)}
+                        </React.Fragment>
+                      );
+                    })}
+                    {renderCell(row?.[totalCol], false, 0, false, {
+                      width: "75px", minWidth: "70px", maxWidth: "85px",
+                      fontSize: rowFontSize,
+                      padding: isPrimaryHeadline ? "3.5px 6px" : "2.5px 6px",
+                      fontWeight: rowFontWeight,
+                      borderBottom: isSpacerRow ? "none" : undefined,
+                      color: isPrimaryHeadline ? "#0f172a" : undefined
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ─────────────────────────────────────────────────────────────────────────────
+          SECTION 2: SALARIES & STAFF COSTS (Rows 57 to 114)
+      ───────────────────────────────────────────────────────────────────────────── */}
+      <div style={{
+        background: "#ffffff",
+        borderRadius: "8px",
+        border: "1px solid #cbd5e1",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+        overflow: "hidden"
+      }}>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "8px 14px",
+          background: "#f1f5f9",
+          borderBottom: "1px solid #cbd5e1"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b" }}>
+              2. Salaries &amp; Staff Costs
+            </span>
+          </div>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", background: "#ffffff" }}>
+            <thead>
+              <tr style={{ position: "sticky", top: 0, zIndex: 6 }}>
+                {renderCell({ v: "Employee Name" }, true, 0, true, {
+                  width: "180px", minWidth: "160px", maxWidth: "200px",
+                  backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {renderCell({ v: "Equiv Salary" }, false, 0, true, {
+                  width: "90px", minWidth: "80px", maxWidth: "100px",
+                  textAlign: "right", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {renderCell({ v: "St. Mth" }, false, 0, true, {
+                  width: "80px", minWidth: "75px", maxWidth: "90px",
+                  textAlign: "center", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {renderCell({ v: "End Mth" }, false, 0, true, {
+                  width: "80px", minWidth: "75px", maxWidth: "90px",
+                  textAlign: "center", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {renderCell({ v: "Del %" }, false, 0, true, {
+                  width: "55px", minWidth: "48px", maxWidth: "60px",
+                  textAlign: "center", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {fyCols.map((colIdx) => (
+                  <React.Fragment key={colIdx}>
+                    {renderCell(matrix[0]?.[colIdx] || { v: "" }, false, 0, true, {
+                      width: "58px", minWidth: "52px", maxWidth: "68px",
+                      padding: "4px 2px", textAlign: "right",
+                      backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                    })}
+                  </React.Fragment>
+                ))}
+                {renderCell(matrix[0]?.[totalCol] || { v: "Total" }, false, 0, true, {
+                  width: "75px", minWidth: "70px", maxWidth: "85px",
+                  textAlign: "right", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {visibleSalaries.map(({ row, sheetRow, isBlank }) => {
+                const nameCell = row?.[0];
+                const equivCell = row?.[1];
+                const stCell = row?.[2];
+                const endCell = row?.[3];
+                const delCell = row?.[4];
+
+                return (
+                  <tr key={`sal-${sheetRow}`} style={{ background: isBlank ? "#f8fafc" : undefined }}>
+                    {renderCell(
+                      isBlank && !nameCell?.v ? { v: "+ Add employee..." } : nameCell,
+                      true,
+                      0,
+                      false,
+                      {
+                        width: "180px", minWidth: "160px", maxWidth: "200px",
+                        fontSize: "11px", padding: "3px 6px",
+                        fontStyle: isBlank && !nameCell?.v ? "italic" : "normal",
+                        color: isBlank && !nameCell?.v ? "#94a3b8" : undefined
+                      },
+                      getEditableOpts(sheetRow, 0, nameCell?.v)
+                    )}
+                    {renderCell(equivCell, false, 0, false, {
+                      width: "90px", minWidth: "80px", maxWidth: "100px",
+                      fontSize: "10.5px", padding: "3px 6px", textAlign: "right"
+                    }, getEditableOpts(sheetRow, 1, equivCell?.v))}
+                    {renderCell(stCell, false, 0, false, {
+                      width: "80px", minWidth: "75px", maxWidth: "90px",
+                      fontSize: "10px", padding: "3px 4px", textAlign: "center"
+                    }, getEditableOpts(sheetRow, 2, stCell?.v))}
+                    {renderCell(endCell, false, 0, false, {
+                      width: "80px", minWidth: "75px", maxWidth: "90px",
+                      fontSize: "10px", padding: "3px 4px", textAlign: "center"
+                    }, getEditableOpts(sheetRow, 3, endCell?.v))}
+                    {renderCell(delCell, false, 0, false, {
+                      width: "55px", minWidth: "48px", maxWidth: "60px",
+                      fontSize: "10.5px", padding: "3px 4px", textAlign: "center"
+                    }, getEditableOpts(sheetRow, 4, delCell?.v))}
+
+                    {/* Month columns: calculated by sheet formula (non-editable) */}
+                    {fyCols.map((colIdx) => (
+                      <React.Fragment key={colIdx}>
+                        {renderCell(row?.[colIdx], false, 0, false, {
+                          width: "58px", minWidth: "52px", maxWidth: "68px",
+                          fontSize: "10.5px", padding: "3px 3px"
+                        })}
+                      </React.Fragment>
+                    ))}
+                    {renderCell(row?.[totalCol], false, 0, false, {
+                      width: "75px", minWidth: "70px", maxWidth: "85px",
+                      fontSize: "11px", padding: "3px 6px", fontWeight: "600"
+                    })}
+                  </tr>
+                );
+              })}
+
+              {/* Total salary cost rows (Rows 113 & 114) */}
+              {salaryTotals.map(({ row, sheetRow, label }) => (
+                <tr key={`sal-tot-${sheetRow}`} style={{ background: "#f8fafc", borderTop: sheetRow === 113 ? "2px solid #cbd5e1" : "none" }}>
+                  <td
+                    colSpan={5}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: "11px",
+                      fontWeight: "700",
+                      color: "#1e293b",
+                      borderRight: "1px solid #e5e7eb",
+                      borderBottom: "1px solid #e5e7eb",
+                      position: "sticky",
+                      left: 0,
+                      backgroundColor: "#f8fafc",
+                      zIndex: 2
+                    }}
+                  >
+                    {label}
+                  </td>
+                  {fyCols.map((colIdx) => (
+                    <React.Fragment key={colIdx}>
+                      {renderCell(row?.[colIdx], false, 0, false, {
+                        width: "58px", minWidth: "52px", maxWidth: "68px",
+                        fontSize: "10.5px", padding: "3px 3px", fontWeight: "700"
+                      })}
+                    </React.Fragment>
+                  ))}
+                  {renderCell(row?.[totalCol], false, 0, false, {
+                    width: "75px", minWidth: "70px", maxWidth: "85px",
+                    fontSize: "11px", padding: "3px 6px", fontWeight: "700"
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ─────────────────────────────────────────────────────────────────────────────
+          SECTION 3: DIVIDENDS IN LIEU OF SALARY (Rows 117 to 123)
+      ───────────────────────────────────────────────────────────────────────────── */}
+      <div style={{
+        background: "#ffffff",
+        borderRadius: "8px",
+        border: "1px solid #cbd5e1",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+        overflow: "hidden"
+      }}>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "8px 14px",
+          background: "#f1f5f9",
+          borderBottom: "1px solid #cbd5e1"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b" }}>
+              3. Dividends in Lieu of Salary
+            </span>
+          </div>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", background: "#ffffff" }}>
+            <thead>
+              <tr style={{ position: "sticky", top: 0, zIndex: 6 }}>
+                {renderCell({ v: "Description" }, true, 0, true, {
+                  width: "180px", minWidth: "160px", maxWidth: "200px",
+                  backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {renderCell({ v: "Del %" }, false, 0, true, {
+                  width: "55px", minWidth: "48px", maxWidth: "60px",
+                  textAlign: "center", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {fyCols.map((colIdx) => (
+                  <React.Fragment key={colIdx}>
+                    {renderCell(matrix[0]?.[colIdx] || { v: "" }, false, 0, true, {
+                      width: "58px", minWidth: "52px", maxWidth: "68px",
+                      padding: "4px 2px", textAlign: "right",
+                      backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                    })}
+                  </React.Fragment>
+                ))}
+                {renderCell(matrix[0]?.[totalCol] || { v: "Total" }, false, 0, true, {
+                  width: "75px", minWidth: "70px", maxWidth: "85px",
+                  textAlign: "right", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {/* Row 119: Div in lieu of salary */}
+              <tr>
+                {renderCell(dividendRow.row?.[0] || { v: "Div in lieu of salary" }, true, 0, false, {
+                  width: "180px", minWidth: "160px", maxWidth: "200px",
+                  fontSize: "11px", padding: "3px 6px", fontWeight: "600"
+                })}
+                {renderCell(dividendRow.row?.[4], false, 0, false, {
+                  width: "55px", minWidth: "48px", maxWidth: "60px",
+                  fontSize: "10.5px", padding: "3px 4px", textAlign: "center"
+                }, getEditableOpts(119, 4, dividendRow.row?.[4]?.v))}
+
+                {/* Months: editable */}
+                {fyCols.map((colIdx) => (
+                  <React.Fragment key={colIdx}>
+                    {renderCell(dividendRow.row?.[colIdx], false, 0, false, {
+                      width: "58px", minWidth: "52px", maxWidth: "68px",
+                      fontSize: "10.5px", padding: "3px 3px"
+                    }, getEditableOpts(119, colIdx, dividendRow.row?.[colIdx]?.v))}
+                  </React.Fragment>
+                ))}
+                {renderCell(dividendRow.row?.[totalCol], false, 0, false, {
+                  width: "75px", minWidth: "70px", maxWidth: "85px",
+                  fontSize: "11px", padding: "3px 6px", fontWeight: "600"
+                })}
+              </tr>
+
+              {/* Total dividends rows (Rows 121 & 122) */}
+              {dividendTotals.map(({ row, sheetRow, label }) => (
+                <tr key={`div-tot-${sheetRow}`} style={{ background: "#f8fafc", borderTop: sheetRow === 121 ? "2px solid #cbd5e1" : "none" }}>
+                  <td
+                    colSpan={2}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: "11px",
+                      fontWeight: "700",
+                      color: "#1e293b",
+                      borderRight: "1px solid #e5e7eb",
+                      borderBottom: "1px solid #e5e7eb",
+                      position: "sticky",
+                      left: 0,
+                      backgroundColor: "#f8fafc",
+                      zIndex: 2
+                    }}
+                  >
+                    {label}
+                  </td>
+                  {fyCols.map((colIdx) => (
+                    <React.Fragment key={colIdx}>
+                      {renderCell(row?.[colIdx], false, 0, false, {
+                        width: "58px", minWidth: "52px", maxWidth: "68px",
+                        fontSize: "10.5px", padding: "3px 3px", fontWeight: "700"
+                      })}
+                    </React.Fragment>
+                  ))}
+                  {renderCell(row?.[totalCol], false, 0, false, {
+                    width: "75px", minWidth: "70px", maxWidth: "85px",
+                    fontSize: "11px", padding: "3px 6px", fontWeight: "700"
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ─────────────────────────────────────────────────────────────────────────────
+          SECTION 4: CONTRACTORS & MAKING UP COS (Rows 125 to 145)
+      ───────────────────────────────────────────────────────────────────────────── */}
+      <div style={{
+        background: "#ffffff",
+        borderRadius: "8px",
+        border: "1px solid #cbd5e1",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+        overflow: "hidden"
+      }}>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "8px 14px",
+          background: "#f1f5f9",
+          borderBottom: "1px solid #cbd5e1"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b" }}>
+              4. Contractors &amp; Making up CoS
+            </span>
+          </div>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", background: "#ffffff" }}>
+            <thead>
+              <tr style={{ position: "sticky", top: 0, zIndex: 6 }}>
+                {renderCell({ v: "Contractor Name" }, true, 0, true, {
+                  width: "180px", minWidth: "160px", maxWidth: "200px",
+                  backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {renderCell({ v: "Del % / Des. %" }, false, 0, true, {
+                  width: "75px", minWidth: "65px", maxWidth: "85px",
+                  textAlign: "center", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {fyCols.map((colIdx) => (
+                  <React.Fragment key={colIdx}>
+                    {renderCell(matrix[0]?.[colIdx] || { v: "" }, false, 0, true, {
+                      width: "58px", minWidth: "52px", maxWidth: "68px",
+                      padding: "4px 2px", textAlign: "right",
+                      backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                    })}
+                  </React.Fragment>
+                ))}
+                {renderCell(matrix[0]?.[totalCol] || { v: "Total" }, false, 0, true, {
+                  width: "75px", minWidth: "70px", maxWidth: "85px",
+                  textAlign: "right", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {visibleContractors.map(({ row, sheetRow, isBlank }) => {
+                const nameCell = row?.[0];
+                const delCell = row?.[4];
+
+                return (
+                  <tr key={`cont-${sheetRow}`} style={{ background: isBlank ? "#f8fafc" : undefined }}>
+                    {renderCell(
+                      isBlank && !nameCell?.v ? { v: "+ Add contractor..." } : nameCell,
+                      true,
+                      0,
+                      false,
+                      {
+                        width: "180px", minWidth: "160px", maxWidth: "200px",
+                        fontSize: "11px", padding: "3px 6px",
+                        fontStyle: isBlank && !nameCell?.v ? "italic" : "normal",
+                        color: isBlank && !nameCell?.v ? "#94a3b8" : undefined
+                      },
+                      getEditableOpts(sheetRow, 0, nameCell?.v)
+                    )}
+                    {renderCell(delCell, false, 0, false, {
+                      width: "75px", minWidth: "65px", maxWidth: "85px",
+                      fontSize: "10.5px", padding: "3px 4px", textAlign: "center"
+                    }, getEditableOpts(sheetRow, 4, delCell?.v))}
+
+                    {/* Months: editable */}
+                    {fyCols.map((colIdx) => (
+                      <React.Fragment key={colIdx}>
+                        {renderCell(row?.[colIdx], false, 0, false, {
+                          width: "58px", minWidth: "52px", maxWidth: "68px",
+                          fontSize: "10.5px", padding: "3px 3px"
+                        }, getEditableOpts(sheetRow, colIdx, row?.[colIdx]?.v))}
+                      </React.Fragment>
+                    ))}
+                    {renderCell(row?.[totalCol], false, 0, false, {
+                      width: "75px", minWidth: "70px", maxWidth: "85px",
+                      fontSize: "11px", padding: "3px 6px", fontWeight: "600"
+                    })}
+                  </tr>
+                );
+              })}
+
+              {/* Row 142: Making up CoS */}
+              <tr style={{ background: "#fefce8", borderTop: "1px dashed #facc15" }}>
+                {renderCell(makingUpCosRow.row?.[0] || { v: "Making up CoS" }, true, 0, false, {
+                  width: "180px", minWidth: "160px", maxWidth: "200px",
+                  fontSize: "11px", padding: "3px 6px", fontWeight: "700", color: "#854d0e"
+                })}
+                {renderCell(makingUpCosRow.row?.[1], false, 0, false, {
+                  width: "75px", minWidth: "65px", maxWidth: "85px",
+                  fontSize: "10.5px", padding: "3px 4px", textAlign: "center", fontWeight: "700", color: "#854d0e"
+                }, getEditableOpts(142, 1, makingUpCosRow.row?.[1]?.v))}
+
+                {/* Months for Making up CoS: calculated formula (non-editable) */}
+                {fyCols.map((colIdx) => (
+                  <React.Fragment key={colIdx}>
+                    {renderCell(makingUpCosRow.row?.[colIdx], false, 0, false, {
+                      width: "58px", minWidth: "52px", maxWidth: "68px",
+                      fontSize: "10.5px", padding: "3px 3px", color: "#854d0e"
+                    })}
+                  </React.Fragment>
+                ))}
+                {renderCell(makingUpCosRow.row?.[totalCol], false, 0, false, {
+                  width: "75px", minWidth: "70px", maxWidth: "85px",
+                  fontSize: "11px", padding: "3px 6px", fontWeight: "700", color: "#854d0e"
+                })}
+              </tr>
+
+              {/* Total contractor cost rows (Rows 144 & 145) */}
+              {contractorTotals.map(({ row, sheetRow, label }) => (
+                <tr key={`cont-tot-${sheetRow}`} style={{ background: "#f8fafc", borderTop: sheetRow === 144 ? "2px solid #cbd5e1" : "none" }}>
+                  <td
+                    colSpan={2}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: "11px",
+                      fontWeight: "700",
+                      color: "#1e293b",
+                      borderRight: "1px solid #e5e7eb",
+                      borderBottom: "1px solid #e5e7eb",
+                      position: "sticky",
+                      left: 0,
+                      backgroundColor: "#f8fafc",
+                      zIndex: 2
+                    }}
+                  >
+                    {label}
+                  </td>
+                  {fyCols.map((colIdx) => (
+                    <React.Fragment key={colIdx}>
+                      {renderCell(row?.[colIdx], false, 0, false, {
+                        width: "58px", minWidth: "52px", maxWidth: "68px",
+                        fontSize: "10.5px", padding: "3px 3px", fontWeight: "700"
+                      })}
+                    </React.Fragment>
+                  ))}
+                  {renderCell(row?.[totalCol], false, 0, false, {
+                    width: "75px", minWidth: "70px", maxWidth: "85px",
+                    fontSize: "11px", padding: "3px 6px", fontWeight: "700"
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ─────────────────────────────────────────────────────────────────────────────
+          SECTION 5: OTHER EXPENSES (Rows 150 to 250)
+      ───────────────────────────────────────────────────────────────────────────── */}
+      <div style={{
+        background: "#ffffff",
+        borderRadius: "8px",
+        border: "1px solid #cbd5e1",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+        overflow: "hidden"
+      }}>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "8px 14px",
+          background: "#f1f5f9",
+          borderBottom: "1px solid #cbd5e1"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b" }}>
+              5. Other Expenses
+            </span>
+          </div>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", background: "#ffffff" }}>
+            <thead>
+              <tr style={{ position: "sticky", top: 0, zIndex: 6 }}>
+                {renderCell({ v: "Expense Description" }, true, 0, true, {
+                  width: "180px", minWidth: "160px", maxWidth: "200px",
+                  backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {renderCell({ v: "Del %" }, false, 0, true, {
+                  width: "55px", minWidth: "48px", maxWidth: "60px",
+                  textAlign: "center", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+                {fyCols.map((colIdx) => (
+                  <React.Fragment key={colIdx}>
+                    {renderCell(matrix[0]?.[colIdx] || { v: "" }, false, 0, true, {
+                      width: "58px", minWidth: "52px", maxWidth: "68px",
+                      padding: "4px 2px", textAlign: "right",
+                      backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                    })}
+                  </React.Fragment>
+                ))}
+                {renderCell(matrix[0]?.[totalCol] || { v: "Total" }, false, 0, true, {
+                  width: "75px", minWidth: "70px", maxWidth: "85px",
+                  textAlign: "right", backgroundColor: THEME_HEADER_BG, color: "#ffffff", fontWeight: "700"
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {visibleExpenses.map(({ row, sheetRow, isBlank }) => {
+                const descCell = row?.[0];
+                const delCell = row?.[4];
+
+                return (
+                  <tr key={`exp-${sheetRow}`} style={{ background: isBlank ? "#f8fafc" : undefined }}>
+                    {renderCell(
+                      isBlank && !descCell?.v ? { v: "+ Add expense..." } : descCell,
+                      true,
+                      0,
+                      false,
+                      {
+                        width: "180px", minWidth: "160px", maxWidth: "200px",
+                        fontSize: "11px", padding: "3px 6px",
+                        fontStyle: isBlank && !descCell?.v ? "italic" : "normal",
+                        color: isBlank && !descCell?.v ? "#94a3b8" : undefined
+                      },
+                      getEditableOpts(sheetRow, 0, descCell?.v)
+                    )}
+                    {renderCell(delCell, false, 0, false, {
+                      width: "55px", minWidth: "48px", maxWidth: "60px",
+                      fontSize: "10.5px", padding: "3px 4px", textAlign: "center"
+                    }, getEditableOpts(sheetRow, 4, delCell?.v))}
+
+                    {/* Months: editable */}
+                    {fyCols.map((colIdx) => (
+                      <React.Fragment key={colIdx}>
+                        {renderCell(row?.[colIdx], false, 0, false, {
+                          width: "58px", minWidth: "52px", maxWidth: "68px",
+                          fontSize: "10.5px", padding: "3px 3px"
+                        }, getEditableOpts(sheetRow, colIdx, row?.[colIdx]?.v))}
+                      </React.Fragment>
+                    ))}
+                    {renderCell(row?.[totalCol], false, 0, false, {
+                      width: "75px", minWidth: "70px", maxWidth: "85px",
+                      fontSize: "11px", padding: "3px 6px", fontWeight: "600"
+                    })}
+                  </tr>
+                );
+              })}
+
+              {/* Total other expenses rows (Rows 252 & 253) */}
+              {expenseTotals.map(({ row, sheetRow, label }) => (
+                <tr key={`exp-tot-${sheetRow}`} style={{ background: "#f8fafc", borderTop: sheetRow === 252 ? "2px solid #cbd5e1" : "none" }}>
+                  <td
+                    colSpan={2}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: "11px",
+                      fontWeight: "700",
+                      color: "#1e293b",
+                      borderRight: "1px solid #e5e7eb",
+                      borderBottom: "1px solid #e5e7eb",
+                      position: "sticky",
+                      left: 0,
+                      backgroundColor: "#f8fafc",
+                      zIndex: 2
+                    }}
+                  >
+                    {label}
+                  </td>
+                  {fyCols.map((colIdx) => (
+                    <React.Fragment key={colIdx}>
+                      {renderCell(row?.[colIdx], false, 0, false, {
+                        width: "58px", minWidth: "52px", maxWidth: "68px",
+                        fontSize: "10.5px", padding: "3px 3px", fontWeight: "700"
+                      })}
+                    </React.Fragment>
+                  ))}
+                  {renderCell(row?.[totalCol], false, 0, false, {
+                    width: "75px", minWidth: "70px", maxWidth: "85px",
+                    fontSize: "11px", padding: "3px 6px", fontWeight: "700"
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

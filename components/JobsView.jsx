@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import Spinner from "./Spinner";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
@@ -7,6 +7,30 @@ import JobsNewJobModal from "./JobsNewJobModal";
 import { useJobs } from "../hooks/useJobs";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
+
+export const parseSheetDate = (dStr) => {
+  if (!dStr) return null;
+  if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
+  const s = String(dStr).trim();
+  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if (m) {
+    const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+    const mIdx = months[m[2].toLowerCase()];
+    if (mIdx !== undefined) {
+      let yr = parseInt(m[3], 10);
+      if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+      return new Date(yr, mIdx, parseInt(m[1], 10));
+    }
+  }
+  const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (slashMatch) {
+    let yr = parseInt(slashMatch[3], 10);
+    if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+    return new Date(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+};
 
 export default function JobsView({
   allOutgoingsClients,
@@ -17,6 +41,7 @@ export default function JobsView({
   const {
     jobsClient, setJobsClient,
     jobsTab, setJobsTab,
+    jobsSortBy, setJobsSortBy,
     jobsData, setJobsData,
     jobsLoading,
     jobsExpanded, setJobsExpanded,
@@ -33,6 +58,81 @@ export default function JobsView({
   const [showAddJobModal, setShowAddJobModal] = useState(false);
 
   const noJobsClient = !jobsClient;
+
+  const sortedJobs = useMemo(() => {
+    if (!jobsData || !Array.isArray(jobsData)) return [];
+    const list = [...jobsData];
+    switch (jobsSortBy) {
+      case "endDateDesc":
+      case "endDate":
+        return list.sort((a, b) => {
+          const da = parseSheetDate(a.rows?.[0]?.endDate);
+          const db = parseSheetDate(b.rows?.[0]?.endDate);
+          if (!da && !db) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          const diff = db.getTime() - da.getTime();
+          if (diff !== 0) return diff;
+          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+        });
+      case "startDateAsc":
+        return list.sort((a, b) => {
+          const da = parseSheetDate(a.rows?.[0]?.startDate);
+          const db = parseSheetDate(b.rows?.[0]?.startDate);
+          if (!da && !db) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          const diff = da.getTime() - db.getTime();
+          if (diff !== 0) return diff;
+          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+        });
+      case "endDateAsc":
+        return list.sort((a, b) => {
+          const da = parseSheetDate(a.rows?.[0]?.endDate);
+          const db = parseSheetDate(b.rows?.[0]?.endDate);
+          if (!da && !db) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          const diff = da.getTime() - db.getTime();
+          if (diff !== 0) return diff;
+          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+        });
+      case "clientName":
+        return list.sort((a, b) => {
+          const nameA = String(a.client || a.rows?.[0]?.client || "").trim();
+          const nameB = String(b.client || b.rows?.[0]?.client || "").trim();
+          if (!nameA && !nameB) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+          if (!nameA) return 1;
+          if (!nameB) return -1;
+          const cmp = nameA.localeCompare(nameB, undefined, { sensitivity: "base", numeric: true });
+          if (cmp !== 0) return cmp;
+          const jobA = String(a.jobName || a.rows?.[0]?.jobName || "").trim();
+          const jobB = String(b.jobName || b.rows?.[0]?.jobName || "").trim();
+          const jcmp = jobA.localeCompare(jobB, undefined, { sensitivity: "base", numeric: true });
+          if (jcmp !== 0) return jcmp;
+          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+        });
+      case "rowNumber":
+        return list.sort((a, b) => {
+          const rowA = a.rows?.[0]?.rowNum ?? 0;
+          const rowB = b.rows?.[0]?.rowNum ?? 0;
+          return rowA - rowB;
+        });
+      case "startDateDesc":
+      case "startDate":
+      default:
+        return list.sort((a, b) => {
+          const da = parseSheetDate(a.rows?.[0]?.startDate);
+          const db = parseSheetDate(b.rows?.[0]?.startDate);
+          if (!da && !db) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          const diff = db.getTime() - da.getTime();
+          if (diff !== 0) return diff;
+          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
+        });
+    }
+  }, [jobsData, jobsSortBy]);
 
   const formatCurrency = (val) => {
     const s = String(val || "").trim();
@@ -246,7 +346,7 @@ export default function JobsView({
             {jobsClient ? jobsClient.clientName : "Jobs Management"}
           </h2>
           {jobsClient && (
-            <button className="triage-btn" onClick={() => { setJobsClient(null); setJobsData(null); }}
+            <button className="triage-btn" onClick={() => { setJobsClient(null); setJobsData(null); setJobsSortBy("startDateDesc"); }}
               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
               ← Back to Clients
             </button>
@@ -304,9 +404,43 @@ export default function JobsView({
               >
                 <span style={{ fontSize: "15px", fontWeight: "bold", lineHeight: "1" }}>+</span> Add Job
               </button>
-              <button onClick={() => loadJobsData(jobsClient, jobsTab)} disabled={jobsLoading} style={{ marginLeft: "auto", background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "13px" }}>
-                {jobsLoading ? <><Spinner size={12}/> Refreshing</> : "↻ Refresh"}
-              </button>
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "14px", marginBottom: "4px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <label htmlFor="jobs-sort-select" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>
+                    Sort:
+                  </label>
+                  <select
+                    id="jobs-sort-select"
+                    value={jobsSortBy}
+                    onChange={(e) => setJobsSortBy(e.target.value)}
+                    style={{
+                      padding: "5px 10px",
+                      borderRadius: "6px",
+                      border: "1px solid #cbd5e1",
+                      fontSize: "13px",
+                      fontWeight: "500",
+                      color: "#1e293b",
+                      background: "#fff",
+                      cursor: "pointer",
+                      outline: "none"
+                    }}
+                  >
+                    <option value="startDateDesc">By job start date - descending</option>
+                    <option value="endDateDesc">By job end date - descending</option>
+                    <option value="startDateAsc">By job start date - ascending</option>
+                    <option value="endDateAsc">By job end date - ascending</option>
+                    <option value="clientName">By client name</option>
+                    <option value="rowNumber">By row number</option>
+                  </select>
+                </div>
+                <button
+                  onClick={() => loadJobsData(jobsClient, jobsTab)}
+                  disabled={jobsLoading}
+                  style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                >
+                  {jobsLoading ? <><Spinner size={12}/> Refreshing</> : "↻ Refresh"}
+                </button>
+              </div>
             </div>
 
             {jobsLoading && !jobsData ? (
@@ -324,16 +458,6 @@ export default function JobsView({
               const hasDateConf = jobsData.some(j => j.rows.some(r => r.dateConf && String(r.dateConf).trim() !== ""));
               const hasLeadSrc = jobsData.some(j => j.rows.some(r => r.leadSrc && String(r.leadSrc).trim() !== ""));
               const hasProdLine = jobsData.some(j => j.rows.some(r => r.prodLine && String(r.prodLine).trim() !== ""));
-
-              const parseSheetDate = (dStr) => {
-                if (!dStr) return null;
-                const m = String(dStr).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-                if (!m) return null;
-                const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-                let yr = parseInt(m[3], 10);
-                if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
-                return new Date(yr, months[m[2].toLowerCase()], parseInt(m[1], 10));
-              };
 
               return (
               <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
@@ -382,7 +506,7 @@ export default function JobsView({
                     </tr>
                   </thead>
                   <tbody>
-                    {jobsData.flatMap((job, jobIdx) => {
+                    {sortedJobs.flatMap((job, jobIdx) => {
                       const isRetainer = String(job.rows[0]?.projectRetainer || "").toLowerCase().includes("retainer");
                       const isExpanded = jobsExpanded.has(job.rows[0]?.rowNum);
                       

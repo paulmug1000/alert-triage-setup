@@ -74,6 +74,12 @@ import {
   handleRehashIgnoredAlerts, PRECOMPUTED_KEY
 } from "../../services/triageEngine";
 import { getClientViewData, handleUpdateViewCell } from "../../services/viewsService";
+import {
+  getCashflowReconData,
+  updateCashAdjustment,
+  toggleCashCellResolved,
+  updateCashCellNote
+} from "../../services/cashflowReconService";
 import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
 import { getAllUsers, isUserAuthorizedForClient } from "../../services/userPermissions";
 import { matchesClientName } from "../../utils/helpers";
@@ -266,6 +272,65 @@ export default async function handler(req, res) {
       }
     } else if (action === "update_view_cell") {
       return await handleUpdateViewCell(req, res, sheets);
+    } else if (action === "get_cashflow_recon_data") {
+      try {
+        const { clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey } = req.body;
+        const data = await getCashflowReconData({ clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey });
+        return res.status(200).json(data);
+      } catch (err) {
+        console.error("❌ get_cashflow_recon_data error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "update_cash_adjustment") {
+      try {
+        const { clientSheetId, colLetter, sheetRow, value, clientName, automationCommanderSheetId } = req.body;
+        const result = await updateCashAdjustment({
+          clientSheetId,
+          colLetter,
+          sheetRow,
+          value,
+          clientName,
+          automationCommanderSheetId
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ update_cash_adjustment error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "toggle_cash_cell_resolved") {
+      try {
+        const { clientSheetId, cashTabSheetId, sheetRow, colIdx, resolved, clientName, automationCommanderSheetId } = req.body;
+        const result = await toggleCashCellResolved({
+          clientSheetId,
+          cashTabSheetId,
+          sheetRow,
+          colIdx,
+          resolved,
+          clientName,
+          automationCommanderSheetId
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ toggle_cash_cell_resolved error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    } else if (action === "update_cash_cell_note") {
+      try {
+        const { clientSheetId, cashTabSheetId, sheetRow, colIdx, note, clientName, automationCommanderSheetId } = req.body;
+        const result = await updateCashCellNote({
+          clientSheetId,
+          cashTabSheetId,
+          sheetRow,
+          colIdx,
+          note,
+          clientName,
+          automationCommanderSheetId
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ update_cash_cell_note error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
 
     } else if (action === "start_triage") {
       // Proxy orchestrator for frontend chunking. Protects CRON_SECRET.

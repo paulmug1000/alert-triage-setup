@@ -6,6 +6,7 @@ import { eomWorkMonthToTargetMonth } from "../utils/helpers";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import PushOutgoingsTab from "./PushOutgoingsTab";
+import CashflowReconTab from "./CashflowReconTab";
 
 export default function ToolsView({
   allOutgoingsClients,
@@ -15,8 +16,9 @@ export default function ToolsView({
   const { automationCommanderSheetId } = useAppGlobals();
   const { sessionId, computeAlertCheckCount, isLoading, startTriage } = useTriage();
 
-  const [eomSubView, setEomSubView] = useState("overview"); // "overview" | "payroll" | "time" | "cash" | "push_outgoings"
+  const [eomSubView, setEomSubView] = useState("overview"); // "overview" | "payroll" | "time" | "cash" | "cashflow_recon" | "push_outgoings"
   const [eomPushOutgoingsClient, setEomPushOutgoingsClient] = useState("");
+  const [eomCashflowReconClient, setEomCashflowReconClient] = useState("");
 
   const {
     eomMonthKey, setEomMonthKey, eomAllTasks, setEomAllTasks, eomStatusOverrides, setEomStatusOverrides,
@@ -339,6 +341,13 @@ export default function ToolsView({
     });
   };
 
+  const handleCashflowReconTaskDone = (clientName, taskId) => {
+    const targetClient = typeof clientName === "object" ? clientName.clientName : clientName;
+    const targetTaskId = typeof clientName === "object" ? clientName.taskId : taskId;
+    if (!targetClient || !targetTaskId) return;
+    handleEomStatusChange(targetTaskId, "done", targetClient);
+  };
+
   const handleEomMarkActual = (taskId, targetClientName = eomDetailClient) => {
     const client = (allOutgoingsClients || []).find(c => c.clientName === targetClientName);
     if (!client) return;
@@ -621,7 +630,7 @@ export default function ToolsView({
       <h2 style={{ margin: "0 0 14px", fontSize: "20px", fontWeight: "700" }}>EoM</h2>
 
       <div style={{ display: "flex", gap: "4px", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
-        {[["overview", "Overview"], ["payroll", "Payroll Import"], ["time", "Time Import"], ["cash", "Cash Balances"], ["push_outgoings", "Push Outgoings"]].map(([key, label]) => (
+        {[["overview", "Overview"], ["payroll", "Payroll Import"], ["time", "Time Import"], ["cash", "Cash Balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push Outgoings"]].map(([key, label]) => (
           <button key={key} onClick={() => setEomSubView(key)}
             style={{ padding: "8px 16px", background: "none", border: "none",
               borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
@@ -848,6 +857,12 @@ export default function ToolsView({
                                   Enter Cash Balance →
                                 </button>
                               )}
+                              {(t.linkedFunction === "cashflow_recon" || (!t.linkedFunction && t.name && t.name.toLowerCase().includes("reconcile cashflow forecast against actual"))) && (
+                                <button onClick={() => { setEomCashflowReconClient(c.clientName); setEomSubView("cashflow_recon"); }}
+                                  style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                  Reconcile Cashflow →
+                                </button>
+                              )}
                               {(t.linkedFunction === "push_outgoings" || (!t.linkedFunction && t.name && t.name.toLowerCase().includes("plcomp"))) && (
                                 <button onClick={() => { setEomPushOutgoingsClient(c.clientName); setEomSubView("push_outgoings"); }}
                                   style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
@@ -1002,6 +1017,7 @@ export default function ToolsView({
                           <option value="time_import">Time Report Import</option>
                           <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                           <option value="push_outgoings">Push Outgoings</option>
+                          <option value="cashflow_recon">Cashflow Recon</option>
                         </select>
                         <label style={{ fontSize: "12px", color: "#666", display: "flex", alignItems: "center", gap: "4px", marginLeft: "10px" }}>
                           <input type="checkbox" checked={eomTemplateDraft.active} onChange={e => setEomTemplateDraft(d => ({ ...d, active: e.target.checked }))} />
@@ -1045,7 +1061,7 @@ export default function ToolsView({
                           {!tpl.active && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#b45309" }}>(inactive)</span>}
                           {tpl.linkedFunction && (
                             <span style={{ marginLeft: "6px", fontSize: "10px", color: "#0066cc" }}>
-                              (linked: {({ salaries: "salaries", cash_balance: "cash balance", mark_actual: "mark actual", create_backup: "create backup", alert_check: "alert check", time_import: "time import", push_outgoings: "push outgoings" }[tpl.linkedFunction]) || tpl.linkedFunction})
+                              (linked: {({ salaries: "salaries", cash_balance: "cash balance", mark_actual: "mark actual", create_backup: "create backup", alert_check: "alert check", time_import: "time import", push_outgoings: "push outgoings", cashflow_recon: "cashflow recon" }[tpl.linkedFunction]) || tpl.linkedFunction})
                             </span>
                           )}
                         </div>
@@ -1087,6 +1103,7 @@ export default function ToolsView({
                       <option value="time_import">Time Report Import</option>
                       <option value="alert_check">Alert Check (InvComp/DirComp/CRMComp)</option>
                       <option value="push_outgoings">Push Outgoings</option>
+                      <option value="cashflow_recon">Cashflow Recon</option>
                     </select>
                   </div>
                   {eomNewTplLinkedFunction === "alert_check" && (
@@ -1269,6 +1286,12 @@ export default function ToolsView({
                         <button onClick={() => { setEomCashPendingClient(eomDetailClient); setEomSubView("cash"); }}
                           style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                           Enter Cash Balance →
+                        </button>
+                      )}
+                      {(t.linkedFunction === "cashflow_recon" || (!t.linkedFunction && t.name && t.name.toLowerCase().includes("reconcile cashflow forecast against actual"))) && (
+                        <button onClick={() => { setEomCashflowReconClient(eomDetailClient); setEomSubView("cashflow_recon"); }}
+                          style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
+                          Reconcile Cashflow →
                         </button>
                       )}
                       {(t.linkedFunction === "push_outgoings" || (!t.linkedFunction && t.name && t.name.toLowerCase().includes("plcomp"))) && (
@@ -1837,6 +1860,20 @@ export default function ToolsView({
           </div>
         );
       })()}
+
+      {eomSubView === "cashflow_recon" && (
+        <CashflowReconTab
+          allOutgoingsClients={allOutgoingsClients}
+          eomMonthKey={eomMonthKey}
+          automationCommanderSheetId={automationCommanderSheetId}
+          initialClient={eomCashflowReconClient}
+          onClearInitialClient={() => setEomCashflowReconClient("")}
+          onTaskMarkedDone={handleCashflowReconTaskDone}
+          eomAllTasks={eomAllTasks}
+          eomStatusOverrides={eomStatusOverrides}
+          styles={styles}
+        />
+      )}
 
       {eomSubView === "push_outgoings" && (
         <PushOutgoingsTab

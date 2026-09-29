@@ -871,6 +871,7 @@ export const EOM_SEED_DATA = {
     },
     {
       "name": "Reconcile cashflow forecast against actual",
+      "linkedFunction": "cashflow_recon",
       "clients": {
         "Thrive": "Reconcile cashflow forecast against actual (use bank recon sheet)",
         "Eleven": "Reconcile cashflow forecast against actual (use bank recon sheet)",

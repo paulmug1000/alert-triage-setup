@@ -60,6 +60,8 @@ export async function handleGetAllClients(req, res, sheets) {
     const clientsObj = {};
     for (const row of rows) {
       const clientName = String(row[0] || "").trim();
+      const reconSheetUrl = row[9];
+      const reconSheetId = extractSheetIdFromUrl(reconSheetUrl) || String(reconSheetUrl || "").trim();
       const scriptId   = String(row[10] || "").trim();
       const clientSheetUrl = row[11];
       const masterSheetUrl = row[12];
@@ -69,8 +71,8 @@ export async function handleGetAllClients(req, res, sheets) {
       if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
       const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
       const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
-      clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl, splitEnabled });
-      if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl };
+      clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl, splitEnabled, reconSheetUrl, reconSheetId });
+      if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl, reconSheetUrl, reconSheetId };
     }
 
     const sessionUser = getSessionUser(req);

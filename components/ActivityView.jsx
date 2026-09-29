@@ -190,7 +190,7 @@ export default function ActivityView({
     } else if (catUpper === "CRM") {
       bg = "#e8f0fe";
       border = "#d2e3fc";
-    } else if (catUpper === "EXPENSES" || catUpper === "OUTGOINGS" || catUpper === "VENDORS") {
+    } else if (catUpper === "EXPENSES" || catUpper === "OUTGOINGS" || catUpper === "VENDORS" || catUpper === "CONTRACTORS") {
       bg = "#feebeb";
       border = "#fad2cf";
     } else if (catUpper === "JOB" || catUpper === "JOBS" || catUpper === "SALARIES") {

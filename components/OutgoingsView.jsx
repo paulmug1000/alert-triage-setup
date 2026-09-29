@@ -245,7 +245,7 @@ export default function OutgoingsView({
               title="Back to client list">&#8592;</button>
           )}
           <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
-            {outgoingsClient ? outgoingsClient.clientName : "Vendors"}
+            {outgoingsClient ? outgoingsClient.clientName : "Contractors"}
           </h2>
           {outgoingsClient && (
             <button className="triage-btn"
@@ -356,7 +356,7 @@ export default function OutgoingsView({
                   borderBottom: vendorsSubTab === "contractors" ? "2px solid #0066cc" : "2px solid transparent",
                   color: vendorsSubTab === "contractors" ? "#0066cc" : "#666",
                   fontWeight: vendorsSubTab === "contractors" ? "700" : "500", fontSize: "14px", cursor: "pointer" }}>
-                Contractors
+                By month
               </button>
               <button onClick={() => {
                   setVendorsSubTab("directCosts");
@@ -366,7 +366,7 @@ export default function OutgoingsView({
                   borderBottom: vendorsSubTab === "directCosts" ? "2px solid #0066cc" : "2px solid transparent",
                   color: vendorsSubTab === "directCosts" ? "#0066cc" : "#666",
                   fontWeight: vendorsSubTab === "directCosts" ? "700" : "500", fontSize: "14px", cursor: "pointer" }}>
-                Direct costs
+                By job
               </button>
             </div>
           </>

@@ -75,11 +75,11 @@ export default function NavShell({
   });
 
   // Strict requested menu order:
-  // Home, Jobs, Vendors, Invoices, Retainers, Tasks, Activity, Views, EoM, Settings (Admin only)
+  // Home, Jobs, Contractors, Invoices, Retainers, Tasks, Activity, Views, EoM, Settings (Admin only)
   const allNavItems = [
     { key: "home", label: "Home", handler: onHome, badge: homeAlertCount },
     { key: "jobs", label: "Jobs", handler: onJobs },
-    { key: "outgoings", label: "Vendors", handler: onOutgoings },
+    { key: "outgoings", label: "Contractors", handler: onOutgoings },
     { key: "invoices", label: "Invoices", handler: onInvoices },
     { key: "retainers", label: "Retainers", handler: onRetainers },
     { key: "tasks", label: "Tasks", handler: onTasks, badge: taskCount },

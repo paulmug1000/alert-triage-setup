@@ -582,7 +582,7 @@ export default function ViewsScreen({ allClients, styles, isAdmin: propIsAdmin }
             {loading && !currentTabData ? (
               <div style={{ textAlign: "center", padding: "60px 20px" }}>
                 <Spinner size={32} color="#0066cc" />
-                <div style={{ marginTop: "14px", fontSize: "14px", color: "#64748b" }}>Loading live sheet data...</div>
+                <div style={{ marginTop: "14px", fontSize: "14px", color: "#64748b" }}>Loading live data...</div>
               </div>
             ) : error ? (
               <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "16px", color: "#991b1b", fontSize: "14px" }}>

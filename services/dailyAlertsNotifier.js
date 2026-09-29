@@ -58,7 +58,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
         <div style="width:28px;height:28px;background:#0066cc;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;color:#ffffff;line-height:28px;text-align:center;">P</div>
         <div>
           <div style="font-size:16px;font-weight:700;letter-spacing:0.3px;">Pulse Management App</div>
-          <div style="font-size:12px;color:#94a3b8;">Daily Alerts Digest — ${formattedDate}</div>
+          <div style="font-size:12px;color:#94a3b8;">Daily Alerts Digest - ${formattedDate}</div>
         </div>
       </div>
 
@@ -114,7 +114,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
 export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId) {
   const acId = automationCommanderSheetId;
   const formattedDate = getFormattedDigestDate();
-  const subject = `Pulse Management App Daily Digest — ${formattedDate}`;
+  const subject = `Pulse Management App Daily Digest - ${formattedDate}`;
 
   console.log(`\n📬 Daily Alerts Notifier starting for ${formattedDate}...`);
 
@@ -274,7 +274,7 @@ export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId)
           user: "Pulse System",
           action: "Daily Digest Sent",
           summary: `Daily alert digest sent to ${user.email} (${userAlerts.length} alerts across ${clientSummaries.length} clients)`
-        }).catch(() => {});
+        }).catch(() => { });
 
       } catch (sendErr) {
         console.error(`  ❌ Failed sending digest to ${user.email}:`, sendErr.message);

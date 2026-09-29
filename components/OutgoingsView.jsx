@@ -272,13 +272,22 @@ export default function OutgoingsView({
                   );
                   const clientsNoInbox = allClients.filter(c => !clientsWithInbox.includes(c));
                   const renderClientBtn = (c) => (
-                    <button key={c.clientName} onClick={() => loadOutgoings(c)}
-                      style={{ padding: "10px 16px", background: c.inboxCount > 0 ? "#fff7ed" : "#f8f9ff",
-                        border: `1px solid ${c.inboxCount > 0 ? "#fed7aa" : "#dde"}`,
-                        borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: "500",
-                        display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <button key={c.clientName} className="triage-btn" onClick={() => loadOutgoings(c)}
+                      style={{
+                        ...styles.buttonSecondary,
+                        textAlign: "left",
+                        padding: "12px 16px",
+                        fontSize: "14px",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        ...(c.inboxCount > 0 ? {
+                          background: "#fff7ed",
+                          borderColor: "#fed7aa"
+                        } : {})
+                      }}>
                       <span>{c.clientName}</span>
-                      {c.inboxCount > 0 && <span style={{ fontSize: "11px", background: "#f97316", color: "#fff", borderRadius: "10px", padding: "1px 7px" }}>{c.inboxCount} to assign</span>}
+                      {c.inboxCount > 0 && <span style={{ fontSize: "11px", background: "#f97316", color: "#fff", borderRadius: "10px", padding: "1px 7px", fontWeight: "600" }}>{c.inboxCount} to assign</span>}
                     </button>
                   );
                   return (

@@ -47,18 +47,37 @@ export default function ClientSelectionView({
     "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
   ];
 
-  const activeClients = authorizedClientsWithFlags.filter(c => Object.values(c.flags || {}).some(v => v));
+  const totalAlertsCount = authorizedClientsWithFlags.reduce((total, c) => {
+    const assignedSet = assignedByClient[c.clientName] || new Set();
+    const expenseIds = c.activeExpenseIds || [];
+    const invoiceIds = c.activeInvoiceIds || [];
+    const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+    const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+    let clientTotal = 0;
+    Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {
+      if (!isSet) return;
+      let count = c.alertCounts?.[flagKey] || 0;
+      if (ACTIONABLE_FLAG_KEYS.includes(flagKey)) {
+        if (flagKey === "expenseDashboardDiscr") count = Math.max(0, count - validAssignedExp);
+        if (flagKey === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
+        clientTotal += count;
+      } else {
+        clientTotal += (count > 0 ? count : 1);
+      }
+    });
+    return total + clientTotal;
+  }, 0) + authorizedProactiveAlerts.length;
 
-  // State 1: All alerts and flags have been resolved
-  if (activeClients.length === 0 && authorizedProactiveAlerts.length === 0 && proactiveLoadedAt > 0) {
+  // State 1: All alerts have been resolved
+  if (totalAlertsCount === 0 && proactiveLoadedAt > 0) {
     return (
       <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.title}>All Done</h1>
-          <p style={styles.subtitle}>All alerts and flags have been resolved</p>
+          <h1 style={styles.title}>Alerts</h1>
+          <p style={styles.subtitle}>All alerts have been resolved</p>
         </div>
         <div style={styles.card}>
-          <div style={styles.successBanner}>✓ No outstanding alerts or flags</div>
+          <div style={styles.successBanner}>✓ No outstanding alerts</div>
           <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
             <button className="triage-btn" onClick={reloadFromCache} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
               ⚡ Reload
@@ -74,8 +93,8 @@ export default function ClientSelectionView({
     );
   }
 
-  // State 2: Checking for proactive alerts
-  if (activeClients.length === 0 && proactiveLoadedAt === 0) {
+  // State 2: Checking for alerts
+  if (totalAlertsCount === 0 && proactiveLoadedAt === 0) {
     return (
       <div style={styles.container}>
         <div style={{ textAlign: "center", padding: "60px 20px", color: "#888" }}>
@@ -92,27 +111,7 @@ export default function ClientSelectionView({
       <div style={styles.header}>
         <h1 style={styles.title}>Alerts</h1>
         <p style={styles.subtitle}>
-          Choose a client to review their alerts (
-          {authorizedClientsWithFlags.reduce((total, c) => {
-            const assignedSet = assignedByClient[c.clientName] || new Set();
-            const expenseIds = c.activeExpenseIds || [];
-            const invoiceIds = c.activeInvoiceIds || [];
-            const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-            const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-            let clientTotal = 0;
-            Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {
-              if (!isSet) return;
-              let count = c.alertCounts?.[flagKey] || 0;
-              if (ACTIONABLE_FLAG_KEYS.includes(flagKey)) {
-                if (flagKey === "expenseDashboardDiscr") count = Math.max(0, count - validAssignedExp);
-                if (flagKey === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
-                clientTotal += count;
-              } else {
-                clientTotal += (count > 0 ? count : 1);
-              }
-            });
-            return total + clientTotal;
-          }, 0) + authorizedProactiveAlerts.length} total)
+          Choose a client to review their alerts ({totalAlertsCount} total)
         </p>
       </div>
 

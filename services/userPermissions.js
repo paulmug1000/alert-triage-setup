@@ -48,8 +48,8 @@ export async function ensureUsersTab(sheets, automationCommanderSheetId = DEFAUL
         valueInputOption: "RAW",
         requestBody: {
           values: [
-            ["Email", "Full Name", "Role", "Assigned Clients", "Status", "Created At", "Last Login At"],
-            ["paul@gothrive.uk", "Paul", "Admin", "*", "Active", new Date().toISOString(), ""]
+            ["Email", "Full Name", "Role", "Assigned Clients", "Status", "Created At", "Last Login At", "Daily Alerts Email"],
+            ["paul@gothrive.uk", "Paul", "Admin", "*", "Active", new Date().toISOString(), "", "Yes"]
           ]
         }
       });
@@ -84,7 +84,7 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
   try {
     const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: acId,
-      range: `${USERS_TAB}!A2:G500`
+      range: `${USERS_TAB}!A2:H500`
     }));
 
     const rows = resp.data.values || [];
@@ -99,6 +99,7 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
         const status = String(row[4] || "").trim().toLowerCase() === "suspended" ? "Suspended" : "Active";
         const createdAt = row[5] || "";
         const lastLoginAt = row[6] || "";
+        const dailyAlertsEmail = String(row[7] || "").trim().toLowerCase() === "no" ? "No" : "Yes";
 
         return {
           rowIndex: idx + 2, // 1-indexed spreadsheet row
@@ -108,7 +109,8 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
           assignedClients,
           status,
           createdAt,
-          lastLoginAt
+          lastLoginAt,
+          dailyAlertsEmail
         };
       });
 

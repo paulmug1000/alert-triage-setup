@@ -17,7 +17,8 @@ export function useTriageEngine({
   setError,
   setBulkMode,
   setBulkSelected,
-  user
+  user,
+  onRefreshTasks
 }) {
   const [sessionId, setSessionId] = useState("");
   const [totalAlerts, setTotalAlerts] = useState(0);
@@ -152,6 +153,7 @@ export function useTriageEngine({
       setClientAlerts([]);
       setScreen("clientSelection");
       setTriageComplete(true);
+      onRefreshTasks?.(true);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -208,6 +210,7 @@ export function useTriageEngine({
 
           setScreen("clientSelection");
           setTriageComplete(true);
+          onRefreshTasks?.();
           precomputedUsed = true;
         } else {
           console.log(`No fresh precomputed data available — running live triage`);
@@ -270,6 +273,7 @@ export function useTriageEngine({
 
         setScreen("clientSelection");
         setTriageComplete(true);
+        onRefreshTasks?.();
       } else {
         setError("Cache is empty or stale (>4 hours old). Please use '↻ Refresh' to run a full sweep.");
       }

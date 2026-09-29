@@ -81,14 +81,15 @@ function TriageSystemContent({ onBack, appGlobals }) {
     taskModalSnoozeDate, setTaskModalSnoozeDate, taskModalSnoozeTime, setTaskModalSnoozeTime,
     taskModalSubmitting, setTaskModalSubmitting, taskActionError, setTaskActionError,
     existingTaskBanner, setExistingTaskBanner,
-    setTasksFilter, loadTasks
+    setTasksFilter, loadTasks, refreshTaskCount
   } = useTasks();
   
   const triageEngine = useTriageEngine({
     automationCommanderSheetId, screen, setScreen, activeNav, assignedAppIds,
     assignedByClient, existingTaskBanner, setExistingTaskBanner, allClientsMap, isLoading, setIsLoading,
     error, setError, setBulkMode: () => {}, setBulkSelected: () => {},
-    user
+    user,
+    onRefreshTasks: refreshTaskCount
   });
 
   const {
@@ -108,8 +109,10 @@ function TriageSystemContent({ onBack, appGlobals }) {
     if (prevAuthEmailRef.current !== currentAuthEmail) {
       prevAuthEmailRef.current = currentAuthEmail;
       startTriage();
+      refreshTaskCount?.();
     } else if (!sessionId && !isLoading) {
       startTriage();
+      refreshTaskCount?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, authChecking, currentAuthEmail, sessionId]);

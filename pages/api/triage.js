@@ -22,6 +22,7 @@ import {
   handleSnoozeTask, handleRevertTaskToAlert, handleResolveTask, handleUpdateTask,
   handleCheckExistingTask
 } from "../../services/tasksController";
+import { sendDailyAlertsSummary } from "../../services/dailyAlertsNotifier";
 import {
   handleGetClaudeSettings, handleSaveClaudeSettings, handleCheckClaudeBudget,
   handleLogClaudeUsage, handleGetAppLog, handleTriggerProactiveChecks,
@@ -455,6 +456,13 @@ export default async function handler(req, res) {
       return await handleStorePrecomputed(req, res, sheets);
     } else if (action === "run_flag_sweep") {
       return await handleRunFlagSweep(req, res, sheets);
+    } else if (action === "send_daily_alerts_summary") {
+      const cronSecret = process.env.CRON_SECRET;
+      if (cronSecret && req.body.secret !== cronSecret && (!sessionUser || !sessionUser.isAdmin)) {
+        return res.status(403).json({ success: false, error: "Unauthorized" });
+      }
+      const result = await sendDailyAlertsSummary(sheets, automationCommanderSheetId);
+      return res.status(200).json(result);
     } else if (action === "build_cached_alert_options") {
       return await handleBuildCachedAlertOptions(req, res, sheets);
     } else if (action === "get_alerts") {

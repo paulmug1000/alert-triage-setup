@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useTasks as useBaseTasks } from '../hooks/useTasks';
 
 const TaskContext = createContext();
@@ -18,6 +18,40 @@ export function TaskProvider({ children, automationCommanderSheetId }) {
     taskState.setShowTaskModal(true);
     taskState.setTaskActionError("");
   };
+
+  const refreshTaskCount = useCallback(async (bypassCache = false) => {
+    if (!automationCommanderSheetId) return;
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId, filter: "active", bypassCache }),
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.tasks)) {
+        setNavTaskCount(data.tasks.length);
+      }
+      fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId, filter: "snoozed", bypassCache }),
+      }).then(r => r.json()).then(d => {
+        if (d.success && Array.isArray(d.tasks)) setSnoozedTaskCount(d.tasks.length);
+      }).catch(() => {});
+    } catch (e) {
+      console.error("Failed to load task counts:", e);
+    }
+  }, [automationCommanderSheetId]);
+
+  useEffect(() => {
+    if (automationCommanderSheetId) {
+      refreshTaskCount();
+    }
+    const interval = setInterval(() => {
+      refreshTaskCount();
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [automationCommanderSheetId, refreshTaskCount]);
 
   const loadTasks = async (filter = "active", bypassCache = false) => {
     try {
@@ -58,7 +92,8 @@ export function TaskProvider({ children, automationCommanderSheetId }) {
     navTaskCount, setNavTaskCount,
     snoozedTaskCount, setSnoozedTaskCount,
     tasksLoadedAt, setTasksLoadedAt,
-    loadTasks, openCreateTaskModal
+    loadTasks, openCreateTaskModal,
+    refreshTaskCount
   };
 
   return (

@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { withRetry } from "./sheetsClient";
+import { withRetry } from "./sheetsClient.js";
 
 export const ALERT_MEMORY_TAB = "AlertMemory";
 export const ALERT_MEMORY_RANGE = `${ALERT_MEMORY_TAB}!A:L`;

@@ -154,6 +154,64 @@ function buildVerticalCsvText_(csvText) {
   return cleanData;
 }
 
+function parsePayrollNumber_(val) {
+  if (val === null || val === undefined || val === "" || val === "-") return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const clean = String(val).replace(/[£$, ]/g, "").trim();
+  if (clean === "" || clean === "-") return 0;
+  const parsed = parseFloat(clean);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+function normalizePayrollEmployee_(emp) {
+  if (!emp || typeof emp !== "object") return {};
+  const grossPay = parsePayrollNumber_(
+    emp.grossPay ?? emp.grossEarnings ?? emp.gross_earnings ?? emp.gross ?? emp.totalEarnings ?? emp.total_earnings ?? emp.basicPay ?? emp.salary
+  );
+  const eeNic = parsePayrollNumber_(
+    emp.eeNic ?? emp.eeNics ?? emp.ee_nic ?? emp.ee_nics ?? emp.employeeNic ?? emp.employee_nic ?? emp.nicEe
+  );
+
+  let erNic = 0;
+  if (emp.erNic !== undefined && emp.erNic !== null) {
+    erNic = parsePayrollNumber_(emp.erNic);
+  } else if (
+    emp.erNicClass1 !== undefined || emp.erNic_class1 !== undefined || emp.er_nic_class_1 !== undefined ||
+    emp["er nic - class 1"] !== undefined || emp["er nic - class 1a"] !== undefined ||
+    emp.erNicClass1a !== undefined || emp.erNicClass1A !== undefined
+  ) {
+    const c1 = parsePayrollNumber_(emp.erNicClass1 ?? emp.erNic_class1 ?? emp.er_nic_class_1 ?? emp["er nic - class 1"]);
+    const c1a = parsePayrollNumber_(emp.erNicClass1a ?? emp.erNicClass1A ?? emp.erNic_class1a ?? emp.er_nic_class_1a ?? emp["er nic - class 1a"]);
+    erNic = c1 + c1a;
+  } else {
+    erNic = parsePayrollNumber_(emp.erNics ?? emp.er_nic ?? emp.er_nics ?? emp.employerNic ?? emp.employer_nic ?? emp.nicEr);
+  }
+
+  const studLoan = parsePayrollNumber_(
+    emp.studLoan ?? emp.studentLoan ?? emp.studentLoans ?? emp.stud_loan ?? emp.student_loans ?? emp.postgradLoan
+  );
+  const eePension = parsePayrollNumber_(
+    emp.eePension ?? emp.ee_pension ?? emp.employeePension ?? emp.employee_pension ?? emp.pensionEe
+  );
+  const erPension = parsePayrollNumber_(
+    emp.erPension ?? emp.er_pension ?? emp.employerPension ?? emp.employer_pension ?? emp.pensionEr
+  );
+  const paye = parsePayrollNumber_(
+    emp.paye ?? emp.tax ?? emp.incomeTax ?? emp.income_tax
+  );
+
+  return {
+    ...emp,
+    grossPay,
+    eeNic,
+    erNic,
+    studLoan,
+    eePension,
+    erPension,
+    paye
+  };
+}
+
 async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, targetMonthStr, allEmployeeNames) {
   const headerResp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "Salaries!1:1" }));
   const headers = (headerResp.data.values && headerResp.data.values[0]) || [];
@@ -166,21 +224,22 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
   const endColLetter = columnIndexToLetter_(startColIdx0 + 7);
 
   const sheetNames = allEmployeeNames;
-  const namesFoundInDoc = extractedData.employees.filter(e => e.mappedName !== "NEW_STARTER").map(e => e.mappedName);
+  const namesFoundInDoc = (extractedData.employees || []).filter(e => e.mappedName !== "NEW_STARTER").map(e => e.mappedName);
   const missingFromDoc = sheetNames.filter(n => n && !namesFoundInDoc.includes(n));
-  const newStarters = extractedData.employees.filter(e => e.mappedName === "NEW_STARTER").map(e => e.originalName);
+  const newStarters = (extractedData.employees || []).filter(e => e.mappedName === "NEW_STARTER").map(e => e.originalName);
   const unmatched = [];
 
   const writeData = [];
   const writtenTotals = { grossPay: 0, eeNic: 0, erNic: 0, studLoan: 0, eePension: 0, erPension: 0, paye: 0 };
   let updateCount = 0;
 
-  for (const emp of extractedData.employees) {
+  for (const rawEmp of (extractedData.employees || [])) {
+    const emp = normalizePayrollEmployee_(rawEmp);
     if (emp.mappedName === "NEW_STARTER") continue;
     const rowIdx = sheetNames.indexOf(emp.mappedName);
-    if (rowIdx === -1) { unmatched.push(emp.originalName); continue; }
+    if (rowIdx === -1) { unmatched.push(emp.originalName || rawEmp.originalName); continue; }
     const sheetRow = rowIdx + 4;
-    const vals = [emp.grossPay||0, emp.eeNic||0, emp.erNic||0, emp.studLoan||0, emp.eePension||0, emp.erPension||0, emp.paye||0];
+    const vals = [emp.grossPay, emp.eeNic, emp.erNic, emp.studLoan, emp.eePension, emp.erPension, emp.paye];
     writeData.push({ range: `Salaries!${startColLetter}${sheetRow}:${endColLetter}${sheetRow}`, values: [vals] });
     writtenTotals.grossPay += vals[0]; writtenTotals.eeNic += vals[1]; writtenTotals.erNic += vals[2];
     writtenTotals.studLoan += vals[3]; writtenTotals.eePension += vals[4]; writtenTotals.erPension += vals[5]; writtenTotals.paye += vals[6];
@@ -188,10 +247,10 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
   }
 
   if (writeData.length > 0) {
-    await withRetry(() => sheets.spreadsheets.values.batchUpdate({ spreadsheetId: clientSheetId, requestBody: { data: writeData, valueInputOption: "RAW" } }));
+    await withRetry(() => sheets.spreadsheets.values.batchUpdate({ spreadsheetId: clientSheetId, requestBody: { data: writeData, valueInputOption: "USER_ENTERED" } }));
   }
 
-  const docTotals = extractedData.totals || {};
+  const docTotals = extractedData.totals ? normalizePayrollEmployee_(extractedData.totals) : {};
   const totalsSource = extractedData.totalsSource === "document" ? "document" : "calculated";
   const TOLERANCE = 1.00;
   const categories = ["grossPay","eeNic","erNic","studLoan","eePension","erPension","paye"];
@@ -401,14 +460,51 @@ export async function handleProcessPayrollDocument(req, res, sheets) {
     const filenameContext = fileData.fileName ? `\nDocument Filename: "${fileData.fileName}"` : "";
 
     const promptText = `You are a payroll data extraction assistant. Analyze this payroll document.${filenameContext}
-TASK 1: Identify the Period. Look for month/year. Output format: "MMM YYYY" (e.g. "Jan 2026").
+TASK 1: Identify the Period. Find the ending date, process date, tax month, or period date. Output format: "MMM YYYY" (e.g. "Jan 2026").
 - CRITICAL DATE HANDLING: The current real-world date context is ${currentDateContext}. Output the most recent instance of the month relative to this date.
+
 TASK 2: Extract Employee Data visible ON THE DOCUMENT.
 - Extract each person exactly ONCE.
 - Match each name to the closest name in this list: ${namesString}. If NO MATCH, set mappedName to "NEW_STARTER".
-- Do NOT perform math. Extract exact numbers.
-TASK 3: Totals. Extract from summary row ("document") or sum yourself ("calculated").
-Return ONLY valid JSON: { "period": "MMM YYYY", "employees": [...], "totalsSource": "", "totals": {...} }`;
+- Do NOT perform math. Extract exact numbers as they appear.
+- SEMANTIC FIELD MAPPING (Map document columns to these EXACT JSON keys):
+  * 'grossPay': Total pay before deductions (e.g., "GROSS EARNINGS", "Gross Pay", "Total Earnings", "Basic Pay").
+  * 'eeNic': Employee National Insurance contribution (e.g., "EE NIC", "Employee NIC", "Class 1 NI").
+  * 'erNic': Total Employer National Insurance contribution (e.g., "ER NIC", "ER NIC - CLASS 1", "Employer NIC", "Er NICs"). If multiple employer NI columns exist (e.g. Class 1 and Class 1A), sum them together into 'erNic'.
+  * 'studLoan': Student loan deductions (e.g., "STUDENT LOANS", "Student Loan", "Postgrad Loan").
+  * 'eePension': Employee pension contribution (e.g., "EE PENSION", "Employee Pension", "Relief At Source").
+  * 'erPension': Employer pension contribution (e.g., "ER PENSION", "Employer Pension").
+  * 'paye': Income tax paid by employee (e.g., "PAYE", "Tax", "Income Tax").
+
+TASK 3: Totals. Extract from summary/totals row ("document") or sum yourself ("calculated") using the exact same keys as above.
+
+Return ONLY valid JSON matching this exact structure:
+{
+  "period": "MMM YYYY",
+  "totalsSource": "document" or "calculated",
+  "totals": {
+    "grossPay": 0,
+    "eeNic": 0,
+    "erNic": 0,
+    "studLoan": 0,
+    "eePension": 0,
+    "erPension": 0,
+    "paye": 0
+  },
+  "employees": [
+    {
+      "originalName": "Name on document",
+      "mappedName": "Matched Name from list or NEW_STARTER",
+      "grossPay": 0,
+      "eeNic": 0,
+      "erNic": 0,
+      "studLoan": 0,
+      "eePension": 0,
+      "erPension": 0,
+      "paye": 0
+    }
+  ]
+}`;
 
     let content;
     if (fileData.type === "text") {
@@ -428,6 +524,11 @@ Return ONLY valid JSON: { "period": "MMM YYYY", "employees": [...], "totalsSourc
     let extractedData;
     try { extractedData = JSON.parse(cleanText.slice(cleanText.indexOf("{"), cleanText.lastIndexOf("}") + 1)); } catch (e) {
       return res.status(500).json({ success: false, error: "AI generated malformed JSON" });
+    }
+
+    console.log(`[Payroll Import] Client: ${payrollClientName}, Period: ${extractedData.period}, Employees: ${extractedData.employees?.length || 0}`);
+    if (extractedData.employees?.length > 0) {
+      console.log("[Payroll Import] Sample extracted employee:", JSON.stringify(extractedData.employees[0], null, 2));
     }
 
     const targetMonthStr = confirmedMonth || extractedData.period;

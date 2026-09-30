@@ -167,9 +167,9 @@ export default function AuthGateView({
             }}
           >
             {redirectingProvider === "Microsoft" ? (
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <Spinner size="sm" />
-                <span>Redirecting to Microsoft...</span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px" }}>
+                <Spinner size={16} color="#1e293b" />
+                <span style={{ fontWeight: "600", fontSize: "14px", color: "#1e293b" }}>Connecting to Microsoft...</span>
               </div>
             ) : (
               <>
@@ -222,9 +222,9 @@ export default function AuthGateView({
             }}
           >
             {redirectingProvider === "Google" ? (
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <Spinner size="sm" />
-                <span>Redirecting to Google...</span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px" }}>
+                <Spinner size={16} color="#ffffff" />
+                <span style={{ fontWeight: "600", fontSize: "14px", color: "#ffffff" }}>Connecting to Google...</span>
               </div>
             ) : (
               <>

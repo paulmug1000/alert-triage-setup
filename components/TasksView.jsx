@@ -245,12 +245,12 @@ export default function TasksView({
           { key: "snoozed", label: "My snoozed", count: snoozedTaskCount },
           { key: "other_active", label: "Other active", count: otherActiveTaskCount },
           { key: "other_snoozed", label: "Other snoozed", count: otherSnoozedTaskCount },
-          { key: "resolved", label: "Completed", count: resolvedTaskCount },
+          { key: "resolved", label: "Completed" },
         ]
       : [
           { key: "active", label: "Active", count: navTaskCount },
           { key: "snoozed", label: "Snoozed", count: snoozedTaskCount },
-          { key: "resolved", label: "Completed", count: resolvedTaskCount },
+          { key: "resolved", label: "Completed" },
         ];
 
     return (
@@ -274,7 +274,7 @@ export default function TasksView({
                 borderRadius: "0", display: "flex", alignItems: "center", gap: "6px",
               }}>
               {tab.label}
-              {tab.count > 0 && (
+              {tab.key !== "resolved" && tab.count > 0 && (
                 <span style={{
                   display: "inline-flex", alignItems: "center", justifyContent: "center",
                   background: tab.key.startsWith("other") ? "#64748b" : "#e53e3e",

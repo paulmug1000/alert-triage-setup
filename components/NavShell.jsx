@@ -14,16 +14,184 @@ const GLOBAL_STYLES = `
   .triage-client-card:active { background: #e3ecff !important; transform: scale(0.995); }
   .pulse-nav-item { transition: color 0.15s, border-color 0.15s !important; }
   .pulse-nav-item:hover { color: #0066cc !important; }
+
+  /* Top Navigation Bar */
+  .pma-topbar {
+    background: #1a1a2e;
+    color: #fff;
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    box-sizing: border-box;
+  }
+  .pma-topbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  .pma-topbar-logo {
+    width: 24px;
+    height: 24px;
+    background: #0066cc;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+  .pma-topbar-title {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pma-topbar-user-area {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .pma-topbar-user-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    padding: 4px 10px;
+    border-radius: 20px;
+  }
+  .pma-topbar-avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #0066cc;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .pma-topbar-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: #e2e8f0;
+    white-space: nowrap;
+  }
+  .pma-topbar-role {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    line-height: 1.3;
+  }
+  .pma-topbar-signout {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    color: #cbd5e1;
+    font-size: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+  }
+
+  /* Mobile Portrait and Small Screens */
+  @media (max-width: 600px) {
+    .pma-topbar {
+      padding: 8px 10px;
+      gap: 6px;
+    }
+    .pma-topbar-brand {
+      gap: 6px;
+    }
+    .pma-topbar-logo {
+      width: 20px;
+      height: 20px;
+      font-size: 12px;
+      border-radius: 5px;
+    }
+    .pma-topbar-title {
+      font-size: 13.5px;
+      letter-spacing: -0.1px;
+      white-space: nowrap;
+    }
+    .pma-topbar-user-area {
+      gap: 6px;
+    }
+    .pma-topbar-user-pill {
+      padding: 2px 6px;
+      gap: 4px;
+      border-radius: 12px;
+    }
+    .pma-topbar-avatar {
+      width: 17px;
+      height: 17px;
+      font-size: 9.5px;
+    }
+    .pma-topbar-name {
+      font-size: 10.5px;
+      max-width: 65px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pma-topbar-role {
+      font-size: 8.5px;
+      padding: 1px 4px;
+      border-radius: 6px;
+      line-height: 1.1;
+      letter-spacing: 0.2px;
+    }
+    .pma-topbar-signout {
+      padding: 2px 6px;
+      font-size: 10.5px;
+      border-radius: 4px;
+    }
+  }
+
+  /* Extra small screens (e.g. 320px - 360px) */
+  @media (max-width: 360px) {
+    .pma-topbar {
+      padding: 6px 8px;
+    }
+    .pma-topbar-title {
+      font-size: 12px;
+    }
+    .pma-topbar-name {
+      max-width: 45px;
+      font-size: 9.5px;
+    }
+    .pma-topbar-role {
+      font-size: 8px;
+      padding: 0.5px 3.5px;
+    }
+    .pma-topbar-signout {
+      padding: 2px 5px;
+      font-size: 9.5px;
+    }
+  }
 `;
 
 if (typeof document !== "undefined") {
   const id = "triage-global-styles";
-  if (!document.getElementById(id)) {
-    const el = document.createElement("style");
+  let el = document.getElementById(id);
+  if (!el) {
+    el = document.createElement("style");
     el.id = id;
-    el.textContent = GLOBAL_STYLES;
     document.head.appendChild(el);
   }
+  el.textContent = GLOBAL_STYLES;
 }
 
 // Persistent top bar - rendered around every screen
@@ -92,42 +260,32 @@ export default function NavShell({
   return (
     <div style={{ fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f5f5f5" }}>
       <style dangerouslySetInnerHTML={{ __html: GLOBAL_STYLES }} />
-      <div style={{ background: "#1a1a2e", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <div style={{ width: "24px", height: "24px", background: "#0066cc", borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700", fontSize: "14px" }}>P</div>
-          <span style={{ fontSize: "15px", fontWeight: "700", letterSpacing: "0.3px" }}>Pulse Management Application</span>
+      <div className="pma-topbar">
+        <div className="pma-topbar-brand">
+          <div className="pma-topbar-logo">P</div>
+          <span className="pma-topbar-title">Pulse Management App</span>
         </div>
         {user && (
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", background: "rgba(255,255,255,0.08)", padding: "4px 10px", borderRadius: "20px" }}>
-              <div style={{ width: "22px", height: "22px", borderRadius: "50%", background: "#0066cc", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: "600" }}>
+          <div className="pma-topbar-user-area">
+            <div className="pma-topbar-user-pill">
+              <div className="pma-topbar-avatar">
                 {(user.name || user.email || "U")[0].toUpperCase()}
               </div>
-              <span style={{ fontSize: "13px", fontWeight: "500", color: "#e2e8f0" }}>{user.name || user.email}</span>
-              <span style={{ 
-                fontSize: "11px", 
-                padding: "1px 6px", 
-                borderRadius: "10px", 
-                background: user.isAdmin ? "rgba(56, 189, 248, 0.2)" : "rgba(245, 158, 11, 0.2)", 
-                color: user.isAdmin ? "#7dd3fc" : "#fcd34d",
-                fontWeight: "600" 
-              }}>
+              <span className="pma-topbar-name" title={user.name || user.email}>{user.name || user.email}</span>
+              <span 
+                className="pma-topbar-role"
+                style={{ 
+                  background: user.isAdmin ? "rgba(56, 189, 248, 0.2)" : "rgba(245, 158, 11, 0.2)", 
+                  color: user.isAdmin ? "#7dd3fc" : "#fcd34d",
+                }}
+              >
                 {user.isAdmin ? "Admin" : (Array.isArray(user.assignedClients) ? `${user.assignedClients.length} clients` : "User")}
               </span>
             </div>
             {onLogout && (
               <button
+                className="pma-topbar-signout"
                 onClick={onLogout}
-                style={{
-                  background: "transparent",
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  borderRadius: "6px",
-                  color: "#cbd5e1",
-                  fontSize: "12px",
-                  padding: "4px 10px",
-                  cursor: "pointer",
-                  transition: "all 0.15s ease"
-                }}
                 onMouseEnter={e => { e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)"; e.currentTarget.style.borderColor = "#ef4444"; e.currentTarget.style.color = "#fca5a5"; }}
                 onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = "#cbd5e1"; }}
                 title="Sign out of Pulse"

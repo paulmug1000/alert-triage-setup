@@ -1,0 +1,23 @@
+export default async function handler(req, res) {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    return res.status(500).json({ error: "Missing GOOGLE_CLIENT_ID environment variable" });
+  }
+
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
+  const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
+  const redirectUri = `${proto}://${host}/api/auth/oauth/google/callback`;
+
+  // Standard OpenID Connect scopes for identity
+  const scopes = ["openid", "email", "profile"].join(" ");
+
+  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  authUrl.searchParams.set("client_id", clientId);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", scopes);
+  authUrl.searchParams.set("access_type", "online");
+  authUrl.searchParams.set("prompt", "select_account");
+
+  return res.redirect(authUrl.toString());
+}

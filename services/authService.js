@@ -238,6 +238,18 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res) {
   // Code matches! Destroy OTP from Redis
   try { await redisClient.del(otpKey); } catch { }
 
+  return await createSessionForVerifiedEmail(normalizedEmail, res, "EmailOTP", automationCommanderSheetId);
+}
+
+/**
+ * Create a session for an already verified email (via OAuth or OTP)
+ */
+export async function createSessionForVerifiedEmail(email, res, provider = "OAuth", automationCommanderSheetId) {
+  const normalizedEmail = String(email || "").toLowerCase().trim();
+  if (!normalizedEmail) {
+    return { success: false, message: "Email is required" };
+  }
+
   // Invalidate Redis user cache so fresh spreadsheet permissions are always loaded
   try { await redisClient.del("pma:users:list"); } catch { }
 
@@ -248,7 +260,8 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res) {
   if (!user || user.status === "Suspended") {
     return {
       success: false,
-      message: "This user account is not active or has been suspended."
+      unauthorized: true,
+      message: "This account is not authorized to access PMA or has been suspended."
     };
   }
 
@@ -263,7 +276,7 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res) {
     clientName: "System",
     category: "Auth",
     action: "USER_LOGIN",
-    summary: `User signed in: ${user.name} (${user.email})`,
+    summary: `User signed in: ${user.name} (${user.email}) via ${provider}`,
     details: `Role: ${user.role}, Assigned Clients: ${Array.isArray(user.assignedClients) ? user.assignedClients.join(", ") : user.assignedClients}`,
     user: user.name || user.email
   }).catch(() => { });

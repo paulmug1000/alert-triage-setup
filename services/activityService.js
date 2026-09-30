@@ -1328,10 +1328,13 @@ export async function handleGetActivity(req, res, sheets) {
     }
 
     const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+    }
 
     // 1. Single Client View
     if (clientName && clientName !== "ALL") {
-      if (sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
+      if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
         return res.status(403).json({ success: false, error: "Access denied to this client" });
       }
       let targetClient = clientsList.find(c => c.clientName.toLowerCase() === clientName.toLowerCase());
@@ -1344,13 +1347,13 @@ export async function handleGetActivity(req, res, sheets) {
     }
 
     // 2. All Clients View
-    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
       clientsList = filterClientsForUser(clientsList, sessionUser);
     }
     const data = await fetchAllClientsActivity(sheets, clientsList, !!forceRefresh, !!includeRoutine, acId);
 
     // Filter aggregated data for non-admins to prevent cache bleeding
-    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       if (data && data.allEvents) {
         data.allEvents = data.allEvents.filter(e =>

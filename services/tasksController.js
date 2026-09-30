@@ -6,7 +6,7 @@ import {
 } from "./alertMemory";
 import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
-import { matchesClientName } from "./userPermissions";
+import { matchesClientName, isUserAuthorizedForClient } from "./userPermissions";
 
 export async function handleBulkCreateTasks(req, res, sheets) {
   const { alerts: alertsToTask, taskNote, snoozedUntil, automationCommanderSheetId: acId } = req.body;
@@ -71,6 +71,12 @@ export async function handleBulkCreateTasks(req, res, sheets) {
 export async function handleCreateTask(req, res, sheets) {
   const { alert, taskNote, automationCommanderSheetId: acId, isProactive, proactiveAlertKey, isInfo } = req.body;
   if (!alert || !acId) return res.status(400).json({ success: false, error: "Missing alert or automationCommanderSheetId" });
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, alert.clientName)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client" });
+  }
 
   try {
     await ensureAlertMemoryTab(sheets, acId);
@@ -214,8 +220,11 @@ export async function handleGetTasks(req, res, sheets) {
     });
 
     const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+    }
     let scopedTasks = parsed;
-    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       scopedTasks = parsed.filter(t =>
         assignedList.some(assigned => matchesClientName(assigned, t.clientName))
@@ -247,6 +256,12 @@ export async function handleAddTaskNote(req, res, sheets) {
     const memoryRows = await readAlertMemory(sheets, acId);
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
+      return res.status(403).json({ success: false, error: "Access denied to this client's tasks" });
+    }
 
     let taskMeta = {};
     try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
@@ -280,6 +295,12 @@ export async function handleSnoozeTask(req, res, sheets) {
     const memoryRows = await readAlertMemory(sheets, acId);
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
+      return res.status(403).json({ success: false, error: "Access denied to this client's tasks" });
+    }
 
     let taskMeta = {};
     try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
@@ -339,6 +360,12 @@ export async function handleResolveTask(req, res, sheets) {
     const memoryRows = await readAlertMemory(sheets, acId);
     const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
     if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
+
+    const sessionUser = getSessionUser(req);
+    if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
+      return res.status(403).json({ success: false, error: "Access denied to this client's tasks" });
+    }
 
     let taskMeta = {};
     try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}

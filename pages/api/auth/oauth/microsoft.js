@@ -1,15 +1,29 @@
+import crypto from "crypto";
+
 export default async function handler(req, res) {
   const clientId = process.env.AZURE_CLIENT_ID;
   if (!clientId) {
     return res.status(500).json({ error: "Missing AZURE_CLIENT_ID environment variable" });
   }
 
-  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
+  // Prevent host header poisoning: prioritize configured production URL
+  const prodHost = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+  const host = prodHost || req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
   const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
   const redirectUri = `${proto}://${host}/api/auth/oauth/microsoft/callback`;
 
   // Standard Microsoft Entra ID OpenID Connect & Graph user identity scopes
   const scopes = ["openid", "email", "profile", "User.Read"].join(" ");
+
+  // Generate cryptographic anti-CSRF nonce
+  const nonce = crypto.randomBytes(16).toString("hex");
+  const stateObj = {
+    mode: req.query.mode || "redirect",
+    nonce
+  };
+
+  const isProd = process.env.NODE_ENV === "production";
+  res.setHeader("Set-Cookie", `pma_oauth_nonce=${nonce}; Path=/api/auth/oauth; HttpOnly; SameSite=Lax; Max-Age=600${isProd ? "; Secure" : ""}`);
 
   const authUrl = new URL("https://login.microsoftonline.com/common/oauth2/v2.0/authorize");
   authUrl.searchParams.set("client_id", clientId);
@@ -18,10 +32,7 @@ export default async function handler(req, res) {
   authUrl.searchParams.set("response_mode", "query");
   authUrl.searchParams.set("scope", scopes);
   authUrl.searchParams.set("prompt", "select_account");
-
-  if (req.query.mode) {
-    authUrl.searchParams.set("state", JSON.stringify({ mode: req.query.mode }));
-  }
+  authUrl.searchParams.set("state", JSON.stringify(stateObj));
 
   res.redirect(authUrl.toString());
   return;

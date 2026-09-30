@@ -14,7 +14,7 @@ export const redisClient = global._redisClient || createClient({
   url: process.env.REDIS_URL,
   socket: {
     family: 4,
-    rejectUnauthorized: false,
+    rejectUnauthorized: process.env.REDIS_REJECT_UNAUTHORIZED === "false" ? false : true,
     connectTimeout: 15000 // Extended to 15s to see if it's just a slow cold start
   }
 });

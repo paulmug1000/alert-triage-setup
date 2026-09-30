@@ -42,7 +42,10 @@ export async function handleGetAlerts(req, res) {
     let { alerts, noActionAlerts, proactiveAlerts, clientsWithFlags, resolvedNoActionFlags } = JSON.parse(sessionData);
     
     const sessionUser = getSessionUser(req);
-    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser) {
+      return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+    }
+    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       alerts = (alerts || []).filter(a => assignedList.some(assigned => matchesClientName(assigned, a.clientName)));
       noActionAlerts = (noActionAlerts || []).filter(a => assignedList.some(assigned => matchesClientName(assigned, a.clientName)));
@@ -607,7 +610,10 @@ export async function handleGetIgnoredAlerts(req, res, sheets) {
       }));
 
     const sessionUser = getSessionUser(req);
-    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser) {
+      return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+    }
+    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       ignoredAlerts = ignoredAlerts.filter(a =>
         assignedList.some(assigned => matchesClientName(assigned, a.clientName))
@@ -654,7 +660,10 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
       });
 
     const sessionUser = getSessionUser(req);
-    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser) {
+      return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+    }
+    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       active = active.filter(a =>
         assignedList.some(assigned => matchesClientName(assigned, a.clientName))

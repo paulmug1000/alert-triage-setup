@@ -76,7 +76,7 @@ export async function logPmaActivity(sheets, {
       sheets.spreadsheets.values.append({
         spreadsheetId: acId,
         range: `${PMA_ACTIVITY_LOG_TAB}!A:G`,
-        valueInputOption: "USER_ENTERED",
+        valueInputOption: "RAW",
         requestBody: {
           values: [[nowISO, cleanClient, cleanCategory, cleanAction, cleanSummary, detailsStr, cleanUser]]
         }

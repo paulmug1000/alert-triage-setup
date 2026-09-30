@@ -3,6 +3,8 @@ import { redisClient } from "./redisClient";
 import { anthropic } from "./claudeClient";
 import { logClaudeUsage_ } from "./systemConfig";
 import { monthStrToEomKey_, eomTargetMonthToWorkMonth_, autoCompleteLinkedEomTask_ } from "./eomTools";
+import { getSessionUser } from "./authService";
+import { isUserAuthorizedForClient } from "./userPermissions";
 
 const CLIENT_NAME_NOISE_WORDS_ = new Set([
   "ltd","limited","plc","inc","llc","llp","the","and","&",
@@ -442,6 +444,12 @@ Return ONLY valid JSON, no other text: { "employerName": "", "employeeNames": ["
 export async function handleProcessPayrollDocument(req, res, sheets) {
   const { clientSheetId: payrollClientSheetId, clientName: payrollClientName, uploadId, confirmedMonth, automationCommanderSheetId } = req.body;
   if (!payrollClientSheetId || !uploadId) return res.status(400).json({ success: false, error: "Missing required fields" });
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (!sessionUser.isAdmin && payrollClientName && !isUserAuthorizedForClient(sessionUser, payrollClientName)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client" });
+  }
   let fileData;
   try {
     const raw = await redisClient.get(`payroll_upload:${uploadId}`);
@@ -555,6 +563,12 @@ Return ONLY valid JSON matching this exact structure:
 export async function handleProcessTimeDocument(req, res, sheets) {
   const { masterSheetId: timeMasterSheetId, clientName: timeClientName, uploadId, confirmedMonth, automationCommanderSheetId } = req.body;
   if (!timeMasterSheetId || !uploadId) return res.status(400).json({ success: false, error: "Missing required fields" });
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
+  if (!sessionUser.isAdmin && timeClientName && !isUserAuthorizedForClient(sessionUser, timeClientName)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client" });
+  }
   let fileData;
   try {
     const raw = await redisClient.get(`payroll_upload:${uploadId}`);

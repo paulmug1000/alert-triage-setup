@@ -7,7 +7,7 @@ import { logPmaActivity } from "./pmaLogger.js";
 
 const OTP_EXPIRY_SECS = 600; // 10 minutes
 const COOLDOWN_SECS = 60; // 60 seconds
-const SESSION_MAX_AGE_SECS = 90 * 24 * 60 * 60; // 90 days
+const SESSION_MAX_AGE_SECS = 7 * 24 * 60 * 60; // 7 days (reduced from 90 days for security)
 
 function serializeCookie(name, val, options = {}) {
   let str = `${encodeURIComponent(name)}=${encodeURIComponent(val)}`;
@@ -283,6 +283,7 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
 
   // Sign JWT session
   const payload = {
+    tokenType: "session",
     email: user.email,
     name: user.name,
     role: user.role,
@@ -351,12 +352,23 @@ export function getSessionUser(req) {
     const decoded = jwt.verify(token, secret);
     if (!decoded || !decoded.email) return null;
 
+    // Explicitly reject transient or single-purpose tokens (e.g. sso_token) from being used as session tokens
+    if (decoded.tokenType && decoded.tokenType !== "session") return null;
+
+    // Secure default: if assignedClients is undefined or missing, default to empty array (never "*")
+    const assignedClients = decoded.assignedClients === "*"
+      ? "*"
+      : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
+
+    const role = decoded.role || "ClientManager";
+    const isAdmin = role === "Admin" || assignedClients === "*";
+
     return {
       email: decoded.email,
       name: decoded.name || decoded.email.split("@")[0],
-      role: decoded.role || "ClientManager",
-      assignedClients: decoded.assignedClients || "*",
-      isAdmin: decoded.role === "Admin" || decoded.assignedClients === "*"
+      role,
+      assignedClients,
+      isAdmin
     };
   } catch (err) {
     return null;

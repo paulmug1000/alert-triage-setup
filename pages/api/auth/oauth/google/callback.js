@@ -1,6 +1,18 @@
 import { createSessionForVerifiedEmail } from "../../../../../services/authService";
 import jwt from "jsonwebtoken";
 
+function parseCookies(cookieHeader) {
+  if (!cookieHeader) return {};
+  return cookieHeader.split(";").reduce((acc, pair) => {
+    const idx = pair.indexOf("=");
+    if (idx === -1) return acc;
+    const key = pair.slice(0, idx).trim();
+    const val = pair.slice(idx + 1).trim();
+    acc[decodeURIComponent(key)] = decodeURIComponent(val);
+    return acc;
+  }, {});
+}
+
 function renderPopupResponse(res, { email, provider, ssoToken, error }) {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   if (error) {
@@ -21,7 +33,16 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
   </div>
   <script>
     if (window.opener) {
-      window.opener.postMessage({ type: 'PULSE_SSO_ERROR', provider: 'Google', error: ${JSON.stringify(error)} }, '*');
+      var targetOrigin = '*';
+      try {
+        if (document.referrer) {
+          var ref = new URL(document.referrer).origin;
+          if (ref === 'https://script.google.com' || ref.endsWith('.googleusercontent.com') || ref.endsWith('.pulsedashboard.co.uk')) {
+            targetOrigin = ref;
+          }
+        }
+      } catch(e) {}
+      window.opener.postMessage({ type: 'PULSE_SSO_ERROR', provider: 'Google', error: ${JSON.stringify(error)} }, targetOrigin);
     }
     setTimeout(function() { window.close(); }, 1200);
   </script>
@@ -50,12 +71,21 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
   <script>
     try {
       if (window.opener) {
+        var targetOrigin = '*';
+        try {
+          if (document.referrer) {
+            var ref = new URL(document.referrer).origin;
+            if (ref === 'https://script.google.com' || ref.endsWith('.googleusercontent.com') || ref.endsWith('.pulsedashboard.co.uk')) {
+              targetOrigin = ref;
+            }
+          }
+        } catch(e) {}
         window.opener.postMessage({
           type: 'PULSE_SSO_SUCCESS',
           email: ${JSON.stringify(email)},
           provider: ${JSON.stringify(provider || 'Google')},
           ssoToken: ${JSON.stringify(ssoToken)}
-        }, '*');
+        }, targetOrigin);
       }
     } catch (e) {
       console.error(e);
@@ -70,12 +100,30 @@ export default async function handler(req, res) {
   const { code, error, state } = req.query;
 
   let isPopup = false;
+  let stateNonce = null;
   try {
     if (state) {
       const parsed = typeof state === "string" && (state.startsWith("{") ? JSON.parse(state) : { mode: state });
       if (parsed.mode === "popup") isPopup = true;
+      if (parsed.nonce) stateNonce = parsed.nonce;
     }
   } catch (e) {}
+
+  // Verify CSRF state nonce
+  const cookies = parseCookies(req.headers.cookie);
+  const cookieNonce = cookies.pma_oauth_nonce;
+  // Clear the nonce cookie
+  const isProd = process.env.NODE_ENV === "production";
+  res.setHeader("Set-Cookie", `pma_oauth_nonce=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`);
+
+  if (stateNonce && cookieNonce && stateNonce !== cookieNonce) {
+    console.warn("⚠️ Google OAuth state mismatch (potential CSRF attempt)");
+    if (isPopup) {
+      return renderPopupResponse(res, { error: "state_mismatch" });
+    }
+    res.redirect("/?auth_error=state_mismatch");
+    return;
+  }
 
   if (error) {
     console.warn("⚠️ Google OAuth error:", error);
@@ -106,7 +154,8 @@ export default async function handler(req, res) {
     return;
   }
 
-  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
+  const prodHost = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+  const host = prodHost || req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
   const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
   const redirectUri = `${proto}://${host}/api/auth/oauth/google/callback`;
 
@@ -152,11 +201,11 @@ export default async function handler(req, res) {
     const email = userData.email.toLowerCase().trim();
     console.log(`🔑 Verified Google OAuth login attempt for: ${email} (isPopup: ${isPopup})`);
 
-    // In popup mode, mint an SSO token and hand back to opener
+    // In popup mode, mint a strictly scoped SSO token (tokenType: "sso_token")
     if (isPopup) {
-      const secret = process.env.PMA_JWT_SECRET || "pulse-sso-secret-fallback";
+      const secret = process.env.PMA_JWT_SECRET || "pma_jwt_secret_pulse_mgmt_auth_2026_x89a74bf20ec91";
       const ssoToken = jwt.sign(
-        { email, provider: "Google" },
+        { tokenType: "sso_token", email, provider: "Google" },
         secret,
         { expiresIn: "5m" }
       );

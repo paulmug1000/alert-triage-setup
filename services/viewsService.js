@@ -2,7 +2,8 @@ import { getSheetsClient, withRetry, colLetterToNum, extractSheetIdFromUrl } fro
 import { resolveClientNameBySheetId } from "./workspaces";
 import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
-import { isUserAuthorizedForClient } from "./userPermissions";
+import { isUserAuthorizedForClient, sanitizeFormulaInput } from "./userPermissions";
+
 
 const MONTH_NAMES = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
@@ -340,8 +341,24 @@ export async function handleUpdateViewCell(req, res, sheets) {
     rowDescription
   } = req.body;
 
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+  }
+
   if ((!clientSheetId && !masterSheetId) || !sheetRow || !colLetter) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+
+  let resolvedClient = req.body.clientName || "";
+  if (!resolvedClient) {
+    try {
+      resolvedClient = await resolveClientNameBySheetId(sheets, extractSheetIdFromUrl(clientSheetId) || clientSheetId, req.body.automationCommanderSheetId);
+    } catch (e) {}
+  }
+
+  if (resolvedClient && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, resolvedClient)) {
+    return res.status(403).json({ success: false, error: "Access denied to this client" });
   }
 
   const rowNum = parseInt(sheetRow, 10);
@@ -431,12 +448,15 @@ export async function handleUpdateViewCell(req, res, sheets) {
     const targetTab = screenTab === "budget" ? "Budget" : (tab || "Outgoings");
     const cellRange = `${targetTab}!${colLetter}${rowNum}`;
 
+    // Sanitize user inputs to prevent CSV / Spreadsheet formula injection (CWE-1236)
+    const safeValue = sanitizeFormulaInput(value ?? "");
+
     await withRetry(() =>
       sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
         range: cellRange,
         valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[value ?? ""]] }
+        requestBody: { values: [[safeValue]] }
       })
     );
 

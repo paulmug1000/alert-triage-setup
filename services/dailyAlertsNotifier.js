@@ -17,6 +17,16 @@ export function getFormattedDigestDate(d = new Date()) {
   }).format(d);
 }
 
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /**
  * Build rich HTML email body for daily alert digest
  */
@@ -30,7 +40,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
     if (cs.taskCount > 0) breakdownPills.push(`<span style="display:inline-block;background:#f3e8ff;color:#6b21a8;border:1px solid #e9d5ff;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;margin-right:5px;margin-bottom:4px;">Tasks: ${cs.taskCount}</span>`);
 
     const alertBullets = (cs.alerts || []).slice(0, 4).map(a =>
-      `<li style="margin-bottom:4px;color:#4b5563;font-size:13px;line-height:1.4;">${a.summary}</li>`
+      `<li style="margin-bottom:4px;color:#4b5563;font-size:13px;line-height:1.4;">${escapeHtml(a.summary)}</li>`
     ).join("");
 
     const moreNotice = (cs.alerts || []).length > 4
@@ -40,7 +50,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
     return `
       <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:16px 18px;margin-bottom:12px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <strong style="font-size:15px;color:#111827;">${cs.clientName}</strong>
+          <strong style="font-size:15px;color:#111827;">${escapeHtml(cs.clientName)}</strong>
           <span style="background:#1e3a8a;color:#ffffff;border-radius:12px;padding:2px 9px;font-size:11px;font-weight:700;">${cs.totalClientAlerts} alert${cs.totalClientAlerts !== 1 ? "s" : ""}</span>
         </div>
         <div style="margin-bottom:8px;">
@@ -58,14 +68,14 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
         <div style="width:28px;height:28px;background:#0066cc;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;color:#ffffff;line-height:28px;text-align:center;">P</div>
         <div>
           <div style="font-size:16px;font-weight:700;letter-spacing:0.3px;">Pulse Management App</div>
-          <div style="font-size:12px;color:#94a3b8;">Daily Alerts Digest - ${formattedDate}</div>
+          <div style="font-size:12px;color:#94a3b8;">Daily Alerts Digest - ${escapeHtml(formattedDate)}</div>
         </div>
       </div>
 
       <!-- Main Container -->
       <div style="background:#f3f4f6;padding:20px 24px;border:1px solid #e5e7eb;border-top:none;">
         <p style="font-size:15px;line-height:1.5;margin-top:0;margin-bottom:14px;">
-          Hello ${user.name || "there"},
+          Hello ${escapeHtml(user.name || "there")},
         </p>
         <p style="font-size:14px;color:#4b5563;line-height:1.5;margin-bottom:18px;">
           Here is your 5:00 AM summary of outstanding alerts across the clients you manage:

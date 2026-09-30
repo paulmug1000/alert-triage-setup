@@ -173,4 +173,23 @@ export function filterClientsForUser(allClients, user) {
     const name = String(c.name || c.clientName || "").trim();
     return assignedList.some(assigned => matchesClientName(assigned, name));
   });
-}
+}
+
+/**
+ * Sanitize user inputs to prevent CSV / Spreadsheet formula injection (CWE-1236).
+ * Neutralizes strings starting with =, +, -, @ by prefixing with a single quote ',
+ * unless the string is a valid finite numeric value.
+ */
+export function sanitizeFormulaInput(val) {
+  if (typeof val !== "string") return val;
+  const trimmed = val.trim();
+  if (!trimmed) return val;
+  // If it's a valid finite number, it is safe (e.g. "-500", "+25.5")
+  if (!isNaN(Number(trimmed))) return val;
+  // If it starts with formula trigger characters, neutralize it
+  if (/^[=+\-@]/.test(trimmed)) {
+    return `'${val}`;
+  }
+  return val;
+}
+

@@ -1,8 +1,21 @@
 import jwt from "jsonwebtoken";
 
 export default async function handler(req, res) {
-  // Allow CORS so client script or server script can verify
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const origin = req.headers.origin;
+  const isAllowedOrigin = origin && (
+    origin === "https://pma.pulsedashboard.co.uk" ||
+    origin === "https://project-shj9n.vercel.app" ||
+    origin === "http://localhost:3000" ||
+    origin === "https://script.google.com" ||
+    origin.endsWith(".googleusercontent.com") ||
+    origin.endsWith(".pulsedashboard.co.uk")
+  );
+
+  if (isAllowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "https://pma.pulsedashboard.co.uk");
+  }
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
@@ -34,8 +47,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    const secret = process.env.PMA_JWT_SECRET || "pulse-sso-secret-fallback";
-    const decoded = jwt.verify(ssoToken, secret);
+    const secret = process.env.PMA_JWT_SECRET;
+    if (!secret) {
+      if (process.env.NODE_ENV === "production") {
+        return res.status(500).json({ valid: false, message: "Server authentication configuration error" });
+      }
+    }
+    const decoded = jwt.verify(ssoToken, secret || "pulse-dev-secret");
 
     if (decoded.email.toLowerCase().trim() !== String(email).toLowerCase().trim()) {
       return res.status(403).json({ valid: false, message: "Email address mismatch" });

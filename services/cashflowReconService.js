@@ -2,6 +2,8 @@ import { getSheetsClient, withRetry, colLetterToNum, extractSheetIdFromUrl } fro
 import { resolveClientNameBySheetId } from "./workspaces";
 import { logPmaActivity } from "./pmaLogger";
 import { parseMonthHeader, FULL_MONTH_NAMES } from "./viewsService";
+import { sanitizeFormulaInput } from "./userPermissions";
+
 
 // Google Sheets light green 3 (used on Incredibble Cash tab)
 const RESOLVED_GREEN_RGB = { red: 0.8509804, green: 0.91764706, blue: 0.827451 };
@@ -372,11 +374,13 @@ export async function updateCashAdjustment({
   const rowNum = parseInt(sheetRow, 10);
   const cellRange = `Cash!${colLetter}${rowNum}`;
 
+  const safeValue = sanitizeFormulaInput(value ?? "");
+
   await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: cleanClientSheetId,
     range: cellRange,
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [[value ?? ""]] }
+    requestBody: { values: [[safeValue]] }
   }));
 
   // Fetch updated formatted value

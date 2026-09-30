@@ -123,7 +123,7 @@ export default async function handler(req, res) {
     "http://localhost:3000"
   ];
   const origin = req.headers.origin;
-  if (origin && (allowedOrigins.includes(origin) || origin.endsWith(".pulsedashboard.co.uk") || origin.endsWith(".vercel.app"))) {
+  if (origin && (allowedOrigins.includes(origin) || origin.endsWith(".pulsedashboard.co.uk"))) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
     res.setHeader("Access-Control-Allow-Origin", "https://pma.pulsedashboard.co.uk");
@@ -131,7 +131,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
+    "Content-Type, Authorization, x-pma-token"
   );
 
   if (req.method === "OPTIONS") {
@@ -142,12 +142,32 @@ export default async function handler(req, res) {
   try {
     // Handle both POST (req.body) and GET (req.query) requests
     const action = req.method === "GET" ? req.query.action : req.body.action;
-    const automationCommanderSheetId = req.body.automationCommanderSheetId;
+    const automationCommanderSheetId = req.body?.automationCommanderSheetId || req.query?.automationCommanderSheetId;
     const sheets = await getSheetsClient();
 
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);
 
     const sessionUser = getSessionUser(req);
+
+    // Public endpoints that do not require an active user session
+    const PUBLIC_ACTIONS = new Set(["send_otp", "verify_otp", "get_session", "logout"]);
+
+    // Background jobs allowed with verified CRON_SECRET or AGENT_TRIGGER_SECRET
+    const cronSecret = process.env.CRON_SECRET;
+    const isCronAuthorized = cronSecret && (req.body?.secret === cronSecret || req.query?.secret === cronSecret);
+    const agentSecret = process.env.AGENT_TRIGGER_SECRET;
+    const isAgentAuthorized = agentSecret && (req.body?.secret === agentSecret);
+
+    const isSystemAuthorized =
+      (isCronAuthorized && (action === "run_flag_sweep" || action === "build_cached_alert_options" || action === "store_precomputed" || action === "send_daily_alerts_summary")) ||
+      (isAgentAuthorized && action === "agent_progress");
+
+    // Enforce authentication gateway across all protected actions
+    if (!PUBLIC_ACTIONS.has(action) && !isSystemAuthorized) {
+      if (!sessionUser) {
+        return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+      }
+    }
 
     if (action === "send_otp") {
       const { email } = req.body || {};
@@ -174,26 +194,11 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, users });
 
     } else if (action === "emergency_flush_redis") {
-          // Temporary endpoint to clear OOM errors
-          await redisClient.flushDb();
-          return res.status(200).json({ success: true, message: "Redis database flushed successfully. You can now use the app normally." });
-          
-        } else if (action === "verify_pin") {
-          const { pin } = req.body;
-          const expectedPin = process.env.APP_ACCESS_PIN;
-          
-          // Failsafe: If no PIN is configured in Vercel, allow access so you don't get locked out
-          if (!expectedPin) {
-            return res.status(200).json({ success: true, token: "pulse_auth_unlocked" });
-          }
-          
-          if (pin === expectedPin) {
-            // High-entropy token stored locally
-            const token = `pulse_auth_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-            return res.status(200).json({ success: true, token });
-          } else {
-            return res.status(401).json({ success: false, error: "Incorrect PIN" });
-          }
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
+      await redisClient.flushDb();
+      return res.status(200).json({ success: true, message: "Redis database flushed successfully." });
 
 } else if (action === "get_all_clients") {
       return await handleGetAllClients(req, res, sheets);
@@ -259,6 +264,9 @@ export default async function handler(req, res) {
     } else if (action === "get_claude_settings") {
       return await handleGetClaudeSettings(req, res, sheets);
     } else if (action === "save_claude_settings") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
       return await handleSaveClaudeSettings(req, res, sheets);
     } else if (action === "check_claude_budget") {
       return await handleCheckClaudeBudget(req, res, sheets);
@@ -270,7 +278,10 @@ export default async function handler(req, res) {
       return await handleGetActivity(req, res, sheets);
     } else if (action === "get_client_view_data") {
       try {
-        const { clientSheetId, masterSheetId, tab } = req.body;
+        const { clientSheetId, masterSheetId, tab, clientName } = req.body;
+        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
         const data = await getClientViewData({ clientSheetId, masterSheetId, tab });
         return res.status(200).json(data);
       } catch (err) {
@@ -281,7 +292,10 @@ export default async function handler(req, res) {
       return await handleUpdateViewCell(req, res, sheets);
     } else if (action === "get_cashflow_recon_data") {
       try {
-        const { clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey } = req.body;
+        const { clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey, clientName } = req.body;
+        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
         const data = await getCashflowReconData({ clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey });
         return res.status(200).json(data);
       } catch (err) {
@@ -291,6 +305,9 @@ export default async function handler(req, res) {
     } else if (action === "update_cash_adjustment") {
       try {
         const { clientSheetId, colLetter, sheetRow, value, clientName, automationCommanderSheetId } = req.body;
+        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
         const result = await updateCashAdjustment({
           clientSheetId,
           colLetter,
@@ -307,6 +324,9 @@ export default async function handler(req, res) {
     } else if (action === "toggle_cash_cell_resolved") {
       try {
         const { clientSheetId, cashTabSheetId, sheetRow, colIdx, resolved, clientName, automationCommanderSheetId } = req.body;
+        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
         const result = await toggleCashCellResolved({
           clientSheetId,
           cashTabSheetId,
@@ -324,6 +344,9 @@ export default async function handler(req, res) {
     } else if (action === "update_cash_cell_note") {
       try {
         const { clientSheetId, cashTabSheetId, sheetRow, colIdx, note, clientName, automationCommanderSheetId } = req.body;
+        if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
         const result = await updateCashCellNote({
           clientSheetId,
           cashTabSheetId,
@@ -343,13 +366,10 @@ export default async function handler(req, res) {
       // Proxy orchestrator for frontend chunking. Protects CRON_SECRET.
       try {
         const { step } = req.body || {};
-        const host = req.headers?.host || "localhost:3000";
-        const protocol = req.headers?.["x-forwarded-proto"] || (host.startsWith("localhost") ? "http" : "https");
-        const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+        const prodUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
           ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-          : process.env.VERCEL_URL
-            ? `https://${process.env.VERCEL_URL}`
-            : `${protocol}://${host}`;
+          : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
+        const baseUrl = prodUrl || `http://127.0.0.1:${process.env.PORT || 3000}`;
         const cronSecret = process.env.CRON_SECRET;
 
         // Step 1: Sweep
@@ -502,12 +522,21 @@ export default async function handler(req, res) {
     } else if (action === "fire_outgoings_pull") {
       return await handleFireOutgoingsPull(req, res, sheets);
     } else if (action === "trigger_proactive_checks") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
       return await handleTriggerProactiveChecks(req, res);
     } else if (action === "get_sweep_schedule") {
       return await handleGetSweepSchedule(req, res, sheets);
     } else if (action === "save_sweep_frequency") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
       return await handleSaveSweepFrequency(req, res, sheets);
     } else if (action === "trigger_agent_run") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
       return await handleTriggerAgentRun(req, res, sheets);
     } else if (action === "agent_progress") {
       return await handleAgentProgress(req, res);
@@ -515,12 +544,24 @@ export default async function handler(req, res) {
       return await handleGetAgentRunProgress(req, res);
 
     } else if (action === "debug_compare_triage") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
       return await handleDebugCompareTriage(req, res, sheets);
     } else if (action === "debug_triage_state") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
       return await handleDebugTriageState(req, res, sheets);
     } else if (action === "cleanup_alert_memory") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
       return await handleCleanupAlertMemory(req, res, sheets);
     } else if (action === "rehash_alert_memory") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
       return await handleRehashAlertMemory(req, res, sheets);
     } else if (action === "get_precomputed") {
       return await handleGetPrecomputed(req, res, sheets);

@@ -3,7 +3,8 @@ import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay } from "./sha
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger";
 import { isPlaceholderInvoice } from "../utils/helpers";
 import { getSessionUser } from "./authService";
-import { isUserAuthorizedForClient, matchesClientName } from "./userPermissions";
+import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput } from "./userPermissions";
+
 
 export let assignedExpensesTabVerified = false;
 
@@ -76,10 +77,14 @@ export async function handleGetAllClients(req, res, sheets) {
     }
 
     const sessionUser = getSessionUser(req);
+    if (!sessionUser) {
+      return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+    }
+
     let finalClientsArray = clientsArray;
     let finalClientsObj = clientsObj;
 
-    if (sessionUser && !sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       finalClientsArray = clientsArray.filter(c =>
         assignedList.some(assigned => matchesClientName(assigned, c.clientName))
@@ -314,7 +319,7 @@ export async function handleCreateOutgoingsVendor(req, res, sheets) {
       spreadsheetId: sheetIdClean,
       range: `Outgoings!A${newRow}:E${newRow}`,
       valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[vendorName, vatFlag || "Yes", invTiming || "Next", payTiming || "Next", pctString]] },
+      requestBody: { values: [[sanitizeFormulaInput(vendorName), vatFlag || "Yes", invTiming || "Next", payTiming || "Next", pctString]] },
     });
 
     let tenantClient = req.body.clientName || "";
@@ -772,11 +777,12 @@ export async function handleUpdateJobField(req, res, sheets) {
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const safeValue = sanitizeFormulaInput(value);
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetIdClean,
       range: `${tabName}!${cellRef}`,
       valueInputOption: "USER_ENTERED",
-      requestBody: { values: [[value]] }
+      requestBody: { values: [[safeValue]] }
     });
 
     const targetCol = (colLetter || cellRef.replace(/[0-9]/g, "")).toUpperCase();
@@ -1843,16 +1849,16 @@ export async function handleAddNewJob(req, res, sheets) {
     };
 
     const updateData = [
-      { range: `${targetTab}!A${targetRow}`,  values: [[jobData.client || ""]] },
-      { range: `${targetTab}!B${targetRow}`,  values: [[jobData.jobName || ""]] },
-      { range: `${targetTab}!C${targetRow}`,  values: [[jobData.projectCode || ""]] },
+      { range: `${targetTab}!A${targetRow}`,  values: [[sanitizeFormulaInput(jobData.client || "")]] },
+      { range: `${targetTab}!B${targetRow}`,  values: [[sanitizeFormulaInput(jobData.jobName || "")]] },
+      { range: `${targetTab}!C${targetRow}`,  values: [[sanitizeFormulaInput(jobData.projectCode || "")]] },
       { range: `${targetTab}!D${targetRow}`,  values: [[formatSheetDate(jobData.dateConfirmed || jobData.dateAdded)]] },
-      { range: `${targetTab}!E${targetRow}`,  values: [[jobData.leadSource || ""]] },
+      { range: `${targetTab}!E${targetRow}`,  values: [[sanitizeFormulaInput(jobData.leadSource || "")]] },
       { range: `${targetTab}!AG${targetRow}`, values: [[parseFloat(jobData.revenue) || 0]] },
       { range: `${targetTab}!AH${targetRow}`, values: [[parseFloat(jobData.directCosts) || 0]] },
-      { range: `${targetTab}!AI${targetRow}`, values: [[jobData.vat || "Yes"]] },
-      { range: `${targetTab}!AJ${targetRow}`, values: [[jobData.projectRetainer || "Project"]] },
-      { range: `${targetTab}!AK${targetRow}`, values: [[jobData.productLine || ""]] },
+      { range: `${targetTab}!AI${targetRow}`, values: [[sanitizeFormulaInput(jobData.vat || "Yes")]] },
+      { range: `${targetTab}!AJ${targetRow}`, values: [[sanitizeFormulaInput(jobData.projectRetainer || "Project")]] },
+      { range: `${targetTab}!AK${targetRow}`, values: [[sanitizeFormulaInput(jobData.productLine || "")]] },
       { range: `${targetTab}!AL${targetRow}`, values: [[formatSheetDate(jobData.startDate)]] },
       { range: `${targetTab}!AM${targetRow}`, values: [[formatSheetDate(jobData.endDate)]] },
     ];

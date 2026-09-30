@@ -5,11 +5,13 @@ export default async function handler(req, res) {
 
   if (error) {
     console.warn("⚠️ Google OAuth error:", error);
-    return res.redirect(`/?auth_error=${encodeURIComponent(error)}`);
+    res.redirect(`/?auth_error=${encodeURIComponent(error)}`);
+    return;
   }
 
   if (!code) {
-    return res.redirect("/?auth_error=missing_code");
+    res.redirect("/?auth_error=missing_code");
+    return;
   }
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -17,7 +19,8 @@ export default async function handler(req, res) {
 
   if (!clientId || !clientSecret) {
     console.error("❌ Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in environment");
-    return res.redirect("/?auth_error=server_configuration_error");
+    res.redirect("/?auth_error=server_configuration_error");
+    return;
   }
 
   const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
@@ -41,7 +44,8 @@ export default async function handler(req, res) {
     const tokenData = await tokenRes.json();
     if (!tokenRes.ok || !tokenData.access_token) {
       console.error("❌ Google token exchange failed:", tokenData);
-      return res.redirect(`/?auth_error=${encodeURIComponent(tokenData.error_description || "Token exchange failed")}`);
+      res.redirect(`/?auth_error=${encodeURIComponent(tokenData.error_description || "Token exchange failed")}`);
+      return;
     }
 
     // 2. Fetch user profile from Google UserInfo endpoint
@@ -52,7 +56,8 @@ export default async function handler(req, res) {
     const userData = await userRes.json();
     if (!userRes.ok || !userData.email) {
       console.error("❌ Failed to fetch Google userinfo:", userData);
-      return res.redirect("/?auth_error=failed_to_fetch_user_profile");
+      res.redirect("/?auth_error=failed_to_fetch_user_profile");
+      return;
     }
 
     const email = userData.email.toLowerCase().trim();
@@ -63,13 +68,16 @@ export default async function handler(req, res) {
 
     if (!result.success) {
       console.warn(`⛔ Access denied for Google user ${email}:`, result.message);
-      return res.redirect(`/?auth_error=unauthorized&email=${encodeURIComponent(email)}&provider=Google`);
+      res.redirect(`/?auth_error=unauthorized&email=${encodeURIComponent(email)}&provider=Google`);
+      return;
     }
 
     console.log(`✅ Google OAuth login successful for: ${email}`);
-    return res.redirect("/");
+    res.redirect("/");
+    return;
   } catch (err) {
     console.error("❌ Google OAuth callback exception:", err);
-    return res.redirect(`/?auth_error=${encodeURIComponent(err.message || "An unexpected error occurred during Google sign in")}`);
+    res.redirect(`/?auth_error=${encodeURIComponent(err.message || "An unexpected error occurred during Google sign in")}`);
+    return;
   }
 }

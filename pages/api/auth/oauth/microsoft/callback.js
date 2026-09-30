@@ -5,11 +5,13 @@ export default async function handler(req, res) {
 
   if (error) {
     console.warn("⚠️ Microsoft OAuth error:", error, error_description);
-    return res.redirect(`/?auth_error=${encodeURIComponent(error_description || error)}`);
+    res.redirect(`/?auth_error=${encodeURIComponent(error_description || error)}`);
+    return;
   }
 
   if (!code) {
-    return res.redirect("/?auth_error=missing_code");
+    res.redirect("/?auth_error=missing_code");
+    return;
   }
 
   const clientId = process.env.AZURE_CLIENT_ID;
@@ -17,7 +19,8 @@ export default async function handler(req, res) {
 
   if (!clientId || !clientSecret) {
     console.error("❌ Missing AZURE_CLIENT_ID or AZURE_CLIENT_SECRET in environment");
-    return res.redirect("/?auth_error=server_configuration_error");
+    res.redirect("/?auth_error=server_configuration_error");
+    return;
   }
 
   const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
@@ -42,7 +45,8 @@ export default async function handler(req, res) {
     const tokenData = await tokenRes.json();
     if (!tokenRes.ok || !tokenData.access_token) {
       console.error("❌ Microsoft token exchange failed:", tokenData);
-      return res.redirect(`/?auth_error=${encodeURIComponent(tokenData.error_description || "Microsoft token exchange failed")}`);
+      res.redirect(`/?auth_error=${encodeURIComponent(tokenData.error_description || "Microsoft token exchange failed")}`);
+      return;
     }
 
     // 2. Fetch user profile from Microsoft Graph
@@ -53,14 +57,16 @@ export default async function handler(req, res) {
     const graphUser = await graphRes.json();
     if (!graphRes.ok) {
       console.error("❌ Failed to fetch Microsoft Graph user:", graphUser);
-      return res.redirect("/?auth_error=failed_to_fetch_user_profile");
+      res.redirect("/?auth_error=failed_to_fetch_user_profile");
+      return;
     }
 
     // Work accounts usually have 'mail', fallback to 'userPrincipalName'
     const email = (graphUser.mail || graphUser.userPrincipalName || "").toLowerCase().trim();
     if (!email) {
       console.error("❌ No email found in Microsoft profile:", graphUser);
-      return res.redirect("/?auth_error=no_email_returned_from_microsoft");
+      res.redirect("/?auth_error=no_email_returned_from_microsoft");
+      return;
     }
 
     console.log(`🔑 Verified Microsoft OAuth login attempt for: ${email}`);
@@ -70,13 +76,16 @@ export default async function handler(req, res) {
 
     if (!result.success) {
       console.warn(`⛔ Access denied for Microsoft user ${email}:`, result.message);
-      return res.redirect(`/?auth_error=unauthorized&email=${encodeURIComponent(email)}&provider=Microsoft`);
+      res.redirect(`/?auth_error=unauthorized&email=${encodeURIComponent(email)}&provider=Microsoft`);
+      return;
     }
 
     console.log(`✅ Microsoft OAuth login successful for: ${email}`);
-    return res.redirect("/");
+    res.redirect("/");
+    return;
   } catch (err) {
     console.error("❌ Microsoft OAuth callback exception:", err);
-    return res.redirect(`/?auth_error=${encodeURIComponent(err.message || "An unexpected error occurred during Microsoft sign in")}`);
+    res.redirect(`/?auth_error=${encodeURIComponent(err.message || "An unexpected error occurred during Microsoft sign in")}`);
+    return;
   }
 }

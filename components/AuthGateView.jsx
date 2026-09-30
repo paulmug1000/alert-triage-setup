@@ -18,8 +18,10 @@ export default function AuthGateView({
       const provider = params.get("provider");
 
       if (err === "unauthorized") {
+        const accountLabel = provider ? `${provider} account provided` : "account provided";
+        const emailSuffix = errEmail ? ` (${errEmail})` : "";
         setOauthError(
-          `Access Denied: The ${provider || "account"} (${errEmail || "provided"}) is not registered in the PMA user directory. Please contact your system administrator to be granted access.`
+          `Access Denied: The ${accountLabel}${emailSuffix} is not authorised to access the Pulse Management App. Please contact hello@pulsedashboard.co.uk with any queries.`
         );
       } else if (err === "access_denied" || err === "consent_required") {
         setOauthError("Sign-in cancelled or consent was not granted. Please try again.");
@@ -85,7 +87,7 @@ export default function AuthGateView({
             Pulse Management App
           </h1>
           <p style={{ margin: 0, fontSize: "14px", color: "#94a3b8" }}>
-            Secure Enterprise Sign-In
+            Secure sign-in
           </p>
         </div>
 
@@ -262,7 +264,7 @@ export default function AuthGateView({
           color: "#64748b",
           lineHeight: "1.5"
         }}>
-          <span>Authorized users only. Access is tied to permissions defined in the central user directory.</span>
+          <span>Authorised users only.</span>
         </div>
       </div>
     </div>

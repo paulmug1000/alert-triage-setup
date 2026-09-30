@@ -111,7 +111,7 @@ export default function ClientSelectionView({
       <div style={styles.header}>
         <h1 style={styles.title}>Alerts</h1>
         <p style={styles.subtitle}>
-          Choose a client to review their alerts ({totalAlertsCount} total)
+          Select a client to review alert details ({totalAlertsCount} total)
         </p>
       </div>
 
@@ -150,7 +150,7 @@ export default function ClientSelectionView({
               const invoiceIds = client.activeInvoiceIds || [];
               const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
               const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-              
+
               const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
                 if (!client.flags?.[key]) return false;
                 let count = client.alertCounts?.[key] || 0;
@@ -166,7 +166,7 @@ export default function ClientSelectionView({
               const invoiceIds = client.activeInvoiceIds || [];
               const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
               const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
-              
+
               const actionableLines = ACTIONABLE_FLAG_KEYS
                 .filter(key => client.flags?.[key])
                 .map(key => {
@@ -291,10 +291,12 @@ export default function ClientSelectionView({
               <button className="triage-btn" onClick={async () => {
                 setDebugLoading(true);
                 try {
-                  const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "cleanup_alert_memory", automationCommanderSheetId }) });
+                  const res = await fetch("/api/triage", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "cleanup_alert_memory", automationCommanderSheetId })
+                  });
                   setDebugResult(await res.json());
-                } catch(e) { setDebugResult({ error: e.message }); }
+                } catch (e) { setDebugResult({ error: e.message }); }
                 finally { setDebugLoading(false); }
               }} disabled={debugLoading}
                 style={{ background: "#dc2626", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: "pointer" }}>
@@ -303,10 +305,12 @@ export default function ClientSelectionView({
               <button className="triage-btn" onClick={async () => {
                 setDebugLoading(true);
                 try {
-                  const res = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "rehash_alert_memory", automationCommanderSheetId }) });
+                  const res = await fetch("/api/triage", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "rehash_alert_memory", automationCommanderSheetId })
+                  });
                   setDebugResult(await res.json());
-                } catch(e) { setDebugResult({ error: e.message }); }
+                } catch (e) { setDebugResult({ error: e.message }); }
                 finally { setDebugLoading(false); }
               }} disabled={debugLoading}
                 style={{ background: "#0369a1", color: "white", border: "none", borderRadius: "4px", padding: "6px 10px", fontSize: "12px", cursor: "pointer" }}>

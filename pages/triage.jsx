@@ -24,10 +24,10 @@ import { TaskProvider, useTasks } from "../contexts/TaskContext";
 import { TriageProvider } from "../contexts/TriageContext";
 import { useIgnoredAlerts } from "../hooks/useIgnoredAlerts";
 import { styles, injectGlobalStyles } from "../utils/styles";
-import { 
-  getAlertSummary, 
-  PROACTIVE_TYPE_LABELS, 
-  getFlagName 
+import {
+  getAlertSummary,
+  PROACTIVE_TYPE_LABELS,
+  getFlagName
 } from "../utils/helpers";
 import { AppGlobalsProvider, useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriageEngine } from "../hooks/useTriageEngine";
@@ -70,7 +70,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
   } = auth;
   const isAdmin = !!(user?.isAdmin || user?.role === "Admin" || user?.assignedClients === "*");
 
-  const [screen, setScreen] = useState("initial"); 
+  const [screen, setScreen] = useState("initial");
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
   const [activeNav, setActiveNav] = useState("home");
 
@@ -83,17 +83,17 @@ function TriageSystemContent({ onBack, appGlobals }) {
     existingTaskBanner, setExistingTaskBanner,
     setTasksFilter, loadTasks, refreshTaskCount
   } = useTasks();
-  
+
   const triageEngine = useTriageEngine({
     automationCommanderSheetId, screen, setScreen, activeNav, assignedAppIds,
     assignedByClient, existingTaskBanner, setExistingTaskBanner, allClientsMap, isLoading, setIsLoading,
-    error, setError, setBulkMode: () => {}, setBulkSelected: () => {},
+    error, setError, setBulkMode: () => { }, setBulkSelected: () => { },
     user,
     onRefreshTasks: refreshTaskCount
   });
 
   const {
-    sessionId, selectedClient, clientAlerts, proactiveAlerts, 
+    sessionId, selectedClient, clientAlerts, proactiveAlerts,
     liveAlertCount, startTriage, acceptError, setAcceptError,
     isAccepting, setIsAccepting, refreshTriage
   } = triageEngine;
@@ -121,7 +121,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
 
   const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
-  
+
   const { ignoredAlerts, isLoadingIgnored, isUnignoring, loadIgnoredAlerts, unignoreAlert } = useIgnoredAlerts(automationCommanderSheetId, setAcceptError);
 
   const openCreateTaskModal = (alert, isProactive = false, isInfo = false) => {
@@ -244,7 +244,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
         return null;
       }
       return (
-        <IgnoredAlertsView 
+        <IgnoredAlertsView
           styles={styles}
           acceptError={acceptError}
           setAcceptError={setAcceptError}
@@ -258,9 +258,9 @@ function TriageSystemContent({ onBack, appGlobals }) {
       );
     }
 
-    
-    
-    
+
+
+
     // ── OUTGOINGS SCREEN ────────────────────────────────────────────────────────
     if (activeNav === "outgoings") {
       return (
@@ -275,7 +275,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
     // ── INVOICES SCREEN ─────────────────────────────────────────────────────────
     if (activeNav === "invoices") {
       return (
-        <InvoicesView 
+        <InvoicesView
           allOutgoingsClients={allOutgoingsClients}
           styles={styles}
         />
@@ -342,7 +342,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
     // ── ACTIVITY / APP LOG SCREEN ──────────────────────────────────────────────
     if (activeNav === "activity" || activeNav === "appLog") {
       return (
-        <ActivityView 
+        <ActivityView
           automationCommanderSheetId={automationCommanderSheetId}
           allOutgoingsClients={allOutgoingsClients}
           styles={styles}
@@ -420,7 +420,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
         {isLoading && (
           <div style={{ textAlign: "center", padding: "40px" }}>
             <Spinner size={28} color="#0066cc" />
-            <div style={{ marginTop: "12px", color: "#666" }}>Loading triage data...</div>
+            <div style={{ marginTop: "12px", color: "#666" }}>Loading data...</div>
           </div>
         )}
       </div>
@@ -432,24 +432,24 @@ function TriageSystemContent({ onBack, appGlobals }) {
     <TriageProvider value={triageEngine}>
       <CreateTaskModal />
       <NavShell
-      activeNav={activeNav} 
-      onHome={handleNavHome} 
-      onOverview={handleNavOverview} 
-      onTasks={handleNavTasks} 
-      onActivity={handleNavActivity}
-      onAppLog={handleNavAppLog} 
-      onOutgoings={handleNavOutgoings} 
-      onInvoices={handleNavInvoices} 
-      onRetainers={handleNavRetainers} 
-      onJobs={handleNavJobs} 
-      onViews={handleNavViews}
-      onTools={handleNavTools} 
-      onSettings={handleNavSettings} 
-      homeAlertCount={liveAlertCount + proactiveAlerts.length} 
-      taskCount={navTaskCount}
-      user={user}
-      onLogout={logout}
-    >
+        activeNav={activeNav}
+        onHome={handleNavHome}
+        onOverview={handleNavOverview}
+        onTasks={handleNavTasks}
+        onActivity={handleNavActivity}
+        onAppLog={handleNavAppLog}
+        onOutgoings={handleNavOutgoings}
+        onInvoices={handleNavInvoices}
+        onRetainers={handleNavRetainers}
+        onJobs={handleNavJobs}
+        onViews={handleNavViews}
+        onTools={handleNavTools}
+        onSettings={handleNavSettings}
+        homeAlertCount={liveAlertCount + proactiveAlerts.length}
+        taskCount={navTaskCount}
+        user={user}
+        onLogout={logout}
+      >
         {renderActiveView()}
       </NavShell>
     </TriageProvider>

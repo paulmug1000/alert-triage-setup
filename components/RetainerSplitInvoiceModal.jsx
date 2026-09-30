@@ -87,7 +87,7 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 500px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Split invoice — {alertMeta.endClientName}</h3>
+          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Split invoice - {alertMeta.endClientName}</h3>
           {!applying && <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>}
         </div>
 
@@ -95,7 +95,7 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
           <div style={{ padding: "30px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: "14px", textAlign: "center" }}>
             <Spinner size={32} color="#0891b2" />
             <div style={{ fontSize: "14px", color: "#0e7490", fontWeight: "600" }}>
-              {applying ? "Applying the split — this can take a little while..." : "Working out the split..."}
+              {applying ? "Applying the split - this can take a little while..." : "Working out the split..."}
             </div>
             {applying && <div style={{ fontSize: "12px", color: "#999" }}>Please don&apos;t close this window until it&apos;s done.</div>}
           </div>
@@ -109,7 +109,7 @@ export default function RetainerSplitInvoiceModal({ alertMeta, alertKey, automat
                 The retainer&apos;s <strong>{preview.missingRowPeriodLabel}</strong> invoice (row {preview.missingRowNum}) will be recorded at the standard <strong>£{preview.standardMonthlyAmount.toFixed(2)}</strong>, using invoice #{preview.altInvoiceNo} sent {preview.altSentDate}.
               </div>
               <div style={{ marginTop: "8px", padding: "10px", background: preview.difference >= 0 ? "#f5f3ff" : "#fff7ed", border: `1px solid ${preview.difference >= 0 ? "#ddd6fe" : "#fed7aa"}`, borderRadius: "6px" }}>
-                The invoice was actually for <strong>£{preview.altAmount.toFixed(2)}</strong> — a difference of <strong>{preview.difference >= 0 ? "+" : ""}£{preview.difference.toFixed(2)}</strong>.{" "}
+                The invoice was actually for <strong>£{preview.altAmount.toFixed(2)}</strong> - a difference of <strong>{preview.difference >= 0 ? "+" : ""}£{preview.difference.toFixed(2)}</strong>.{" "}
                 {preview.existingJobInfo ? (
                   <>This will be applied to the existing job on row <strong>{preview.existingJobInfo.confirmedRow}</strong> ({preview.existingJobInfo.jobName}), which will be renamed to <strong>&quot;{preview.extraJobName}&quot;</strong> and its revenue set to {preview.difference >= 0 ? "" : "-"}£{Math.abs(preview.difference).toFixed(2)}.</>
                 ) : (

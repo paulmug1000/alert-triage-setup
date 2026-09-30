@@ -126,7 +126,7 @@ export default function RetainersView({
                 {c.clientName}
               </button>
             ))}
-            {(!allOutgoingsClients || allOutgoingsClients.length === 0) && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet — go to Home and refresh first.</p>}
+            {(!allOutgoingsClients || allOutgoingsClients.length === 0) && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet - go to Home and refresh first.</p>}
           </div>
         </div>
       )}
@@ -197,7 +197,7 @@ export default function RetainersView({
                           const isEmpty = !s.ref && !s.amount;
                           return (
                             <td key={s.slotNum} style={{ padding: "7px 10px", borderBottom: "1px solid #eee" }}>
-                              {isEmpty ? <span style={{ color: "#ccc" }}>—</span> : (
+                              {isEmpty ? <span style={{ color: "#ccc" }}>-</span> : (
                                 <div>
                                   <div style={{ fontWeight: "600" }}>{s.ref}</div>
                                   <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.sentDate}{s.status ? ` · ${s.status}` : ""}</div>

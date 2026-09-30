@@ -304,7 +304,7 @@ export default function InvoicesView({
                     <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>No invoices to assign</div>
                   )}
                   {clientsNoInbox.map(renderClientBtnPlain)}
-                  {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet — go to Home and refresh first.</p>}
+                  {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet - go to Home and refresh first.</p>}
                 </div>
               );
             })()}
@@ -316,7 +316,7 @@ export default function InvoicesView({
             <div style={{ background: "#fff", border: `1px solid ${invoicesInbox.length > 0 ? "#ffc107" : "#e0e0e0"}`, borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
               <div style={{ fontSize: "13px", fontWeight: "700", color: invoicesInbox.length > 0 ? "#e65100" : "#888", marginBottom: invoicesInbox.length > 0 ? "6px" : "0" }}>
                 {invoicesInboxLoading ? "Loading..." : invoicesInbox.length > 0
-                  ? `Unmatched invoices (${invoicesInbox.length}) — click to select, then click a slot to place`
+                  ? `Unmatched invoices (${invoicesInbox.length}) - click to select, then click a slot to place`
                   : "No unmatched invoices"}
               </div>
               {invoicesInbox.length > 0 && (
@@ -331,8 +331,8 @@ export default function InvoicesView({
                           border: `1px solid ${isPlacing ? "#1a56db" : "#ffe082"}`,
                           fontSize: "12px", minWidth: "160px" }}>
                         <div onClick={() => setInvoicesPlacing(isPlacing ? null : inv)} style={{ cursor: "pointer" }}>
-                          <div style={{ fontWeight: "700" }}>#{inv.invoiceNo} — £{inv.amount.toFixed(2)}</div>
-                          <div style={{ opacity: 0.85 }}>{inv.client}{inv.job ? ` — ${inv.job}` : ""}</div>
+                          <div style={{ fontWeight: "700" }}>#{inv.invoiceNo} - £{inv.amount.toFixed(2)}</div>
+                          <div style={{ opacity: 0.85 }}>{inv.client}{inv.job ? ` - ${inv.job}` : ""}</div>
                           <div style={{ opacity: 0.7 }}>{inv.sentDate}{inv.status ? ` · ${inv.status}` : ""}</div>
                         </div>
                         <button onClick={e => { e.stopPropagation(); setInvoicesNewJob({ inv }); }}
@@ -456,7 +456,7 @@ export default function InvoicesView({
                                     <Spinner size={12} color="#1a56db" /> Saving...
                                   </div>
                                 ) : isGenuinelyBlank ? (
-                                  isPlacing ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>—</span>
+                                  isPlacing ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>-</span>
                                 ) : (
                                   <div>
                                     <div style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit" }}>
@@ -481,7 +481,7 @@ export default function InvoicesView({
                               </div>
                             ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing && (
                               <div
-                                title="No spare invoice slot — click to add a new row for this job"
+                                title="No spare invoice slot - click to add a new row for this job"
                                 onClick={async () => {
                                   const inv = invoicesPlacingRef.current;
                                   if (!inv) return;

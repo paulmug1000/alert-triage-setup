@@ -12,7 +12,8 @@ export default function CreateTaskModal() {
     showTaskModal, setShowTaskModal, taskModalAlert,
     taskModalIsProactive, taskModalIsInfo, taskModalNote, setTaskModalNote,
     taskModalSnoozeDate, setTaskModalSnoozeDate, taskModalSnoozeTime, setTaskModalSnoozeTime,
-    taskModalSubmitting, setTaskModalSubmitting, taskActionError, setTaskActionError
+    taskModalSubmitting, setTaskModalSubmitting, taskActionError, setTaskActionError,
+    refreshTaskCount
   } = useTasks();
 
   const {
@@ -53,6 +54,7 @@ export default function CreateTaskModal() {
 
       setShowTaskModal(false); setTaskModalNote(""); setTaskModalSnoozeDate(""); setTaskModalSnoozeTime("07:00");
       if (!taskModalSnoozeDate) setNavTaskCount(prev => prev + 1); else setSnoozedTaskCount(prev => prev + 1);
+      refreshTaskCount?.(true);
 
       if (isInfo) {
         const na = taskModalAlert;

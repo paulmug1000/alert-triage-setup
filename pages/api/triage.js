@@ -89,7 +89,7 @@ import { matchesClientName } from "../../utils/helpers";
 // ============================================================================
 // CONSTANTS & CONFIGURATION
 // ============================================================================
-// FLAG_COLUMNS/NO_ACTION_FLAGS retired 24 Aug 2026 — both were only used by
+// FLAG_COLUMNS/NO_ACTION_FLAGS retired 24 Aug 2026 - both were only used by
 // the old start_triage implementation (AutoUpdates sticky-column-based),
 // which has been fully replaced by a thin orchestrator that reuses
 // run_flag_sweep/build_cached_alert_options/store_precomputed instead.
@@ -102,7 +102,7 @@ import { matchesClientName } from "../../utils/helpers";
 //   - Appends a structured {App ID:...} block to the cell note
 // ============================================================================
 
-// Increase body size limit — store_precomputed sends the full alert list
+// Increase body size limit - store_precomputed sends the full alert list
 export const config = {
   api: {
     bodyParser: {

@@ -720,7 +720,7 @@ function renderCell(cell, isSticky = false, stickyLeft = 0, isHeader = false, cu
               cursor: "pointer",
             }}
           >
-            <option value="">—</option>
+            <option value="">-</option>
             {(editableOpts.options || []).map(opt => (
               <option key={opt} value={opt}>{opt}</option>
             ))}
@@ -822,7 +822,7 @@ function renderCell(cell, isSticky = false, stickyLeft = 0, isHeader = false, cu
           <span>{v}</span>
         </span>
       ) : (
-        v !== "" ? v : (isEditable ? <span style={{ opacity: 0.25 }}>—</span> : "")
+        v !== "" ? v : (isEditable ? <span style={{ opacity: 0.25 }}>-</span> : "")
       )}
     </td>
   );

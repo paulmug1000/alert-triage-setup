@@ -83,7 +83,7 @@ export async function logPmaActivity(sheets, {
       })
     );
 
-    console.log(`📝 [PMA Log] ${cleanCategory} (${cleanClient || "All"}): ${cleanAction} — ${cleanSummary}`);
+    console.log(`📝 [PMA Log] ${cleanCategory} (${cleanClient || "All"}): ${cleanAction} - ${cleanSummary}`);
 
     // 2. Invalidate Redis activity cache so fresh event is visible immediately
     try {

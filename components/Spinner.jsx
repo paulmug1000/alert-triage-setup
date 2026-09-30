@@ -1,6 +1,6 @@
 import React from "react";
 
-// Inline spinner SVG — shown inside buttons and loading states during async operations
+// Inline spinner SVG - shown inside buttons and loading states during async operations
 export default function Spinner({ size = 16, color = "currentColor" }) {
   const numericSize =
     typeof size === "number"

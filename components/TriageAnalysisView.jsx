@@ -4,10 +4,15 @@ import TruncatedCode from "./TruncatedCode";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTasks } from "../contexts/TaskContext";
+import { stripRowInfo } from "../utils/helpers";
 
 export default function TriageAnalysisView({
-  styles, setScreen, getFlagName, setActiveNav, handleNavTasks
+  styles, setScreen, getFlagName, setActiveNav, handleNavTasks,
+  isAdmin: propIsAdmin, user
 }) {
+  const isAdmin = propIsAdmin !== undefined
+    ? propIsAdmin
+    : !!(user?.isAdmin || user?.role === "Admin" || user?.assignedClients === "*");
   const { openCreateTaskModal } = useTasks();
   const {
     selectedClient, clientAlerts, currentClientAlertIndex, setCurrentClientAlertIndex,
@@ -41,6 +46,12 @@ export default function TriageAnalysisView({
     otherDuplicateAlerts.length > 0
   );
   const spreadsheetItems = alert?.spreadsheetItems || [];
+  const alertFlags = alert?.data?.flags || [];
+  const isMissingFlag = String(alertFlags[0] || "").trim() === "1";
+  const isExpenseType = alert?.type === "expense" || alert?.flagType === "expenseDashboardDiscr";
+  const isInvoiceType = alert?.type === "invoice" || alert?.flagType === "invoiceDashboardDiscr";
+  const isMissingCost = isExpenseType && isMissingFlag;
+  const isMissingInvoice = isInvoiceType && isMissingFlag;
 
   return (
     <div style={styles.container}>
@@ -166,11 +177,11 @@ export default function TriageAnalysisView({
             </div>
             <div style={{ fontSize: "13px", marginTop: "6px", lineHeight: "1.5" }}>
               {spreadsheetItems.length > 0 ? (
-                <>This invoice number appears in <strong>{spreadsheetItems.length} distinct items/jobs in the spreadsheet</strong>, but only <strong>once in accounting</strong> (InvComp Row {alert.rowNumber}).</>
+                <>This invoice number appears in <strong>{spreadsheetItems.length} distinct items/jobs in the spreadsheet</strong>, but only <strong>once in accounting</strong>{isAdmin ? ` (InvComp Row ${alert.rowNumber})` : ""}.</>
               ) : otherDuplicateAlerts.length > 0 ? (
-                <>Invoice <strong>#{alert.summary?.invoiceNo}</strong> also appears in <strong>{otherDuplicateAlerts.length}</strong> other entry/entries in this triage batch (InvComp Row{otherDuplicateAlerts.length > 1 ? "s" : ""}: {otherDuplicateAlerts.map(a => a.rowNumber).join(", ")}).</>
+                <>Invoice <strong>#{alert.summary?.invoiceNo}</strong> also appears in <strong>{otherDuplicateAlerts.length}</strong> other entry/entries in this triage batch{isAdmin ? ` (InvComp Row${otherDuplicateAlerts.length > 1 ? "s" : ""}: ${otherDuplicateAlerts.map(a => a.rowNumber).join(", ")})` : ""}.</>
               ) : (
-                <>This invoice number is flagged as having multiple entries in the spreadsheet (InvComp Column W, Row {alert.rowNumber}).</>
+                <>{isAdmin ? `This invoice number is flagged as having multiple entries in the spreadsheet (InvComp Column W, Row ${alert.rowNumber}).` : "This invoice number is flagged as having multiple entries in the spreadsheet."}</>
               )}
             </div>
 
@@ -202,10 +213,10 @@ export default function TriageAnalysisView({
                           <td style={{ padding: "6px 8px", textAlign: "right" }}>£{item.netAmount.toFixed(2)}</td>
                           <td style={{ padding: "6px 8px", textAlign: "right" }}>£{item.vatAmount.toFixed(2)}</td>
                           <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: "600" }}>£{item.grossAmount.toFixed(2)}</td>
-                          <td style={{ padding: "6px 8px", color: "#4b5563" }}>{item.sentDate || "—"}</td>
+                          <td style={{ padding: "6px 8px", color: "#4b5563" }}>{item.sentDate || "-"}</td>
                           <td style={{ padding: "6px 8px" }}>
                             <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "3px", background: "#f3f4f6", color: "#374151" }}>
-                              {item.status || "—"}
+                              {item.status || "-"}
                             </span>
                           </td>
                         </tr>
@@ -226,7 +237,7 @@ export default function TriageAnalysisView({
                         <td colSpan={2}></td>
                       </tr>
                       <tr style={{ background: "#eff6ff", fontWeight: "700", borderTop: "1px solid #bfdbfe", color: "#1e40af" }}>
-                        <td style={{ padding: "6px 8px" }}>Accounting Total (Row {alert.rowNumber}):</td>
+                        <td style={{ padding: "6px 8px" }}>Accounting Total{isAdmin ? ` (Row ${alert.rowNumber})` : ""}:</td>
                         <td style={{ padding: "6px 8px", textAlign: "right" }}>
                           £{(parseFloat(String(alert.data?.accounting?.[3] || "0").replace(/,/g, "")) || alert.summary?.amount || 0).toFixed(2)}
                         </td>
@@ -258,7 +269,7 @@ export default function TriageAnalysisView({
               ⚠ {alert.type === "expense" ? (() => {
                   const expFlags = alert.data?.flags || [];
                   const isMissing = String(expFlags[0]||"").trim() === "1";
-                  if (isMissing) return "Missing cost — in accounting system, not in Confirmed or Outgoings tab";
+                  if (isMissing) return "Missing expense - in accounting system, not in Pulse";
                   const expFlagNames = [null,"Duplicate App ID","Description mismatch","Amount mismatch","VAT mismatch","Rec date mismatch","Pay date mismatch","Status mismatch"];
                   const active = expFlags.map((v,i) => String(v||"").trim()==="1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
                   return active.length > 0 ? `Field mismatch: ${active.join(", ")}` : "Expense Discrepancy";
@@ -266,7 +277,7 @@ export default function TriageAnalysisView({
                 : (() => {
                     const flags = alert.data?.flags || [];
                     const isMissing = String(flags[0]||"").trim() === "1";
-                    if (isMissing) return "Missing invoice — in accounting system, not in Confirmed tab";
+                    if (isMissing) return "Missing invoice - in accounting system, not in Pulse";
                     const invFlagNames2 = [null,"Client mismatch","Amount mismatch","Sent date mismatch","Duplicate invoice in sheet","Pay date mismatch","Status mismatch"];
                     const active = flags.map((v,i) => String(v||"").trim()==="1" && invFlagNames2[i] ? invFlagNames2[i] : null).filter(Boolean);
                     return active.length > 0 ? `Field mismatch: ${active.join(", ")}` : "Invoice Discrepancy";
@@ -370,7 +381,7 @@ export default function TriageAnalysisView({
                 )}
               </div>
             )}
-            {/* Discrepancy summary — what this alert actually is, and the specific field(s) at issue */}
+            {/* Discrepancy summary - what this alert actually is, and the specific field(s) at issue */}
             {(() => {
               const ft = alert?.flagType || alert?.alertType || alert?.type || "";
               const isCRM = ft.startsWith("crm");
@@ -406,8 +417,8 @@ export default function TriageAnalysisView({
               const subHeader = isMismatch
                 ? `Field mismatch: ${mismatchedFieldNames.join(", ")}`
                 : isDash
-                  ? `Missing job — in CRM, not in ${tabLabel} tab`
-                  : `Missing job — in ${tabLabel} tab, not in CRM`;
+                  ? `Missing job - in CRM, not in Pulse ${tabLabel.toLowerCase()} jobs`
+                  : `Missing job - in Pulse ${tabLabel.toLowerCase()} jobs, not in CRM`;
 
               return (
                 <div style={{ marginBottom: "16px", padding: "14px 16px", backgroundColor: "#f5f3ff", borderLeft: "4px solid #7c3aed", borderRadius: "4px" }}>
@@ -415,13 +426,13 @@ export default function TriageAnalysisView({
                     ⚠ {subHeader}
                   </div>
                   <div style={{ fontSize: "14px", fontWeight: "600", color: "#1a1a1a", marginBottom: isMismatch ? "10px" : "0" }}>
-                    {client}{job ? ` — ${job}` : ""}{code ? ` (${code})` : ""}
+                    {client}{job ? ` - ${job}` : ""}{code ? ` (${code})` : ""}
                   </div>
                   {isMismatch && (
                     <div style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#333" }}>
                       {mismatchedFields.map(f => (
                         <div key={f.name}>
-                          {f.name} in CRM: <strong>{f.fmt(f.crm)}</strong>. {f.name} in {tabLabel.toLowerCase()} tab: <strong>{f.fmt(f.sheet)}</strong>.
+                          {f.name} in CRM: <strong>{f.fmt(f.crm)}</strong>. {f.name} in Pulse {tabLabel.toLowerCase()} jobs: <strong>{f.fmt(f.sheet)}</strong>.
                         </div>
                       ))}
                     </div>
@@ -429,6 +440,52 @@ export default function TriageAnalysisView({
                 </div>
               );
             })()}
+            {isMissingCost && (
+              <div style={{ marginBottom: "16px" }}>
+                <button
+                  className="triage-btn"
+                  onClick={() => setActiveNav("outgoings")}
+                  style={{
+                    ...styles.buttonSecondary,
+                    fontSize: "13px",
+                    padding: "8px 16px",
+                    fontWeight: "600",
+                    color: "#059669",
+                    borderColor: "#6ee7b7",
+                    background: "#ecfdf5",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    cursor: "pointer"
+                  }}
+                >
+                  📤 Place expense
+                </button>
+              </div>
+            )}
+            {isMissingInvoice && (
+              <div style={{ marginBottom: "16px" }}>
+                <button
+                  className="triage-btn"
+                  onClick={() => setActiveNav("invoices")}
+                  style={{
+                    ...styles.buttonSecondary,
+                    fontSize: "13px",
+                    padding: "8px 16px",
+                    fontWeight: "600",
+                    color: "#ea580c",
+                    borderColor: "#fdba74",
+                    background: "#fff7ed",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    cursor: "pointer"
+                  }}
+                >
+                  📥 Place invoice
+                </button>
+              </div>
+            )}
             <h3 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", color: "#1a1a1a" }}>
               Potential Actions
             </h3>
@@ -447,7 +504,7 @@ export default function TriageAnalysisView({
                           <table style={{ borderCollapse: "collapse", fontSize: "11px", width: "100%", minWidth: "700px" }}>
                             <thead>
                               <tr style={{ background: "#f3f4f6" }}>
-                                {["Row","Client","Job name","Code","Revenue","Direct costs","Type","VAT","Start","End",
+                                {[...(isAdmin ? ["Row"] : []), "Client","Job name","Code","Revenue","Direct costs","Type","VAT","Start","End",
                                   ...(option.jobRowsData[0].likelihood !== null ? ["% Likely"] : []),
                                   ...(option.jobRowsData[0].copiedToConf !== null ? ["Copied?"] : [])
                                 ].map(h => (
@@ -458,7 +515,7 @@ export default function TriageAnalysisView({
                             <tbody>
                               {option.jobRowsData.map(jr => (
                                 <tr key={jr.rowNum} style={{ borderBottom: "1px solid #eee" }}>
-                                  <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>
+                                  {isAdmin && <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>}
                                   <td style={{ padding: "5px 8px" }}>{jr.client}</td>
                                   <td style={{ padding: "5px 8px" }}>{jr.jobName}</td>
                                   <td style={{ padding: "5px 8px" }}>{jr.projectCode}</td>
@@ -474,12 +531,12 @@ export default function TriageAnalysisView({
                               ))}
                             </tbody>
                           </table>
-                          {/* Invoice slots — only render if any slot has data or is the target */}
+                          {/* Invoice slots - only render if any slot has data or is the target */}
                           {option.jobRowsData.some(jr => jr.invoiceSlots?.some(s => s.amount || s.ref || s.highlighted)) && (
                             <table style={{ borderCollapse: "collapse", fontSize: "11px", width: "100%", minWidth: "700px", borderTop: "2px solid #ddd" }}>
                               <thead>
                                 <tr style={{ background: "#f3f4f6" }}>
-                                  {["Row","Slot","Amount","Reference","Sent","Days","Status"].map(h => (
+                                  {[...(isAdmin ? ["Row"] : []), "Slot","Amount","Reference","Sent","Days","Status"].map(h => (
                                     <th key={h} style={{ padding: "5px 8px", textAlign: "left", borderBottom: "1px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
                                   ))}
                                 </tr>
@@ -491,7 +548,7 @@ export default function TriageAnalysisView({
                                     background: s.highlighted ? "#fff3cd" : "transparent",
                                     fontWeight: s.highlighted ? "700" : "400",
                                   }}>
-                                    <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>
+                                    {isAdmin && <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>}
                                     <td style={{ padding: "5px 8px" }}>{s.slotNum}{s.highlighted ? " ← this option" : ""}</td>
                                     <td style={{ padding: "5px 8px" }}>{s.amount}</td>
                                     <td style={{ padding: "5px 8px" }}>{s.ref}</td>
@@ -503,12 +560,12 @@ export default function TriageAnalysisView({
                               </tbody>
                             </table>
                           )}
-                          {/* Expense slots — only render if any slot has data or is the target */}
+                          {/* Expense slots - only render if any slot has data or is the target */}
                           {option.jobRowsData.some(jr => jr.expenseSlots?.some(s => s.amount || s.description || s.highlighted)) && (
                             <table style={{ borderCollapse: "collapse", fontSize: "11px", width: "100%", minWidth: "700px", borderTop: "2px solid #ddd" }}>
                               <thead>
                                 <tr style={{ background: "#f3f4f6" }}>
-                                  {["Row","Slot","Description","Amount","VAT","Date","Days","Status","Txn ID"].map(h => (
+                                  {[...(isAdmin ? ["Row"] : []), "Slot","Description","Amount","VAT","Date","Days","Status","Txn ID"].map(h => (
                                     <th key={h} style={{ padding: "5px 8px", textAlign: "left", borderBottom: "1px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
                                   ))}
                                 </tr>
@@ -520,7 +577,7 @@ export default function TriageAnalysisView({
                                     background: s.highlighted ? "#fff3cd" : "transparent",
                                     fontWeight: s.highlighted ? "700" : "400",
                                   }}>
-                                    <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>
+                                    {isAdmin && <td style={{ padding: "5px 8px", color: "#888" }}>{jr.rowNum}</td>}
                                     <td style={{ padding: "5px 8px" }}>{s.slotNum}{s.highlighted ? " ← this option" : ""}</td>
                                     <td style={{ padding: "5px 8px" }}>{s.description}</td>
                                     <td style={{ padding: "5px 8px" }}>{s.amount}</td>
@@ -541,7 +598,7 @@ export default function TriageAnalysisView({
                         <>
                           {option.explanation && (
                             <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#fff8e1", borderLeft: "3px solid #f59e0b", fontSize: "13px", lineHeight: "1.5" }}>
-                              {option.explanation}
+                              {isAdmin ? option.explanation : stripRowInfo(option.explanation)}
                             </div>
                           )}
                           {option.jobDetails && (
@@ -580,6 +637,7 @@ export default function TriageAnalysisView({
                                   method: "POST",
                                   headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify({ action: "remove_alert", sessionId, alertId }),
+                                rank: 1,
                                 }).catch(() => {});
                               }
                               const updatedAlerts = clientAlerts.filter((_, i) => i !== currentClientAlertIndex);
@@ -600,7 +658,7 @@ export default function TriageAnalysisView({
                       {/* Explanation and revenue impact for invoice amount mismatch options */}
                       {option.explanation && (
                         <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#fff8e1", borderLeft: "3px solid #f59e0b", fontSize: "13px", lineHeight: "1.5" }}>
-                          {option.explanation}
+                          {isAdmin ? option.explanation : stripRowInfo(option.explanation)}
                         </div>
                       )}
                       {option.slotBreakdown && option.slotBreakdown.lines && option.slotBreakdown.lines.length > 0 && (
@@ -621,10 +679,10 @@ export default function TriageAnalysisView({
                           ⚠ Revenue impact: {option.revenueImpact}
                         </div>
                       )}
-                      {/* VAT mismatch — show job context and exact cell that will be updated */}
+                      {/* VAT mismatch - show job context and exact cell that will be updated */}
                       {option.discrepancyType === "inv_vat_mismatch" && option.matchType === "existing_job" && option.jobDetails && (
                         <div style={{ ...styles.optionDetail, marginTop: "8px", padding: "10px", backgroundColor: "#f0f9ff", borderLeft: "3px solid #3b82f6" }}>
-                          <strong style={{ color: "#1d4ed8", fontSize: "12px" }}>Job Details (Confirmed tab, row {option.jobRow}):</strong>
+                          <strong style={{ color: "#1d4ed8", fontSize: "12px" }}>Job Details (Confirmed tab{isAdmin ? `, row ${option.jobRow}` : ""}):</strong>
                           <div style={{ marginTop: "6px", fontSize: "12px", color: "#333" }}>
                             {option.jobDetails.clientName && <div><strong>Client:</strong> {option.jobDetails.clientName}</div>}
                             {option.jobDetails.jobName && <div><strong>Job:</strong> {option.jobDetails.jobName}</div>}
@@ -799,7 +857,9 @@ export default function TriageAnalysisView({
                                 <strong>Existing invoices:</strong>
                                 <div style={{ marginTop: "4px", fontFamily: "monospace", fontSize: "11px", color: "#333", lineHeight: "1.6" }}>
                                   {option.facts.existingInvoices.split(/\.\s+(?=Row )/).map((line, i) => (
-                                    <div key={i} style={{ paddingLeft: "4px", borderLeft: "2px solid #e0e0e0", marginBottom: "2px" }}>{line.trim()}</div>
+                                    <div key={i} style={{ paddingLeft: "4px", borderLeft: "2px solid #e0e0e0", marginBottom: "2px" }}>
+                                      {isAdmin ? line.trim() : stripRowInfo(line.trim())}
+                                    </div>
                                   ))}
                                 </div>
                               </li>
@@ -935,7 +995,7 @@ export default function TriageAnalysisView({
               📊 Open Sheets
             </button>
           )}
-          {/* Use AI button — shown for alert types that previously used Claude */}
+          {/* Use AI button - shown for alert types that previously used Claude */}
           {claudeAnalysis && (() => {
             const alert = clientAlerts[currentClientAlertIndex];
             const ft = alert?.flagType || alert?.alertType || alert?.type || "";
@@ -975,7 +1035,7 @@ export default function TriageAnalysisView({
         {existingTaskBanner && (
           <div style={{ marginTop: "12px", padding: "12px 16px", background: "#f3e8ff", border: "1px solid #c4b5fd", borderRadius: "6px" }}>
             <div style={{ fontSize: "13px", fontWeight: "600", color: "#7c3aed", marginBottom: "6px" }}>
-              📋 This alert has an existing task{existingTaskBanner.dataChanged ? " — underlying data has changed since the task was created" : ""}
+              📋 This alert has an existing task{existingTaskBanner.dataChanged ? " - underlying data has changed since the task was created" : ""}
             </div>
             <div style={{ fontSize: "12px", color: "#555", marginBottom: "8px" }}>
               Created: {existingTaskBanner.taskCreatedAt ? new Date(existingTaskBanner.taskCreatedAt).toLocaleDateString("en-GB") : "unknown"}

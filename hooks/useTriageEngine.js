@@ -213,14 +213,14 @@ export function useTriageEngine({
           onRefreshTasks?.();
           precomputedUsed = true;
         } else {
-          console.log(`No fresh precomputed data available — running live triage`);
+          console.log(`No fresh precomputed data available - running live triage`);
         }
       } catch (preErr) {
         console.log(`Precomputed check failed, falling back to live run: ${preErr.message}`);
       }
 
       if (precomputedUsed) return;
-      console.log(`No fresh precomputed data available — triggering full refresh pipeline`);
+      console.log(`No fresh precomputed data available - triggering full refresh pipeline`);
       await refreshTriage();
     } catch (err) {
       setError(err.message);

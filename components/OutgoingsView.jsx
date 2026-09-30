@@ -231,7 +231,7 @@ export default function OutgoingsView({
 
       {outgoingsPlacing && (
         <div style={{ background: "#1a56db", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px" }}>
-          <span>Placing: <strong>{outgoingsPlacing.description || outgoingsPlacing.accountName}</strong> — £{(outgoingsPlacing.amount || 0).toLocaleString()} · Click a contractor cell to place it</span>
+          <span>Placing: <strong>{outgoingsPlacing.description || outgoingsPlacing.accountName}</strong> - £{(outgoingsPlacing.amount || 0).toLocaleString()} · Click a contractor cell to place it</span>
           <button onClick={() => setOutgoingsPlacing(null)}
             style={{ background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", borderRadius: "4px", padding: "4px 12px", cursor: "pointer", fontSize: "12px" }}>Cancel</button>
         </div>
@@ -300,7 +300,7 @@ export default function OutgoingsView({
                         <div style={{ fontSize: "11px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em", padding: "6px 0 2px" }}>No expenses to assign</div>
                       )}
                       {clientsNoInbox.map(renderClientBtn)}
-                      {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet — go to Home and refresh first.</p>}
+                      {allClients.length === 0 && <p style={{ color: "#999", fontSize: "13px" }}>No clients loaded yet - go to Home and refresh first.</p>}
                     </div>
                   );
                 })()}
@@ -313,8 +313,8 @@ export default function OutgoingsView({
           <div style={{ background: "#fff", border: `1px solid ${outgoingsInbox.length > 0 ? "#ffc107" : "#e0e0e0"}`, borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
             <div style={{ fontSize: "13px", fontWeight: "700", color: outgoingsInbox.length > 0 ? "#e65100" : "#888", marginBottom: outgoingsInbox.length > 0 ? "6px" : "0" }}>
               {outgoingsInbox.length > 0
-                ? `Unmatched expenses (${outgoingsInbox.length}) — click to select, then click a cell to place`
-                : "No unmatched expenses — inbox is clear ✓"}
+                ? `Unmatched expenses (${outgoingsInbox.length}) - click to select, then click a cell to place`
+                : "No unmatched expenses - inbox is clear ✓"}
             </div>
             {outgoingsInbox.length > 0 && (
               <>
@@ -634,7 +634,7 @@ export default function OutgoingsView({
                                     <Spinner size={12} color="#1a56db" /> Saving...
                                   </div>
                                 ) : isGenuinelyBlank ? (
-                                  isPlacing ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>—</span>
+                                  isPlacing ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>-</span>
                                 ) : (
                                   <div>
                                     <div style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit" }}>
@@ -659,7 +659,7 @@ export default function OutgoingsView({
                               </div>
                             ) : isLastRowOfJob && !jobHasEmptySlot && !!outgoingsPlacing && (
                               <div
-                                title="No spare expense slot — click to add a new row for this job"
+                                title="No spare expense slot - click to add a new row for this job"
                                 onClick={async () => {
                                   const exp = outgoingsPlacingRef.current;
                                   if (!exp) return;

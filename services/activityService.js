@@ -341,7 +341,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
           clientName: staleMatch[3].trim(),
           jobName: staleMatch[4].trim(),
           slot: `Slot ${staleMatch[5]}`,
-          amount: "—",
+          amount: "-",
           action: "Stale Date Moved",
           status: "Stale Date Moved",
           statusType: "updated",
@@ -354,9 +354,9 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
       if (line.startsWith("•") || line.startsWith("-")) {
         const desc = line.replace(/^[•\-]\s*/, "");
         if (desc.includes("Inv #")) {
-          accountingInvoices.push({ description: desc, invoiceNumber: "—", action: "Updated" });
+          accountingInvoices.push({ description: desc, invoiceNumber: "-", action: "Updated" });
         } else {
-          matchedInvoices.push({ description: desc, invoiceNumber: "—", action: "Updated" });
+          matchedInvoices.push({ description: desc, invoiceNumber: "-", action: "Updated" });
         }
       }
     }
@@ -443,7 +443,7 @@ export function parseAutoLogRow(row, clientName, rowIndex) {
     const hasRealChanges = newCount > 0 || updatedCount > 0 || createdJobs.length > 0;
 
     if (!hasRealChanges && skippedJobs.length > 0) {
-      // ONLY skipped jobs existed — this was a routine check where nothing was added or updated
+      // ONLY skipped jobs existed - this was a routine check where nothing was added or updated
       isRoutine = true;
       summary = `Routine CRM sync (${skippedJobs.length} existing job${skippedJobs.length > 1 ? "s" : ""} verified)`;
     } else if (newCount > 0 && createdJobs.length > 0) {

@@ -49,7 +49,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
       }
       if (inboxData.success) {
         if (inboxData.locked) {
-          console.warn("Outgoings inbox: GAS lock active —", inboxData.lockMessage);
+          console.warn("Outgoings inbox: GAS lock active -", inboxData.lockMessage);
           const serverAssigned = assignedByClient[client.clientName] || new Set();
           const currentAssigned = new Set([...assignedAppIds, ...serverAssigned]);
           const freshInbox = (inboxData.inbox || []).filter(exp => !currentAssigned.has(exp.appId));

@@ -299,9 +299,9 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         }
         if (!hasUnsentScheduled) continue;
         const possibleMatch1 = await findPossibleRetainerInvoice_(masterSheetId, clientSheetId, clientNameRow, unsentSendDate, sharedData, sheets);
-        let detail1 = `${clientNameRow} - ${jobName}: invoice was scheduled for ${fmtDate(unsentSendDate)} but has no reference number — it may not have been sent yet.`;
+        let detail1 = `${clientNameRow} - ${jobName}: invoice was scheduled for ${fmtDate(unsentSendDate)} but has no reference number - it may not have been sent yet.`;
         if (possibleMatch1) {
-          detail1 += `\nPossible match: invoice ${possibleMatch1.invoiceNo} for £${possibleMatch1.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch1.sentDate} (confidence: ${possibleMatch1.confidence})${possibleMatch1.attachedToRow ? ` — already attached to Confirmed row ${possibleMatch1.attachedToRow}` : " — not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;
+          detail1 += `\nPossible match: invoice ${possibleMatch1.invoiceNo} for £${possibleMatch1.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch1.sentDate} (confidence: ${possibleMatch1.confidence})${possibleMatch1.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch1.attachedToRow}` : " - not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;
         }
         const expectedDateStr1 = unsentSendDate ? fmtDate(unsentSendDate) : "";
         alerts.push({
@@ -378,13 +378,13 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
             const match2Differs = Math.abs(possibleMatch2.amount - monthlyRevenue) > 0.01;
             possibleMatchCase = match2Differs ? "changed" : "matches";
             if (match2Differs) {
-              detail2 += `\nPossible match: invoice ${possibleMatch2.invoiceNo} for £${possibleMatch2.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch2.sentDate} (confidence: ${possibleMatch2.confidence})${possibleMatch2.attachedToRow ? ` — already attached to Confirmed row ${possibleMatch2.attachedToRow}` : " — not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;
+              detail2 += `\nPossible match: invoice ${possibleMatch2.invoiceNo} for £${possibleMatch2.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch2.sentDate} (confidence: ${possibleMatch2.confidence})${possibleMatch2.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch2.attachedToRow}` : " - not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;
             } else {
-              detail2 += `\nInvoice ${possibleMatch2.invoiceNo} for £${possibleMatch2.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch2.sentDate}, matching the expected retainer amount${possibleMatch2.attachedToRow ? ` — already attached to Confirmed row ${possibleMatch2.attachedToRow}.` : ", but not yet attached to this job in Confirmed."}`;
+              detail2 += `\nInvoice ${possibleMatch2.invoiceNo} for £${possibleMatch2.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch2.sentDate}, matching the expected retainer amount${possibleMatch2.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch2.attachedToRow}.` : ", but not yet attached to this job in Confirmed."}`;
             }
           } else {
             possibleMatchCase = "draft";
-            detail2 += `\nNote: invoice ${possibleMatch2.invoiceNo} for £${possibleMatch2.amount.toFixed(2)}${possibleMatch2.attachedToRow ? ` already exists on Confirmed row ${possibleMatch2.attachedToRow}` : " already exists"} but is still marked "${possibleMatch2.status || "unsent"}" — it likely just needs sending.`;
+            detail2 += `\nNote: invoice ${possibleMatch2.invoiceNo} for £${possibleMatch2.amount.toFixed(2)}${possibleMatch2.attachedToRow ? ` already exists on Confirmed row ${possibleMatch2.attachedToRow}` : " already exists"} but is still marked "${possibleMatch2.status || "unsent"}" - it likely just needs sending.`;
           }
         }
         const expectedDateStr2 = expectedBy ? fmtDate(expectedBy) : "";
@@ -468,7 +468,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
           alerts.push({
             alertType: "revenue_mismatch", alertKey: `revenue_mismatch|${clientName}|${jobClient0}|${jobName0}${projectCode0 ? `|${projectCode0}` : ""}`,
             heading: "Revenue / total invoiced mismatch",
-            detail: `${jobClient0} | ${jobName0} (Row ${r + 1})${projectCode0 ? ` [${projectCode0}]` : ""}: revenue = £0.00 but total invoiced (incl. placeholders) = £${totalInvoiced0.toFixed(2)} — job revenue appears to be missing or not yet set.`,
+            detail: `${jobClient0} | ${jobName0} (Row ${r + 1})${projectCode0 ? ` [${projectCode0}]` : ""}: revenue = £0.00 but total invoiced (incl. placeholders) = £${totalInvoiced0.toFixed(2)} - job revenue appears to be missing or not yet set.`,
             jobName: jobName0, endClientName: jobClient0, projectCode: projectCode0, confirmedRow: r + 1, isRetainer: false,
           });
         }
@@ -497,7 +497,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
         const diff = Math.abs(totalInvoiced - revenueAmt);
         if (diff > TOLERANCE) {
           mismatch = true;
-          detail = `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: revenue = £${revenueAmt.toFixed(2)}, total invoiced (incl. placeholders) = £${totalInvoiced.toFixed(2)} — difference of £${diff.toFixed(2)}`;
+          detail = `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: revenue = £${revenueAmt.toFixed(2)}, total invoiced (incl. placeholders) = £${totalInvoiced.toFixed(2)} - difference of £${diff.toFixed(2)}`;
         }
       } else {
           const childRows = jobRows.filter(jr => !jr.isParent);
@@ -507,7 +507,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
             const diffA = Math.abs(parentTotal - revenueAmt);
             if (diffA > TOLERANCE) {
               mismatch = true;
-              detail = `${jobClient} | ${jobName} (Row ${r + 1}) [retainer, single-row]: monthly revenue = £${revenueAmt.toFixed(2)}, total invoiced on parent = £${parentTotal.toFixed(2)} — difference of £${diffA.toFixed(2)}`;
+              detail = `${jobClient} | ${jobName} (Row ${r + 1}) [retainer, single-row]: monthly revenue = £${revenueAmt.toFixed(2)}, total invoiced on parent = £${parentTotal.toFixed(2)} - difference of £${diffA.toFixed(2)}`;
             }
           } else {
             for (let ci = 0; ci < childRows.length; ci++) {
@@ -526,7 +526,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
                   alertType: "revenue_mismatch", 
                   alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}|${suffix}${projectCode ? `|${projectCode}` : ""}`,
                   heading: "Revenue / total invoiced mismatch", 
-                  detail: `${jobClient} | ${jobName} (Row ${cr.sheetRow}) [retainer, multi-row]: £${childTotal.toFixed(2)} invoiced, expected £${expectedForRow.toFixed(2)} (${mult}× monthly revenue of £${revenueAmt.toFixed(2)}) — diff £${diffC.toFixed(2)}`, 
+                  detail: `${jobClient} | ${jobName} (Row ${cr.sheetRow}) [retainer, multi-row]: £${childTotal.toFixed(2)} invoiced, expected £${expectedForRow.toFixed(2)} (${mult}× monthly revenue of £${revenueAmt.toFixed(2)}) - diff £${diffC.toFixed(2)}`, 
                   jobName, endClientName: jobClient, projectCode, confirmedRow: cr.sheetRow, isRetainer,
                 });
               }
@@ -603,7 +603,7 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
           const diff = Math.abs(totalExpenses - directCostsAmt);
           if (diff > TOLERANCE) {
             mismatch = true;
-            detail = `${jobClient} | ${jobName} (Row ${sheetRow})${projectCode ? ` [${projectCode}]` : ""} [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses (incl. placeholders) = £${totalExpenses.toFixed(2)} — difference of £${diff.toFixed(2)}`;
+            detail = `${jobClient} | ${jobName} (Row ${sheetRow})${projectCode ? ` [${projectCode}]` : ""} [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses (incl. placeholders) = £${totalExpenses.toFixed(2)} - difference of £${diff.toFixed(2)}`;
           }
         } else {
           const childRows = jobRows.filter(jr => !jr.isParent);
@@ -613,7 +613,7 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
             const diffA = Math.abs(parentExp - directCostsAmt);
             if (diffA > TOLERANCE) {
               mismatch = true;
-              detail = `${jobClient} | ${jobName} (Row ${sheetRow}) [retainer, single-row] [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses on parent = £${parentExp.toFixed(2)} — difference of £${diffA.toFixed(2)}`;
+              detail = `${jobClient} | ${jobName} (Row ${sheetRow}) [retainer, single-row] [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses on parent = £${parentExp.toFixed(2)} - difference of £${diffA.toFixed(2)}`;
             }
           } else {
             for (let ci = 0; ci < childRows.length; ci++) {
@@ -633,7 +633,7 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
                   alertType: "direct_costs_mismatch", 
                   alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}|${suffix}${projectCode ? `|${projectCode}` : ""}`,
                   heading: "Direct costs / total expenses mismatch", 
-                  detail: `${jobClient} | ${jobName} (Row ${childSheetRow}) [retainer, multi-row] [${tabName} tab]: £${childExp.toFixed(2)} expenses, expected £${expectedForRow.toFixed(2)} (${mult}× monthly budget of £${directCostsAmt.toFixed(2)}) — diff £${diffC.toFixed(2)}`, 
+                  detail: `${jobClient} | ${jobName} (Row ${childSheetRow}) [retainer, multi-row] [${tabName} tab]: £${childExp.toFixed(2)} expenses, expected £${expectedForRow.toFixed(2)} (${mult}× monthly budget of £${directCostsAmt.toFixed(2)}) - diff £${diffC.toFixed(2)}`, 
                   jobName, endClientName: jobClient, projectCode, confirmedRow: childSheetRow, isRetainer, tab: tabName,
                 });
               }
@@ -702,7 +702,7 @@ export async function checkPipelineConfirmedOverlap_(clientName, clientSheetId, 
 
       alerts.push({
         alertType: "pipeline_confirmed_overlap", alertKey: `pipeline_confirmed_overlap|${clientName}|${confClient}|${confCode || confJob}`,
-        heading: "Job in both Pipeline and Confirmed — Pipeline not closed out", detail, jobName: confJob, endClientName: confClient,
+        heading: "Job in both Pipeline and Confirmed - Pipeline not closed out", detail, jobName: confJob, endClientName: confClient,
         projectCode: confCode, confirmedRow: r + 1, pipelineRow: pipeMatch.sheetRow, likelihood: pipeMatch.likelihood, copiedToConf: pipeMatch.copiedToConf, jobType: confJobType,
       });
     }
@@ -740,7 +740,7 @@ export async function checkRetainerShrinkBlocked_(clientName, masterSheetId, sha
 
       alerts.push({
         alertType: "retainer_shrink_blocked", alertKey: `retainer_shrink_blocked|${clientName}|${endClientStr || "unknown"}|${jobName || clientJobStr}|row${childRowNum}`,
-        heading: "Retainer child row blocked from trimming — manual review needed",
+        heading: "Retainer child row blocked from trimming - manual review needed",
         detail: `Retainer contract shrunk but the system was unable to automatically trim child row ${childRowNum} because the row contains actuals (expenses or invoices already recorded).\nJob: ${clientJobStr || clientName}.\nChild row ${childRowNum} is now an excess row that falls outside the new contract period but cannot be removed automatically.\nAction required: manually review row ${childRowNum} in the Confirmed tab and decide whether to keep, adjust, or remove it.\nFirst detected: ${tsStr ? tsStr.slice(0, 10) : "(unknown date)"}.`,
         jobName, endClientName: endClientStr, childRowNum, clientJobStr, timestamp: tsStr, confirmedRow: childRowNum,
       });
@@ -858,14 +858,14 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
       const uninvoiced = revenueAmt - totalRealInvoiced;
       if (uninvoiced > TOLERANCE) {
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
-        const draftNote = draftCount > 0 ? ` Note: ${draftCount} invoice(s) totalling £${draftTotal.toFixed(2)} have a reference but are still Draft (not yet sent) — these are not counted as invoiced.` : "";
+        const draftNote = draftCount > 0 ? ` Note: ${draftCount} invoice(s) totalling £${draftTotal.toFixed(2)} have a reference but are still Draft (not yet sent) - these are not counted as invoiced.` : "";
         alerts.push({
           alertType: "uninvoiced_revenue",
           alertKey: `uninvoiced_revenue|${clientName}|${jobClient || ""}|${stableKey}`,
           legacyAlertKey: `uninvoiced_revenue|${stableKey}`,
           stableJobKey: stableKey,
           heading: "Completed job has uninvoiced revenue",
-          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, revenue = £${revenueAmt.toFixed(2)}, real sent/paid invoiced (excl. placeholders and drafts) = £${totalRealInvoiced.toFixed(2)} — £${uninvoiced.toFixed(2)} uninvoiced.${draftNote}`,
+          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, revenue = £${revenueAmt.toFixed(2)}, real sent/paid invoiced (excl. placeholders and drafts) = £${totalRealInvoiced.toFixed(2)} - £${uninvoiced.toFixed(2)} uninvoiced.${draftNote}`,
           jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)),
           metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, revenue: String(revenueAmt), endDate: fmtDate(endDate), uninvoicedAmount: String(uninvoiced.toFixed(2)), draftCount: String(draftCount), draftTotal: String(draftTotal.toFixed(2)), stableJobKey: stableKey },
         });
@@ -931,7 +931,7 @@ export async function checkDeletedInvoices_(clientName, clientSheetId, masterShe
       alerts.push({
         alertType: "deleted_invoice", alertKey: `deleted_invoice|${clientName}|${candidateRef}`,
         heading: "Invoice reference no longer found in accounting system",
-        detail: `Invoice ${candidateRef} (${found.foundClientName}${found.jobName ? ` - ${found.jobName}` : ""}), sent ${sentDateStr}${amountNum > 0 ? `, £${amountNum.toFixed(2)}` : ""}, has a real reference on the Confirmed tab (row ${found.rowNum}, invoice slot ${found.slotNum}) but no longer appears in the accounting system. It may have been deleted or voided — check Xero directly.`,
+        detail: `Invoice ${candidateRef} (${found.foundClientName}${found.jobName ? ` - ${found.jobName}` : ""}), sent ${sentDateStr}${amountNum > 0 ? `, £${amountNum.toFixed(2)}` : ""}, has a real reference on the Confirmed tab (row ${found.rowNum}, invoice slot ${found.slotNum}) but no longer appears in the accounting system. It may have been deleted or voided - check Xero directly.`,
         jobName: found.jobName, endClientName: found.foundClientName, projectCode: found.projectCode, confirmedRow: found.rowNum, stableJobKey: candidateRef,
       });
     }
@@ -999,10 +999,10 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
         const rowLabel = `Row ${jSheetRow} (${jobRows[jr].isParent ? "parent" : "child"})`;
 
         if (isRetainer && (hasVal(jRow[invAmtIdx[1]]) || hasVal(jRow[invAmtIdx[2]]))) {
-          problems.push(`${rowLabel}: retainer has data in invoice slot 2 or 3 — retainers should only ever use slot 1 per row`);
+          problems.push(`${rowLabel}: retainer has data in invoice slot 2 or 3 - retainers should only ever use slot 1 per row`);
         }
         if (isRetainer && hasChildren && jobRows[jr].isParent && hasVal(jRow[invAmtIdx[0]])) {
-          problems.push(`${rowLabel}: retainer has child rows but the parent row also holds an invoice — once child rows exist, the parent should stay empty`);
+          problems.push(`${rowLabel}: retainer has child rows but the parent row also holds an invoice - once child rows exist, the parent should stay empty`);
         }
         if (hasVal(jRow[invAmtIdx[1]]) && !hasVal(jRow[invAmtIdx[0]])) problems.push(`${rowLabel}: invoice slot 2 has data but slot 1 is empty`);
         if (hasVal(jRow[invAmtIdx[2]]) && (!hasVal(jRow[invAmtIdx[0]]) || !hasVal(jRow[invAmtIdx[1]]))) problems.push(`${rowLabel}: invoice slot 3 has data but slot 1 or 2 is empty`);
@@ -1077,7 +1077,7 @@ export async function checkDeletedExpenses_(clientName, clientSheetId, masterShe
       alerts.push({
         alertType: "deleted_expense", alertKey: `deleted_expense|${clientName}|${appId}`,
         heading: "Expense reference no longer found in accounting system",
-        detail: `Expense ${appId} (${jobClientD}${jobNameD ? ` - ${jobNameD}` : ""})${description ? `, ${description}` : ""}, received ${recDateStr}${grossAmount > 0 ? `, £${grossAmount.toFixed(2)}` : ""}${foundRow ? ` (Confirmed row ${foundRow}, expense slot${foundSlot})` : ""} but no longer appears in the accounting system. It may have been deleted or voided — check Xero directly.`,
+        detail: `Expense ${appId} (${jobClientD}${jobNameD ? ` - ${jobNameD}` : ""})${description ? `, ${description}` : ""}, received ${recDateStr}${grossAmount > 0 ? `, £${grossAmount.toFixed(2)}` : ""}${foundRow ? ` (Confirmed row ${foundRow}, expense slot${foundSlot})` : ""} but no longer appears in the accounting system. It may have been deleted or voided - check Xero directly.`,
         jobName: jobNameD, endClientName: jobClientD, confirmedRow: foundRow || "", stableJobKey: appId,
       });
     }
@@ -1133,7 +1133,7 @@ export async function checkUnreceivedExpenses_(clientName, clientSheetId, shared
 
       const unreceived = directCostsAmt - totalRealReceived;
       if (unreceived > TOLERANCE) {
-        const placeholderNote = placeholderCount > 0 ? ` Note: ${placeholderCount} expense(s) totalling £${placeholderTotal.toFixed(2)} are manual estimates or unreconciled-gap placeholders — these are not counted as received.` : "";
+        const placeholderNote = placeholderCount > 0 ? ` Note: ${placeholderCount} expense(s) totalling £${placeholderTotal.toFixed(2)} are placeholders - these are not counted as received.` : "";
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
         alerts.push({
           alertType: "unreceived_expenses",
@@ -1141,8 +1141,9 @@ export async function checkUnreceivedExpenses_(clientName, clientSheetId, shared
           legacyAlertKey: `unreceived_expenses|${stableKey}`,
           stableJobKey: stableKey,
           heading: "Completed job has unreceived expenses",
-          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, direct cost budget = £${directCostsAmt.toFixed(2)}, real received expenses (excl. estimates/gaps) = £${totalRealReceived.toFixed(2)} — £${unreceived.toFixed(2)} unreceived.${placeholderNote}`,
+          detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, direct cost budget = £${directCostsAmt.toFixed(2)}, real received expenses (excl. estimates/gaps) = £${totalRealReceived.toFixed(2)} - £${unreceived.toFixed(2)} unreceived.${placeholderNote}`,
           jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, directCosts: String(directCostsAmt), endDate: fmtDate(endDate), unreceivedAmount: String(unreceived.toFixed(2)), placeholderCount: String(placeholderCount), placeholderTotal: String(placeholderTotal.toFixed(2)),
+          metadata: { jobClient, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, directCosts: String(directCostsAmt), endDate: fmtDate(endDate), unreceivedAmount: String(unreceived.toFixed(2)), placeholderCount: String(placeholderCount), placeholderTotal: String(placeholderTotal.toFixed(2)), stableJobKey: stableKey },
         });
       }
       r += jobRows.length;

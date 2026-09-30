@@ -377,6 +377,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
           PROACTIVE_TYPE_LABELS={PROACTIVE_TYPE_LABELS}
           openCreateTaskModal={openCreateTaskModal}
           setActiveNav={setActiveNav}
+          isAdmin={isAdmin}
+          user={user}
         />
       );
     }
@@ -391,6 +393,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
           openCreateTaskModal={openCreateTaskModal}
           setActiveNav={setActiveNav}
           handleNavTasks={handleNavTasks}
+          isAdmin={isAdmin}
+          user={user}
         />
       );
     }
@@ -405,6 +409,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
           isAccepting={isAccepting}
           setIsAccepting={setIsAccepting}
           refreshTriage={refreshTriage}
+          isAdmin={isAdmin}
+          user={user}
         />
       );
     }

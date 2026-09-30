@@ -185,7 +185,7 @@ export default function JobsView({
         onMouseLeave={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor || "transparent"}
         title="Click to edit"
       >
-        {val ? (isCurrency ? formatCurrency(val) : val) : <span style={{ color: "#ccc" }}>—</span>}
+        {val ? (isCurrency ? formatCurrency(val) : val) : <span style={{ color: "#ccc" }}>-</span>}
       </div>
     );
   };
@@ -685,7 +685,7 @@ export default function JobsView({
                                 <td key={`inv${s.slotNum}`} onClick={() => {
                                   setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s });
                                 }} style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer", borderLeft: s.slotNum === 1 ? "2px solid #f0f0f0" : "none" }} onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                                  {!s.ref && !s.amount ? <span style={{ color: "#ccc" }}>—</span> : (
+                                  {!s.ref && !s.amount ? <span style={{ color: "#ccc" }}>-</span> : (
                                     <div>
                                       <div style={{ fontWeight: "600", color: isPlaceholderInvoice(s.ref) ? "#9333ea" : "inherit" }}>{s.ref}</div>
                                       <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
@@ -714,7 +714,7 @@ export default function JobsView({
                               <td key={`exp${s.slotNum}`} onClick={() => {
                                 setDirectCostsEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s });
                               }} style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer", borderLeft: s.slotNum === 1 ? "2px solid #f0f0f0" : "none" }} onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                                {!s.description && !s.amount ? <span style={{ color: "#ccc" }}>—</span> : (
+                                {!s.description && !s.amount ? <span style={{ color: "#ccc" }}>-</span> : (
                                   <div>
                                     <div style={{ fontWeight: "600", color: isPlaceholderExpense(s.transactionId) ? "#9333ea" : "inherit", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "155px" }}>{s.description || s.transactionId}</div>
                                     <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>

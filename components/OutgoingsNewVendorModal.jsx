@@ -41,7 +41,7 @@ export default function OutgoingsNewVendorModal({ newVendorData, outgoingsClient
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
         <div style={{ fontSize: "12px", color: "#888", background: "#f8f8f8", borderRadius: "6px", padding: "10px", marginBottom: "16px" }}>
-          <strong>Expense to place:</strong> {exp.description || exp.accountName} — £{exp.amount}<br/>
+          <strong>Expense to place:</strong> {exp.description || exp.accountName} - £{exp.amount}<br/>
           <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{exp.appId}</span>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>

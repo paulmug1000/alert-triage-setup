@@ -42,7 +42,7 @@ export function useSettings(automationCommanderSheetId) {
     const interval = setInterval(async () => {
       if (Date.now() - agentRunStartedAt > 15 * 60 * 1000) {
         setAgentRunStatus("error");
-        setAgentRunMsg("No completion reported after 15 minutes — check that client's Apps Script Executions panel directly.");
+        setAgentRunMsg("No completion reported after 15 minutes - check that client's Apps Script Executions panel directly.");
         return;
       }
       try {

@@ -88,7 +88,7 @@ export async function logClaudeUsage_(sheets, automationCommanderSheetId, client
       ]],
     },
   }));
-  console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} — ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
+  console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} - ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
 }
 
 export async function handleGetClaudeSettings(req, res, sheets) {
@@ -323,7 +323,7 @@ export async function handleTriggerAgentRun(req, res, sheets) {
     }
     const webAppUrl = String(row[13] || "").trim(); // col N
     if (!webAppUrl) {
-      return res.status(400).json({ success: false, error: `No Web App URL configured for "${targetClientName}" (column N) — deploy and add it first` });
+      return res.status(400).json({ success: false, error: `No Web App URL configured for "${targetClientName}" (column N) - deploy and add it first` });
     }
 
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -334,7 +334,7 @@ export async function handleTriggerAgentRun(req, res, sheets) {
     });
     const gasData = await gasResp.json().catch(() => null);
     if (!gasData) {
-      return res.status(502).json({ success: false, error: "No valid response from the client's Web App — check the deployment URL and that it's still active" });
+      return res.status(502).json({ success: false, error: "No valid response from the client's Web App - check the deployment URL and that it's still active" });
     }
     if (!gasData.success) {
       return res.status(200).json({ success: false, error: gasData.error || "Client Web App reported failure" });

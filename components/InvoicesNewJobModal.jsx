@@ -63,8 +63,8 @@ export default function InvoicesNewJobModal({
           <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
         <div style={{ fontSize: "12px", color: "#888", background: "#f8f8f8", borderRadius: "6px", padding: "10px", marginBottom: "16px" }}>
-          <strong>Invoice to place:</strong> #{inv.invoiceNo} — £{inv.amount.toFixed(2)}<br/>
-          {inv.client}{inv.job ? ` — ${inv.job}` : ""} · {inv.sentDate}
+          <strong>Invoice to place:</strong> #{inv.invoiceNo} - £{inv.amount.toFixed(2)}<br/>
+          {inv.client}{inv.job ? ` - ${inv.job}` : ""} · {inv.sentDate}
         </div>
 
         <div style={{ display: "grid", gap: "12px" }}>

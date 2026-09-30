@@ -64,7 +64,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
     const newSrcAmt = parseFloat((b.amount - splitAmt).toFixed(2));
     const newBlocks = blocks.map((bl, i) => i === blockIdx ? { ...bl, amount: newSrcAmt } : bl);
     blocksRef.current = newBlocks;
-    dirtyRef.current = false; // already written below — don't re-write on Save
+    dirtyRef.current = false; // already written below - don't re-write on Save
     setBlocks(newBlocks);
     // Write reduced source cell immediately
     updateCell(contractor, colLetter, newBlocks);
@@ -143,26 +143,26 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
                   {isManual ? (
                     <select value={b.status} onChange={e => updateBlock(i, "status", e.target.value)}
                       style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px" }}>
-                      <option value="">—</option>
+                      <option value="">-</option>
                       <option>Received</option><option>Paid</option><option>Draft</option>
                     </select>
-                  ) : <div style={{ padding: "7px 9px", fontSize: "13px", fontWeight: "600", color: sc.text }}>{b.status || "—"}</div>}
+                  ) : <div style={{ padding: "7px 9px", fontSize: "13px", fontWeight: "600", color: sc.text }}>{b.status || "-"}</div>}
                 </div>
                 <div>
                   <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Rec date</label>
-                  <div style={{ padding: "7px 9px", fontSize: "13px" }}>{b.recDate || "—"}</div>
+                  <div style={{ padding: "7px 9px", fontSize: "13px" }}>{b.recDate || "-"}</div>
                 </div>
                 <div>
                   <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Pay date{isManual ? " (editable)" : ""}</label>
                   {isManual ? (
                     <input type="text" value={b.payDate} placeholder="e.g. 28-Apr-26" onChange={e => updateBlock(i, "payDate", e.target.value)}
                       style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
-                  ) : <div style={{ padding: "7px 9px", fontSize: "13px" }}>{b.payDate || "—"}</div>}
+                  ) : <div style={{ padding: "7px 9px", fontSize: "13px" }}>{b.payDate || "-"}</div>}
                 </div>
               </div>
               <div style={{ marginTop: "10px" }}>
                 <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Description</label>
-                <div style={{ padding: "7px 9px", fontSize: "12px", color: "#333", background: "rgba(255,255,255,0.7)", borderRadius: "4px", border: "1px solid rgba(0,0,0,0.06)" }}>{b.description || "—"}</div>
+                <div style={{ padding: "7px 9px", fontSize: "12px", color: "#333", background: "rgba(255,255,255,0.7)", borderRadius: "4px", border: "1px solid rgba(0,0,0,0.06)" }}>{b.description || "-"}</div>
               </div>
               <div style={{ marginTop: "10px", borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: "10px" }}>
                 <div style={{ fontSize: "11px", color: "#888", marginBottom: "6px" }}>Split portion to another month:</div>
@@ -188,7 +188,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
                 <span style={{ fontSize: "11px", color: "#888" }}>Move to:</span>
                 <select value="" onChange={e => doMove(i, e.target.value)}
                   style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: "4px", fontSize: "11px" }}>
-                  <option value="">— select month —</option>
+                  <option value="">- select month -</option>
                   {(outgoingsData?.months || []).filter(m => m.colLetter !== colLetter).map(m => (
                     <option key={m.colLetter} value={m.colLetter}>{fmtMonthLabel(m.isoMonth || m.label)}</option>
                   ))}

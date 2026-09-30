@@ -325,7 +325,7 @@ export default function ActivityView({
                         {k.replace(/([A-Z])/g, " $1").toLowerCase()}
                       </div>
                       <div style={{ fontSize: "11.5px", color: "#0f172a", fontWeight: "600", marginTop: "2px" }}>
-                        {typeof v === "object" ? JSON.stringify(v) : String(v ?? "—")}
+                        {typeof v === "object" ? JSON.stringify(v) : String(v ?? "-")}
                       </div>
                     </div>
                   ))}
@@ -432,7 +432,7 @@ export default function ActivityView({
                       <tr key={i} style={{ borderBottom: i < accountingInvoices.length - 1 ? "1px solid #f1f5f9" : "none" }}>
                         <td style={{ padding: "8px 10px", verticalAlign: "top", width: "95px" }}>
                           <div style={{ fontWeight: "700", color: "#1e293b", fontFamily: "monospace", fontSize: "11.5px" }}>
-                            {inv.invoiceNumber || "—"}
+                            {inv.invoiceNumber || "-"}
                           </div>
                           <div style={{ marginTop: "4px" }}>
                             <span style={{
@@ -460,7 +460,7 @@ export default function ActivityView({
                             )}
                           </div>
                           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "5px" }}>
-                            {inv.amount && inv.amount !== "—" && (
+                            {inv.amount && inv.amount !== "-" && (
                               <span style={{
                                 padding: "2px 7px",
                                 borderRadius: "4px",
@@ -525,7 +525,7 @@ export default function ActivityView({
                       <tr key={i} style={{ borderBottom: i < matchedInvoices.length - 1 ? "1px solid #f1f5f9" : "none" }}>
                         <td style={{ padding: "8px 10px", verticalAlign: "top", width: "95px" }}>
                           <div style={{ fontWeight: "700", color: "#1e293b", fontFamily: "monospace", fontSize: "11.5px" }}>
-                            {inv.invoiceNumber || "—"}
+                            {inv.invoiceNumber || "-"}
                           </div>
                           <div style={{ marginTop: "4px" }}>
                             <span style={{
@@ -565,7 +565,7 @@ export default function ActivityView({
                                 {inv.sheet || "Confirmed"}{inv.slot ? ` • ${inv.slot}` : ""}{inv.row ? ` (Row ${inv.row})` : ""}
                               </span>
                             )}
-                            {inv.amount && inv.amount !== "—" && (
+                            {inv.amount && inv.amount !== "-" && (
                               <span style={{
                                 padding: "2px 7px",
                                 borderRadius: "4px",
@@ -630,7 +630,7 @@ export default function ActivityView({
                       <tr key={i} style={{ borderBottom: i < accountingExpenses.length - 1 ? "1px solid #f1f5f9" : "none" }}>
                         <td style={{ padding: "8px 10px", verticalAlign: "top", width: "105px" }}>
                           <div style={{ fontWeight: "700", color: "#1e293b", fontFamily: "monospace", fontSize: "11.5px" }}>
-                            {exp.ref || exp.supplier || "—"}
+                            {exp.ref || exp.supplier || "-"}
                           </div>
                           <div style={{ marginTop: "4px" }}>
                             <span style={{
@@ -658,7 +658,7 @@ export default function ActivityView({
                             )}
                           </div>
                           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "5px" }}>
-                            {exp.amount && exp.amount !== "—" && (
+                            {exp.amount && exp.amount !== "-" && (
                               <span style={{
                                 padding: "2px 7px",
                                 borderRadius: "4px",
@@ -723,7 +723,7 @@ export default function ActivityView({
                       <tr key={i} style={{ borderBottom: i < matchedExpenses.length - 1 ? "1px solid #f1f5f9" : "none" }}>
                         <td style={{ padding: "8px 10px", verticalAlign: "top", width: "110px" }}>
                           <div style={{ fontWeight: "700", color: "#1e293b", fontSize: "11.5px" }}>
-                            {exp.supplier || exp.description || "—"}
+                            {exp.supplier || exp.description || "-"}
                           </div>
                           <div style={{ marginTop: "4px" }}>
                             <span style={{
@@ -755,7 +755,7 @@ export default function ActivityView({
                                 {exp.sheet}{exp.slot ? ` • ${exp.slot}` : ""}{exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
                               </span>
                             )}
-                            {exp.amount && exp.amount !== "—" && (
+                            {exp.amount && exp.amount !== "-" && (
                               <span style={{
                                 padding: "2px 7px",
                                 borderRadius: "4px",
@@ -837,7 +837,7 @@ export default function ActivityView({
                             }}>
                               {exp.sheet || "Outgoings"}{exp.slot ? ` • ${exp.slot}` : ""}{exp.row && !String(exp.row).includes("-") ? ` (Row ${exp.row})` : ""}
                             </span>
-                            {exp.amount && exp.amount !== "—" && (
+                            {exp.amount && exp.amount !== "-" && (
                               <span style={{
                                 padding: "2px 7px",
                                 borderRadius: "4px",

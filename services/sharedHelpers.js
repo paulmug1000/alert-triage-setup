@@ -46,11 +46,11 @@ export async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
       const currentVal = currentResp.data.values?.[0]?.[0];
       const alreadyOn = (currentVal === true || String(currentVal).toUpperCase() === "TRUE");
       if (alreadyOn) {
-        console.log(`  ✅ ${sheetName} switch already ON — skipping write and delay`);
+        console.log(`  ✅ ${sheetName} switch already ON - skipping write and delay`);
         return;
       }
     } catch(e) {
-      console.log(`  ⚠ Could not check ${sheetName} switch state: ${e.message} — proceeding with write`);
+      console.log(`  ⚠ Could not check ${sheetName} switch state: ${e.message} - proceeding with write`);
     }
     await sheets.spreadsheets.values.update({
       spreadsheetId,
@@ -61,7 +61,7 @@ export async function setMasterSwitch(sheets, spreadsheetId, sheetName, value) {
     await new Promise(r => setTimeout(r, 1000));
     return;
   }
-  console.log(`  ⏭ ${sheetName} switch left ON (permanent mode — not turning off)`);
+  console.log(`  ⏭ ${sheetName} switch left ON (permanent mode - not turning off)`);
 }
 
 export async function setCRMMode(sheets, spreadsheetId, mode) {
@@ -99,7 +99,7 @@ export async function checkAllGASLocks(sheets, masterSheetId, cachedData = null)
       if (tsRaw) {
         const tsDate = new Date(tsRaw);
         if (!isNaN(tsDate) && (Date.now() - tsDate.getTime()) > GAS_LOCK_STALE_MS) {
-          console.log(`  ⚠️ GAS lock for ${name} is stale — clearing`);
+          console.log(`  ⚠️ GAS lock for ${name} is stale - clearing`);
           try {
             await withRetry(() => sheets.spreadsheets.values.batchUpdate({
               spreadsheetId: masterSheetId,
@@ -121,7 +121,7 @@ export async function checkAllGASLocks(sheets, masterSheetId, cachedData = null)
     result.expense = await check(4, 5, "expense", "F4", "G4");
     result.crm = await check(6, 7, "crm", "H4", "I4");
   } catch (e) {
-    console.log(`  ⚠️ Could not read GAS locks: ${e.message} — proceeding anyway`);
+    console.log(`  ⚠️ Could not read GAS locks: ${e.message} - proceeding anyway`);
   }
   return result;
 }

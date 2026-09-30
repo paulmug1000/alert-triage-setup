@@ -1705,10 +1705,10 @@ export async function handleRunFlagSweep(req, res, sheets) {
               const client = crmArr[0] || shtArr[1] || "";
               const job    = crmArr[1] || shtArr[2] || "";
               const code   = crmArr[2] || shtArr[0] || "";
-              const jobDesc = [client, job, code].filter(Boolean).join(" — ");
+              const jobDesc = [client, job, code].filter(Boolean).join(" - ");
               summary = `CRM ${item.alertType} ${jobDesc}`.trim();
             }
-            summary = summary || `${item.alertType} — ${item.clientName} (row ${alert.rowNumber})`;
+            summary = summary || `${item.alertType} - ${item.clientName} (row ${alert.rowNumber})`;
 
             // Dual-hash match: check modern hash first, then legacy hash
             let exRow = memoryRows.find(r => r.clientName === item.clientName && r.fingerprintHash === alert._fingerprint);
@@ -1932,7 +1932,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
       const [clientName, alertType] = key.split("::");
         const client = clientByName.get(clientName);
         if (!client) {
-          console.log(`  ⚠️ ${clientName}: not found in current client list — skipping ${rows.length} row(s)`);
+          console.log(`  ⚠️ ${clientName}: not found in current client list - skipping ${rows.length} row(s)`);
           notFound += rows.length;
           continue;
         }
@@ -1993,7 +1993,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
             currentAlerts = currentAlerts.filter(a => (a.flagType || a.alertType) === alertType);
           }
         } else {
-          console.log(`  ⚠️ Unknown alertType "${alertType}" for ${clientName} — skipping`);
+          console.log(`  ⚠️ Unknown alertType "${alertType}" for ${clientName} - skipping`);
           notFound += rows.length;
           continue;
         }
@@ -2001,7 +2001,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
         for (const row of rows) {
           const match = currentAlerts.find(a => a._fingerprint === row.fingerprintHash || a._legacyFingerprint === row.fingerprintHash);
           if (!match) {
-            console.log(`  ⏭ ${clientName}/${alertType}: fingerprint ${row.fingerprintHash.slice(0, 8)}… no longer found — marking auto_resolved`);
+            console.log(`  ⏭ ${clientName}/${alertType}: fingerprint ${row.fingerprintHash.slice(0, 8)}… no longer found - marking auto_resolved`);
             try {
               await updateAlertMemoryRow(sheets, acIdBuild, row.rowIndex, {
                 ...row, status: "auto_resolved"
@@ -2061,18 +2061,18 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
               console.log(`  ✅ ${clientName}/${alertType}: options built`);
             } else {
               errors++;
-              console.log(`  ❌ ${clientName}/${alertType}: analyze_alert failed — ${analyzeData.error || "unknown"}`);
+              console.log(`  ❌ ${clientName}/${alertType}: analyze_alert failed - ${analyzeData.error || "unknown"}`);
             }
           } catch (fetchErr) {
             errors++;
-            console.log(`  ❌ ${clientName}/${alertType}: analyze_alert call failed — ${fetchErr.message}`);
+            console.log(`  ❌ ${clientName}/${alertType}: analyze_alert call failed - ${fetchErr.message}`);
           }
 
           await new Promise(r => setTimeout(r, 1200));
         }
       } catch (groupErr) {
         errors += rows.length;
-        console.log(`  ❌ ${clientName}/${alertType}: group processing failed — ${groupErr.message}`);
+        console.log(`  ❌ ${clientName}/${alertType}: group processing failed - ${groupErr.message}`);
       }
     }
 
@@ -2089,7 +2089,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
       console.log(`build_cached_alert_options: ${pendingRich.length} rich informational row(s) pending analysis`);
       for (const row of pendingRich) {
         if (Date.now() - buildStart > TIME_LIMIT_MS) {
-          console.log(`  ⏳ Time limit reached during rich-type analysis — remaining rows will be picked up next run.`);
+          console.log(`  ⏳ Time limit reached during rich-type analysis - remaining rows will be picked up next run.`);
           hasMore = true;
           break;
         }
@@ -2121,15 +2121,15 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
             console.log(`  ✅ ${row.clientName}/${row.alertType}: targeted analysis stored`);
           } else {
             richErrors++;
-            console.log(`  ❌ ${row.clientName}/${row.alertType}: analyze_noaction_flag failed — ${analyzeData.error || "unknown"}`);
+            console.log(`  ❌ ${row.clientName}/${row.alertType}: analyze_noaction_flag failed - ${analyzeData.error || "unknown"}`);
           }
         } catch (richErr) {
           richErrors++;
-          console.log(`  ❌ ${row.clientName}/${row.alertType}: analyze_noaction_flag call failed — ${richErr.message}`);
+          console.log(`  ❌ ${row.clientName}/${row.alertType}: analyze_noaction_flag call failed - ${richErr.message}`);
         }
         await new Promise(r => setTimeout(r, 1200)); 
       }
-      console.log(`build_cached_alert_options: rich informational analysis — ${richAnalyzed} analyzed, ${richErrors} errors`);
+      console.log(`build_cached_alert_options: rich informational analysis - ${richAnalyzed} analyzed, ${richErrors} errors`);
     }
 
     await logBuildOptionsRun(sheets, acIdBuild, { 
@@ -2164,7 +2164,7 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
 
   console.log(`  📝 Writing Outgoings expense: ${categoryName} / ${expenseMonth} / £${amount}`);
 
-  // Read the full Outgoings sheet — use UNFORMATTED_VALUE so header dates come back
+  // Read the full Outgoings sheet - use UNFORMATTED_VALUE so header dates come back
   // as serial numbers (e.g. 46083.0) rather than locale-dependent strings like "1/3/2026"
   const sheetRange = "Outgoings!A1:AX500";
   const valuesResp = await sheets.spreadsheets.values.get({
@@ -2220,14 +2220,14 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
 
   let isNewVendor = false;
   if (targetRowIndex === -1) {
-    // Vendor not found — use the first blank row AFTER the last existing vendor
+    // Vendor not found - use the first blank row AFTER the last existing vendor
     const nextBlankIndex = lastFilledRowIndex + 1;
     if (lastFilledRowIndex === -1 || nextBlankIndex > 109) {
       throw new Error(`No existing row for "${categoryName}" and no blank rows available in contractor section (rows 13-110)`);
     }
     targetRowIndex = nextBlankIndex;
     isNewVendor = true;
-    console.log(`  New vendor — using blank row ${targetRowIndex + 1} (after last vendor at row ${lastFilledRowIndex + 1})`);
+    console.log(`  New vendor - using blank row ${targetRowIndex + 1} (after last vendor at row ${lastFilledRowIndex + 1})`);
   }
 
   const sheetRow = targetRowIndex + 1; // 1-indexed
@@ -2363,7 +2363,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
       }
 
       // Proactive alerts (revenue_mismatch, direct_costs_mismatch, retainer_invoice etc.)
-      // don't have automation options to generate — they have heading/detail only.
+      // don't have automation options to generate - they have heading/detail only.
       // Return empty options gracefully rather than crashing on missing alert.type/clientId.
       if (!alert.type && !alert.data && alert.alertKey) {
         return res.status(200).json({ success: true, options: [], isProactive: true });
@@ -2387,11 +2387,11 @@ export async function handleAnalyzeAlert(req, res, sheets) {
         if (memoryRow) {
           if (memoryRow.status === "ignored") {
             // Shouldn't reach here (filtered at start_triage), but handle gracefully
-            console.log(`  ⏭ Alert is ignored — returning ignored status`);
+            console.log(`  ⏭ Alert is ignored - returning ignored status`);
             return res.status(200).json({ success: true, ignored: true });
           }
           if (memoryRow.status === "cached" && memoryRow.cachedOptionsJSON) {
-            console.log(`  ✅ Cache HIT for ${fingerprintHash} — returning stored options`);
+            console.log(`  ✅ Cache HIT for ${fingerprintHash} - returning stored options`);
             // Update lastSeen
             await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, {
               ...memoryRow,
@@ -2400,7 +2400,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             try {
               cachedOptions = JSON.parse(memoryRow.cachedOptionsJSON);
             } catch (e) {
-              console.log(`  ⚠️ Could not parse cached options JSON — will re-fetch from Claude`);
+              console.log(`  ⚠️ Could not parse cached options JSON - will re-fetch from Claude`);
             }
             // Only use cache if options have valid structure (title field present)
             // If cached options are the fallback { summary: ... } format from a failed
@@ -2431,7 +2431,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 ? validCachedOptions.map(o => ({ ...o, copiedToConf: liveCopiedToConf }))
                 : validCachedOptions;
 
-              // Regenerate jobRowsData fresh for cached options — this data may be
+              // Regenerate jobRowsData fresh for cached options - this data may be
               // missing entirely (cached before this feature existed) or stale (sheet
               // has changed since the options were cached). Determine the correct tab:
               // CRM alerts use Pipeline/Confirmed per their mode; invoice/expense options
@@ -2445,7 +2445,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 optionsToReturn = await Promise.all(optionsToReturn.map(async (opt) => {
                   if (!opt.jobRow || (opt.matchType !== "existing_job" && opt.matchType !== "job")) return opt;
                   // Prefer explicit target fields (set at generation time) over parsing
-                  // recommendedActions text — explicit fields can't be mismatched.
+                  // recommendedActions text - explicit fields can't be mismatched.
                   let highlightSlot = null;
                   if (opt.targetSlotType && opt.targetSlotNum && opt.targetRowNum) {
                     highlightSlot = { type: opt.targetSlotType, rowNum: opt.targetRowNum, slotNum: opt.targetSlotNum };
@@ -2475,13 +2475,13 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 previousIgnoreReason: await findPreviousIgnoreReason(memoryRows, alert),
               });
             }
-            console.log(`  ⚠️ Cached options have no valid title — treating as cache miss`);
+            console.log(`  ⚠️ Cached options have no valid title - treating as cache miss`);
           }
         }
 
-        console.log(`  Cache MISS for ${fingerprintHash} — calling Claude`);
+        console.log(`  Cache MISS for ${fingerprintHash} - calling Claude`);
 
-        // Check if this alert was previously ignored (superseded) — surface the old reason
+        // Check if this alert was previously ignored (superseded) - surface the old reason
         const previousIgnoreReason = await findPreviousIgnoreReason(memoryRows, alert);
         if (previousIgnoreReason) {
           console.log(`  ℹ️ Found previous ignore reason for this alert`);
@@ -2535,11 +2535,11 @@ export async function handleAnalyzeAlert(req, res, sheets) {
 
           // ── VAT mismatch handling ──────────────────────────────────────────
           if (isVATMismatch && !isMissingCost) {
-            console.log(`  📊 VAT mismatch — analysing...`);
+            console.log(`  📊 VAT mismatch - analysing...`);
 
             // Step 1: Is this a Confirmed tab or Outgoings tab expense?
             if (source.startsWith("Slot")) {
-              // Confirmed tab expense — find the row by TransactionID and update the VAT field
+              // Confirmed tab expense - find the row by TransactionID and update the VAT field
               const slotNum = source === "Slot1" ? 1 : source === "Slot2" ? 2 : source === "Slot3" ? 3 : null;
               const slotColMap = {
                 1: { vat: "BZ", txId: "CD" },
@@ -2553,7 +2553,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
               if (!slotNum || !transactionId) {
                 const options = [{
                   optionId: 1,
-                  title: `MANUAL INVESTIGATION REQUIRED — Could not identify slot or transaction ID`,
+                  title: `MANUAL INVESTIGATION REQUIRED - Could not identify slot or transaction ID`,
                   matchType: "info",
                   matchAnalysis: {
                     matchConfidence: "N/A",
@@ -2586,7 +2586,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
               if (confirmedRow === -1) {
                 const options = [{
                   optionId: 1,
-                  title: `MANUAL INVESTIGATION REQUIRED — Transaction not found in Confirmed tab`,
+                  title: `MANUAL INVESTIGATION REQUIRED - Transaction not found in Confirmed tab`,
                   matchType: "info",
                   matchAnalysis: {
                     matchConfidence: "N/A",
@@ -2609,7 +2609,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 matchAnalysis: {
                   matchConfidence: "High",
                   reasonForChoice: `Accounting system shows VAT ${vatAmount > 0 ? `of £${vatAmount.toFixed(2)}` : "not applied"} for this expense. The Confirmed tab ${source} VAT field should be "${newVATValue}".`,
-                  discrepancies: `VAT mismatch — accounting system has VAT ${vatAmount > 0 ? "applied" : "not applied"}, Confirmed tab has the opposite`,
+                  discrepancies: `VAT mismatch - accounting system has VAT ${vatAmount > 0 ? "applied" : "not applied"}, Confirmed tab has the opposite`,
                 },
                 recommendedActions: [
                   `Update VAT setting for "${vendorDesc}" in Confirmed tab ${source} to "${newVATValue}"`,
@@ -2621,10 +2621,10 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             }
 
             if (!source.startsWith("OG-")) {
-              // Unknown source — manual investigation
+              // Unknown source - manual investigation
               const options = [{
                 optionId: 1,
-                title: `MANUAL INVESTIGATION REQUIRED — Cannot determine expense location`,
+                title: `MANUAL INVESTIGATION REQUIRED - Cannot determine expense location`,
                 matchType: "info",
                 matchAnalysis: {
                   matchConfidence: "N/A",
@@ -2636,7 +2636,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
-            // Step 2: Outgoings tab expense — re-read full DirComp to find all items for this vendor
+            // Step 2: Outgoings tab expense - re-read full DirComp to find all items for this vendor
             console.log(`  Re-reading DirComp to find all Outgoings items for vendor "${vendorName}"...`);
             const dirCompResp = await sheets.spreadsheets.values.get({
               spreadsheetId: alert.masterSheetId || alert.clientId,
@@ -2668,7 +2668,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
               // Shouldn't happen since the triggering row should be in there, but handle gracefully
               const options = [{
                 optionId: 1,
-                title: `MANUAL INVESTIGATION REQUIRED — Could not find vendor items in DirComp`,
+                title: `MANUAL INVESTIGATION REQUIRED - Could not find vendor items in DirComp`,
                 matchType: "info",
                 matchAnalysis: {
                   matchConfidence: "N/A",
@@ -2689,21 +2689,21 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             const allSameVAT = vatTreatments.every(v => v === vatTreatments[0]);
             const unanimousVAT = allSameVAT ? vatTreatments[0] : null; // "yes" or "no"
 
-            console.log(`  VAT treatments across ${vendorOGRows.length} items: ${vatTreatments.join(", ")} — unanimous: ${unanimousVAT || "NO"}`);
+            console.log(`  VAT treatments across ${vendorOGRows.length} items: ${vatTreatments.join(", ")} - unanimous: ${unanimousVAT || "NO"}`);
 
             if (!allSameVAT) {
-              // Mixed VAT treatment — vendor has some items with VAT and some without.
+              // Mixed VAT treatment - vendor has some items with VAT and some without.
               // Changing col B would break the other items, so we offer per-item fix only.
               // This specific expense has vatAmount, so we know what THIS item should be.
               const thisVAT = vatAmount > 0 ? "Yes" : "No";
               const options = [{
                 optionId: 1,
-                title: `VAT mismatch on this item only — vendor "${vendorName}" has mixed VAT treatment`,
+                title: `VAT mismatch on this item only - vendor "${vendorName}" has mixed VAT treatment`,
                 matchType: "info",
                 matchAnalysis: {
                   matchConfidence: "Medium",
                   reasonForChoice: `${vendorOGRows.length} Outgoings items exist for "${vendorName}" with mixed VAT treatments (${vatTreatments.filter(v=>v==="yes").length} with VAT, ${vatTreatments.filter(v=>v==="no").length} without). Changing the vendor-level VAT setting (Outgoings col B) would affect all items. The discrepancy on this specific item suggests the accounting system recorded VAT ${vatAmount > 0 ? `of £${vatAmount.toFixed(2)}` : "not applied"} but the Outgoings tab shows the opposite. Please review this item individually in the Outgoings tab for ${source}.`,
-                  discrepancies: `VAT mismatch on this item — accounting: VAT ${vatAmount > 0 ? "applied" : "not applied"}, Outgoings: opposite`,
+                  discrepancies: `VAT mismatch on this item - accounting: VAT ${vatAmount > 0 ? "applied" : "not applied"}, Outgoings: opposite`,
                 },
                 recommendedActions: [
                   `Review the ${source} entry for "${expDescription}" in the Outgoings tab`,
@@ -2713,7 +2713,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
-            // Step 4: All items agree — find vendor row in Outgoings and recommend VAT change
+            // Step 4: All items agree - find vendor row in Outgoings and recommend VAT change
             const newVATValue = unanimousVAT === "yes" ? "Yes" : "No";
             const isSingleItem = vendorOGRows.length === 1;
 
@@ -2735,7 +2735,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             if (outgoingsVendorRow === -1) {
               const options = [{
                 optionId: 1,
-                title: `MANUAL INVESTIGATION REQUIRED — Vendor "${vendorName}" not found in Outgoings tab`,
+                title: `MANUAL INVESTIGATION REQUIRED - Vendor "${vendorName}" not found in Outgoings tab`,
                 matchType: "info",
                 matchAnalysis: {
                   matchConfidence: "N/A",
@@ -2781,14 +2781,14 @@ export async function handleAnalyzeAlert(req, res, sheets) {
 
           // ── Other discrepancy types (not Missing cost, not VAT mismatch) ──
           if (!isMissingCost) {
-            console.log(`  📊 Non-standard discrepancy type: ${activeFlags.join(", ")} — returning info message`);
+            console.log(`  📊 Non-standard discrepancy type: ${activeFlags.join(", ")} - returning info message`);
             const options = [{
               optionId: 1,
-              title: `MANUAL INVESTIGATION REQUIRED — ${activeFlags.join(", ")}`,
+              title: `MANUAL INVESTIGATION REQUIRED - ${activeFlags.join(", ")}`,
               matchType: "info",
               matchAnalysis: {
                 matchConfidence: "N/A",
-                reasonForChoice: `This type of discrepancy (${activeFlags.join(", ")}) requires manual investigation. The triage system handles "Missing cost" and "VAT mismatch" automatically — other discrepancy types should be reviewed directly in the sheet.`,
+                reasonForChoice: `This type of discrepancy (${activeFlags.join(", ")}) requires manual investigation. The triage system handles "Missing cost" and "VAT mismatch" automatically - other discrepancy types should be reviewed directly in the sheet.`,
                 discrepancies: activeFlags.join(", "),
               },
               recommendedActions: [
@@ -2800,7 +2800,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
           }
 
-          // ── Missing cost — existing Claude path follows ────────────────────
+          // ── Missing cost - existing Claude path follows ────────────────────
           console.log(`  📊 Fetching Outgoings tab for expense matching...`);
           
           const outgoingsResponse = await sheets.spreadsheets.values.get({
@@ -2810,7 +2810,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           const outgoingsRows = outgoingsResponse.data.values || [];
           console.log(`  ✓ Loaded ${outgoingsRows.length} rows from Outgoings (rows 1-112)`);
 
-          // Build vendor list for Claude — rows 13-110 are the contractor section
+          // Build vendor list for Claude - rows 13-110 are the contractor section
           // Each row: A=vendorName, B=chargesVAT, C-F=defaults
           // Find the LAST blank row after all existing vendors (i.e. next available slot at the bottom)
           const outgoingsVendorList = [];
@@ -2875,13 +2875,13 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           const expenseDate = alert.summary?.date || "";
           const expenseAccountName = alert.summary?.accountName || "";
           
-          // Compute VAT flag from actual data — don't let Claude guess
+          // Compute VAT flag from actual data - don't let Claude guess
           const vatAmountRaw = parseFloat(String(alert.summary?.vatAmount || '0').replace(/[£$€,]/g, '')) || 0;
           const vatYesNo = vatAmountRaw > 0 ? 'Yes' : 'No';
           console.log(`  VAT amount: ${vatAmountRaw}, vatYesNo: ${vatYesNo}`);
 
           // Backend pre-analysis: identify candidate jobs with DirectCostBudget > £0.
-          // Claude cannot reliably scan 250 rows — we compute candidates in code
+          // Claude cannot reliably scan 250 rows - we compute candidates in code
           // and pass only those to Claude for qualitative ranking.
 
           const slotColDefs = [
@@ -2934,7 +2934,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                   let periodMultiplier = 1;
                   if (parentMonthlyRevenue > 0 && childInvoiceAmt > 0) {
                     const ratio = childInvoiceAmt / parentMonthlyRevenue;
-                    // Round to nearest integer — handles minor rounding differences
+                    // Round to nearest integer - handles minor rounding differences
                     periodMultiplier = Math.max(1, Math.round(ratio));
                   }
                   const childBudget = parentMonthlyBudget * periodMultiplier;
@@ -2954,7 +2954,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                     const appId = String(cr[id] || '').trim();
                     if (!descr && !amt) {
                       // date was already read above but previously omitted
-                      // here — fixed 20 Aug 2026, confirmed with Paul that
+                      // here - fixed 20 Aug 2026, confirmed with Paul that
                       // empty expense placeholders do carry a real expected
                       // date the same way invoice placeholders do, needed
                       // for the date-tolerance check added below.
@@ -3017,7 +3017,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
 
           console.log(`  ✓ Found ${candidateJobs.length} jobs with DirectCostBudget > £0`);
 
-          // ── TIER 1: Single job with exact amount placeholder match — skip Claude ──
+          // ── TIER 1: Single job with exact amount placeholder match - skip Claude ──
           // If exactly one candidate job has a single unallocated placeholder slot whose
           // amount exactly matches the expense, generate the option directly.
           const exactMatches = candidateJobs.flatMap(job =>
@@ -3033,16 +3033,16 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             };
             const cols = slotColMap[emSlot.slotNum];
             const row = emSlot.sheetRow;
-            console.log(`  ✅ Expense Tier 1 — exact placeholder match: ${emJob.parentJob} Row ${row} ExpSlot${emSlot.slotNum}`);
+            console.log(`  ✅ Expense Tier 1 - exact placeholder match: ${emJob.parentJob} Row ${row} ExpSlot${emSlot.slotNum}`);
             const tier1ExpOption = {
               optionId: 1,
-              title: `Allocate to ${emJob.parentJob} (Row ${row}, ExpSlot${emSlot.slotNum}) — exact amount match`,
+              title: `Allocate to ${emJob.parentJob} (Row ${row}, ExpSlot${emSlot.slotNum}) - exact amount match`,
               matchType: "job",
               jobRow: row,
               jobName: emJob.parentJob,
               matchAnalysis: {
                 matchConfidence: "High",
-                placeholderMatch: `YES — Row ${row} ExpSlot${emSlot.slotNum} has placeholder matching amount £${expenseAmount}`,
+                placeholderMatch: `YES - Row ${row} ExpSlot${emSlot.slotNum} has placeholder matching amount £${expenseAmount}`,
                 budgetFit: "YES",
                 reasonForChoice: `Exact amount match (£${expenseAmount}) with unallocated placeholder in ${emJob.parentJob}.`,
                 discrepancies: "None",
@@ -3052,7 +3052,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
                 `write ${expenseDescription} to ${cols.d}${row}, write ${expenseAmount} to ${cols.a}${row}, write ${vatYesNo} to ${cols.v}${row}, write ${expenseDate} to ${cols.dt}${row}, write 30 to ${cols.dp}${row}, write ${alert.summary?.status || ""} to ${cols.st}${row}`,
               ],
             };
-            const expSummary1 = `Expense ${expenseDescription} £${expenseAmount} — ${alert.clientName}`;
+            const expSummary1 = `Expense ${expenseDescription} £${expenseAmount} - ${alert.clientName}`;
             await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
             const expMemRows1 = await readAlertMemory(sheets, automationCommanderSheetId);
             const expMemRow1 = findMemoryRow(expMemRows1, fingerprintHash);
@@ -3068,7 +3068,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           // If forceAI flag is set, skip system options and use Claude directly.
           const forceAI = req.body.forceAI === true;
           if (forceAI) {
-            console.log("  🤖 forceAI=true — using Claude for expense options");
+            console.log("  🤖 forceAI=true - using Claude for expense options");
             // Rebuild expense Claude prompt and call Claude
             const vatAmountRaw2 = parseFloat(String(alert.summary?.vatAmount || "0").replace(/[£$€,]/g, "")) || 0;
             const vatYesNo2     = vatAmountRaw2 > 0 ? "Yes" : "No";
@@ -3138,7 +3138,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
           for (const vm of vendorMatches.slice(0, 3)) {
             // Find the best available expense slot for this vendor across candidateJobs
-            // For outgoings match, we use outgoingsData block — no slot write needed
+            // For outgoings match, we use outgoingsData block - no slot write needed
             vendorSysOptions.push({
               optionId: vendorSysOptions.length + 1,
               title: `Assign to OUTGOINGS vendor "${vm.vendorName}" (Row ${vm.sheetRow})`,
@@ -3155,7 +3155,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               },
               matchAnalysis: {
                 matchConfidence: "Medium",
-                placeholderMatch: "N/A — Outgoings vendor assignment",
+                placeholderMatch: "N/A - Outgoings vendor assignment",
                 budgetFit: "YES",
                 reasonForChoice: `Vendor name "${vm.vendorName}" matches expense description word(s). VAT: ${vm.chargesVAT}.`,
                 discrepancies: "None",
@@ -3178,21 +3178,21 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           // ── Option type B: Match to Confirmed job (by description word overlap) ─
           const jobDescMatches = [];
           // Format is typically "Vendor name (outline of expense, may include end client name)".
-          // Extract the bracketed portion to check for a client-name match — vendor name alone
+          // Extract the bracketed portion to check for a client-name match - vendor name alone
           // (before the bracket) is not a reliable client signal.
           const expBracketMatch = (expenseDescription || "").match(/\(([^)]*)\)/);
           const expBracketWords = expBracketMatch ? normExpWords(expBracketMatch[1]) : [];
 
-          // Date tolerance: ±expenseMonthsTolerance months from expense date —
+          // Date tolerance: ±expenseMonthsTolerance months from expense date -
           // added 20 Aug 2026, prompted by Paul after the invoice-side date
           // fix. expenseMonthsTolerance was already a configured tolerance
           // value (default 1 month) but was never actually used in this
-          // matching logic at all — nothing here previously compared dates.
+          // matching logic at all - nothing here previously compared dates.
           // Confirmed with Paul that empty expense placeholder slots DO
           // carry a real expected date the same way invoice placeholders
           // do, which is what makes this comparison meaningful (the empty-
           // slot date was also being silently dropped before this same
-          // change — see candidateJobs construction above). Reuses the
+          // change - see candidateJobs construction above). Reuses the
           // same parseSheetOrJsDate_/monthsWithinTolerance_ helpers as the
           // invoice side, not a second, separate definition.
           const expMonthsTol = Number(tolerances.expenseMonthsTolerance) || 1;
@@ -3247,11 +3247,11 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             if (a.isExactClient !== b.isExactClient) return a.isExactClient ? -1 : 1;
             // clientOverlap (bracketed end-client text overlapping the job's
             // client name) was already computed per candidate above but
-            // never actually used here — added 20 Aug 2026, prompted by
+            // never actually used here - added 20 Aug 2026, prompted by
             // Paul asking whether partial client matches are considered on
             // the invoice side. This was sitting right there, unused.
             if (a.clientOverlap !== b.clientOverlap) return a.clientOverlap ? -1 : 1;
-            // Expense date within tolerance of the slot's expected date —
+            // Expense date within tolerance of the slot's expected date -
             // added 20 Aug 2026, mirroring the same fix and priority
             // position on the invoice side (a direct match signal, ranked
             // above the much weaker/indirect job-recency tie-breaker below).
@@ -3268,10 +3268,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
           for (const jm of jobDescMatches.slice(0, 3)) {
             const { job, availSlot, cols, row, realAllocated, newTotal, budgetFit, dateMatch } = jm;
-            const jobClientLabel = job.parentClient ? `${job.parentClient} — ${job.parentJob}` : job.parentJob;
+            const jobClientLabel = job.parentClient ? `${job.parentClient} - ${job.parentJob}` : job.parentJob;
             jobSysOptions.push({
               optionId: jobSysOptions.length + 1,
-              title: `Allocate to ${jobClientLabel} slot ${availSlot.slotNum} (Row ${row}) — job name match`,
+              title: `Allocate to ${jobClientLabel} slot ${availSlot.slotNum} (Row ${row}) - job name match`,
               matchType: "job",
               jobRow: row,
               jobName: job.parentJob,
@@ -3280,7 +3280,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               targetSlotNum: availSlot.slotNum,
               matchingDetails: {
                 // Same bug as the invoice side (fixed 20 Aug 2026, confirmed
-                // during Paul's review of expense-matching for parity) —
+                // during Paul's review of expense-matching for parity) -
                 // unmatchedJobSummary must hold the JOB's own true
                 // revenue/start date for row-verification to work (it
                 // compares this against what's actually in the sheet
@@ -3308,14 +3308,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               },
               matchAnalysis: {
                 // Upgraded to High when the expense date falls within
-                // tolerance of the slot's expected date — added 20 Aug
+                // tolerance of the slot's expected date - added 20 Aug
                 // 2026, mirroring the invoice side's confidence logic
                 // exactly (previously hardcoded "Medium" regardless of date
                 // proximity, since no date comparison existed at all).
                 matchConfidence: dateMatch ? "High" : "Medium",
-                placeholderMatch: availSlot.empty ? `YES — Row ${row} ExpSlot${availSlot.slotNum} is empty` : `PARTIAL — unallocated slot available`,
+                placeholderMatch: availSlot.empty ? `YES - Row ${row} ExpSlot${availSlot.slotNum} is empty` : `PARTIAL - unallocated slot available`,
                 budgetFit,
-                dateRangeMatch: dateMatch === null ? "UNKNOWN" : (dateMatch ? "YES" : "PARTIAL — outside date tolerance"),
+                dateRangeMatch: dateMatch === null ? "UNKNOWN" : (dateMatch ? "YES" : "PARTIAL - outside date tolerance"),
                 reasonForChoice: `Job name "${job.parentJob}" matches expense description word(s). Currently allocated: £${realAllocated.toFixed(2)}, this expense adds £${expenseAmount.toFixed(2)} → new total £${newTotal.toFixed(2)} vs budget £${job.totalBudget}.`,
                 discrepancies: budgetFit.startsWith("OVER") ? `Budget would be exceeded by £${(newTotal-(parseFloat(String(job.totalBudget||"0").replace(/[£$€,]/g,""))||0)).toFixed(2)}` : "None",
               },
@@ -3345,10 +3345,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               },
               matchAnalysis: {
                 matchConfidence: "Low",
-                placeholderMatch: "N/A — new vendor row",
+                placeholderMatch: "N/A - new vendor row",
                 budgetFit: "YES",
                 reasonForChoice: `No existing Outgoings vendor matched this expense. A new vendor row will be created at row ${nextBlankOGRow2} using the expense account name/description as the vendor name. Review the vendor name before accepting.`,
-                discrepancies: "New vendor — confirm name and VAT setting are correct",
+                discrepancies: "New vendor - confirm name and VAT setting are correct",
               },
               outgoingsData: {
                 categoryName: guessedVendorName,
@@ -3374,7 +3374,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           // ── Option type D: Manual investigation fallback ─────────────────────
           vendorSysOptions.push({
             optionId: vendorSysOptions.length + 1,
-            title: "MANUAL INVESTIGATION REQUIRED — no confident automatic match found",
+            title: "MANUAL INVESTIGATION REQUIRED - no confident automatic match found",
             matchType: "info",
             matchAnalysis: {
               matchConfidence: "N/A",
@@ -3395,7 +3395,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const options = sysOptions.map((o, i) => ({ ...o, optionId: i + 1 }));
           console.log(`  ✅ System-generated ${options.length} expense options`);
 
-          // Attach jobRowsData for spreadsheet-style display — only for job matches
+          // Attach jobRowsData for spreadsheet-style display - only for job matches
           // (Outgoings vendor/category matches don't have a Confirmed job row to show)
           const expJobRowCache = new Map();
           for (const opt of options) {
@@ -3444,7 +3444,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
           // App discrepancy: job exists in sheet (Confirmed/Pipeline) but not in CRM.
           // The only valid actions are: ignore the discrepancy, or delete the job from the sheet.
-          // We never suggest creating a job — Claude is not needed here.
+          // We never suggest creating a job - Claude is not needed here.
           if (alertType === "crmConfAppDiscr" || alertType === "crmPipeAppDiscr") {
             const tabName = alertType === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
             const src = alert.data?.sheetData || [];
@@ -3457,7 +3457,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const startDate   = src[5] || "";
             const endDate     = src[6] || "";
             const likelihood  = src[7] || "";
-            const jobDesc = [client, jobName, projectCode].filter(Boolean).join(" — ");
+            const jobDesc = [client, jobName, projectCode].filter(Boolean).join(" - ");
 
             let options = [];
             let jobRow = null;      // declared here so both branches can set it and the DD read below can use it
@@ -3518,7 +3518,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 if (fc.writable && jobRow) {
                   options.push({
                     optionId: options.length + 1,
-                    title: `UPDATE ${client} — ${jobName} — ${fc.name} to match CRM: "${fc.crm}"`,
+                    title: `UPDATE ${client} - ${jobName} - ${fc.name} to match CRM: "${fc.crm}"`,
                     matchType: "existing_job", jobRow, jobName,
                     matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
                     matchAnalysis: {
@@ -3534,22 +3534,22 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 } else {
                   options.push({
                     optionId: options.length + 1,
-                    title: `REVIEW ${client} — ${jobName} — ${fc.name} mismatch — manual update required`,
+                    title: `REVIEW ${client} - ${jobName} - ${fc.name} mismatch - manual update required`,
                     matchType: "info", jobName,
                     matchAnalysis: {
                       matchConfidence: "N/A",
                       reasonForChoice: `${fc.name} differs: ${tabName}="${fc.sheet}" vs CRM="${fc.crm}". Cannot update automatically.`,
                     },
-                    recommendedActions: [ `Review and correct ${fc.name} manually — ${tabName}: "${fc.sheet}", CRM: "${fc.crm}"` ],
+                    recommendedActions: [ `Review and correct ${fc.name} manually - ${tabName}: "${fc.sheet}", CRM: "${fc.crm}"` ],
                   });
                 }
               }
               options.push({
                 optionId: options.length + 1,
-                title: `IGNORE — ${client} — ${jobName} — CRM data is wrong or discrepancy can be disregarded`,
+                title: `IGNORE - ${client} - ${jobName} - CRM data is wrong or discrepancy can be disregarded`,
                 matchType: "ignore", jobRow: jobRow || alert.rowNumber, jobName,
                 matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
-                recommendedActions: [ `Mark this field mismatch as ignored — no changes will be made` ],
+                recommendedActions: [ `Mark this field mismatch as ignored - no changes will be made` ],
               });
 
             } else {
@@ -3586,7 +3586,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               options = [
                 {
                   optionId: 1,
-                  title: `IGNORE — "${jobDesc}" is legitimate and CRM discrepancy can be disregarded`,
+                  title: `IGNORE - "${jobDesc}" is legitimate and CRM discrepancy can be disregarded`,
                   matchType: "ignore",
                   jobRow: jobRow || alert.rowNumber, jobName,
                   matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
@@ -3597,7 +3597,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 },
                 {
                   optionId: 2,
-                  title: `DELETE — Remove "${jobDesc}" from ${tabName} tab as it should not exist`,
+                  title: `DELETE - Remove "${jobDesc}" from ${tabName} tab as it should not exist`,
                   matchType: "delete",
                   jobRow: jobRow || alert.rowNumber, jobName,
                   matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
@@ -3621,7 +3621,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               } catch(e) { console.log("  copiedToConf read failed:", e.message); }
             }
 
-            console.log(`  ✅ App discr (${alert.subType || "not_found"}) — ${options.length} options for ${jobDesc}`);
+            console.log(`  ✅ App discr (${alert.subType || "not_found"}) - ${options.length} options for ${jobDesc}`);
 
             // Inject Pipeline-specific fields onto options
             if (tabName === "Pipeline" && copiedToConf !== undefined) {
@@ -3714,7 +3714,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             }
 
             const rowRef = jobRow ? ` (${tabName} row ${jobRow})` : "";
-            const jobLabel = `${shtClient || crmClient} — ${shtJob || crmJob}${crmCode ? ` (${crmCode})` : ""}`;
+            const jobLabel = `${shtClient || crmClient} - ${shtJob || crmJob}${crmCode ? ` (${crmCode})` : ""}`;
 
             // Consolidated mismatch handler
             const mismatchFields = alert.mismatchFields || [];
@@ -3795,7 +3795,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               if (unWritable.length > 0 && actions.length === 0) {
                 options.push({
                   optionId: options.length + 1,
-                  title: `REVIEW ${shtClient || crmClient} — ${shtJob || crmJob} — manual update required`,
+                  title: `REVIEW ${shtClient || crmClient} - ${shtJob || crmJob} - manual update required`,
                   matchType: "info",
                   jobName: shtJob || crmJob,
                   matchAnalysis: {
@@ -3813,7 +3813,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               // Fallback if the job row cannot be found
               options.push({
                 optionId: options.length + 1,
-                title: `REVIEW ${shtClient || crmClient} — ${shtJob || crmJob} — job row not found in ${tabName}`,
+                title: `REVIEW ${shtClient || crmClient} - ${shtJob || crmJob} - job row not found in ${tabName}`,
                 matchType: "info",
                 jobName: shtJob || crmJob,
                 matchAnalysis: {
@@ -3824,14 +3824,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 recommendedActions: [
                   `Locate job manually in ${tabName} tab and update mismatched fields`,
                 ],
-                explanation: `Job row could not be located automatically — update manually.`,
+                explanation: `Job row could not be located automatically - update manually.`,
               });
             }
 
             // Always add an ignore option at the end
             options.push({
               optionId: options.length + 1,
-              title: `IGNORE — ${shtClient || crmClient} — ${shtJob || crmJob} — CRM data is wrong or discrepancy can be disregarded`,
+              title: `IGNORE - ${shtClient || crmClient} - ${shtJob || crmJob} - CRM data is wrong or discrepancy can be disregarded`,
               matchType: "ignore",
               jobRow: jobRow || alert.rowNumber,
               jobName: shtJob || crmJob,
@@ -3839,7 +3839,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 unmatchedJobSummary: { clientName: shtClient || crmClient, jobName: shtJob || crmJob, projectCode: shtCode || crmCode },
               },
               recommendedActions: [
-                `Mark this discrepancy as ignored — no changes will be made to either system`,
+                `Mark this discrepancy as ignored - no changes will be made to either system`,
               ],
             });
 
@@ -3854,7 +3854,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               } catch(e) { console.log("  copiedToConf read failed:", e.message); }
             }
 
-            console.log(`  ✅ Field mismatch — ${mismatchFields.join(", ")} — returning ${options.length} options for ${jobLabel}`);
+            console.log(`  ✅ Field mismatch - ${mismatchFields.join(", ")} - returning ${options.length} options for ${jobLabel}`);
 
             // Inject Pipeline-specific fields onto options
             if (tabName === "Pipeline" && copiedToConf !== undefined) {
@@ -3883,9 +3883,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
 
           // ── System-generated options for CRM dashboard not_found ──────────────
-          // If forceAI is set, skip system options — return a simple AI-generated response
+          // If forceAI is set, skip system options - return a simple AI-generated response
           if (req.body.forceAI === true) {
-            console.log("  🤖 forceAI=true — using Claude for CRM dashboard options");
+            console.log("  🤖 forceAI=true - using Claude for CRM dashboard options");
             const crmModeAI = await getCRMMatchingMode(sheets, alert.masterSheetId || alert.clientId);
             const crmTabAI  = crmModeAI === "Pipeline" ? "Pipeline" : "Confirmed";
             const crmSrcAI  = alert.data?.crmData || [];
@@ -3911,7 +3911,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           console.log(`  Mode: ${crmMode}`);
           const dashTabName = crmMode === "Pipeline" ? "Pipeline" : "Confirmed";
 
-          // Extract CRM data — layout: [0]=client,[1]=job,[2]=code,[3]=revenue,[4]=dirCosts,[5]=start,[6]=end,[7]=likelihood
+          // Extract CRM data - layout: [0]=client,[1]=job,[2]=code,[3]=revenue,[4]=dirCosts,[5]=start,[6]=end,[7]=likelihood
           const dashCrmArr = alert.data?.crmData || [];
           const dashShtArr = alert.data?.sheetData || [];
           const dashClient   = dashCrmArr[0] || dashShtArr[1] || "";
@@ -3922,12 +3922,12 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           const dashStart    = dashCrmArr[5] || dashShtArr[5] || "";
           const dashEnd      = dashCrmArr[6] || dashShtArr[6] || "";
           const dashLikely   = dashCrmArr[7] || dashShtArr[7] || "";
-          const dashJobDesc  = [dashClient, dashJob, dashCode].filter(Boolean).join(" — ");
+          const dashJobDesc  = [dashClient, dashJob, dashCode].filter(Boolean).join(" - ");
 
           const dashOptions = [
             {
               optionId: 1,
-              title: `IGNORE — discrepancy for "${dashJobDesc || "unknown"}" can be disregarded`,
+              title: `IGNORE - discrepancy for "${dashJobDesc || "unknown"}" can be disregarded`,
               matchType: "ignore",
               jobRow: alert.rowNumber,
               jobName: dashJob,
@@ -3972,7 +3972,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               matchAnalysis: {
                 matchConfidence: "Medium",
                 reasonForChoice: `Create a new job row in ${dashTabName} using the CRM data. Review all fields before accepting.`,
-                discrepancies: "New job — confirm all fields before accepting",
+                discrepancies: "New job - confirm all fields before accepting",
               },
               newJobData: {
                 clientName:      dashClient,
@@ -4048,7 +4048,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
         // ── "Inv amt mismatch" handling ────────────────────────────────────
         if (isInvAmtMismatch && !isMissingInvoice) {
-          console.log(`  📊 Invoice amount mismatch — analysing...`);
+          console.log(`  📊 Invoice amount mismatch - analysing...`);
 
           // Step 1: Find the job in Confirmed tab by invoice number
           // Search AQ(42), AX(49), BE(56) for the invoice number
@@ -4079,15 +4079,15 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
 
           if (!matchedJob) {
-            // Invoice not found in Confirmed — pass to Claude with just what we know
-            console.log(`  Invoice #${invoiceNo} not found in Confirmed tab — falling through to Claude`);
+            // Invoice not found in Confirmed - pass to Claude with just what we know
+            console.log(`  Invoice #${invoiceNo} not found in Confirmed tab - falling through to Claude`);
           } else {
             const jobClient     = String(matchedJob[0]  || "").trim();  // A
             const jobName       = String(matchedJob[1]  || "").trim();  // B
             const jobCode       = String(matchedJob[2]  || "").trim();  // C
             const jobRevenue    = String(matchedJob[32] || "").trim();  // AG
-            const jobVAT        = String(matchedJob[34] || "").trim();  // AI — "Yes" or "No"
-            const jobType       = String(matchedJob[35] || "").trim();  // AJ — Project / Retainer
+            const jobVAT        = String(matchedJob[34] || "").trim();  // AI - "Yes" or "No"
+            const jobType       = String(matchedJob[35] || "").trim();  // AJ - Project / Retainer
             const jobStart      = String(matchedJob[37] || "").trim();  // AL
             const jobEnd        = String(matchedJob[38] || "").trim();  // AM
             const jobVATYes     = jobVAT.toLowerCase() === "yes";
@@ -4098,7 +4098,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const slot2 = { ref: String(matchedJob[49]||""), amt: String(matchedJob[48]||""), sent: String(matchedJob[50]||""), status: String(matchedJob[52]||"") };
             const slot3 = { ref: String(matchedJob[56]||""), amt: String(matchedJob[55]||""), sent: String(matchedJob[57]||""), status: String(matchedJob[59]||"") };
 
-            console.log(`  Found invoice in Confirmed at slot ${matchedSlot}: ${jobClient} — ${jobName}, VAT=${jobVAT}, type=${jobType}`);
+            console.log(`  Found invoice in Confirmed at slot ${matchedSlot}: ${jobClient} - ${jobName}, VAT=${jobVAT}, type=${jobType}`);
 
             // Step 2: VAT scenario detection
             const epsilon = 0.01;
@@ -4113,7 +4113,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               const options = [
                 {
                   optionId: 1,
-                  title: `Update job VAT setting to "Yes" — invoice was sent WITH VAT (£${vatIncluded.toFixed(2)})`,
+                  title: `Update job VAT setting to "Yes" - invoice was sent WITH VAT (£${vatIncluded.toFixed(2)})`,
                   matchType: "existing_job",
                   discrepancyType: "inv_vat_mismatch",
                   jobRow: matchedRowNum,
@@ -4132,7 +4132,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 },
                 {
                   optionId: 2,
-                  title: `MANUAL INVESTIGATION — invoice was sent incorrectly and needs re-issuing without VAT`,
+                  title: `MANUAL INVESTIGATION - invoice was sent incorrectly and needs re-issuing without VAT`,
                   matchType: "info",
                   discrepancyType: "inv_vat_mismatch",
                   explanation: `If the invoice was sent in error with VAT and should have been sent without VAT, the invoice needs to be re-issued excluding VAT and the job VAT setting should remain "No".`,
@@ -4153,12 +4153,12 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             // Evidence: VAT = 0 AND gross amount × 1.2 ≈ dashboard total
             // (InvComp calculates dashboard total as slot amount × 1.2 when job VAT = Yes)
             if (vatIncluded === 0 && jobVATYes && Math.abs(grossAmount * 1.2 - dashboardTotal) < epsilon) {
-              console.log(`  VAT scenario B: invoice sent WITHOUT VAT (£${grossAmount}) but job marked YES VAT — dashboard shows £${dashboardTotal} (= £${grossAmount} × 1.2)`);
+              console.log(`  VAT scenario B: invoice sent WITHOUT VAT (£${grossAmount}) but job marked YES VAT - dashboard shows £${dashboardTotal} (= £${grossAmount} × 1.2)`);
               const vatColB = `AI${matchedRowNum}`;
               const options = [
                 {
                   optionId: 1,
-                  title: `Update job VAT setting to "No" — invoice was sent WITHOUT VAT (£${grossAmount.toFixed(2)})`,
+                  title: `Update job VAT setting to "No" - invoice was sent WITHOUT VAT (£${grossAmount.toFixed(2)})`,
                   matchType: "existing_job",
                   discrepancyType: "inv_vat_mismatch",
                   jobRow: matchedRowNum,
@@ -4177,7 +4177,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 },
                 {
                   optionId: 2,
-                  title: `MANUAL INVESTIGATION — invoice was sent incorrectly and needs re-issuing with VAT`,
+                  title: `MANUAL INVESTIGATION - invoice was sent incorrectly and needs re-issuing with VAT`,
                   matchType: "info",
                   discrepancyType: "inv_vat_mismatch",
                   explanation: `If the invoice was sent in error without VAT and should have been sent with VAT, the invoice needs to be re-issued including VAT (£${(grossAmount * 1.2).toFixed(2)} total) and the job VAT setting should remain "Yes".`,
@@ -4194,11 +4194,11 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               vatMismatchOptions = options; vatMismatchNewValue = "No";
             }
 
-            // Step 3: Not a VAT scenario — check for rounding difference first
+            // Step 3: Not a VAT scenario - check for rounding difference first
             const amtDiff = Math.abs(grossAmount - dashboardTotal);
             console.log(`  Amount diff: £${amtDiff.toFixed(2)}, isRetainer: ${isRetainer}`);
 
-            // If difference < £1.00, it's almost certainly a rounding issue — no need for Claude
+            // If difference < £1.00, it's almost certainly a rounding issue - no need for Claude
             if (amtDiff < 1.00 && amtDiff > 0) {
               // Amount to write = total excl VAT (Confirmed tab always stores excl-VAT amounts)
               const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
@@ -4208,7 +4208,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               const currentSlotAmt = matchedSlot === 1 ? slot1.amt : matchedSlot === 2 ? slot2.amt : slot3.amt;
               const options = [{
                 optionId: 1,
-                title: `ROUNDING DIFFERENCE — Correct invoice #${invoiceNo} amount from £${currentSlotAmt}${vatIncluded > 0 ? " +VAT" : ""} to £${correctAmount.toFixed(2)}${vatIncluded > 0 ? " +VAT" : ""}`,
+                title: `ROUNDING DIFFERENCE - Correct invoice #${invoiceNo} amount from £${currentSlotAmt}${vatIncluded > 0 ? " +VAT" : ""} to £${correctAmount.toFixed(2)}${vatIncluded > 0 ? " +VAT" : ""}`,
                 matchType: "existing_job",
                 jobRow: matchedRowNum,
                 jobName,
@@ -4216,12 +4216,12 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                   `write ${correctAmount.toFixed(2)} to ${cellRef}`,
                 ],
               }];
-              console.log(`  ✅ Rounding difference (£${amtDiff.toFixed(2)}) — writing ${correctAmount.toFixed(2)} to ${cellRef}`);
+              console.log(`  ✅ Rounding difference (£${amtDiff.toFixed(2)}) - writing ${correctAmount.toFixed(2)} to ${cellRef}`);
               return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
             }
 
             // Send to Claude with job details and retainer context
-            console.log(`  No VAT scenario, diff £${amtDiff.toFixed(2)} — sending to Claude with job details`);
+            console.log(`  No VAT scenario, diff £${amtDiff.toFixed(2)} - sending to Claude with job details`);
             const slotAmtCol = matchedSlot === 1 ? "AP" : matchedSlot === 2 ? "AW" : "BD";
             const currentSlotAmt = matchedSlot === 1 ? slot1.amt : matchedSlot === 2 ? slot2.amt : slot3.amt;
             const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
@@ -4243,7 +4243,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             })();
 
             // Find parent row for this job (the row with revenue in AG)
-            // The matched row may be a child row — scan upwards to find the parent
+            // The matched row may be a child row - scan upwards to find the parent
             const isRealSlot = (ref) => {
               const r = String(ref || "").trim();
               return r && !isPlaceholderInvoice(r);
@@ -4253,7 +4253,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             let parentRowNum = matchedRowNum; // default: matched row is parent
             let parentRevenue = parseSlotAmt(jobRevenue);
             if (!String(matchedJob[32] || "").trim()) {
-              // Matched row has no revenue — scan upwards for parent
+              // Matched row has no revenue - scan upwards for parent
               for (let ri = matchedRowNum - 2; ri >= 0; ri--) { // ri is 0-indexed in invConfirmedRows
                 const r = invConfirmedRows[ri] || [];
                 const rClient = String(r[0] || "").trim().toLowerCase();
@@ -4336,7 +4336,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             const revenueRatio = parentRevenue > 0 ? (newTotalInvoiced / parentRevenue) * 100 : 0;
             console.log(`  Parent row: ${parentRowNum}, isMultiRowRetainer: ${isMultiRowRetainer}, realInvoices: ${realInvoiceCount}, newTotal: £${newTotalInvoiced.toFixed(2)}, revenue: £${parentRevenue.toFixed(2)}, ratio: ${revenueRatio.toFixed(1)}%`);
 
-            // ── Invoice amount mismatch: fully pre-computed — no Claude needed ──
+            // ── Invoice amount mismatch: fully pre-computed - no Claude needed ──
             // All data required for both options is already calculated above.
             console.log(`  ✅ Generating invAmtMismatch options from pre-computed data (no Claude)`);
             const confidenceFromRatio = (() => {
@@ -4346,16 +4346,16 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               return "Low";
             })();
             const revenueImpactStr = `New total invoiced = £${newTotalInvoiced.toFixed(2)}. Job revenue = £${parentRevenue.toFixed(2)}. ${
-              revenueRatio > 110 ? "Job is over-invoiced — revenue likely needs updating." :
-              revenueRatio >= 90 ? "Total invoiced is close to revenue — revenue adjustment likely correct." :
-              revenueRatio >= 75 ? "Total invoiced is below revenue — further invoices may be expected." :
-              "Total invoiced is well below revenue — revenue adjustment is uncertain."
+              revenueRatio > 110 ? "Job is over-invoiced - revenue likely needs updating." :
+              revenueRatio >= 90 ? "Total invoiced is close to revenue - revenue adjustment likely correct." :
+              revenueRatio >= 75 ? "Total invoiced is below revenue - further invoices may be expected." :
+              "Total invoiced is well below revenue - revenue adjustment is uncertain."
             }`;
 
             let invAmtOptions = [
               {
                 optionId: 1,
-                title: `Update slot amount only — accounting system reflects actual invoice sent`,
+                title: `Update slot amount only - accounting system reflects actual invoice sent`,
                 matchType: "existing_job",
                 jobRow: matchedRowNum,
                 confidence: "High",
@@ -4395,7 +4395,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                   },
             ];
 
-                        // Build slotBreakdown from pre-calculated allJobRows data — injected onto both options
+                        // Build slotBreakdown from pre-calculated allJobRows data - injected onto both options
             // so the frontend can display the full invoice context without relying on Claude to enumerate it.
             const slotBreakdownLines = [];
             for (const { row, rowNum } of allJobRows) {
@@ -4465,10 +4465,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
         // ── Non-standard invoice discrepancy types ─────────────────────────
         if (!isMissingInvoice && activeInvFlags.length > 0) {
-          console.log(`  📊 Non-standard invoice discrepancy: ${activeInvFlags.join(", ")} — returning info message`);
+          console.log(`  📊 Non-standard invoice discrepancy: ${activeInvFlags.join(", ")} - returning info message`);
           const options = [{
             optionId: 1,
-            title: `MANUAL INVESTIGATION REQUIRED — ${activeInvFlags.join(", ")}`,
+            title: `MANUAL INVESTIGATION REQUIRED - ${activeInvFlags.join(", ")}`,
             matchType: "info",
             matchAnalysis: {
               matchConfidence: "N/A",
@@ -4476,7 +4476,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               discrepancies: activeInvFlags.join(", "),
             },
             recommendedActions: [
-              `Invoice #${invoiceNo} — ${invClient}${invJob ? " | " + invJob : ""}`,
+              `Invoice #${invoiceNo} - ${invClient}${invJob ? " | " + invJob : ""}`,
               `Amount: £${grossAmount.toFixed(2)}${vatIncluded > 0 ? ` (incl. £${vatIncluded.toFixed(2)} VAT)` : ""}, Sent: ${invSentDate}, Status: ${invStatus}`,
               `Discrepancy type(s): ${activeInvFlags.join(", ")}`,
               `Please review this invoice directly in InvComp`,
@@ -4485,7 +4485,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
         }
 
-        // ── Missing invoice — existing Claude path ─────────────────────────
+        // ── Missing invoice - existing Claude path ─────────────────────────
         console.log(`  Fetching Confirmed tab from CLIENT sheet ${alert.clientId.substring(0, 16)}...`);
         
         let confirmedData = [];
@@ -4524,10 +4524,10 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         const activeData = confirmedData.slice(0, lastDataRow + 1);
         console.log(`  📊 Using ${activeData.length} non-blank rows for Claude analysis`);
 
-        // Fetch tolerances here — needed by both the pre-check and the prompt builder below
+        // Fetch tolerances here - needed by both the pre-check and the prompt builder below
         const tolerances = await getToleranceValues(sheets, alert.masterSheetId || alert.clientId);
 
-        // Extract invoice details — declared here so they're available to both the
+        // Extract invoice details - declared here so they're available to both the
         // pre-check block and the prompt builder below (avoids temporal dead zone in prod build)
         const invoiceAmount = parseFloat(alert.summary?.amount) || 0;
         const invoiceRef = alert.summary?.invoiceNo || '(unmatched)';
@@ -4542,13 +4542,13 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         const datePaid = alert.summary?.datePaid || '';
 
         // Date tolerance: ±invoiceMonthsTolerance months from invoice sent date.
-        // Same reasoning as invoiceAmtForMatch above — moved here 20 Aug 2026 from
+        // Same reasoning as invoiceAmtForMatch above - moved here 20 Aug 2026 from
         // inside the isMissingInvoice block below, which Tier 1/2 (further down,
         // a SIBLING scope, not a child of that block) also needs this for. The
         // original placement meant every accept-option call touching the
         // "name match" Tier 2 path threw a ReferenceError at runtime (confirmed via
         // Babel's own scope resolution during a full-codebase sweep, not just an
-        // ESLint guess) — a plain syntax check can't catch an undefined-reference
+        // ESLint guess) - a plain syntax check can't catch an undefined-reference
         // error since it's runtime-only, so this had been silently broken since it
         // was first added.
         const invMonthsTol = Number(tolerances.invoiceMonthsTolerance) || 2;
@@ -4590,14 +4590,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         // ── Pre-check: fuzzy client matching + amount/date slot sweep ─────────
         // Two independent matching signals are computed before sending to Claude:
         //
-        // Signal A — Fuzzy client name match: checks whether any Confirmed tab client
+        // Signal A - Fuzzy client name match: checks whether any Confirmed tab client
         //   name is plausibly the same entity as the invoice client name, using:
         //   - noise-word stripping (ltd, limited, plc, inc, llc, the, and, &, group, co)
         //   - normalisation (punctuation, whitespace, case)
         //   - word-overlap: any single meaningful word shared between names
         //   - abbreviation detection: initials of one name spell the other
         //
-        // Signal B — Amount + date sweep of non-real slots (blank ref OR MANUAL-INV):
+        // Signal B - Amount + date sweep of non-real slots (blank ref OR MANUAL-INV):
         //   - Amount tolerance: 5p domestic, 10% foreign (mirrors GAS automation)
         //   - Date tolerance: ±invoiceMonthsTolerance months
         //   - Only considers slots with no real invoice reference (available placeholders)
@@ -4630,7 +4630,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             });
             primaryCurrency = String(keyInfoResp.data.values?.[0]?.[0] || "GBP").trim().toUpperCase();
           } catch (e) {
-            console.log(`  ⚠️ Could not read KeyInfo!B17 — defaulting to GBP`);
+            console.log(`  ⚠️ Could not read KeyInfo!B17 - defaulting to GBP`);
           }
 
           const invoiceCurrency = String(alert.summary?.currency || "GBP").trim().toUpperCase();
@@ -4679,13 +4679,13 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               if (slotAmt === 0) continue;
 
               const amtMatch  = amtToleranceFn(slotAmt);
-              if (!amtMatch) continue; // amount must match — date is supporting evidence only
+              if (!amtMatch) continue; // amount must match - date is supporting evidence only
 
               const dateOk = dateWithinTolerance(slotDate); // true / false / null
               slotMatches.push({
                 rowNum: ri + 1, // 1-indexed sheet row (activeData[0] = header, ri=1 → sheet row 2)
                 client: rowClient, jobName: rowJob, projectCode: rowCode, revenue: rowRevenue,
-                startDate: String(row[37] || "").trim(), // AL — for recency ranking
+                startDate: String(row[37] || "").trim(), // AL - for recency ranking
                 slotNum: sd.slotNum, slotAmt, slotDate, amtMatch, dateMatch: dateOk,
                 amtCol: sd.amtCol, refCol: sd.refCol, sentCol: sd.sentCol,
                 daysCol: sd.daysCol, statusCol: sd.statusCol, isManual,
@@ -4728,7 +4728,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             for (const [, job] of jobManualSlots) {
               const totalManual = job.slots.reduce((s, sl) => s + sl.slotAmt, 0);
               if (amtToleranceFn(totalManual)) {
-                // Total matches — flag slot 1 (first slot) as the target
+                // Total matches - flag slot 1 (first slot) as the target
                 const firstSlot = job.slots.sort((a, b) => a.rowNum - b.rowNum || a.slotNum - b.slotNum)[0];
                 // Only add if not already in slotMatches
                 const alreadyMatched = slotMatches.some(m => m.rowNum === firstSlot.rowNum && m.slotNum === firstSlot.slotNum);
@@ -4737,7 +4737,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                   slotMatches.push({
                     rowNum: firstSlot.rowNum,
                     client: job.client, jobName: job.jobName, projectCode: job.projectCode, revenue: job.revenue,
-                    startDate: job.startDate, // AL — for recency ranking
+                    startDate: job.startDate, // AL - for recency ranking
                     slotNum: firstSlot.slotNum, slotAmt: totalManual, slotDate: firstSlot.slotDate,
                     amtMatch: true, dateMatch: dateOk,
                     amtCol: firstSlot.amtCol, refCol: firstSlot.refCol, sentCol: firstSlot.sentCol,
@@ -4745,7 +4745,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                     isJobTotalMatch: true, // flag so Claude knows this is a total-match scenario
                     manualSlotsToClear: job.slots.length, // how many MANUAL-INV slots exist
                   });
-                  console.log(`  Job-level MANUAL-INV total match: ${job.client} | ${job.jobName} — total £${totalManual} matches invoice £${invoiceAmtForMatch}`);
+                  console.log(`  Job-level MANUAL-INV total match: ${job.client} | ${job.jobName} - total £${totalManual} matches invoice £${invoiceAmtForMatch}`);
                 }
               }
             }
@@ -4753,15 +4753,15 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
           const hasSlotMatches = slotMatches.length > 0;
 
-          // ── Neither signal found → still send to Claude — it may find non-obvious matches
+          // ── Neither signal found → still send to Claude - it may find non-obvious matches
           // (e.g. different client name spelling, amount = fraction of job revenue, etc.)
           if (!clientFound && !hasSlotMatches) {
-            console.log(`  No client match and no slot match — sending to Claude for non-obvious match detection`);
+            console.log(`  No client match and no slot match - sending to Claude for non-obvious match detection`);
           }
 
           // ── Build slot match context block for Claude (if Signal B found) ──
           // Group matches by job (client + jobName) so Claude sees the COMPLETE picture
-          // for each candidate job — all matching slots AND all other slots on the same job.
+          // for each candidate job - all matching slots AND all other slots on the same job.
           // This prevents Claude treating parent and child rows as separate jobs.
           let slotMatchContext = "";
           if (hasSlotMatches) {
@@ -4847,15 +4847,15 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                   if (isEmpty) {
                     slotDesc = "(empty)";
                   } else if (isReal) {
-                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [REAL — do not overwrite]`;
+                    slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [REAL - do not overwrite]`;
                   } else if (isManual) {
                     const manualAmtMatch = amt && Math.abs(amt - invoiceAmount) < 0.01;
                     // Check if this is part of a job-total match (invoice covers full job revenue via multiple placeholder slots)
                     const isJobTotalMatch = group.matchingSlots.some(m => m.isJobTotalMatch && m.rowNum === sheetRow && m.slotNum === sd.slotNum);
-                    const jobTotalNote = isJobTotalMatch ? ` ← INVOICE COVERS FULL JOB REVENUE — PLACE HERE AND CLEAR ALL OTHER PLACEHOLDER SLOTS` : (manualAmtMatch ? " ← AMOUNT MATCHES THIS INVOICE" : "");
+                    const jobTotalNote = isJobTotalMatch ? ` ← INVOICE COVERS FULL JOB REVENUE - PLACE HERE AND CLEAR ALL OTHER PLACEHOLDER SLOTS` : (manualAmtMatch ? " ← AMOUNT MATCHES THIS INVOICE" : "");
                     slotDesc = `${ref} £${amt?.toFixed(2) || "?"} sent:${slotDate || "?"} [placeholder${jobTotalNote}]`;
                   } else {
-                    // Blank-ref placeholder — show explicit date comparison vs invoice sent date
+                    // Blank-ref placeholder - show explicit date comparison vs invoice sent date
                     const dateResult = dateWithinTolerance(slotDate);
                     let dateTag;
                     if (!slotDate) {
@@ -4885,34 +4885,34 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
               jobContextLines.push(
                 `JOB: ${group.client} | ${group.jobName}${group.projectCode ? ` (${group.projectCode})` : ""} | Revenue: ${parentRevenue}${parentType ? ` | Type: ${parentType}` : ""}${parentStart ? ` | ${parentStart}→${parentEnd}` : ""}
-  Dashboard client name: "${group.client}" | Invoice client name: "${alertClientStr}"${group.client.toLowerCase() !== alertClientStr.toLowerCase() ? ` ← NAMES DIFFER — if you recommend this job, also write "${alertClientStr}" to col A of ALL rows for this job (rows: ${allJobRows.map(r => r.sheetRow).join(", ")})` : " ← names match"}
-  ${matchCount} slot(s) with amount matching invoice £${invoiceAmtForMatch.toFixed(2)} (${toleranceNote}) — date ${bestDateMatch ? "✓ at least one slot within tolerance" : "✗ no slot within date tolerance"}
-  ALL SLOTS FOR THIS JOB (${allJobRows.length} row${allJobRows.length > 1 ? "s" : ""} = ${allJobRows.length * 3} slots total — parent + child rows combined):
+  Dashboard client name: "${group.client}" | Invoice client name: "${alertClientStr}"${group.client.toLowerCase() !== alertClientStr.toLowerCase() ? ` ← NAMES DIFFER - if you recommend this job, also write "${alertClientStr}" to col A of ALL rows for this job (rows: ${allJobRows.map(r => r.sheetRow).join(", ")})` : " ← names match"}
+  ${matchCount} slot(s) with amount matching invoice £${invoiceAmtForMatch.toFixed(2)} (${toleranceNote}) - date ${bestDateMatch ? "✓ at least one slot within tolerance" : "✗ no slot within date tolerance"}
+  ALL SLOTS FOR THIS JOB (${allJobRows.length} row${allJobRows.length > 1 ? "s" : ""} = ${allJobRows.length * 3} slots total - parent + child rows combined):
 ${allSlotLines.join("\n")}`
               );
             }
 
             const toleranceHeader = isForeignCurrency
-              ? `(Foreign currency — ${invoiceCurrency} vs primary ${primaryCurrency} — amount tolerance 10%)`
-              : `(Domestic currency — amount tolerance 5p, date tolerance ±${invMonthsTol} months)`;
+              ? `(Foreign currency - ${invoiceCurrency} vs primary ${primaryCurrency} - amount tolerance 10%)`
+              : `(Domestic currency - amount tolerance 5p, date tolerance ±${invMonthsTol} months)`;
 
             slotMatchContext = `
-PLACEHOLDER SLOT MATCHES — PRE-COMPUTED BY BACKEND ${toleranceHeader}:
+PLACEHOLDER SLOT MATCHES - PRE-COMPUTED BY BACKEND ${toleranceHeader}:
 The backend found non-real invoice slots whose amounts match this invoice within tolerance.
-CRITICAL: Parent and child rows below belong to the SAME JOB — treat them as a single unit with up to ${3 * (slotMatches[0] ? (jobGroups.get(`${slotMatches[0].client}||${slotMatches[0].jobName}`)?.matchingSlots?.length || 1) : 1)} slots total.
+CRITICAL: Parent and child rows below belong to the SAME JOB - treat them as a single unit with up to ${3 * (slotMatches[0] ? (jobGroups.get(`${slotMatches[0].client}||${slotMatches[0].jobName}`)?.matchingSlots?.length || 1) : 1)} slots total.
 Invoice amount to place: £${invoiceAmtForMatch.toFixed(2)}, sent date: ${sentDate || "unknown"}
 
 ${jobContextLines.join("\n\n")}
 
 INSTRUCTIONS FOR USING THESE MATCHES:
 - Slots marked "← AMOUNT MATCHES THIS INVOICE" are the backend-confirmed candidates
-- Slots marked "← INVOICE COVERS FULL JOB REVENUE — PLACE HERE AND CLEAR ALL OTHER PLACEHOLDER SLOTS" mean the invoice amount equals the total of all placeholders on this job. In this case: place the invoice in that slot (slot 1), write all 5 invoice fields to it, and clear ALL other placeholder slots on this job (write blank to all 5 fields of each remaining placeholder slot).
+- Slots marked "← INVOICE COVERS FULL JOB REVENUE - PLACE HERE AND CLEAR ALL OTHER PLACEHOLDER SLOTS" mean the invoice amount equals the total of all placeholders on this job. In this case: place the invoice in that slot (slot 1), write all 5 invoice fields to it, and clear ALL other placeholder slots on this job (write blank to all 5 fields of each remaining placeholder slot).
 - A slot with both amount match AND date match (✓) is the most likely target
-- A slot with amount match but date mismatch (✗) is still a valid option, with lower confidence — state the actual date difference
-- NEVER describe a date-tolerance match as "exact" — state the actual difference in months
+- A slot with amount match but date mismatch (✗) is still a valid option, with lower confidence - state the actual date difference
+- NEVER describe a date-tolerance match as "exact" - state the actual difference in months
 - The job's total revenue is split across ALL slots (parent + child rows combined)
 - When recommending a slot, use the actual sheet row number shown (e.g. Row 263 or Row 264)
-- CLIENT NAME MISMATCH: If the dashboard client name and invoice client name differ (marked "← NAMES DIFFER"), you MUST include writes of the invoice client name to column A of ALL rows for that job as part of recommendedActions — the accounting system name is authoritative`;
+- CLIENT NAME MISMATCH: If the dashboard client name and invoice client name differ (marked "← NAMES DIFFER"), you MUST include writes of the invoice client name to column A of ALL rows for that job as part of recommendedActions - the accounting system name is authoritative`;
           }
 
           // Inject both signals into the prompt via a pre-analysis block that Claude receives
@@ -4929,7 +4929,7 @@ INSTRUCTIONS FOR USING THESE MATCHES:
           };
         }
 
-        // ── TIER 1: Single exact slot match — generate option without Claude ─
+        // ── TIER 1: Single exact slot match - generate option without Claude ─
         // Conditions: exactly one slot match, amount exact (within 5p), date within
         // tolerance, not a job-total MANUAL-INV scenario (those need clearing logic).
         // Client name must match (clientFound). If any condition fails → Tier 2 (Claude).
@@ -4953,13 +4953,13 @@ INSTRUCTIONS FOR USING THESE MATCHES:
           const rowNum = m.rowNum;
           const slotNum = m.slotNum;
           const isManual = m.isManual;
-          const slotLabel = `${m.client} — ${m.jobName} (Row ${rowNum} Slot ${slotNum})`;
+          const slotLabel = `${m.client} - ${m.jobName} (Row ${rowNum} Slot ${slotNum})`;
           const slotDesc = isManual ? "replacing placeholder" : "replacing the blank placeholder";
-          console.log(`  ✅ Tier 1 match — generating option without Claude: ${slotLabel}`);
+          console.log(`  ✅ Tier 1 match - generating option without Claude: ${slotLabel}`);
 
           const tier1Option = {
             optionId: 1,
-            title: `Place in ${m.client} — ${m.jobName} slot ${slotNum} (Row ${rowNum}) — exact amount match, ${isManual ? "replacing placeholder" : "slot date match"}`,
+            title: `Place in ${m.client} - ${m.jobName} slot ${slotNum} (Row ${rowNum}) - exact amount match, ${isManual ? "replacing placeholder" : "slot date match"}`,
             matchType: "existing_job",
             jobRow: rowNum,
             jobName: m.jobName,
@@ -4969,7 +4969,7 @@ INSTRUCTIONS FOR USING THESE MATCHES:
             targetSlotNum: slotNum,
             matchAnalysis: {
               matchConfidence: "High",
-              reasonForChoice: `Amount exact match (£${invoiceAmtForMatch.toFixed(2)}). Client name match (${m.client}). Invoice sent ${sentDate} vs slot date ${m.slotDate} — within tolerance.`,
+              reasonForChoice: `Amount exact match (£${invoiceAmtForMatch.toFixed(2)}). Client name match (${m.client}). Invoice sent ${sentDate} vs slot date ${m.slotDate} - within tolerance.`,
               discrepancies: "None",
             },
             recommendedActions: [
@@ -4991,7 +4991,7 @@ INSTRUCTIONS FOR USING THESE MATCHES:
             sharedData
           );
 
-          const tier1Summary = `Invoice ${invoiceRef} ${m.client} — ${m.jobName}`;
+          const tier1Summary = `Invoice ${invoiceRef} ${m.client} - ${m.jobName}`;
           await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
           const memRowsTier1 = await readAlertMemory(sheets, automationCommanderSheetId);
           const memRowTier1 = findMemoryRow(memRowsTier1, fingerprintHash);
@@ -5006,7 +5006,7 @@ INSTRUCTIONS FOR USING THESE MATCHES:
         // ── TIER 2: System-generated options (ambiguous, no match, or foreign currency) ─
         // If forceAI is set, send the full Confirmed tab to Claude as before.
         if (req.body.forceAI === true) {
-          console.log("  🤖 forceAI=true — using Claude for invoice options");
+          console.log("  🤖 forceAI=true - using Claude for invoice options");
           // Build compact confirmed tab summary for Claude
           const aiInvRows = activeData.slice(0, Math.min(activeData.length, 200)).map((row, ridx) => {
             const inv1 = `${row[42]||"(empty)"} £${row[41]||"?"} sent:${row[43]||"?"}`;
@@ -5031,7 +5031,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             aiInvOptions = JSON.parse(arrInv);
             if (!Array.isArray(aiInvOptions)) aiInvOptions = [aiInvOptions];
           } catch(e) { aiInvOptions = [{ optionId:1, title:"AI response could not be parsed", matchType:"info", recommendedActions:[] }]; }
-          const aiInvSummary = `Invoice ${invoiceRef} ${invClient} — ${invJob}`;
+          const aiInvSummary = `Invoice ${invoiceRef} ${invClient} - ${invJob}`;
           if (memoryRow) { await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(aiInvOptions) }); }
           else { await appendAlertMemoryRow(sheets, automationCommanderSheetId, { fingerprintHash, alertType:"invoice", clientName: alert.clientName||"", alertSummary: aiInvSummary, cachedOptionsJSON: JSON.stringify(aiInvOptions), status:"cached" }); }
           return res.status(200).json({ success: true, options: aiInvOptions, alertId: alert.rowNumber, previousIgnoreReason });
@@ -5107,8 +5107,8 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           const confidence = best.dateMatch ? "High" : "Medium";
           const slotDesc   = best.isManual ? "replacing placeholder" : "replacing blank placeholder";
           const dateNote   = best.dateMatch
-            ? `Invoice sent ${sentDate}, slot date ${best.slotDate} — within tolerance`
-            : `Invoice sent ${sentDate}, slot date ${best.slotDate} — outside date tolerance`;
+            ? `Invoice sent ${sentDate}, slot date ${best.slotDate} - within tolerance`
+            : `Invoice sent ${sentDate}, slot date ${best.slotDate} - outside date tolerance`;
 
           const slotLines = [`Row ${best.rowNum} Slot ${best.slotNum}: ${invoiceRef} £${invoiceAmtForMatch.toFixed(2)} ← this invoice`];
           const revLine = revNum > 0
@@ -5117,7 +5117,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
 
           tier2Options.push({
             optionId: tier2Options.length + 1,
-            title: `Place in ${best.client} — ${best.jobName} slot ${best.slotNum} (Row ${best.rowNum}) — amount match, ${slotDesc}`,
+            title: `Place in ${best.client} - ${best.jobName} slot ${best.slotNum} (Row ${best.rowNum}) - amount match, ${slotDesc}`,
             matchType: "existing_job",
             jobRow: best.rowNum,
             jobName: best.jobName,
@@ -5126,12 +5126,12 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             targetSlotType: "invoice",
             targetSlotNum: best.slotNum,
             matchingDetails: {
-              // revenue/startDate here must be the JOB's own true values — the
+              // revenue/startDate here must be the JOB's own true values - the
               // row-re-verification check before writing (a few hundred lines
               // down) reads this field expecting the target row's expected
               // state, to confirm cell references haven't gone stale. This
               // previously held the INVOICE's own amount/sent-date instead
-              // (invoiceAmtForMatch/sentDate) — which never matches the job
+              // (invoiceAmtForMatch/sentDate) - which never matches the job
               // row's actual revenue/start date, so verification failed on
               // every single write through this path. Fixed 20 Aug 2026,
               // confirmed via a live example (Orinoco Communications →
@@ -5139,7 +5139,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               // job's real revenue (already used correctly elsewhere in this
               // same option, in matchedJobDetails below); the job's true
               // start date isn't reliably available here, so it's left empty
-              // rather than populated with another wrong value — the
+              // rather than populated with another wrong value - the
               // verification guard already skips its date check cleanly when
               // the expected value is empty.
               unmatchedJobSummary: {
@@ -5162,15 +5162,15 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             },
             matchAnalysis: {
               matchConfidence: confidence,
-              amountMatch: `YES — invoice £${invoiceAmtForMatch.toFixed(2)} matches slot £${best.slotAmt.toFixed(2)} (within tolerance)`,
-              dateRangeMatch: best.dateMatch ? "YES" : "PARTIAL — outside date tolerance",
+              amountMatch: `YES - invoice £${invoiceAmtForMatch.toFixed(2)} matches slot £${best.slotAmt.toFixed(2)} (within tolerance)`,
+              dateRangeMatch: best.dateMatch ? "YES" : "PARTIAL - outside date tolerance",
               projectCodeMatch: "N/A",
               reasonForChoice: `Amount match on ${best.jobName} Row ${best.rowNum} Slot ${best.slotNum}. ${dateNote}.`,
               discrepancies: best.dateMatch ? "None" : `Date outside tolerance: ${dateNote}`,
-              whyItDidntAutoMatch: "Multiple slot matches or foreign currency — system presented all options",
+              whyItDidntAutoMatch: "Multiple slot matches or foreign currency - system presented all options",
             },
             recommendedActions: [
-              `Place invoice ${invoiceRef} (£${invoiceAmtForMatch.toFixed(2)}) in ${best.client} — ${best.jobName} slot ${best.slotNum}, ${slotDesc}`,
+              `Place invoice ${invoiceRef} (£${invoiceAmtForMatch.toFixed(2)}) in ${best.client} - ${best.jobName} slot ${best.slotNum}, ${slotDesc}`,
               [`write ${invoiceAmtForMatch.toFixed(2)} to ${best.amtCol}${best.rowNum}`,
                `write ${invoiceRef} to ${best.refCol}${best.rowNum}`,
                `write ${sentDate||""} to ${best.sentCol}${best.rowNum}`,
@@ -5187,9 +5187,9 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         }
 
         // ── Signal B: Job-name fuzzy matched slots (first non-real slot only) ──
-        // Requires a client name match (exact or close overlap) — job name alone is not
+        // Requires a client name match (exact or close overlap) - job name alone is not
         // sufficient, since job names can coincidentally share words across clients.
-        // Only the FIRST available placeholder/MANUAL-INV slot per job is offered — if a
+        // Only the FIRST available placeholder/MANUAL-INV slot per job is offered - if a
         // job already has later slots filled behind an earlier gap, presenting every
         // remaining slot as a separate option is misleading (the gap should be filled
         // in order).
@@ -5204,7 +5204,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
             const rcWords = normInvWords(rc);
             const rjWords = normInvWords(rj);
             const clientOverlap = invClientWords.some(w => rcWords.includes(w)) || rcWords.some(w => invClientWords.includes(w));
-            if (!clientOverlap) continue; // client match required — job name alone is not enough
+            if (!clientOverlap) continue; // client match required - job name alone is not enough
 
             // Find only the FIRST non-real slot on this row (in slot-number order)
             let sd = null, ref = "", rawAmt = "", isManual = false;
@@ -5250,19 +5250,19 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
               const amtNote   = slotAmt > 0
                 ? (Math.abs(invoiceAmtForMatch - slotAmt) < 0.01
                   ? "exact amount match"
-                  : `slot is £${slotAmt.toFixed(2)}, invoice is £${invoiceAmtForMatch.toFixed(2)} — diff £${Math.abs(amtDiff||0).toFixed(2)}`)
+                  : `slot is £${slotAmt.toFixed(2)}, invoice is £${invoiceAmtForMatch.toFixed(2)} - diff £${Math.abs(amtDiff||0).toFixed(2)}`)
                 : "slot amount unknown";
               const overUnder = bRevNum > 0 ? (bNewTotal > bRevNum ? ` (over budget by £${(bNewTotal-bRevNum).toFixed(2)})` : ` (£${(bRevNum-bNewTotal).toFixed(2)} remaining)`) : "";
               const slotLabel = isManual ? "placeholder" : "blank placeholder";
               // This path had slotDate available but never actually checked
-              // it against the invoice's sent date — dateRangeMatch was
+              // it against the invoice's sent date - dateRangeMatch was
               // hardcoded to "UNKNOWN"/"N/A" regardless of actual
               // proximity. Fixed 20 Aug 2026 alongside the ranking fix below.
               const bDateMatch = dateWithinTolerance(slotDate);
 
               tier2Options.push({
                 optionId: tier2Options.length + 1,
-                title: `Place in ${rc} — ${rj||rc} slot ${sd.slotNum} (Row ${ri+1}) — name match, ${slotLabel}, ${amtNote}`,
+                title: `Place in ${rc} - ${rj||rc} slot ${sd.slotNum} (Row ${ri+1}) - name match, ${slotLabel}, ${amtNote}`,
                 matchType: "existing_job",
                 jobRow: ri + 1,
                 jobName: rj || rc,
@@ -5272,7 +5272,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 targetSlotNum: sd.slotNum,
                 matchingDetails: {
                   // Same fix as the amount-match Tier 2 path above (20 Aug
-                  // 2026) — unmatchedJobSummary must hold the job's own true
+                  // 2026) - unmatchedJobSummary must hold the job's own true
                   // revenue/start date for row-verification to work, not the
                   // invoice's. bStartDate is available here (read from the
                   // sheet just above), so it's populated correctly rather
@@ -5287,15 +5287,15 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
                 },
                 matchAnalysis: {
                   matchConfidence: bDateMatch ? "Medium" : "Low",
-                  amountMatch: slotAmt > 0 ? (Math.abs(invoiceAmtForMatch-slotAmt)<0.01 ? "YES" : `PARTIAL — ${amtNote}`) : "UNKNOWN",
-                  dateRangeMatch: bDateMatch === null ? (slotDate ? "UNKNOWN" : "N/A") : (bDateMatch ? "YES" : "PARTIAL — outside date tolerance"),
+                  amountMatch: slotAmt > 0 ? (Math.abs(invoiceAmtForMatch-slotAmt)<0.01 ? "YES" : `PARTIAL - ${amtNote}`) : "UNKNOWN",
+                  dateRangeMatch: bDateMatch === null ? (slotDate ? "UNKNOWN" : "N/A") : (bDateMatch ? "YES" : "PARTIAL - outside date tolerance"),
                   projectCodeMatch: "N/A",
                   reasonForChoice: `Job/client name has word overlap with invoice. ${amtNote}. Current real invoiced: £${bRealTotal.toFixed(2)}, new total would be £${bNewTotal.toFixed(2)}${overUnder}.`,
                   discrepancies: amtDiff && Math.abs(amtDiff) > 0.01 ? `Amount mismatch: slot £${slotAmt.toFixed(2)} vs invoice £${invoiceAmtForMatch.toFixed(2)}` : "None",
-                  whyItDidntAutoMatch: "Amount does not match within tolerance — presented as lower-confidence option",
+                  whyItDidntAutoMatch: "Amount does not match within tolerance - presented as lower-confidence option",
                 },
                 recommendedActions: [
-                  `Place invoice ${invoiceRef} (£${invoiceAmtForMatch.toFixed(2)}) in ${rc} — ${rj} slot ${sd.slotNum} (Row ${ri+1}), ${slotLabel}`,
+                  `Place invoice ${invoiceRef} (£${invoiceAmtForMatch.toFixed(2)}) in ${rc} - ${rj} slot ${sd.slotNum} (Row ${ri+1}), ${slotLabel}`,
                   [`write ${invoiceAmtForMatch.toFixed(2)} to ${sd.amtCol}${ri+1}`,
                    `write ${invoiceRef} to ${sd.refCol}${ri+1}`,
                    `write ${sentDate||""} to ${sd.sentCol}${ri+1}`,
@@ -5331,29 +5331,29 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           return new Date(yr, mIdx, parseInt(m[1])).getTime();
         };
         tier2Options.sort((a, b) => {
-          // 1. Budget fit — options that don't exceed job revenue come first
+          // 1. Budget fit - options that don't exceed job revenue come first
           if (a._rankBudgetFits !== b._rankBudgetFits) return a._rankBudgetFits ? -1 : 1;
           // 2. Exact client name match comes first
           if (a._rankExactClient !== b._rankExactClient) return a._rankExactClient ? -1 : 1;
           // 3. Partial client name match (word overlap, e.g. "Oxford" in
-          // both) comes next — added 20 Aug 2026, prompted by Paul asking
+          // both) comes next - added 20 Aug 2026, prompted by Paul asking
           // whether this was considered at all (it wasn't). Uses the shared
           // module-level fuzzyClientMatch_ (also used to decide
-          // clientFound above) rather than a second, separate definition —
+          // clientFound above) rather than a second, separate definition -
           // originally a local reuse here, but that turned out to be
           // unreachable from this scope; see fuzzyClientMatch_'s own
           // comment. A completely unrelated client is a stronger
           // disqualifier than a date mismatch, so this ranks above
-          // date-match below — mirrors the equivalent fix just made to the
+          // date-match below - mirrors the equivalent fix just made to the
           // expense-matching side's clientOverlap, which was being computed
           // but never actually used in its own ranking either.
           if (a._rankPartialClient !== b._rankPartialClient) return a._rankPartialClient ? -1 : 1;
           // 4. Invoice sent date within tolerance of the slot's expected
-          // date comes first — added 20 Aug 2026, confirmed via a live
+          // date comes first - added 20 Aug 2026, confirmed via a live
           // example (Orinoco Communications) where an option with the
           // invoice date 4 months from the slot's expected date outranked
           // one only 5 days off, because date proximity was never
-          // considered here at all — only the unrelated signal of which
+          // considered here at all - only the unrelated signal of which
           // JOB itself started more recently (step 5 below). This is a
           // direct, strong signal of whether the invoice actually belongs
           // to this slot; job recency is a much weaker, indirect one and
@@ -5371,7 +5371,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         // ── Fallback: Manual investigation ────────────────────────────────────
         tier2Options.push({
           optionId: tier2Options.length + 1,
-          title: "MANUAL INVESTIGATION REQUIRED — no confident automatic match found",
+          title: "MANUAL INVESTIGATION REQUIRED - no confident automatic match found",
           matchType: "info",
           matchAnalysis: {
             matchConfidence: "N/A",
@@ -5394,7 +5394,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
         });
         console.log(`  ✅ System-generated ${options.length} invoice options`);
 
-        // Attach jobRowsData for spreadsheet-style display — cache by row+slot since
+        // Attach jobRowsData for spreadsheet-style display - cache by row+slot since
         // different options can target the same row with different slots highlighted
         const invJobRowCache = new Map();
         for (const opt of options) {
@@ -5409,7 +5409,7 @@ Return a JSON array of options. Each option: optionId, title, matchType (existin
           opt.jobRowsData = invJobRowCache.get(cacheKey);
         }
 
-        const invSummary = `Invoice ${invoiceRef} ${invClient} — ${invJob}`;
+        const invSummary = `Invoice ${invoiceRef} ${invClient} - ${invJob}`;
         if (memoryRow) {
           await updateAlertMemoryRow(sheets, automationCommanderSheetId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: JSON.stringify(options) });
         } else {
@@ -5449,23 +5449,23 @@ export async function handleAcceptOption(req, res, sheets) {
         
         const sheets = await getSheetsClient();
 
-        // ── IGNORE — mark alert as ignored in AlertMemory ────────────────────
+        // ── IGNORE - mark alert as ignored in AlertMemory ────────────────────
         if (option.matchType === "ignore") {
-          console.log(`  → Ignoring alert (CRM not_found — job is legitimate)`);
+          console.log(`  → Ignoring alert (CRM not_found - job is legitimate)`);
           await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
           const memRows = await readAlertMemory(sheets, automationCommanderSheetId);
           const fp = alert.fingerprintHash || buildAlertFingerprint(alert);
           const mr = findMemoryRow(memRows, fp);
-          const alertSummary = `CRM ${alert.alertType} ${alert.clientName} — ${option.jobName || ""}`.trim();
+          const alertSummary = `CRM ${alert.alertType} ${alert.clientName} - ${option.jobName || ""}`.trim();
           const dataSnapshot = JSON.stringify({ alertType: alert.type || alert.flagType || "", flagType: alert.flagType || "", masterSheetId: alert.masterSheetId || "" });
           if (mr) {
-            await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "ignored", ignoreReason: "Accepted IGNORE option — job is legitimate", dataSnapshot });
+            await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr.rowIndex, { ...mr, status: "ignored", ignoreReason: "Accepted IGNORE option - job is legitimate", dataSnapshot });
           } else {
             await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
               fingerprintHash: fp, alertType: alert.type || alert.flagType || "crm",
               clientName: alert.clientName || "", alertSummary,
               cachedOptionsJSON: "", status: "ignored",
-              ignoreReason: "Accepted IGNORE option — job is legitimate", dataSnapshot,
+              ignoreReason: "Accepted IGNORE option - job is legitimate", dataSnapshot,
             });
           }
           await sheets.spreadsheets.values.append({
@@ -5476,7 +5476,7 @@ export async function handleAcceptOption(req, res, sheets) {
           return res.status(200).json({ success: true, message: "Alert marked as ignored", cellsWritten: 0 });
         }
 
-        // ── DELETE — blank all cells for the job in Pipeline/Confirmed tab ──
+        // ── DELETE - blank all cells for the job in Pipeline/Confirmed tab ──
         if (option.matchType === "delete") {
           const tabName = (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr") ? "Pipeline" : "Confirmed";
           const jobRowNum = option.jobRow;
@@ -5526,7 +5526,7 @@ export async function handleAcceptOption(req, res, sheets) {
           const memRows2 = await readAlertMemory(sheets, automationCommanderSheetId);
           const fp2 = alert.fingerprintHash || buildAlertFingerprint(alert);
           const mr2 = findMemoryRow(memRows2, fp2);
-          const summary2 = `CRM ${alert.alertType} ${alert.clientName} — ${option.jobName || ""}`.trim();
+          const summary2 = `CRM ${alert.alertType} ${alert.clientName} - ${option.jobName || ""}`.trim();
           if (mr2) {
             await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr2.rowIndex, { ...mr2, status: "accepted" });
           } else {
@@ -5644,7 +5644,7 @@ export async function handleAcceptOption(req, res, sheets) {
           const createCellUpdates = [];
 
           if (option.newJobData && typeof option.newJobData === "object") {
-            // Primary path: Claude returned structured newJobData — map fields to columns
+            // Primary path: Claude returned structured newJobData - map fields to columns
             const d = option.newJobData;
             const strVal = (v) => String(v ?? "").trim();
             const numVal = (v) => String(v ?? "").replace(/[£,]/g, "").trim();
@@ -5744,7 +5744,7 @@ export async function handleAcceptOption(req, res, sheets) {
           console.log(`  ✅ Created new job at row ${newRow} with ${createCellUpdates.length} fields`);
 
           // Log to TriageLog
-          // Log to TriageLog and update AlertMemory — failures here don't affect the user
+          // Log to TriageLog and update AlertMemory - failures here don't affect the user
           try {
             const timestamp = new Date().toISOString();
             await sheets.spreadsheets.values.append({
@@ -5796,14 +5796,14 @@ export async function handleAcceptOption(req, res, sheets) {
                 let value = match[1].trim();
                 const cell = match[2];
                 // Reject malformed captures where the value itself contains a cell reference
-                // e.g. "to CI51, write Received" — this means the regex caught too much
+                // e.g. "to CI51, write Received" - this means the regex caught too much
                 if (/[A-Z]{1,3}\d+/.test(value)) {
-                  console.log(`  ⚠ Skipping malformed write action — value "${value}" contains cell reference`);
+                  console.log(`  ⚠ Skipping malformed write action - value "${value}" contains cell reference`);
                   continue;
                 }
                 // Strip surrounding quotes if Claude wrapped the value in them
                 value = value.replace(/^["']|["']$/g, '').trim();
-                // Allow empty string writes — these are intentional slot clears (e.g. clearing a MANUAL-INV placeholder)
+                // Allow empty string writes - these are intentional slot clears (e.g. clearing a MANUAL-INV placeholder)
                 if (cell && value !== undefined) cellUpdates.push({ cell, value });
               }
             }
@@ -5840,7 +5840,7 @@ export async function handleAcceptOption(req, res, sheets) {
               const expectedClient  = (option.matchingDetails?.unmatchedJobSummary?.clientName || alert.clientName || "").trim().toLowerCase();
 
               if (expectedJobName) {
-                // Re-read the Confirmed/Pipeline tab fresh — cols A:AM covers client, job, revenue (AG), start date (AL)
+                // Re-read the Confirmed/Pipeline tab fresh - cols A:AM covers client, job, revenue (AG), start date (AL)
                 const verifyResp = await sheets.spreadsheets.values.get({
                   spreadsheetId: alert.clientId,
                   range: `${verifyTab}!A1:AM5000`,
@@ -5869,7 +5869,7 @@ export async function handleAcceptOption(req, res, sheets) {
                 };
 
                 if (!jobMatches(currentRow)) {
-                  // Row has shifted — find the job by name + revenue + start date
+                  // Row has shifted - find the job by name + revenue + start date
                   console.log(`  ⚠️ Job not at expected row ${expectedRow}.`);
                   console.log(`  Expected: job="${expectedJobName}" revenue="${expectedRevenue}" start="${expectedStart}"`);
                   console.log(`  Found at row ${expectedRow}: job="${String(currentRow[1]||"").trim()}" revenue="${String(currentRow[32]||"").trim()}" start="${String(currentRow[37]||"").trim()}"`);
@@ -5915,7 +5915,7 @@ export async function handleAcceptOption(req, res, sheets) {
         if (cellUpdates.length > 0) {
 
           // Sanitise values before writing:
-          // 1. Strip surrounding quotes — Claude sometimes writes "" for empty, which would
+          // 1. Strip surrounding quotes - Claude sometimes writes "" for empty, which would
           //    appear as literal quote characters in the sheet rather than a blank cell.
           // 2. Reformat JS date strings (e.g. "Mon Mar 23 2026 00:00:00 GMT+0000") to "23-Mar-26"
           const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -6096,7 +6096,7 @@ export async function handleAcceptOption(req, res, sheets) {
 
 export async function handleDeleteJob(req, res, sheets) {
   // Blank out all cells for a job (parent + child rows) in the Confirmed or Pipeline tab.
-        // NEVER deletes rows — only clears cell content.
+        // NEVER deletes rows - only clears cell content.
         // Child rows: same client (col A) + same job name (col B) + no revenue (AG=32) + no direct costs (AH=33) + no start date (AL=37)
         // Blanked columns: A:G (0-6), AG:AM (32-38), AP:BH (41-59), BX:CR (75-94)
         const { alert, option, automationCommanderSheetId } = req.body;
@@ -6113,10 +6113,10 @@ export async function handleDeleteJob(req, res, sheets) {
   
           if (!clientSheetId) {
             console.error("  ❌ clientSheetId missing from alert");
-            return res.status(400).json({ success: false, error: "Cannot delete: clientSheetId missing from alert — please re-analyse this alert and try again." });
+            return res.status(400).json({ success: false, error: "Cannot delete: clientSheetId missing from alert - please re-analyse this alert and try again." });
           }
   
-          // Only read cols A:B (client, job) and AG (revenue — to identify parent vs child)
+          // Only read cols A:B (client, job) and AG (revenue - to identify parent vs child)
           // This is much faster than reading A1:CR2000
           const tabResp = await sheets.spreadsheets.values.get({
             spreadsheetId: clientSheetId,
@@ -6130,7 +6130,7 @@ export async function handleDeleteJob(req, res, sheets) {
           const targetJob = (option.jobName || "").trim().toLowerCase();
           const targetCode = (option.matchingDetails?.unmatchedJobSummary?.projectCode || "").trim().toLowerCase();
   
-          // Pipeline tab: client name only appears on parent rows — propagate to child rows
+          // Pipeline tab: client name only appears on parent rows - propagate to child rows
           let parentRowIdx = -1;
           let lastSeenClient = "";
           for (let i = 1; i < tabRows.length; i++) {
@@ -6153,7 +6153,7 @@ export async function handleDeleteJob(req, res, sheets) {
             const sample = tabRows.slice(1,4).map(r => `"${r[0]||""}/${r[1]||""}"`).join(", ");
             return res.status(404).json({
               success: false,
-              error: `Job "${option.jobName}" not found in ${tabName} tab — client name or job name may not match exactly. Nearby rows: ${sample}`,
+              error: `Job "${option.jobName}" not found in ${tabName} tab - client name or job name may not match exactly. Nearby rows: ${sample}`,
             });
           }
   
@@ -6175,7 +6175,7 @@ export async function handleDeleteJob(req, res, sheets) {
           console.log(`  Rows to blank: ${rowsToBlank.map(r => r + 1).join(", ")} (${rowsToBlank.length} rows)`);
   
           // Build column ranges to blank: A:G (1-7), AE (31), AG:AM (33-39), AN (40), AP:BH (42-60), BX:CR (76-96), DD (108)
-          // AN = likelihood (40), DD = "Copied to Confirmed?" (108) — Pipeline-specific fields
+          // AN = likelihood (40), DD = "Copied to Confirmed?" (108) - Pipeline-specific fields
           // In A1 notation: colNum is 1-indexed
           const colRanges = [
             [1, 7],    // A:G
@@ -6197,7 +6197,7 @@ export async function handleDeleteJob(req, res, sheets) {
             }
           }
   
-          // Use batchClear (not batchUpdate with "") — batchClear truly empties cells,
+          // Use batchClear (not batchUpdate with "") - batchClear truly empties cells,
           // preserving formatting and not leaving empty-string values that would
           // trigger conditional formatting rules checking <>0 or <>"".
           await sheets.spreadsheets.values.batchClear({
@@ -6278,12 +6278,12 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
       // to identify exactly which jobs were affected, then verify them.
       // Supported flagTypes: crmCopiedConfChecked, crmCopiedConfUnchecked, retainerInvoicesCreated
       //
-      // targetLine (26 Aug 2026, Paul's direction — proposal 2): when provided
+      // targetLine (26 Aug 2026, Paul's direction - proposal 2): when provided
       // (the exact AutoLog line text, already stored as the AlertMemory row's
       // alertSummary since that's how detection fingerprinted it), restricts
       // analysis to that one specific instance instead of scanning the whole
       // window for every possibly-relevant entry. Every one of the 6 rich
-      // types' parsing/verification logic below is completely unchanged —
+      // types' parsing/verification logic below is completely unchanged -
       // each already naturally produces a single-job result when only one
       // line is present to match, so narrowing the input alone is sufficient
       // and carries none of the risk a rewrite of that logic would.
@@ -6301,11 +6301,11 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
         const acIdClean = extractSheetIdFromUrl(acId) || acId;
 
         // ── Step 1: Find when this flag type was last resolved for this client ────
-        // Skipped entirely when targetLine is provided — a lookback window is
+        // Skipped entirely when targetLine is provided - a lookback window is
         // meaningless once we're targeting one already-known, specific line;
         // it either exists in AutoLog or it doesn't. Saves the extra
         // AlertMemory read too.
-        let windowStart = new Date(0); // epoch — no-op filter, overridden below when not targeted
+        let windowStart = new Date(0); // epoch - no-op filter, overridden below when not targeted
 
         if (!targetLine) {
           windowStart = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // default: 90 days ago
@@ -6329,7 +6329,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
           }
 
           if (!foundClear) {
-            console.log(`  ℹ No prior resolution found in AlertMemory — using 90-day window from ${windowStart.toISOString()}`);
+            console.log(`  ℹ No prior resolution found in AlertMemory - using 90-day window from ${windowStart.toISOString()}`);
           }
         }
 
@@ -6357,7 +6357,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
         });
         console.log(`  ✓ ${autoLogRows.length} AutoLog entries after window start (${allAutoLogRows.length} total)`);
 
-        // Narrow to the one specific instance (26 Aug 2026, proposal 2) — every
+        // Narrow to the one specific instance (26 Aug 2026, proposal 2) - every
         // branch below still scans/matches within autoLogRows exactly as
         // before, but now only one row (at most) is ever present to match,
         // since only rows whose Details genuinely contain this exact line
@@ -6375,7 +6375,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
         if (flagType === "crmCopiedConfChecked" || flagType === "crmCopiedConfUnchecked") {
           const expectCopied = flagType === "crmCopiedConfChecked";
 
-          // Read all CRM AutoLog entries — the Details field contains the full structured log
+          // Read all CRM AutoLog entries - the Details field contains the full structured log
           // The flag is raised when Pipeline col DD changes to 'Yes'.
           // The GAS code writes this at line 293: "Copied Status: 'X' -> 'Yes'"
           // as part of an "Updated Pipeline: Row N, Client | Job - ... Copied Status: ..." entry.
@@ -6558,7 +6558,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                         rowNumber: job.pipelineRowFromLog,
                       };
                     } else {
-                      console.log(`  ⚠️ Pipeline row ${job.pipelineRowFromLog} has "${prJobName}" / "${prClientName}" — expected "${job.jobName}" / "${job.clientParsed}". Row may have shifted — falling back to name search.`);
+                      console.log(`  ⚠️ Pipeline row ${job.pipelineRowFromLog} has "${prJobName}" / "${prClientName}" - expected "${job.jobName}" / "${job.clientParsed}". Row may have shifted - falling back to name search.`);
                     }
                   }
                 }
@@ -6584,7 +6584,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                     }
                     if (job.projectCodeFromLog) continue; // If looking strictly by code, don't fallback to name check for this iteration
 
-                    // If job name is blank/placeholder, match on client name only (less reliable — only use as last resort)
+                    // If job name is blank/placeholder, match on client name only (less reliable - only use as last resort)
                     if (!jobNameIsBlank && (!pJobName || pJobName.toLowerCase() !== jobNameLower)) continue;
                     if (jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
                     if (!jobNameIsBlank && clientParsedLower && pClientName && !pClientName.toLowerCase().includes(clientParsedLower) && !clientParsedLower.includes(pClientName.toLowerCase())) continue;
@@ -6600,23 +6600,23 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 }
 
                 if (!pipelineJob) {
-                  checks.push({ ok: false, message: `✗ CRITICAL: Job "${job.jobName}" not found in Pipeline — cannot verify DD was set to Yes` });
+                  checks.push({ ok: false, message: `✗ CRITICAL: Job "${job.jobName}" not found in Pipeline - cannot verify DD was set to Yes` });
                   allOk = false;
                 } else {
                   const ddVal = pipelineJob.copiedToConf.toLowerCase();
                   const ddOk = ddVal === "yes" || ddVal === "true";
                   const pRowStr = pipelineJob.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
-                  const cliStr = pipelineJob.clientName ? ` — ${pipelineJob.clientName}` : "";
+                  const cliStr = pipelineJob.clientName ? ` - ${pipelineJob.clientName}` : "";
                   checks.push({
                     ok: ddOk,
                     message: ddOk
                       ? `✓ Pipeline col DD ("Copied to confirmed?"): Yes${pRowStr}${cliStr}`
-                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" — expected Yes${pRowStr}${cliStr}. The copy may not have registered correctly.`,
+                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" - expected Yes${pRowStr}${cliStr}. The copy may not have registered correctly.`,
                   });
                   if (!ddOk) allOk = false;
                 }
 
-                // Secondary check: job exists in Confirmed — search by project code first, then job+client name
+                // Secondary check: job exists in Confirmed - search by project code first, then job+client name
                 // Row numbers are unreliable (rows can shift), so we match on col C (project code) or cols A+B
                 const pipelineProjectCode = pipelineJob?.projectCode || job.projectCodeFromLog || "";
                 // Use the resolved client name from pipelineJob (more reliable than AutoLog-parsed clientParsed)
@@ -6633,7 +6633,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   }
                   // Fallback: job name + client name (skip if job name is blank/placeholder)
                   const jobNameIsBlankConf = !jobNameLower || jobNameLower === "-";
-                  if (jobNameIsBlankConf) continue; // can't match on blank name — project code is the only key
+                  if (jobNameIsBlankConf) continue; // can't match on blank name - project code is the only key
                   if (crJobName.toLowerCase() !== jobNameLower) continue;
                   // Use resolvedClientLower (from pipelineJob) for a more accurate client match
                   if (resolvedClientLower && crClientName && !crClientName.toLowerCase().includes(resolvedClientLower) && !resolvedClientLower.includes(crClientName.toLowerCase())) continue;
@@ -6645,15 +6645,15 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 // Include client name and row numbers in check messages
                 const pipelineRowStr = pipelineJob?.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
                 const confirmedRowStr = confirmedMatch?.rowNumber ? ` (Confirmed row ${confirmedMatch.rowNumber})` : "";
-                const clientStr = pipelineJob?.clientName ? ` — ${pipelineJob.clientName}` : "";
+                const clientStr = pipelineJob?.clientName ? ` - ${pipelineJob.clientName}` : "";
 
                 checks.push({
                   ok: confExists,
                   message: confExists
                     ? `✓ Confirmed tab: "${confirmedMatch.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confirmedRowStr}${pipelineRowStr}${clientStr} found`
                     : pipelineProjectCode
-                      ? `✗ Confirmed tab: job "${job.jobName}" not found by project code (${pipelineProjectCode}) or name — Confirmed col C may be blank for this job, or copy may have failed`
-                      : `✗ Confirmed tab: job "${job.jobName}" not found — copy may have failed`,
+                      ? `✗ Confirmed tab: job "${job.jobName}" not found by project code (${pipelineProjectCode}) or name - Confirmed col C may be blank for this job, or copy may have failed`
+                      : `✗ Confirmed tab: job "${job.jobName}" not found - copy may have failed`,
                 });
                 if (!confExists) allOk = false;
 
@@ -6663,7 +6663,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 const clientParsedLower = job.clientParsed ? job.clientParsed.toLowerCase() : "";
                 const jobNameIsBlank = !jobNameLower || jobNameLower === "-";
 
-                // Look up Pipeline row — use log row number first, then name search
+                // Look up Pipeline row - use log row number first, then name search
                 if (job.pipelineRowFromLog) {
                   const prIdx = job.pipelineRowFromLog - 6;
                   const pr = prIdx >= 0 ? pipelineRows[prIdx] : null;
@@ -6709,12 +6709,12 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   const ddVal = pipelineJob.copiedToConf.toLowerCase();
                   const ddOk = ddVal === "no" || ddVal === "" || ddVal === "false";
                   const pRowStr = pipelineJob.rowNumber ? ` (Pipeline row ${pipelineJob.rowNumber})` : "";
-                  const cliStr = pipelineJob.clientName ? ` — ${pipelineJob.clientName}` : "";
+                  const cliStr = pipelineJob.clientName ? ` - ${pipelineJob.clientName}` : "";
                   checks.push({
                     ok: ddOk,
                     message: ddOk
-                      ? `✓ Pipeline col DD: "${pipelineJob.copiedToConf || "blank"}" — No/blank (correct)${pRowStr}${cliStr}`
-                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" — expected No or blank${pRowStr}${cliStr}`,
+                      ? `✓ Pipeline col DD: "${pipelineJob.copiedToConf || "blank"}" - No/blank (correct)${pRowStr}${cliStr}`
+                      : `✗ CRITICAL: Pipeline col DD is "${pipelineJob.copiedToConf}" - expected No or blank${pRowStr}${cliStr}`,
                   });
                   if (!ddOk) allOk = false;
                 } else {
@@ -6722,7 +6722,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   allOk = false;
                 }
 
-                // Check Confirmed — search by project code first, then job+client name
+                // Check Confirmed - search by project code first, then job+client name
                 const uncheckedProjectCode = pipelineJob?.projectCode || "";
                 for (let cri = 0; cri < confirmedRows.length; cri++) {
                   const cr = confirmedRows[cri];
@@ -6746,12 +6746,12 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 }
                 const inConfirmed = confirmedMatch !== null;
                 const confRowStr = confirmedMatch?.rowNumber ? ` (Confirmed row ${confirmedMatch.rowNumber})` : "";
-                const confCliStr = confirmedMatch?.clientName ? ` — ${confirmedMatch.clientName}` : "";
+                const confCliStr = confirmedMatch?.clientName ? ` - ${confirmedMatch.clientName}` : "";
                 checks.push({
                   ok: !inConfirmed,
                   message: !inConfirmed
                     ? `✓ Confirmed tab: job not present (correct)`
-                    : `✗ "${confirmedMatch.jobName || job.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confRowStr}${confCliStr} still exists in Confirmed — should have been removed`,
+                    : `✗ "${confirmedMatch.jobName || job.jobName}"${confirmedMatch.projectCode ? ` (${confirmedMatch.projectCode})` : ""}${confRowStr}${confCliStr} still exists in Confirmed - should have been removed`,
                 });
                 if (inConfirmed) allOk = false;
               }
@@ -6789,7 +6789,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 (details.includes("child row") || details.includes("invoice rows"));
             });
           if (retainerLogEntries.length === 0 && retainerLogEntriesToUse.length > 0) {
-            console.log(`  ↩ Fell back to full AutoLog — found ${retainerLogEntriesToUse.length} entries`);
+            console.log(`  ↩ Fell back to full AutoLog - found ${retainerLogEntriesToUse.length} entries`);
           }
           for (const entry of retainerLogEntriesToUse) {
             console.log(`    [${entry[0]}] Details="${String(entry[3]||"").slice(0, 400)}"`);
@@ -6884,12 +6884,12 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                     parentRowIdx = logIdx;
                     console.log(`  ✓ Matched by row number: ${job.logSheetRow}`);
                   } else {
-                    console.log(`  ⚠ Row ${job.logSheetRow} has "${r[1]}"/"${r[0]}" — expected "${job.jobName}"/"${job.clientNameFromLog}" — row may have shifted, falling back to name search`);
+                    console.log(`  ⚠ Row ${job.logSheetRow} has "${r[1]}"/"${r[0]}" - expected "${job.jobName}"/"${job.clientNameFromLog}" - row may have shifted, falling back to name search`);
                   }
                 }
               }
 
-              // Second: name search — collect ALL matches to detect duplicates
+              // Second: name search - collect ALL matches to detect duplicates
               if (parentRowIdx === -1) {
                 for (let ri = 0; ri < tabRows.length; ri++) {
                   const r       = tabRows[ri];
@@ -6909,7 +6909,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                     status:     "issue",
                     checks:     [{
                       ok: false,
-                      message: `✗ Found ${allMatchingIdxs.length} rows matching "${job.clientNameFromLog} | ${job.jobName}" in ${targetTab} (rows ${allMatchingIdxs.map(i => i + tabStartRow).join(", ")}) — cannot reliably identify which row the automation acted on. Ensure jobs have unique names within the same client.`,
+                      message: `✗ Found ${allMatchingIdxs.length} rows matching "${job.clientNameFromLog} | ${job.jobName}" in ${targetTab} (rows ${allMatchingIdxs.map(i => i + tabStartRow).join(", ")}) - cannot reliably identify which row the automation acted on. Ensure jobs have unique names within the same client.`,
                     }],
                   });
                   continue;
@@ -6917,7 +6917,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               }
 
               if (parentRowIdx === -1) {
-                // Not found in target tab — check the other tab as fallback
+                // Not found in target tab - check the other tab as fallback
                 const fallbackTab  = targetTab === "Pipeline" ? "Confirmed" : "Pipeline";
                 const fallbackRows = targetTab === "Pipeline" ? retConfirmedRows : retPipelineRows;
                 let fallbackIdx    = -1;
@@ -6936,7 +6936,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                     jobName:    job.jobName,
                     clientName: job.clientNameFromLog,
                     status:     "info",
-                    checks:     [{ ok: true, message: `✓ Job "${job.jobName}" (${job.clientNameFromLog}) moved to ${fallbackTab} tab (row ${fallbackIdx + fallbackStartRow}) — originally created in ${targetTab}` }],
+                    checks:     [{ ok: true, message: `✓ Job "${job.jobName}" (${job.clientNameFromLog}) moved to ${fallbackTab} tab (row ${fallbackIdx + fallbackStartRow}) - originally created in ${targetTab}` }],
                   });
                 } else {
                   retainerChecks.push({
@@ -6959,7 +6959,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               const confirmedSheetRow = parentRowIdx + tabStartRow;
               console.log(`  Found "${jobName}" (${clientN}) at ${targetTab} row ${confirmedSheetRow}: start="${startRaw}", end="${endRaw}"`);
 
-              // Collect child rows — same tab, immediately after parent
+              // Collect child rows - same tab, immediately after parent
               // Child row: same client+job, no revenue, no start date
               const childRows = [];
               let ci = parentRowIdx + 1;
@@ -6978,7 +6978,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 if (!v) return null;
                 if (v instanceof Date) {
                   if (isNaN(v.getTime())) return null;
-                  // JS Date treats 2-digit years as 1900s — correct to 2000s for years < 100
+                  // JS Date treats 2-digit years as 1900s - correct to 2000s for years < 100
                   if (v.getFullYear() < 100) v.setFullYear(v.getFullYear() + 2000);
                   return v;
                 }
@@ -7005,7 +7005,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               if (!startDate || !endDate) {
                 retainerChecks.push({
                   jobName, clientName: clientN, projectCode, status: "info",
-                  message: `No start/end dates set on this retainer — cannot verify invoice coverage`,
+                  message: `No start/end dates set on this retainer - cannot verify invoice coverage`,
                   checks: [],
                 });
                 continue;
@@ -7044,11 +7044,11 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   const hasInvoice = parentInvAmt > 0;
                   const fmt = (d) => d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
                   checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (1 month total, single invoice)` });
-                  checks.push({ ok: true, message: `Single-row retainer (1-month exception) — invoice sits on parent row, no child rows expected` });
+                  checks.push({ ok: true, message: `Single-row retainer (1-month exception) - invoice sits on parent row, no child rows expected` });
                   if (hasInvoice) {
                     checks.push({ ok: true, message: `✓ Parent row slot 1 has invoice amount £${parentInvAmt.toFixed(2)}${parentInvRef ? ` (ref: ${parentInvRef})` : ""}` });
                   } else {
-                    checks.push({ ok: false, message: `✗ Parent row slot 1 has no invoice amount — invoice not yet created` });
+                    checks.push({ ok: false, message: `✗ Parent row slot 1 has no invoice amount - invoice not yet created` });
                   }
                   retainerChecks.push({
                     jobName, clientName: clientN, projectCode,
@@ -7059,12 +7059,12 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   });
                   continue;
                 } else {
-                  checks.push({ ok: false, message: `✗ Parent row has an invoice (amount/ref) but no child rows exist — single-row retainers are not allowed for multi-month jobs` });
+                  checks.push({ ok: false, message: `✗ Parent row has an invoice (amount/ref) but no child rows exist - single-row retainers are not allowed for multi-month jobs` });
                 }
               }
 
               // Count child rows whose scheduled invoice date (Inv1 sent-date slot) falls
-              // in or before the current calendar month — these are "past + current" rows.
+              // in or before the current calendar month - these are "past + current" rows.
               // Expected = that count + 18 future rows (adjusted for period frequency).
               const parseConfirmedDate = (val) => {
                 if (!val) return null;
@@ -7105,7 +7105,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               checks.push({ ok: true, message: `Duration: ${fmt(startDate)} → ${fmt(endDate)} (${monthsDiff} months total, ${periodLabel})` });
               checks.push({
                 ok: durationOk,
-                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) — ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),
+                message: `Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) - ` + (durationOk ? "✓ full coverage" : `✗ ${expectedChildRows - actualChildRows} row(s) missing`),
               });
 
               let allHaveInvoice = true;
@@ -7149,7 +7149,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 (details.includes("child row") || details.includes("excess"));
             });
           if (deletedLogEntries.length === 0 && deletedLogEntriesToUse.length > 0) {
-            console.log(`  ↩ Fell back to full AutoLog — found ${deletedLogEntriesToUse.length} entries`);
+            console.log(`  ↩ Fell back to full AutoLog - found ${deletedLogEntriesToUse.length} entries`);
           }
           for (const entry of deletedLogEntriesToUse) {
             console.log(`    [${entry[0]}] Details="${String(entry[3]||"").slice(0, 400)}"`);
@@ -7274,7 +7274,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 retainerChecks.push({
                   jobName: jobName2, clientName: jobClient, projectCode,
                   parentSheetRow, status: "info",
-                  message: `No start/end dates set on this retainer — cannot verify row coverage`,
+                  message: `No start/end dates set on this retainer - cannot verify row coverage`,
                   checks: [],
                 });
                 continue;
@@ -7333,7 +7333,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               checks.push({
                 ok: durationOk,
                 message: durationOk
-                  ? `✓ Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) — correct count`
+                  ? `✓ Child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward) - correct count`
                   : `${actualChildRows > expectedChildRows ? "✗ Too many" : "✗ Too few"} child rows: ${actualChildRows} found, ${expectedChildRows} expected (${pastAndCurrentRows} past/current + ${futureRows} forward)`,
               });
 
@@ -7365,7 +7365,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
           const staleEntriesToUse = staleLogEntries.length > 0 ? staleLogEntries :
             allAutoLogRows.filter(row => String(row[3] || "").includes("Stale Invoice"));
           if (staleLogEntries.length === 0 && staleEntriesToUse.length > 0) {
-            console.log(`  ↩ Fell back to full AutoLog — found ${staleEntriesToUse.length} stale entries`);
+            console.log(`  ↩ Fell back to full AutoLog - found ${staleEntriesToUse.length} stale entries`);
           }
 
           if (staleEntriesToUse.length === 0) {
@@ -7517,8 +7517,8 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   logTimestamp: timestamp,
                   checks,
                   message: isResolved 
-                    ? `[${tab}] Row ${actualRowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
-                    : `[${tab}] Row ${actualRowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: date moved ${oldDate} → ${newDate}.`,
+                    ? `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
+                    : `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: date moved ${oldDate} → ${newDate}.`,
                 });
               }
             }
@@ -7702,8 +7702,8 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   logTimestamp: timestamp,
                   checks,
                   message: isResolved
-                    ? `[${tab}] Row ${actualRowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
-                    : `[${tab}] Row ${actualRowNum} — ${jobClient} | ${jobName}, Slot ${slotNum}: Still requires reconciliation.`
+                    ? `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
+                    : `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: Still requires reconciliation.`
                 });
               }
             }
@@ -7732,7 +7732,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               return details.includes("Deleted Job:") && details.includes("[Confirmed]");
             });
           if (deleteLogEntries.length === 0 && deleteEntriesToUse.length > 0) {
-            console.log(`  ↩ Fell back to full AutoLog — found ${deleteEntriesToUse.length} entries`);
+            console.log(`  ↩ Fell back to full AutoLog - found ${deleteEntriesToUse.length} entries`);
           }
 
           if (deleteEntriesToUse.length === 0) {
@@ -7810,9 +7810,9 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 }
 
                 if (confirmedRowIdx === -1) {
-                  checks.push({ ok: true,  message: `✓ Not found in Confirmed tab — job successfully removed` });
+                  checks.push({ ok: true,  message: `✓ Not found in Confirmed tab - job successfully removed` });
                 } else {
-                  checks.push({ ok: false, message: `✗ Job still exists in Confirmed tab at row ${confirmedRowIdx + 1} — deletion may have failed` });
+                  checks.push({ ok: false, message: `✗ Job still exists in Confirmed tab at row ${confirmedRowIdx + 1} - deletion may have failed` });
                 }
 
                 // ── Check 2: Pipeline tab ───────────────────────────────────
@@ -7833,7 +7833,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 }
 
                 if (pipelineRowIdx === -1) {
-                  checks.push({ ok: false, message: `⚠ Job not found in Pipeline tab — notable, as deleted Confirmed jobs are usually still in Pipeline` });
+                  checks.push({ ok: false, message: `⚠ Job not found in Pipeline tab - notable, as deleted Confirmed jobs are usually still in Pipeline` });
                 } else {
                   const pipeRow = pipelineRows[pipelineRowIdx];
                   // AN = col 39 (0-indexed), DD = col 109 (0-indexed)
@@ -7847,7 +7847,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   checks.push({
                     ok: true,
                     message: `Job found in Pipeline tab at row ${pipelineRowIdx + 1}` +
-                      ` — likelihood: ${likelihood || "(blank)"}` +
+                      ` - likelihood: ${likelihood || "(blank)"}` +
                       `, "Copied to conf?" = ${copiedStatus || "(blank)"}`,
                   });
                 }
@@ -7860,7 +7860,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                   confirmedRow: parseInt(job.rowNum, 10),
                   logTimestamp: job.logTimestamp,
                   checks,
-                  message: `${job.clientName} | ${job.jobName} (${job.projectCode}) — deleted from Confirmed row ${job.rowNum}`,
+                  message: `${job.clientName} | ${job.jobName} (${job.projectCode}) - deleted from Confirmed row ${job.rowNum}`,
                 });
               }
             }
@@ -7936,7 +7936,7 @@ async function ensureSweepScheduleTab(sheets, automationCommanderSheetId) {
 
 // Returns { actionable: { rowIndex, frequencyMinutes, lastCheckedAt }, info: {...}, proactive: {...} }
 // Missing categories (e.g. a row deleted by hand) fall back to defaults with
-// no rowIndex — isCategoryDue_ below treats that as "always due" rather than
+// no rowIndex - isCategoryDue_ below treats that as "always due" rather than
 // throwing, and the caller can decide whether to also re-create the row.
 async function readSweepSchedule_(sheets, automationCommanderSheetId) {
   const resp = await sheets.spreadsheets.values.get({
@@ -7964,7 +7964,7 @@ async function readSweepSchedule_(sheets, automationCommanderSheetId) {
 
 // True if this category's configured interval has elapsed since it was last
 // checked (or has never been checked at all). A missing/unparseable
-// lastCheckedAt is treated as "always due" — safer than silently never
+// lastCheckedAt is treated as "always due" - safer than silently never
 // running a category because of a malformed timestamp.
 function isCategoryDue_(categoryEntry) {
   if (!categoryEntry.lastCheckedAt) return true;
@@ -7974,7 +7974,7 @@ function isCategoryDue_(categoryEntry) {
   return elapsedMinutes >= categoryEntry.frequencyMinutes;
 }
 
-// Updates lastCheckedAt for one category — creates the row if it doesn't
+// Updates lastCheckedAt for one category - creates the row if it doesn't
 // exist yet (e.g. schedule tab was just created, or a row was deleted by
 // hand), rather than silently failing to persist the timestamp.
 async function markCategoryChecked_(sheets, automationCommanderSheetId, category, schedule) {
@@ -8022,5 +8022,5 @@ export async function logClaudeUsage_(sheets, automationCommanderSheetId, client
       ]],
     },
   }));
-  console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} — ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
+  console.log(`  📊 Logged Claude usage: ${clientName} ${alertType} - ${inputTokens}+${outputTokens} tokens, $${costUsd.toFixed(4)}`);
 }

@@ -101,7 +101,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>
-            {resolutionType === "end" ? "End retainer" : "Change retainer amount"} — {alertMeta.endClientName}
+            {resolutionType === "end" ? "End retainer" : "Change retainer amount"} - {alertMeta.endClientName}
           </h3>
           {!applying && <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>}
         </div>
@@ -110,7 +110,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
           <div style={{ padding: "30px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: "14px", textAlign: "center" }}>
             <Spinner size={32} color="#7c3aed" />
             <div style={{ fontSize: "14px", color: "#5b21b6", fontWeight: "600" }}>
-              {applying ? "Applying the change — this can take a little while..." : "Working out what this change would do..."}
+              {applying ? "Applying the change - this can take a little while..." : "Working out what this change would do..."}
             </div>
             {applying && <div style={{ fontSize: "12px", color: "#999" }}>Please don&apos;t close this window until it&apos;s done.</div>}
           </div>
@@ -124,7 +124,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
                 <>
                   <div style={{ marginTop: "8px" }}>Last invoice was sent on <strong>{preview.lastInvoiceSentDate}</strong>, covering <strong>{preview.coveredPeriodLabel}</strong>.</div>
                   <div style={{ marginTop: "8px", padding: "10px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px" }}>
-                    The retainer&apos;s end date will be set to <strong>{preview.computedEndDateLabel}</strong>. Any future invoice rows beyond this date will be removed (only if they contain no real invoice or expense data — otherwise this will be blocked).
+                    The retainer&apos;s end date will be set to <strong>{preview.computedEndDateLabel}</strong>. Any future invoice rows beyond this date will be removed (only if they contain no real invoice or expense data - otherwise this will be blocked).
                   </div>
                 </>
               ) : (
@@ -135,7 +135,7 @@ export default function RetainerAlertResolutionModal({ resolutionType, alertMeta
                   </div>
                   {preview.sourceRowInfo && (
                     <div style={{ marginTop: "8px", padding: "10px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "6px" }}>
-                      This invoice is currently attached to a different job on row <strong>{preview.sourceRowInfo.confirmedRow}</strong> ({preview.sourceRowInfo.client} — {preview.sourceRowInfo.jobName}). <strong>That job&apos;s data will be permanently cleared</strong> — {preview.sourceRowInfo.totalRowsToClear > 1 ? `all ${preview.sourceRowInfo.totalRowsToClear} of its rows (the parent row plus ${preview.sourceRowInfo.totalRowsToClear - 1} child row${preview.sourceRowInfo.totalRowsToClear - 1 === 1 ? "" : "s"})` : "its one row"} — (client, job, revenue, dates, and all invoice/expense slots) since it&apos;s being relocated onto this retainer.
+                      This invoice is currently attached to a different job on row <strong>{preview.sourceRowInfo.confirmedRow}</strong> ({preview.sourceRowInfo.client} - {preview.sourceRowInfo.jobName}). <strong>That job&apos;s data will be permanently cleared</strong> - {preview.sourceRowInfo.totalRowsToClear > 1 ? `all ${preview.sourceRowInfo.totalRowsToClear} of its rows (the parent row plus ${preview.sourceRowInfo.totalRowsToClear - 1} child row${preview.sourceRowInfo.totalRowsToClear - 1 === 1 ? "" : "s"})` : "its one row"} - (client, job, revenue, dates, and all invoice/expense slots) since it&apos;s being relocated onto this retainer.
                     </div>
                   )}
                 </>

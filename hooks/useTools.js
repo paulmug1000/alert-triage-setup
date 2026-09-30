@@ -169,7 +169,7 @@ export function useTools({
         const isTime = target.toolType === "time";
     
         if (isTime && !client.masterSheetId) {
-            return prev.map(f => f.id === id ? { ...f, processStatus: "error", processMsg: "This client has no master sheet linked — can't locate TimeComp." } : f);
+            return prev.map(f => f.id === id ? { ...f, processStatus: "error", processMsg: "This client has no master sheet linked - can't locate TimeComp." } : f);
         }
 
         (async () => {

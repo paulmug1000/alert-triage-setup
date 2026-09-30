@@ -2,6 +2,7 @@ import React, { useEffect } from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
 import { useTasks } from "../contexts/TaskContext";
+import { useAuth } from "../hooks/useAuth";
 
 export default function TasksView({
   styles,
@@ -9,8 +10,16 @@ export default function TasksView({
   automationCommanderSheetId,
   isAccepting,
   setIsAccepting,
-  refreshTriage
+  refreshTriage,
+  isAdmin: propIsAdmin,
+  user: propUser,
 }) {
+  const auth = useAuth?.() || {};
+  const currentUser = propUser || auth.user;
+  const isAdmin = propIsAdmin !== undefined
+    ? propIsAdmin
+    : !!(currentUser?.isAdmin || currentUser?.role === "Admin" || currentUser?.assignedClients === "*");
+
   const {
     tasks, setTasks, tasksLoading, tasksFilter, setTasksFilter,
     selectedTask, setSelectedTask, taskDetailOptions, setTaskDetailOptions,
@@ -18,9 +27,17 @@ export default function TasksView({
     taskNoteSubmitting, setTaskNoteSubmitting,
     taskSnoozeDate, setTaskSnoozeDate, taskSnoozeTime, setTaskSnoozeTime,
     taskSnoozeSubmitting, setTaskSnoozeSubmitting, taskActionError, setTaskActionError,
-    navTaskCount, setNavTaskCount, snoozedTaskCount, setSnoozedTaskCount,
-    tasksLoadedAt, loadTasks
+    navTaskCount, snoozedTaskCount,
+    otherActiveTaskCount, otherSnoozedTaskCount, resolvedTaskCount,
+    tasksLoadedAt, loadTasks, refreshTaskCount
   } = useTasks();
+
+  useEffect(() => {
+    if (!isAdmin && (tasksFilter === "other_active" || tasksFilter === "other_snoozed")) {
+      setTasksFilter("active");
+      loadTasks("active", true);
+    }
+  }, [isAdmin, tasksFilter, setTasksFilter, loadTasks]);
 
   useEffect(() => {
     if (!tasksLoading && Date.now() - tasksLoadedAt > 5 * 60 * 1000) {
@@ -126,10 +143,8 @@ export default function TasksView({
       const data = await res.json();
       if (data.success) {
         setSelectedTask(null);
-        setNavTaskCount(prev => Math.max(0, prev - 1));
-        setSnoozedTaskCount(prev => prev + 1);
-        setTasksFilter("active");
-        loadTasks("active", true);
+        await loadTasks(tasksFilter, true);
+        refreshTaskCount?.(true);
       } else setTaskActionError(data.error || "Failed to snooze task");
     } catch (e) { setTaskActionError(e.message); }
     finally { setTaskSnoozeSubmitting(false); }
@@ -145,17 +160,9 @@ export default function TasksView({
       });
       const data = await res.json();
       if (data.success) {
-        const taskToResolve = tasks.find(t => t.fingerprintHash === fingerprintHash) || selectedTask;
-        const wasSnoozed = taskToResolve?.isSnoozed;
-
-        setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
         if (selectedTask?.fingerprintHash === fingerprintHash) setSelectedTask(null);
-        
-        if (wasSnoozed) {
-          setSnoozedTaskCount(prev => Math.max(0, prev - 1));
-        } else {
-          setNavTaskCount(prev => Math.max(0, prev - 1));
-        }
+        await loadTasks(tasksFilter, true);
+        refreshTaskCount?.(true);
       } else setTaskActionError(data.error || "Failed to resolve task");
     } catch (e) { setTaskActionError(e.message); }
   };
@@ -170,16 +177,10 @@ export default function TasksView({
       });
       const data = await res.json();
       if (data.success) {
-        const taskToRevert = tasks.find(t => t.fingerprintHash === fingerprintHash) || selectedTask;
-        const wasSnoozed = taskToRevert?.isSnoozed;
-        
-        setTasks(prev => prev.filter(t => t.fingerprintHash !== fingerprintHash));
         if (selectedTask?.fingerprintHash === fingerprintHash) setSelectedTask(null);
-        
-        if (wasSnoozed) setSnoozedTaskCount(prev => Math.max(0, prev - 1));
-        else setNavTaskCount(prev => Math.max(0, prev - 1));
-        
         refreshTriage();
+        await loadTasks(tasksFilter, true);
+        refreshTaskCount?.(true);
       } else {
         setTaskActionError(data.error || "Failed to revert task");
       }
@@ -238,11 +239,20 @@ export default function TasksView({
   };
 
   if (!selectedTask) {
-    const filterTabs = [
-      { key: "active", label: "Active", count: navTaskCount },
-      { key: "snoozed", label: "Snoozed", count: snoozedTaskCount },
-      { key: "resolved", label: "Completed", count: 0 },
-    ];
+    const filterTabs = isAdmin
+      ? [
+          { key: "active", label: "My active", count: navTaskCount },
+          { key: "snoozed", label: "My snoozed", count: snoozedTaskCount },
+          { key: "other_active", label: "Other active", count: otherActiveTaskCount },
+          { key: "other_snoozed", label: "Other snoozed", count: otherSnoozedTaskCount },
+          { key: "resolved", label: "Completed", count: resolvedTaskCount },
+        ]
+      : [
+          { key: "active", label: "Active", count: navTaskCount },
+          { key: "snoozed", label: "Snoozed", count: snoozedTaskCount },
+          { key: "resolved", label: "Completed", count: resolvedTaskCount },
+        ];
+
     return (
       <div style={styles.container}>
         <div style={styles.header}>
@@ -252,12 +262,12 @@ export default function TasksView({
 
         {taskActionError && <div style={styles.errorBanner}>{taskActionError}</div>}
 
-        <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
+        <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e0e0e0", marginBottom: "20px", flexWrap: "wrap" }}>
           {filterTabs.map(tab => (
             <button key={tab.key} className="triage-btn pulse-nav-item"
               onClick={() => { setTasksFilter(tab.key); loadTasks(tab.key); }}
               style={{
-                background: "none", border: "none", cursor: "pointer", padding: "10px 20px",
+                background: "none", border: "none", cursor: "pointer", padding: "10px 18px",
                 fontSize: "14px", fontWeight: tasksFilter === tab.key ? "600" : "400",
                 color: tasksFilter === tab.key ? "#0066cc" : "#555",
                 borderBottom: tasksFilter === tab.key ? "2px solid #0066cc" : "2px solid transparent",
@@ -267,14 +277,15 @@ export default function TasksView({
               {tab.count > 0 && (
                 <span style={{
                   display: "inline-flex", alignItems: "center", justifyContent: "center",
-                  background: "#e53e3e", color: "#fff", borderRadius: "10px",
+                  background: tab.key.startsWith("other") ? "#64748b" : "#e53e3e",
+                  color: "#fff", borderRadius: "10px",
                   fontSize: "10px", fontWeight: "700", minWidth: "17px", height: "17px",
                   padding: "0 5px", lineHeight: "1",
                 }}>{tab.count > 99 ? "99+" : tab.count}</span>
               )}
             </button>
           ))}
-          <button className="triage-btn" onClick={() => loadTasks(tasksFilter)}
+          <button className="triage-btn" onClick={() => loadTasks(tasksFilter, true)}
             style={{ ...styles.buttonSecondary, marginLeft: "auto", fontSize: "12px", padding: "6px 14px", alignSelf: "center" }}>
             ↻ Refresh
           </button>
@@ -284,7 +295,15 @@ export default function TasksView({
           <div style={{ textAlign: "center", padding: "40px", color: "#888" }}><Spinner size={20} color="#0066cc" /> Loading tasks...</div>
         ) : tasks.length === 0 ? (
           <div style={{ textAlign: "center", padding: "40px", color: "#888", fontSize: "14px" }}>
-            {tasksFilter === "active" ? "No active tasks" : tasksFilter === "snoozed" ? "No snoozed tasks" : "No completed tasks"}
+            {tasksFilter === "active"
+              ? (isAdmin ? "No active tasks created by you" : "No active tasks")
+              : tasksFilter === "snoozed"
+              ? (isAdmin ? "No snoozed tasks created by you" : "No snoozed tasks")
+              : tasksFilter === "other_active"
+              ? "No other active tasks from team members"
+              : tasksFilter === "other_snoozed"
+              ? "No other snoozed tasks from team members"
+              : "No completed tasks"}
           </div>
         ) : (
           <div>
@@ -295,18 +314,38 @@ export default function TasksView({
                 style={{ ...styles.card, cursor: "pointer", marginBottom: "12px", padding: "16px 20px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
                   <div style={{ flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
                       <span style={{ fontSize: "13px", fontWeight: "700", color: "#1a1a1a" }}>{task.clientName}</span>
                       <span style={{ fontSize: "11px", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>
                         {formatAlertType(task.alertType)}
                       </span>
+                      {task.isAdminOnly && (
+                        <span style={{
+                          fontSize: "10px",
+                          fontWeight: "700",
+                          background: "#f1f5f9",
+                          border: "1px solid #cbd5e1",
+                          color: "#64748b",
+                          borderRadius: "10px",
+                          padding: "1px 6px",
+                          letterSpacing: "0.2px"
+                        }} title="Created from an Admin-only alert">
+                          Admin
+                        </span>
+                      )}
                       {task.isProactive && (
                         <span style={{ fontSize: "11px", background: "#fff3e0", color: "#e65100", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>Proactive</span>
                       )}
                     </div>
-                    <div style={{ fontSize: "13px", color: "#555", marginBottom: "4px" }}>{task.alertSummary}</div>
+                    <div style={{ fontSize: "13px", color: "#555", marginBottom: "6px" }}>{task.alertSummary}</div>
+                    
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569", marginBottom: "4px" }}>
+                      <span style={{ fontSize: "12px" }}>👤</span>
+                      <span>Created by: <strong style={{ color: "#334155" }}>{task.createdByName || task.createdByEmail || "System / Unassigned"}</strong></span>
+                    </div>
+
                     {task.taskNote && (
-                      <div style={{ fontSize: "12px", color: "#7c3aed", fontStyle: "italic" }}>📋 {task.taskNote}</div>
+                      <div style={{ fontSize: "12px", color: "#7c3aed", fontStyle: "italic", marginBottom: "2px" }}>📋 {task.taskNote}</div>
                     )}
                     {task.furtherNotes?.length > 0 && (
                       <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>
@@ -316,7 +355,7 @@ export default function TasksView({
                   </div>
                   <div style={{ textAlign: "right", flexShrink: 0 }}>
                     <div style={{ fontSize: "11px", color: "#aaa" }}>
-                      {task.taskCreatedAt ? new Date(task.taskCreatedAt).toLocaleDateString("en-GB") : "—"}
+                      {task.taskCreatedAt ? new Date(task.taskCreatedAt).toLocaleDateString("en-GB") : "-"}
                     </div>
                     {task.isSnoozed && (
                       <div style={{ fontSize: "11px", color: "#d97706", marginTop: "2px" }}>
@@ -353,16 +392,48 @@ export default function TasksView({
       <div style={{ ...styles.card, borderLeft: "4px solid #7c3aed", paddingTop: "16px", paddingBottom: "16px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
           <div>
-            <div style={{ fontSize: "16px", fontWeight: "700", color: "#1a1a1a", marginBottom: "4px" }}>
-              {selectedTask.clientName}
-              <span style={{ marginLeft: "8px", fontSize: "12px", fontWeight: "600", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px" }}>
+            <div style={{ fontSize: "16px", fontWeight: "700", color: "#1a1a1a", marginBottom: "4px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <span>{selectedTask.clientName}</span>
+              <span style={{ fontSize: "12px", fontWeight: "600", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px" }}>
                 {formatAlertType(selectedTask.alertType)}
               </span>
+              {selectedTask.isAdminOnly && (
+                <span style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  background: "#f1f5f9",
+                  border: "1px solid #cbd5e1",
+                  color: "#64748b",
+                  borderRadius: "10px",
+                  padding: "2px 8px",
+                  letterSpacing: "0.2px"
+                }} title="Created from an Admin-only alert">
+                  Admin
+                </span>
+              )}
+              {selectedTask.isProactive && (
+                <span style={{ fontSize: "11px", background: "#fff3e0", color: "#e65100", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>Proactive</span>
+              )}
             </div>
-            <div style={{ fontSize: "13px", color: "#555", marginBottom: "4px" }}>{selectedTask.alertSummary}</div>
-            <div style={{ fontSize: "12px", color: "#888" }}>
-              Created: {selectedTask.taskCreatedAt ? new Date(selectedTask.taskCreatedAt).toLocaleString("en-GB") : "—"}
-              {selectedTask.isSnoozed && <span style={{ color: "#d97706", marginLeft: "8px" }}>· Snoozed until {new Date(selectedTask.snoozedUntil).toLocaleString("en-GB")}</span>}
+            <div style={{ fontSize: "13px", color: "#555", marginBottom: "6px" }}>{selectedTask.alertSummary}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "14px", fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                <span>👤</span>
+                <span>Created by: <strong style={{ color: "#334155" }}>{selectedTask.createdByName || selectedTask.createdByEmail || "System / Unassigned"}</strong></span>
+              </div>
+              <div>
+                Created: {selectedTask.taskCreatedAt ? new Date(selectedTask.taskCreatedAt).toLocaleString("en-GB") : "-"}
+              </div>
+              {selectedTask.isSnoozed && (
+                <div style={{ color: "#d97706" }}>
+                  ⏰ Snoozed until {new Date(selectedTask.snoozedUntil).toLocaleString("en-GB")}
+                </div>
+              )}
+              {selectedTask.isResolved && selectedTask.resolvedAt && (
+                <div style={{ color: "#2e7d32" }}>
+                  ✓ Resolved {new Date(selectedTask.resolvedAt).toLocaleString("en-GB")}
+                </div>
+              )}
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px", flexShrink: 0 }}>
@@ -457,7 +528,7 @@ export default function TasksView({
                   padding: "6px 10px", borderRadius: "4px", marginBottom: "8px", fontSize: "12px", fontWeight: "600",
                   background: overallOk ? "#e8f5e9" : "#fbe9e7", color: overallOk ? "#2e7d32" : "#bf360c",
                 }}>
-                  {overallOk ? "✓ Everything looks correct" : "⚠ Issues found — review below"}
+                  {overallOk ? "✓ Everything looks correct" : "⚠ Issues found - review below"}
                 </div>
                 {(analysis.results || []).map((r, ri) => (
                   <div key={ri} style={{
@@ -500,7 +571,7 @@ export default function TasksView({
           <div style={{ textAlign: "center", padding: "20px", color: "#666" }}><Spinner size={18} color="#0066cc" /> Re-analysing alert...</div>
         )}
         {!taskDetailAnalyzing && taskDetailOptions.length === 0 && (
-          <div style={{ color: "#888", fontSize: "13px" }}>No options available — the alert may have been resolved already.</div>
+          <div style={{ color: "#888", fontSize: "13px" }}>No options available - the alert may have been resolved already.</div>
         )}
         {taskDetailOptions.map((option, idx) => (
           <div key={idx} style={{ ...styles.optionCard, marginBottom: "12px" }}>
@@ -576,6 +647,8 @@ export default function TasksView({
                 });
                 setSelectedTask(prev => ({ ...prev, isSnoozed: false, snoozedUntil: "" }));
                 setTasks(prev => prev.map(t => t.fingerprintHash === selectedTask.fingerprintHash ? { ...t, isSnoozed: false, snoozedUntil: "" } : t));
+                await loadTasks(tasksFilter, true);
+                refreshTaskCount?.(true);
               }} style={{ ...styles.linkButton, marginLeft: "10px", fontSize: "12px" }}>
                 Unsnooze
               </button>

@@ -3,7 +3,7 @@ import Spinner from "./Spinner";
 import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useAuth } from "../hooks/useAuth";
-import { isUserAuthorizedForClient } from "../utils/helpers";
+import { isUserAuthorizedForClient, ADMIN_ONLY_FLAG_KEYS, ADMIN_ONLY_PROACTIVE_TYPES } from "../utils/helpers";
 
 export default function ClientSelectionView({
   styles,
@@ -19,6 +19,9 @@ export default function ClientSelectionView({
   const currentUser = user || auth.user;
   const isAdmin = !!(currentUser?.isAdmin || currentUser?.role === "Admin" || currentUser?.assignedClients === "*");
 
+  const isFlagVisible = (flagKey) => isAdmin || !ADMIN_ONLY_FLAG_KEYS.has(flagKey);
+  const isProactiveVisible = (alertType) => isAdmin || !ADMIN_ONLY_PROACTIVE_TYPES.has(alertType);
+
   const {
     refreshStatus, acceptError, clientsWithFlags, proactiveAlerts,
     proactiveCountsByClient, proactiveLoadedAt, selectingClient,
@@ -29,12 +32,15 @@ export default function ClientSelectionView({
     isUserAuthorizedForClient(currentUser, c.clientName)
   );
   const authorizedProactiveAlerts = (proactiveAlerts || []).filter(a =>
-    isUserAuthorizedForClient(currentUser, a.clientName)
+    isUserAuthorizedForClient(currentUser, a.clientName) && isProactiveVisible(a.alertType)
   );
   const authorizedProactiveCountsByClient = Object.fromEntries(
-    Object.entries(proactiveCountsByClient || {}).filter(([name]) =>
-      isUserAuthorizedForClient(currentUser, name)
-    )
+    Object.entries(
+      (authorizedProactiveAlerts || []).reduce((acc, a) => {
+        acc[a.clientName] = (acc[a.clientName] || 0) + 1;
+        return acc;
+      }, {})
+    ).filter(([name]) => isUserAuthorizedForClient(currentUser, name))
   );
 
   const {
@@ -55,7 +61,7 @@ export default function ClientSelectionView({
     const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
     let clientTotal = 0;
     Object.entries(c.flags || {}).forEach(([flagKey, isSet]) => {
-      if (!isSet) return;
+      if (!isSet || !isFlagVisible(flagKey)) return;
       let count = c.alertCounts?.[flagKey] || 0;
       if (ACTIONABLE_FLAG_KEYS.includes(flagKey)) {
         if (flagKey === "expenseDashboardDiscr") count = Math.max(0, count - validAssignedExp);
@@ -152,13 +158,13 @@ export default function ClientSelectionView({
               const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
 
               const hasVisibleActionable = ACTIONABLE_FLAG_KEYS.some(key => {
-                if (!client.flags?.[key]) return false;
+                if (!client.flags?.[key] || !isFlagVisible(key)) return false;
                 let count = client.alertCounts?.[key] || 0;
                 if (key === "expenseDashboardDiscr") count = Math.max(0, count - validAssignedExp);
                 if (key === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
                 return count > 0;
               });
-              const hasInfoFlags = Object.entries(client.flags || {}).some(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key) && (client.alertCounts?.[key] || 0) > 0);
+              const hasInfoFlags = Object.entries(client.flags || {}).some(([key, val]) => val && isFlagVisible(key) && !ACTIONABLE_FLAG_KEYS.includes(key) && (client.alertCounts?.[key] || 0) > 0);
               return hasVisibleActionable || hasInfoFlags || (authorizedProactiveCountsByClient[client.clientName] || 0) > 0;
             }).map((client, idx) => {
               const assignedSet = assignedByClient[client.clientName] || new Set();
@@ -168,32 +174,42 @@ export default function ClientSelectionView({
               const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
 
               const actionableLines = ACTIONABLE_FLAG_KEYS
-                .filter(key => client.flags?.[key])
+                .filter(key => client.flags?.[key] && isFlagVisible(key))
                 .map(key => {
                   let count = client.alertCounts?.[key] || 0;
                   if (key === "expenseDashboardDiscr") count = Math.max(0, count - validAssignedExp);
                   if (key === "invoiceDashboardDiscr") count = Math.max(0, count - validAssignedInv);
                   if (count === 0) return null;
                   const label = getFlagName(key);
-                  return `${label} (${count} alert${count !== 1 ? "s" : ""})`;
+                  return {
+                    text: `${label} (${count} alert${count !== 1 ? "s" : ""})`,
+                    isAdminOnly: ADMIN_ONLY_FLAG_KEYS.has(key),
+                  };
                 })
                 .filter(Boolean);
 
               const infoLines = Object.entries(client.flags || {})
-                .filter(([key, val]) => val && !ACTIONABLE_FLAG_KEYS.includes(key) && (client.alertCounts?.[key] || 0) > 0)
+                .filter(([key, val]) => val && isFlagVisible(key) && !ACTIONABLE_FLAG_KEYS.includes(key) && (client.alertCounts?.[key] || 0) > 0)
                 .map(([key]) => {
                   const count = client.alertCounts?.[key] || 0;
                   const label = getFlagName(key);
-                  return `${label} (${count} alert${count !== 1 ? "s" : ""})`;
+                  return {
+                    text: `${label} (${count} alert${count !== 1 ? "s" : ""})`,
+                    isAdminOnly: ADMIN_ONLY_FLAG_KEYS.has(key),
+                  };
                 });
 
-              const proactiveLines = Object.entries(
-                (authorizedProactiveAlerts || []).filter(a => a.clientName === client.clientName).reduce((acc, a) => {
-                  const label = PROACTIVE_TYPE_LABELS[a.alertType] || a.alertType || "Alert";
-                  acc[label] = (acc[label] || 0) + 1;
-                  return acc;
-                }, {})
-              ).map(([label, count]) => `${label} (${count} alert${count !== 1 ? "s" : ""})`);
+              const proactiveMap = (authorizedProactiveAlerts || []).filter(a => a.clientName === client.clientName).reduce((acc, a) => {
+                const label = PROACTIVE_TYPE_LABELS[a.alertType] || a.alertType || "Alert";
+                if (!acc[label]) acc[label] = { count: 0, isAdminOnly: ADMIN_ONLY_PROACTIVE_TYPES.has(a.alertType) };
+                acc[label].count += 1;
+                return acc;
+              }, {});
+
+              const proactiveLines = Object.entries(proactiveMap).map(([label, info]) => ({
+                text: `${label} (${info.count} alert${info.count !== 1 ? "s" : ""})`,
+                isAdminOnly: info.isAdminOnly,
+              }));
 
               return (
                 <button
@@ -217,19 +233,30 @@ export default function ClientSelectionView({
                     {selectingClient === client.clientName && <Spinner size={13} />}
                     {client.clientName}
                   </div>
-                  {actionableLines.map((line, i) => (
-                    <div key={i} style={{ fontSize: "13px", color: "#1976d2", marginBottom: "2px" }}>
-                      • {line}
-                    </div>
-                  ))}
-                  {infoLines.map((line, i) => (
-                    <div key={i} style={{ fontSize: "13px", color: "#888", marginBottom: "2px" }}>
-                      • {line}
-                    </div>
-                  ))}
-                  {proactiveLines.map((line, i) => (
-                    <div key={i} style={{ fontSize: "13px", color: "#d97706", marginBottom: "2px" }}>
-                      • {line}
+                  {[...actionableLines, ...infoLines, ...proactiveLines].map((lineItem, i) => (
+                    <div key={i} style={{ fontSize: "13px", color: "#1976d2", marginBottom: "2px", display: "flex", alignItems: "center" }}>
+                      <span>• {lineItem.text}</span>
+                      {isAdmin && lineItem.isAdminOnly && (
+                        <span
+                          title="Visible to Admins only"
+                          style={{
+                            display: "inline-block",
+                            marginLeft: "6px",
+                            padding: "1px 5px",
+                            fontSize: "9px",
+                            fontWeight: "700",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.4px",
+                            borderRadius: "10px",
+                            backgroundColor: "#f1f5f9",
+                            color: "#64748b",
+                            border: "1px solid #cbd5e1",
+                            lineHeight: "12px",
+                          }}
+                        >
+                          Admin
+                        </span>
+                      )}
                     </div>
                   ))}
                 </button>

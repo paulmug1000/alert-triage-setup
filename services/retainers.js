@@ -230,7 +230,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
     const rows = resp.data.values || [];
     const parentRow = rows[parentRowNum - 1] || [];
     if (String(parentRow[0]||"").trim() !== oldClient || String(parentRow[1]||"").trim() !== oldJobName) {
-      return res.status(400).json({ success: false, error: "Row mismatch — job may have moved. Please refresh and try again." });
+      return res.status(400).json({ success: false, error: "Row mismatch - job may have moved. Please refresh and try again." });
     }
 
     const targetRows = [parentRowNum];
@@ -289,7 +289,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
     const rows = resp.data.values || [];
     const parentRow = rows[parentRowNum - 1] || [];
     if (String(parentRow[0]||"").trim() !== client || String(parentRow[1]||"").trim() !== jobName) {
-      return res.status(400).json({ success: false, error: "Row mismatch — job may have moved." });
+      return res.status(400).json({ success: false, error: "Row mismatch - job may have moved." });
     }
 
     const oldEndDate = retParseSheetDate(parentRow[38]);
@@ -336,7 +336,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
       if (blockedRow) {
         return res.status(200).json({
           success: false, blocked: true,
-          error: `Cannot shorten this retainer — row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
+          error: `Cannot shorten this retainer - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
         });
       }
 
@@ -624,7 +624,7 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
     const rows = resp.data.values || [];
     const parentRow = rows[parentRowNum - 1] || [];
     if (String(parentRow[0] || "").trim() !== client || String(parentRow[1] || "").trim() !== jobName) {
-      return res.status(400).json({ success: false, error: "Row mismatch — job may have moved." });
+      return res.status(400).json({ success: false, error: "Row mismatch - job may have moved." });
     }
 
     const newStart = retParseSheetDate(newStartDate);
@@ -655,7 +655,7 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
       return res.status(200).json({
         success: false,
         blocked: true,
-        error: `Cannot change start date — row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
+        error: `Cannot change start date - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
       });
     }
 

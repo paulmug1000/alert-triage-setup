@@ -176,7 +176,7 @@ export async function handleGetOutgoingsInbox(req, res, sheets) {
     const allLocks = await checkAllGASLocks(sheets, sheetIdClean);
     const expLock = allLocks.expense;
     if (expLock.locked) {
-      return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Expense automation is currently running — try again in a moment" });
+      return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Expense automation is currently running - try again in a moment" });
     }
 
     await setMasterSwitch(sheets, sheetIdClean, "DirComp", true);
@@ -227,7 +227,7 @@ export async function handleGetInvoicesInbox(req, res, sheets) {
     const allLocks = await checkAllGASLocks(sheets, sheetIdClean);
     const invLock = allLocks.invoice;
     if (invLock.locked) {
-      return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Invoice automation is currently running — try again in a moment" });
+      return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Invoice automation is currently running - try again in a moment" });
     }
 
     await setMasterSwitch(sheets, sheetIdClean, "InvComp", true);

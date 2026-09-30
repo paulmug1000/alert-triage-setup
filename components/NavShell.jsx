@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 
-// Global styles injected once — handles :hover/:active which React inline styles can't do
+// Global styles injected once - handles :hover/:active which React inline styles can't do
 const GLOBAL_STYLES = `
   html, body { margin: 0; padding: 0; scroll-behavior: auto; }
   @keyframes triage-spin { to { transform: rotate(360deg); } }
@@ -26,7 +26,7 @@ if (typeof document !== "undefined") {
   }
 }
 
-// Persistent top bar — rendered around every screen
+// Persistent top bar - rendered around every screen
 export default function NavShell({ 
   activeNav, onHome, onOverview, onTasks, onActivity, onAppLog, 
   onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onSettings, 

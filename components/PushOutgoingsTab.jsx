@@ -304,7 +304,7 @@ export default function PushOutgoingsTab({
                 gap: "5px"
               }}>
                 <span>🕒</span>
-                <span>P&amp;L last updated: <strong>{plData?.lastUpdated || "—"}</strong> (cell C1)</span>
+                <span>P&amp;L last updated: <strong>{plData?.lastUpdated || "-"}</strong> (cell C1)</span>
               </div>
             </div>
 

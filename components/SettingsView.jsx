@@ -97,7 +97,7 @@ export default function SettingsView({
           <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
             <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Run Client Automation</h3>
             <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-              Runs a client&apos;s invoice/CRM/expense automation sequence on demand, via that client&apos;s Web App deployment — instead of checking a box in Automation Commander and waiting for the 30-minute poll.
+              Runs a client&apos;s invoice/CRM/expense automation sequence on demand, via that client&apos;s Web App deployment - instead of checking a box in Automation Commander and waiting for the 30-minute poll.
             </p>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "14px" }}>
@@ -139,7 +139,7 @@ export default function SettingsView({
                       body: JSON.stringify({ action: "trigger_agent_run", automationCommanderSheetId, clientName: agentRunClient, types }) });
                     const d = await r.json();
                     if (d.success) {
-                      setAgentRunMsg("Triggered — Apps Script doesn&apos;t guarantee exact timing, so this may take a few minutes to actually start. Progress will appear below once it does.");
+                      setAgentRunMsg("Triggered - Apps Script doesn&apos;t guarantee exact timing, so this may take a few minutes to actually start. Progress will appear below once it does.");
                       setAgentRunId(d.runId || null);
                     } else {
                       setAgentRunStatus("error");
@@ -165,7 +165,7 @@ export default function SettingsView({
                 {agentProgressEntries.map((entry, i) => (
                   <div key={i} style={{ fontSize: "12px", color: "#333", padding: "3px 0", borderBottom: i < agentProgressEntries.length - 1 ? "1px solid #eceef5" : "none" }}>
                     <span style={{ color: "#888", fontFamily: "monospace" }}>{entry.at ? new Date(entry.at).toLocaleTimeString() : ""}</span>
-                    {" — "}
+                    {" - "}
                     <strong style={{ textTransform: "capitalize" }}>{entry.stage}:</strong> {entry.message}
                   </div>
                 ))}
@@ -177,18 +177,18 @@ export default function SettingsView({
           <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
             <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700" }}>Alert System</h3>
             <p style={{ margin: "0 0 18px", fontSize: "12px", color: "#666" }}>
-              Every alert — actionable, informational, or proactive — is detected, resolved, and cleared independently of every other. The three categories below each run on their own schedule.
+              Every alert - actionable, informational, or proactive - is detected, resolved, and cleared independently of every other. The three categories below each run on their own schedule.
             </p>
 
             {/* Check frequency */}
             <div style={{ marginBottom: "20px", paddingBottom: "18px", borderBottom: "1px solid #f0f0f0" }}>
               <div style={{ fontSize: "13px", fontWeight: "700", color: "#1a1a1a", marginBottom: "4px" }}>Check frequency</div>
               <p style={{ margin: "0 0 12px", fontSize: "12px", color: "#888" }}>
-                How often each category is checked for. A single 30-minute Google Apps Script trigger drives all three — each just decides independently whether it&apos;s actually due yet.
+                How often each category is checked for. A single 30-minute Google Apps Script trigger drives all three - each just decides independently whether it&apos;s actually due yet.
               </p>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "8px" }}>
                 {[
-                  { key: "actionable", label: "Actionable", hint: "Discrepancies needing review — invoice, CRM, expense" },
+                  { key: "actionable", label: "Actionable", hint: "Discrepancies needing review - invoice, CRM, expense" },
                   { key: "info", label: "Informational", hint: "Acknowledge-only events from AutoLog" },
                   { key: "proactive", label: "Proactive", hint: "The 14 proactive checks" },
                 ].map(cat => {
@@ -352,7 +352,7 @@ export default function SettingsView({
             <div style={{ marginBottom: "20px", paddingTop: "18px", borderTop: "1px solid #f0f0f0" }}>
               <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Alert Types</h3>
               <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-                Every alert type the system can raise. Each one is detected, resolved, and cleared entirely on its own — nothing here is grouped, and resolving one alert never depends on or affects any other.
+                Every alert type the system can raise. Each one is detected, resolved, and cleared entirely on its own - nothing here is grouped, and resolving one alert never depends on or affects any other.
               </p>
 
               {[
@@ -372,9 +372,9 @@ export default function SettingsView({
                     { key: "crmPipeAppDiscr", name: "CRM pipeline app discrepancy", kind: "actionable" },
                     { key: "crmConfDashDiscr", name: "CRM confirmed dashboard discrepancy", kind: "actionable" },
                     { key: "crmConfAppDiscr", name: "CRM confirmed app discrepancy", kind: "actionable" },
-                    { key: "crmCopiedConfChecked", name: "CRM copied to Confirmed — checked", kind: "info" },
-                    { key: "crmCopiedConfUnchecked", name: "CRM copied to Confirmed — unchecked", kind: "info" },
-                    { key: "crmCopiedConfDelete", name: "CRM copied to Confirmed — delete", kind: "info" },
+                    { key: "crmCopiedConfChecked", name: "CRM copied to Confirmed - checked", kind: "info" },
+                    { key: "crmCopiedConfUnchecked", name: "CRM copied to Confirmed - unchecked", kind: "info" },
+                    { key: "crmCopiedConfDelete", name: "CRM copied to Confirmed - delete", kind: "info" },
                   ],
                 },
                 {
@@ -382,7 +382,7 @@ export default function SettingsView({
                   items: [
                     { key: "expenseDashboardDiscr", name: "Expense dashboard discrepancy", kind: "actionable" },
                     { key: "expenseAdded", name: "Expense added", kind: "info" },
-                    { key: "expenseUnreconGaps", name: "Expense reconciliation gaps", kind: "info" },
+                    { key: "expenseUnreconGaps", name: "Expense placeholders updated", kind: "info" },
                   ],
                 },
               ].map((g, gi) => (
@@ -406,8 +406,8 @@ export default function SettingsView({
               ))}
 
               <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #e8e8e8", fontSize: "11px", color: "#888", lineHeight: "1.6" }}>
-                <strong>Actionable</strong> — generates an individual alert with options to accept or ignore, shown in the main alert list.{" "}
-                <strong>Informational</strong> — an event worth knowing about; acknowledge it directly on the alert card, with no options to act on.
+                <strong>Actionable</strong> - generates an individual alert with options to accept or ignore, shown in the main alert list.{" "}
+                <strong>Informational</strong> - an event worth knowing about; acknowledge it directly on the alert card, with no options to act on.
               </div>
             </div>
 
@@ -445,9 +445,9 @@ export default function SettingsView({
                 { name: "Uninvoiced new job", detail: "Flags jobs that started over a month ago but still have no real invoices recorded (only placeholders or empty slots)." },
                 { name: "Uninvoiced revenue on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have uninvoiced revenue, excluding placeholder invoices and Draft invoices that haven't been sent." },
                 { name: "Unreceived expenses on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have unreceived expenses against their direct cost budget, excluding manual estimates and unreconciled-gap placeholders." },
-                { name: "Deleted invoice detection", detail: "Flags invoices with a real reference on the Confirmed tab that no longer appear in the accounting system — a likely sign the invoice was deleted or voided." },
-                { name: "Job structure errors", detail: "Flags jobs whose invoice/expense slots don't match the expected layout — e.g. a multi-row retainer with an invoice on the parent row, or slots filled out of sequence." },
-                { name: "Deleted expense detection", detail: "Flags expenses with a real reference that no longer appear in the accounting system — the expense equivalent of deleted invoice detection." },
+                { name: "Deleted invoice detection", detail: "Flags invoices with a real reference on the Confirmed tab that no longer appear in the accounting system - a likely sign the invoice was deleted or voided." },
+                { name: "Job structure errors", detail: "Flags jobs whose invoice/expense slots don't match the expected layout - e.g. a multi-row retainer with an invoice on the parent row, or slots filled out of sequence." },
+                { name: "Deleted expense detection", detail: "Flags expenses with a real reference that no longer appear in the accounting system - the expense equivalent of deleted invoice detection." },
                 { name: "Automation error detection", detail: "Watches the last 100 AutoLog entries for any occurrences of 'Error:', highlighting the error and the text that follows." },
                 { name: "Infinite loop & automation conflict detection", detail: "Detects situations where automation routines fight each other, such as within-run inverted changes (e.g. days to pay extended then shortened) or recurring multi-run flip-flops (e.g. client name differing between Xero and CRM)." },
               ].map((c, i) => (

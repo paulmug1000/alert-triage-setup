@@ -611,7 +611,7 @@ export default function ToolsView({
           <div style={styles.modalCard}>
             <h3 style={styles.modalTitle}>Stop tracking this task?</h3>
             <p style={styles.modalSubtitle}>
-              &quot;{eomDeactivateConfirm.name}&quot; will stop appearing on {eomDetailClient}&apos;s checklist. It won&apos;t be deleted — you can reactivate it later from the inactive tasks list.
+              &quot;{eomDeactivateConfirm.name}&quot; will stop appearing on {eomDetailClient}&apos;s checklist. It won&apos;t be deleted - you can reactivate it later from the inactive tasks list.
             </p>
             <div style={{ display: "flex", gap: "10px", marginTop: "14px" }}>
               <button onClick={() => { handleEomToggleTaskActive(eomDeactivateConfirm); setEomDeactivateConfirm(null); }}
@@ -812,7 +812,7 @@ export default function ToolsView({
                                 </div>
                               ) : (
                                 <span onClick={t.templateId ? undefined : () => { setEomEditingNameFor(t.taskId); setEomNameDraft(t.name); }}
-                                  title={t.templateId ? "Shared template — edit via Manage Templates" : "Click to rename"}
+                                  title={t.templateId ? "Shared template - edit via Manage Templates" : "Click to rename"}
                                   style={{ cursor: t.templateId ? "default" : "pointer" }}>
                                   {t.name}
                                 </span>
@@ -932,7 +932,7 @@ export default function ToolsView({
             </button>
             <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700" }}>Manage Clients</h3>
             <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#666" }}>
-              Drag to set the order clients appear in on the EoM overview. Excluded clients won&apos;t appear there at all — for clients on AutoUpdates that don&apos;t have any monthly tasks to complete.
+              Drag to set the order clients appear in on the EoM overview. Excluded clients won&apos;t appear there at all - for clients on AutoUpdates that don&apos;t have any monthly tasks to complete.
             </p>
             <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
               {orderedClients.map((c, i) => (
@@ -1243,7 +1243,7 @@ export default function ToolsView({
                         </div>
                       ) : (
                         <span onClick={t.templateId ? undefined : () => { setEomEditingNameFor(t.taskId); setEomNameDraft(t.name); }}
-                          title={t.templateId ? "Shared template — edit via Manage Templates" : "Click to rename"}
+                          title={t.templateId ? "Shared template - edit via Manage Templates" : "Click to rename"}
                           style={{ cursor: t.templateId ? "default" : "pointer" }}>
                           {t.name}
                         </span>
@@ -1338,7 +1338,7 @@ export default function ToolsView({
                 </div>
               ))}
               {activeTasks.length === 0 && !eomClientTasksLoading && (
-                <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No tasks assigned yet — add one below.</div>
+                <div style={{ padding: "20px", fontSize: "13px", color: "#999", textAlign: "center" }}>No tasks assigned yet - add one below.</div>
               )}
             </div>
 
@@ -1387,7 +1387,7 @@ export default function ToolsView({
                         </select>
                         {eomTemplatesError && (
                           <div style={{ fontSize: "11px", color: "#dc2626", marginTop: "4px" }}>
-                            {eomTemplatesError} — <button onClick={reloadEomTemplatesForPicker} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "11px", padding: 0, textDecoration: "underline" }}>retry</button>
+                            {eomTemplatesError} - <button onClick={reloadEomTemplatesForPicker} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "11px", padding: 0, textDecoration: "underline" }}>retry</button>
                           </div>
                         )}
                       </div>
@@ -1419,7 +1419,7 @@ export default function ToolsView({
         const { files: payrollFiles, stillResolving, readyToStart, completeCount, errorCount } = toolsFileStats("payroll");
         return (<>
         <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
-          Payroll import — upload several clients&apos; payroll documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can&apos;t work out is flagged for you to assign.
+          Payroll import - upload several clients&apos; payroll documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can&apos;t work out is flagged for you to assign.
         </p>
 
         <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
@@ -1480,7 +1480,7 @@ export default function ToolsView({
                 )}
                 {f.detectStatus === "ambiguous" && f.processStatus === "pending" && (
                   <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
-                    ⚠️ Couldn&apos;t work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} — please select it below.
+                    ⚠️ Couldn&apos;t work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} - please select it below.
                     {f.ambiguousInfo?.candidateScores?.length > 0 && (
                       <div style={{ marginTop: "4px", fontSize: "12px", color: "#92400e" }}>
                         Closest guesses: {f.ambiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
@@ -1516,7 +1516,7 @@ export default function ToolsView({
                         style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                         Yes, apply
                       </button>
-                      <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled — please check the document and try again." })}
+                      <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled - please check the document and try again." })}
                         style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                         Cancel
                       </button>
@@ -1531,14 +1531,14 @@ export default function ToolsView({
                 {f.processStatus === "complete" && f.result && (
                   <div>
                     <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
-                      ✓ {f.client} — updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
+                      ✓ {f.client} - updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
                     </div>
 
                     {f.result.totalsCheck && (
                       <div style={{ marginBottom: "12px" }}>
                         <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "6px" }}>
                           Totals check <span style={{ fontWeight: "400", color: "#888" }}>
-                            ({f.result.totalsSource === "document" ? "from a totals row on the document" : "AI-calculated — no totals row found on the document"})
+                            ({f.result.totalsSource === "document" ? "from a totals row on the document" : "AI-calculated - no totals row found on the document"})
                           </span>
                         </div>
                         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px" }}>
@@ -1583,7 +1583,7 @@ export default function ToolsView({
                       </div>
                     )}
                     {!f.result.newStarters?.length && !f.result.unmatched?.length && !f.result.missingFromDoc?.length && (
-                      <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly — no discrepancies.</div>
+                      <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly - no discrepancies.</div>
                     )}
                   </div>
                 )}
@@ -1598,7 +1598,7 @@ export default function ToolsView({
         const { files: timeFiles, stillResolving, readyToStart, completeCount, errorCount } = toolsFileStats("time");
         return (<>
         <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
-          Time report import — upload several clients&apos; time tracking documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can&apos;t work out is flagged for you to assign.
+          Time report import - upload several clients&apos; time tracking documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can&apos;t work out is flagged for you to assign.
         </p>
 
         <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
@@ -1659,7 +1659,7 @@ export default function ToolsView({
                 )}
                 {f.detectStatus === "ambiguous" && f.processStatus === "pending" && (
                   <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
-                    ⚠️ Couldn&apos;t work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} — please select it below.
+                    ⚠️ Couldn&apos;t work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} - please select it below.
                     {f.ambiguousInfo?.candidateScores?.length > 0 && (
                       <div style={{ marginTop: "4px", fontSize: "12px", color: "#92400e" }}>
                         Closest guesses: {f.ambiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
@@ -1695,7 +1695,7 @@ export default function ToolsView({
                         style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                         Yes, apply
                       </button>
-                      <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled — please check the document and try again." })}
+                      <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled - please check the document and try again." })}
                         style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                         Cancel
                       </button>
@@ -1710,7 +1710,7 @@ export default function ToolsView({
                 {f.processStatus === "complete" && f.result && (
                   <div>
                     <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
-                      ✓ {f.client} — updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
+                      ✓ {f.client} - updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
                     </div>
 
                     {f.result.newStarters?.length > 0 && (
@@ -1732,7 +1732,7 @@ export default function ToolsView({
                       </div>
                     )}
                     {!f.result.newStarters?.length && !f.result.unmatched?.length && !f.result.missingFromDoc?.length && (
-                      <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly — no discrepancies.</div>
+                      <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly - no discrepancies.</div>
                     )}
                   </div>
                 )}
@@ -1756,7 +1756,7 @@ export default function ToolsView({
           return (
             <div>
               <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#666" }}>
-                Enter each client&apos;s closing cash balance for the selected month. Account names are cached — use &quot;Load bank account information&quot; if they&apos;ve changed.
+                Enter each client&apos;s closing cash balance for the selected month. Account names are cached - use &quot;Load bank account information&quot; if they&apos;ve changed.
               </p>
 
               <div style={{ marginBottom: "16px" }}>
@@ -1776,7 +1776,7 @@ export default function ToolsView({
                     <div style={{ marginTop: "6px", fontSize: "12px", color: "#166534" }}>
                       ✓ Loaded {eomBankAccountsLoadResult.accountsLoaded} account{eomBankAccountsLoadResult.accountsLoaded !== 1 ? "s" : ""} across {eomBankAccountsLoadResult.clientsProcessed} client{eomBankAccountsLoadResult.clientsProcessed !== 1 ? "s" : ""}
                       {eomBankAccountsLoadResult.failedClients?.length > 0 && (
-                        <span style={{ color: "#b45309" }}> — couldn&apost read: {eomBankAccountsLoadResult.failedClients.join(", ")}</span>
+                        <span style={{ color: "#b45309" }}> - couldn&apost read: {eomBankAccountsLoadResult.failedClients.join(", ")}</span>
                       )}
                     </div>
                   )

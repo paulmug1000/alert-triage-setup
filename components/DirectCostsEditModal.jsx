@@ -77,7 +77,7 @@ export default function DirectCostsEditModal({
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit expense — Row {rowNum}, Slot {slotNum}</h3>
+          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit expense - Row {rowNum}, Slot {slotNum}</h3>
           <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
 

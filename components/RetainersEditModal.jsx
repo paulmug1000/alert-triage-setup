@@ -158,7 +158,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
       }
 
       if (endChanged) {
-        setSavingMessage("Updating end date — this can take a little while if rows need to be added or removed...");
+        setSavingMessage("Updating end date - this can take a little while if rows need to be added or removed...");
         const res = await fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -213,12 +213,12 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
       return;
     }
     if (jobEndISO && changeMonth > jobEndISO.slice(0, 7)) {
-      setError("The change month is after the job's current end date — please pick an earlier month, or extend the end date first.");
+      setError("The change month is after the job's current end date - please pick an earlier month, or extend the end date first.");
       return;
     }
     setSaving(true);
     try {
-      setSavingMessage("Splitting the retainer at the new amount — this can take a little while...");
+      setSavingMessage("Splitting the retainer at the new amount - this can take a little while...");
       const [yr, mo] = changeMonth.split("-").map(Number);
       const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -245,7 +245,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 520px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit retainer — {job.client}</h3>
+          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit retainer - {job.client}</h3>
           {!saving && <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>}
         </div>
 

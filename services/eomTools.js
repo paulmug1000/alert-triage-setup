@@ -1563,7 +1563,7 @@ export async function handleEomPushOutgoings(req, res, sheets) {
       clientName,
       category: "EOM",
       action: "Pushed Outgoings",
-      summary: `Pushed outgoings for ${clientName} (${selectedMonths.join(", ")})${markedTaskDone ? " — EoM task marked Done" : ""}`,
+      summary: `Pushed outgoings for ${clientName} (${selectedMonths.join(", ")})${markedTaskDone ? " - EoM task marked Done" : ""}`,
       details: { clientName, selectedMonths, markedTaskDone }
     }).catch(e => console.error("PMA log failed:", e));
 

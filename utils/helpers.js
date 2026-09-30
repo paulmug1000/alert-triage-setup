@@ -45,9 +45,9 @@ export function getAlertSummary(alert) {
     const client = src?.[0] || "";
     const job    = src?.[1] || "";
     const code   = src?.[2] || "";
-    const base   = `${client}${job ? " — " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
+    const base   = `${client}${job ? " - " + job : ""}${code ? " (" + code + ")" : ""}` || "CRM alert";
     if (isDashDiscr && alert.subType === "field_mismatch" && alert.mismatchFields?.length) {
-      return `${base} — ⚠ ${alert.mismatchFields.join(", ")} mismatch`;
+      return `${base} - ⚠ ${alert.mismatchFields.join(", ")} mismatch`;
     }
     return base;
   }
@@ -85,13 +85,52 @@ export const PROACTIVE_TYPE_LABELS = {
   infinite_loop:              "Infinite loop / automation conflict",
 };
 
+export const ADMIN_ONLY_FLAG_KEYS = new Set([
+  "crmCopiedConfChecked",
+  "crmCopiedConfUnchecked",
+  "crmCopiedConfDelete",
+  "retainerInvoicesCreated",
+  "retainerInvoicesDeleted",
+  "expenseAdded",
+  "expenseUnreconGaps",
+]);
+
+export const ADMIN_ONLY_PROACTIVE_TYPES = new Set([
+  "crm_wipe",
+  "pipeline_confirmed_overlap",
+  "retainer_shrink_blocked",
+  "job_structure_error",
+  "autolog_error",
+  "infinite_loop",
+]);
+
+export const ADMIN_ONLY_ALERT_TYPES = new Set([
+  ...ADMIN_ONLY_FLAG_KEYS,
+  ...ADMIN_ONLY_PROACTIVE_TYPES,
+]);
+
+export function stripRowInfo(text) {
+  if (!text || typeof text !== "string") return text;
+  return text
+    .replace(/\(\s*row\s+\d+,\s*/gi, "(")
+    .replace(/\(\s*(?:Confirmed|Pipeline)?\s*row\s+\d+,\s*/gi, "(")
+    .replace(/\s*\(\s*(?:Confirmed|Pipeline)?\s*row\s+\d+\s*\)/gi, "")
+    .replace(/\b(Confirmed|Pipeline)\s+row\s+\d+\b/gi, "$1")
+    .replace(/\bchild\s+row\s+\d+\b/gi, "child entry")
+    .replace(/\s*-\s*row\s+\d+:\s*/gi, ": ")
+    .replace(/\brow\s+\d+:\s*/gi, "")
+    .replace(/Mismatched rows:/gi, "Mismatched entries:")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export const getFlagName = (flagKey) => {
   const flagNames = {
     "invoiceDashboardDiscr": "Invoice discrepancy",
-    "crmPipeDashDiscr":      "CRM dashboard discrepancy (Pipeline)",
-    "crmPipeAppDiscr":       "CRM app discrepancy (Pipeline)",
-    "crmConfDashDiscr":      "CRM dashboard discrepancy (Confirmed)",
-    "crmConfAppDiscr":       "CRM app discrepancy (Confirmed)",
+    "crmPipeDashDiscr":      "Job discrepancy - Pulse-CRM (Pipeline)",
+    "crmPipeAppDiscr":       "Job discrepancy - in Pulse but not in CRM (Pipeline)",
+    "crmConfDashDiscr":      "Job discrepancy - Pulse-CRM (Confirmed)",
+    "crmConfAppDiscr":       "Job discrepancy - in Pulse but not in CRM (Confirmed)",
     "crmCopiedConfChecked":  "CRM copied to conf box checked",
     "crmCopiedConfUnchecked":"CRM copied to conf box UNchecked",
     "crmCopiedConfDelete":   "CRM copied to conf box DELETE",
@@ -99,7 +138,7 @@ export const getFlagName = (flagKey) => {
     "retainerInvoicesDeleted": "Retainer invoices deleted",
     "expenseDashboardDiscr": "Expense discrepancy",
     "expenseAdded":          "Expense added",
-    "expenseUnreconGaps":    "Expense reconciliation gaps",
+    "expenseUnreconGaps":    "Expense placeholders updated",
     "invoiceStaleUnsentChanges": "Stale unsent invoice send date changed",
   };
   return flagNames[flagKey] || flagKey;
@@ -192,4 +231,45 @@ export function sanitizeFormulaInput(val) {
   }
   return val;
 }
-
+
+/**
+ * Parse structured fields from an unreceived_expenses alert detail string
+ * in case metadata was not populated or when reading from older cached alerts.
+ */
+export function parseUnreceivedExpensesDetail(detail = "") {
+  const result = {};
+  if (!detail || typeof detail !== "string") return result;
+
+  const pipeIdx = detail.indexOf(" | ");
+  if (pipeIdx !== -1) {
+    result.endClientName = detail.slice(0, pipeIdx).trim();
+    const afterPipe = detail.slice(pipeIdx + 3);
+    const colonIdx = afterPipe.indexOf(":");
+    if (colonIdx !== -1) {
+      const jobPart = afterPipe.slice(0, colonIdx).trim();
+      const codeMatch = jobPart.match(/\[([^\]]+)\]/);
+      if (codeMatch) result.projectCode = codeMatch[1];
+      const rowMatch = jobPart.match(/\(Row\s*(\d+)\)/i);
+      if (rowMatch) result.confirmedRow = rowMatch[1];
+      result.jobName = jobPart.replace(/\[([^\]]+)\]/, "").replace(/\(Row\s*(\d+)\)/i, "").trim();
+    }
+  }
+
+  const dateMatch = detail.match(/job ended\s*([^,]+)/i);
+  if (dateMatch) result.endDate = dateMatch[1].trim();
+
+  const budgetMatch = detail.match(/direct cost budget\s*=\s*£?([\d,.]+)/i);
+  if (budgetMatch) result.directCosts = budgetMatch[1].replace(/,/g, "");
+
+  const unrecMatch = detail.match(/[-\u2014]\s*£?([\d,.]+)\s*unreceived/i);
+  if (unrecMatch) result.unreceivedAmount = unrecMatch[1].replace(/,/g, "");
+
+  const noteMatch = detail.match(/Note:\s*(\d+)\s*expense\(s\)\s*totalling\s*£?([\d,.]+)/i);
+  if (noteMatch) {
+    result.placeholderCount = noteMatch[1];
+    result.placeholderTotal = noteMatch[2].replace(/,/g, "");
+  }
+
+  return result;
+}
+

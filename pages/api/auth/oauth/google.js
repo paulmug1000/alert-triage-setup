@@ -15,15 +15,24 @@ export default async function handler(req, res) {
   // Standard OpenID Connect scopes for identity
   const scopes = ["openid", "email", "profile"].join(" ");
 
-  // Generate cryptographic anti-CSRF nonce
+  // Generate cryptographic anti-CSRF nonce and PKCE verifier (RFC 7636)
   const nonce = crypto.randomBytes(16).toString("hex");
+  const codeVerifier = crypto.randomBytes(32).toString("base64url");
+  const codeChallenge = crypto
+    .createHash("sha256")
+    .update(codeVerifier)
+    .digest("base64url");
+
   const stateObj = {
     mode: req.query.mode || "redirect",
     nonce
   };
 
   const isProd = process.env.NODE_ENV === "production";
-  res.setHeader("Set-Cookie", `pma_oauth_nonce=${nonce}; Path=/api/auth/oauth; HttpOnly; SameSite=Lax; Max-Age=600${isProd ? "; Secure" : ""}`);
+  res.setHeader("Set-Cookie", [
+    `pma_oauth_nonce=${nonce}; Path=/api/auth/oauth; HttpOnly; SameSite=Lax; Max-Age=600${isProd ? "; Secure" : ""}`,
+    `pma_oauth_verifier=${codeVerifier}; Path=/api/auth/oauth; HttpOnly; SameSite=Lax; Max-Age=600${isProd ? "; Secure" : ""}`
+  ]);
 
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.searchParams.set("client_id", clientId);
@@ -32,6 +41,8 @@ export default async function handler(req, res) {
   authUrl.searchParams.set("scope", scopes);
   authUrl.searchParams.set("access_type", "online");
   authUrl.searchParams.set("prompt", "select_account");
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
   authUrl.searchParams.set("state", JSON.stringify(stateObj));
 
   res.redirect(authUrl.toString());

@@ -110,12 +110,16 @@ export default async function handler(req, res) {
     }
   } catch (e) {}
 
-  // Verify CSRF state nonce
+  // Verify CSRF state nonce & PKCE code verifier
   const cookies = parseCookies(req.headers.cookie);
   const cookieNonce = cookies.pma_oauth_nonce;
-  // Clear the nonce cookie
+  const codeVerifier = cookies.pma_oauth_verifier;
+  // Clear the OAuth cookies
   const isProd = process.env.NODE_ENV === "production";
-  res.setHeader("Set-Cookie", `pma_oauth_nonce=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`);
+  res.setHeader("Set-Cookie", [
+    `pma_oauth_nonce=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`,
+    `pma_oauth_verifier=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`
+  ]);
 
   if (stateNonce && cookieNonce && stateNonce !== cookieNonce) {
     console.warn("⚠️ Microsoft OAuth state mismatch (potential CSRF attempt)");
@@ -161,18 +165,23 @@ export default async function handler(req, res) {
   const redirectUri = `${proto}://${host}/api/auth/oauth/microsoft/callback`;
 
   try {
-    // 1. Exchange authorization code for tokens
+    // 1. Exchange authorization code for tokens (RFC 7636 PKCE)
+    const tokenPayload = {
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: String(code),
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code",
+      scope: "openid email profile User.Read"
+    };
+    if (codeVerifier) {
+      tokenPayload.code_verifier = codeVerifier;
+    }
+
     const tokenRes = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        code: String(code),
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code",
-        scope: "openid email profile User.Read"
-      })
+      body: new URLSearchParams(tokenPayload)
     });
 
     const tokenData = await tokenRes.json();

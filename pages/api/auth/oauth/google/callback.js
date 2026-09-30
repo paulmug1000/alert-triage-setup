@@ -110,12 +110,16 @@ export default async function handler(req, res) {
     }
   } catch (e) {}
 
-  // Verify CSRF state nonce
+  // Verify CSRF state nonce & PKCE code verifier
   const cookies = parseCookies(req.headers.cookie);
   const cookieNonce = cookies.pma_oauth_nonce;
-  // Clear the nonce cookie
+  const codeVerifier = cookies.pma_oauth_verifier;
+  // Clear the OAuth cookies
   const isProd = process.env.NODE_ENV === "production";
-  res.setHeader("Set-Cookie", `pma_oauth_nonce=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`);
+  res.setHeader("Set-Cookie", [
+    `pma_oauth_nonce=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`,
+    `pma_oauth_verifier=; Path=/api/auth/oauth; HttpOnly; Max-Age=0${isProd ? "; Secure" : ""}`
+  ]);
 
   if (stateNonce && cookieNonce && stateNonce !== cookieNonce) {
     console.warn("⚠️ Google OAuth state mismatch (potential CSRF attempt)");
@@ -161,17 +165,22 @@ export default async function handler(req, res) {
   const redirectUri = `${proto}://${host}/api/auth/oauth/google/callback`;
 
   try {
-    // 1. Exchange authorization code for tokens
+    // 1. Exchange authorization code for tokens (RFC 7636 PKCE)
+    const tokenPayload = {
+      code: String(code),
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code"
+    };
+    if (codeVerifier) {
+      tokenPayload.code_verifier = codeVerifier;
+    }
+
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code: String(code),
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code"
-      })
+      body: new URLSearchParams(tokenPayload)
     });
 
     const tokenData = await tokenRes.json();

@@ -1,0 +1,55 @@
+import jwt from "jsonwebtoken";
+
+export default async function handler(req, res) {
+  // Allow CORS so client script or server script can verify
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  let ssoToken = null;
+  let email = null;
+
+  if (req.method === "POST") {
+    let body = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        body = {};
+      }
+    }
+    ssoToken = body?.ssoToken;
+    email = body?.email;
+  } else {
+    ssoToken = req.query?.ssoToken;
+    email = req.query?.email;
+  }
+
+  if (!ssoToken || !email) {
+    return res.status(400).json({ valid: false, message: "Missing ssoToken or email parameter" });
+  }
+
+  try {
+    const secret = process.env.PMA_JWT_SECRET || "pulse-sso-secret-fallback";
+    const decoded = jwt.verify(ssoToken, secret);
+
+    if (decoded.email.toLowerCase().trim() !== String(email).toLowerCase().trim()) {
+      return res.status(403).json({ valid: false, message: "Email address mismatch" });
+    }
+
+    return res.status(200).json({
+      valid: true,
+      email: decoded.email,
+      provider: decoded.provider || "SSO"
+    });
+  } catch (err) {
+    return res.status(401).json({
+      valid: false,
+      message: err.message || "SSO token is invalid or has expired"
+    });
+  }
+}

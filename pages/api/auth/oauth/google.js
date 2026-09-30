@@ -19,6 +19,10 @@ export default async function handler(req, res) {
   authUrl.searchParams.set("access_type", "online");
   authUrl.searchParams.set("prompt", "select_account");
 
+  if (req.query.mode) {
+    authUrl.searchParams.set("state", JSON.stringify({ mode: req.query.mode }));
+  }
+
   res.redirect(authUrl.toString());
   return;
 }

@@ -117,10 +117,17 @@ export const config = {
 
 export default async function handler(req, res) {
   // Set CORS headers
-  res.setHeader(
-    "Access-Control-Allow-Origin",
-    "https://project-shj9n.vercel.app"
-  );
+  const allowedOrigins = [
+    "https://pma.pulsedashboard.co.uk",
+    "https://project-shj9n.vercel.app",
+    "http://localhost:3000"
+  ];
+  const origin = req.headers.origin;
+  if (origin && (allowedOrigins.includes(origin) || origin.endsWith(".pulsedashboard.co.uk") || origin.endsWith(".vercel.app"))) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "https://pma.pulsedashboard.co.uk");
+  }
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",

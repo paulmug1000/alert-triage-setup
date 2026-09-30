@@ -35,11 +35,18 @@ export default async function handler(req, res) {
         
       const acId = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 
+      const cronSecret = process.env.CRON_SECRET || "";
+      const cronHeaders = {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${cronSecret}`,
+        "x-cron-secret": cronSecret
+      };
+
       // Step 1: Sweep
       console.log("CRON: Triggering Sweep...");
       await fetch(`${baseUrl}/api/triage`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start_triage", step: "sweep", automationCommanderSheetId: acId }),
+        method: "POST", headers: cronHeaders,
+        body: JSON.stringify({ action: "start_triage", step: "sweep", secret: cronSecret, automationCommanderSheetId: acId }),
       });
 
       // Step 2: Build Options
@@ -47,8 +54,8 @@ export default async function handler(req, res) {
       let hasMore = true;
       while (hasMore) {
         const buildResp = await fetch(`${baseUrl}/api/triage`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "start_triage", step: "build", automationCommanderSheetId: acId }),
+          method: "POST", headers: cronHeaders,
+          body: JSON.stringify({ action: "start_triage", step: "build", secret: cronSecret, automationCommanderSheetId: acId }),
         });
         const buildData = await buildResp.json();
         if (!buildResp.ok || !buildData.success) throw new Error(buildData.error || "Build options failed");
@@ -58,8 +65,8 @@ export default async function handler(req, res) {
       // Step 3: Store Precomputed
       console.log("CRON: Triggering Store...");
       const storeResp = await fetch(`${baseUrl}/api/triage`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start_triage", step: "store", automationCommanderSheetId: acId }),
+        method: "POST", headers: cronHeaders,
+        body: JSON.stringify({ action: "start_triage", step: "store", secret: cronSecret, automationCommanderSheetId: acId }),
       });
       const storeData = await storeResp.json();
       if (!storeResp.ok || !storeData.success) throw new Error(storeData.error || "Store failed");

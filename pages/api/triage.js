@@ -154,12 +154,28 @@ export default async function handler(req, res) {
 
     // Background jobs allowed with verified CRON_SECRET or AGENT_TRIGGER_SECRET
     const cronSecret = process.env.CRON_SECRET;
-    const isCronAuthorized = cronSecret && (req.body?.secret === cronSecret || req.query?.secret === cronSecret);
+    const isCronAuthorized = cronSecret && (
+      req.body?.secret === cronSecret ||
+      req.query?.secret === cronSecret ||
+      req.headers["x-cron-secret"] === cronSecret ||
+      req.headers.authorization === `Bearer ${cronSecret}`
+    );
     const agentSecret = process.env.AGENT_TRIGGER_SECRET;
-    const isAgentAuthorized = agentSecret && (req.body?.secret === agentSecret);
+    const isAgentAuthorized = agentSecret && (
+      req.body?.secret === agentSecret ||
+      req.headers.authorization === `Bearer ${agentSecret}`
+    );
 
     const isSystemAuthorized =
-      (isCronAuthorized && (action === "run_flag_sweep" || action === "build_cached_alert_options" || action === "store_precomputed" || action === "send_daily_alerts_summary")) ||
+      (isCronAuthorized && (
+        action === "start_triage" ||
+        action === "run_flag_sweep" ||
+        action === "build_cached_alert_options" ||
+        action === "analyze_alert" ||
+        action === "analyze_noaction_flag" ||
+        action === "store_precomputed" ||
+        action === "send_daily_alerts_summary"
+      )) ||
       (isAgentAuthorized && action === "agent_progress");
 
     // Enforce authentication gateway across all protected actions
@@ -171,7 +187,9 @@ export default async function handler(req, res) {
 
     if (action === "send_otp") {
       const { email } = req.body || {};
-      const result = await sendOtp(email, automationCommanderSheetId);
+      const forwarded = req.headers["x-forwarded-for"];
+      const clientIp = (typeof forwarded === "string" ? forwarded.split(",")[0] : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+      const result = await sendOtp(email, automationCommanderSheetId, clientIp);
       return res.status(200).json(result);
 
     } else if (action === "verify_otp") {

@@ -11,7 +11,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, message: "Email is required" });
     }
 
-    const result = await sendOtp(email, automationCommanderSheetId);
+    const forwarded = req.headers["x-forwarded-for"];
+    const clientIp = (typeof forwarded === "string" ? forwarded.split(",")[0] : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+    const result = await sendOtp(email, automationCommanderSheetId, clientIp);
     return res.status(200).json(result);
   } catch (error) {
     console.error("❌ /api/auth/send-code error:", error);

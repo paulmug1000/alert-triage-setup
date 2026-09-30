@@ -2029,10 +2029,15 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
           match.fingerprintHash = row.fingerprintHash;
 
           try {
+            const cronSecret = process.env.CRON_SECRET || "";
             const analyzeRes = await fetch(`${baseUrl}/api/triage`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "analyze_alert", alert: match, memoryRow: row, automationCommanderSheetId: acIdBuild, sharedData }),
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${cronSecret}`,
+                "x-cron-secret": cronSecret
+              },
+              body: JSON.stringify({ action: "analyze_alert", secret: cronSecret, alert: match, memoryRow: row, automationCommanderSheetId: acIdBuild, sharedData }),
             });
             const analyzeData = await analyzeRes.json();
             if (analyzeData.success) {
@@ -2091,11 +2096,17 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
         const client = clientByName.get(row.clientName);
         if (!client) { richErrors++; continue; }
         try {
+          const cronSecret = process.env.CRON_SECRET || "";
           const analyzeRes = await fetch(`${baseUrl}/api/triage`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${cronSecret}`,
+              "x-cron-secret": cronSecret
+            },
             body: JSON.stringify({
               action: "analyze_noaction_flag",
+              secret: cronSecret,
               clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId,
               automationCommanderSheetId: acIdBuild, flagType: row.alertType, clientName: row.clientName,
               targetLine: row.alertSummary,

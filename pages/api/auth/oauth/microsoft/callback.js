@@ -1,5 +1,6 @@
-import { createSessionForVerifiedEmail } from "../../../../../services/authService";
+import { createSessionForVerifiedEmail, getJwtSecret } from "../../../../../services/authService";
 import jwt from "jsonwebtoken";
+
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -214,7 +215,7 @@ export default async function handler(req, res) {
 
     // In popup mode, mint a strictly scoped SSO token (tokenType: "sso_token")
     if (isPopup) {
-      const secret = process.env.PMA_JWT_SECRET || "pma_jwt_secret_pulse_mgmt_auth_2026_x89a74bf20ec91";
+      const secret = getJwtSecret();
       const ssoToken = jwt.sign(
         { tokenType: "sso_token", email, provider: "Microsoft" },
         secret,

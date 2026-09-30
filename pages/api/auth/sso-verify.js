@@ -1,4 +1,6 @@
 import jwt from "jsonwebtoken";
+import { getJwtSecret } from "../../../services/authService";
+
 
 export default async function handler(req, res) {
   const origin = req.headers.origin;
@@ -47,13 +49,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const secret = process.env.PMA_JWT_SECRET;
-    if (!secret) {
-      if (process.env.NODE_ENV === "production") {
-        return res.status(500).json({ valid: false, message: "Server authentication configuration error" });
-      }
-    }
-    const decoded = jwt.verify(ssoToken, secret || "pulse-dev-secret");
+    const secret = getJwtSecret();
+    const decoded = jwt.verify(ssoToken, secret);
 
     if (decoded.email.toLowerCase().trim() !== String(email).toLowerCase().trim()) {
       return res.status(403).json({ valid: false, message: "Email address mismatch" });

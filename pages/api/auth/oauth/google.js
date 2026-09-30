@@ -19,5 +19,6 @@ export default async function handler(req, res) {
   authUrl.searchParams.set("access_type", "online");
   authUrl.searchParams.set("prompt", "select_account");
 
-  return res.redirect(authUrl.toString());
+  res.redirect(authUrl.toString());
+  return;
 }

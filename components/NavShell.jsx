@@ -243,7 +243,7 @@ export default function NavShell({
   });
 
   // Strict requested menu order:
-  // Home, Jobs, Contractors, Invoices, Retainers, Tasks, Activity, Views, EoM, Settings (Admin only)
+  // Home, Jobs, Contractors, Invoices, Retainers, Tasks, Activity, Views, EoM, Settings
   const allNavItems = [
     { key: "home", label: "Home", handler: onHome, badge: homeAlertCount },
     { key: "jobs", label: "Jobs", handler: onJobs },
@@ -254,7 +254,7 @@ export default function NavShell({
     { key: "activity", label: "Activity", handler: onActivity || onAppLog },
     { key: "views", label: "Views", handler: onViews },
     { key: "tools", label: "EoM", handler: onTools },
-    ...(!user || user.isAdmin ? [{ key: "settings", label: "⚙ Settings", handler: onSettings }] : []),
+    { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
 
   return (

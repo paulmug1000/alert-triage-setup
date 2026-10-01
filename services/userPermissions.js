@@ -89,8 +89,8 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
 
     const rows = resp.data.values || [];
     const users = rows
-      .filter(row => row && row[0] && String(row[0]).trim().length > 0)
       .map((row, idx) => {
+        if (!row || !row[0] || String(row[0]).trim().length === 0) return null;
         const email = String(row[0] || "").toLowerCase().trim();
         const name = String(row[1] || "").trim();
         const role = String(row[2] || "").trim().toLowerCase() === "admin" ? "Admin" : "ClientManager";
@@ -102,7 +102,7 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
         const dailyAlertsEmail = String(row[7] || "").trim().toLowerCase() === "no" ? "No" : "Yes";
 
         return {
-          rowIndex: idx + 2, // 1-indexed spreadsheet row
+          rowIndex: idx + 2, // 1-indexed spreadsheet row matching A2:H500 offset
           email,
           name: name || email.split("@")[0],
           role,
@@ -112,7 +112,8 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
           lastLoginAt,
           dailyAlertsEmail
         };
-      });
+      })
+      .filter(Boolean);
 
     // Save to Redis
     try {
@@ -163,6 +164,39 @@ export async function updateUserLastLogin(email, sheets, automationCommanderShee
     } catch (e) {}
   } catch (e) {
     console.warn("⚠️ Failed to update user last login:", e.message);
+  }
+}
+
+/**
+ * Update Daily Alerts Email preference ("Yes" | "No") for a user in the spreadsheet and bust Redis cache
+ */
+export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
+  try {
+    const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+    const user = await getUserByEmail(email, sheets, acId, true);
+    if (!user || !user.rowIndex) {
+      throw new Error(`User not found: ${email}`);
+    }
+
+    const val = String(dailyAlertsEmail).trim().toLowerCase() === "no" ? "No" : "Yes";
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: acId,
+      range: `${USERS_TAB}!H${user.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [[val]]
+      }
+    }));
+
+    // Invalidate Redis cache so subsequent reads see the updated preference
+    try {
+      await redisClient.del(REDIS_USERS_KEY);
+    } catch (e) {}
+
+    return { success: true, dailyAlertsEmail: val };
+  } catch (e) {
+    console.error("❌ Failed to update user daily alerts email:", e.message);
+    throw e;
   }
 }
 

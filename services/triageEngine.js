@@ -1052,6 +1052,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
     let aggregatedNoActionResults = {};
     for (const na of scopedNoAction) {
       if (na.analysisResult && na.analysisResult.results) {
+        if (na.fingerprintHash) {
+          aggregatedNoActionResults[`${na.clientName}___${na.fingerprintHash}`] = na.analysisResult;
+        }
         const key = `${na.clientName}___${na.flagType}`;
         if (!aggregatedNoActionResults[key]) {
           aggregatedNoActionResults[key] = { success: true, flagType: na.flagType, results: [], overallOk: true };
@@ -1307,6 +1310,9 @@ export async function handleStorePrecomputed(req, res, sheets) {
 
     for (const na of finalNoActionAlerts) {
       if (na.analysisResult && na.analysisResult.results) {
+        if (na.fingerprintHash) {
+          aggregatedNoActionResults[`${na.clientName}___${na.fingerprintHash}`] = na.analysisResult;
+        }
         const key = `${na.clientName}___${na.flagType}`;
         aggregatedNoActionResults[key].results.push(...na.analysisResult.results);
         if (na.analysisResult.overallOk === false) {
@@ -6823,6 +6829,15 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               const newPattern = /\[Retainers\s*-\s*(Confirmed|Pipeline)\]\s*Added\s+(\d+)\s+child\s+rows?\(s?\)\s*\(Parent\s+Row:\s*(\d+)\)\s+for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
               let m;
               while ((m = newPattern.exec(details)) !== null) {
+                if (targetLine) {
+                  const normMatch = m[0].replace(/\s+/g, " ").trim().toLowerCase();
+                  const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
+                  const clientLower = m[4].trim().toLowerCase();
+                  const jobLower = m[5].trim().toLowerCase();
+                  const isMatch = normMatch.includes(normTarget) || normTarget.includes(normMatch) ||
+                    (normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower));
+                  if (!isMatch) continue;
+                }
                 affectedRetainerJobs.push({
                   tab:               m[1].trim(),   // "Confirmed" or "Pipeline"
                   childRowsCreated:  parseInt(m[2], 10),
@@ -6837,6 +6852,15 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               if (affectedRetainerJobs.length === 0) {
                 const oldPattern = /Row\s+(\d+),\s+([^,]+),\s+([^:]+):\s+Added\s+\d+\s+invoice rows/gi;
                 while ((m = oldPattern.exec(details)) !== null) {
+                  if (targetLine) {
+                    const normMatch = m[0].replace(/\s+/g, " ").trim().toLowerCase();
+                    const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
+                    const clientLower = m[2].trim().toLowerCase();
+                    const jobLower = m[3].trim().toLowerCase();
+                    const isMatch = normMatch.includes(normTarget) || normTarget.includes(normMatch) ||
+                      (normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower));
+                    if (!isMatch) continue;
+                  }
                   affectedRetainerJobs.push({
                     logSheetRow: parseInt(m[1], 10),
                     clientNameFromLog: m[2].trim(),
@@ -6846,14 +6870,51 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 }
               }
             }
+
+            if (affectedRetainerJobs.length === 0 && targetLine) {
+              const targetNewPattern = /\[Retainers\s*-\s*(Confirmed|Pipeline)\]\s*Added\s+(\d+)\s+child\s+rows?\(s?\)\s*(?:\(Parent\s+Row:\s*(\d+)\)\s*)?for\s+([^|]+)\s*\|\s*([^\[\n]+)/i;
+              const tm = targetNewPattern.exec(targetLine);
+              if (tm) {
+                affectedRetainerJobs.push({
+                  tab:               tm[1].trim(),
+                  childRowsCreated:  parseInt(tm[2], 10),
+                  logSheetRow:       tm[3] ? parseInt(tm[3], 10) : null,
+                  clientNameFromLog: tm[4].trim(),
+                  jobName:           tm[5].trim(),
+                  logTimestamp:      "",
+                });
+              } else {
+                const targetOldPattern = /Row\s+(\d+),\s+([^,]+),\s+([^:]+):\s+Added\s+(\d+)\s+invoice rows/i;
+                const om = targetOldPattern.exec(targetLine);
+                if (om) {
+                  affectedRetainerJobs.push({
+                    logSheetRow:       parseInt(om[1], 10),
+                    clientNameFromLog: om[2].trim(),
+                    jobName:           om[3].trim(),
+                    logTimestamp:      "",
+                  });
+                }
+              }
+            }
+
             // Deduplicate by jobName (row numbers are unreliable after row shifts)
             const seenJobs = new Set();
-            const dedupedJobs = affectedRetainerJobs.filter(j => {
+            let dedupedJobs = affectedRetainerJobs.filter(j => {
               const key = `${j.clientNameFromLog}___${j.jobName}`;
               if (seenJobs.has(key)) return false;
               seenJobs.add(key);
               return true;
             });
+
+            if (targetLine && dedupedJobs.length > 1) {
+              const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
+              const matched = dedupedJobs.filter(j => {
+                const jobLower = (j.jobName || "").trim().toLowerCase();
+                const clientLower = (j.clientNameFromLog || "").trim().toLowerCase();
+                return normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower);
+              });
+              if (matched.length > 0) dedupedJobs = matched;
+            }
             console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
 
             // Read Confirmed tab
@@ -7180,6 +7241,15 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               const pattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\(s?\)(?:\s*\(Parent\s+Row:\s*\d+\))?\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/gi;
               let m;
               while ((m = pattern.exec(details)) !== null) {
+                if (targetLine) {
+                  const normMatch = m[0].replace(/\s+/g, " ").trim().toLowerCase();
+                  const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
+                  const clientLower = m[1].trim().toLowerCase();
+                  const jobLower = m[2].trim().toLowerCase();
+                  const isMatch = normMatch.includes(normTarget) || normTarget.includes(normMatch) ||
+                    (normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower));
+                  if (!isMatch) continue;
+                }
                 affectedRetainerJobs.push({
                   clientNameFromLog: m[1].trim(),
                   jobName: m[2].trim(),
@@ -7188,14 +7258,36 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               }
             }
 
+            if (affectedRetainerJobs.length === 0 && targetLine) {
+              const targetPattern = /Trimmed\s+\d+\s+excess\s+child\s+rows?\(s?\)(?:\s*\(Parent\s+Row:\s*\d+\))?\s*for\s+([^|]+)\s*\|\s*([^\[\n]+)/i;
+              const tm = targetPattern.exec(targetLine);
+              if (tm) {
+                affectedRetainerJobs.push({
+                  clientNameFromLog: tm[1].trim(),
+                  jobName: tm[2].trim(),
+                  logTimestamp: "",
+                });
+              }
+            }
+
             // Deduplicate by client + job
             const seenJobs = new Set();
-            const dedupedJobs = affectedRetainerJobs.filter(j => {
+            let dedupedJobs = affectedRetainerJobs.filter(j => {
               const key = `${j.clientNameFromLog}|||${j.jobName}`;
               if (seenJobs.has(key)) return false;
               seenJobs.add(key);
               return true;
             });
+
+            if (targetLine && dedupedJobs.length > 1) {
+              const normTarget = targetLine.replace(/\s+/g, " ").trim().toLowerCase();
+              const matched = dedupedJobs.filter(j => {
+                const jobLower = (j.jobName || "").trim().toLowerCase();
+                const clientLower = (j.clientNameFromLog || "").trim().toLowerCase();
+                return normTarget.includes(jobLower) && (normTarget.includes(clientLower) || !clientLower);
+              });
+              if (matched.length > 0) dedupedJobs = matched;
+            }
             console.log(`  ✓ Parsed ${dedupedJobs.length} affected retainer jobs: ${JSON.stringify(dedupedJobs)}`);
 
             // Read Confirmed tab

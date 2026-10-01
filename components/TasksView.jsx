@@ -3,6 +3,7 @@ import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
 import { useTasks } from "../contexts/TaskContext";
 import { useAuth } from "../hooks/useAuth";
+import { filterAnalysisResultsForAlert } from "../utils/helpers";
 
 export default function TasksView({
   styles,
@@ -527,8 +528,13 @@ export default function TasksView({
           </div>
           
           {selectedTask.analysisResult ? (() => {
-            const analysis = selectedTask.analysisResult;
-            const overallOk = analysis.overallOk;
+            const rawAnalysis = selectedTask.analysisResult;
+            const taskDetail = selectedTask.alertSummary || "";
+            const displayedResults = filterAnalysisResultsForAlert(rawAnalysis?.results, taskDetail);
+            const overallOk = displayedResults.length > 0
+              ? displayedResults.every(r => r.status === "ok" || r.status === "info")
+              : (rawAnalysis?.overallOk ?? true);
+            const analysis = { ...rawAnalysis, results: displayedResults, overallOk };
             return (
               <div>
                 <div style={{

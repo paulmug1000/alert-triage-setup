@@ -324,6 +324,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
           allOutgoingsClients={allOutgoingsClients}
           getFlagName={getFlagName}
           withModal={withModal}
+          isAdmin={isAdmin}
+          user={user}
         />
       );
     }

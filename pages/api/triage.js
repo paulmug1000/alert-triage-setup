@@ -81,7 +81,7 @@ import {
   updateCashCellNote
 } from "../../services/cashflowReconService";
 import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
-import { getAllUsers, isUserAuthorizedForClient } from "../../services/userPermissions";
+import { getAllUsers, isUserAuthorizedForClient, updateUserDailyAlertsEmail, getUserByEmail } from "../../services/userPermissions";
 import { matchesClientName } from "../../utils/helpers";
 
 // eomTabsVerified moved to eomTools.js
@@ -210,6 +210,34 @@ export default async function handler(req, res) {
       }
       const users = await getAllUsers(sheets, automationCommanderSheetId);
       return res.status(200).json({ success: true, users });
+
+    } else if (action === "get_user_preferences") {
+      if (!sessionUser || !sessionUser.email) {
+        return res.status(401).json({ success: false, error: "Unauthorized" });
+      }
+      try {
+        const userRecord = await getUserByEmail(sessionUser.email, sheets, automationCommanderSheetId);
+        return res.status(200).json({
+          success: true,
+          dailyAlertsEmail: userRecord?.dailyAlertsEmail || "Yes"
+        });
+      } catch (err) {
+        console.error("❌ get_user_preferences error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "update_user_preference") {
+      if (!sessionUser || !sessionUser.email) {
+        return res.status(401).json({ success: false, error: "Unauthorized" });
+      }
+      try {
+        const { dailyAlertsEmail } = req.body;
+        const result = await updateUserDailyAlertsEmail(sessionUser.email, dailyAlertsEmail, sheets, automationCommanderSheetId);
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ update_user_preference error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
 
     } else if (action === "emergency_flush_redis") {
       if (!sessionUser || !sessionUser.isAdmin) {

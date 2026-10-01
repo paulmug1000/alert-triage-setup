@@ -273,3 +273,47 @@ export function parseUnreceivedExpensesDetail(detail = "") {
   return result;
 }
 
+export function filterAnalysisResultsForAlert(results, flagDetail) {
+  if (!Array.isArray(results) || results.length <= 1 || !flagDetail) {
+    return results || [];
+  }
+
+  const detailLower = flagDetail.toLowerCase();
+
+  // Try extracting client and job directly from standard log patterns
+  // Pattern 1: "... for ClientName | JobName"
+  const forMatch = flagDetail.match(/for\s+([^|]+)\s*\|\s*([^\[\n]+)/i);
+  // Pattern 2: "Row N, ClientName, JobName:"
+  const rowMatch = !forMatch ? flagDetail.match(/Row\s+\d+,\s*([^,]+),\s*([^:]+):/i) : null;
+
+  const targetClient = (forMatch ? forMatch[1] : rowMatch ? rowMatch[1] : "").trim().toLowerCase();
+  const targetJob = (forMatch ? forMatch[2] : rowMatch ? rowMatch[2] : "").trim().toLowerCase();
+
+  const matched = results.filter(r => {
+    const job = String(r.jobName || "").trim().toLowerCase();
+    const client = String(r.clientName || "").trim().toLowerCase();
+    const code = String(r.projectCode || "").trim().toLowerCase();
+
+    // If we extracted targetClient and targetJob from log line:
+    if (targetJob && job) {
+      const jobMatches = job === targetJob || targetJob.includes(job) || job.includes(targetJob);
+      const clientMatches = !targetClient || !client || client === targetClient || targetClient.includes(client) || client.includes(targetClient);
+      if (jobMatches && clientMatches) return true;
+    }
+
+    // Secondary check: project code in detail
+    if (code && detailLower.includes(code)) return true;
+
+    // Fallback: check if both client and job appear in flagDetail
+    if (client && job && job !== "-") {
+      if (detailLower.includes(client) && detailLower.includes(job)) return true;
+    }
+
+    // Fallback: job alone if distinctive and client is blank
+    if (job && job !== "-" && !client && detailLower.includes(job)) return true;
+
+    return false;
+  });
+
+  return matched.length > 0 ? matched : results;
+}

@@ -1,7 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail } from "../utils/helpers";
+import { stripRowInfo, parseUnreceivedExpensesDetail, filterAnalysisResultsForAlert } from "../utils/helpers";
 
 export default function NonAdminAlertListView({
   styles,
@@ -168,8 +168,13 @@ export default function NonAdminAlertListView({
                 const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
                 const isResolved = resolvedNoActionFlags.has(alertId);
                 const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges", "expenseUnreconGaps"].includes(na.flagType);
-                const analysis = noActionAnalysis[alertId] || na.analysisResult;
+                const rawAnalysis = noActionAnalysis[alertId] || na.analysisResult;
                 const isLoading = noActionAnalysisLoading[alertId];
+                const displayedResults = filterAnalysisResultsForAlert(rawAnalysis?.results, na.flagDetail);
+                const overallOk = displayedResults.length > 0
+                  ? displayedResults.every(r => r.status === "ok" || r.status === "info")
+                  : (rawAnalysis?.overallOk ?? true);
+                const analysis = rawAnalysis ? { ...rawAnalysis, results: displayedResults, overallOk } : null;
 
                 if (isRichFlag && !isResolved) {
                   const overallOk = analysis?.overallOk;

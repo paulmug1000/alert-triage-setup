@@ -3,15 +3,31 @@ import Spinner from "./Spinner";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
 
+// ============================================================================
+// PULSE MANAGEMENT APP (PMA)
+// Version: 1.01
+// Rule: Always increment this version by 0.01 whenever changes are made to the PMA app.
+// ============================================================================
+export const PMA_VERSION = "1.01";
+
 export default function SettingsView({
   automationCommanderSheetId,
   allOutgoingsClients,
-  getFlagName
+  getFlagName,
+  isAdmin = false,
+  user
 }) {
   const { clientsWithFlags, isLoading, refreshTriage } = useTriage();
+  const effectiveIsAdmin = !!(isAdmin || user?.isAdmin || user?.role === "Admin" || user?.assignedClients === "*");
 
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [triggerProactiveMsg, setTriggerProactiveMsg] = useState("");
+
+  // User preference: Daily alerts digest email
+  const [dailyAlertsEmail, setDailyAlertsEmail] = useState("Yes");
+  const [prefLoading, setPrefLoading] = useState(true);
+  const [prefSaving, setPrefSaving] = useState(false);
+  const [prefSavedMsg, setPrefSavedMsg] = useState("");
 
   const {
     settingsData, setSettingsData, settingsLoading, setSettingsLoading,
@@ -38,9 +54,64 @@ export default function SettingsView({
   const [diagResult, setDiagResult] = useState(null);
   const [diagError, setDiagError] = useState("");
 
-  // Initialize data on mount
+  // Initialize user preferences on mount (all users)
   useEffect(() => {
-    if (!automationCommanderSheetId) return;
+    let isMounted = true;
+    fetch("/api/triage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "get_user_preferences", automationCommanderSheetId })
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (isMounted && d.success && d.dailyAlertsEmail) {
+          setDailyAlertsEmail(d.dailyAlertsEmail);
+        }
+      })
+      .catch(e => console.error("get_user_preferences error:", e))
+      .finally(() => {
+        if (isMounted) setPrefLoading(false);
+      });
+
+    return () => { isMounted = false; };
+  }, [automationCommanderSheetId]);
+
+  // Handle immediate save of daily digest email preference
+  const handleDailyAlertsEmailChange = async (e) => {
+    const val = e.target.value;
+    setDailyAlertsEmail(val);
+    setPrefSaving(true);
+    setPrefSavedMsg("");
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_user_preference",
+          automationCommanderSheetId,
+          dailyAlertsEmail: val
+        })
+      });
+      const d = await res.json();
+      if (d.success) {
+        setPrefSavedMsg("✓ Saved");
+        setTimeout(() => setPrefSavedMsg(""), 3000);
+      } else {
+        setPrefSavedMsg("Error: " + (d.error || "Failed to save"));
+      }
+    } catch (err) {
+      setPrefSavedMsg("Error: " + err.message);
+    } finally {
+      setPrefSaving(false);
+    }
+  };
+
+  // Initialize admin data on mount (Admin only)
+  useEffect(() => {
+    if (!automationCommanderSheetId || !effectiveIsAdmin) {
+      setSettingsLoading(false);
+      return;
+    }
 
     setSettingsLoading(true);
     if (!sweepScheduleLoaded) loadSweepSchedule();
@@ -65,7 +136,7 @@ export default function SettingsView({
     loadBuildOptionsLog, loadFlagSweepLog, loadPrecomputeLog, 
     loadSweepSchedule, precomputeLogLoaded, setSettingsData, 
     setSettingsEditAnomaly, setSettingsEditDaily, setSettingsEditHourly, 
-    setSettingsLoading, sweepScheduleLoaded
+    setSettingsLoading, sweepScheduleLoaded, effectiveIsAdmin
   ]);
 
   const saveSettings = async () => {
@@ -87,18 +158,67 @@ export default function SettingsView({
 
   return (
     <div style={{ padding: "20px", maxWidth: "800px" }}>
+      {/* Top Application Version & Copyright Header */}
+      <div style={{ fontSize: "11px", fontStyle: "italic", color: "#666", marginBottom: "16px" }}>
+        Pulse Management App v{PMA_VERSION} - (C) 2026 Thrive Organisational Consulting Ltd
+      </div>
+
       <h2 style={{ margin: "0 0 20px", fontSize: "20px", fontWeight: "700" }}>Settings</h2>
 
-      {settingsLoading && <div style={{ color: "#999", padding: "20px" }}>Loading...</div>}
+      {/* Notifications / Preferences Section (All Users) */}
+      <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+        <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Notifications</h3>
+        <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
+          Configure automated alert digests sent to your email address ({user?.email || "your account"}).
+        </p>
 
-      {!settingsLoading && (
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          <label style={{ fontSize: "13px", fontWeight: "600", color: "#333" }}>
+            Receive daily digest email?
+          </label>
+          <select
+            value={dailyAlertsEmail}
+            disabled={prefLoading || prefSaving}
+            onChange={handleDailyAlertsEmailChange}
+            style={{
+              padding: "6px 12px",
+              borderRadius: "6px",
+              border: "1px solid #ccc",
+              fontSize: "13px",
+              background: "#fff",
+              cursor: (prefLoading || prefSaving) ? "wait" : "pointer",
+              fontWeight: "500"
+            }}
+          >
+            <option value="Yes">Yes</option>
+            <option value="No">No</option>
+          </select>
+          {prefSaving && (
+            <span style={{ fontSize: "12px", color: "#666", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+              <Spinner size={12} color="#0066cc" /> Saving...
+            </span>
+          )}
+          {prefSavedMsg && (
+            <span style={{ fontSize: "12px", color: prefSavedMsg.startsWith("Error") ? "#dc2626" : "#166534", fontWeight: "600" }}>
+              {prefSavedMsg}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Admin Only Sections */}
+      {effectiveIsAdmin && (
         <>
-          {/* Run Client Automation */}
-          <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-            <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Run Client Automation</h3>
-            <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
-              Runs a client&apos;s invoice/CRM/expense automation sequence on demand, via that client&apos;s Web App deployment - instead of checking a box in Automation Commander and waiting for the 30-minute poll.
-            </p>
+          {settingsLoading && <div style={{ color: "#999", padding: "20px" }}>Loading admin settings...</div>}
+
+          {!settingsLoading && (
+            <>
+              {/* Run Client Automation */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: "700" }}>Run Client Automation</h3>
+                <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#666" }}>
+                  Runs a client&apos;s invoice/CRM/expense automation sequence on demand, via that client&apos;s Web App deployment - instead of checking a box in Automation Commander and waiting for the 30-minute poll.
+                </p>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "14px" }}>
               <div>
@@ -667,6 +787,8 @@ export default function SettingsView({
               );
             })()}
           </div>
+            </>
+          )}
         </>
       )}
     </div>

@@ -382,7 +382,7 @@ export default function SettingsView({
                   items: [
                     { key: "expenseDashboardDiscr", name: "Expense dashboard discrepancy", kind: "actionable" },
                     { key: "expenseAdded", name: "Expense added", kind: "info" },
-                    { key: "expenseUnreconGaps", name: "Expense placeholders updated", kind: "info" },
+                    { key: "expenseUnreconGaps", name: "Stale unreceived expense received date changed", kind: "info" },
                   ],
                 },
               ].map((g, gi) => (

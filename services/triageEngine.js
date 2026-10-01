@@ -23,7 +23,7 @@ import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemL
 import { anthropic } from "./claudeClient";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
 import { getSessionUser } from "./authService";
-import { matchesClientName } from "./userPermissions";
+import { matchesClientName, getClientManagerClientMap } from "./userPermissions";
 
 const ALERT_MEMORY_TAB = "AlertMemory";
 
@@ -43,7 +43,7 @@ export const FLAG_NAMES = {
   retainerInvoicesDeleted: "Retainer invoices deleted",
   expenseDashboardDiscr: "Expense dashboard discr",
   expenseAdded: "Expense added",
-  expenseUnreconGaps: "Expense unrecon gaps",
+  expenseUnreconGaps: "Stale unreceived expense received date changed",
   invoiceStaleUnsentChanges: "Stale unsent invoice send date changed",
 };
 
@@ -215,8 +215,7 @@ export const AUTOLOG_TYPE_PATTERNS = {
   retainerInvoicesCreated:   ["[Retainers - Confirmed] Added"],
   retainerInvoicesDeleted:   ["[Retainers - Confirmed] Trimmed"],
   expenseUnreconGaps:        [
-    "[Confirmed] Created Manual Gap:", "[Confirmed] Changed Manual Gap:", "[Confirmed] Removed Manual Gap",
-    "[Confirmed] Created Placeholder Gap:", "[Confirmed] Changed Placeholder Gap:", "[Confirmed] Removed Placeholder Gap"
+    "Rec Date updated", "Updated stale Placeholder/Gap date", "Stale Expense - Row"
   ],
   expenseAdded:              ["Created New Row:"],
   invoiceStaleUnsentChanges: ["Stale Invoice - Row"],
@@ -1024,6 +1023,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       );
     }
 
+    const cmMap = await getClientManagerClientMap(sheets, automationCommanderSheetId);
     const clientsWithUpdatedCounts = clientsSource.map(c => {
       const counts = alertCountsByClientAndFlag[c.clientName] || {};
       const updatedFlags = { ...(c.flags || {}) };
@@ -1034,6 +1034,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       }
       return {
         ...c,
+        hasClientManager: cmMap.hasManager(c.clientName),
         flags: updatedFlags,
         alertCounts: counts,
         activeExpenseIds: activeExpenseIdsByClient[c.clientName] || [],
@@ -2080,7 +2081,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     console.log(`build_cached_alert_options complete in ${elapsedS}s: ${built} built, ${notFound} not found, ${errors} errors, hasMore: ${hasMore}`);
 
     const RICH_INFO_TYPES = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
-      "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
+      "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges", "expenseUnreconGaps"];
     const pendingRich = memoryRows.filter(r =>
       r.status === "cached" && RICH_INFO_TYPES.includes(r.alertType) && !r.cachedOptionsJSON
     );
@@ -7592,53 +7593,80 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
         } // end expenseAdded
 
         // ── expenseUnreconGaps ─────────────────────────────────────────────
+        // "Stale unreceived expense received date changed"
+        // Equivalent to invoiceStaleUnsentChanges, but for expenses.
+        // Alerted when stale unreceived expense dates are moved forward by automation.
+        // Handles both:
+        //   1. Confirmed tab direct expenses:
+        //      "[Confirmed] (Stale Expense - )?Row N, CLIENT | JOB, Slot N: Rec Date updated DD-Mon-YY -> DD-Mon-YY"
+        //   2. Outgoings tab expenses:
+        //      "[Outgoings] (Stale Expense - )?Row N, CONTRACTOR: Updated stale Placeholder/Gap date (Rec: X->Y, Pay: A->B)"
         else if (flagType === "expenseUnreconGaps") {
-          const gapEntries = autoLogRows.filter(row => {
+          const staleLogEntries = autoLogRows.filter(row => {
             const d = String(row[3] || "");
-            return d.includes("Created Manual Gap:") || d.includes("Changed Manual Gap:") || d.includes("Removed Manual Gap:");
+            return d.includes("Rec Date updated") || d.includes("Updated stale Placeholder/Gap date") || d.includes("Stale Expense");
           });
-          const entriesToUse = gapEntries.length > 0 ? gapEntries : allAutoLogRows.filter(row => {
+
+          const entriesToUse = staleLogEntries.length > 0 ? staleLogEntries : allAutoLogRows.filter(row => {
             const d = String(row[3] || "");
-            return d.includes("Created Manual Gap:") || d.includes("Changed Manual Gap:") || d.includes("Removed Manual Gap:");
+            return d.includes("Rec Date updated") || d.includes("Updated stale Placeholder/Gap date") || d.includes("Stale Expense");
           });
 
           if (entriesToUse.length === 0) {
-            results.push({ status: "info", message: "No expense gap entries found in AutoLog." });
+            results.push({
+              status: "info",
+              message: "No stale unreceived expense date change entries found in AutoLog.",
+            });
           } else {
-            const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
-              spreadsheetId: clientSheetIdClean,
-              range: "Confirmed!A1:CR5000",
-            }));
-            const confirmedRows = confirmedResp.data.values || [];
+            let confirmedRows = null;
+            let outgoingsRows = null;
 
-            // Matches: [Confirmed] Created Manual Gap: Row {N}, {Client} | {Job} (Slot {N}) - ...
-            const pattern = /\[(Confirmed|Pipeline)\] (?:Created|Changed|Removed) Manual Gap:\s*Row\s*(\d+),\s*([^|]+)\|\s*([^(]+)\(Slot\s*(\d+)\)/gi;
+            // Pattern for Confirmed direct expenses:
+            // "[Confirmed] Row 15, Client | Job, Slot 1: Rec Date updated 05-Jan-26 -> 05-Feb-26"
+            // or "[Confirmed] Stale Expense - Row 15, Client | Job, Slot 1: Rec Date updated 05-Jan-26 -> 05-Feb-26"
+            const confirmedPattern = /\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?Row\s*(\d+),\s*([^|]+)\|\s*([^,\n]+),\s*Slot\s*(\d+):\s*Rec Date updated\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
+
+            // Pattern for Outgoings tab expenses:
+            // "[Outgoings] Row 12, John Doe: Updated stale Placeholder/Gap date (Rec: 05-Jan-26->05-Feb-26, Pay: 28-Jan-26->28-Feb-26)"
+            const outgoingsPattern = /\[Outgoings\]\s*(?:Stale Expense\s*[-–]\s*)?Row\s*(\d+),\s*([^:]+):\s*Updated stale Placeholder\/Gap date\s*\(Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+),\s*Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)\)/gi;
 
             for (const entry of entriesToUse) {
               const details = String(entry[3] || "");
               const timestamp = String(entry[0] || "");
-              let match;
-              while ((match = pattern.exec(details)) !== null) {
+
+              // Check Confirmed matches
+              let cMatch;
+              while ((cMatch = confirmedPattern.exec(details)) !== null) {
                 if (targetLine) {
-                  const normMatch = match[0].replace(/\s+/g, " ").trim();
+                  const normMatch = cMatch[0].replace(/\s+/g, " ").trim();
                   const normTarget = targetLine.replace(/\s+/g, " ").trim();
                   if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
                 }
 
-                const tab = match[1].trim();
-                const rowNum = parseInt(match[2].trim(), 10);
-                const jobClient = match[3].trim();
-                const jobName = match[4].trim();
-                const slotNum = parseInt(match[5].trim(), 10);
+                const tab = "Confirmed";
+                const rowNum = parseInt(cMatch[1].trim(), 10);
+                const jobClient = cMatch[2].trim();
+                const jobName = cMatch[3].trim();
+                const slotNum = parseInt(cMatch[4].trim(), 10);
+                const oldDate = cMatch[5].trim();
+                const newDate = cMatch[6].trim();
+
+                if (!confirmedRows) {
+                  const confirmedResp = await withRetry(() => sheets.spreadsheets.values.get({
+                    spreadsheetId: clientSheetIdClean,
+                    range: "Confirmed!A1:CR5000",
+                  }));
+                  confirmedRows = confirmedResp.data.values || [];
+                }
 
                 let isResolved = false;
-                let resolutionMsg = "Slot is empty or contains a placeholder.";
+                let resolutionMsg = "Slot is empty or contains an unreceived placeholder.";
                 const checks = [];
                 let targetSheetRow = null;
                 let actualRowNum = rowNum;
 
                 // 1. Try original row
-                if (tab === "Confirmed" && rowNum > 0 && rowNum <= confirmedRows.length) {
+                if (rowNum > 0 && rowNum <= confirmedRows.length) {
                   const r = confirmedRows[rowNum - 1] || [];
                   if (String(r[0]||"").trim().toLowerCase() === jobClient.toLowerCase() && 
                       String(r[1]||"").trim().toLowerCase() === jobName.toLowerCase()) {
@@ -7647,7 +7675,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                 }
 
                 // 2. Fallback search (job moved)
-                if (!targetSheetRow && tab === "Confirmed") {
+                if (!targetSheetRow) {
                   const matchingRows = [];
                   for (let i = 0; i < confirmedRows.length; i++) {
                     const r = confirmedRows[i] || [];
@@ -7656,56 +7684,206 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
                       matchingRows.push({ row: r, index: i + 1 });
                     }
                   }
-                  if (matchingRows.length > 0) {
+                  if (matchingRows.length === 1) {
+                    targetSheetRow = matchingRows[0].row;
+                    actualRowNum = matchingRows[0].index;
+                  } else if (matchingRows.length > 1) {
                     targetSheetRow = matchingRows[0].row;
                     actualRowNum = matchingRows[0].index;
                   }
                 }
 
                 if (targetSheetRow) {
-                  const slotCols = {
-                    1: { id: 81, amt: 76 }, // CD (81), BY (76)
-                    2: { id: 88, amt: 83 }, // CK (88), CF (83)
-                    3: { id: 95, amt: 90 }, // CR (95), CM (90)
-                  }[slotNum];
-
-                  if (slotCols) {
-                    const currentId = String(targetSheetRow[slotCols.id] || "").trim();
-                    const currentAmt = String(targetSheetRow[slotCols.amt] || "").trim();
-
-                    if (currentId && !isPlaceholderExpense(currentId)) {
-                      isResolved = true;
-                      resolutionMsg = `Slot ${slotNum} now contains a real expense reference (App ID: ${currentId}).`;
-                      checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
-                    } else if (!currentId && !currentAmt) {
-                      isResolved = true;
-                      resolutionMsg = `Slot ${slotNum} is now completely empty (placeholder was removed).`;
-                      checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
-                    } else {
-                      checks.push({ ok: false, message: `✗ Slot ${slotNum} still contains a placeholder (App ID: ${currentId || "(blank)"}, Amount: ${currentAmt || "(blank)"}).` });
+                  const headers = (confirmedRows[0] || []).map(h => String(h || "").toLowerCase().trim());
+                  const findHeaderIdx = (patterns) => {
+                    for (const pat of patterns) {
+                      const idx = headers.indexOf(pat.toLowerCase().trim());
+                      if (idx !== -1) return idx;
                     }
+                    return -1;
+                  };
+
+                  const colAppId = findHeaderIdx([`dir inv ${slotNum} app id`, `dir inv. ${slotNum} app id`, `direct inv ${slotNum} app id`]);
+                  const colAmt   = findHeaderIdx([`direct inv ${slotNum} amt`, `direct inv ${slotNum} amount`, `dir inv ${slotNum} amt`]);
+                  const colRec   = findHeaderIdx([`direct inv ${slotNum} rec date`, `dir inv. ${slotNum} rec date`, `dir inv ${slotNum} rec date`]);
+                  const colStat  = findHeaderIdx([`dir inv ${slotNum} status`, `direct inv ${slotNum} status`]);
+
+                  const currentId = colAppId !== -1 ? String(targetSheetRow[colAppId] || "").trim() : "";
+                  const currentAmt = colAmt !== -1 ? String(targetSheetRow[colAmt] || "").trim() : "";
+                  const currentRec = colRec !== -1 ? String(targetSheetRow[colRec] || "").trim() : "";
+                  const currentStatus = colStat !== -1 ? String(targetSheetRow[colStat] || "").trim() : "";
+
+                  if (currentId && !isPlaceholderExpense(currentId)) {
+                    isResolved = true;
+                    resolutionMsg = `Slot ${slotNum} now contains a real expense reference (App ID: ${currentId}${currentStatus ? `, Status: ${currentStatus}` : ""}).`;
+                    checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+                  } else if (currentStatus.toLowerCase() === "received" || currentStatus.toLowerCase() === "paid") {
+                    isResolved = true;
+                    resolutionMsg = `Slot ${slotNum} is now marked as ${currentStatus}.`;
+                    checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
+                  } else if (!currentId && !currentAmt) {
+                    isResolved = true;
+                    resolutionMsg = `Slot ${slotNum} is now completely empty (stale placeholder was removed).`;
+                    checks.push({ ok: true, message: `✓ Resolved: ${resolutionMsg}` });
                   } else {
-                    checks.push({ ok: false, message: `✗ Invalid slot number parsed from log: ${slotNum}` });
+                    checks.push({
+                      ok: false,
+                      message: `✗ Slot ${slotNum} still contains an unreceived expense placeholder (Amount: £${currentAmt || "0"}, Rec Date: ${currentRec || newDate}${currentStatus ? `, Status: ${currentStatus}` : ""}).`
+                    });
                   }
 
                   if (actualRowNum !== rowNum) {
                     checks.push({ ok: true, message: `ℹ️ Job safely located at row ${actualRowNum} (moved from original row ${rowNum})` });
                   }
-                } else if (tab !== "Confirmed") {
-                   checks.push({ ok: false, message: `✗ Alert specifies ${tab} tab, but only Confirmed is verified.` });
                 } else {
-                  checks.push({ ok: false, message: `✗ Could not locate job "${jobClient} | ${jobName}" anywhere in the Confirmed tab.` });
+                  checks.push({ ok: false, message: `✗ Could not locate job "${jobClient} | ${jobName}" in the Confirmed tab.` });
                 }
 
                 results.push({
                   status: isResolved ? "ok" : "issue",
+                  stale: true,
+                  tab,
+                  rowNum: actualRowNum,
+                  jobClient,
+                  jobName,
+                  slotNum,
+                  oldDate,
+                  newDate,
                   logTimestamp: timestamp,
                   checks,
                   message: isResolved
                     ? `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: Alert resolved.`
-                    : `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: Still requires reconciliation.`
+                    : `[${tab}] Row ${actualRowNum} - ${jobClient} | ${jobName}, Slot ${slotNum}: receive date moved ${oldDate} → ${newDate}.`
                 });
               }
+
+              // Check Outgoings matches
+              let oMatch;
+              while ((oMatch = outgoingsPattern.exec(details)) !== null) {
+                if (targetLine) {
+                  const normMatch = oMatch[0].replace(/\s+/g, " ").trim();
+                  const normTarget = targetLine.replace(/\s+/g, " ").trim();
+                  if (!normMatch.includes(normTarget) && !normTarget.includes(normMatch)) continue;
+                }
+
+                const tab = "Outgoings";
+                const rowNum = parseInt(oMatch[1].trim(), 10);
+                const contractor = oMatch[2].trim();
+                const oldRec = oMatch[3].trim();
+                const newRec = oMatch[4].trim();
+                const oldPay = oMatch[5].trim();
+                const newPay = oMatch[6].trim();
+
+                if (!outgoingsRows) {
+                  const outgoingsResp = await withRetry(() => sheets.spreadsheets.values.get({
+                    spreadsheetId: clientSheetIdClean,
+                    range: "Outgoings!A1:AZ300",
+                  }));
+                  outgoingsRows = outgoingsResp.data.values || [];
+                }
+
+                let isResolved = false;
+                const checks = [];
+                let actualRowNum = rowNum;
+                let targetRow = null;
+
+                // 1. Try original row
+                if (rowNum > 0 && rowNum <= outgoingsRows.length) {
+                  const r = outgoingsRows[rowNum - 1] || [];
+                  if (String(r[0] || "").trim().toLowerCase() === contractor.toLowerCase()) {
+                    targetRow = r;
+                  }
+                }
+
+                // 2. Fallback search (contractor moved)
+                if (!targetRow) {
+                  for (let i = 0; i < outgoingsRows.length; i++) {
+                    const r = outgoingsRows[i] || [];
+                    if (String(r[0] || "").trim().toLowerCase() === contractor.toLowerCase()) {
+                      targetRow = r;
+                      actualRowNum = i + 1;
+                      break;
+                    }
+                  }
+                }
+
+                if (targetRow) {
+                  // Inspect cell notes in that row to check if placeholder is still active
+                  try {
+                    const noteResp = await withRetry(() => sheets.spreadsheets.get({
+                      spreadsheetId: clientSheetIdClean,
+                      ranges: [`Outgoings!A${actualRowNum}:AZ${actualRowNum}`],
+                      fields: "sheets(data(rowData(values(note,formattedValue))))",
+                    }));
+                    const rowData = noteResp?.data?.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
+                    let hasUnresolvedPlaceholder = false;
+                    let foundPlaceholderCount = 0;
+
+                    for (const cell of rowData) {
+                      const note = String(cell.note || "");
+                      if (note.includes("PLACE-EXP") || note.includes("MANUAL-ENTRY") || note.includes("UNRECON-GAP") || note.includes("PLACE-GAP") || note.includes("MANUAL-GAP")) {
+                        foundPlaceholderCount++;
+                        const statusMatch = note.match(/\{Status:\s*(.*?)\}/i);
+                        const status = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
+                        if (status !== "paid" && status !== "complete") {
+                          hasUnresolvedPlaceholder = true;
+                        }
+                      }
+                    }
+
+                    if (foundPlaceholderCount === 0) {
+                      isResolved = true;
+                      checks.push({ ok: true, message: `✓ Resolved: Placeholder was replaced with a real expense or removed.` });
+                    } else if (!hasUnresolvedPlaceholder) {
+                      isResolved = true;
+                      checks.push({ ok: true, message: `✓ Resolved: All expense entries for ${contractor} are marked as Paid/Complete.` });
+                    } else {
+                      checks.push({
+                        ok: false,
+                        message: `✗ Row ${actualRowNum} (${contractor}) still contains unreceived placeholder expense(s) (Rec date moved to ${newRec}, Pay date to ${newPay}).`
+                      });
+                    }
+                  } catch (e) {
+                    // Fallback if cell notes call failed
+                    checks.push({
+                      ok: false,
+                      message: `ℹ️ Stale date moved: Rec date ${oldRec} → ${newRec}, Pay date ${oldPay} → ${newPay}.`
+                    });
+                  }
+
+                  if (actualRowNum !== rowNum) {
+                    checks.push({ ok: true, message: `ℹ️ Contractor located at row ${actualRowNum} (moved from original row ${rowNum})` });
+                  }
+                } else {
+                  checks.push({ ok: false, message: `✗ Could not locate contractor "${contractor}" in the Outgoings tab.` });
+                }
+
+                results.push({
+                  status: isResolved ? "ok" : "issue",
+                  stale: true,
+                  tab,
+                  rowNum: actualRowNum,
+                  contractor,
+                  oldRec,
+                  newRec,
+                  oldPay,
+                  newPay,
+                  logTimestamp: timestamp,
+                  checks,
+                  message: isResolved
+                    ? `[${tab}] Row ${actualRowNum} - ${contractor}: Alert resolved.`
+                    : `[${tab}] Row ${actualRowNum} - ${contractor}: receive date moved ${oldRec} → ${newRec}.`
+                });
+              }
+            }
+
+            if (results.length === 0) {
+              results.push({
+                status: "info",
+                message: "Stale expense date change entries found in AutoLog but could not be parsed.",
+              });
+            } else {
+              console.log(`  ✓ Parsed ${results.length} stale expense entries`);
             }
           }
 

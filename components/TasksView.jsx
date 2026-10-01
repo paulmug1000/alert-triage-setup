@@ -20,6 +20,13 @@ export default function TasksView({
     ? propIsAdmin
     : !!(currentUser?.isAdmin || currentUser?.role === "Admin" || currentUser?.assignedClients === "*");
 
+  const clientHasManager = (clientName) => {
+    if (!allClientsMap || !clientName) return false;
+    if (allClientsMap[clientName]) return !!allClientsMap[clientName].hasClientManager;
+    const match = Object.values(allClientsMap).find(c => c.clientName && c.clientName.toLowerCase() === clientName.toLowerCase());
+    return !!match?.hasClientManager;
+  };
+
   const {
     tasks, setTasks, tasksLoading, tasksFilter, setTasksFilter,
     selectedTask, setSelectedTask, taskDetailOptions, setTaskDetailOptions,
@@ -319,7 +326,7 @@ export default function TasksView({
                       <span style={{ fontSize: "11px", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>
                         {formatAlertType(task.alertType)}
                       </span>
-                      {task.isAdminOnly && (
+                      {task.isAdminOnly && clientHasManager(task.clientName) && (
                         <span style={{
                           fontSize: "10px",
                           fontWeight: "700",
@@ -397,7 +404,7 @@ export default function TasksView({
               <span style={{ fontSize: "12px", fontWeight: "600", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px" }}>
                 {formatAlertType(selectedTask.alertType)}
               </span>
-              {selectedTask.isAdminOnly && (
+              {selectedTask.isAdminOnly && clientHasManager(selectedTask.clientName) && (
                 <span style={{
                   fontSize: "11px",
                   fontWeight: "700",

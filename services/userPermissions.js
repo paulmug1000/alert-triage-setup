@@ -237,3 +237,32 @@ export function sanitizeFormulaInput(val) {
   return val;
 }
 
+/**
+ * Return an object that can check whether a client has at least one active ClientManager assigned.
+ */
+export async function getClientManagerClientMap(sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID) {
+  try {
+    const users = await getAllUsers(sheets, automationCommanderSheetId);
+    const clientManagers = (users || []).filter(u => u.role === "ClientManager" && u.status === "Active");
+    const assignedList = [];
+    clientManagers.forEach(u => {
+      if (Array.isArray(u.assignedClients)) {
+        u.assignedClients.forEach(c => assignedList.push(c));
+      }
+    });
+    return {
+      clientManagers,
+      hasManager: (clientName) => {
+        if (!clientName) return false;
+        return assignedList.some(assigned => matchesClientName(assigned, clientName));
+      }
+    };
+  } catch (err) {
+    console.warn("⚠️ getClientManagerClientMap error:", err.message);
+    return {
+      clientManagers: [],
+      hasManager: () => false
+    };
+  }
+}
+

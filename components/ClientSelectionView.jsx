@@ -211,6 +211,10 @@ export default function ClientSelectionView({
                 isAdminOnly: info.isAdminOnly,
               }));
 
+              const hasManager = client.hasClientManager !== undefined
+                ? !!client.hasClientManager
+                : !!(allClientsMap[client.clientName]?.hasClientManager);
+
               return (
                 <button
                   key={idx}
@@ -236,7 +240,7 @@ export default function ClientSelectionView({
                   {[...actionableLines, ...infoLines, ...proactiveLines].map((lineItem, i) => (
                     <div key={i} style={{ fontSize: "13px", color: "#1976d2", marginBottom: "2px", display: "flex", alignItems: "center" }}>
                       <span>• {lineItem.text}</span>
-                      {isAdmin && lineItem.isAdminOnly && (
+                      {isAdmin && lineItem.isAdminOnly && hasManager && (
                         <span
                           title="Visible to Admins only"
                           style={{

@@ -92,7 +92,6 @@ export const ADMIN_ONLY_FLAG_KEYS = new Set([
   "retainerInvoicesCreated",
   "retainerInvoicesDeleted",
   "expenseAdded",
-  "expenseUnreconGaps",
 ]);
 
 export const ADMIN_ONLY_PROACTIVE_TYPES = new Set([
@@ -138,7 +137,7 @@ export const getFlagName = (flagKey) => {
     "retainerInvoicesDeleted": "Retainer invoices deleted",
     "expenseDashboardDiscr": "Expense discrepancy",
     "expenseAdded":          "Expense added",
-    "expenseUnreconGaps":    "Expense placeholders updated",
+    "expenseUnreconGaps":    "Stale unreceived expense received date changed",
     "invoiceStaleUnsentChanges": "Stale unsent invoice send date changed",
   };
   return flagNames[flagKey] || flagKey;
@@ -151,6 +150,7 @@ export const RICH_NOACTION_FLAG_GROUP = {
   retainerInvoicesCreated: "invoice",
   retainerInvoicesDeleted: "invoice",
   invoiceStaleUnsentChanges: "invoice",
+  expenseUnreconGaps:      "expense",
 };
 
 export const ALERT_CATEGORY_FLAGS = {

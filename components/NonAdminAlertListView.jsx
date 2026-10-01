@@ -167,7 +167,7 @@ export default function NonAdminAlertListView({
               {groupAlerts.map(na => {
                 const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
                 const isResolved = resolvedNoActionFlags.has(alertId);
-                const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges"].includes(na.flagType);
+                const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges", "expenseUnreconGaps"].includes(na.flagType);
                 const analysis = noActionAnalysis[alertId] || na.analysisResult;
                 const isLoading = noActionAnalysisLoading[alertId];
 
@@ -240,9 +240,10 @@ export default function NonAdminAlertListView({
                               marginBottom: "8px", padding: "8px 10px", borderRadius: "4px",
                               border: "1px solid #e0e0e0", background: "#f9fafb",
                             }}>
-                              {(r.jobName || r.projectCode) && (
+                              {(r.jobName || r.projectCode || r.contractor) && (
                                 <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
                                   {r.clientName && <span style={{ fontWeight: "400", color: "#666" }}>{r.clientName} - </span>}
+                                  {r.contractor && !r.jobName && <span style={{ fontWeight: "600", color: "#333" }}>{r.contractor}</span>}
                                   {r.jobName || r.projectCode}
                                   {r.projectCode && r.jobName && <TruncatedCode code={r.projectCode} />}
                                   {r.periodLabel && <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> - {r.periodLabel}</span>}

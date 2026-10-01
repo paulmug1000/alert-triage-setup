@@ -3,7 +3,7 @@ import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay } from "./sha
 import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger";
 import { isPlaceholderInvoice } from "../utils/helpers";
 import { getSessionUser } from "./authService";
-import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput } from "./userPermissions";
+import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap } from "./userPermissions";
 
 
 export let assignedExpensesTabVerified = false;
@@ -56,6 +56,7 @@ export async function handleGetAllClients(req, res, sheets) {
       spreadsheetId: automationCommanderSheetId,
       range: "AutoUpdates!A2:DB500",
     }));
+    const cmMap = await getClientManagerClientMap(sheets, automationCommanderSheetId);
     const rows = resp.data.values || [];
     const clientsArray = [];
     const clientsObj = {};
@@ -72,8 +73,9 @@ export async function handleGetAllClients(req, res, sheets) {
       if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
       const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
       const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
-      clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl, splitEnabled, reconSheetUrl, reconSheetId });
-      if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl, reconSheetUrl, reconSheetId };
+      const hasClientManager = cmMap.hasManager(clientName);
+      clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl, splitEnabled, reconSheetUrl, reconSheetId, hasClientManager });
+      if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl, reconSheetUrl, reconSheetId, hasClientManager };
     }
 
     const sessionUser = getSessionUser(req);

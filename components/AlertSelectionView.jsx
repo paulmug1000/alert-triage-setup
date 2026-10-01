@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
 import RetainerAlertResolutionModal from "./RetainerAlertResolutionModal";
@@ -20,7 +20,8 @@ const RICH_NOACTION_FLAG_GROUP = {
   invoiceStaleUnsentChanges: "invoice",
 };
 
-function AdminBadge({ style = {} }) {
+function AdminBadge({ style = {}, show = true }) {
+  if (!show) return null;
   return (
     <span
       title="Visible to Admins only"
@@ -70,6 +71,15 @@ export default function AlertSelectionView({
     noActionAnalysisLoading, analyzeNoActionFlag, setProcessedAlerts, allNoActionResolved,
     loadProactiveAlerts
   } = useTriage();
+
+  const clientHasManager = useMemo(() => {
+    if (selectedClient?.hasClientManager !== undefined) return !!selectedClient.hasClientManager;
+    const cName = selectedClient?.clientName;
+    if (!cName || !allClientsMap) return false;
+    if (allClientsMap[cName]) return !!allClientsMap[cName].hasClientManager;
+    const match = Object.values(allClientsMap).find(c => c.clientName && c.clientName.toLowerCase() === cName.toLowerCase());
+    return !!match?.hasClientManager;
+  }, [selectedClient, allClientsMap]);
   const {
     bulkMode, setBulkMode, bulkSelected, setBulkSelected,
     showBulkIgnoreModal, setShowBulkIgnoreModal, showBulkTaskModal, setShowBulkTaskModal,
@@ -760,7 +770,7 @@ export default function AlertSelectionView({
         <div style={{ pointerEvents: "none" }}>
           <div style={{ fontWeight: "600", display: "flex", alignItems: "center" }}>
             <span>{client}{job ? ` - ${job}` : ""}</span>
-            {isAdmin && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge />}
+            {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
           {code    && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
           {rev     && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
@@ -793,7 +803,7 @@ export default function AlertSelectionView({
         <div style={{ pointerEvents: "none" }}>
           <div style={{ fontWeight: "600", display: "flex", alignItems: "center" }}>
             <span>{client}{job ? ` - ${job}` : ""}</span>
-            {isAdmin && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge />}
+            {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
           {code    && <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>Code: {code}</div>}
           {rev     && <div style={{ fontSize: "11px", color: "#888" }}>Revenue: {rev}</div>}
@@ -819,7 +829,7 @@ export default function AlertSelectionView({
       <div style={{ pointerEvents: "none" }}>
         <div style={{ fontWeight: "600", color: "#333", display: "flex", alignItems: "center" }}>
           <span>{getAlertSummary(alert)}</span>
-          {isAdmin && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge />}
+          {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
         </div>
         {detailSub && <div style={{ fontSize: "11px", fontWeight: "600", color: "#d97706", marginTop: "4px" }}>⚠ {detailSub}</div>}
         {ignoreBanner}
@@ -920,7 +930,7 @@ export default function AlertSelectionView({
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
                     <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#1976d2", margin: 0, display: "flex", alignItems: "center" }}>
                       <span>{getGroupSectionHeader(type, groupAlerts)}</span>
-                      {isAdmin && ADMIN_ONLY_ALERT_TYPES.has(type) && <AdminBadge />}
+                      {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(type) && <AdminBadge show={clientHasManager} />}
                     </h3>
                     {bulkMode && groupAlerts.length > 1 && (
                       <button className="triage-btn" onClick={() => {
@@ -1085,13 +1095,13 @@ export default function AlertSelectionView({
                   <div key={type} style={{ marginBottom: "20px" }}>
                     <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#1976d2", margin: "0 0 10px 0", display: "flex", alignItems: "center" }}>
                       <span>{getFlagName(type)}</span>
-                      {isAdmin && ADMIN_ONLY_ALERT_TYPES.has(type) && <AdminBadge />}
+                      {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(type) && <AdminBadge show={clientHasManager} />}
                     </h3>
                     <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                       {groupAlerts.map((na) => {
                         const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
                         const isResolved = resolvedNoActionFlags.has(alertId);
-                        const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges"].includes(na.flagType);
+                        const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges", "expenseUnreconGaps"].includes(na.flagType);
                         const analysis = noActionAnalysis[alertId] || na.analysisResult;
                         const isLoading = noActionAnalysisLoading[alertId];
 
@@ -1158,7 +1168,7 @@ export default function AlertSelectionView({
                                 <div style={{ flexShrink: 1, minWidth: 0 }}>
                                   <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", display: "flex", alignItems: "center" }}>
                                     <span>{na.flagName || getFlagName(na.flagType)}</span>
-                                    {isAdmin && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge />}
+                                    {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
                                   </div>
                                   {na.flagDetail && (
                                     <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", lineHeight: "1.4" }}>
@@ -1232,9 +1242,10 @@ export default function AlertSelectionView({
                                       border: `1px solid ${r.status === "ok" ? "#c8e6c9" : r.status === "issue" ? "#ffccbc" : "#e0e0e0"}`,
                                       background: r.status === "ok" ? "#f9fef9" : r.status === "issue" ? "#fff8f6" : "#fafafa",
                                     }}>
-                                      {(r.jobName || r.projectCode) && (
+                                      {(r.jobName || r.projectCode || r.contractor) && (
                                         <div style={{ fontSize: "12px", fontWeight: "600", color: "#333", marginBottom: "4px" }}>
                                           {r.clientName && <span style={{ fontWeight: "400", color: "#666" }}>{r.clientName} - </span>}
+                                          {r.contractor && !r.jobName && <span style={{ fontWeight: "600", color: "#333" }}>{r.contractor}</span>}
                                           {r.jobName || r.projectCode}
                                           {r.projectCode && r.jobName && <TruncatedCode code={r.projectCode} />}
                                           {r.periodLabel && <span style={{ fontWeight: "400", color: "#666", marginLeft: "6px" }}> - {r.periodLabel}</span>}
@@ -1296,7 +1307,7 @@ export default function AlertSelectionView({
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ fontSize: "13px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#555", textDecoration: isResolved ? "line-through" : "none", display: "flex", alignItems: "center" }}>
                                 <span>{na.flagName || getFlagName(na.flagType)}</span>
-                                {isAdmin && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge />}
+                                {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
                               </div>
                               {na.flagDetail && (
                                 <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#888", marginTop: "4px", textDecoration: isResolved ? "line-through" : "none", lineHeight: "1.4" }}>
@@ -1432,7 +1443,7 @@ export default function AlertSelectionView({
                   <div key={type} style={{ marginBottom: "20px" }}>
                     <h3 style={{ fontSize: "14px", fontWeight: "bold", color: "#1976d2", margin: "0 0 10px 0", display: "flex", alignItems: "center" }}>
                       <span>{PROACTIVE_TYPE_LABELS[type] || type || "Proactive Alert"}</span>
-                      {isAdmin && ADMIN_ONLY_ALERT_TYPES.has(type) && <AdminBadge />}
+                      {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(type) && <AdminBadge show={clientHasManager} />}
                     </h3>
                     <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                       {groupAlerts.map((alert, idx) => {
@@ -1454,7 +1465,7 @@ export default function AlertSelectionView({
                             )}
                             <div style={{ fontWeight: "600", fontSize: "14px", color: "#1a1a1a", marginBottom: "6px", display: "flex", alignItems: "center" }}>
                               <span>{alert.heading}</span>
-                              {isAdmin && ADMIN_ONLY_ALERT_TYPES.has(alert.alertType) && <AdminBadge />}
+                              {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(alert.alertType) && <AdminBadge show={clientHasManager} />}
                             </div>
                             <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
                               {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" || alert.alertType === "unreceived_expenses" ? null : alert.detail}

@@ -5,10 +5,10 @@ import { useTriage } from "../contexts/TriageContext";
 
 // ============================================================================
 // PULSE MANAGEMENT APP (PMA)
-// Version: 1.04
+// Version: 1.05
 // Rule: Always increment this version by 0.01 whenever changes are made to the PMA app.
 // ============================================================================
-export const PMA_VERSION = "1.04";
+export const PMA_VERSION = "1.05";
 
 export default function SettingsView({
   automationCommanderSheetId,

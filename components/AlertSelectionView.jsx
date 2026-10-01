@@ -1297,15 +1297,32 @@ export default function AlertSelectionView({
 
                         if (na.flagType === "expenseUnreconGaps") {
                           const parsed = parseStaleExpenseDetail(na.flagDetail);
+                          const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient?.clientName) || allClientsMap[selectedClient?.clientName] || selectedClient;
+                          const cardTitle = parsed?.tab === "Outgoings"
+                            ? (parsed.contractor ? `Stale placeholder expense date moved (${parsed.contractor})` : "Stale placeholder expense date moved")
+                            : (parsed?.client ? `Stale placeholder expense date moved (${parsed.client})` : (getFlagName(na.flagType) || na.flagName || "Stale placeholder expense date moved"));
+
                           return (
                             <div key={alertId} style={{
-                              padding: "12px 14px", borderRadius: "6px",
-                              border: `1px solid ${isResolved ? "#c8e6c9" : "#bae6fd"}`,
-                              background: isResolved ? "#f1f8f2" : "#f0f9ff",
-                              display: "flex", flexDirection: "column", gap: "10px",
+                              padding: "14px",
+                              borderRadius: "6px",
+                              border: isResolved ? "1px solid #c8e6c9" : (infoBulkMode && infoBulkSelected.has(alertId) ? "1px solid #7c3aed" : "1px solid #ddd"),
+                              background: isResolved ? "#f1f8f2" : (infoBulkMode && infoBulkSelected.has(alertId) ? "#ede9fe" : "#fafafa"),
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: "8px",
                             }}>
-                              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", flex: 1, minWidth: 0 }}>
+                              <div style={{
+                                fontWeight: "600",
+                                fontSize: "14px",
+                                color: isResolved ? "#2e7d32" : "#1a1a1a",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                flexWrap: "wrap",
+                                gap: "8px",
+                              }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
                                   {infoBulkMode && (
                                     <input type="checkbox" checked={infoBulkSelected.has(alertId)} onChange={() => {
                                       setInfoBulkSelected(prev => {
@@ -1315,144 +1332,117 @@ export default function AlertSelectionView({
                                       });
                                     }} style={{ accentColor: "#7c3aed", cursor: "pointer", flexShrink: 0 }} />
                                   )}
-                                  <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1", textDecoration: isResolved ? "line-through" : "none" }}>
-                                    {getFlagName(na.flagType) || na.flagName}
-                                  </div>
-                                  {parsed?.tab && (
-                                    <span style={{
-                                      fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.02em",
-                                      padding: "2px 7px", borderRadius: "4px", background: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd",
-                                    }}>
-                                      {parsed.tab} tab
-                                    </span>
-                                  )}
-                                  {parsed?.month && (
-                                    <span style={{
-                                      fontSize: "11px", fontWeight: "600",
-                                      padding: "2px 7px", borderRadius: "4px", background: "#ffffff", color: "#334155", border: "1px solid #cbd5e1",
-                                    }}>
-                                      {parsed.month}
-                                    </span>
-                                  )}
-                                  {parsed?.slot && (
-                                    <span style={{
-                                      fontSize: "11px", fontWeight: "600",
-                                      padding: "2px 7px", borderRadius: "4px", background: "#ffffff", color: "#334155", border: "1px solid #cbd5e1",
-                                    }}>
-                                      Slot {parsed.slot}
-                                    </span>
-                                  )}
-                                  {isAdmin && parsed?.rowNum && (
-                                    <span style={{
-                                      fontSize: "11px", fontWeight: "600",
-                                      padding: "2px 7px", borderRadius: "4px", background: "#f1f5f9", color: "#64748b", border: "1px solid #e2e8f0",
-                                    }}>
-                                      Row {parsed.rowNum}
-                                    </span>
-                                  )}
+                                  <span style={{ textDecoration: isResolved ? "line-through" : "none" }}>{cardTitle}</span>
                                   {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
                                 </div>
-
-                                {isResolved ? (
+                                {isResolved && (
                                   <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
+                                )}
+                              </div>
+
+                              <div style={{
+                                fontSize: "12px",
+                                color: "#555",
+                                backgroundColor: isResolved ? "#ffffff" : "#f0f9ff",
+                                border: `1px solid ${isResolved ? "#c8e6c9" : "#bae6fd"}`,
+                                borderRadius: "4px",
+                                padding: "8px 10px",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "3px",
+                              }}>
+                                {parsed ? (
+                                  parsed.tab === "Outgoings" ? (
+                                    <>
+                                      <div><strong>Tab:</strong> Outgoings</div>
+                                      {parsed.month && <div><strong>Month:</strong> {parsed.month}</div>}
+                                      {parsed.contractor && <div><strong>Vendor:</strong> {parsed.contractor}</div>}
+                                      {isAdmin && parsed.rowNum && <div><strong>Outgoings tab row:</strong> {parsed.rowNum}</div>}
+                                      {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
+                                      {parsed.changes && parsed.changes.length > 0 && (
+                                        <div style={{ marginTop: "3px" }}>
+                                          <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
+                                          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                                            {parsed.changes.map((ch, ci) => (
+                                              <span key={ci} style={{
+                                                padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
+                                                background: isResolved ? "#f1f8f2" : "#e0f2fe",
+                                                color: isResolved ? "#2e7d32" : "#0369a1",
+                                                border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
+                                              }}>
+                                                {ch.label}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
+                                        Stale unreceived expense dates moved forward to current month.
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <div><strong>Tab:</strong> Confirmed{parsed.slot ? ` (Slot ${parsed.slot})` : ""}</div>
+                                      {parsed.client && <div><strong>End client:</strong> {parsed.client}</div>}
+                                      {parsed.job && <div><strong>Job:</strong> {parsed.job}</div>}
+                                      {isAdmin && parsed.rowNum && <div><strong>Confirmed tab row:</strong> {parsed.rowNum}</div>}
+                                      {parsed.amount && <div><strong>Amount:</strong> {parsed.amount}</div>}
+                                      {parsed.changes && parsed.changes.length > 0 && (
+                                        <div style={{ marginTop: "3px" }}>
+                                          <strong style={{ display: "block", marginBottom: "3px" }}>Date updates:</strong>
+                                          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                                            {parsed.changes.map((ch, ci) => (
+                                              <span key={ci} style={{
+                                                padding: "2px 7px", borderRadius: "4px", fontSize: "11px", fontWeight: "600",
+                                                background: isResolved ? "#f1f8f2" : "#e0f2fe",
+                                                color: isResolved ? "#2e7d32" : "#0369a1",
+                                                border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
+                                              }}>
+                                                {ch.label}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div style={{ marginTop: "4px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
+                                        Stale unreceived expense receive date moved forward to current month.
+                                      </div>
+                                    </>
+                                  )
                                 ) : (
-                                  <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                                  <div>{isAdmin ? na.flagDetail : stripRowInfo(na.flagDetail)}</div>
+                                )}
+                              </div>
+
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
+                                <div style={{ fontSize: "11px", color: "#aaa" }}>
+                                  {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
+                                  {na.firstSeen && na.lastSeen ? " · " : ""}
+                                  {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
+                                </div>
+                                {!isResolved && (
+                                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                                    {clientInfo && (clientInfo.clientSheetId || clientInfo.masterSheetId) && (
+                                      <button className="triage-btn" onClick={() => {
+                                        if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
+                                        if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
+                                      }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
+                                    )}
                                     <button className="triage-btn"
                                       onClick={() => openCreateTaskModal(na, false, true)}
-                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}
+                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}
                                     >
                                       📋 Create Task
                                     </button>
                                     <button className="triage-btn"
                                       onClick={handleMarkResolved}
-                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", whiteSpace: "nowrap" }}
+                                      style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}
                                     >
                                       ✓ Mark resolved
                                     </button>
                                   </div>
                                 )}
                               </div>
-
-                              {parsed ? (
-                                <div style={{
-                                  fontSize: "12px", color: "#475569",
-                                  backgroundColor: isResolved ? "#f8fdf9" : "#ffffff",
-                                  border: `1px solid ${isResolved ? "#dcfce7" : "#e0f2fe"}`,
-                                  borderRadius: "6px", padding: "10px 12px",
-                                  display: "flex", flexDirection: "column", gap: "6px",
-                                }}>
-                                  {parsed.tab === "Outgoings" ? (
-                                    <>
-                                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px" }}>
-                                        <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0f172a" }}>
-                                          Vendor: <span style={{ color: isResolved ? "#2e7d32" : "#1e293b" }}>{parsed.contractor}</span>
-                                        </div>
-                                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                                          {parsed.amount && (
-                                            <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
-                                              Amount: {parsed.amount}
-                                            </div>
-                                          )}
-                                          <span style={{ fontSize: "11px", color: "#64748b", fontWeight: "500" }}>Updated stale placeholder date</span>
-                                        </div>
-                                      </div>
-                                      {parsed.changes && parsed.changes.length > 0 && (
-                                        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
-                                          {parsed.changes.map((ch, ci) => (
-                                            <div key={ci} style={{
-                                              padding: "4px 8px", borderRadius: "4px", fontSize: "12px", fontWeight: "600",
-                                              background: isResolved ? "#f1f8f2" : "#f0f9ff",
-                                              color: isResolved ? "#2e7d32" : "#0369a1",
-                                              border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
-                                            }}>
-                                              {ch.label}
-                                            </div>
-                                          ))}
-                                        </div>
-                                      )}
-                                    </>
-                                  ) : (
-                                    <>
-                                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px" }}>
-                                        <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0f172a" }}>
-                                          {parsed.client} <span style={{ fontWeight: "400", color: "#64748b" }}>|</span> {parsed.job}
-                                        </div>
-                                        {parsed.amount && (
-                                          <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
-                                            Amount: {parsed.amount}
-                                          </div>
-                                        )}
-                                      </div>
-                                      {parsed.changes && parsed.changes.length > 0 && (
-                                        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
-                                          {parsed.changes.map((ch, ci) => (
-                                            <div key={ci} style={{
-                                              padding: "4px 8px", borderRadius: "4px", fontSize: "12px", fontWeight: "600",
-                                              background: isResolved ? "#f1f8f2" : "#f0f9ff",
-                                              color: isResolved ? "#2e7d32" : "#0369a1",
-                                              border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
-                                            }}>
-                                              {ch.label}
-                                            </div>
-                                          ))}
-                                        </div>
-                                      )}
-                                    </>
-                                  )}
-                                </div>
-                              ) : (
-                                <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#64748b", marginTop: "2px" }}>
-                                  {isAdmin ? na.flagDetail : stripRowInfo(na.flagDetail)}
-                                </div>
-                              )}
-
-                              {(na.firstSeen || na.lastSeen) && (
-                                <div style={{ fontSize: "10px", color: "#94a3b8" }}>
-                                  {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
-                                  {na.firstSeen && na.lastSeen ? " · " : ""}
-                                  {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
-                                </div>
-                              )}
                             </div>
                           );
                         }

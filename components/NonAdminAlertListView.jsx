@@ -178,7 +178,7 @@ export default function NonAdminAlertListView({
                       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
                         <div style={{ flexShrink: 1, minWidth: 0 }}>
                           <div style={{ fontSize: "13px", fontWeight: "600", color: "#333" }}>
-                            {na.flagName || getFlagName(na.flagType)}
+                            {getFlagName(na.flagType) || na.flagName}
                           </div>
                           {na.flagDetail && (
                             <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", lineHeight: "1.4" }}>
@@ -272,7 +272,7 @@ export default function NonAdminAlertListView({
                   }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: "13px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#333", textDecoration: isResolved ? "line-through" : "none" }}>
-                        {na.flagName || getFlagName(na.flagType)}
+                        {getFlagName(na.flagType) || na.flagName}
                       </div>
                       {na.flagDetail && (
                         <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#666", marginTop: "4px", textDecoration: isResolved ? "line-through" : "none", lineHeight: "1.4" }}>

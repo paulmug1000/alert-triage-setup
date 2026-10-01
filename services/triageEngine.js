@@ -944,6 +944,10 @@ export async function handleGetPrecomputed(req, res, sheets) {
     });
 
     const filteredNoAction = (data.noActionAlerts || []).filter(alert => {
+      if (alert.flagType === "expenseUnreconGaps") {
+        const detail = String(alert.flagDetail || alert.alertSummary || "");
+        if (detail.includes("Manual Gap") || detail.includes("Placeholder Gap")) return false;
+      }
       if (!alert.fingerprintHash) return true;
       const memRow = findMemoryRow(memoryRows, alert.fingerprintHash);
       if (!memRow) return true;
@@ -1007,6 +1011,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
     }
 
     for (const alert of scopedNoAction) {
+      if (alert.flagType && FLAG_NAMES[alert.flagType]) {
+        alert.flagName = FLAG_NAMES[alert.flagType];
+      }
       const key = alert.clientName;
       const flagKey = alert.flagType;
       if (key && flagKey) {
@@ -1227,6 +1234,10 @@ export async function handleStorePrecomputed(req, res, sheets) {
           if (!clientMeta) continue; 
 
           if (oldPathNoActionKeys.has(`${clientMeta.masterSheetId}|||${row.alertType}`)) continue; 
+          if (row.alertType === "expenseUnreconGaps") {
+            const summary = String(row.alertSummary || "");
+            if (summary.includes("Manual Gap") || summary.includes("Placeholder Gap")) continue;
+          } 
 
           let analysisResult = null;
           if (row.cachedOptionsJSON) {

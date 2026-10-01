@@ -1167,7 +1167,7 @@ export default function AlertSelectionView({
                               <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: analysis ? "10px" : "0", flexWrap: "wrap", gap: "8px" }}>
                                 <div style={{ flexShrink: 1, minWidth: 0 }}>
                                   <div style={{ fontSize: "13px", fontWeight: "600", color: "#444", display: "flex", alignItems: "center" }}>
-                                    <span>{na.flagName || getFlagName(na.flagType)}</span>
+                                    <span>{getFlagName(na.flagType) || na.flagName}</span>
                                     {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
                                   </div>
                                   {na.flagDetail && (
@@ -1306,7 +1306,7 @@ export default function AlertSelectionView({
                             )}
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ fontSize: "13px", fontWeight: "600", color: isResolved ? "#2e7d32" : "#555", textDecoration: isResolved ? "line-through" : "none", display: "flex", alignItems: "center" }}>
-                                <span>{na.flagName || getFlagName(na.flagType)}</span>
+                                <span>{getFlagName(na.flagType) || na.flagName}</span>
                                 {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(na.flagType) && <AdminBadge show={clientHasManager} />}
                               </div>
                               {na.flagDetail && (

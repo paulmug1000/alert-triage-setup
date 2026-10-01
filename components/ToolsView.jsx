@@ -76,15 +76,19 @@ export default function ToolsView({
   };
 
   // --- EOM DATA LOADING & EFFECTS ---
-  
+
   useEffect(() => {
     setEomStatusLoading(true);
     setEomStatusError("");
     Promise.all([
-      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId }) }).then(r => r.json()),
-      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId }) }).then(r => r.json()),
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId })
+      }).then(r => r.json()),
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_month_status", monthKey: eomMonthKey, automationCommanderSheetId })
+      }).then(r => r.json()),
     ])
       .then(([tasksD, statusD]) => {
         if (tasksD.success) setEomAllTasks(tasksD.tasks || []);
@@ -98,8 +102,10 @@ export default function ToolsView({
 
   useEffect(() => {
     if (eomClientSettings !== null) return;
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_excluded_clients", automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_excluded_clients", automationCommanderSheetId })
+    })
       .then(r => r.json())
       .then(d => { if (d.success) setEomClientSettings(d.clients || []); })
       .catch(e => console.error("eom_get_excluded_clients error:", e));
@@ -109,8 +115,10 @@ export default function ToolsView({
 
   useEffect(() => {
     if (eomBankAccountsByClient !== null) return;
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_bank_accounts", automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_bank_accounts", automationCommanderSheetId })
+    })
       .then(r => r.json())
       .then(d => { if (d.success) { setEomBankAccountsByClient(d.accountsByClient || {}); setEomBankAccountsLoadedAt(d.loadedAt || ""); } })
       .catch(e => console.error("eom_get_bank_accounts error:", e));
@@ -118,8 +126,10 @@ export default function ToolsView({
 
   useEffect(() => {
     setEomCashProgressLoading(true);
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_cash_balance_progress", monthKey: eomCashMonthKey, automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_cash_balance_progress", monthKey: eomCashMonthKey, automationCommanderSheetId })
+    })
       .then(r => r.json())
       .then(d => { if (d.success) setEomCashCompletedClients(d.completedClients || []); })
       .catch(e => console.error("eom_get_cash_balance_progress error:", e))
@@ -151,8 +161,10 @@ export default function ToolsView({
       if (existing) return list.map(c => c.clientName === clientName ? { ...c, excluded } : c);
       return [...list, { clientName, excluded, sortOrder: null }];
     });
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_toggle_client_excluded", clientName, excluded, automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_toggle_client_excluded", clientName, excluded, automationCommanderSheetId })
+    })
       .catch(e => console.error("eom_toggle_client_excluded error:", e));
   };
 
@@ -174,16 +186,20 @@ export default function ToolsView({
       });
     });
 
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_reorder_clients", orderedClientNames: reordered, automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_reorder_clients", orderedClientNames: reordered, automationCommanderSheetId })
+    })
       .catch(e => console.error("eom_reorder_clients error:", e));
   };
 
   const reloadEomClientTasks = () => {
     setEomClientTasksLoading(true);
     setEomClientTasksError("");
-    return fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId }) })
+    return fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId })
+    })
       .then(r => r.json())
       .then(d => {
         if (d.success) setEomAllTasks(d.tasks || []);
@@ -195,8 +211,10 @@ export default function ToolsView({
 
   const reloadEomTemplatesForPicker = useCallback(() => {
     setEomTemplatesError("");
-    return fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId }) })
+    return fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId })
+    })
       .then(r => r.json())
       .then(d => {
         if (d.success) setEomTemplates(d.templates || []);
@@ -209,10 +227,14 @@ export default function ToolsView({
     setEomManagerLoading(true);
     setEomManagerError("");
     Promise.all([
-      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId }) }).then(r => r.json()),
-      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId }) }).then(r => r.json()),
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_templates", automationCommanderSheetId })
+      }).then(r => r.json()),
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_get_client_tasks", automationCommanderSheetId })
+      }).then(r => r.json()),
     ])
       .then(([templatesD, tasksD]) => {
         if (templatesD.success) setEomManagerTemplates(templatesD.templates || []);
@@ -226,14 +248,18 @@ export default function ToolsView({
   const handleLoadBankAccounts = () => {
     setEomBankAccountsLoading(true);
     setEomBankAccountsLoadResult(null);
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_load_bank_accounts", automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_load_bank_accounts", automationCommanderSheetId })
+    })
       .then(r => r.json())
       .then(d => {
         if (d.success) {
           setEomBankAccountsLoadResult(d);
-          fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "eom_get_bank_accounts", automationCommanderSheetId }) })
+          fetch("/api/triage", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "eom_get_bank_accounts", automationCommanderSheetId })
+          })
             .then(r => r.json())
             .then(d2 => { if (d2.success) { setEomBankAccountsByClient(d2.accountsByClient || {}); setEomBankAccountsLoadedAt(d2.loadedAt || ""); } });
         } else {
@@ -270,7 +296,7 @@ export default function ToolsView({
   }, [setEomCashSubView, setupEntryForClient]);
 
   // --- EFFECTS THAT DEPEND ON CALLBACKS ---
-  
+
   useEffect(() => {
     if (eomTemplates) return;
     reloadEomTemplatesForPicker();
@@ -300,9 +326,13 @@ export default function ToolsView({
     const amounts = Object.values(eomCashEntryAmounts);
     setEomCashSaveStatus("saving");
     setEomCashSaveError("");
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_save_cash_balance", clientSheetId: client.clientSheetId,
-        clientName: eomCashEntryClient, monthKey: eomCashMonthKey, amounts, automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_save_cash_balance", clientSheetId: client.clientSheetId,
+        clientName: eomCashEntryClient, monthKey: eomCashMonthKey, amounts, automationCommanderSheetId
+      })
+    })
       .then(r => r.json())
       .then(d => {
         if (!d.success) { setEomCashSaveStatus("error"); setEomCashSaveError(d.error || "Failed to save"); return; }
@@ -317,8 +347,10 @@ export default function ToolsView({
     const client = (allOutgoingsClients || []).find(c => c.clientName === targetClientName);
     if (!client) return;
     setEomBackupRunning(taskId);
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_create_dashboard_backup", clientSheetId: client.clientSheetId, clientName: targetClientName, workMonthKey: eomMonthKey, automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_create_dashboard_backup", clientSheetId: client.clientSheetId, clientName: targetClientName, workMonthKey: eomMonthKey, automationCommanderSheetId })
+    })
       .then(r => r.json())
       .then(d => {
         if (!d.success) { setEomClientTasksError(d.error || "Failed to create backup"); return; }
@@ -352,8 +384,10 @@ export default function ToolsView({
     const client = (allOutgoingsClients || []).find(c => c.clientName === targetClientName);
     if (!client) return;
     setEomMarkActualRunning(taskId);
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_mark_month_actual", clientSheetId: client.clientSheetId, clientName: targetClientName, workMonthKey: eomMonthKey, automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_mark_month_actual", clientSheetId: client.clientSheetId, clientName: targetClientName, workMonthKey: eomMonthKey, automationCommanderSheetId })
+    })
       .then(r => r.json())
       .then(d => {
         if (!d.success) { setEomClientTasksError(d.error || "Failed to mark month actual"); return; }
@@ -380,21 +414,21 @@ export default function ToolsView({
     }
 
     if (eomStatusTimerRef.current) clearTimeout(eomStatusTimerRef.current);
-    
+
     eomStatusTimerRef.current = setTimeout(() => {
       const updates = [...eomStatusQueueRef.current];
       eomStatusQueueRef.current = [];
-      
+
       if (updates.length > 0) {
-        fetch("/api/triage", { 
+        fetch("/api/triage", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "eom_update_task_status_batch", updates, automationCommanderSheetId }) 
+          body: JSON.stringify({ action: "eom_update_task_status_batch", updates, automationCommanderSheetId })
         })
-        .then(r => r.json())
-        .then(d => {
-          if (!d.success) setEomClientTasksError(d.error || "Failed to save status batch");
-        })
-        .catch(e => setEomClientTasksError(e.message));
+          .then(r => r.json())
+          .then(d => {
+            if (!d.success) setEomClientTasksError(d.error || "Failed to save status batch");
+          })
+          .catch(e => setEomClientTasksError(e.message));
       }
     }, 1000);
   };
@@ -406,11 +440,15 @@ export default function ToolsView({
     setEomAddTaskSaving(true);
 
     const finishAdd = (templateId) => {
-      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_save_client_task", clientName: eomDetailClient,
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "eom_save_client_task", clientName: eomDetailClient,
           templateId: eomAddTaskMode === "template" ? templateId : undefined,
           taskName: eomAddTaskMode === "custom" ? eomNewTaskName.trim() : undefined,
-          clientNotes: eomNewTaskNotes.trim(), automationCommanderSheetId }) })
+          clientNotes: eomNewTaskNotes.trim(), automationCommanderSheetId
+        })
+      })
         .then(r => r.json())
         .then(d => {
           if (d.success) {
@@ -428,8 +466,10 @@ export default function ToolsView({
     };
 
     if (eomAddTaskMode === "template" && eomCreatingNewTemplate) {
-      fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_save_template", name: eomNewTemplateName.trim(), automationCommanderSheetId }) })
+      fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_save_template", name: eomNewTemplateName.trim(), automationCommanderSheetId })
+      })
         .then(r => r.json())
         .then(d => { if (d.success) finishAdd(d.templateId); else setEomAddTaskSaving(false); })
         .catch(e => { console.error("eom_save_template error:", e); setEomAddTaskSaving(false); });
@@ -439,10 +479,14 @@ export default function ToolsView({
   };
 
   const handleEomSaveNotes = (task, targetClientName = eomDetailClient) => {
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: targetClientName,
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_save_client_task", taskId: task.taskId, clientName: targetClientName,
         templateId: task.templateId || undefined, taskName: task.templateId ? undefined : task.name,
-        clientNotes: eomNotesDraft, active: true, automationCommanderSheetId }) })
+        clientNotes: eomNotesDraft, active: true, automationCommanderSheetId
+      })
+    })
       .then(r => r.json())
       .then(d => {
         if (d.success) { setEomEditingNotesFor(""); reloadEomClientTasks(); }
@@ -453,9 +497,13 @@ export default function ToolsView({
 
   const handleEomSaveName = (task, targetClientName = eomDetailClient) => {
     if (!eomNameDraft.trim()) return;
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: targetClientName,
-        taskName: eomNameDraft.trim(), clientNotes: task.clientNotes, active: true, automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_save_client_task", taskId: task.taskId, clientName: targetClientName,
+        taskName: eomNameDraft.trim(), clientNotes: task.clientNotes, active: true, automationCommanderSheetId
+      })
+    })
       .then(r => r.json())
       .then(d => {
         if (d.success) { setEomEditingNameFor(""); reloadEomClientTasks(); }
@@ -469,7 +517,7 @@ export default function ToolsView({
     setEomNoteletSaving(true);
     const { taskId, clientName } = eomEditingNotelet;
     const newText = eomNoteletDraft.trim();
-    
+
     setEomStatusOverrides(prev => {
       const list = prev || [];
       const existing = list.find(s => s.clientName === clientName && s.taskId === taskId);
@@ -478,9 +526,11 @@ export default function ToolsView({
     });
 
     try {
-      await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "eom_update_task_notelet", clientName, taskId, monthKey: eomMonthKey, notelet: newText, automationCommanderSheetId }) });
-    } catch(e) { console.error(e); }
+      await fetch("/api/triage", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "eom_update_task_notelet", clientName, taskId, monthKey: eomMonthKey, notelet: newText, automationCommanderSheetId })
+      });
+    } catch (e) { console.error(e); }
     finally {
       setEomNoteletSaving(false);
       setEomEditingNotelet(null);
@@ -488,10 +538,14 @@ export default function ToolsView({
   };
 
   const handleEomToggleTaskActive = (task) => {
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_save_client_task", taskId: task.taskId, clientName: eomDetailClient,
         templateId: task.templateId || undefined, taskName: task.templateId ? undefined : task.name,
-        clientNotes: task.clientNotes, active: !task.active, automationCommanderSheetId }) })
+        clientNotes: task.clientNotes, active: !task.active, automationCommanderSheetId
+      })
+    })
       .then(r => r.json())
       .then(d => {
         if (d.success) reloadEomClientTasks();
@@ -517,8 +571,10 @@ export default function ToolsView({
       return newIdx === -1 ? t : { ...t, sortOrder: (newIdx + 1) * 10 };
     }));
 
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_reorder_tasks", clientName: targetClientName, orderedTaskIds, automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_reorder_tasks", clientName: targetClientName, orderedTaskIds, automationCommanderSheetId })
+    })
       .catch(e => console.error("eom_reorder_tasks error:", e));
   };
 
@@ -541,17 +597,23 @@ export default function ToolsView({
     setEomManagerTemplates(prev => applyNewOrder(prev));
     setEomTemplates(prev => prev ? applyNewOrder(prev) : prev);
 
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_reorder_templates", orderedTemplateIds, automationCommanderSheetId }) })
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "eom_reorder_templates", orderedTemplateIds, automationCommanderSheetId })
+    })
       .catch(e => console.error("eom_reorder_templates error:", e));
   };
 
   const handleEomSaveTemplateEdit = (templateId) => {
     if (!eomTemplateDraft.name.trim()) return;
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_save_template", templateId, name: eomTemplateDraft.name.trim(),
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_save_template", templateId, name: eomTemplateDraft.name.trim(),
         defaultNotes: eomTemplateDraft.defaultNotes.trim(), linkedFunction: eomTemplateDraft.linkedFunction,
-        active: eomTemplateDraft.active, alertCategories: eomTemplateDraft.alertCategories || "", automationCommanderSheetId }) })
+        active: eomTemplateDraft.active, alertCategories: eomTemplateDraft.alertCategories || "", automationCommanderSheetId
+      })
+    })
       .then(r => r.json())
       .then(d => {
         if (d.success) {
@@ -566,10 +628,14 @@ export default function ToolsView({
   const handleEomCreateTemplate = () => {
     if (!eomNewTplName.trim()) return;
     setEomAddingNewTemplateSaving(true);
-    fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "eom_save_template", name: eomNewTplName.trim(),
+    fetch("/api/triage", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "eom_save_template", name: eomNewTplName.trim(),
         defaultNotes: eomNewTplNotes.trim(), linkedFunction: eomNewTplLinkedFunction,
-        alertCategories: eomNewTplAlertCategories, automationCommanderSheetId }) })
+        alertCategories: eomNewTplAlertCategories, automationCommanderSheetId
+      })
+    })
       .then(r => r.json())
       .then(d => {
         if (d.success) {
@@ -632,10 +698,12 @@ export default function ToolsView({
       <div style={{ display: "flex", gap: "4px", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
         {[["overview", "Overview"], ["payroll", "Payroll Import"], ["time", "Time Import"], ["cash", "Cash Balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push Outgoings"]].map(([key, label]) => (
           <button key={key} onClick={() => setEomSubView(key)}
-            style={{ padding: "8px 16px", background: "none", border: "none",
+            style={{
+              padding: "8px 16px", background: "none", border: "none",
               borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
               color: eomSubView === key ? "#0066cc" : "#666", fontWeight: eomSubView === key ? "600" : "400",
-              fontSize: "13px", cursor: "pointer" }}>
+              fontSize: "13px", cursor: "pointer"
+            }}>
             {label}
           </button>
         ))}
@@ -697,8 +765,10 @@ export default function ToolsView({
                   ) : (
                     <>
                       <div style={{ flex: 1, height: "8px", background: "#f0f0f0", borderRadius: "4px", overflow: "hidden" }}>
-                        <div style={{ width: `${c.pct * 100}%`, height: "100%",
-                          background: c.pct === 1 ? "#16a34a" : c.pct === 0 ? "#dc2626" : "#f59e0b" }} />
+                        <div style={{
+                          width: `${c.pct * 100}%`, height: "100%",
+                          background: c.pct === 1 ? "#16a34a" : c.pct === 0 ? "#dc2626" : "#f59e0b"
+                        }} />
                       </div>
                       <div style={{ flex: "0 0 70px", fontSize: "12px", color: "#666", textAlign: "right" }}>{c.done} of {c.total}</div>
                     </>
@@ -734,7 +804,7 @@ export default function ToolsView({
               {clientRows.map((c) => {
                 const cTasks = (eomAllTasks || []).filter(t => t.clientName === c.clientName && t.active).sort((a, b) => a.sortOrder - b.sortOrder);
                 if (cTasks.length === 0) return null;
-                
+
                 const statusByTaskId = {};
                 const noteletByTaskId = {};
                 (eomStatusOverrides || []).forEach(s => { if (s.clientName === c.clientName) { statusByTaskId[s.taskId] = s.status; noteletByTaskId[s.taskId] = s.notelet; } });
@@ -744,26 +814,28 @@ export default function ToolsView({
                   const hasNotelet = !!noteletText;
                   return (
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <button 
+                      <button
                         onClick={() => { setEomEditingNotelet({ taskId, clientName: c.clientName }); setEomNoteletDraft(noteletText || ""); }}
                         title={hasNotelet ? noteletText : "Add month-specific note"}
-                        style={{ 
-                          background: hasNotelet ? "#ffeb3b" : "none", 
-                          border: hasNotelet ? "1px solid #fbc02d" : "1px solid transparent", 
-                          borderRadius: "6px", cursor: "pointer", padding: "4px 6px", fontSize: "15px", 
-                          opacity: hasNotelet ? 1 : 0.4, color: hasNotelet ? "#f57f17" : "#999", 
+                        style={{
+                          background: hasNotelet ? "#ffeb3b" : "none",
+                          border: hasNotelet ? "1px solid #fbc02d" : "1px solid transparent",
+                          borderRadius: "6px", cursor: "pointer", padding: "4px 6px", fontSize: "15px",
+                          opacity: hasNotelet ? 1 : 0.4, color: hasNotelet ? "#f57f17" : "#999",
                           boxShadow: hasNotelet ? "0 2px 4px rgba(0,0,0,0.15)" : "none",
-                          transition: "all 0.2s" 
+                          transition: "all 0.2s"
                         }}>
                         {hasNotelet ? "💬" : "🗨️"}
                       </button>
                       <div style={{ display: "flex", gap: "4px" }}>
                         {options.map(([val, label, color]) => (
                           <button key={val} onClick={() => handleEomStatusChange(taskId, val, c.clientName)}
-                            style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
+                            style={{
+                              padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
                               border: `1px solid ${current === val ? color : "#ddd"}`,
                               background: current === val ? color : "#fff",
-                              color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400" }}>
+                              color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400"
+                            }}>
                             {label}
                           </button>
                         ))}
@@ -778,8 +850,10 @@ export default function ToolsView({
                   const isDone = count === 0;
                   return (
                     <span title={isDone ? "No active alerts in the selected categories" : `${count} active alert${count !== 1 ? "s" : ""} in the selected categories`}
-                      style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", fontWeight: "600",
-                        border: `1px solid ${isDone ? "#16a34a" : "#f59e0b"}`, background: isDone ? "#16a34a" : "#f59e0b", color: "#fff" }}>
+                      style={{
+                        padding: "3px 9px", fontSize: "11px", borderRadius: "5px", fontWeight: "600",
+                        border: `1px solid ${isDone ? "#16a34a" : "#f59e0b"}`, background: isDone ? "#16a34a" : "#f59e0b", color: "#fff"
+                      }}>
                       {isDone ? "Done" : `Pending (${count})`}
                     </span>
                   );
@@ -797,9 +871,11 @@ export default function ToolsView({
                           onDragLeave={() => setEomDragOverTaskId(prev => prev === t.taskId ? null : prev)}
                           onDrop={e => { e.preventDefault(); persistEomTaskOrder(eomDraggedTaskId, t.taskId, c.clientName); setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
                           onDragEnd={() => { setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
-                          style={{ padding: "8px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
+                          style={{
+                            padding: "8px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
                             background: eomDragOverTaskId === t.taskId ? "#f0f7ff" : "transparent",
-                            opacity: eomDraggedTaskId === t.taskId ? 0.4 : 1 }}>
+                            opacity: eomDraggedTaskId === t.taskId ? 0.4 : 1
+                          }}>
                           <div style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
                             <div title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", lineHeight: "20px", userSelect: "none" }}>⠿</div>
                             <div style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
@@ -837,8 +913,10 @@ export default function ToolsView({
                                 return (
                                   <button onClick={() => handleEomMarkActual(t.taskId, c.clientName)} disabled={eomMarkActualRunning === t.taskId}
                                     title={`Writes &quot;Actual&quot; to the ${targetLabel} column on the Performance tab`}
-                                    style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
-                                      color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                    style={{
+                                      marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                                      color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600"
+                                    }}>
                                     {eomMarkActualRunning === t.taskId ? "Marking..." : `Mark ${targetLabel} Actual`}
                                   </button>
                                 );
@@ -846,8 +924,10 @@ export default function ToolsView({
                               {t.linkedFunction === "create_backup" && (
                                 <button onClick={() => handleEomCreateBackup(t.taskId, c.clientName)} disabled={eomBackupRunning === t.taskId}
                                   title={`Copies the Dashboard tab to the backup sheet as values only`}
-                                  style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
-                                    color: "#0066cc", cursor: eomBackupRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
+                                  style={{
+                                    marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                                    color: "#0066cc", cursor: eomBackupRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600"
+                                  }}>
                                   {eomBackupRunning === t.taskId ? "Creating..." : `Create Backup`}
                                 </button>
                               )}
@@ -877,13 +957,15 @@ export default function ToolsView({
                             </div>
                             {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending", noteletByTaskId[t.taskId])}
                             <button onClick={() => setEomExpandedNotesFor(prev => {
-                                const next = new Set(prev);
-                                if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
-                                return next;
-                              })}
+                              const next = new Set(prev);
+                              if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
+                              return next;
+                            })}
                               title={t.clientNotes ? "Show/hide note" : "Add note"}
-                              style={{ background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
-                                color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400" }}>
+                              style={{
+                                background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
+                                color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400"
+                              }}>
                               {eomExpandedNotesFor.has(t.taskId) ? "−" : "+"}
                             </button>
                           </div>
@@ -943,10 +1025,12 @@ export default function ToolsView({
                   onDragLeave={() => setEomDragOverClientName(prev => prev === c.clientName ? null : prev)}
                   onDrop={e => { e.preventDefault(); persistEomClientOrder(eomDraggedClientName, c.clientName, orderedClientNames); setEomDraggedClientName(null); setEomDragOverClientName(null); }}
                   onDragEnd={() => { setEomDraggedClientName(null); setEomDragOverClientName(null); }}
-                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 18px",
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 18px",
                     borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
                     background: eomDragOverClientName === c.clientName ? "#f0f7ff" : "transparent",
-                    opacity: eomDraggedClientName === c.clientName ? 0.4 : 1 }}>
+                    opacity: eomDraggedClientName === c.clientName ? 0.4 : 1
+                  }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                     <div title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", userSelect: "none" }}>⠿</div>
                     <div style={{ fontSize: "13px", color: c.excluded ? "#999" : "#1a1a1a", fontWeight: "600" }}>{c.clientName}</div>
@@ -997,8 +1081,10 @@ export default function ToolsView({
                   onDragLeave={() => setEomDragOverTemplateId(prev => prev === tpl.templateId ? null : prev)}
                   onDrop={e => { e.preventDefault(); persistEomTemplateOrder(eomDraggedTemplateId, tpl.templateId); setEomDraggedTemplateId(null); setEomDragOverTemplateId(null); }}
                   onDragEnd={() => { setEomDraggedTemplateId(null); setEomDragOverTemplateId(null); }}
-                  style={{ padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none", opacity: tpl.active ? (eomDraggedTemplateId === tpl.templateId ? 0.4 : 1) : 0.55,
-                    background: eomDragOverTemplateId === tpl.templateId ? "#f0f7ff" : "transparent" }}>
+                  style={{
+                    padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none", opacity: tpl.active ? (eomDraggedTemplateId === tpl.templateId ? 0.4 : 1) : 0.55,
+                    background: eomDragOverTemplateId === tpl.templateId ? "#f0f7ff" : "transparent"
+                  }}>
                   {eomEditingTemplateId === tpl.templateId ? (
                     <div>
                       <input value={eomTemplateDraft.name} onChange={e => setEomTemplateDraft(d => ({ ...d, name: e.target.value }))} placeholder="Template name"
@@ -1157,26 +1243,28 @@ export default function ToolsView({
           const hasNotelet = !!noteletText;
           return (
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <button 
+              <button
                 onClick={() => { setEomEditingNotelet({ taskId, clientName: eomDetailClient }); setEomNoteletDraft(noteletText || ""); }}
                 title={hasNotelet ? noteletText : "Add month-specific note"}
-                style={{ 
-                  background: hasNotelet ? "#ffeb3b" : "none", 
-                  border: hasNotelet ? "1px solid #fbc02d" : "1px solid transparent", 
-                  borderRadius: "6px", cursor: "pointer", padding: "4px 6px", fontSize: "15px", 
-                  opacity: hasNotelet ? 1 : 0.4, color: hasNotelet ? "#f57f17" : "#999", 
+                style={{
+                  background: hasNotelet ? "#ffeb3b" : "none",
+                  border: hasNotelet ? "1px solid #fbc02d" : "1px solid transparent",
+                  borderRadius: "6px", cursor: "pointer", padding: "4px 6px", fontSize: "15px",
+                  opacity: hasNotelet ? 1 : 0.4, color: hasNotelet ? "#f57f17" : "#999",
                   boxShadow: hasNotelet ? "0 2px 4px rgba(0,0,0,0.15)" : "none",
-                  transition: "all 0.2s" 
+                  transition: "all 0.2s"
                 }}>
                 {hasNotelet ? "💬" : "🗨️"}
               </button>
               <div style={{ display: "flex", gap: "4px" }}>
                 {options.map(([val, label, color]) => (
                   <button key={val} onClick={() => handleEomStatusChange(taskId, val)}
-                    style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
+                    style={{
+                      padding: "3px 9px", fontSize: "11px", borderRadius: "5px", cursor: "pointer",
                       border: `1px solid ${current === val ? color : "#ddd"}`,
                       background: current === val ? color : "#fff",
-                      color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400" }}>
+                      color: current === val ? "#fff" : "#666", fontWeight: current === val ? "600" : "400"
+                    }}>
                     {label}
                   </button>
                 ))}
@@ -1193,8 +1281,10 @@ export default function ToolsView({
           const isDone = count === 0;
           return (
             <span title={isDone ? "No active alerts in the selected categories" : `${count} active alert${count !== 1 ? "s" : ""} in the selected categories`}
-              style={{ padding: "3px 9px", fontSize: "11px", borderRadius: "5px", fontWeight: "600",
-                border: `1px solid ${isDone ? "#16a34a" : "#f59e0b"}`, background: isDone ? "#16a34a" : "#f59e0b", color: "#fff" }}>
+              style={{
+                padding: "3px 9px", fontSize: "11px", borderRadius: "5px", fontWeight: "600",
+                border: `1px solid ${isDone ? "#16a34a" : "#f59e0b"}`, background: isDone ? "#16a34a" : "#f59e0b", color: "#fff"
+              }}>
               {isDone ? "Done" : `Pending (${count})`}
             </span>
           );
@@ -1228,9 +1318,11 @@ export default function ToolsView({
                   onDragLeave={() => setEomDragOverTaskId(prev => prev === t.taskId ? null : prev)}
                   onDrop={e => { e.preventDefault(); persistEomTaskOrder(eomDraggedTaskId, t.taskId); setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
                   onDragEnd={() => { setEomDraggedTaskId(null); setEomDragOverTaskId(null); }}
-                  style={{ padding: "8px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
+                  style={{
+                    padding: "8px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none",
                     background: eomDragOverTaskId === t.taskId ? "#f0f7ff" : "transparent",
-                    opacity: eomDraggedTaskId === t.taskId ? 0.4 : 1 }}>
+                    opacity: eomDraggedTaskId === t.taskId ? 0.4 : 1
+                  }}>
                   <div style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
                     <div title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", lineHeight: "20px", userSelect: "none" }}>⠿</div>
                     <div style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
@@ -1268,8 +1360,10 @@ export default function ToolsView({
                         return (
                           <button onClick={() => handleEomMarkActual(t.taskId)} disabled={eomMarkActualRunning === t.taskId}
                             title={`Writes &quot;Actual&quot; to the ${targetLabel} column on the Performance tab`}
-                            style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
-                              color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
+                            style={{
+                              marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                              color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600"
+                            }}>
                             {eomMarkActualRunning === t.taskId ? "Marking..." : `Mark ${targetLabel} Actual`}
                           </button>
                         );
@@ -1277,8 +1371,10 @@ export default function ToolsView({
                       {t.linkedFunction === "create_backup" && (
                         <button onClick={() => handleEomCreateBackup(t.taskId)} disabled={eomBackupRunning === t.taskId}
                           title={`Copies the Dashboard tab to the backup sheet as values only`}
-                          style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
-                            color: "#0066cc", cursor: eomBackupRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600" }}>
+                          style={{
+                            marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
+                            color: "#0066cc", cursor: eomBackupRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600"
+                          }}>
                           {eomBackupRunning === t.taskId ? "Creating..." : `Create Backup`}
                         </button>
                       )}
@@ -1308,13 +1404,15 @@ export default function ToolsView({
                     </div>
                     {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending", noteletByTaskId[t.taskId])}
                     <button onClick={() => setEomExpandedNotesFor(prev => {
-                        const next = new Set(prev);
-                        if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
-                        return next;
-                      })}
+                      const next = new Set(prev);
+                      if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
+                      return next;
+                    })}
                       title={t.clientNotes ? "Show/hide note" : "Add note"}
-                      style={{ background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
-                        color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400" }}>
+                      style={{
+                        background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
+                        color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400"
+                      }}>
                       {eomExpandedNotesFor.has(t.taskId) ? "−" : "+"}
                     </button>
                     <button onClick={() => setEomDeactivateConfirm(t)} title="Stop tracking this task for this client"
@@ -1375,9 +1473,9 @@ export default function ToolsView({
                     ) : (
                       <div style={{ marginBottom: "8px" }}>
                         <select value={eomNewTaskTemplateId} onChange={e => {
-                            if (e.target.value === "__new__") { setEomCreatingNewTemplate(true); setEomNewTaskTemplateId(""); }
-                            else setEomNewTaskTemplateId(e.target.value);
-                          }}
+                          if (e.target.value === "__new__") { setEomCreatingNewTemplate(true); setEomNewTaskTemplateId(""); }
+                          else setEomNewTaskTemplateId(e.target.value);
+                        }}
                           style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: "6px", fontSize: "13px" }}>
                           <option value="">{eomTemplates === null ? "Loading templates..." : "Select a template..."}</option>
                           {(eomTemplates || []).filter(t => t.active).map(t => (
@@ -1418,328 +1516,332 @@ export default function ToolsView({
       {eomSubView === "payroll" && (() => {
         const { files: payrollFiles, stillResolving, readyToStart, completeCount, errorCount } = toolsFileStats("payroll");
         return (<>
-        <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
-          Payroll import - upload several clients&apos; payroll documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can&apos;t work out is flagged for you to assign.
-        </p>
+          <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
+            Payroll import - upload several clients&apos; payroll documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can&apos;t work out is flagged for you to assign.
+          </p>
 
-        <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-          <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Import Payroll</h3>
+          <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+            <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Import Payroll</h3>
 
-          <div style={{ marginBottom: "14px" }}>
-            <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Payroll documents</label>
-            <input type="file" multiple accept=".pdf,image/*,.xlsx,.xls,.csv"
-              onChange={e => { handleToolsFilesSelect(e.target.files, "payroll"); e.target.value = ""; }}
-              style={{ width: "100%", fontSize: "13px" }} />
+            <div style={{ marginBottom: "14px" }}>
+              <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Payroll documents</label>
+              <input type="file" multiple accept=".pdf,image/*,.xlsx,.xls,.csv"
+                onChange={e => { handleToolsFilesSelect(e.target.files, "payroll"); e.target.value = ""; }}
+                style={{ width: "100%", fontSize: "13px" }} />
+            </div>
+
+            {payrollFiles.length > 0 && (
+              <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" }}>
+                <button
+                  disabled={!readyToStart || toolsBatchRunning}
+                  onClick={startToolsBatch}
+                  style={{
+                    padding: "8px 20px", background: (!readyToStart || toolsBatchRunning) ? "#ccc" : "#0066cc",
+                    color: "#fff", border: "none", borderRadius: "6px",
+                    cursor: (!readyToStart || toolsBatchRunning) ? "default" : "pointer", fontSize: "13px", fontWeight: "600"
+                  }}>
+                  {toolsBatchRunning ? <><Spinner color="#fff" /> Processing...</> : "Process All"}
+                </button>
+                <span style={{ fontSize: "12px", color: "#888" }}>
+                  {completeCount} of {payrollFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
+                </span>
+                {stillResolving.length > 0 && (
+                  <span style={{ fontSize: "12px", color: "#b45309" }}>
+                    Waiting on {stillResolving.length} file{stillResolving.length !== 1 ? "s" : ""} to finish identifying before this can start
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
-          {payrollFiles.length > 0 && (
-            <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" }}>
-              <button
-                disabled={!readyToStart || toolsBatchRunning}
-                onClick={startToolsBatch}
-                style={{ padding: "8px 20px", background: (!readyToStart || toolsBatchRunning) ? "#ccc" : "#0066cc",
-                  color: "#fff", border: "none", borderRadius: "6px",
-                  cursor: (!readyToStart || toolsBatchRunning) ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
-                {toolsBatchRunning ? <><Spinner color="#fff" /> Processing...</> : "Process All"}
-              </button>
-              <span style={{ fontSize: "12px", color: "#888" }}>
-                {completeCount} of {payrollFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
-              </span>
-              {stillResolving.length > 0 && (
-                <span style={{ fontSize: "12px", color: "#b45309" }}>
-                  Waiting on {stillResolving.length} file{stillResolving.length !== 1 ? "s" : ""} to finish identifying before this can start
-                </span>
+          {payrollFiles.map(f => (
+            <div key={f.id} style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px", marginBottom: "14px" }}>
+              <div style={{ fontSize: "14px", fontWeight: "700", color: "#1a1a1a", marginBottom: "8px" }}>{f.fileName}</div>
+
+              {(f.convertStatus === "converting" || f.convertStatus === "pending") && (
+                <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.convertMsg || "Preparing..."}</div>
+              )}
+              {f.convertStatus === "error" && (
+                <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.convertMsg}</div>
+              )}
+
+              {f.convertStatus === "ready" && (
+                <>
+                  {f.detectStatus === "detecting" && (
+                    <div style={{ fontSize: "13px", color: "#666", marginBottom: "8px" }}><Spinner /> Working out which client this belongs to...</div>
+                  )}
+                  {f.detectStatus === "matched" && f.processStatus === "pending" && (
+                    <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
+                      ✓ Detected client: <strong>{f.client}</strong>
+                      {" "}<span style={{ color: "#888" }}>
+                        ({f.detectMethod === "filename" ? "matched by filename" : f.detectMethod === "document_name" ? "matched by name on document" : "matched by employee names"})
+                      </span>
+                    </div>
+                  )}
+                  {f.detectStatus === "ambiguous" && f.processStatus === "pending" && (
+                    <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
+                      ⚠️ Couldn&apos;t work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} - please select it below.
+                      {f.ambiguousInfo?.candidateScores?.length > 0 && (
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#92400e" }}>
+                          Closest guesses: {f.ambiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {f.processStatus === "pending" && (
+                    <div style={{ marginBottom: "6px" }}>
+                      <select value={f.client} onChange={e => updateToolsFile(f.id, { client: e.target.value })}
+                        style={{ width: "100%", padding: "7px 10px", border: `1px solid ${f.detectStatus === "ambiguous" && !f.client ? "#fbbf24" : "#ddd"}`, borderRadius: "6px", fontSize: "13px", boxSizing: "border-box" }}>
+                        <option value="">Select a client...</option>
+                        {(allOutgoingsClients || []).map(c => (
+                          <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {f.processStatus === "processing" && (
+                    <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.processMsg}</div>
+                  )}
+
+                  {f.processStatus === "confirm_period" && f.pendingConfirm && (
+                    <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
+                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#664d03", marginBottom: "6px" }}>Date not found</div>
+                      <div style={{ fontSize: "13px", color: "#664d03", marginBottom: "10px" }}>
+                        Would you like to apply this data to the most recent period: <strong>{f.pendingConfirm.fallback}</strong>?
+                      </div>
+                      <div style={{ display: "flex", gap: "10px" }}>
+                        <button onClick={() => processOneToolsFile(f.id, f.pendingConfirm.fallback)}
+                          style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          Yes, apply
+                        </button>
+                        <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled - please check the document and try again." })}
+                          style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {f.processStatus === "error" && (
+                    <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.processMsg}</div>
+                  )}
+
+                  {f.processStatus === "complete" && f.result && (
+                    <div>
+                      <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
+                        ✓ {f.client} - updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
+                      </div>
+
+                      {f.result.totalsCheck && (
+                        <div style={{ marginBottom: "12px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "6px" }}>
+                            Totals check <span style={{ fontWeight: "400", color: "#888" }}>
+                              ({f.result.totalsSource === "document" ? "from a totals row on the document" : "AI-calculated - no totals row found on the document"})
+                            </span>
+                          </div>
+                          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px" }}>
+                            <thead>
+                              <tr style={{ borderBottom: "2px solid #e0e0e0" }}>
+                                {["Category", "Document", "Written", "Diff", ""].map(h => (
+                                  <th key={h} style={{ padding: "5px 8px", textAlign: "left", fontWeight: "600", color: "#555" }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {f.result.totalsCheck.map(row => (
+                                <tr key={row.category} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                                  <td style={{ padding: "5px 8px" }}>{categoryLabels[row.category] || row.category}</td>
+                                  <td style={{ padding: "5px 8px" }}>£{row.documentTotal.toFixed(2)}</td>
+                                  <td style={{ padding: "5px 8px" }}>£{row.writtenTotal.toFixed(2)}</td>
+                                  <td style={{ padding: "5px 8px", color: row.reconciled ? "#166534" : "#dc2626" }}>£{row.diff.toFixed(2)}</td>
+                                  <td style={{ padding: "5px 8px" }}>{row.reconciled ? "✓" : "⚠️"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      {f.result.newStarters?.length > 0 && (
+                        <div style={{ marginBottom: "8px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
+                          {f.result.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {f.result.unmatched?.length > 0 && (
+                        <div style={{ marginBottom: "8px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#b45309", marginBottom: "4px" }}>⚠️ Unmatched:</div>
+                          {f.result.unmatched.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {f.result.missingFromDoc?.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>⚪ In Pulse, missing from document:</div>
+                          {f.result.missingFromDoc.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {!f.result.newStarters?.length && !f.result.unmatched?.length && !f.result.missingFromDoc?.length && (
+                        <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly - no discrepancies.</div>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </div>
-          )}
-        </div>
-
-        {payrollFiles.map(f => (
-          <div key={f.id} style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px", marginBottom: "14px" }}>
-            <div style={{ fontSize: "14px", fontWeight: "700", color: "#1a1a1a", marginBottom: "8px" }}>{f.fileName}</div>
-
-            {(f.convertStatus === "converting" || f.convertStatus === "pending") && (
-              <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.convertMsg || "Preparing..."}</div>
-            )}
-            {f.convertStatus === "error" && (
-              <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.convertMsg}</div>
-            )}
-
-            {f.convertStatus === "ready" && (
-              <>
-                {f.detectStatus === "detecting" && (
-                  <div style={{ fontSize: "13px", color: "#666", marginBottom: "8px" }}><Spinner /> Working out which client this belongs to...</div>
-                )}
-                {f.detectStatus === "matched" && f.processStatus === "pending" && (
-                  <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
-                    ✓ Detected client: <strong>{f.client}</strong>
-                    {" "}<span style={{ color: "#888" }}>
-                      ({f.detectMethod === "filename" ? "matched by filename" : f.detectMethod === "document_name" ? "matched by name on document" : "matched by employee names"})
-                    </span>
-                  </div>
-                )}
-                {f.detectStatus === "ambiguous" && f.processStatus === "pending" && (
-                  <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
-                    ⚠️ Couldn&apos;t work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} - please select it below.
-                    {f.ambiguousInfo?.candidateScores?.length > 0 && (
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#92400e" }}>
-                        Closest guesses: {f.ambiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {f.processStatus === "pending" && (
-                  <div style={{ marginBottom: "6px" }}>
-                    <select value={f.client} onChange={e => updateToolsFile(f.id, { client: e.target.value })}
-                      style={{ width: "100%", padding: "7px 10px", border: `1px solid ${f.detectStatus === "ambiguous" && !f.client ? "#fbbf24" : "#ddd"}`, borderRadius: "6px", fontSize: "13px", boxSizing: "border-box" }}>
-                      <option value="">Select a client...</option>
-                      {(allOutgoingsClients || []).map(c => (
-                        <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                {f.processStatus === "processing" && (
-                  <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.processMsg}</div>
-                )}
-
-                {f.processStatus === "confirm_period" && f.pendingConfirm && (
-                  <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "700", color: "#664d03", marginBottom: "6px" }}>Date not found</div>
-                    <div style={{ fontSize: "13px", color: "#664d03", marginBottom: "10px" }}>
-                      Would you like to apply this data to the most recent period: <strong>{f.pendingConfirm.fallback}</strong>?
-                    </div>
-                    <div style={{ display: "flex", gap: "10px" }}>
-                      <button onClick={() => processOneToolsFile(f.id, f.pendingConfirm.fallback)}
-                        style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                        Yes, apply
-                      </button>
-                      <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled - please check the document and try again." })}
-                        style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {f.processStatus === "error" && (
-                  <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.processMsg}</div>
-                )}
-
-                {f.processStatus === "complete" && f.result && (
-                  <div>
-                    <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
-                      ✓ {f.client} - updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
-                    </div>
-
-                    {f.result.totalsCheck && (
-                      <div style={{ marginBottom: "12px" }}>
-                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#444", marginBottom: "6px" }}>
-                          Totals check <span style={{ fontWeight: "400", color: "#888" }}>
-                            ({f.result.totalsSource === "document" ? "from a totals row on the document" : "AI-calculated - no totals row found on the document"})
-                          </span>
-                        </div>
-                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px" }}>
-                          <thead>
-                            <tr style={{ borderBottom: "2px solid #e0e0e0" }}>
-                              {["Category", "Document", "Written", "Diff", ""].map(h => (
-                                <th key={h} style={{ padding: "5px 8px", textAlign: "left", fontWeight: "600", color: "#555" }}>{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {f.result.totalsCheck.map(row => (
-                              <tr key={row.category} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                                <td style={{ padding: "5px 8px" }}>{categoryLabels[row.category] || row.category}</td>
-                                <td style={{ padding: "5px 8px" }}>£{row.documentTotal.toFixed(2)}</td>
-                                <td style={{ padding: "5px 8px" }}>£{row.writtenTotal.toFixed(2)}</td>
-                                <td style={{ padding: "5px 8px", color: row.reconciled ? "#166534" : "#dc2626" }}>£{row.diff.toFixed(2)}</td>
-                                <td style={{ padding: "5px 8px" }}>{row.reconciled ? "✓" : "⚠️"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-
-                    {f.result.newStarters?.length > 0 && (
-                      <div style={{ marginBottom: "8px" }}>
-                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
-                        {f.result.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
-                      </div>
-                    )}
-                    {f.result.unmatched?.length > 0 && (
-                      <div style={{ marginBottom: "8px" }}>
-                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#b45309", marginBottom: "4px" }}>⚠️ Unmatched:</div>
-                        {f.result.unmatched.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
-                      </div>
-                    )}
-                    {f.result.missingFromDoc?.length > 0 && (
-                      <div>
-                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>⚪ In sheet, missing from document:</div>
-                        {f.result.missingFromDoc.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
-                      </div>
-                    )}
-                    {!f.result.newStarters?.length && !f.result.unmatched?.length && !f.result.missingFromDoc?.length && (
-                      <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly - no discrepancies.</div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        ))}
+          ))}
         </>);
       })()}
 
       {eomSubView === "time" && (() => {
         const { files: timeFiles, stillResolving, readyToStart, completeCount, errorCount } = toolsFileStats("time");
         return (<>
-        <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
-          Time report import - upload several clients&apos; time tracking documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can&apos;t work out is flagged for you to assign.
-        </p>
+          <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#666" }}>
+            Time report import - upload several clients&apos; time tracking documents at once (PDF, image, or Excel). Each one is matched to a client automatically; anything it can&apos;t work out is flagged for you to assign.
+          </p>
 
-        <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
-          <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Import Time Reports</h3>
+          <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+            <h3 style={{ margin: "0 0 14px", fontSize: "15px", fontWeight: "700" }}>Import Time Reports</h3>
 
-          <div style={{ marginBottom: "14px" }}>
-            <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Time report documents</label>
-            <input type="file" multiple accept=".pdf,image/*,.xlsx,.xls,.csv"
-              onChange={e => { handleToolsFilesSelect(e.target.files, "time"); e.target.value = ""; }}
-              style={{ width: "100%", fontSize: "13px" }} />
+            <div style={{ marginBottom: "14px" }}>
+              <label style={{ fontSize: "12px", color: "#666", display: "block", marginBottom: "4px", fontWeight: "600" }}>Time report documents</label>
+              <input type="file" multiple accept=".pdf,image/*,.xlsx,.xls,.csv"
+                onChange={e => { handleToolsFilesSelect(e.target.files, "time"); e.target.value = ""; }}
+                style={{ width: "100%", fontSize: "13px" }} />
+            </div>
+
+            {timeFiles.length > 0 && (
+              <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" }}>
+                <button
+                  disabled={!readyToStart || toolsBatchRunning}
+                  onClick={startToolsBatch}
+                  style={{
+                    padding: "8px 20px", background: (!readyToStart || toolsBatchRunning) ? "#ccc" : "#0066cc",
+                    color: "#fff", border: "none", borderRadius: "6px",
+                    cursor: (!readyToStart || toolsBatchRunning) ? "default" : "pointer", fontSize: "13px", fontWeight: "600"
+                  }}>
+                  {toolsBatchRunning ? <><Spinner color="#fff" /> Processing...</> : "Process All"}
+                </button>
+                <span style={{ fontSize: "12px", color: "#888" }}>
+                  {completeCount} of {timeFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
+                </span>
+                {stillResolving.length > 0 && (
+                  <span style={{ fontSize: "12px", color: "#b45309" }}>
+                    Waiting on {stillResolving.length} file{stillResolving.length !== 1 ? "s" : ""} to finish identifying before this can start
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
-          {timeFiles.length > 0 && (
-            <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" }}>
-              <button
-                disabled={!readyToStart || toolsBatchRunning}
-                onClick={startToolsBatch}
-                style={{ padding: "8px 20px", background: (!readyToStart || toolsBatchRunning) ? "#ccc" : "#0066cc",
-                  color: "#fff", border: "none", borderRadius: "6px",
-                  cursor: (!readyToStart || toolsBatchRunning) ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
-                {toolsBatchRunning ? <><Spinner color="#fff" /> Processing...</> : "Process All"}
-              </button>
-              <span style={{ fontSize: "12px", color: "#888" }}>
-                {completeCount} of {timeFiles.length} complete{errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}
-              </span>
-              {stillResolving.length > 0 && (
-                <span style={{ fontSize: "12px", color: "#b45309" }}>
-                  Waiting on {stillResolving.length} file{stillResolving.length !== 1 ? "s" : ""} to finish identifying before this can start
-                </span>
+          {timeFiles.map(f => (
+            <div key={f.id} style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px", marginBottom: "14px" }}>
+              <div style={{ fontSize: "14px", fontWeight: "700", color: "#1a1a1a", marginBottom: "8px" }}>{f.fileName}</div>
+
+              {(f.convertStatus === "converting" || f.convertStatus === "pending") && (
+                <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.convertMsg || "Preparing..."}</div>
+              )}
+              {f.convertStatus === "error" && (
+                <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.convertMsg}</div>
+              )}
+
+              {f.convertStatus === "ready" && (
+                <>
+                  {f.detectStatus === "detecting" && (
+                    <div style={{ fontSize: "13px", color: "#666", marginBottom: "8px" }}><Spinner /> Working out which client this belongs to...</div>
+                  )}
+                  {f.detectStatus === "matched" && f.processStatus === "pending" && (
+                    <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
+                      ✓ Detected client: <strong>{f.client}</strong>
+                      {" "}<span style={{ color: "#888" }}>
+                        ({f.detectMethod === "filename" ? "matched by filename" : f.detectMethod === "document_name" ? "matched by name on document" : "matched by employee names"})
+                      </span>
+                    </div>
+                  )}
+                  {f.detectStatus === "ambiguous" && f.processStatus === "pending" && (
+                    <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
+                      ⚠️ Couldn&apos;t work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} - please select it below.
+                      {f.ambiguousInfo?.candidateScores?.length > 0 && (
+                        <div style={{ marginTop: "4px", fontSize: "12px", color: "#92400e" }}>
+                          Closest guesses: {f.ambiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {f.processStatus === "pending" && (
+                    <div style={{ marginBottom: "6px" }}>
+                      <select value={f.client} onChange={e => updateToolsFile(f.id, { client: e.target.value })}
+                        style={{ width: "100%", padding: "7px 10px", border: `1px solid ${f.detectStatus === "ambiguous" && !f.client ? "#fbbf24" : "#ddd"}`, borderRadius: "6px", fontSize: "13px", boxSizing: "border-box" }}>
+                        <option value="">Select a client...</option>
+                        {(allOutgoingsClients || []).map(c => (
+                          <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {f.processStatus === "processing" && (
+                    <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.processMsg}</div>
+                  )}
+
+                  {f.processStatus === "confirm_period" && f.pendingConfirm && (
+                    <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
+                      <div style={{ fontSize: "13px", fontWeight: "700", color: "#664d03", marginBottom: "6px" }}>Date not found</div>
+                      <div style={{ fontSize: "13px", color: "#664d03", marginBottom: "10px" }}>
+                        Would you like to apply this data to the most recent period: <strong>{f.pendingConfirm.fallback}</strong>?
+                      </div>
+                      <div style={{ display: "flex", gap: "10px" }}>
+                        <button onClick={() => processOneToolsFile(f.id, f.pendingConfirm.fallback)}
+                          style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          Yes, apply
+                        </button>
+                        <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled - please check the document and try again." })}
+                          style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {f.processStatus === "error" && (
+                    <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.processMsg}</div>
+                  )}
+
+                  {f.processStatus === "complete" && f.result && (
+                    <div>
+                      <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
+                        ✓ {f.client} - updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
+                      </div>
+
+                      {f.result.newStarters?.length > 0 && (
+                        <div style={{ marginBottom: "8px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
+                          {f.result.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {f.result.unmatched?.length > 0 && (
+                        <div style={{ marginBottom: "8px" }}>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#b45309", marginBottom: "4px" }}>⚠️ Unmatched:</div>
+                          {f.result.unmatched.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {f.result.missingFromDoc?.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>⚪ In Pulse, missing from document:</div>
+                          {f.result.missingFromDoc.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
+                        </div>
+                      )}
+                      {!f.result.newStarters?.length && !f.result.unmatched?.length && !f.result.missingFromDoc?.length && (
+                        <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly - no discrepancies.</div>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </div>
-          )}
-        </div>
-
-        {timeFiles.map(f => (
-          <div key={f.id} style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "14px 18px", marginBottom: "14px" }}>
-            <div style={{ fontSize: "14px", fontWeight: "700", color: "#1a1a1a", marginBottom: "8px" }}>{f.fileName}</div>
-
-            {(f.convertStatus === "converting" || f.convertStatus === "pending") && (
-              <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.convertMsg || "Preparing..."}</div>
-            )}
-            {f.convertStatus === "error" && (
-              <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.convertMsg}</div>
-            )}
-
-            {f.convertStatus === "ready" && (
-              <>
-                {f.detectStatus === "detecting" && (
-                  <div style={{ fontSize: "13px", color: "#666", marginBottom: "8px" }}><Spinner /> Working out which client this belongs to...</div>
-                )}
-                {f.detectStatus === "matched" && f.processStatus === "pending" && (
-                  <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
-                    ✓ Detected client: <strong>{f.client}</strong>
-                    {" "}<span style={{ color: "#888" }}>
-                      ({f.detectMethod === "filename" ? "matched by filename" : f.detectMethod === "document_name" ? "matched by name on document" : "matched by employee names"})
-                    </span>
-                  </div>
-                )}
-                {f.detectStatus === "ambiguous" && f.processStatus === "pending" && (
-                  <div style={{ fontSize: "13px", color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px" }}>
-                    ⚠️ Couldn&apos;t work out the client automatically{f.ambiguousInfo?.error ? ` (${f.ambiguousInfo.error})` : ""} - please select it below.
-                    {f.ambiguousInfo?.candidateScores?.length > 0 && (
-                      <div style={{ marginTop: "4px", fontSize: "12px", color: "#92400e" }}>
-                        Closest guesses: {f.ambiguousInfo.candidateScores.map(s => `${s.clientName} (${s.overlap} matching name${s.overlap !== 1 ? "s" : ""})`).join(", ")}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {f.processStatus === "pending" && (
-                  <div style={{ marginBottom: "6px" }}>
-                    <select value={f.client} onChange={e => updateToolsFile(f.id, { client: e.target.value })}
-                      style={{ width: "100%", padding: "7px 10px", border: `1px solid ${f.detectStatus === "ambiguous" && !f.client ? "#fbbf24" : "#ddd"}`, borderRadius: "6px", fontSize: "13px", boxSizing: "border-box" }}>
-                      <option value="">Select a client...</option>
-                      {(allOutgoingsClients || []).map(c => (
-                        <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                {f.processStatus === "processing" && (
-                  <div style={{ fontSize: "13px", color: "#666" }}><Spinner /> {f.processMsg}</div>
-                )}
-
-                {f.processStatus === "confirm_period" && f.pendingConfirm && (
-                  <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "6px", padding: "10px 12px" }}>
-                    <div style={{ fontSize: "13px", fontWeight: "700", color: "#664d03", marginBottom: "6px" }}>Date not found</div>
-                    <div style={{ fontSize: "13px", color: "#664d03", marginBottom: "10px" }}>
-                      Would you like to apply this data to the most recent period: <strong>{f.pendingConfirm.fallback}</strong>?
-                    </div>
-                    <div style={{ display: "flex", gap: "10px" }}>
-                      <button onClick={() => processOneToolsFile(f.id, f.pendingConfirm.fallback)}
-                        style={{ padding: "6px 14px", background: "#198754", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                        Yes, apply
-                      </button>
-                      <button onClick={() => updateToolsFile(f.id, { processStatus: "error", pendingConfirm: null, processMsg: "Cancelled - please check the document and try again." })}
-                        style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {f.processStatus === "error" && (
-                  <div style={{ fontSize: "13px", color: "#dc2626" }}>{f.processMsg}</div>
-                )}
-
-                {f.processStatus === "complete" && f.result && (
-                  <div>
-                    <div style={{ fontSize: "13px", color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 10px", marginBottom: "12px" }}>
-                      ✓ {f.client} - updated {f.result.updateCount} row{f.result.updateCount !== 1 ? "s" : ""} in column {f.result.startCol} for {f.result.targetMonthStr}
-                    </div>
-
-                    {f.result.newStarters?.length > 0 && (
-                      <div style={{ marginBottom: "8px" }}>
-                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#dc2626", marginBottom: "4px" }}>🔴 In document, not in sheet:</div>
-                        {f.result.newStarters.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
-                      </div>
-                    )}
-                    {f.result.unmatched?.length > 0 && (
-                      <div style={{ marginBottom: "8px" }}>
-                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#b45309", marginBottom: "4px" }}>⚠️ Unmatched:</div>
-                        {f.result.unmatched.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
-                      </div>
-                    )}
-                    {f.result.missingFromDoc?.length > 0 && (
-                      <div>
-                        <div style={{ fontSize: "12px", fontWeight: "700", color: "#888", marginBottom: "4px" }}>⚪ In sheet, missing from document:</div>
-                        {f.result.missingFromDoc.map((n, i) => <div key={i} style={{ fontSize: "12px", color: "#555" }}>{n}</div>)}
-                      </div>
-                    )}
-                    {!f.result.newStarters?.length && !f.result.unmatched?.length && !f.result.missingFromDoc?.length && (
-                      <div style={{ fontSize: "12px", color: "#166534" }}>✓ Every employee matched cleanly - no discrepancies.</div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        ))}
+          ))}
         </>);
       })()}
 

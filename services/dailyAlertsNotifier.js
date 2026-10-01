@@ -67,7 +67,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
       <div style="background:#1a1a2e;color:#ffffff;padding:18px 24px;border-radius:8px 8px 0 0;display:flex;align-items:center;gap:12px;">
         <div style="width:28px;height:28px;background:#0066cc;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;color:#ffffff;line-height:28px;text-align:center;">P</div>
         <div>
-          <div style="font-size:16px;font-weight:700;letter-spacing:0.3px;">Pulse Management App</div>
+          <div style="font-size:16px;font-weight:700;letter-spacing:0.3px;">Pulse Management Area</div>
           <div style="font-size:12px;color:#94a3b8;">Daily Alerts Digest - ${escapeHtml(formattedDate)}</div>
         </div>
       </div>
@@ -97,7 +97,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
         <!-- Call to Action -->
         <div style="text-align:center;margin:28px 0 16px 0;">
           <a href="${appUrl}" target="_blank" style="background:#0066cc;color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;padding:12px 28px;border-radius:6px;display:inline-block;box-shadow:0 2px 4px rgba(0,102,204,0.2);">
-            Open Pulse Management App &rarr;
+            Open Pulse Management Area &rarr;
           </a>
         </div>
       </div>
@@ -105,7 +105,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
       <!-- Footer -->
       <div style="padding:16px 20px;font-size:11px;color:#9ca3af;line-height:1.6;text-align:center;">
         <p style="margin:0 0 4px 0;">
-          You are receiving this summary because you have notifications enabled in the Pulse Management App.
+          You are receiving this summary because you have notifications enabled in the Pulse Management Area.
         </p>
         <p style="margin:0 0 6px 0;">
           To stop receiving this email, set <strong>Daily Alerts Email</strong> to <strong>No</strong> in the <strong>Users</strong> tab.
@@ -124,7 +124,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
 export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId) {
   const acId = automationCommanderSheetId;
   const formattedDate = getFormattedDigestDate();
-  const subject = `Pulse Management App Daily Digest - ${formattedDate}`;
+  const subject = `Pulse Management Area Daily Digest - ${formattedDate}`;
 
   console.log(`\n📬 Daily Alerts Notifier starting for ${formattedDate}...`);
 
@@ -262,10 +262,10 @@ export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId)
     });
 
     const textBody = `Hello ${user.name || "there"},\n\n` +
-      `Here is your Pulse Management App daily summary for ${formattedDate}:\n` +
+      `Here is your Pulse Management Area daily summary for ${formattedDate}:\n` +
       `Total active alerts: ${userAlerts.length} across ${clientSummaries.length} clients.\n\n` +
       clientSummaries.map(cs => `• ${cs.clientName}: ${cs.totalClientAlerts} alert(s)`).join("\n") +
-      `\n\nOpen Pulse Management App: ${appUrl}\n\n` +
+      `\n\nOpen Pulse Management Area: ${appUrl}\n\n` +
       `To opt out of daily summaries, set 'Daily Alerts Email' to 'No' in the Users tab.`;
 
     if (transporter) {

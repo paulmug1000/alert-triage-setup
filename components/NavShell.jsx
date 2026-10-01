@@ -195,10 +195,10 @@ if (typeof document !== "undefined") {
 }
 
 // Persistent top bar - rendered around every screen
-export default function NavShell({ 
-  activeNav, onHome, onOverview, onTasks, onActivity, onAppLog, 
-  onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onSettings, 
-  homeAlertCount, taskCount, user, onLogout, children 
+export default function NavShell({
+  activeNav, onHome, onOverview, onTasks, onActivity, onAppLog,
+  onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onSettings,
+  homeAlertCount, taskCount, user, onLogout, children
 }) {
   const [showMore, setShowMore] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -263,7 +263,7 @@ export default function NavShell({
       <div className="pma-topbar">
         <div className="pma-topbar-brand">
           <div className="pma-topbar-logo">P</div>
-          <span className="pma-topbar-title">Pulse Management App</span>
+          <span className="pma-topbar-title">Pulse Management Area</span>
         </div>
         {user && (
           <div className="pma-topbar-user-area">
@@ -272,10 +272,10 @@ export default function NavShell({
                 {(user.name || user.email || "U")[0].toUpperCase()}
               </div>
               <span className="pma-topbar-name" title={user.name || user.email}>{user.name || user.email}</span>
-              <span 
+              <span
                 className="pma-topbar-role"
-                style={{ 
-                  background: user.isAdmin ? "rgba(56, 189, 248, 0.2)" : "rgba(245, 158, 11, 0.2)", 
+                style={{
+                  background: user.isAdmin ? "rgba(56, 189, 248, 0.2)" : "rgba(245, 158, 11, 0.2)",
                   color: user.isAdmin ? "#7dd3fc" : "#fcd34d",
                 }}
               >
@@ -296,12 +296,12 @@ export default function NavShell({
           </div>
         )}
       </div>
-      <div style={{ 
-        background: "#fff", 
-        borderBottom: "1px solid #e0e0e0", 
-        padding: "0 8px", 
-        display: "flex", 
-        alignItems: "stretch", 
+      <div style={{
+        background: "#fff",
+        borderBottom: "1px solid #e0e0e0",
+        padding: "0 8px",
+        display: "flex",
+        alignItems: "stretch",
         position: "relative",
         overflowX: isMobile ? "visible" : "auto",
         scrollbarWidth: "none"

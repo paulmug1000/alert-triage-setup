@@ -48,7 +48,7 @@ export async function ensurePmaActivityLogTab(sheets, automationCommanderSheetId
 }
 
 /**
- * Log an activity event performed inside Pulse Management App (PMA)
+ * Log an activity event performed inside Pulse Management Area (PMA)
  * Appends row to PmaActivityLog on Automation Commander and busts Redis activity cache.
  * Safe & Non-blocking: will never throw to the caller.
  */

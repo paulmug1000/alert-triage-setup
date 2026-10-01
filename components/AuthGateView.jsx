@@ -21,7 +21,7 @@ export default function AuthGateView({
         const accountLabel = provider ? `${provider} account provided` : "account provided";
         const emailSuffix = errEmail ? ` (${errEmail})` : "";
         setOauthError(
-          `Access Denied: The ${accountLabel}${emailSuffix} is not authorised to access the Pulse Management App. Please contact hello@pulsedashboard.co.uk with any queries.`
+          `Access Denied: The ${accountLabel}${emailSuffix} is not authorised to access the Pulse Management Area. Please contact hello@pulsedashboard.co.uk with any queries.`
         );
       } else if (err === "access_denied" || err === "consent_required") {
         setOauthError("Sign-in cancelled or consent was not granted. Please try again.");
@@ -84,7 +84,7 @@ export default function AuthGateView({
             <span style={{ fontSize: "30px", fontWeight: "800", color: "#ffffff", letterSpacing: "-1px" }}>P</span>
           </div>
           <h1 style={{ margin: "0 0 8px", fontSize: "24px", fontWeight: "700", color: "#ffffff", letterSpacing: "-0.4px" }}>
-            Pulse Management App
+            Pulse Management Area
           </h1>
           <p style={{ margin: 0, fontSize: "14px", color: "#94a3b8" }}>
             Secure sign-in

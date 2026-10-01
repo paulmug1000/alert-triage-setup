@@ -178,7 +178,7 @@ export async function sendDailyAlertsSummary(sheets, automationCommanderSheetId)
   // 3. Setup Email Transport
   const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
   const emailPass = process.env.PMA_EMAIL_APP_PASSWORD;
-  const appUrl = process.env.APP_BASE_URL || "https://pma.pulsedashboard.co.uk";
+  const appUrl = process.env.APP_BASE_URL || "https://app.pulsedashboard.co.uk";
 
   if (!emailPass) {
     console.warn("⚠️ PMA_EMAIL_APP_PASSWORD is not set. Emails will be skipped or simulated in development.");

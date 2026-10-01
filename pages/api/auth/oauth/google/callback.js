@@ -159,8 +159,11 @@ export default async function handler(req, res) {
     return;
   }
 
-  const prodHost = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
-  const host = prodHost || req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
+  // Host resolution: prioritize verified pulsedashboard.co.uk host, then configured prod host
+  const reqHost = req.headers["x-forwarded-host"] || req.headers.host;
+  const isPulseHost = reqHost && (reqHost === "pulsedashboard.co.uk" || reqHost.endsWith(".pulsedashboard.co.uk"));
+  const prodHost = (process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).host : null) || process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+  const host = isPulseHost ? reqHost : (prodHost || reqHost || "localhost:3000");
   const proto = req.headers["x-forwarded-proto"] || (host.includes("localhost") ? "http" : "https");
   const redirectUri = `${proto}://${host}/api/auth/oauth/google/callback`;
 

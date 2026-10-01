@@ -5,6 +5,7 @@ import { getJwtSecret } from "../../../services/authService";
 export default async function handler(req, res) {
   const origin = req.headers.origin;
   const isAllowedOrigin = origin && (
+    origin === "https://app.pulsedashboard.co.uk" ||
     origin === "https://pma.pulsedashboard.co.uk" ||
     origin === "https://project-shj9n.vercel.app" ||
     origin === "http://localhost:3000" ||
@@ -16,7 +17,7 @@ export default async function handler(req, res) {
   if (isAllowedOrigin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
-    res.setHeader("Access-Control-Allow-Origin", "https://pma.pulsedashboard.co.uk");
+    res.setHeader("Access-Control-Allow-Origin", "https://app.pulsedashboard.co.uk");
   }
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");

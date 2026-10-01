@@ -118,6 +118,7 @@ export const config = {
 export default async function handler(req, res) {
   // Set CORS headers
   const allowedOrigins = [
+    "https://app.pulsedashboard.co.uk",
     "https://pma.pulsedashboard.co.uk",
     "https://project-shj9n.vercel.app",
     "http://localhost:3000"
@@ -126,7 +127,7 @@ export default async function handler(req, res) {
   if (origin && (allowedOrigins.includes(origin) || origin.endsWith(".pulsedashboard.co.uk"))) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
-    res.setHeader("Access-Control-Allow-Origin", "https://pma.pulsedashboard.co.uk");
+    res.setHeader("Access-Control-Allow-Origin", "https://app.pulsedashboard.co.uk");
   }
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader(

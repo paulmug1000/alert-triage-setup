@@ -58,7 +58,7 @@ All vulnerabilities across **Phase 1 (Immediate Critical Fixes)** and **Phase 2 
 - **Remediation**:
   - Updated OAuth callbacks to issue tokens tagged `{ tokenType: "sso_token" }` with an expiry of 10 minutes for popup flows.
   - Hardened `getSessionUser()` to strictly reject tokens without `{ tokenType: "session" }` and reduced session lifetime to 7 days.
-  - Restricted `postMessage` target origin to verified domains (`https://pma.pulsedashboard.co.uk`, Google script domains, or current host) - never `'*'`.
+  - Restricted `postMessage` target origin to verified domains (`https://app.pulsedashboard.co.uk`, Google script domains, or current host) - never `'*'`.
   - Missing `assignedClients` now defaults strictly to `[]` (zero access), preventing default-admin elevation.
 
 #### 4. OAuth CSRF & Host Header Poisoning

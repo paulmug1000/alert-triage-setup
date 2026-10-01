@@ -346,7 +346,14 @@ export default function NonAdminAlertListView({
                                 <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0f172a" }}>
                                   Vendor: <span style={{ color: isResolved ? "#2e7d32" : "#1e293b" }}>{parsed.contractor}</span>
                                 </div>
-                                <span style={{ fontSize: "11px", color: "#64748b", fontWeight: "500" }}>Updated stale placeholder date</span>
+                                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                  {parsed.amount && (
+                                    <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
+                                      Amount: {parsed.amount}
+                                    </div>
+                                  )}
+                                  <span style={{ fontSize: "11px", color: "#64748b", fontWeight: "500" }}>Updated stale placeholder date</span>
+                                </div>
                               </div>
                               {parsed.changes && parsed.changes.length > 0 && (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>

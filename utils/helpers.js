@@ -329,12 +329,13 @@ export function parseStaleExpenseDetail(detail = "") {
   // or legacy: "[Outgoings] Row 13, Toby Stickland: Updated stale Placeholder/Gap date (Rec: ...)"
   if (clean.includes("[Outgoings]")) {
     const res = { tab: "Outgoings" };
-    const newMatch = clean.match(/\[Outgoings\]\s*(?:([A-Za-z]{3}\s*\d{2})\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*Updated stale placeholder date\s*[-–]\s*(.+)/i);
+    const newMatch = clean.match(/\[Outgoings\]\s*(?:([A-Za-z]{3}\s*\d{2})\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*(?:£([0-9.,]+)\s*[-–]\s*)?Updated stale placeholder date\s*[-–]\s*(.+)/i);
     if (newMatch) {
       res.month = newMatch[1] ? newMatch[1].trim() : null;
       res.contractor = newMatch[2] ? newMatch[2].trim() : "";
       res.rowNum = newMatch[3] ? parseInt(newMatch[3], 10) : null;
-      res.changeText = newMatch[4] ? newMatch[4].trim() : "";
+      res.amount = newMatch[4] ? `£${newMatch[4].trim()}` : null;
+      res.changeText = newMatch[5] ? newMatch[5].trim() : "";
     } else {
       const legMatch = clean.match(/\[Outgoings\]\s*(?:Row\s*(\d+),\s*)?(.+?):\s*Updated stale Placeholder\/Gap date\s*\((.+)\)/i);
       if (legMatch) {

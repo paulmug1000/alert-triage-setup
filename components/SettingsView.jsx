@@ -5,10 +5,10 @@ import { useTriage } from "../contexts/TriageContext";
 
 // ============================================================================
 // PULSE MANAGEMENT APP (PMA)
-// Version: 1.02
+// Version: 1.03
 // Rule: Always increment this version by 0.01 whenever changes are made to the PMA app.
 // ============================================================================
-export const PMA_VERSION = "1.02";
+export const PMA_VERSION = "1.03";
 
 export default function SettingsView({
   automationCommanderSheetId,
@@ -512,7 +512,7 @@ export default function SettingsView({
                       items: [
                         { key: "expenseDashboardDiscr", name: "Expense dashboard discrepancy", kind: "actionable" },
                         { key: "expenseAdded", name: "Expense added", kind: "info" },
-                        { key: "expenseUnreconGaps", name: "Stale unreceived expense received date changed", kind: "info" },
+                        { key: "expenseUnreconGaps", name: "Stale unreceived expense date changed", kind: "info" },
                       ],
                     },
                   ].map((g, gi) => (

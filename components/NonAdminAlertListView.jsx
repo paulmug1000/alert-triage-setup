@@ -1,7 +1,7 @@
 import React from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
-import { stripRowInfo, parseUnreceivedExpensesDetail, filterAnalysisResultsForAlert } from "../utils/helpers";
+import { stripRowInfo, parseUnreceivedExpensesDetail, parseStaleExpenseDetail, filterAnalysisResultsForAlert } from "../utils/helpers";
 
 export default function NonAdminAlertListView({
   styles,
@@ -167,7 +167,7 @@ export default function NonAdminAlertListView({
               {groupAlerts.map(na => {
                 const alertId = na.fingerprintHash || `${na.flagType}-${na.flagDetail || ""}`;
                 const isResolved = resolvedNoActionFlags.has(alertId);
-                const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges", "expenseUnreconGaps"].includes(na.flagType);
+                const isRichFlag = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "retainerInvoicesCreated", "retainerInvoicesDeleted", "crmCopiedConfDelete", "invoiceStaleUnsentChanges"].includes(na.flagType);
                 const rawAnalysis = noActionAnalysis[alertId] || na.analysisResult;
                 const isLoading = noActionAnalysisLoading[alertId];
                 const displayedResults = filterAnalysisResultsForAlert(rawAnalysis?.results, na.flagDetail);
@@ -264,6 +264,145 @@ export default function NonAdminAlertListView({
                               ))}
                             </div>
                           ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                if (na.flagType === "expenseUnreconGaps") {
+                  const parsed = parseStaleExpenseDetail(na.flagDetail);
+                  return (
+                    <div key={alertId} style={{
+                      padding: "12px 14px", borderRadius: "6px",
+                      border: `1px solid ${isResolved ? "#c8e6c9" : "#bae6fd"}`,
+                      background: isResolved ? "#f1f8f2" : "#f0f9ff",
+                      display: "flex", flexDirection: "column", gap: "10px",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1", textDecoration: isResolved ? "line-through" : "none" }}>
+                            {getFlagName(na.flagType) || na.flagName}
+                          </div>
+                          {parsed?.tab && (
+                            <span style={{
+                              fontSize: "11px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.02em",
+                              padding: "2px 7px", borderRadius: "4px", background: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd",
+                            }}>
+                              {parsed.tab} tab
+                            </span>
+                          )}
+                          {parsed?.month && (
+                            <span style={{
+                              fontSize: "11px", fontWeight: "600",
+                              padding: "2px 7px", borderRadius: "4px", background: "#ffffff", color: "#334155", border: "1px solid #cbd5e1",
+                            }}>
+                              {parsed.month}
+                            </span>
+                          )}
+                          {parsed?.slot && (
+                            <span style={{
+                              fontSize: "11px", fontWeight: "600",
+                              padding: "2px 7px", borderRadius: "4px", background: "#ffffff", color: "#334155", border: "1px solid #cbd5e1",
+                            }}>
+                              Slot {parsed.slot}
+                            </span>
+                          )}
+                        </div>
+
+                        {isResolved ? (
+                          <span style={{ fontSize: "12px", color: "#2e7d32", fontWeight: "600", whiteSpace: "nowrap" }}>✓ Resolved</span>
+                        ) : (
+                          <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                            <button
+                              className="triage-btn"
+                              onClick={() => openCreateTaskModal(na, false, true)}
+                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#7c3aed", borderColor: "#c4b5fd", whiteSpace: "nowrap" }}
+                            >
+                              📋 Create Task
+                            </button>
+                            <button
+                              className="triage-btn"
+                              onClick={() => handleMarkNoActionResolved(na)}
+                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", whiteSpace: "nowrap" }}
+                            >
+                              Mark resolved
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {parsed ? (
+                        <div style={{
+                          fontSize: "12px", color: "#475569",
+                          backgroundColor: isResolved ? "#f8fdf9" : "#ffffff",
+                          border: `1px solid ${isResolved ? "#dcfce7" : "#e0f2fe"}`,
+                          borderRadius: "6px", padding: "10px 12px",
+                          display: "flex", flexDirection: "column", gap: "6px",
+                        }}>
+                          {parsed.tab === "Outgoings" ? (
+                            <>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px" }}>
+                                <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0f172a" }}>
+                                  Vendor: <span style={{ color: isResolved ? "#2e7d32" : "#1e293b" }}>{parsed.contractor}</span>
+                                </div>
+                                <span style={{ fontSize: "11px", color: "#64748b", fontWeight: "500" }}>Updated stale placeholder date</span>
+                              </div>
+                              {parsed.changes && parsed.changes.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
+                                  {parsed.changes.map((ch, ci) => (
+                                    <div key={ci} style={{
+                                      padding: "4px 8px", borderRadius: "4px", fontSize: "12px", fontWeight: "600",
+                                      background: isResolved ? "#f1f8f2" : "#f0f9ff",
+                                      color: isResolved ? "#2e7d32" : "#0369a1",
+                                      border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
+                                    }}>
+                                      {ch.label}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px" }}>
+                                <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0f172a" }}>
+                                  {parsed.client} <span style={{ fontWeight: "400", color: "#64748b" }}>|</span> {parsed.job}
+                                </div>
+                                {parsed.amount && (
+                                  <div style={{ fontSize: "13px", fontWeight: "700", color: isResolved ? "#2e7d32" : "#0369a1" }}>
+                                    Amount: {parsed.amount}
+                                  </div>
+                                )}
+                              </div>
+                              {parsed.changes && parsed.changes.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "4px" }}>
+                                  {parsed.changes.map((ch, ci) => (
+                                    <div key={ci} style={{
+                                      padding: "4px 8px", borderRadius: "4px", fontSize: "12px", fontWeight: "600",
+                                      background: isResolved ? "#f1f8f2" : "#f0f9ff",
+                                      color: isResolved ? "#2e7d32" : "#0369a1",
+                                      border: `1px solid ${isResolved ? "#bbf7d0" : "#bae6fd"}`,
+                                    }}>
+                                      {ch.label}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: "12px", color: isResolved ? "#2e7d32" : "#64748b", marginTop: "2px" }}>
+                          {stripRowInfo(na.flagDetail)}
+                        </div>
+                      )}
+
+                      {(na.firstSeen || na.lastSeen) && (
+                        <div style={{ fontSize: "10px", color: "#94a3b8" }}>
+                          {na.firstSeen ? `First seen: ${na.firstSeen.split("T")[0]}` : ""}
+                          {na.firstSeen && na.lastSeen ? " · " : ""}
+                          {na.lastSeen ? `Last seen: ${na.lastSeen.split("T")[0]}` : ""}
                         </div>
                       )}
                     </div>

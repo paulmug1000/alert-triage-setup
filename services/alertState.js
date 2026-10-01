@@ -221,7 +221,7 @@ export async function handleUpdateSessionFlags(req, res) {
       parsed.totalAlerts = (parsed.alerts || []).length;
       parsed.noActionCount = (parsed.noActionAlerts || []).length;
       if (parsed.noActionAnalysisResults) {
-        const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges", "expenseUnreconGaps"];
+        const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
         richFlags.forEach(flagType => { if (keysToZero.has(flagType)) delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`]; });
       }
       await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 3600 });

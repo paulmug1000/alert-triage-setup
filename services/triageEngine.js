@@ -43,7 +43,7 @@ export const FLAG_NAMES = {
   retainerInvoicesDeleted: "Retainer invoices deleted",
   expenseDashboardDiscr: "Expense dashboard discr",
   expenseAdded: "Expense added",
-  expenseUnreconGaps: "Stale unreceived expense received date changed",
+  expenseUnreconGaps: "Stale unreceived expense date changed",
   invoiceStaleUnsentChanges: "Stale unsent invoice send date changed",
 };
 
@@ -215,7 +215,7 @@ export const AUTOLOG_TYPE_PATTERNS = {
   retainerInvoicesCreated:   ["[Retainers - Confirmed] Added"],
   retainerInvoicesDeleted:   ["[Retainers - Confirmed] Trimmed"],
   expenseUnreconGaps:        [
-    "Rec Date updated", "Updated stale Placeholder/Gap date", "Stale Expense - Row"
+    "Rec Date updated", "Updated stale placeholder date", "Updated stale Placeholder/Gap date", "Stale Expense - Row"
   ],
   expenseAdded:              ["Created New Row:"],
   invoiceStaleUnsentChanges: ["Stale Invoice - Row"],
@@ -1371,6 +1371,126 @@ export async function handleStorePrecomputed(req, res, sheets) {
   }
 }
 
+export async function isExpensePlaceholderStillActive_(line, clientSheetId, sharedData, sheets) {
+  if (!line || !clientSheetId) return true;
+
+  // 1. Confirmed tab check:
+  if (line.includes("[Confirmed]")) {
+    const cMatch = line.match(/\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,]+),\s*Slot\s*(\d+)/i);
+    if (!cMatch) return true;
+    const rowNum = cMatch[1] ? parseInt(cMatch[1], 10) : 0;
+    const clientName = cMatch[2].trim().toLowerCase();
+    const jobName = cMatch[3].trim().toLowerCase();
+    const slotNum = parseInt(cMatch[4], 10);
+    if (!slotNum || slotNum < 1 || slotNum > 3) return true;
+
+    let confirmedRows = sharedData?.confirmedData || [];
+    if (!confirmedRows || confirmedRows.length < 2) {
+      try {
+        const resp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId, range: "Confirmed!A1:CR5000", valueRenderOption: "UNFORMATTED_VALUE"
+        }));
+        confirmedRows = resp.data.values || [];
+        if (sharedData) sharedData.confirmedData = confirmedRows;
+      } catch (e) {
+        return true;
+      }
+    }
+    if (confirmedRows.length < 2) return true;
+
+    let targetRow = null;
+    if (rowNum > 0 && rowNum <= confirmedRows.length) {
+      const r = confirmedRows[rowNum - 1] || [];
+      if (String(r[0] || "").trim().toLowerCase() === clientName && String(r[1] || "").trim().toLowerCase() === jobName) {
+        targetRow = r;
+      }
+    }
+    if (!targetRow) {
+      for (let i = 1; i < confirmedRows.length; i++) {
+        const r = confirmedRows[i] || [];
+        if (String(r[0] || "").trim().toLowerCase() === clientName && String(r[1] || "").trim().toLowerCase() === jobName) {
+          targetRow = r;
+          break;
+        }
+      }
+    }
+    if (!targetRow) return false; // Job gone from Confirmed -> resolved!
+
+    const headers = (confirmedRows[0] || []).map(h => String(h || "").toLowerCase().trim());
+    const findHeaderIdx = (patterns) => {
+      for (const pat of patterns) {
+        const idx = headers.indexOf(pat.toLowerCase().trim());
+        if (idx !== -1) return idx;
+      }
+      return -1;
+    };
+
+    const colAppId = findHeaderIdx([`dir inv ${slotNum} app id`, `dir inv. ${slotNum} app id`, `direct inv ${slotNum} app id`]);
+    const colAmt   = findHeaderIdx([`direct inv ${slotNum} amt`, `direct inv ${slotNum} amount`, `dir inv ${slotNum} amt`]);
+    const colStat  = findHeaderIdx([`dir inv ${slotNum} status`, `direct inv ${slotNum} status`]);
+
+    const currentId = colAppId !== -1 ? String(targetRow[colAppId] || "").trim() : "";
+    const currentAmt = colAmt !== -1 ? String(targetRow[colAmt] || "").trim() : "";
+    const currentStatus = colStat !== -1 ? String(targetRow[colStat] || "").trim().toLowerCase() : "";
+
+    if (currentId && !isPlaceholderExpense(currentId)) return false; // Real expense received -> resolved!
+    if (currentStatus === "received" || currentStatus === "paid") return false; // Marked received/paid -> resolved!
+    if (!currentId && (!currentAmt || currentAmt === "0")) return false; // Placeholder removed -> resolved!
+
+    return true; // Still active placeholder
+  }
+
+  // 2. Outgoings tab check:
+  if (line.includes("[Outgoings]")) {
+    const oMatch = line.match(/\[Outgoings\]\s*(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*Updated stale placeholder date|(?:Row\s*(\d+),\s*)?([^:]+):\s*Updated stale Placeholder\/Gap date)/i);
+    if (!oMatch) return true;
+    const contractor = (oMatch[1] || oMatch[4] || "").trim().toLowerCase();
+    const rowNum = parseInt(oMatch[2] || oMatch[3] || "0", 10);
+    if (!contractor) return true;
+
+    try {
+      let actualRowNum = rowNum;
+      if (!actualRowNum) {
+        const outResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId, range: "Outgoings!A1:A300"
+        }));
+        const outRows = outResp.data.values || [];
+        for (let i = 0; i < outRows.length; i++) {
+          if (String(outRows[i]?.[0] || "").trim().toLowerCase() === contractor) {
+            actualRowNum = i + 1;
+            break;
+          }
+        }
+      }
+      if (!actualRowNum) return false; // Contractor no longer in Outgoings -> resolved!
+
+      const noteResp = await withRetry(() => sheets.spreadsheets.get({
+        spreadsheetId: clientSheetId,
+        ranges: [`Outgoings!A${actualRowNum}:AZ${actualRowNum}`],
+        fields: "sheets(data(rowData(values(note))))",
+      }));
+      const rowCells = noteResp?.data?.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
+      let hasUnresolved = false;
+      for (const cell of rowCells) {
+        const note = String(cell.note || "");
+        if (note.includes("PLACE-EXP") || note.includes("MANUAL-ENTRY") || note.includes("UNRECON-GAP") || note.includes("PLACE-GAP") || note.includes("MANUAL-GAP")) {
+          const statusMatch = note.match(/\{Status:\s*(.*?)\}/i);
+          const st = statusMatch ? statusMatch[1].trim().toLowerCase() : "";
+          if (st !== "paid" && st !== "complete") {
+            hasUnresolved = true;
+            break;
+          }
+        }
+      }
+      return hasUnresolved; // If no unresolved placeholders, it is resolved!
+    } catch (e) {
+      return true;
+    }
+  }
+
+  return true;
+}
+
 export async function handleRunFlagSweep(req, res, sheets) {
   const { secret: sweepSecret, automationCommanderSheetId: acIdSweep, startIdx = 0 } = req.body;
   if (sweepSecret !== process.env.CRON_SECRET) {
@@ -1513,6 +1633,10 @@ export async function handleRunFlagSweep(req, res, sheets) {
               const lines = (entry.details || "").split(/\n+/);
               for (const line of lines) {
                 if (!patterns.some(p => line.includes(p))) continue;
+                if (autoLogType === "expenseUnreconGaps") {
+                  const isActive = await isExpensePlaceholderStillActive_(line, client.clientSheetId, null, sheets);
+                  if (!isActive) continue; // Skip: underlying expense already resolved in sheet
+                }
                 const fingerprintInput = `${client.clientName}|${autoLogType}|${line}`;
                 matchedAlerts.push({
                   clientName: client.clientName,
@@ -1522,7 +1646,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 });
               }
             }
-            if (matchedAlerts.length > 0) {
+            if (matchedAlerts.length > 0 || autoLogType === "expenseUnreconGaps") {
               sweepItems.push({ clientName: client.clientName, alertType: autoLogType, alerts: matchedAlerts, autoUpdatesRow: client.sheetRowNum, category: "info" });
             }
           }
@@ -1627,7 +1751,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
       const clientMetaMap = new Map(clientChunk.map(c => [c.clientName, c]));
 
       for (const item of sweepItems) {
-        if (item.category === "discrepancy" || item.category === "proactive") {
+        if (item.category === "discrepancy" || item.category === "proactive" || item.alertType === "expenseUnreconGaps") {
           const freshHashes = new Set();
           (item.alerts || []).forEach(a => {
             if (a._fingerprint) freshHashes.add(a._fingerprint);
@@ -2098,7 +2222,7 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     console.log(`build_cached_alert_options complete in ${elapsedS}s: ${built} built, ${notFound} not found, ${errors} errors, hasMore: ${hasMore}`);
 
     const RICH_INFO_TYPES = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
-      "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges", "expenseUnreconGaps"];
+      "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
     const pendingRich = memoryRows.filter(r =>
       r.status === "cached" && RICH_INFO_TYPES.includes(r.alertType) && !r.cachedOptionsJSON
     );
@@ -7727,11 +7851,10 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
             // Pattern for Confirmed direct expenses:
             // "[Confirmed] Row 15, Client | Job, Slot 1: Rec Date updated 05-Jan-26 -> 05-Feb-26"
             // or "[Confirmed] Stale Expense - Row 15, Client | Job, Slot 1: Rec Date updated 05-Jan-26 -> 05-Feb-26"
-            const confirmedPattern = /\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?Row\s*(\d+),\s*([^|]+)\|\s*([^,\n]+),\s*Slot\s*(\d+):\s*Rec Date updated\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
+            const confirmedPattern = /\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,\n]+),\s*Slot\s*(\d+):\s*(?:£[0-9.,]+\s*[-–]\s*)?Rec Date updated\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/gi;
 
             // Pattern for Outgoings tab expenses:
-            // "[Outgoings] Row 12, John Doe: Updated stale Placeholder/Gap date (Rec: 05-Jan-26->05-Feb-26, Pay: 28-Jan-26->28-Feb-26)"
-            const outgoingsPattern = /\[Outgoings\]\s*(?:Stale Expense\s*[-–]\s*)?Row\s*(\d+),\s*([^:]+):\s*Updated stale Placeholder\/Gap date\s*\(Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+),\s*Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)\)/gi;
+            const outgoingsPattern = /\[Outgoings\]\s*(?:(?:[A-Za-z]{3}\s*\d{2}\s*[-–]\s*)?([^:(]+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*Updated stale placeholder date\s*[-–]\s*(.+)|(?:Stale Expense\s*[-–]\s*)?Row\s*(\d+),\s*([^:]+):\s*Updated stale Placeholder\/Gap date\s*\(Rec:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+),\s*Pay:\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)\))/gi;
 
             for (const entry of entriesToUse) {
               const details = String(entry[3] || "");

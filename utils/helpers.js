@@ -114,6 +114,7 @@ export function stripRowInfo(text) {
     .replace(/\(\s*row\s+\d+,\s*/gi, "(")
     .replace(/\(\s*(?:Confirmed|Pipeline)?\s*row\s+\d+,\s*/gi, "(")
     .replace(/\s*\(\s*(?:Confirmed|Pipeline)?\s*row\s+\d+\s*\)/gi, "")
+    .replace(/\b(?:Confirmed|Pipeline)?\s*Row\s+\d+,\s*/gi, "")
     .replace(/\b(Confirmed|Pipeline)\s+row\s+\d+\b/gi, "$1")
     .replace(/\bchild\s+row\s+\d+\b/gi, "child entry")
     .replace(/\s*-\s*row\s+\d+:\s*/gi, ": ")
@@ -137,7 +138,7 @@ export const getFlagName = (flagKey) => {
     "retainerInvoicesDeleted": "Retainer invoices deleted",
     "expenseDashboardDiscr": "Expense discrepancy",
     "expenseAdded":          "Expense added",
-    "expenseUnreconGaps":    "Stale unreceived expense received date changed",
+    "expenseUnreconGaps":    "Stale unreceived expense date changed",
     "invoiceStaleUnsentChanges": "Stale unsent invoice send date changed",
   };
   return flagNames[flagKey] || flagKey;
@@ -317,3 +318,78 @@ export function filterAnalysisResultsForAlert(results, flagDetail) {
 
   return matched.length > 0 ? matched : results;
 }
+
+export function parseStaleExpenseDetail(detail = "") {
+  if (!detail || typeof detail !== "string") return null;
+  const clean = detail.trim();
+
+  // 1. Outgoings check:
+  // e.g. "[Outgoings] Aug 26 - Toby Stickland (Row 13): Updated stale placeholder date - Pay: 28-Sep-26->28-Oct-26"
+  // or non-admin: "[Outgoings] Aug 26 - Toby Stickland: Updated stale placeholder date - Pay: 28-Sep-26->28-Oct-26"
+  // or legacy: "[Outgoings] Row 13, Toby Stickland: Updated stale Placeholder/Gap date (Rec: ...)"
+  if (clean.includes("[Outgoings]")) {
+    const res = { tab: "Outgoings" };
+    const newMatch = clean.match(/\[Outgoings\]\s*(?:([A-Za-z]{3}\s*\d{2})\s*[-–]\s*)?(.+?)(?:\s*\((?:Row\s*)?(\d+)\))?:\s*Updated stale placeholder date\s*[-–]\s*(.+)/i);
+    if (newMatch) {
+      res.month = newMatch[1] ? newMatch[1].trim() : null;
+      res.contractor = newMatch[2] ? newMatch[2].trim() : "";
+      res.rowNum = newMatch[3] ? parseInt(newMatch[3], 10) : null;
+      res.changeText = newMatch[4] ? newMatch[4].trim() : "";
+    } else {
+      const legMatch = clean.match(/\[Outgoings\]\s*(?:Row\s*(\d+),\s*)?(.+?):\s*Updated stale Placeholder\/Gap date\s*\((.+)\)/i);
+      if (legMatch) {
+        res.rowNum = legMatch[1] ? parseInt(legMatch[1], 10) : null;
+        res.contractor = legMatch[2] ? legMatch[2].trim() : "";
+        res.changeText = legMatch[3] ? legMatch[3].trim() : "";
+      } else {
+        res.rawText = clean.replace(/\[Outgoings\]\s*/i, "");
+      }
+    }
+    if (res.changeText) {
+      const parts = res.changeText.split(/,\s*/);
+      res.changes = parts.map(p => {
+        const arrowMatch = p.match(/(Rec|Pay):\s*([A-Za-z0-9-]+)\s*->\s*([A-Za-z0-9-]+)/i);
+        if (arrowMatch) {
+          return {
+            type: arrowMatch[1],
+            from: arrowMatch[2],
+            to: arrowMatch[3],
+            label: `${arrowMatch[1].toLowerCase() === "pay" ? "Pay Date" : "Receive Date"}: ${arrowMatch[2]} → ${arrowMatch[3]}`
+          };
+        }
+        return { label: p.replace(/->/g, " → ") };
+      });
+    }
+    return res;
+  }
+
+  // 2. Confirmed check:
+  // e.g. "[Confirmed] Row 202, Jenki Drinks LTD | Development - Jan, Slot 1: £1,050 - Rec Date updated 05-Sep-26 -> 05-Oct-26"
+  // or non-admin: "[Confirmed] Jenki Drinks LTD | Development - Jan, Slot 1: £1,050 - Rec Date updated 05-Sep-26 -> 05-Oct-26"
+  // or legacy: "[Confirmed] Stale Expense - Row 202, Jenki Drinks LTD | Development - Jan, Slot 1: Rec Date updated 05-Sep-26 -> 05-Oct-26"
+  if (clean.includes("[Confirmed]")) {
+    const res = { tab: "Confirmed" };
+    const confMatch = clean.match(/\[Confirmed\]\s*(?:Stale Expense\s*[-–]\s*)?(?:Row\s*(\d+),\s*)?([^|]+)\|\s*([^,]+),\s*Slot\s*(\d+):\s*(?:£([0-9.,]+)\s*[-–]\s*)?Rec Date updated\s*([\d\-A-Za-z]+)\s*->\s*([\d\-A-Za-z]+)/i);
+    if (confMatch) {
+      res.rowNum = confMatch[1] ? parseInt(confMatch[1], 10) : null;
+      res.client = confMatch[2] ? confMatch[2].trim() : "";
+      res.job = confMatch[3] ? confMatch[3].trim() : "";
+      res.slot = confMatch[4] ? parseInt(confMatch[4], 10) : null;
+      res.amount = confMatch[5] ? `£${confMatch[5].trim()}` : null;
+      res.oldRec = confMatch[6] ? confMatch[6].trim() : "";
+      res.newRec = confMatch[7] ? confMatch[7].trim() : "";
+      res.changes = [{
+        type: "Rec",
+        from: res.oldRec,
+        to: res.newRec,
+        label: `Receive Date: ${res.oldRec} → ${res.newRec}`
+      }];
+    } else {
+      res.rawText = clean.replace(/\[Confirmed\]\s*/i, "");
+    }
+    return res;
+  }
+
+  return null;
+}
+

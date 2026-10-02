@@ -192,7 +192,8 @@ export function matchesClientName(assignedIdentifier, actualClientName) {
  */
 export function isUserAuthorizedForClient(user, clientName) {
   if (!user) return false;
-  if (user.role === "Admin" || user.isAdmin || user.assignedClients === "*") return true;
+  // Only Admin is an internal staff role able to see all clients
+  if (user.role === "Admin" || user.isAdmin) return true;
   if (!clientName) return false;
 
   const assignedList = Array.isArray(user.assignedClients) ? user.assignedClients : [];
@@ -206,7 +207,8 @@ export function isUserAuthorizedForClient(user, clientName) {
 export function filterClientsForUser(allClients, user) {
   if (!allClients || !Array.isArray(allClients)) return [];
   if (!user) return [];
-  if (user.role === "Admin" || user.isAdmin || user.assignedClients === "*") return allClients;
+  // Only Admin is an internal staff role able to see all clients
+  if (user.role === "Admin" || user.isAdmin) return allClients;
 
   const assignedList = Array.isArray(user.assignedClients) ? user.assignedClients : [];
   return allClients.filter(c => {

@@ -68,7 +68,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const {
     isAuthenticated, authChecking, user, logout
   } = auth;
-  const isAdmin = !!(user?.isAdmin || user?.role === "Admin" || user?.assignedClients === "*");
+  // Only Admin is an internal staff role able to see all clients
+  const isAdmin = !!(user?.isAdmin || user?.role === "Admin");
 
   const [screen, setScreen] = useState("initial");
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);

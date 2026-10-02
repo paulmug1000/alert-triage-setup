@@ -17,6 +17,15 @@ const nextConfig = {
       },
     ];
   },
+  async redirects() {
+    return [
+      {
+        source: "/portal",
+        destination: "/pulse",
+        permanent: false,
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;

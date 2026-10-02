@@ -12,7 +12,7 @@ export default function TriageAnalysisView({
 }) {
   const isAdmin = propIsAdmin !== undefined
     ? propIsAdmin
-    : !!(user?.isAdmin || user?.role === "Admin" || user?.assignedClients === "*");
+    : !!(user?.isAdmin || user?.role === "Admin");
   const { openCreateTaskModal } = useTasks();
   const {
     selectedClient, clientAlerts, currentClientAlertIndex, setCurrentClientAlertIndex,

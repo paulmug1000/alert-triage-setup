@@ -56,7 +56,7 @@ export default function AlertSelectionView({
   const currentUser = user || auth.user;
   const isAdmin = propIsAdmin !== undefined
     ? propIsAdmin
-    : !!(currentUser?.isAdmin || currentUser?.role === "Admin" || currentUser?.assignedClients === "*");
+    : !!(currentUser?.isAdmin || currentUser?.role === "Admin");
   const [retainerAlertResolution, setRetainerAlertResolution] = useState(null);
   const [retainerSplitInvoice, setRetainerSplitInvoice] = useState(null);
 

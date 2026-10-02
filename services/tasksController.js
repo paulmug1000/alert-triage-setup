@@ -269,7 +269,8 @@ export async function handleGetTasks(req, res, sheets) {
 
     const userEmail = String(sessionUser.email || "").trim().toLowerCase();
     const userName = String(sessionUser.name || "").trim().toLowerCase();
-    const isAdmin = !!(sessionUser.isAdmin || sessionUser.role === "Admin" || sessionUser.assignedClients === "*");
+    // Only Admin is an internal staff role able to see all clients
+    const isAdmin = !!(sessionUser.isAdmin || sessionUser.role === "Admin");
 
     // Check if task was created by the logged-in user
     const checkIsMine = (t) => {

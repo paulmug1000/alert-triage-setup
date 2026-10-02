@@ -331,7 +331,7 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
     token,
     user: {
       ...payload,
-      isAdmin: user.role === "Admin" || user.assignedClients === "*"
+      isAdmin: user.role === "Admin"
     }
   };
 }
@@ -381,7 +381,8 @@ export function getSessionUser(req) {
       : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
 
     const role = decoded.role || "ClientManager";
-    const isAdmin = role === "Admin" || assignedClients === "*";
+    // Only Admin is an internal staff role able to see all clients
+    const isAdmin = role === "Admin";
 
     return {
       email: decoded.email,

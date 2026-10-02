@@ -30,12 +30,14 @@ export function useTriageEngine({
   const [refreshStatus, setRefreshStatus] = useState("");
 
   const scopeClients = useCallback((clients) => {
-    if (!user || user.isAdmin || user.assignedClients === "*") return clients || [];
+    // Only Admin is an internal staff role able to see all clients
+    if (!user || user.isAdmin || user.role === "Admin") return clients || [];
     return (clients || []).filter(c => isUserAuthorizedForClient(user, c.clientName));
   }, [user]);
 
   const scopeProactive = useCallback((alerts) => {
-    if (!user || user.isAdmin || user.assignedClients === "*") return alerts || [];
+    // Only Admin is an internal staff role able to see all clients
+    if (!user || user.isAdmin || user.role === "Admin") return alerts || [];
     return (alerts || []).filter(a => isUserAuthorizedForClient(user, a.clientName));
   }, [user]);
 

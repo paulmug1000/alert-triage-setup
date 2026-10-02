@@ -19,7 +19,7 @@ export default function TasksView({
   const currentUser = propUser || auth.user;
   const isAdmin = propIsAdmin !== undefined
     ? propIsAdmin
-    : !!(currentUser?.isAdmin || currentUser?.role === "Admin" || currentUser?.assignedClients === "*");
+    : !!(currentUser?.isAdmin || currentUser?.role === "Admin");
 
   const clientHasManager = (clientName) => {
     if (!allClientsMap || !clientName) return false;

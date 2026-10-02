@@ -93,7 +93,7 @@ function formatCurrency(val) {
 
 export default function ViewsScreen({ allClients, styles, isAdmin: propIsAdmin }) {
   const { user } = useAuth();
-  const isAdmin = propIsAdmin !== undefined ? propIsAdmin : !!(user?.isAdmin || user?.role === "Admin" || user?.assignedClients === "*");
+  const isAdmin = propIsAdmin !== undefined ? propIsAdmin : !!(user?.isAdmin || user?.role === "Admin");
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientSearch, setClientSearch] = useState("");
   const [activeTab, setActiveTab] = useState("dashboard"); // 'dashboard' | 'cash' | 'contractors' | 'outgoings' | 'budget'

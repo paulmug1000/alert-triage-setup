@@ -17,7 +17,7 @@ export default function ClientSelectionView({
 }) {
   const auth = useAuth();
   const currentUser = user || auth.user;
-  const isAdmin = !!(currentUser?.isAdmin || currentUser?.role === "Admin" || currentUser?.assignedClients === "*");
+  const isAdmin = !!(currentUser?.isAdmin || currentUser?.role === "Admin");
 
   const isFlagVisible = (flagKey) => isAdmin || !ADMIN_ONLY_FLAG_KEYS.has(flagKey);
   const isProactiveVisible = (alertType) => isAdmin || !ADMIN_ONLY_PROACTIVE_TYPES.has(alertType);

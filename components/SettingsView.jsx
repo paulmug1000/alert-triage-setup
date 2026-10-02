@@ -5,10 +5,10 @@ import { useTriage } from "../contexts/TriageContext";
 
 // ============================================================================
 // PULSE MANAGEMENT APP (PMA)
-// Version: 1.05
+// Version: 1.18
 // Rule: Always increment this version by 0.01 whenever changes are made to the PMA app.
 // ============================================================================
-export const PMA_VERSION = "1.05";
+export const PMA_VERSION = "1.18";
 
 export default function SettingsView({
   automationCommanderSheetId,
@@ -18,7 +18,8 @@ export default function SettingsView({
   user
 }) {
   const { clientsWithFlags, isLoading, refreshTriage } = useTriage();
-  const effectiveIsAdmin = !!(isAdmin || user?.isAdmin || user?.role === "Admin" || user?.assignedClients === "*");
+  // Only Admin is an internal staff role able to see all clients
+  const effectiveIsAdmin = !!(isAdmin || user?.isAdmin || user?.role === "Admin");
 
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [triggerProactiveMsg, setTriggerProactiveMsg] = useState("");

@@ -2,10 +2,47 @@ import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
 
 export default function AuthGateView({
-  authError,
-  setAuthError,
-  statusMessage
+  authStep: propAuthStep,
+  emailInput: propEmailInput,
+  setEmailInput: propSetEmailInput,
+  codeInput: propCodeInput,
+  setCodeInput: propSetCodeInput,
+  authError: propAuthError,
+  setAuthError: propSetAuthError,
+  authLoading: propAuthLoading,
+  statusMessage: propStatusMessage,
+  cooldown: propCooldown,
+  sendVerificationCode: propSendVerificationCode,
+  verifyCode: propVerifyCode,
+  resetToEmailStep: propResetToEmailStep
 }) {
+  // Local fallbacks if props not supplied
+  const [localEmail, setLocalEmail] = useState("");
+  const [localCode, setLocalCode] = useState("");
+  const [localStep, setLocalStep] = useState("email");
+  const [localError, setLocalError] = useState("");
+  const [localLoading, setLocalLoading] = useState(false);
+  const [localStatus, setLocalStatus] = useState("");
+  const [localCooldown, setLocalCooldown] = useState(0);
+
+  const email = propEmailInput !== undefined ? propEmailInput : localEmail;
+  const setEmail = propSetEmailInput || setLocalEmail;
+  const code = propCodeInput !== undefined ? propCodeInput : localCode;
+  const setCode = propSetCodeInput || setLocalCode;
+  const step = propAuthStep || localStep;
+  const setStep = (s) => {
+    if (propResetToEmailStep && s === "email") {
+      propResetToEmailStep();
+    } else {
+      setLocalStep(s);
+    }
+  };
+  const error = propAuthError !== undefined ? propAuthError : localError;
+  const setError = propSetAuthError || setLocalError;
+  const loading = propAuthLoading !== undefined ? propAuthLoading : localLoading;
+  const status = propStatusMessage !== undefined ? propStatusMessage : localStatus;
+  const cooldown = propCooldown !== undefined ? propCooldown : localCooldown;
+
   const [oauthError, setOauthError] = useState("");
   const [redirectingProvider, setRedirectingProvider] = useState(null);
 
@@ -18,121 +55,194 @@ export default function AuthGateView({
       const provider = params.get("provider");
 
       if (err === "unauthorized") {
-        const accountLabel = provider ? `${provider} account provided` : "account provided";
+        const accountLabel = provider ? `${provider} account` : "account";
         const emailSuffix = errEmail ? ` (${errEmail})` : "";
         setOauthError(
-          `Access Denied: The ${accountLabel}${emailSuffix} is not authorised to access the Pulse Management Area. Please contact hello@pulsedashboard.co.uk with any queries.`
+          `Access Denied: The ${accountLabel}${emailSuffix} is not authorised to access Pulse. Please contact hello@pulsedashboard.co.uk with any queries.`
         );
       } else if (err === "access_denied" || err === "consent_required") {
-        setOauthError("Sign-in cancelled or consent was not granted. Please try again.");
+        setOauthError("Sign-in was cancelled or consent was not granted. Please try again.");
       } else if (err) {
         setOauthError(`Sign in failed: ${err.replace(/_/g, " ")}`);
       }
     }
   }, []);
 
-  const activeError = oauthError || authError;
+  // Handle local send code fallback if no prop provided
+  const handleSendCode = async (targetEmail) => {
+    const mail = (targetEmail || email || "").trim().toLowerCase();
+    if (!mail) {
+      setError("Please enter your email address");
+      return;
+    }
+
+    if (propSendVerificationCode) {
+      await propSendVerificationCode(mail);
+      return;
+    }
+
+    setLocalLoading(true);
+    setError("");
+    setLocalStatus("");
+    try {
+      const res = await fetch("/api/auth/send-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: mail })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setEmail(mail);
+        setLocalStep("code");
+        setCode("");
+        setLocalCooldown(60);
+        setLocalStatus(data.message || `Verification code sent to ${mail}`);
+      } else {
+        setError(data.message || "Failed to send verification code");
+      }
+    } catch (e) {
+      setError("Network error. Please try again.");
+    } finally {
+      setLocalLoading(false);
+    }
+  };
+
+  // Handle local verify code fallback if no prop provided
+  const handleVerifyCode = async () => {
+    const c = (code || "").trim();
+    if (!c) {
+      setError("Please enter the 6-digit verification code");
+      return;
+    }
+
+    if (propVerifyCode) {
+      await propVerifyCode(c);
+      return;
+    }
+
+    setLocalLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/auth/verify-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim().toLowerCase(), code: c })
+      });
+      const data = await res.json();
+      if (data.success) {
+        window.location.reload();
+      } else {
+        setError(data.message || "Invalid verification code");
+      }
+    } catch (e) {
+      setError("Network error verifying code. Please try again.");
+    } finally {
+      setLocalLoading(false);
+    }
+  };
+
+  const handleResetToEmail = () => {
+    if (propResetToEmailStep) {
+      propResetToEmailStep();
+    } else {
+      setLocalStep("email");
+      setCode("");
+      setError("");
+      setLocalStatus("");
+    }
+  };
+
+  const activeError = oauthError || error;
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      background: "radial-gradient(circle at 50% 20%, #1e293b 0%, #0f172a 100%)",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-      padding: "20px"
-    }}>
-      <div style={{
+    <div
+      style={{
+        minHeight: "100vh",
         width: "100%",
-        maxWidth: "440px",
-        background: "rgba(30, 41, 59, 0.85)",
-        backdropFilter: "blur(16px)",
-        borderRadius: "24px",
-        border: "1px solid rgba(255, 255, 255, 0.1)",
-        boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05)",
-        padding: "44px 36px",
-        color: "#f8fafc",
-        position: "relative",
-        overflow: "hidden"
-      }}>
-        {/* Subtle accent glow at the top */}
-        <div style={{
-          position: "absolute",
-          top: 0,
-          left: "15%",
-          right: "15%",
-          height: "2px",
-          background: "linear-gradient(90deg, transparent, #38bdf8, transparent)",
-          boxShadow: "0 0 20px #38bdf8"
-        }} />
-
-        {/* Brand Header */}
-        <div style={{ textAlign: "center", marginBottom: "32px" }}>
-          <div style={{
-            width: "60px",
-            height: "60px",
-            background: "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)",
-            borderRadius: "18px",
-            margin: "0 auto 18px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            boxShadow: "0 10px 25px -5px rgba(2, 132, 199, 0.5)",
-            border: "1px solid rgba(255, 255, 255, 0.2)"
-          }}>
-            <span style={{ fontSize: "30px", fontWeight: "800", color: "#ffffff", letterSpacing: "-1px" }}>P</span>
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#ffffff",
+        fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        padding: "20px",
+        boxSizing: "border-box"
+      }}
+    >
+      {/* Pulse Card - Exactly matching WebApp.html styles */}
+      <div
+        className="login-box"
+        style={{
+          background: "#0047AB",
+          borderRadius: "12px",
+          maxWidth: "450px",
+          width: "100%",
+          padding: "3rem 2.5rem",
+          boxShadow: "0 10px 40px rgba(0, 0, 0, 0.2)",
+          color: "#ffffff",
+          boxSizing: "border-box"
+        }}
+      >
+        {/* Logo and Header */}
+        <div style={{ textAlign: "center", marginBottom: "2rem" }}>
+          {/* Pulse Logo */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/pulselogo.png"
+            alt="Pulse"
+            style={{
+              display: "block",
+              margin: "0 auto 1.5rem auto",
+              maxHeight: "80px",
+              maxWidth: "250px",
+              width: "auto",
+              height: "auto"
+            }}
+            onError={(e) => {
+              // Fallback to stylized text if logo file is loading
+              e.currentTarget.style.display = "none";
+              const fb = document.getElementById("pulse-logo-fallback");
+              if (fb) fb.style.display = "inline-block";
+            }}
+          />
+          <div
+            id="pulse-logo-fallback"
+            style={{
+              display: "none",
+              fontSize: "32px",
+              fontWeight: "800",
+              color: "#ffffff",
+              letterSpacing: "1px",
+              marginBottom: "1rem"
+            }}
+          >
+            PULSE
           </div>
-          <h1 style={{ margin: "0 0 8px", fontSize: "24px", fontWeight: "700", color: "#ffffff", letterSpacing: "-0.4px" }}>
-            Pulse Management Area
+
+          <h1
+            style={{
+              fontSize: "1.75rem",
+              fontWeight: 600,
+              margin: "0 0 0.5rem 0",
+              color: "#ffffff",
+              letterSpacing: "-0.3px"
+            }}
+          >
+            Welcome to Pulse
           </h1>
-          <p style={{ margin: 0, fontSize: "14px", color: "#94a3b8" }}>
-            Secure sign-in
+          <p
+            style={{
+              fontSize: "0.95rem",
+              color: "#ffffff",
+              margin: 0,
+              opacity: 0.95
+            }}
+          >
+            Enter your email to get started
           </p>
         </div>
 
-        {/* Error Alert Box */}
-        {activeError && (
-          <div style={{
-            background: "rgba(239, 68, 68, 0.15)",
-            border: "1px solid rgba(239, 68, 68, 0.35)",
-            borderRadius: "12px",
-            padding: "14px 16px",
-            marginBottom: "24px",
-            fontSize: "13px",
-            color: "#fca5a5",
-            display: "flex",
-            alignItems: "flex-start",
-            gap: "10px",
-            lineHeight: "1.45"
-          }}>
-            <span style={{ fontSize: "16px", flexShrink: 0 }}>⚠️</span>
-            <div style={{ flex: 1 }}>{activeError}</div>
-          </div>
-        )}
-
-        {/* Informational Message */}
-        {statusMessage && !activeError && (
-          <div style={{
-            background: "rgba(14, 165, 233, 0.12)",
-            border: "1px solid rgba(14, 165, 233, 0.3)",
-            borderRadius: "12px",
-            padding: "14px 16px",
-            marginBottom: "24px",
-            fontSize: "13px",
-            color: "#7dd3fc",
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            lineHeight: "1.4"
-          }}>
-            <span style={{ fontSize: "16px" }}>ℹ️</span>
-            <span>{statusMessage}</span>
-          </div>
-        )}
-
-        {/* SSO Action Buttons */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+        {/* SSO Options: Microsoft & Google */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           {/* Microsoft Sign-In Button */}
           <button
             type="button"
@@ -140,38 +250,40 @@ export default function AuthGateView({
               setRedirectingProvider("Microsoft");
               window.location.href = "/api/auth/oauth/microsoft";
             }}
+            disabled={redirectingProvider !== null}
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               gap: "12px",
               width: "100%",
-              padding: "13px 20px",
+              padding: "0.9rem",
               background: "#ffffff",
-              color: "#1e293b",
-              borderRadius: "12px",
-              border: "none",
-              fontWeight: "600",
+              color: "#1f2937",
+              borderRadius: "8px",
+              border: "1px solid rgba(255, 255, 255, 0.9)",
+              fontWeight: 600,
               fontSize: "15px",
-              boxShadow: "0 4px 14px rgba(0, 0, 0, 0.25)",
-              transition: "transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease",
+              boxShadow: "0 4px 14px rgba(0, 0, 0, 0.18)",
               cursor: redirectingProvider ? "wait" : "pointer",
-              opacity: redirectingProvider && redirectingProvider !== "Microsoft" ? 0.6 : 1,
-              pointerEvents: redirectingProvider ? "none" : "auto"
+              transition: "transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease",
+              boxSizing: "border-box"
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.transform = "translateY(-1px)";
-              e.currentTarget.style.boxShadow = "0 6px 20px rgba(0, 0, 0, 0.35)";
+              if (!redirectingProvider) {
+                e.currentTarget.style.transform = "translateY(-1px)";
+                e.currentTarget.style.boxShadow = "0 6px 20px rgba(0, 0, 0, 0.25)";
+              }
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.transform = "translateY(0)";
-              e.currentTarget.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.25)";
+              e.currentTarget.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.18)";
             }}
           >
             {redirectingProvider === "Microsoft" ? (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px" }}>
-                <Spinner size={16} color="#1e293b" />
-                <span style={{ fontWeight: "600", fontSize: "14px", color: "#1e293b" }}>Connecting to Microsoft...</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <Spinner size={16} color="#1f2937" />
+                <span>Connecting to Microsoft...</span>
               </div>
             ) : (
               <>
@@ -193,44 +305,44 @@ export default function AuthGateView({
               setRedirectingProvider("Google");
               window.location.href = "/api/auth/oauth/google";
             }}
+            disabled={redirectingProvider !== null}
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               gap: "12px",
               width: "100%",
-              padding: "13px 20px",
-              background: "rgba(255, 255, 255, 0.08)",
-              color: "#ffffff",
-              borderRadius: "12px",
-              border: "1px solid rgba(255, 255, 255, 0.15)",
-              fontWeight: "600",
+              padding: "0.9rem",
+              background: "#ffffff",
+              color: "#1f2937",
+              borderRadius: "8px",
+              border: "1px solid rgba(255, 255, 255, 0.9)",
+              fontWeight: 600,
               fontSize: "15px",
-              boxShadow: "0 4px 14px rgba(0, 0, 0, 0.15)",
-              transition: "transform 0.15s ease, background 0.15s ease, border-color 0.15s ease",
+              boxShadow: "0 4px 14px rgba(0, 0, 0, 0.18)",
               cursor: redirectingProvider ? "wait" : "pointer",
-              opacity: redirectingProvider && redirectingProvider !== "Google" ? 0.6 : 1,
-              pointerEvents: redirectingProvider ? "none" : "auto"
+              transition: "transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease",
+              boxSizing: "border-box"
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.transform = "translateY(-1px)";
-              e.currentTarget.style.background = "rgba(255, 255, 255, 0.14)";
-              e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.3)";
+              if (!redirectingProvider) {
+                e.currentTarget.style.transform = "translateY(-1px)";
+                e.currentTarget.style.boxShadow = "0 6px 20px rgba(0, 0, 0, 0.25)";
+              }
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.transform = "translateY(0)";
-              e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
-              e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.15)";
+              e.currentTarget.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.18)";
             }}
           >
             {redirectingProvider === "Google" ? (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px" }}>
-                <Spinner size={16} color="#ffffff" />
-                <span style={{ fontWeight: "600", fontSize: "14px", color: "#ffffff" }}>Connecting to Google...</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <Spinner size={16} color="#1f2937" />
+                <span>Connecting to Google...</span>
               </div>
             ) : (
               <>
-                <svg width="19" height="19" viewBox="0 0 24 24">
+                <svg width="20" height="20" viewBox="0 0 24 24">
                   <path
                     fill="#4285F4"
                     d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.65v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.14z"
@@ -254,17 +366,314 @@ export default function AuthGateView({
           </button>
         </div>
 
-        {/* Security & Organization Compliance Notice */}
-        <div style={{
-          marginTop: "32px",
-          paddingTop: "20px",
-          borderTop: "1px solid rgba(255, 255, 255, 0.08)",
-          textAlign: "center",
-          fontSize: "12px",
-          color: "#64748b",
-          lineHeight: "1.5"
-        }}>
-          <span>Authorised users only.</span>
+        {/* Divider */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            margin: "1.75rem 0 1.5rem 0",
+            gap: "12px"
+          }}
+        >
+          <div style={{ flex: 1, height: "1px", background: "rgba(255, 255, 255, 0.25)" }} />
+          <span
+            style={{
+              color: "rgba(255, 255, 255, 0.85)",
+              fontSize: "13px",
+              fontWeight: 500,
+              letterSpacing: "0.2px"
+            }}
+          >
+            or continue with email
+          </span>
+          <div style={{ flex: 1, height: "1px", background: "rgba(255, 255, 255, 0.25)" }} />
+        </div>
+
+        {/* Email OTP Step 1: Email Entry */}
+        {step === "email" && (
+          <div>
+            <div style={{ marginBottom: "1rem" }}>
+              <label
+                style={{
+                  display: "block",
+                  color: "#ffffff",
+                  fontWeight: 500,
+                  marginBottom: "0.5rem",
+                  fontSize: "0.9rem"
+                }}
+              >
+                Email Address
+              </label>
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  if (activeError) {
+                    setError("");
+                    setOauthError("");
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSendCode();
+                }}
+                className="login-input"
+                style={{
+                  width: "100%",
+                  padding: "0.875rem 1rem",
+                  border: "2px solid rgba(255, 255, 255, 0.3)",
+                  borderRadius: "8px",
+                  fontSize: "16px",
+                  boxSizing: "border-box",
+                  background: "#ffffff",
+                  color: "#0047AB",
+                  fontWeight: 500,
+                  outline: "none",
+                  transition: "border-color 0.2s"
+                }}
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => handleSendCode()}
+              disabled={loading}
+              className="login-button"
+              style={{
+                width: "100%",
+                background: "#ffffff",
+                color: "#0047AB",
+                border: "none",
+                padding: "1rem",
+                borderRadius: "8px",
+                fontSize: "1rem",
+                fontWeight: 600,
+                cursor: loading ? "wait" : "pointer",
+                boxShadow: "0 4px 14px rgba(0, 0, 0, 0.12)",
+                transition: "background 0.2s, transform 0.15s",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "8px"
+              }}
+            >
+              {loading ? (
+                <>
+                  <Spinner size={16} color="#0047AB" />
+                  <span>Sending code...</span>
+                </>
+              ) : (
+                "Send Verification Code"
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* Email OTP Step 2: Code Verification */}
+        {step === "code" && (
+          <div>
+            <div style={{ marginBottom: "1rem" }}>
+              <label
+                style={{
+                  display: "block",
+                  color: "#ffffff",
+                  fontWeight: 500,
+                  marginBottom: "0.35rem",
+                  fontSize: "0.9rem"
+                }}
+              >
+                Verification Code
+              </label>
+              <p
+                style={{
+                  color: "rgba(255, 255, 255, 0.9)",
+                  fontSize: "0.875rem",
+                  margin: "0 0 1rem 0"
+                }}
+              >
+                Enter the 6-digit code sent to{" "}
+                <strong style={{ color: "#ffffff", fontWeight: 600 }}>{email}</strong>
+              </p>
+              <input
+                type="text"
+                placeholder="000000"
+                maxLength={6}
+                pattern="[0-9]*"
+                inputMode="numeric"
+                value={code}
+                onChange={(e) => {
+                  const cleaned = e.target.value.replace(/[^0-9]/g, "");
+                  setCode(cleaned);
+                  if (activeError) {
+                    setError("");
+                    setOauthError("");
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleVerifyCode();
+                }}
+                autoFocus
+                className="login-input login-code-input"
+                style={{
+                  width: "100%",
+                  padding: "0.875rem",
+                  border: "2px solid rgba(255, 255, 255, 0.3)",
+                  borderRadius: "8px",
+                  fontSize: "1.5rem",
+                  textAlign: "center",
+                  letterSpacing: "0.5rem",
+                  fontFamily: "monospace",
+                  fontWeight: 700,
+                  boxSizing: "border-box",
+                  background: "#ffffff",
+                  color: "#0047AB",
+                  outline: "none"
+                }}
+              />
+            </div>
+
+            {/* Verify & Login Button */}
+            <button
+              type="button"
+              onClick={() => handleVerifyCode()}
+              disabled={loading}
+              className="login-button"
+              style={{
+                width: "100%",
+                background: "#ffffff",
+                color: "#0047AB",
+                border: "none",
+                padding: "1rem",
+                borderRadius: "8px",
+                fontSize: "1rem",
+                fontWeight: 600,
+                cursor: loading ? "wait" : "pointer",
+                boxShadow: "0 4px 14px rgba(0, 0, 0, 0.12)",
+                transition: "background 0.2s, transform 0.15s",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "8px"
+              }}
+            >
+              {loading ? (
+                <>
+                  <Spinner size={16} color="#0047AB" />
+                  <span>Verifying...</span>
+                </>
+              ) : (
+                "Verify & Sign In"
+              )}
+            </button>
+
+            {/* Use Different Email */}
+            <button
+              type="button"
+              onClick={handleResetToEmail}
+              disabled={loading}
+              style={{
+                width: "100%",
+                background: "transparent",
+                color: "#ffffff",
+                border: "2px solid rgba(255, 255, 255, 0.8)",
+                padding: "0.85rem",
+                borderRadius: "8px",
+                fontSize: "0.95rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                marginTop: "0.75rem",
+                transition: "background 0.2s"
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.15)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+              }}
+            >
+              Use Different Email
+            </button>
+
+            {/* Resend Code Option */}
+            <div style={{ textAlign: "center", marginTop: "1rem" }}>
+              {cooldown > 0 ? (
+                <span style={{ color: "rgba(255, 255, 255, 0.75)", fontSize: "0.85rem" }}>
+                  Resend code in {cooldown}s
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleSendCode(email)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#ffffff",
+                    fontSize: "0.85rem",
+                    textDecoration: "underline",
+                    cursor: "pointer",
+                    padding: 0
+                  }}
+                >
+                  Didn&apos;t receive code? Resend
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Error Alert Box - Matching WebApp.html .login-error */}
+        {activeError && (
+          <div
+            className="login-error"
+            style={{
+              background: "#fee2e2",
+              color: "#991b1b",
+              border: "1px solid #f87171",
+              borderRadius: "8px",
+              padding: "0.75rem 1rem",
+              marginTop: "1.25rem",
+              fontSize: "0.875rem",
+              textAlign: "center",
+              lineHeight: "1.4"
+            }}
+          >
+            {activeError}
+          </div>
+        )}
+
+        {/* Status Message Box */}
+        {status && !activeError && (
+          <div
+            style={{
+              background: "rgba(255, 255, 255, 0.2)",
+              color: "#ffffff",
+              border: "1px solid rgba(255, 255, 255, 0.35)",
+              borderRadius: "8px",
+              padding: "0.75rem 1rem",
+              marginTop: "1.25rem",
+              fontSize: "0.875rem",
+              textAlign: "center",
+              lineHeight: "1.4"
+            }}
+          >
+            {status}
+          </div>
+        )}
+
+        {/* Authorised users only notice */}
+        <div
+          style={{
+            marginTop: "1.75rem",
+            paddingTop: "1.25rem",
+            borderTop: "1px solid rgba(255, 255, 255, 0.2)",
+            textAlign: "center",
+            fontSize: "12px",
+            color: "rgba(255, 255, 255, 0.7)",
+            letterSpacing: "0.3px"
+          }}
+        >
+          Authorised users only.
         </div>
       </div>
     </div>

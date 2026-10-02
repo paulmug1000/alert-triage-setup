@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import Link from "next/link";
 
 // Global styles injected once - handles :hover/:active which React inline styles can't do
 const GLOBAL_STYLES = `
@@ -282,6 +283,22 @@ export default function NavShell({
                 {user.isAdmin ? "Admin" : (Array.isArray(user.assignedClients) ? `${user.assignedClients.length} clients` : "User")}
               </span>
             </div>
+            <Link href="/pulse" style={{ textDecoration: "none" }}>
+              <button
+                className="pma-topbar-signout"
+                style={{
+                  background: "#0047AB",
+                  borderColor: "#0047AB",
+                  color: "#ffffff",
+                  fontWeight: 600
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = "#003b8e"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "#0047AB"; }}
+                title="Open Client Portal View"
+              >
+                Client Portal →
+              </button>
+            </Link>
             {onLogout && (
               <button
                 className="pma-topbar-signout"

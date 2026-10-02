@@ -54,17 +54,17 @@ export default function PerformanceBreakdownView({
     return list;
   }, [years]);
 
-  // Determine initial period: closest to current date
+  // Determine initial period: closest to current date (excluding FY total)
   const defaultPeriodKey = useMemo(() => {
     if (periodOptions.length === 0) return "";
     const now = new Date();
     const currMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
 
-    let closestKey = periodOptions[0].key;
+    let closestKey = "";
     let closestDiff = Infinity;
 
     for (const opt of periodOptions) {
-      if (opt.date) {
+      if (opt.date && !opt.isFY) {
         const diff = Math.abs(opt.date.getTime() - currMonthStart);
         if (diff < closestDiff) {
           closestDiff = diff;
@@ -72,17 +72,17 @@ export default function PerformanceBreakdownView({
         }
       }
     }
-    return closestKey;
+    return closestKey || periodOptions[0]?.key || "";
   }, [periodOptions]);
 
   const [selectedPeriodKey, setSelectedPeriodKey] = useState("");
   const [breakdownType, setBreakdownType] = useState("confRev");
 
   useEffect(() => {
-    if (!selectedPeriodKey && defaultPeriodKey) {
+    if (defaultPeriodKey && (!selectedPeriodKey || !periodOptions.some((p) => p.key === selectedPeriodKey))) {
       setSelectedPeriodKey(defaultPeriodKey);
     }
-  }, [defaultPeriodKey, selectedPeriodKey]);
+  }, [defaultPeriodKey, selectedPeriodKey, periodOptions]);
 
   const activePeriod = periodOptions.find((p) => p.key === selectedPeriodKey) || periodOptions[0] || null;
 
@@ -91,6 +91,12 @@ export default function PerformanceBreakdownView({
     const allLabels = (years[0]?.rows || []).map((r) => String(r.label || "").toLowerCase());
     return allLabels.some((l) => l.includes("confirmed income") || l.includes("total income"));
   }, [years]);
+
+  useEffect(() => {
+    if (isIncomeMode && breakdownType === "dirCosts") {
+      setBreakdownType("confRev");
+    }
+  }, [isIncomeMode, breakdownType]);
 
   const formatMoney = (val) => {
     const rounded = Math.round(val || 0);
@@ -152,24 +158,174 @@ export default function PerformanceBreakdownView({
       return [];
     }
 
-    // 2. Staff Costs (Delivery or Non-Delivery)
+    // 2. Staff Costs (Delivery or Non-Delivery) - Ported from WebApp.html lines 16413-16527
     if (breakdownType === "staffDel" || breakdownType === "staffNonDel") {
       const isDel = breakdownType === "staffDel";
-      const staffList = (keyData.salaries?.staff || []).filter((s) => (isDel ? s.isDelivery : !s.isDelivery));
       const results = [];
+      const yIdx = activePeriod.yearIdx;
+      const mIdx = activePeriod.monthIdx >= 0 ? activePeriod.monthIdx : 0;
 
+      // Extract target total from sheet table row
+      const activeYearData = years[yIdx];
+      const targetLabel = isDel ? "staff costs - delivery" : "staff costs - non-delivery";
+      const targetRow = (activeYearData?.rows || []).find((r) =>
+        String(r.label || "").toLowerCase().includes(targetLabel)
+      );
+      let cellTotal = 0;
+      if (targetRow) {
+        cellTotal = isFY
+          ? parseMoney(targetRow.totalVal)
+          : parseMoney(targetRow.monthlyValues?.[activePeriod.monthIdx]);
+      }
+
+      // A. Salaries
+      const staffList = keyData.salaries?.staff || [];
+      let calcSalTotal = 0;
       staffList.forEach((s) => {
-        const annual = s.actualAnnualCost || 0;
-        const amt = isFY ? annual : Math.round(annual / 12);
+        let delPct = 0;
+        if (s.deliveryPct !== undefined && String(s.deliveryPct).trim() !== "") {
+          delPct = parseMoney(s.deliveryPct);
+          if (String(s.deliveryPct).includes("%")) delPct = delPct / 100;
+          else if (delPct > 1) delPct = delPct / 100;
+        } else if (s.isDelivery) {
+          delPct = 1;
+        }
+        const applicablePct = isDel ? delPct : (1 - delPct);
+        if (applicablePct <= 0.001) return;
+
+        const baseCost = isFY ? (s.actualAnnualCost || 0) : ((s.actualAnnualCost || 0) / 12);
+        const amt = Math.round(baseCost * applicablePct);
         if (amt > 0) {
+          calcSalTotal += amt;
+          const mathText = Math.abs(applicablePct - 1) > 0.01 ? ` (${Math.round(applicablePct * 100)}% of ${formatMoney(baseCost)})` : "";
           results.push({
             client: s.name,
-            jobName: s.role,
+            jobName: "Salaries",
             amount: amt,
-            detail: `${s.role || "Staff"} | FTE: ${s.fte || "1.00"}`,
+            detail: `${s.role || "Staff"}${mathText} | FTE: ${s.fte || "1.00"}`,
           });
         }
       });
+
+      // Employment allowance
+      let actualSalaries = 0;
+      if (keyData.outgoingsMeta) {
+        if (isDel && keyData.outgoingsMeta.salariesDel?.[yIdx]) {
+          actualSalaries = isFY
+            ? keyData.outgoingsMeta.salariesDel[yIdx].reduce((a, b) => a + b, 0)
+            : (keyData.outgoingsMeta.salariesDel[yIdx][mIdx] || 0);
+        } else if (!isDel && keyData.outgoingsMeta.salariesNonDel?.[yIdx]) {
+          actualSalaries = isFY
+            ? keyData.outgoingsMeta.salariesNonDel[yIdx].reduce((a, b) => a + b, 0)
+            : (keyData.outgoingsMeta.salariesNonDel[yIdx][mIdx] || 0);
+        }
+      }
+      const allowanceDiff = actualSalaries - calcSalTotal;
+      if (Math.abs(allowanceDiff) > 2) {
+        results.push({
+          client: "Employment allowance",
+          jobName: "Salaries",
+          amount: Math.round(allowanceDiff),
+          detail: "HMRC employment allowance adjustment",
+        });
+        calcSalTotal += allowanceDiff;
+      }
+
+      // B. Dividends as salary
+      const dividendsList = keyData.outgoings?.dividends || [];
+      dividendsList.forEach((d) => {
+        let delPct = 0.5; // default 50%
+        if (d.deliveryPct !== undefined && String(d.deliveryPct).trim() !== "") {
+          delPct = parseMoney(d.deliveryPct);
+          if (String(d.deliveryPct).includes("%")) delPct = delPct / 100;
+          else if (delPct > 1) delPct = delPct / 100;
+        }
+        const applicablePct = isDel ? delPct : (1 - delPct);
+        if (applicablePct <= 0.001) return;
+
+        const allocs = d.allocations?.[yIdx + 1] || d.monthlyAllocations || [];
+        const rawAmt = isFY
+          ? (d.totals?.[yIdx + 1] || 0)
+          : parseMoney(allocs[mIdx] || "0");
+        const amt = Math.round(rawAmt * applicablePct);
+        if (amt > 0) {
+          results.push({
+            client: d.name || "Dividends as salary",
+            jobName: "Dividends as salary",
+            amount: amt,
+            detail: `Dividend in lieu • ${Math.round(applicablePct * 100)}% allocation`,
+          });
+        }
+      });
+
+      // C. Contractors
+      const contractorsList = keyData.outgoings?.contractors || [];
+      contractorsList.forEach((c) => {
+        let delPct = 1.0; // default 100%
+        if (c.deliveryPct !== undefined && String(c.deliveryPct).trim() !== "") {
+          delPct = parseMoney(c.deliveryPct);
+          if (String(c.deliveryPct).includes("%")) delPct = delPct / 100;
+          else if (delPct > 1) delPct = delPct / 100;
+        }
+        const applicablePct = isDel ? delPct : (1 - delPct);
+        if (applicablePct <= 0.001) return;
+
+        const allocs = c.allocations?.[yIdx + 1] || c.monthlyAllocations || [];
+        const rawAmt = isFY
+          ? (c.totals?.[yIdx + 1] || 0)
+          : parseMoney(allocs[mIdx] || "0");
+        const amt = Math.round(rawAmt * applicablePct);
+        if (amt > 0) {
+          results.push({
+            client: c.name,
+            jobName: "Contractors",
+            amount: amt,
+            detail: `Contractor • ${Math.round(applicablePct * 100)}% delivery • Timing: ${c.paymentTiming || "Curr"}`,
+          });
+        }
+      });
+
+      // D. Additional staff costs: Making up CoS & Profit share
+      if (isDel && keyData.outgoingsMeta?.makingUpCosBase?.[yIdx]) {
+        const cosVal = isFY
+          ? keyData.outgoingsMeta.makingUpCosBase[yIdx].reduce((a, b) => a + b, 0)
+          : (keyData.outgoingsMeta.makingUpCosBase[yIdx][mIdx] || 0);
+        if (cosVal > 0) {
+          results.push({
+            client: "Making up CoS",
+            jobName: "Additional staff costs",
+            amount: Math.round(cosVal),
+            detail: "Cost of sale adjustment (delivery only)",
+          });
+        }
+      }
+
+      if (keyData.outgoingsMeta) {
+        const psArr = isDel ? keyData.outgoingsMeta.profitShareBaseDel?.[yIdx] : keyData.outgoingsMeta.profitShareBaseNonDel?.[yIdx];
+        const psVal = psArr ? (isFY ? psArr.reduce((a, b) => a + b, 0) : (psArr[mIdx] || 0)) : 0;
+        if (psVal > 0) {
+          results.push({
+            client: "Profit share",
+            jobName: "Additional staff costs",
+            amount: Math.round(psVal),
+            detail: `Profit share (${isDel ? "delivery" : "non-delivery"})`,
+          });
+        }
+      }
+
+      // E. Rounding adjustment so grand total matches cellTotal exactly
+      if (cellTotal > 0) {
+        const sumItems = results.reduce((s, i) => s + i.amount, 0);
+        const drift = Math.round(cellTotal - sumItems);
+        if (Math.abs(drift) >= 1) {
+          results.push({
+            client: "Rounding adjustment",
+            jobName: "Adjustment",
+            amount: drift,
+            detail: "Ledger alignment adjustment",
+          });
+        }
+      }
 
       return results;
     }
@@ -345,7 +501,7 @@ export default function PerformanceBreakdownView({
         >
           <option value="confRev">{isIncomeMode ? "Confirmed income" : "Confirmed revenue"}</option>
           <option value="pipeRev">{isIncomeMode ? "Pipeline income" : "Pipeline revenue"}</option>
-          <option value="dirCosts">Direct costs</option>
+          {!isIncomeMode && <option value="dirCosts">Direct costs</option>}
           <option value="staffDel">Delivery staff costs</option>
           <option value="staffNonDel">Non-delivery staff costs</option>
           <option value="expDel">Delivery expenses</option>

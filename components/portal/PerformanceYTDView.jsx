@@ -114,7 +114,7 @@ export default function PerformanceYTDView({
     if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
       return { bg: "#f1f5f9", color: "#0047AB", bold: true, isHeader: true };
     }
-    return { bg: "#ffffff", color: "#334155", bold: false, isMajor: false };
+    return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
 
   if (isLoading && !data) {
@@ -484,14 +484,14 @@ export default function PerformanceYTDView({
               const label = String(row.label || "").trim();
               if (label.toLowerCase() === "hide" || (!label && !row.totalVal)) {
                 return (
-                  <tr key={rIdx} style={{ height: "4px", background: "#f8fafc" }}>
-                    <td colSpan={displayedMonths.length + 2} style={{ padding: 0 }} />
+                  <tr key={rIdx} style={{ height: "4px", background: "#ffffff" }}>
+                    <td colSpan={displayedMonths.length + 2} style={{ padding: 0, background: "#ffffff" }} />
                   </tr>
                 );
               }
 
               const rowStyle = getRowStyle(label);
-              const isPercentageRow = row.isPct;
+              const isPercentageRow = row.isPct || label.includes("%") || label.toLowerCase().includes("ratio") || label.toLowerCase().includes("margin");
 
               // YTD Total formatted string
               let ytdDisplay = "";
@@ -508,7 +508,7 @@ export default function PerformanceYTDView({
                 <tr
                   key={rIdx}
                   style={{
-                    borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
+                    borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #ffffff",
                     background: rowStyle.bg,
                     fontWeight: rowStyle.bold ? 700 : 400,
                   }}
@@ -521,6 +521,7 @@ export default function PerformanceYTDView({
                       textTransform: rowStyle.isHeader ? "uppercase" : "none",
                       letterSpacing: rowStyle.isHeader ? "0.5px" : "normal",
                       paddingLeft: !rowStyle.isHeader && !rowStyle.isMajor ? "16px" : "8px",
+                      fontStyle: isPercentageRow ? "italic" : "normal",
                       position: "sticky",
                       left: 0,
                       background: rowStyle.bg,
@@ -549,7 +550,8 @@ export default function PerformanceYTDView({
                         style={{
                           padding: "4px 4px",
                           textAlign: "right",
-                          color: rowStyle.isMajor ? "#ffffff" : "#334155",
+                          color: rowStyle.isMajor ? "#ffffff" : mBadge ? mBadge.color : rowStyle.color,
+                          fontStyle: isPercentageRow ? "italic" : "normal",
                           fontSize: "11px",
                           background: mBadge ? mBadge.bg : "transparent",
                           cursor: isClickable ? "pointer" : "default",
@@ -581,10 +583,11 @@ export default function PerformanceYTDView({
                         style={{
                           padding: "4px 8px",
                           textAlign: "right",
-                          color: rowStyle.isMajor ? "#ffffff" : "#0047AB",
+                          color: rowStyle.isMajor ? "#ffffff" : ytdBadge ? ytdBadge.color : "#0047AB",
+                          fontStyle: isPercentageRow ? "italic" : "normal",
                           fontSize: rowStyle.isMajor ? "13px" : "11.5px",
                           fontWeight: rowStyle.isMajor ? 800 : 700,
-                          background: ytdBadge ? ytdBadge.bg : rowStyle.isMajor ? rowStyle.bg : "rgba(0, 71, 171, 0.04)",
+                          background: ytdBadge ? ytdBadge.bg : (rowStyle.isMajor ? "transparent" : rowStyle.bg),
                           cursor: isClickable ? "pointer" : "default",
                           textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
                           textUnderlineOffset: isClickable ? "2px" : "initial",

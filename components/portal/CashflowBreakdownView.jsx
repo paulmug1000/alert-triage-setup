@@ -11,21 +11,69 @@ export default function CashflowBreakdownView({
   onRefresh,
 }) {
   const [activeCategory, setActiveCategory] = useState("cashConfInc");
-  const [selectedMonthIdx, setSelectedMonthIdx] = useState(0); // 0 to 6
-
-  const cashCategories = [
-    { id: "cashConfInc", name: "Confirmed cash incoming" },
-    { id: "cashPipeInc", name: "Pipeline cash incoming" },
-    { id: "cashInvoicesSent", name: "Invoices sent" },
-    { id: "cashSalaries", name: "Salary payments" },
-    { id: "cashContractors", name: "Contractor payments" },
-    { id: "cashDirCosts", name: "Direct cost payments" },
-    { id: "cashOutgoings", name: "Outgoings payments" },
-    { id: "cashTaxes", name: "Tax payments" },
-    { id: "cashOther", name: "Other cash movements" },
-  ];
 
   const rollingMonths = useMemo(() => data?.rollingMonths || [], [data?.rollingMonths]);
+
+  const isIncomeMode = useMemo(() => {
+    if (keyData?.outgoingsMeta?.mode) {
+      return keyData.outgoingsMeta.mode.toLowerCase().includes("income");
+    }
+    const allLabels = [
+      ...(data?.excludingPipeline || []).map((r) => String(r.label || "").toLowerCase()),
+      ...(data?.includingPipeline || []).map((r) => String(r.label || "").toLowerCase()),
+    ];
+    return allLabels.some((l) => l.includes("confirmed income") || l.includes("total income"));
+  }, [keyData, data]);
+
+  const cashCategories = useMemo(() => {
+    return [
+      { id: "cashConfInc", name: "Confirmed cash incoming" },
+      { id: "cashPipeInc", name: "Pipeline cash incoming" },
+      { id: "cashInvoicesSent", name: "Invoices sent" },
+      { id: "cashSalaries", name: "Salary payments" },
+      { id: "cashContractors", name: "Contractor payments" },
+      ...(!isIncomeMode ? [{ id: "cashDirCosts", name: "Direct cost payments" }] : []),
+      { id: "cashOutgoings", name: "Outgoings payments" },
+      { id: "cashTaxes", name: "Tax payments" },
+      { id: "cashOther", name: "Other cash movements" },
+    ];
+  }, [isIncomeMode]);
+
+  useEffect(() => {
+    if (isIncomeMode && activeCategory === "cashDirCosts") {
+      setActiveCategory("cashConfInc");
+    }
+  }, [isIncomeMode, activeCategory]);
+
+  // Determine initial month: closest to current calendar date
+  const defaultMonthIdx = useMemo(() => {
+    if (rollingMonths.length === 0) return 0;
+    const now = new Date();
+    const currMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
+    let closestIdx = 0;
+    let closestDiff = Infinity;
+    rollingMonths.forEach((mStr, idx) => {
+      const d = DeepDiveEngine.parseHeaderDate(mStr);
+      if (d) {
+        const diff = Math.abs(d.getTime() - currMonthStart);
+        if (diff < closestDiff) {
+          closestDiff = diff;
+          closestIdx = idx;
+        }
+      }
+    });
+    return closestIdx;
+  }, [rollingMonths]);
+
+  const [selectedMonthIdx, setSelectedMonthIdx] = useState(0);
+  const [hasUserSelectedMonth, setHasUserSelectedMonth] = useState(false);
+
+  useEffect(() => {
+    if (!hasUserSelectedMonth && rollingMonths.length > 0) {
+      setSelectedMonthIdx(defaultMonthIdx);
+    }
+  }, [defaultMonthIdx, hasUserSelectedMonth, rollingMonths.length]);
 
   const targetDate = useMemo(() => {
     if (rollingMonths.length === 0) return new Date();

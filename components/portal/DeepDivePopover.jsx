@@ -214,57 +214,108 @@ export default function DeepDivePopover({
             No individual items recorded for this period
           </div>
         ) : (
-          filteredItems.map((item, idx) => (
-            <div
-              key={idx}
-              style={{
-                padding: "8px 16px",
-                borderBottom: idx === filteredItems.length - 1 ? "none" : "1px solid #f1f5f9",
-                display: "flex",
-                alignItems: "flex-start",
-                justifyContent: "space-between",
-                gap: "10px",
-                fontSize: "12px",
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                  <span>{item.client ? `${item.client} - ` : ""}{item.name}</span>
-                  {item.badge && (
-                    <span
-                      style={{
-                        padding: "1px 6px",
-                        borderRadius: "10px",
-                        fontSize: "10px",
-                        fontWeight: 600,
-                        background: "#eff6ff",
-                        color: "#1e40af",
-                      }}
-                    >
-                      {item.badge}
-                    </span>
-                  )}
-                </div>
-                {item.detail && (
-                  <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
-                    {item.detail}
-                  </div>
-                )}
-              </div>
+          filteredItems.map((item, idx) => {
+            const isAdjustment = item.name === "Manual adjustment" || item.name === "Rounding adjustment";
 
+            if (isAdjustment) {
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    padding: "8px 16px",
+                    borderTop: "1px dashed #cbd5e1",
+                    background: "#f8fafc",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    fontSize: "12px",
+                  }}
+                >
+                  <div style={{ color: "#64748b", fontStyle: "italic", fontSize: "11.5px" }}>
+                    {item.name}
+                  </div>
+                  <div style={{ fontWeight: 700, color: "#0047AB", fontSize: "13px" }}>
+                    {formatGBP(item.amount)}
+                  </div>
+                </div>
+              );
+            }
+
+            const hasCashMeta = Boolean(item.payDateStr || item.desc || item.status);
+
+            return (
               <div
+                key={idx}
                 style={{
-                  fontWeight: 700,
-                  color: "#0047AB",
-                  whiteSpace: "nowrap",
-                  textAlign: "right",
-                  fontSize: "13px",
+                  padding: "8px 16px",
+                  borderBottom: idx === filteredItems.length - 1 ? "none" : "1px solid #f1f5f9",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  fontSize: "12px",
                 }}
               >
-                {formatGBP(item.amount)}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, color: "#1e293b", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                    {item.client ? (
+                      <span>
+                        <span style={{ fontWeight: 600, color: "#0f172a" }}>{item.client}</span>
+                        <span style={{ color: "#64748b" }}> – {item.name}</span>
+                      </span>
+                    ) : (
+                      <span>{item.name}</span>
+                    )}
+                    {!hasCashMeta && item.badge && (
+                      <span
+                        style={{
+                          padding: "1px 6px",
+                          borderRadius: "10px",
+                          fontSize: "10px",
+                          fontWeight: 600,
+                          background: "#eff6ff",
+                          color: "#1e40af",
+                        }}
+                      >
+                        {item.badge}
+                      </span>
+                    )}
+                  </div>
+
+                  {hasCashMeta ? (
+                    <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
+                      {item.isPipeline ? (
+                        <span>Expected: {item.payDateStr}</span>
+                      ) : (
+                        <span>
+                          {item.desc && <em style={{ fontStyle: "normal", color: "#475569" }}>{item.desc}</em>}
+                          {item.desc ? " | " : ""}
+                          Expected: {item.payDateStr}
+                          {item.status ? ` | ${item.status}` : ""}
+                        </span>
+                      )}
+                    </div>
+                  ) : item.detail ? (
+                    <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
+                      {item.detail}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div
+                  style={{
+                    fontWeight: 700,
+                    color: "#0047AB",
+                    whiteSpace: "nowrap",
+                    textAlign: "right",
+                    fontSize: "13px",
+                  }}
+                >
+                  {formatGBP(item.amount)}
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 

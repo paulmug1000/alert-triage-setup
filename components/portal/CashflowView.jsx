@@ -124,12 +124,15 @@ export default function CashflowView({
 
     const monthLabel = rollingMonths[mIdx] || `Month ${mIdx + 1}`;
     const rect = e.currentTarget.getBoundingClientRect();
+    const parsedTargetDate = DeepDiveEngine.parseHeaderDate(rollingMonths[mIdx]) || new Date();
+
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel: monthLabel,
       monthIndex: mIdx,
       cellValue: val,
       yearIndex: 1,
+      targetDate: parsedTargetDate,
       keyData,
     });
 
@@ -194,10 +197,10 @@ export default function CashflowView({
   const exclDetails = [
     { label: "Confirmed cash incoming", values: getValues(exclRows, ["confirmed cash"], [5]), ddType: "cashConfInflow" },
     { label: "Salaries", values: getValues(exclRows, ["salaries", "delivery salaries"], [7, 8]), ddType: "cashSalaries" },
-    { label: "Dividends as salary", values: getValues(exclRows, ["dividends as salary"], [9, 10]), ddType: "dividends" },
-    { label: "Contractors", values: getValues(exclRows, ["contractors"], [11, 12]), ddType: "dirCosts" },
-    { label: "Direct costs", values: getValues(exclRows, ["direct costs"], [13, 14]), ddType: "dirCosts" },
-    { label: "Other expenses", values: getValues(exclRows, ["other expenses"], [15, 16]), ddType: "expNonDel" },
+    { label: "Dividends as salary", values: getValues(exclRows, ["dividends as salary"], [9, 10]), ddType: "cashDividends" },
+    { label: "Contractors", values: getValues(exclRows, ["contractors"], [11, 12]), ddType: "cashContractors" },
+    { label: "Direct costs", values: getValues(exclRows, ["direct costs"], [13, 14]), ddType: "cashDirCosts" },
+    { label: "Other expenses", values: getValues(exclRows, ["other expenses"], [15, 16]), ddType: "cashOutgoings" },
     { label: "Corporation tax", values: getValues(exclRows, ["corporation tax"], [18, 19]), ddType: null },
     { label: "VAT", values: getValues(exclRows, ["vat"], [20, 21]), ddType: null },
     { label: "Non-operating income", values: getValues(exclRows, ["non-operating income"], [23, 24]), ddType: null },
@@ -213,10 +216,10 @@ export default function CashflowView({
     { label: "Confirmed cash incoming", values: getValues(inclRows, ["confirmed cash"], [46]), ddType: "cashConfInflow" },
     { label: "Pipeline cash incoming", values: getValues(inclRows, ["pipeline cash"], [47]), ddType: "cashPipeInflow" },
     { label: "Salaries", values: getValues(inclRows, ["salaries", "delivery salaries"], [49, 50]), ddType: "cashSalaries" },
-    { label: "Dividends as salary", values: getValues(inclRows, ["dividends as salary"], [51, 52]), ddType: "dividends" },
-    { label: "Contractors", values: getValues(inclRows, ["contractors"], [53, 54]), ddType: "dirCosts" },
-    { label: "Direct costs", values: getValues(inclRows, ["direct costs"], [55, 56]), ddType: "dirCosts" },
-    { label: "Other expenses", values: getValues(inclRows, ["other expenses"], [57, 58]), ddType: "expNonDel" },
+    { label: "Dividends as salary", values: getValues(inclRows, ["dividends as salary"], [51, 52]), ddType: "cashDividends" },
+    { label: "Contractors", values: getValues(inclRows, ["contractors"], [53, 54]), ddType: "cashContractors" },
+    { label: "Direct costs", values: getValues(inclRows, ["direct costs"], [55, 56]), ddType: "cashDirCosts" },
+    { label: "Other expenses", values: getValues(inclRows, ["other expenses"], [57, 58]), ddType: "cashOutgoings" },
     { label: "Corporation tax", values: getValues(inclRows, ["corporation tax"], [60, 61]), ddType: null },
     { label: "VAT", values: getValues(inclRows, ["vat"], [62, 63]), ddType: null },
     { label: "Non-operating income", values: getValues(inclRows, ["non-operating income"], [65, 66]), ddType: null },
@@ -429,10 +432,10 @@ export default function CashflowView({
                 </tr>
 
                 {/* Opening balance */}
-                <tr style={{ borderBottom: "1px solid #f1f5f9" }}>
-                  <td style={stickyColStyle}>Opening balance</td>
+                <tr style={{ background: "#efefef", borderBottom: "1px solid #e2e8f0" }}>
+                  <td style={{ ...stickyColStyle, background: "#efefef" }}>Opening balance</td>
                   {exclOpening.map((val, idx) => (
-                    <td key={idx} style={dataCellStyle}>
+                    <td key={idx} style={{ ...dataCellStyle, background: "#efefef" }}>
                       {val}
                     </td>
                   ))}
@@ -443,15 +446,15 @@ export default function CashflowView({
                   onClick={() => setExclOpen((prev) => !prev)}
                   style={{
                     cursor: "pointer",
-                    background: "#f8fafc",
-                    borderTop: "1px solid #e2e8f0",
-                    borderBottom: "2px solid #e2e8f0",
+                    background: "#f1f5f9",
+                    borderTop: "1px solid #cbd5e1",
+                    borderBottom: "2px solid #cbd5e1",
                   }}
                 >
                   <td
                     style={{
                       ...stickyColStyle,
-                      background: "#f8fafc",
+                      background: "#f1f5f9",
                       fontWeight: 700,
                       color: "#0047AB",
                     }}
@@ -476,7 +479,7 @@ export default function CashflowView({
                       style={{
                         ...dataCellStyle,
                         fontWeight: 600,
-                        background: "#f8fafc",
+                        background: "#f1f5f9",
                       }}
                     >
                       {val}
@@ -490,13 +493,13 @@ export default function CashflowView({
                     if (isRowEmpty(detail.values)) return null;
 
                     return (
-                      <tr key={dIdx} style={{ background: "#fafafa", borderBottom: "1px solid #f1f5f9" }}>
+                      <tr key={dIdx} style={{ background: "#efefef", borderBottom: "1px solid #e2e8f0" }}>
                         <td
                           style={{
                             ...stickyColStyle,
-                            background: "#fafafa",
+                            background: "#efefef",
                             paddingLeft: "30px",
-                            color: "#475569",
+                            color: "#334155",
                             fontSize: "12.5px",
                             fontWeight: 400,
                           }}
@@ -512,6 +515,7 @@ export default function CashflowView({
                               onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType)}
                               style={{
                                 ...dataCellStyle,
+                                background: "#efefef",
                                 color: isClickable ? "#0047AB" : "#475569",
                                 fontSize: "12px",
                                 cursor: isClickable ? "pointer" : "default",
@@ -519,10 +523,10 @@ export default function CashflowView({
                                 textUnderlineOffset: isClickable ? "2px" : "initial",
                               }}
                               onMouseEnter={(e) => {
-                                if (isClickable) e.currentTarget.style.backgroundColor = "rgba(0, 71, 171, 0.08)";
+                                if (isClickable) e.currentTarget.style.backgroundColor = "#e2e8f0";
                               }}
                               onMouseLeave={(e) => {
-                                if (isClickable) e.currentTarget.style.backgroundColor = "transparent";
+                                if (isClickable) e.currentTarget.style.backgroundColor = "#efefef";
                               }}
                             >
                               {val}
@@ -534,14 +538,14 @@ export default function CashflowView({
                   })}
 
                 {/* Closing balance */}
-                <tr style={{ background: "#f8fafc", borderTop: "1px solid #94a3b8" }}>
+                <tr style={{ background: "#f1f5f9", borderTop: "2px solid #94a3b8" }}>
                   <td
                     style={{
                       ...stickyColStyle,
-                      background: "#f8fafc",
+                      background: "#f1f5f9",
                       fontWeight: 800,
                       color: "#0047AB",
-                      borderTop: "1px solid #94a3b8",
+                      borderTop: "2px solid #94a3b8",
                     }}
                   >
                     Closing balance
@@ -553,8 +557,8 @@ export default function CashflowView({
                         ...dataCellStyle,
                         fontWeight: 800,
                         color: "#0047AB",
-                        background: "#f8fafc",
-                        borderTop: "1px solid #94a3b8",
+                        background: "#f1f5f9",
+                        borderTop: "2px solid #94a3b8",
                       }}
                     >
                       {val}
@@ -586,10 +590,10 @@ export default function CashflowView({
                 </tr>
 
                 {/* Opening balance */}
-                <tr style={{ borderBottom: "1px solid #f1f5f9" }}>
-                  <td style={stickyColStyle}>Opening balance</td>
+                <tr style={{ background: "#efefef", borderBottom: "1px solid #e2e8f0" }}>
+                  <td style={{ ...stickyColStyle, background: "#efefef" }}>Opening balance</td>
                   {inclOpening.map((val, idx) => (
-                    <td key={idx} style={dataCellStyle}>
+                    <td key={idx} style={{ ...dataCellStyle, background: "#efefef" }}>
                       {val}
                     </td>
                   ))}
@@ -600,15 +604,15 @@ export default function CashflowView({
                   onClick={() => setInclOpen((prev) => !prev)}
                   style={{
                     cursor: "pointer",
-                    background: "#f8fafc",
-                    borderTop: "1px solid #e2e8f0",
-                    borderBottom: "2px solid #e2e8f0",
+                    background: "#f1f5f9",
+                    borderTop: "1px solid #cbd5e1",
+                    borderBottom: "2px solid #cbd5e1",
                   }}
                 >
                   <td
                     style={{
                       ...stickyColStyle,
-                      background: "#f8fafc",
+                      background: "#f1f5f9",
                       fontWeight: 700,
                       color: "#0047AB",
                     }}
@@ -633,7 +637,7 @@ export default function CashflowView({
                       style={{
                         ...dataCellStyle,
                         fontWeight: 600,
-                        background: "#f8fafc",
+                        background: "#f1f5f9",
                       }}
                     >
                       {val}
@@ -647,13 +651,13 @@ export default function CashflowView({
                     if (isRowEmpty(detail.values)) return null;
 
                     return (
-                      <tr key={dIdx} style={{ background: "#fafafa", borderBottom: "1px solid #f1f5f9" }}>
+                      <tr key={dIdx} style={{ background: "#efefef", borderBottom: "1px solid #e2e8f0" }}>
                         <td
                           style={{
                             ...stickyColStyle,
-                            background: "#fafafa",
+                            background: "#efefef",
                             paddingLeft: "30px",
-                            color: "#475569",
+                            color: "#334155",
                             fontSize: "12.5px",
                             fontWeight: 400,
                           }}
@@ -669,6 +673,7 @@ export default function CashflowView({
                               onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType)}
                               style={{
                                 ...dataCellStyle,
+                                background: "#efefef",
                                 color: isClickable ? "#0047AB" : "#475569",
                                 fontSize: "12px",
                                 cursor: isClickable ? "pointer" : "default",
@@ -676,10 +681,10 @@ export default function CashflowView({
                                 textUnderlineOffset: isClickable ? "2px" : "initial",
                               }}
                               onMouseEnter={(e) => {
-                                if (isClickable) e.currentTarget.style.backgroundColor = "rgba(0, 71, 171, 0.08)";
+                                if (isClickable) e.currentTarget.style.backgroundColor = "#e2e8f0";
                               }}
                               onMouseLeave={(e) => {
-                                if (isClickable) e.currentTarget.style.backgroundColor = "transparent";
+                                if (isClickable) e.currentTarget.style.backgroundColor = "#efefef";
                               }}
                             >
                               {val}
@@ -691,14 +696,14 @@ export default function CashflowView({
                   })}
 
                 {/* Closing balance */}
-                <tr style={{ background: "#f8fafc", borderTop: "1px solid #94a3b8" }}>
+                <tr style={{ background: "#f1f5f9", borderTop: "2px solid #94a3b8" }}>
                   <td
                     style={{
                       ...stickyColStyle,
-                      background: "#f8fafc",
+                      background: "#f1f5f9",
                       fontWeight: 800,
                       color: "#0047AB",
-                      borderTop: "1px solid #94a3b8",
+                      borderTop: "2px solid #94a3b8",
                     }}
                   >
                     Closing balance
@@ -710,8 +715,8 @@ export default function CashflowView({
                         ...dataCellStyle,
                         fontWeight: 800,
                         color: "#0047AB",
-                        background: "#f8fafc",
-                        borderTop: "1px solid #94a3b8",
+                        background: "#f1f5f9",
+                        borderTop: "2px solid #94a3b8",
                       }}
                     >
                       {val}
@@ -938,11 +943,11 @@ const stickyColStyle = {
   textAlign: "left",
   position: "sticky",
   left: 0,
-  background: "#ffffff",
+  background: "#efefef",
   zIndex: 5,
   fontWeight: 500,
   color: "#0f172a",
-  borderRight: "2px solid #e2e8f0",
+  borderRight: "2px solid #cbd5e1",
   whiteSpace: "nowrap",
 };
 

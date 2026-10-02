@@ -273,9 +273,9 @@ export default function ScenariosView({
       return { bg: "#f1f5f9", color: "#0047AB", bold: true, isHeader: true };
     }
     if (l === "total costs of sale" || l === "total cost of sales") {
-      return { bg: "#ffffff", color: "#334155", bold: true, isMajor: false };
+      return { bg: "#efefef", color: "#0047AB", bold: true, isMajor: false };
     }
-    return { bg: "#ffffff", color: "#334155", bold: false, isMajor: false };
+    return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
 
   const getMarginBadgeStyle = (label, valStr) => {
@@ -599,21 +599,21 @@ export default function ScenariosView({
 
                 if (!label || label.toLowerCase() === "hide") {
                   return (
-                    <tr key={rIdx} style={{ height: "4px", background: "#f8fafc" }}>
-                      <td colSpan={14} style={{ padding: 0 }} />
+                    <tr key={rIdx} style={{ height: "4px", background: "#ffffff" }}>
+                      <td colSpan={14} style={{ padding: 0, background: "#ffffff" }} />
                     </tr>
                   );
                 }
 
                 const rowStyle = getRowStyle(label);
-                const isPercentageRow = label.includes("%") || label.toLowerCase().includes("ratio");
+                const isPercentageRow = label.includes("%") || label.toLowerCase().includes("ratio") || label.toLowerCase().includes("margin");
                 const totalBadge = isPercentageRow ? getMarginBadgeStyle(label, totalVal) : null;
 
                 return (
                   <tr
                     key={rIdx}
                     style={{
-                      borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
+                      borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #ffffff",
                       background: rowStyle.bg,
                       fontWeight: rowStyle.bold ? 700 : 400,
                     }}
@@ -627,6 +627,7 @@ export default function ScenariosView({
                         textTransform: rowStyle.isHeader ? "uppercase" : "none",
                         letterSpacing: rowStyle.isHeader ? "0.5px" : "normal",
                         paddingLeft: !rowStyle.isHeader && !rowStyle.isMajor ? "16px" : "8px",
+                        fontStyle: isPercentageRow ? "italic" : "normal",
                         position: "sticky",
                         left: 0,
                         background: rowStyle.bg,
@@ -651,7 +652,8 @@ export default function ScenariosView({
                           style={{
                             padding: "4px 4px",
                             textAlign: "right",
-                            color: rowStyle.isMajor ? "#ffffff" : mBadge ? mBadge.color : "#334155",
+                            color: rowStyle.isMajor ? "#ffffff" : mBadge ? mBadge.color : rowStyle.color,
+                            fontStyle: isPercentageRow ? "italic" : "normal",
                             fontSize: "11px",
                             background: mBadge ? mBadge.bg : "transparent",
                             whiteSpace: "nowrap",
@@ -669,8 +671,9 @@ export default function ScenariosView({
                         textAlign: "right",
                         fontWeight: 800,
                         color: rowStyle.isMajor ? "#ffffff" : totalBadge ? totalBadge.color : "#0047AB",
+                        fontStyle: isPercentageRow ? "italic" : "normal",
                         fontSize: "11.5px",
-                        background: totalBadge ? totalBadge.bg : rowStyle.isMajor ? rowStyle.bg : "#ffffff",
+                        background: totalBadge ? totalBadge.bg : rowStyle.isMajor ? rowStyle.bg : rowStyle.bg,
                         whiteSpace: "nowrap",
                       }}
                     >
@@ -741,8 +744,8 @@ export default function ScenariosView({
 
             <tbody>
               {/* Include NB to Find Checkboxes */}
-              <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#fbfcfe" }}>
-                <td style={{ padding: "6px 8px", fontWeight: 600, color: "#0f172a" }}>
+              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
+                <td style={{ padding: "6px 8px", fontWeight: 600, color: "#0047AB" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     <input
                       type="checkbox"
@@ -770,7 +773,7 @@ export default function ScenariosView({
               </tr>
 
               {/* Additional Revenue Inputs */}
-              <tr style={{ borderBottom: "1px solid #f1f5f9" }}>
+              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
                 <td style={{ padding: "6px 8px", color: "#0047AB" }}>
                   Additional revenue
                 </td>
@@ -791,7 +794,7 @@ export default function ScenariosView({
               </tr>
 
               {/* Additional delivery staff costs */}
-              <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#fbfcfe" }}>
+              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
                 <td style={{ padding: "6px 8px", color: "#0047AB" }}>
                   Additional delivery staff costs
                 </td>
@@ -812,7 +815,7 @@ export default function ScenariosView({
               </tr>
 
               {/* Additional delivery expenses */}
-              <tr style={{ borderBottom: "1px solid #f1f5f9" }}>
+              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
                 <td style={{ padding: "6px 8px", color: "#0047AB" }}>
                   Additional delivery expenses
                 </td>
@@ -833,7 +836,7 @@ export default function ScenariosView({
               </tr>
 
               {/* Additional non-delivery staff costs */}
-              <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#fbfcfe" }}>
+              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
                 <td style={{ padding: "6px 8px", color: "#0047AB" }}>
                   Additional non-delivery staff costs
                 </td>
@@ -854,7 +857,7 @@ export default function ScenariosView({
               </tr>
 
               {/* Additional non-delivery expenses */}
-              <tr>
+              <tr style={{ background: "#efefef" }}>
                 <td style={{ padding: "6px 8px", color: "#0047AB" }}>
                   Additional non-delivery expenses
                 </td>

@@ -270,7 +270,7 @@ export default function ScenariosView({
       return { bg: "#1155cc", color: "#ffffff", bold: true, isMajor: true };
     }
     if (["income", "costs of sale", "overheads"].includes(l)) {
-      return { bg: "#f1f5f9", color: "#0047AB", bold: true, isHeader: true };
+      return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
     }
     if (l === "total costs of sale" || l === "total cost of sales") {
       return { bg: "#efefef", color: "#0047AB", bold: true, isMajor: false };
@@ -415,7 +415,7 @@ export default function ScenariosView({
                 color: "#0047AB",
               }}
             >
-              {activeYear?.displayTitle || activeYear?.fyLabel}
+              {activeYear?.fyLabel || activeYear?.displayTitle}
             </span>
             {years.length > 1 && (
               <button
@@ -554,41 +554,28 @@ export default function ScenariosView({
               </tr>
 
               {/* Row 2: Status row (Actual vs Forecast) with NO column header */}
-              <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", fontSize: "10px" }}>
+              <tr style={{ background: "#efefef", borderBottom: "1px solid #ffffff", fontSize: "10.5px" }}>
                 <td
                   style={{
                     padding: "3px 8px",
-                    fontWeight: 600,
-                    color: "#64748b",
                     position: "sticky",
                     left: 0,
-                    background: "#f8fafc",
+                    background: "#efefef",
                     zIndex: 2,
                   }}
                 >
                   {/* Empty cell, NO Status label */}
                 </td>
                 {activeYear?.statusValues?.map((st, idx) => {
-                  const isAct = String(st).toLowerCase() === "actual";
+                  const raw = String(st || "").trim();
+                  const text = raw.toLowerCase() === "actual" ? "Actual" : raw.toLowerCase() === "forecast" ? "Forecast" : raw;
                   return (
-                    <td key={idx} style={{ padding: "3px 4px", textAlign: "right" }}>
-                      <span
-                        style={{
-                          padding: "1px 5px",
-                          borderRadius: "4px",
-                          fontSize: "9px",
-                          fontWeight: 700,
-                          background: isAct ? "#e2f0d9" : "#d9e1f2",
-                          color: isAct ? "#38761d" : "#1a73e8",
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        {st || ""}
-                      </span>
+                    <td key={idx} style={{ padding: "3px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef" }}>
+                      {text}
                     </td>
                   );
                 })}
-                <td style={{ padding: "3px 8px", textAlign: "right" }}></td>
+                <td style={{ padding: "3px 8px", textAlign: "right", background: "#efefef" }}></td>
               </tr>
             </thead>
 
@@ -599,8 +586,8 @@ export default function ScenariosView({
 
                 if (!label || label.toLowerCase() === "hide") {
                   return (
-                    <tr key={rIdx} style={{ height: "4px", background: "#ffffff" }}>
-                      <td colSpan={14} style={{ padding: 0, background: "#ffffff" }} />
+                    <tr key={rIdx} style={{ height: "6px", background: "#efefef" }}>
+                      <td colSpan={14} style={{ padding: 0, background: "#efefef" }} />
                     </tr>
                   );
                 }

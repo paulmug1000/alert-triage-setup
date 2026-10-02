@@ -364,7 +364,7 @@ export default function MonthView({
               width: "410px",
               borderCollapse: "separate",
               borderSpacing: 0,
-              background: "#ffffff",
+              background: "#efefef",
               borderRadius: "8px",
               overflow: "hidden",
               border: "1px solid #e5e7eb",
@@ -394,8 +394,8 @@ export default function MonthView({
                 let rowHeight = 22;
 
                 if (isSpacer) {
-                  bgColor = "#ffffff";
-                  textColor = "#ffffff";
+                  bgColor = "#efefef";
+                  textColor = "#efefef";
                   rowHeight = 6;
                   fontSize = 2;
                 } else if (i === 0) {
@@ -408,6 +408,7 @@ export default function MonthView({
                 } else if (i === 1) {
                   isItalic = true;
                   fontSize = 11;
+                  textColor = "#666666";
                 } else if (i === 2) {
                   isBold = true;
                   fontSize = 13;
@@ -467,10 +468,16 @@ export default function MonthView({
                 const ddType = !isSpacer && !isHide ? getDeepDiveType(label) : null;
                 const isClickable = Boolean(ddType && value && value !== "£0" && value !== "—" && value !== "");
 
+                let displayVal = value;
+                if (i === 1 && typeof value === "string") {
+                  if (value.toUpperCase() === "ACTUAL") displayVal = "Actual";
+                  else if (value.toUpperCase() === "FORECAST") displayVal = "Forecast";
+                }
+
                 if (isSpacer) {
                   return (
-                    <tr key={i} style={{ height: `${rowHeight}px`, background: "#ffffff" }}>
-                      <td colSpan={2} style={{ padding: 0, border: "none" }} />
+                    <tr key={i} style={{ height: `${rowHeight}px`, background: "#efefef" }}>
+                      <td colSpan={2} style={{ padding: 0, border: "none", background: "#efefef" }} />
                     </tr>
                   );
                 }
@@ -526,7 +533,7 @@ export default function MonthView({
                         if (isClickable) e.currentTarget.style.filter = "none";
                       }}
                     >
-                      {value || ""}
+                      {displayVal || ""}
                     </td>
                   </tr>
                 );
@@ -564,25 +571,24 @@ export default function MonthView({
         </div>
       </div>
 
-      {/* 12-Month Performance Trend Line Chart (Only shown in 'curr' month view, matching original app) */}
+      {/* 12-Month Performance Trend Line Chart (matching original app size & title) */}
       {activePeriod === "curr" && chartData?.showChart && chartData?.months?.length > 0 && (
         <div
           style={{
+            maxWidth: "410px",
+            margin: "1.5rem auto 0 auto",
+            width: "100%",
             background: "#ffffff",
             borderRadius: "8px",
             border: "1px solid #e5e7eb",
-            padding: "1.25rem",
-            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-            marginTop: "1.5rem"
+            padding: "1rem",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)"
           }}
         >
-          <div style={{ marginBottom: "1rem", textAlign: "left" }}>
-            <h3 style={{ margin: "0 0 2px 0", fontSize: "1.05rem", fontWeight: 700, color: "#0047AB" }}>
-              12-Month Performance History & Trend
+          <div style={{ marginBottom: "0.75rem", textAlign: "center" }}>
+            <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 600, color: "#0047AB", fontFamily: "'Kumbh Sans', sans-serif" }}>
+              Last 12 months
             </h3>
-            <p style={{ margin: 0, fontSize: "0.8rem", color: "#64748b" }}>
-              Rolling revenue, gross profit, and operating profit
-            </p>
           </div>
 
           {/* Responsive SVG Line Chart */}
@@ -600,20 +606,44 @@ export default function MonthView({
 
 // Clean, smooth SVG Line Chart mirroring Chart.js
 function HomeLineChart({ months = [], revenue = [], grossProfit = [], operatingProfit = [] }) {
-  const width = 580;
-  const height = 240;
-  const padding = { top: 20, right: 20, bottom: 40, left: 55 };
+  const width = 410;
+  const height = 205;
+  const padding = { top: 15, right: 15, bottom: 25, left: 62 };
 
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
 
-  const allVals = [...revenue, ...grossProfit, ...operatingProfit];
-  const maxVal = Math.max(...allVals, 1000);
-  const minVal = Math.min(...allVals, 0);
-  const range = maxVal - minVal || 1;
+  const allVals = [...revenue, ...grossProfit, ...operatingProfit].filter((v) => typeof v === "number" && !isNaN(v));
+  const rawMax = Math.max(...allVals, 10000);
+  const rawMin = Math.min(...allVals, 0);
+
+  // Calculate sensible, whole-number interval (e.g. £10,000, £20,000, £50,000)
+  const targetTicks = 4;
+  const span = Math.max(rawMax - (rawMin < 0 ? rawMin : 0), 10000);
+  const roughStep = span / targetTicks;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const residual = roughStep / magnitude;
+  let niceFactor = 1;
+  if (residual > 7) niceFactor = 10;
+  else if (residual > 3) niceFactor = 5;
+  else if (residual > 1.5) niceFactor = 2;
+  else niceFactor = 1;
+  const step = Math.max(niceFactor * magnitude, 1000);
+
+  const minTick = rawMin < 0 ? Math.floor(rawMin / step) * step : 0;
+  const maxTick = Math.max(Math.ceil(rawMax / step) * step, minTick + step * targetTicks);
+
+  const yTicks = [];
+  for (let val = minTick; val <= maxTick; val += step) {
+    yTicks.push(val);
+  }
+
+  const chartMin = minTick;
+  const chartMax = maxTick;
+  const range = chartMax - chartMin || 1;
 
   const getX = (idx) => padding.left + (idx / Math.max(months.length - 1, 1)) * chartW;
-  const getY = (val) => padding.top + chartH - ((val - minVal) / range) * chartH;
+  const getY = (val) => padding.top + chartH - ((val - chartMin) / range) * chartH;
 
   // Build SVG path strings with smooth curves (bezier)
   const buildSmoothPath = (data) => {
@@ -634,22 +664,15 @@ function HomeLineChart({ months = [], revenue = [], grossProfit = [], operatingP
   const gpPath = buildSmoothPath(grossProfit);
   const opPath = buildSmoothPath(operatingProfit);
 
-  // Y-axis grid ticks (4 ticks)
-  const yTicks = [
-    minVal,
-    minVal + range * 0.33,
-    minVal + range * 0.66,
-    maxVal
-  ];
-
   const formatShortMoney = (n) => {
-    if (Math.abs(n) >= 1000000) return `£${(n / 1000000).toFixed(1)}M`;
-    if (Math.abs(n) >= 1000) return `£${Math.round(n / 1000)}k`;
-    return `£${Math.round(n)}`;
+    if (n === 0) return "£0";
+    const abs = Math.abs(n);
+    const formatted = "£" + Math.round(abs).toLocaleString("en-GB");
+    return n < 0 ? `-${formatted}` : formatted;
   };
 
   return (
-    <div style={{ width: "100%", overflowX: "auto" }}>
+    <div style={{ width: "100%" }}>
       <svg
         viewBox={`0 0 ${width} ${height}`}
         style={{ width: "100%", height: "auto", display: "block" }}
@@ -668,11 +691,11 @@ function HomeLineChart({ months = [], revenue = [], grossProfit = [], operatingP
                 strokeWidth="1"
               />
               <text
-                x={padding.left - 8}
+                x={padding.left - 6}
                 y={y + 3}
                 textAnchor="end"
-                fontSize="10"
-                fill="#94a3b8"
+                fontSize="9"
+                fill="#64748b"
                 fontFamily="'Kumbh Sans', sans-serif"
               >
                 {formatShortMoney(tick)}
@@ -689,9 +712,9 @@ function HomeLineChart({ months = [], revenue = [], grossProfit = [], operatingP
             <text
               key={i}
               x={x}
-              y={height - 12}
+              y={height - 8}
               textAnchor="middle"
-              fontSize="10"
+              fontSize="9"
               fill="#64748b"
               fontFamily="'Kumbh Sans', sans-serif"
             >
@@ -705,7 +728,7 @@ function HomeLineChart({ months = [], revenue = [], grossProfit = [], operatingP
           d={revPath}
           fill="none"
           stroke="#9900ff"
-          strokeWidth="2.5"
+          strokeWidth="2"
           strokeLinecap="round"
         />
 
@@ -714,7 +737,7 @@ function HomeLineChart({ months = [], revenue = [], grossProfit = [], operatingP
           d={gpPath}
           fill="none"
           stroke="#e69138"
-          strokeWidth="2.5"
+          strokeWidth="2"
           strokeLinecap="round"
         />
 
@@ -723,19 +746,19 @@ function HomeLineChart({ months = [], revenue = [], grossProfit = [], operatingP
           d={opPath}
           fill="none"
           stroke="#1155cc"
-          strokeWidth="2.5"
+          strokeWidth="2"
           strokeLinecap="round"
         />
 
         {/* Dots on points */}
         {revenue.map((val, i) => (
-          <circle key={`r-${i}`} cx={getX(i)} cy={getY(val)} r="3" fill="#9900ff" />
+          <circle key={`r-${i}`} cx={getX(i)} cy={getY(val)} r="2" fill="#9900ff" />
         ))}
         {grossProfit.map((val, i) => (
-          <circle key={`gp-${i}`} cx={getX(i)} cy={getY(val)} r="3" fill="#e69138" />
+          <circle key={`gp-${i}`} cx={getX(i)} cy={getY(val)} r="2" fill="#e69138" />
         ))}
         {operatingProfit.map((val, i) => (
-          <circle key={`op-${i}`} cx={getX(i)} cy={getY(val)} r="3" fill="#1155cc" />
+          <circle key={`op-${i}`} cx={getX(i)} cy={getY(val)} r="2" fill="#1155cc" />
         ))}
       </svg>
 
@@ -744,23 +767,23 @@ function HomeLineChart({ months = [], revenue = [], grossProfit = [], operatingP
         style={{
           display: "flex",
           justifyContent: "center",
-          gap: "20px",
-          marginTop: "8px",
-          fontSize: "12px",
+          gap: "16px",
+          marginTop: "6px",
+          fontSize: "9.5px",
           fontFamily: "'Kumbh Sans', sans-serif"
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "12px", height: "3px", background: "#9900ff", borderRadius: "2px" }} />
-          <span style={{ color: "#334155", fontWeight: 600 }}>Revenue</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#9900ff", display: "inline-block" }} />
+          <span style={{ color: "#334155", fontWeight: 500 }}>Revenue</span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "12px", height: "3px", background: "#e69138", borderRadius: "2px" }} />
-          <span style={{ color: "#334155", fontWeight: 600 }}>Gross Profit</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#e69138", display: "inline-block" }} />
+          <span style={{ color: "#334155", fontWeight: 500 }}>Gross Profit</span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "12px", height: "3px", background: "#1155cc", borderRadius: "2px" }} />
-          <span style={{ color: "#334155", fontWeight: 600 }}>Operating Profit</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#1155cc", display: "inline-block" }} />
+          <span style={{ color: "#334155", fontWeight: 500 }}>Operating Profit</span>
         </div>
       </div>
     </div>

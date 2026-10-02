@@ -417,7 +417,7 @@ export default function PortalPage() {
   return (
     <>
       <Head>
-        <title>{selectedClient ? `${selectedClient.clientName} - Pulse` : "Pulse"}</title>
+        <title>Pulse</title>
       </Head>
 
       <PortalShell

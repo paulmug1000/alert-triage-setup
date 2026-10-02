@@ -148,7 +148,7 @@ export default function PerformanceFYView({
       return { bg: "#1155cc", color: "#ffffff", bold: true, isMajor: true };
     }
     if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
-      return { bg: "#f1f5f9", color: "#0047AB", bold: true, isHeader: true };
+      return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
     }
     return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
@@ -254,7 +254,7 @@ export default function PerformanceFYView({
             >
               {years.map((y, idx) => (
                 <option key={y.id} value={idx}>
-                  {y.displayTitle} {idx === data?.currentYearIdx ? "(Current)" : ""}
+                  {y.fyLabel || y.displayTitle} {idx === data?.currentYearIdx ? "(Current)" : ""}
                 </option>
               ))}
             </select>
@@ -377,41 +377,28 @@ export default function PerformanceFYView({
             </tr>
 
             {/* Row 2: Status row (Actual vs Forecast) with NO column header */}
-            <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", fontSize: "10px" }}>
+            <tr style={{ background: "#efefef", borderBottom: "1px solid #ffffff", fontSize: "10.5px" }}>
               <td
                 style={{
                   padding: "3px 8px",
-                  fontWeight: 600,
-                  color: "#64748b",
                   position: "sticky",
                   left: 0,
-                  background: "#f8fafc",
+                  background: "#efefef",
                   zIndex: 2,
                 }}
               >
                 {/* Empty cell, NO Status label */}
               </td>
               {(activeYear.statusValues || activeYear.monthStatuses || []).map((st, idx) => {
-                const isAct = String(st).toLowerCase() === "actual";
+                const raw = String(st || "").trim();
+                const text = raw.toLowerCase() === "actual" ? "Actual" : raw.toLowerCase() === "forecast" ? "Forecast" : raw;
                 return (
-                  <td key={idx} style={{ padding: "3px 4px", textAlign: "right" }}>
-                    <span
-                      style={{
-                        padding: "1px 4px",
-                        borderRadius: "4px",
-                        fontSize: "9px",
-                        fontWeight: 700,
-                        background: isAct ? "#dcfce7" : "#e0f2fe",
-                        color: isAct ? "#166534" : "#0369a1",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {st || ""}
-                    </span>
+                  <td key={idx} style={{ padding: "3px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef" }}>
+                    {text}
                   </td>
                 );
               })}
-              <td style={{ padding: "3px 8px", textAlign: "right", color: "#64748b", fontWeight: 700 }}>
+              <td style={{ padding: "3px 8px", textAlign: "right", background: "#efefef" }}>
               </td>
             </tr>
           </thead>
@@ -424,8 +411,8 @@ export default function PerformanceFYView({
               // Hide rows
               if (!label || label.toLowerCase() === "hide") {
                 return (
-                  <tr key={rIdx} style={{ height: "4px", background: "#ffffff" }}>
-                    <td colSpan={14} style={{ padding: 0, background: "#ffffff" }} />
+                  <tr key={rIdx} style={{ height: "6px", background: "#efefef" }}>
+                    <td colSpan={14} style={{ padding: 0, background: "#efefef" }} />
                   </tr>
                 );
               }

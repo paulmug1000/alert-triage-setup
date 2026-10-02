@@ -37,10 +37,10 @@ export default function BudgetView({
     if (l === "operating profit") {
       return { bg: "#1155cc", color: "#ffffff", bold: true, isMajor: true };
     }
-    if (["income", "costs of sale", "overheads"].includes(l)) {
-      return { bg: "#f1f5f9", color: "#0047AB", bold: true, isHeader: true };
+    if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
+      return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
     }
-    return { bg: "#ffffff", color: "#334155", bold: false, isMajor: false };
+    return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
 
   if (isLoading && !budgetData) {
@@ -215,11 +215,11 @@ export default function BudgetView({
         <div style={{ overflowX: "auto", width: "100%" }}>
           <table
             style={{
-              width: "100%",
+              width: "max-content",
               borderCollapse: "separate",
               borderSpacing: 0,
               fontSize: "12px",
-              tableLayout: "fixed",
+              fontFamily: "'Kumbh Sans', sans-serif",
             }}
           >
             <thead>
@@ -229,7 +229,8 @@ export default function BudgetView({
                     padding: "6px 8px",
                     textAlign: "left",
                     fontWeight: 700,
-                    width: "22%",
+                    width: "220px",
+                    minWidth: "220px",
                     position: "sticky",
                     left: 0,
                     background: "#0047AB",
@@ -245,7 +246,8 @@ export default function BudgetView({
                       textAlign: "right",
                       fontWeight: 700,
                       fontSize: "11px",
-                      width: "5.8%",
+                      width: "87px",
+                      minWidth: "87px",
                     }}
                   >
                     {typeof m === "object" && m !== null ? m.label || "" : m}
@@ -256,8 +258,9 @@ export default function BudgetView({
                     padding: "6px 8px",
                     textAlign: "right",
                     fontWeight: 800,
-                    width: "8.4%",
-                    background: "#003380",
+                    width: "110px",
+                    minWidth: "110px",
+                    background: "#0047AB",
                   }}
                 >
                   FY Budget
@@ -270,20 +273,21 @@ export default function BudgetView({
                 const label = String(row.label || "").trim();
                 if (!label || label.toLowerCase() === "hide") {
                   return (
-                    <tr key={rIdx} style={{ height: "4px", background: "#f8fafc" }}>
-                      <td colSpan={months.length + 2} style={{ padding: 0 }} />
+                    <tr key={rIdx} style={{ height: "6px", background: "#efefef" }}>
+                      <td colSpan={months.length + 2} style={{ padding: 0, background: "#efefef" }} />
                     </tr>
                   );
                 }
 
                 const rowStyle = getRowStyle(label);
+                const isPercentageRow = label.includes("%") || label.toLowerCase().includes("ratio") || label.toLowerCase().includes("margin");
                 const displayTotal = row.total === "—" ? "" : row.total || "";
 
                 return (
                   <tr
                     key={rIdx}
                     style={{
-                      borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
+                      borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #ffffff",
                       background: rowStyle.bg,
                       fontWeight: rowStyle.bold ? 700 : 400,
                     }}
@@ -293,6 +297,7 @@ export default function BudgetView({
                         padding: "5px 8px",
                         color: rowStyle.color,
                         fontWeight: rowStyle.bold ? 700 : 500,
+                        fontStyle: isPercentageRow ? "italic" : "normal",
                         position: "sticky",
                         left: 0,
                         background: rowStyle.bg,
@@ -316,7 +321,8 @@ export default function BudgetView({
                             padding: "4px 4px",
                             textAlign: "right",
                             fontSize: "11px",
-                            color: rowStyle.isMajor ? "#ffffff" : "#334155",
+                            color: rowStyle.isMajor ? "#ffffff" : rowStyle.color,
+                            fontStyle: isPercentageRow ? "italic" : "normal",
                             whiteSpace: "nowrap",
                           }}
                         >
@@ -331,8 +337,9 @@ export default function BudgetView({
                         textAlign: "right",
                         fontWeight: 800,
                         color: rowStyle.isMajor ? "#ffffff" : "#0047AB",
+                        fontStyle: isPercentageRow ? "italic" : "normal",
                         fontSize: "11.5px",
-                        background: rowStyle.isMajor ? rowStyle.bg : "rgba(0, 71, 171, 0.04)",
+                        background: rowStyle.bg,
                         whiteSpace: "nowrap",
                       }}
                     >

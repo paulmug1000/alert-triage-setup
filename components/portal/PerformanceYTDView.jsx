@@ -112,7 +112,7 @@ export default function PerformanceYTDView({
       return { bg: "#1155cc", color: "#ffffff", bold: true, isMajor: true };
     }
     if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
-      return { bg: "#f1f5f9", color: "#0047AB", bold: true, isHeader: true };
+      return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
     }
     return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
@@ -318,7 +318,7 @@ export default function PerformanceYTDView({
             >
               {years.map((y, idx) => (
                 <option key={y.id} value={idx}>
-                  {y.displayTitle || y.fyLabel} {idx === data?.currentYearIdx ? "(Current)" : ""}
+                  {y.fyLabel || y.displayTitle} {idx === data?.currentYearIdx ? "(Current)" : ""}
                 </option>
               ))}
             </select>
@@ -326,10 +326,10 @@ export default function PerformanceYTDView({
 
           {/* Month Cutoff selector */}
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Through:</span>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Through to:</span>
             <select
               value={endMonthIdx}
-              onChange={(e) => setEndMonthIdx(parseInt(e.target.value, 10))}
+              onChange={(e) => setUserEndMonthIdx(parseInt(e.target.value, 10))}
               style={selectStyle}
             >
               {(activeYear.headerMonths || []).map((m, idx) => (
@@ -383,10 +383,9 @@ export default function PerformanceYTDView({
       >
         <table
           style={{
-            width: "100%",
+            width: "max-content",
             borderCollapse: "separate",
             borderSpacing: 0,
-            tableLayout: "fixed",
             fontSize: "12px",
             fontFamily: "'Kumbh Sans', sans-serif",
           }}
@@ -404,7 +403,8 @@ export default function PerformanceYTDView({
                   left: 0,
                   background: "#0047AB",
                   zIndex: 2,
-                  width: "25%",
+                  width: "220px",
+                  minWidth: "220px",
                 }}
               >
                 {/* Empty header, NO Line item label */}
@@ -417,7 +417,8 @@ export default function PerformanceYTDView({
                     textAlign: "right",
                     fontWeight: 700,
                     fontSize: "11.5px",
-                    width: `${monthColPct}%`,
+                    width: "87px",
+                    minWidth: "87px",
                   }}
                 >
                   {m}
@@ -430,7 +431,8 @@ export default function PerformanceYTDView({
                   fontWeight: 800,
                   fontSize: "12px",
                   background: "#0047AB",
-                  width: "10%",
+                  width: "110px",
+                  minWidth: "110px",
                 }}
               >
                 YTD Total
@@ -438,42 +440,29 @@ export default function PerformanceYTDView({
             </tr>
 
             {/* Status row: Actual / Forecast markers */}
-            <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", fontSize: "10px" }}>
+            <tr style={{ background: "#efefef", borderBottom: "1px solid #ffffff", fontSize: "10.5px" }}>
               <td
                 style={{
                   padding: "3px 8px",
-                  fontWeight: 600,
-                  color: "#64748b",
                   position: "sticky",
                   left: 0,
-                  background: "#f8fafc",
+                  background: "#efefef",
                   zIndex: 2,
                 }}
               >
                 {/* Empty cell, NO Status label */}
               </td>
               {displayedMonths.map((_, idx) => {
-                const st = (activeYear?.statusValues || activeYear?.monthStatuses || [])[idx] || "";
-                const isAct = String(st).toLowerCase() === "actual";
+                const st = (activeYear.statusValues || activeYear.monthStatuses || [])[idx] || "";
+                const raw = String(st).trim();
+                const text = raw.toLowerCase() === "actual" ? "Actual" : raw.toLowerCase() === "forecast" ? "Forecast" : raw;
                 return (
-                  <td key={idx} style={{ padding: "3px 4px", textAlign: "right" }}>
-                    <span
-                      style={{
-                        padding: "1px 4px",
-                        borderRadius: "4px",
-                        fontSize: "9px",
-                        fontWeight: 700,
-                        background: isAct ? "#dcfce7" : "#e0f2fe",
-                        color: isAct ? "#166534" : "#0369a1",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {st || ""}
-                    </span>
+                  <td key={idx} style={{ padding: "3px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef" }}>
+                    {text}
                   </td>
                 );
               })}
-              <td style={{ padding: "3px 8px", textAlign: "right" }}></td>
+              <td style={{ padding: "3px 8px", textAlign: "right", background: "#efefef" }}></td>
             </tr>
           </thead>
 
@@ -484,8 +473,8 @@ export default function PerformanceYTDView({
               const label = String(row.label || "").trim();
               if (label.toLowerCase() === "hide" || (!label && !row.totalVal)) {
                 return (
-                  <tr key={rIdx} style={{ height: "4px", background: "#ffffff" }}>
-                    <td colSpan={displayedMonths.length + 2} style={{ padding: 0, background: "#ffffff" }} />
+                  <tr key={rIdx} style={{ height: "6px", background: "#efefef" }}>
+                    <td colSpan={displayedMonths.length + 2} style={{ padding: 0, background: "#efefef" }} />
                   </tr>
                 );
               }

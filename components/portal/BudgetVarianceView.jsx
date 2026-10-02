@@ -8,28 +8,57 @@ export default function BudgetVarianceView({
   error,
   onRefresh,
 }) {
-  const [viewMode, setViewMode] = useState("month"); // 'month' | 'ytd' | 'fy'
-  const [selectedMonthIdx, setSelectedMonthIdx] = useState(0); // 0 to 11
+  const [viewMode, setViewMode] = useState("ytd"); // 'month' | 'ytd' | 'fy'
+  const [userMonthIdx, setUserMonthIdx] = useState(null);
   const [selectedYearIdx, setSelectedYearIdx] = useState(0);
 
   const budgetData = data;
   const years = budgetData?.years || [];
   const currentYear = years[selectedYearIdx] || years[0];
-  const months = currentYear?.months || [];
+  const months = useMemo(() => currentYear?.months || [], [currentYear]);
 
-  const formatGBP = (val) => {
-    if (val === null || val === undefined || val === "" || val === "—") return "";
-    if (typeof val === "number") {
-      return (val < 0 ? "-" : "") + "£" + Math.abs(Math.round(val)).toLocaleString("en-GB");
+  // Default to previous calendar month
+  const defaultMonthIdx = useMemo(() => {
+    if (!months || months.length === 0) return 0;
+    const now = new Date();
+    const currMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    let prevIdx = -1;
+    for (let i = 0; i < months.length; i++) {
+      const m = months[i];
+      const mLabel = typeof m === "object" && m !== null ? m.label : m;
+      const match = String(mLabel).trim().match(/^([a-zA-Z]{3})[\s\-](\d{2,4})$/);
+      if (match) {
+        const monthsMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+        const monthNum = monthsMap[match[1].toLowerCase()];
+        let yr = parseInt(match[2], 10);
+        if (yr < 100) yr += 2000;
+        const d = new Date(yr, monthNum, 1);
+        if (d.getTime() < currMonthStart) {
+          prevIdx = i;
+        }
+      }
     }
-    const num = parseFloat(String(val).replace(/[£,]/g, ""));
-    return isNaN(num) ? String(val) : (num < 0 ? "-" : "") + "£" + Math.abs(Math.round(num)).toLocaleString("en-GB");
-  };
+    return prevIdx !== -1 ? prevIdx : 0;
+  }, [months]);
+
+  const selectedMonthIdx = userMonthIdx !== null ? userMonthIdx : defaultMonthIdx;
 
   const parseNum = (val) => {
     if (typeof val === "number") return val;
-    return parseFloat(String(val || "0").replace(/[£,]/g, "")) || 0;
+    if (!val || val === "—") return 0;
+    const clean = String(val).replace(/[£,]/g, "").trim();
+    if (clean.includes("%")) return parseFloat(clean) / 100;
+    const n = parseFloat(clean);
+    return isNaN(n) ? 0 : n;
   };
+
+  const formatMoney = (val) => {
+    const rounded = Math.round(val || 0);
+    const sign = rounded < 0 ? "-" : "";
+    return `${sign}£${Math.abs(rounded).toLocaleString("en-GB")}`;
+  };
+
+  const formatPct = (val) => `${Math.round((val || 0) * 100)}%`;
 
   const getRowStyle = (label) => {
     const l = String(label || "").toLowerCase().trim();
@@ -45,14 +74,18 @@ export default function BudgetVarianceView({
     if (l === "operating profit") {
       return { bg: "#1155cc", color: "#ffffff", bold: true, isMajor: true };
     }
-    if (["income", "costs of sale", "overheads"].includes(l)) {
-      return { bg: "#f1f5f9", color: "#0047AB", bold: true, isHeader: true };
+    if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
+      return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
     }
-    return { bg: "#ffffff", color: "#334155", bold: false, isMajor: false };
+    return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
 
-  // Variance rows computation
-  const varianceRows = useMemo(() => {
+  // Determine limit of displayed months
+  const displayedMonthCount = viewMode === "month" ? 1 : viewMode === "ytd" ? selectedMonthIdx + 1 : 12;
+  const displayedMonths = months.slice(0, displayedMonthCount);
+
+  // Compute variance rows
+  const computedRows = useMemo(() => {
     if (!currentYear?.rows) return [];
 
     return currentYear.rows
@@ -62,28 +95,33 @@ export default function BudgetVarianceView({
       })
       .map((r) => {
         const label = String(r.label || "").trim();
-        const isHeader = ["income", "costs of sale", "overheads"].includes(label.toLowerCase());
+        const isHeader = ["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(label.toLowerCase());
+        const isPercentageRow = label.includes("%") || label.toLowerCase().includes("ratio") || label.toLowerCase().includes("margin");
 
-        let actual = 0;
-        let budget = 0;
-
-        if (!isHeader) {
-          if (viewMode === "month") {
-            actual = parseNum(r.actualValues?.[selectedMonthIdx]);
-            budget = parseNum(r.values?.[selectedMonthIdx]);
-          } else if (viewMode === "ytd") {
-            for (let m = 0; m <= selectedMonthIdx; m++) {
-              actual += parseNum(r.actualValues?.[m]);
-              budget += parseNum(r.values?.[m]);
-            }
-          } else {
-            actual = parseNum(r.actualTotal);
-            budget = parseNum(r.total);
-          }
+        if (isHeader) {
+          return { label, isHeader, isPercentageRow };
         }
 
-        const diff = actual - budget;
-        const pct = budget !== 0 ? Math.round((diff / Math.abs(budget)) * 100) : 0;
+        const monthlyActuals = [];
+        for (let m = 0; m < displayedMonthCount; m++) {
+          monthlyActuals.push(parseNum(r.actualValues?.[m]));
+        }
+
+        let actualTotal = 0;
+        let budgetTotal = 0;
+
+        if (viewMode === "month") {
+          actualTotal = parseNum(r.actualValues?.[selectedMonthIdx]);
+          budgetTotal = parseNum(r.values?.[selectedMonthIdx]);
+        } else if (viewMode === "ytd") {
+          for (let m = 0; m <= selectedMonthIdx; m++) {
+            actualTotal += parseNum(r.actualValues?.[m]);
+            budgetTotal += parseNum(r.values?.[m]);
+          }
+        } else {
+          actualTotal = parseNum(r.actualTotal);
+          budgetTotal = parseNum(r.total);
+        }
 
         const isCost =
           label.toLowerCase().includes("cost") ||
@@ -91,20 +129,26 @@ export default function BudgetVarianceView({
           label.toLowerCase().includes("expense") ||
           label.toLowerCase().includes("salaries");
 
-        const isFavorable = isCost ? diff <= 0 : diff >= 0;
+        const diff = isCost ? budgetTotal - actualTotal : actualTotal - budgetTotal;
+        const diffAmount = actualTotal - budgetTotal;
+        const pct = budgetTotal !== 0 ? (diff / Math.abs(budgetTotal)) : 0;
+        const isFavorable = diff >= 0;
 
         return {
           label,
-          isHeader,
-          actual,
-          budget,
+          isHeader: false,
+          isPercentageRow,
+          monthlyActuals,
+          actualTotal,
+          budgetTotal,
           diff,
+          diffAmount,
           pct,
           isCost,
           isFavorable,
         };
       });
-  }, [currentYear, viewMode, selectedMonthIdx]);
+  }, [currentYear, viewMode, selectedMonthIdx, displayedMonthCount]);
 
   if (isLoading && !budgetData) {
     return (
@@ -203,7 +247,7 @@ export default function BudgetVarianceView({
             {viewMode === "month"
               ? `${typeof months[selectedMonthIdx] === "object" ? months[selectedMonthIdx]?.label : months[selectedMonthIdx] || "Month"}`
               : viewMode === "ytd"
-              ? `YTD Through ${typeof months[selectedMonthIdx] === "object" ? months[selectedMonthIdx]?.label : months[selectedMonthIdx] || "Month"}`
+              ? `YTD Through to ${typeof months[selectedMonthIdx] === "object" ? months[selectedMonthIdx]?.label : months[selectedMonthIdx] || "Month"}`
               : "Full FY"}
           </span>
         </div>
@@ -249,11 +293,11 @@ export default function BudgetVarianceView({
           {viewMode !== "fy" && months.length > 0 && (
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>
-                {viewMode === "ytd" ? "Through:" : "Month:"}
+                {viewMode === "ytd" ? "Through to:" : "Month:"}
               </span>
               <select
                 value={selectedMonthIdx}
-                onChange={(e) => setSelectedMonthIdx(parseInt(e.target.value, 10))}
+                onChange={(e) => setUserMonthIdx(parseInt(e.target.value, 10))}
                 style={selectStyle}
               >
                 {months.map((m, idx) => {
@@ -298,185 +342,309 @@ export default function BudgetVarianceView({
         </div>
       </div>
 
-      {/* Main Table (Fitting desktop width) */}
+      {/* Main Budget Variance Table (max-content width matching original app) */}
       <div
         style={{
           background: "#ffffff",
           borderRadius: "8px",
           boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
           border: "1px solid #e2e8f0",
-          overflow: "hidden",
+          overflowX: "auto",
           width: "100%",
         }}
       >
-        <div style={{ overflowX: "auto", width: "100%" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "separate",
-              borderSpacing: 0,
-              fontSize: "12px",
-              tableLayout: "fixed",
-            }}
-          >
-            <thead>
-              <tr style={{ background: "#0047AB", color: "#ffffff" }}>
-                <th
+        <table
+          style={{
+            width: "max-content",
+            borderCollapse: "separate",
+            borderSpacing: 0,
+            fontSize: "12px",
+            fontFamily: "'Kumbh Sans', sans-serif",
+          }}
+        >
+          <thead>
+            {/* Row 1: Headers */}
+            <tr style={{ background: "#0047AB", color: "#ffffff" }}>
+              <th
+                style={{
+                  padding: "6px 8px",
+                  textAlign: "left",
+                  fontWeight: 700,
+                  fontSize: "12px",
+                  position: "sticky",
+                  left: 0,
+                  background: "#0047AB",
+                  zIndex: 2,
+                  width: "220px",
+                  minWidth: "220px",
+                }}
+              >
+                {/* Empty header */}
+              </th>
+
+              {/* Monthly Actual Columns (in YTD or FY view) */}
+              {viewMode !== "month" &&
+                displayedMonths.map((m, idx) => {
+                  const mLabel = typeof m === "object" && m !== null ? m.label : m;
+                  return (
+                    <th
+                      key={idx}
+                      style={{
+                        padding: "6px 4px",
+                        textAlign: "right",
+                        fontWeight: 700,
+                        fontSize: "11.5px",
+                        width: "87px",
+                        minWidth: "87px",
+                      }}
+                    >
+                      {mLabel}
+                    </th>
+                  );
+                })}
+
+              {/* Total/Period Actual */}
+              <th
+                style={{
+                  padding: "6px 8px",
+                  textAlign: "right",
+                  fontWeight: 800,
+                  fontSize: "12px",
+                  width: "110px",
+                  minWidth: "110px",
+                }}
+              >
+                {viewMode === "month" ? "Actual" : viewMode === "ytd" ? "YTD Actual" : "FY Actual"}
+              </th>
+
+              {/* Budget Column */}
+              <th
+                style={{
+                  padding: "6px 8px",
+                  textAlign: "right",
+                  fontWeight: 700,
+                  fontStyle: "italic",
+                  fontSize: "12px",
+                  width: "110px",
+                  minWidth: "110px",
+                }}
+              >
+                {viewMode === "month" ? "Budget" : viewMode === "ytd" ? "YTD Budget" : "FY Budget"}
+              </th>
+
+              {/* Variance (£) */}
+              <th
+                style={{
+                  padding: "6px 8px",
+                  textAlign: "right",
+                  fontWeight: 700,
+                  fontStyle: "italic",
+                  fontSize: "12px",
+                  width: "87px",
+                  minWidth: "87px",
+                }}
+              >
+                Var (£)
+              </th>
+
+              {/* Variance (%) */}
+              <th
+                style={{
+                  padding: "6px 8px",
+                  textAlign: "right",
+                  fontWeight: 700,
+                  fontStyle: "italic",
+                  fontSize: "12px",
+                  width: "87px",
+                  minWidth: "87px",
+                }}
+              >
+                Var %
+              </th>
+            </tr>
+
+            {/* Row 2: Status row (Actual / Forecast) for multi-month views */}
+            {viewMode !== "month" && (
+              <tr style={{ background: "#efefef", borderBottom: "1px solid #ffffff", fontSize: "10.5px" }}>
+                <td
                   style={{
-                    padding: "6px 8px",
-                    textAlign: "left",
-                    fontWeight: 700,
-                    width: "36%",
+                    padding: "3px 8px",
                     position: "sticky",
                     left: 0,
-                    background: "#0047AB",
+                    background: "#efefef",
                     zIndex: 2,
                   }}
-                >
-                  {/* Empty top-left cell */}
-                </th>
-                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, width: "16%" }}>
-                  Actual
-                </th>
-                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, width: "16%" }}>
-                  Budget
-                </th>
-                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, width: "16%" }}>
-                  Variance (£)
-                </th>
-                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, width: "16%" }}>
-                  Variance (%)
-                </th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {varianceRows.map((row, rIdx) => {
-                if (!row.label) {
+                />
+                {displayedMonths.map((m, idx) => {
+                  const raw = typeof m === "object" && m !== null ? m.status || "Actual" : "Actual";
+                  const text = String(raw).toLowerCase() === "forecast" ? "Forecast" : "Actual";
                   return (
-                    <tr key={rIdx} style={{ height: "4px", background: "#f8fafc" }}>
-                      <td colSpan={5} style={{ padding: 0 }} />
-                    </tr>
-                  );
-                }
-
-                const rowStyle = getRowStyle(row.label);
-                const isHeader = row.isHeader;
-
-                if (isHeader) {
-                  return (
-                    <tr key={rIdx} style={{ background: "#f1f5f9" }}>
-                      <td
-                        colSpan={5}
-                        style={{
-                          padding: "6px 8px",
-                          fontWeight: 700,
-                          color: "#0047AB",
-                          fontSize: "11px",
-                          textTransform: "uppercase",
-                          letterSpacing: "0.5px",
-                        }}
-                      >
-                        {row.label}
-                      </td>
-                    </tr>
-                  );
-                }
-
-                const varColor = row.diff === 0 ? "#64748b" : row.isFavorable ? "#166534" : "#991b1b";
-                const varBg = row.diff === 0 ? "transparent" : row.isFavorable ? "#dcfce7" : "#fee2e2";
-
-                return (
-                  <tr
-                    key={rIdx}
-                    style={{
-                      borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
-                      background: rowStyle.bg,
-                      fontWeight: rowStyle.bold ? 700 : 400,
-                    }}
-                  >
                     <td
+                      key={idx}
                       style={{
-                        padding: "5px 8px",
-                        color: rowStyle.color,
-                        fontWeight: rowStyle.bold ? 700 : 500,
+                        padding: "3px 4px",
+                        textAlign: "right",
+                        color: "#666666",
+                        fontStyle: "italic",
+                        background: "#efefef",
+                      }}
+                    >
+                      {text}
+                    </td>
+                  );
+                })}
+                <td style={{ background: "#efefef" }} />
+                <td style={{ background: "#efefef" }} />
+                <td style={{ background: "#efefef" }} />
+                <td style={{ background: "#efefef" }} />
+              </tr>
+            )}
+          </thead>
+
+          <tbody>
+            {computedRows.map((row, rIdx) => {
+              if (row.isHeader) {
+                return (
+                  <tr key={rIdx} style={{ background: "#efefef", borderBottom: "1px solid #ffffff" }}>
+                    <td
+                      colSpan={viewMode === "month" ? 5 : displayedMonthCount + 5}
+                      style={{
+                        padding: "6px 8px",
+                        fontWeight: 700,
+                        color: "#0047AB",
+                        fontSize: "11px",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.5px",
+                        background: "#efefef",
                         position: "sticky",
                         left: 0,
-                        background: rowStyle.bg,
                         zIndex: 1,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
                       }}
-                      title={row.label}
                     >
                       {row.label}
                     </td>
-
-                    <td
-                      style={{
-                        padding: "5px 8px",
-                        textAlign: "right",
-                        color: rowStyle.isMajor ? "#ffffff" : "#0f172a",
-                        fontWeight: rowStyle.bold ? 700 : 500,
-                      }}
-                    >
-                      {formatGBP(row.actual)}
-                    </td>
-
-                    <td
-                      style={{
-                        padding: "5px 8px",
-                        textAlign: "right",
-                        color: rowStyle.isMajor ? "rgba(255,255,255,0.9)" : "#64748b",
-                      }}
-                    >
-                      {formatGBP(row.budget)}
-                    </td>
-
-                    <td
-                      style={{
-                        padding: "5px 8px",
-                        textAlign: "right",
-                        fontWeight: 700,
-                        color: rowStyle.isMajor ? "#ffffff" : varColor,
-                      }}
-                    >
-                      <span
-                        style={{
-                          padding: rowStyle.isMajor ? "0" : "1px 6px",
-                          borderRadius: "4px",
-                          background: rowStyle.isMajor ? "transparent" : varBg,
-                        }}
-                      >
-                        {formatGBP(row.diff)}
-                      </span>
-                    </td>
-
-                    <td
-                      style={{
-                        padding: "5px 8px",
-                        textAlign: "right",
-                        fontWeight: 700,
-                        color: rowStyle.isMajor ? "#ffffff" : varColor,
-                      }}
-                    >
-                      <span
-                        style={{
-                          padding: rowStyle.isMajor ? "0" : "1px 6px",
-                          borderRadius: "4px",
-                          background: rowStyle.isMajor ? "transparent" : varBg,
-                        }}
-                      >
-                        {row.pct > 0 ? `+${row.pct}%` : `${row.pct}%`}
-                      </span>
-                    </td>
                   </tr>
                 );
-              })}
-            </tbody>
-          </table>
-        </div>
+              }
+
+              const rowStyle = getRowStyle(row.label);
+              const isPct = row.isPercentageRow;
+              const varColor = row.diff === 0 ? "#0047AB" : row.isFavorable ? "#166534" : "#991b1b";
+              const varBg = row.diff === 0 ? "#efefef" : row.isFavorable ? "#d9ead3" : "#f4cccc";
+
+              return (
+                <tr
+                  key={rIdx}
+                  style={{
+                    borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #ffffff",
+                    background: rowStyle.bg,
+                    fontWeight: rowStyle.bold ? 700 : 400,
+                  }}
+                >
+                  {/* Sticky Line Item */}
+                  <td
+                    style={{
+                      padding: "5px 8px",
+                      color: rowStyle.color,
+                      fontWeight: rowStyle.bold ? 700 : 500,
+                      fontStyle: isPct ? "italic" : "normal",
+                      position: "sticky",
+                      left: 0,
+                      background: rowStyle.bg,
+                      zIndex: 1,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={row.label}
+                  >
+                    {row.label}
+                  </td>
+
+                  {/* Monthly Actual Values (in YTD/FY mode) */}
+                  {viewMode !== "month" &&
+                    row.monthlyActuals?.map((val, mIdx) => (
+                      <td
+                        key={mIdx}
+                        style={{
+                          padding: "4px 4px",
+                          textAlign: "right",
+                          fontSize: "11px",
+                          color: rowStyle.isMajor ? "#ffffff" : rowStyle.color,
+                          fontStyle: isPct ? "italic" : "normal",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {isPct ? formatPct(val) : formatMoney(val)}
+                      </td>
+                    ))}
+
+                  {/* Period Actual */}
+                  <td
+                    style={{
+                      padding: "5px 8px",
+                      textAlign: "right",
+                      fontWeight: rowStyle.bold ? 800 : 600,
+                      color: rowStyle.isMajor ? "#ffffff" : "#0047AB",
+                      fontStyle: isPct ? "italic" : "normal",
+                      fontSize: "11.5px",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {isPct ? formatPct(row.actualTotal) : formatMoney(row.actualTotal)}
+                  </td>
+
+                  {/* Period Budget */}
+                  <td
+                    style={{
+                      padding: "5px 8px",
+                      textAlign: "right",
+                      fontWeight: 600,
+                      color: rowStyle.isMajor ? "rgba(255,255,255,0.9)" : "#0047AB",
+                      fontStyle: "italic",
+                      fontSize: "11.5px",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {isPct ? formatPct(row.budgetTotal) : formatMoney(row.budgetTotal)}
+                  </td>
+
+                  {/* Var (£) */}
+                  <td
+                    style={{
+                      padding: "5px 8px",
+                      textAlign: "right",
+                      fontWeight: 700,
+                      fontStyle: "italic",
+                      fontSize: "11.5px",
+                      background: rowStyle.isMajor ? "transparent" : varBg,
+                      color: rowStyle.isMajor ? "#ffffff" : varColor,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {isPct ? formatPct(row.diffAmount) : formatMoney(row.diffAmount)}
+                  </td>
+
+                  {/* Var (%) */}
+                  <td
+                    style={{
+                      padding: "5px 8px",
+                      textAlign: "right",
+                      fontWeight: 700,
+                      fontStyle: "italic",
+                      fontSize: "11.5px",
+                      background: rowStyle.isMajor ? "transparent" : varBg,
+                      color: rowStyle.isMajor ? "#ffffff" : varColor,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {formatPct(row.pct)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );

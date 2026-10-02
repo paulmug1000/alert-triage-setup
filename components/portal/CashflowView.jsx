@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine } from "../../services/deepDiveHelper";
 
 export default function CashflowView({
   clientName,

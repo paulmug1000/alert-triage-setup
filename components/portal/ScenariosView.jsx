@@ -16,10 +16,10 @@ export default function ScenariosView({
     performanceData?.currentYearIdx !== undefined
       ? performanceData.currentYearIdx
       : years.length > 0
-      ? years.length - 2
-      : 0;
+        ? years.length - 2
+        : 0;
   const [selectedYearIdx, setSelectedYearIdx] = useState(defaultYearIdx);
-  const [pipelineSort, setPipelineSort] = useState("startDate-desc");
+  const [pipelineSort, setPipelineSort] = useState("likelihood-desc");
 
   const activeYearIdx = Math.min(Math.max(0, selectedYearIdx), Math.max(0, years.length - 1));
   const activeYear = years[activeYearIdx];
@@ -792,10 +792,10 @@ export default function ScenariosView({
           }}
         >
           <span style={{ fontSize: "12px", fontWeight: 700, color: "#0047AB" }}>
-            Scenario Financial Adjustments
+            Scenario adjustments
           </span>
           <span style={{ fontSize: "11px", color: "#64748b" }}>
-            Enter deltas (+/-) to dynamically simulate business conditions
+            Enter adjustments (+/-) to build your scenario
           </span>
         </div>
 
@@ -813,7 +813,7 @@ export default function ScenariosView({
             <thead>
               <tr style={{ background: "#f1f5f9", color: "#475569" }}>
                 <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 700, width: "22%", position: "sticky", left: 0, background: "#f1f5f9", zIndex: 2 }}>
-                  Adjustment Item
+
                 </th>
                 {headerMonths.map((m, idx) => (
                   <th key={idx} style={{ padding: "6px 4px", textAlign: "center", fontWeight: 600, fontSize: "11px", width: "5.8%" }}>
@@ -821,7 +821,7 @@ export default function ScenariosView({
                   </th>
                 ))}
                 <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, width: "8.4%" }}>
-                  Total Delta
+                  Total difference
                 </th>
               </tr>
             </thead>
@@ -1011,10 +1011,10 @@ export default function ScenariosView({
                   cursor: "pointer",
                 }}
               >
-                <option value="startDate-desc">Job start date (descending)</option>
-                <option value="startDate-asc">Job start date (ascending)</option>
                 <option value="likelihood-desc">Likelihood (descending)</option>
                 <option value="likelihood-asc">Likelihood (ascending)</option>
+                <option value="startDate-desc">Job start date (descending)</option>
+                <option value="startDate-asc">Job start date (ascending)</option>
                 <option value="client-asc">Client name</option>
               </select>
             </div>

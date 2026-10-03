@@ -386,6 +386,7 @@ export default function PortalJobsView({
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem", width: "100%", fontFamily: "'Kumbh Sans', sans-serif" }}>
       {/* Action Bar */}
       <div
+        className="portal-action-bar"
         style={{
           display: "flex",
           justifyContent: "space-between",
@@ -490,6 +491,7 @@ export default function PortalJobsView({
 
       {/* Filter and Search Bar */}
       <div
+        className="portal-filter-container"
         style={{
           display: "flex",
           justifyContent: "space-between",
@@ -503,7 +505,7 @@ export default function PortalJobsView({
         }}
       >
         {/* Type Filter Buttons */}
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+        <div className="portal-filter-pills" style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
           {[
             { id: "all", label: `All (${jobsData?.all?.length || 0})` },
             { id: "confirmed", label: `Confirmed (${jobsData?.confirmedCount || 0})` },
@@ -535,7 +537,7 @@ export default function PortalJobsView({
         </div>
 
         {/* Search & Sort */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div className="portal-search-sort" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <input
             type="text"
             placeholder="Search jobs or clients..."
@@ -587,8 +589,10 @@ export default function PortalJobsView({
       >
         <div style={{ overflowX: "auto", width: "100%" }}>
           <table
+            className="portal-data-table"
             style={{
               width: "100%",
+              minWidth: "750px",
               borderCollapse: "separate",
               borderSpacing: 0,
               fontSize: "13.8px",
@@ -851,7 +855,7 @@ export default function PortalJobsView({
             {/* Form */}
             <form onSubmit={handleSaveJob} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
               {/* Row 1: Client Name (25%) | Job Name (75%) */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: "0.75rem" }}>
+              <div className="modal-form-row modal-form-row-1" style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: "0.75rem" }}>
                 <div>
                   <label style={formLabelStyle}>Client Name *</label>
                   <input
@@ -875,7 +879,7 @@ export default function PortalJobsView({
               </div>
 
               {/* Row 2: Type | Status | % Likelihood | Project Code */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
+              <div className="modal-form-row modal-form-row-2" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
                 <div>
                   <label style={formLabelStyle}>Type *</label>
                   <select
@@ -923,7 +927,7 @@ export default function PortalJobsView({
               </div>
 
               {/* Row 3: Revenue | Direct Costs | VAT | Date Confirmed */}
-              <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
+              <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr 2fr", gap: "0.75rem" }}>
                 <div>
                   <label style={formLabelStyle}>Revenue (excl. VAT) *</label>
                   <input
@@ -969,7 +973,7 @@ export default function PortalJobsView({
               </div>
 
               {/* Row 4: Start Date | End Date | Product Line | Lead Source */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
+              <div className="modal-form-row modal-form-row-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
                 <div>
                   <label style={formLabelStyle}>Start Date *</label>
                   <input
@@ -1063,6 +1067,7 @@ export default function PortalJobsView({
                   {(editingJob.invoices || []).map((inv, idx) => (
                     <div
                       key={idx}
+                      className="modal-sub-grid-row"
                       style={{
                         display: "grid",
                         gridTemplateColumns: "1.2fr 1fr 1.2fr 0.7fr 1fr 28px",
@@ -1191,6 +1196,7 @@ export default function PortalJobsView({
                   {(editingJob.directExpenses || []).map((exp, idx) => (
                     <div
                       key={idx}
+                      className="modal-sub-grid-row"
                       style={{
                         display: "grid",
                         gridTemplateColumns: "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr 28px",
@@ -1342,6 +1348,45 @@ export default function PortalJobsView({
           </div>
         </div>
       )}
+
+      <style jsx>{`
+        @media (max-width: 640px) {
+          .portal-action-bar {
+            gap: 0.75rem !important;
+          }
+          .portal-filter-pills {
+            display: flex !important;
+            overflow-x: auto !important;
+            white-space: nowrap !important;
+            flex-wrap: nowrap !important;
+            width: 100% !important;
+            padding-bottom: 4px !important;
+            -webkit-overflow-scrolling: touch !important;
+          }
+          .portal-filter-pills > button {
+            flex-shrink: 0 !important;
+          }
+          .portal-search-sort {
+            width: 100% !important;
+            flex-wrap: wrap !important;
+          }
+          .portal-search-sort input {
+            flex: 1 1 140px !important;
+            width: auto !important;
+          }
+        }
+        @media (max-width: 768px) {
+          .modal-form-row-1,
+          .modal-form-row-2,
+          .modal-form-row-3,
+          .modal-form-row-4 {
+            grid-template-columns: 1fr !important;
+          }
+          .modal-sub-grid-row {
+            grid-template-columns: 1fr 1fr !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

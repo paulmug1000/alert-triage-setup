@@ -343,11 +343,12 @@ export default function MonthView({
           width: "100%",
         }}
       >
-        <div style={{ position: "relative", display: "inline-block" }}>
+        <div className="month-table-wrapper" style={{ position: "relative", display: "inline-block" }}>
           {/* Left Arrow (Visible for curr and next) */}
           {(activePeriod === "curr" || activePeriod === "next") && (
             <button
               type="button"
+              className="month-nav-arrow-left"
               onClick={() => setActivePeriod((p) => (p === "curr" ? "prev" : "curr"))}
               style={{
                 position: "absolute",
@@ -373,6 +374,7 @@ export default function MonthView({
           )}
 
           <table
+            className="month-blueprint-table"
             style={{
               width: "410px",
               borderCollapse: "separate",
@@ -386,8 +388,8 @@ export default function MonthView({
             }}
           >
             <colgroup>
-              <col style={{ width: "290px" }} />
-              <col style={{ width: "120px" }} />
+              <col className="month-col-label" style={{ width: "290px" }} />
+              <col className="month-col-val" style={{ width: "120px" }} />
             </colgroup>
             <tbody>
               {(currMonth?.tableRows || currMonth?.rows || []).map((row, i) => {
@@ -564,6 +566,7 @@ export default function MonthView({
           {(activePeriod === "curr" || activePeriod === "prev") && (
             <button
               type="button"
+              className="month-nav-arrow-right"
               onClick={() => setActivePeriod((p) => (p === "curr" ? "next" : "curr"))}
               style={{
                 position: "absolute",
@@ -619,6 +622,30 @@ export default function MonthView({
           />
         </div>
       )}
+
+      <style jsx>{`
+        @media (max-width: 500px) {
+          .month-blueprint-table {
+            width: 312px !important;
+          }
+          .month-col-label {
+            width: 216px !important;
+          }
+          .month-col-val {
+            width: 96px !important;
+          }
+          .month-nav-arrow-left {
+            left: -28px !important;
+            font-size: 2.5rem !important;
+            padding: 8px 2px !important;
+          }
+          .month-nav-arrow-right {
+            right: -28px !important;
+            font-size: 2.5rem !important;
+            padding: 8px 2px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

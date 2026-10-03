@@ -5,7 +5,7 @@ export default function App({ Component, pageProps }) {
   return (
     <>
       <Head>
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
       </Head>
       <style jsx global>{`
         *, *::before, *::after {
@@ -21,6 +21,12 @@ export default function App({ Component, pageProps }) {
           background-color: #ffffff;
           font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
           -webkit-font-smoothing: antialiased;
+          overflow-x: hidden;
+        }
+        .portal-scroll-x {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: thin;
         }
         @keyframes triage-spin {
           0% {

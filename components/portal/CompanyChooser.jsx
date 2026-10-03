@@ -43,6 +43,7 @@ export default function CompanyChooser({
       >
         {/* Top Header Card */}
         <div
+          className="chooser-header"
           style={{
             background: "#0047AB",
             padding: "2.5rem 2rem 2rem 2rem",
@@ -108,7 +109,7 @@ export default function CompanyChooser({
         </div>
 
         {/* Content Area */}
-        <div style={{ padding: "2rem" }}>
+        <div className="chooser-content" style={{ padding: "2rem" }}>
           {/* Optional search filter if more than 4 clients */}
           {clients.length > 4 && (
             <div style={{ marginBottom: "1.5rem" }}>
@@ -353,6 +354,17 @@ export default function CompanyChooser({
           </div>
         </div>
       </div>
+
+      <style jsx>{`
+        @media (max-width: 600px) {
+          .chooser-header {
+            padding: 1.5rem 1rem !important;
+          }
+          .chooser-content {
+            padding: 1.25rem 1rem !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

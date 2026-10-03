@@ -76,6 +76,7 @@ export default function PortalShell({
         }}
       >
         <div
+          className="portal-header-bar-inner"
           style={{
             width: "100%",
             maxWidth: "1440px",
@@ -89,7 +90,7 @@ export default function PortalShell({
           }}
         >
           {/* Left Brand & Client Name (Stacked: Logo on top, Client Name underneath) */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "2px", alignItems: "flex-start" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "2px", alignItems: "flex-start", minWidth: 0 }}>
             <button
               type="button"
               onClick={() => handleNavClick("month")}
@@ -106,6 +107,7 @@ export default function PortalShell({
               <img
                 src="/pulselogo.png"
                 alt="Pulse"
+                className="portal-brand-logo"
                 style={{
                   height: "45px",
                   width: "auto",
@@ -116,6 +118,7 @@ export default function PortalShell({
 
             {clientName && (
               <span
+                className="portal-client-title"
                 style={{
                   color: "#ffffff",
                   fontSize: "0.85rem",
@@ -616,32 +619,52 @@ export default function PortalShell({
             left: 0,
             right: 0,
             bottom: 0,
-            background: "#0047AB",
+            background: "rgba(0, 0, 0, 0.45)",
+            backdropFilter: "blur(2px)",
             zIndex: 10001,
-            padding: "2rem",
-            color: "#ffffff",
             display: "flex",
-            flexDirection: "column",
-            gap: "1.25rem",
-            overflowY: "auto"
+            justifyContent: "flex-end"
           }}
+          onClick={() => setMobileMenuOpen(false)}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: "1.2rem", fontWeight: 700 }}>Menu</span>
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen(false)}
-              style={{
-                background: "none",
-                border: "none",
-                color: "#ffffff",
-                fontSize: "28px",
-                cursor: "pointer"
-              }}
-            >
-              ✕
-            </button>
-          </div>
+          <div
+            style={{
+              width: "82%",
+              maxWidth: "320px",
+              height: "100%",
+              background: "#0047AB",
+              padding: "1.5rem 1.25rem",
+              color: "#ffffff",
+              display: "flex",
+              flexDirection: "column",
+              gap: "1.1rem",
+              overflowY: "auto",
+              boxShadow: "-4px 0 25px rgba(0, 0, 0, 0.3)"
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255, 255, 255, 0.15)", paddingBottom: "0.75rem" }}>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <span style={{ fontSize: "1.1rem", fontWeight: 700 }}>Menu</span>
+                {clientName && (
+                  <span style={{ fontSize: "0.8rem", color: "rgba(255, 255, 255, 0.75)" }}>{clientName}</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(false)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "#ffffff",
+                  fontSize: "24px",
+                  cursor: "pointer",
+                  padding: "4px"
+                }}
+              >
+                ✕
+              </button>
+            </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {clients.length > 1 && (
@@ -732,11 +755,12 @@ export default function PortalShell({
             )}
           </div>
         </div>
+      </div>
       )}
 
       {/* Main Content Area */}
       <main style={{ flex: 1, width: "100%", padding: 0 }}>
-        <div style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "1.5rem 2rem", boxSizing: "border-box" }}>
+        <div className="portal-main-content-wrapper" style={{ width: "100%", maxWidth: "1440px", margin: "0 auto", padding: "1.5rem 2rem", boxSizing: "border-box" }}>
           {children}
         </div>
       </main>
@@ -748,12 +772,33 @@ export default function PortalShell({
             display: none !important;
           }
           .portal-mobile-toggle {
-            display: block !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
           }
         }
         @media (min-width: 901px) {
           .portal-mobile-toggle {
             display: none !important;
+          }
+        }
+        @media (max-width: 768px) {
+          .portal-header-bar-inner {
+            padding: 0.5rem 0.85rem !important;
+            gap: 0.5rem !important;
+          }
+          .portal-brand-logo {
+            height: 32px !important;
+          }
+          .portal-client-title {
+            max-width: 145px !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            font-size: 0.8rem !important;
+          }
+          .portal-main-content-wrapper {
+            padding: 0.75rem 0.5rem !important;
           }
         }
       `}</style>

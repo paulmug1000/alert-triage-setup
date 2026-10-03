@@ -498,10 +498,11 @@ export default function CashflowBreakdownView({
     <div style={{ display: "flex", flexDirection: "column", width: "100%", fontFamily: "'Kumbh Sans', sans-serif" }}>
       {/* Top Header Bar matching original app */}
       <div
+        className="breakdown-header-bar"
         style={{
           display: "flex",
           alignItems: "center",
-          gap: "1rem",
+          gap: "0.75rem",
           flexWrap: "wrap",
           marginBottom: "1.5rem",
         }}
@@ -512,6 +513,7 @@ export default function CashflowBreakdownView({
 
         {/* Category Dropdown */}
         <select
+          className="breakdown-select"
           value={activeCategory}
           onChange={(e) => setActiveCategory(e.target.value)}
           style={dropdownStyle}
@@ -525,6 +527,7 @@ export default function CashflowBreakdownView({
 
         {/* Month Dropdown */}
         <select
+          className="breakdown-select"
           value={selectedMonthIdx}
           onChange={(e) => setSelectedMonthIdx(parseInt(e.target.value, 10))}
           style={dropdownStyle}
@@ -591,14 +594,14 @@ export default function CashflowBreakdownView({
       </div>
 
       {/* Main Breakdown Content Container */}
-      <div style={{ width: "fit-content", maxWidth: "100%", margin: "0" }}>
+      <div style={{ width: "100%", maxWidth: "100%", margin: "0" }}>
         
         {/* 1. Invoices Sent View (Matching original WebApp table layout) */}
         {activeCategory === "cashInvoicesSent" ? (
           <div>
             {(invoicesSentData?.confirmed?.length > 0 || invoicesSentData?.pipeline?.length > 0) ? (
-              <div style={{ width: "fit-content", maxWidth: "100%", marginTop: "1rem", marginBottom: "2rem", overflowX: "auto" }}>
-                <table style={{ width: "auto", borderCollapse: "collapse", fontSize: "14px" }}>
+              <div className="breakdown-scroll-wrapper" style={{ width: "100%", maxWidth: "100%", marginTop: "1rem", marginBottom: "2rem", overflowX: "auto" }}>
+                <table style={{ width: "100%", minWidth: "640px", borderCollapse: "collapse", fontSize: "14px" }}>
                   {/* Confirmed Section */}
                   {invoicesSentData?.confirmed?.length > 0 && (
                     <>
@@ -692,8 +695,8 @@ export default function CashflowBreakdownView({
           </div>
         ) : isTableLayout ? (
           /* 2. Confirmed Cash / Pipeline Cash / Direct Cost Payments: Table matching original buildJobCashHtml */
-          <div style={{ width: "fit-content", maxWidth: "100%", overflowX: "auto", paddingBottom: "10px" }}>
-            <table style={{ width: "auto", borderCollapse: "collapse", textAlign: "left", fontSize: "0.95em", whiteSpace: "nowrap" }}>
+          <div className="breakdown-scroll-wrapper" style={{ width: "100%", maxWidth: "100%", overflowX: "auto", paddingBottom: "10px" }}>
+            <table style={{ width: "100%", minWidth: "600px", borderCollapse: "collapse", textAlign: "left", fontSize: "0.95em", whiteSpace: "nowrap" }}>
               <tbody>
                 {/* Header Total Row */}
                 <tr>
@@ -755,8 +758,8 @@ export default function CashflowBreakdownView({
           </div>
         ) : (
           /* 3. Simple List (Salaries, Contractors, Outgoings, Taxes) matching original buildSimpleListHtml */
-          <div style={{ width: "fit-content", minWidth: "460px", maxWidth: "100%", overflowX: "auto" }}>
-            <table style={{ width: "auto", minWidth: "460px", borderCollapse: "collapse", fontSize: "14px" }}>
+          <div className="breakdown-scroll-wrapper" style={{ width: "100%", maxWidth: "100%", overflowX: "auto" }}>
+            <table style={{ width: "100%", minWidth: "320px", borderCollapse: "collapse", fontSize: "14px" }}>
               <thead>
                 <tr>
                   <th style={{ padding: "10px 48px 10px 0", borderBottom: "1px solid #e5e7eb", textAlign: "left" }}></th>
@@ -799,6 +802,18 @@ export default function CashflowBreakdownView({
           </div>
         )}
       </div>
+
+      <style jsx>{`
+        @media (max-width: 640px) {
+          .breakdown-header-bar {
+            gap: 0.5rem !important;
+          }
+          .breakdown-select {
+            font-size: 0.95rem !important;
+            padding: 0.45rem 0.65rem !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

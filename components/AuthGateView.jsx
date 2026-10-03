@@ -676,6 +676,14 @@ export default function AuthGateView({
           Authorised users only.
         </div>
       </div>
+
+      <style jsx>{`
+        @media (max-width: 500px) {
+          .login-box {
+            padding: 2rem 1.25rem !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

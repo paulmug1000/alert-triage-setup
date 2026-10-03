@@ -422,6 +422,7 @@ export default function PortalOutgoingsView({
         {selectedYear > 1 && (
           <button
             type="button"
+            className="fy-nav-arrow-left"
             onClick={() => {
               setSelectedYear((prev) => Math.max(1, prev - 1));
               setIsEditing(false);
@@ -452,6 +453,7 @@ export default function PortalOutgoingsView({
         )}
 
         <div
+          className="fy-table-scroll-wrapper"
           style={{
             background: "#ffffff",
             borderRadius: "8px",
@@ -465,6 +467,7 @@ export default function PortalOutgoingsView({
             <table
               style={{
                 width: "100%",
+                minWidth: "780px",
                 borderCollapse: "separate",
                 borderSpacing: 0,
                 fontSize: "12px",
@@ -612,6 +615,7 @@ export default function PortalOutgoingsView({
       {selectedYear < 3 && (
         <button
           type="button"
+          className="fy-nav-arrow-right"
           onClick={() => {
             setSelectedYear((prev) => Math.min(3, prev + 1));
             setIsEditing(false);
@@ -641,6 +645,23 @@ export default function PortalOutgoingsView({
         </button>
       )}
     </div>
+
+    <style jsx>{`
+      @media (max-width: 768px) {
+        .fy-nav-arrow-left {
+          left: -12px !important;
+          font-size: 2.2rem !important;
+        }
+        .fy-nav-arrow-right {
+          right: -12px !important;
+          font-size: 2.2rem !important;
+        }
+        .fy-table-scroll-wrapper {
+          margin: 0 16px !important;
+          width: calc(100% - 32px) !important;
+        }
+      }
+    `}</style>
     </div>
   );
 }

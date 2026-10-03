@@ -431,6 +431,7 @@ export default function BudgetView({
         {selectedYearIdx > 0 && (
           <button
             type="button"
+            className="fy-nav-arrow-left"
             onClick={() => setSelectedYearIdx((prev) => Math.max(0, prev - 1))}
             title="Previous Year"
             style={{
@@ -458,6 +459,7 @@ export default function BudgetView({
         )}
 
         <div
+          className="fy-table-scroll-wrapper"
           style={{
             background: "#ffffff",
             borderRadius: "8px",
@@ -471,6 +473,7 @@ export default function BudgetView({
             <table
               style={{
                 width: "100%",
+                minWidth: "780px",
                 tableLayout: "fixed",
                 borderCollapse: "separate",
                 borderSpacing: 0,
@@ -686,6 +689,7 @@ export default function BudgetView({
       {selectedYearIdx < 2 && (
         <button
           type="button"
+          className="fy-nav-arrow-right"
           onClick={() => setSelectedYearIdx((prev) => Math.min(2, prev + 1))}
           title="Next Year"
           style={{
@@ -712,6 +716,23 @@ export default function BudgetView({
         </button>
       )}
     </div>
+
+    <style jsx>{`
+      @media (max-width: 768px) {
+        .fy-nav-arrow-left {
+          left: -12px !important;
+          font-size: 2.2rem !important;
+        }
+        .fy-nav-arrow-right {
+          right: -12px !important;
+          font-size: 2.2rem !important;
+        }
+        .fy-table-scroll-wrapper {
+          margin: 0 16px !important;
+          width: calc(100% - 32px) !important;
+        }
+      }
+    `}</style>
   </div>
   );
 }

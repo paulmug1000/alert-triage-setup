@@ -451,6 +451,7 @@ export default function PerformanceYTDView({
         {activeYearIdx > 0 && (
           <button
             type="button"
+            className="fy-nav-arrow-left"
             onClick={() => setSelectedYearIdx((prev) => Math.max(0, (prev !== null ? prev : activeYearIdx) - 1))}
             title="Previous Year"
             style={{
@@ -478,6 +479,7 @@ export default function PerformanceYTDView({
         )}
 
         <div
+          className="fy-table-scroll-wrapper"
           style={{
             background: "#ffffff",
             borderRadius: "8px",
@@ -488,8 +490,10 @@ export default function PerformanceYTDView({
           }}
         >
         <table
+          className="fy-main-table"
           style={{
-            width: "max-content",
+            width: "100%",
+            minWidth: "780px",
             borderCollapse: "separate",
             borderSpacing: 0,
             fontSize: "12px",
@@ -709,6 +713,7 @@ export default function PerformanceYTDView({
       {activeYearIdx < years.length - 1 && (
         <button
           type="button"
+          className="fy-nav-arrow-right"
           onClick={() => setSelectedYearIdx((prev) => Math.min(years.length - 1, (prev !== null ? prev : activeYearIdx) + 1))}
           title="Next Year"
           style={{
@@ -797,6 +802,23 @@ export default function PerformanceYTDView({
           </span>
         </div>
       </div>
+
+      <style jsx>{`
+        @media (max-width: 768px) {
+          .fy-nav-arrow-left {
+            left: -12px !important;
+            font-size: 2.2rem !important;
+          }
+          .fy-nav-arrow-right {
+            right: -12px !important;
+            font-size: 2.2rem !important;
+          }
+          .fy-table-scroll-wrapper {
+            margin: 0 16px !important;
+            width: calc(100% - 32px) !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

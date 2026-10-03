@@ -567,6 +567,7 @@ export default function ScenariosView({
           <table
             style={{
               width: "100%",
+              minWidth: "780px",
               borderCollapse: "separate",
               borderSpacing: 0,
               fontSize: "12px",
@@ -802,6 +803,7 @@ export default function ScenariosView({
           <table
             style={{
               width: "100%",
+              minWidth: "780px",
               borderCollapse: "separate",
               borderSpacing: 0,
               fontSize: "12px",
@@ -810,7 +812,7 @@ export default function ScenariosView({
           >
             <thead>
               <tr style={{ background: "#f1f5f9", color: "#475569" }}>
-                <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 700, width: "22%" }}>
+                <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 700, width: "22%", position: "sticky", left: 0, background: "#f1f5f9", zIndex: 2 }}>
                   Adjustment Item
                 </th>
                 {headerMonths.map((m, idx) => (
@@ -827,7 +829,7 @@ export default function ScenariosView({
             <tbody>
               {/* Include NB to Find Checkboxes */}
               <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", fontWeight: 600, color: "#0047AB" }}>
+                <td style={{ padding: "6px 8px", fontWeight: 600, color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     <input
                       type="checkbox"
@@ -856,7 +858,7 @@ export default function ScenariosView({
 
               {/* Additional Revenue Inputs */}
               <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB" }}>
+                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
                   Additional revenue
                 </td>
                 {headerMonths.map((_, mIdx) => (
@@ -877,7 +879,7 @@ export default function ScenariosView({
 
               {/* Additional delivery staff costs */}
               <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB" }}>
+                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
                   Additional delivery staff costs
                 </td>
                 {headerMonths.map((_, mIdx) => (
@@ -898,7 +900,7 @@ export default function ScenariosView({
 
               {/* Additional delivery expenses */}
               <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB" }}>
+                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
                   Additional delivery expenses
                 </td>
                 {headerMonths.map((_, mIdx) => (
@@ -919,7 +921,7 @@ export default function ScenariosView({
 
               {/* Additional non-delivery staff costs */}
               <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB" }}>
+                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
                   Additional non-delivery staff costs
                 </td>
                 {headerMonths.map((_, mIdx) => (
@@ -940,7 +942,7 @@ export default function ScenariosView({
 
               {/* Additional non-delivery expenses */}
               <tr style={{ background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB" }}>
+                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
                   Additional non-delivery expenses
                 </td>
                 {headerMonths.map((_, mIdx) => (
@@ -1023,6 +1025,7 @@ export default function ScenariosView({
           <table
             style={{
               width: "100%",
+              minWidth: "750px",
               borderCollapse: "collapse",
               background: "#ffffff",
               textAlign: "left",

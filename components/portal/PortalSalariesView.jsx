@@ -232,6 +232,7 @@ export default function PortalSalariesView({
           <table
             style={{
               width: "100%",
+              minWidth: "750px",
               borderCollapse: "separate",
               borderSpacing: 0,
               fontSize: "12px",

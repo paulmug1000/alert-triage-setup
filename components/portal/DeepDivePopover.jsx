@@ -117,53 +117,126 @@ export default function DeepDivePopover({
   });
 
   return (
-    <div
-      ref={popoverRef}
-      style={{
-        position: "absolute",
-        top: `${position.top}px`,
-        left: `${position.left}px`,
-        width: "380px",
-        maxHeight: "80vh",
-        background: "#ffffff",
-        border: "1px solid #cbd5e1",
-        borderRadius: "8px",
-        boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.08)",
-        zIndex: 9999,
-        fontFamily: "'Kumbh Sans', sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        animation: "popoverIn 0.15s ease-out forwards",
-      }}
-    >
-      <style>{`
-        @keyframes popoverIn {
-          from { opacity: 0; transform: translateY(4px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
-
-      {/* Header: Clean White Layout Matching Original WebApp */}
+    <div className="deep-dive-backdrop" onClick={onClose}>
       <div
+        ref={popoverRef}
+        className="deep-dive-box"
+        onClick={(e) => e.stopPropagation()}
         style={{
+          position: "absolute",
+          top: `${position.top}px`,
+          left: `${position.left}px`,
+          width: "380px",
+          maxHeight: "80vh",
           background: "#ffffff",
-          padding: "14px 18px",
+          border: "1px solid #cbd5e1",
+          borderRadius: "8px",
+          boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.08)",
+          zIndex: 9999,
+          fontFamily: "'Kumbh Sans', sans-serif",
           display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          borderBottom: "1px solid #e5e7eb",
+          flexDirection: "column",
+          overflow: "hidden",
+          animation: "popoverIn 0.15s ease-out forwards",
         }}
       >
-        <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", letterSpacing: "-0.2px" }}>
-          {title}
-        </div>
-        {total !== undefined && (
-          <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB" }}>
-            {formatGBP(total)}
+        <style>{`
+          @keyframes popoverIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          @keyframes sheetSlideUp {
+            from { transform: translateY(100%); }
+            to { transform: translateY(0); }
+          }
+          @media (max-width: 768px) {
+            .deep-dive-backdrop {
+              position: fixed !important;
+              top: 0 !important;
+              left: 0 !important;
+              right: 0 !important;
+              bottom: 0 !important;
+              background: rgba(0, 0, 0, 0.45) !important;
+              backdrop-filter: blur(2px) !important;
+              z-index: 10000 !important;
+              display: flex !important;
+              align-items: flex-end !important;
+              justify-content: center !important;
+            }
+            .deep-dive-box {
+              position: relative !important;
+              top: auto !important;
+              left: auto !important;
+              width: 100% !important;
+              max-width: 500px !important;
+              max-height: 85vh !important;
+              border-radius: 16px 16px 0 0 !important;
+              border-bottom: none !important;
+              box-shadow: 0 -8px 25px rgba(0, 0, 0, 0.2) !important;
+              animation: sheetSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
+            }
+            .deep-dive-pull-handle {
+              display: block !important;
+            }
+          }
+          @media (min-width: 769px) {
+            .deep-dive-pull-handle {
+              display: none !important;
+            }
+          }
+        `}</style>
+
+        {/* Mobile Pull Handle */}
+        <div
+          className="deep-dive-pull-handle"
+          style={{
+            width: "36px",
+            height: "4px",
+            borderRadius: "2px",
+            background: "#cbd5e1",
+            margin: "8px auto 2px auto",
+          }}
+        />
+
+        {/* Header: Clean White Layout Matching Original WebApp */}
+        <div
+          style={{
+            background: "#ffffff",
+            padding: "14px 18px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            borderBottom: "1px solid #e5e7eb",
+          }}
+        >
+          <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", letterSpacing: "-0.2px" }}>
+            {title}
           </div>
-        )}
-      </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            {total !== undefined && (
+              <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB" }}>
+                {formatGBP(total)}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#64748b",
+                fontSize: "18px",
+                cursor: "pointer",
+                padding: "2px 6px",
+                borderRadius: "4px",
+                lineHeight: 1
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
 
       {/* Content Area */}
       <div
@@ -433,5 +506,6 @@ export default function DeepDivePopover({
         )}
       </div>
     </div>
+  </div>
   );
 }

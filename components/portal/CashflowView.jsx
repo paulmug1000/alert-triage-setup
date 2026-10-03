@@ -10,6 +10,7 @@ export default function CashflowView({
   isLoading,
   error,
   onRefresh,
+  isSenior = false,
 }) {
   const [exclOpen, setExclOpen] = useState(false);
   const [inclOpen, setInclOpen] = useState(false);
@@ -30,7 +31,7 @@ export default function CashflowView({
       >
         <Spinner size={32} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
-          Loading {clientName} cashflow forecast...
+          Please wait - loading
         </p>
       </div>
     );
@@ -134,6 +135,7 @@ export default function CashflowView({
       yearIndex: 1,
       targetDate: parsedTargetDate,
       keyData,
+      isRestricted: isSenior,
     });
 
     setActivePopover({
@@ -143,6 +145,7 @@ export default function CashflowView({
       period: ddData.period,
       total: ddData.total,
       items: ddData.items,
+      sections: ddData.sections,
     });
   };
 
@@ -196,16 +199,24 @@ export default function CashflowView({
 
   const exclDetails = [
     { label: "Confirmed cash incoming", values: getValues(exclRows, ["confirmed cash incoming"], [6]), ddType: "cashConfInflow" },
-    { label: "Salaries", values: getValues(exclRows, ["salaries outgoing", "salaries adjustment"], [8, 9]), ddType: "cashSalaries" },
-    { label: "Dividends as salary", values: getValues(exclRows, ["dividends as salary outgoing", "dividends as salary adjustment"], [10, 11]), ddType: "cashDividends" },
+    {
+      label: "Salaries",
+      values: isSenior
+        ? getValues(exclRows, ["salaries outgoing", "salaries adjustment", "dividends as salary outgoing", "dividends as salary adjustment"], [8, 9, 10, 11])
+        : getValues(exclRows, ["salaries outgoing", "salaries adjustment"], [8, 9]),
+      ddType: "cashSalaries"
+    },
+    ...(!isSenior
+      ? [{ label: "Dividends as salary", values: getValues(exclRows, ["dividends as salary outgoing", "dividends as salary adjustment"], [10, 11]), ddType: "cashDividends" }]
+      : []),
     { label: "Contractors", values: getValues(exclRows, ["contractors outgoing", "contractors adjustment"], [12, 13]), ddType: "cashContractors" },
     { label: "Direct costs", values: getValues(exclRows, ["direct costs outgoing", "direct costs adjustment"], [14, 15]), ddType: "cashDirCosts" },
     { label: "Other expenses", values: getValues(exclRows, ["other expenses outgoing", "other expenses adjustment"], [16, 17]), ddType: "cashOutgoings" },
-    { label: "Corporation tax", values: getValues(exclRows, ["corporation tax"], [19, 20]), ddType: null },
-    { label: "VAT", values: getValues(exclRows, ["vat"], [21, 22]), ddType: null },
-    { label: "Non-operating income", values: getValues(exclRows, ["non-operating income"], [24, 25]), ddType: null },
-    { label: "Non-operating expenses", values: getValues(exclRows, ["non-operating expenses"], [26, 27]), ddType: null },
-    { label: "Other cash movements", values: getValues(exclRows, ["other cash movements", "other adjustments"], [29, 30]), ddType: null },
+    { label: "Corporation tax", values: getValues(exclRows, ["corporation tax"], [19, 20]), ddType: "taxCash" },
+    { label: "VAT", values: getValues(exclRows, ["vat"], [21, 22]), ddType: "vatCash" },
+    { label: "Non-operating income", values: getValues(exclRows, ["non-operating income"], [24, 25]), ddType: "nonOpIncCash" },
+    { label: "Non-operating expenses", values: getValues(exclRows, ["non-operating expenses"], [26, 27]), ddType: "nonOpExpCash" },
+    { label: "Other cash movements", values: getValues(exclRows, ["other cash movements", "other adjustments"], [29, 30]), ddType: "otherMoveCash" },
   ];
 
   const inclOpening = getValues(inclRows, ["opening balance"], [45]);
@@ -215,16 +226,24 @@ export default function CashflowView({
   const inclDetails = [
     { label: "Confirmed cash incoming", values: getValues(inclRows, ["confirmed cash incoming"], [47]), ddType: "cashConfInflow" },
     { label: "Pipeline cash incoming", values: getValues(inclRows, ["pipeline cash incoming"], [48]), ddType: "cashPipeInflow" },
-    { label: "Salaries", values: getValues(inclRows, ["salaries outgoing", "salaries adjustment"], [50, 51]), ddType: "cashSalaries" },
-    { label: "Dividends as salary", values: getValues(inclRows, ["dividends as salary outgoing", "dividends as salary adjustment"], [52, 53]), ddType: "cashDividends" },
+    {
+      label: "Salaries",
+      values: isSenior
+        ? getValues(inclRows, ["salaries outgoing", "salaries adjustment", "dividends as salary outgoing", "dividends as salary adjustment"], [50, 51, 52, 53])
+        : getValues(inclRows, ["salaries outgoing", "salaries adjustment"], [50, 51]),
+      ddType: "cashSalaries"
+    },
+    ...(!isSenior
+      ? [{ label: "Dividends as salary", values: getValues(inclRows, ["dividends as salary outgoing", "dividends as salary adjustment"], [52, 53]), ddType: "cashDividends" }]
+      : []),
     { label: "Contractors", values: getValues(inclRows, ["contractors outgoing", "contractors adjustment"], [54, 55]), ddType: "cashContractors" },
     { label: "Direct costs", values: getValues(inclRows, ["direct costs outgoing", "direct costs adjustment"], [56, 57]), ddType: "cashDirCosts" },
     { label: "Other expenses", values: getValues(inclRows, ["other expenses outgoing", "other expenses adjustment"], [58, 59]), ddType: "cashOutgoings" },
-    { label: "Corporation tax", values: getValues(inclRows, ["corporation tax"], [61, 62]), ddType: null },
-    { label: "VAT", values: getValues(inclRows, ["vat"], [63, 64]), ddType: null },
-    { label: "Non-operating income", values: getValues(inclRows, ["non-operating income"], [66, 67]), ddType: null },
-    { label: "Non-operating expenses", values: getValues(inclRows, ["non-operating expenses"], [68, 69]), ddType: null },
-    { label: "Other cash movements", values: getValues(inclRows, ["other cash movements", "other adjustments"], [71, 72]), ddType: null },
+    { label: "Corporation tax", values: getValues(inclRows, ["corporation tax"], [61, 62]), ddType: "taxCash" },
+    { label: "VAT", values: getValues(inclRows, ["vat"], [63, 64]), ddType: "vatCash" },
+    { label: "Non-operating income", values: getValues(inclRows, ["non-operating income"], [66, 67]), ddType: "nonOpIncCash" },
+    { label: "Non-operating expenses", values: getValues(inclRows, ["non-operating expenses"], [68, 69]), ddType: "nonOpExpCash" },
+    { label: "Other cash movements", values: getValues(inclRows, ["other cash movements", "other adjustments"], [71, 72]), ddType: "otherMoveCash" },
   ];
 
   const isRowEmpty = (vals) => vals.every((v) => Math.abs(parseMoney(v)) < 0.01);
@@ -285,6 +304,7 @@ export default function CashflowView({
         period={activePopover?.period}
         total={activePopover?.total}
         items={activePopover?.items || []}
+        sections={activePopover?.sections}
         onClose={() => setActivePopover(null)}
       />
 
@@ -294,7 +314,7 @@ export default function CashflowView({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          maxWidth: "75%",
+          width: "100%",
           padding: "0.25rem 0",
         }}
       >
@@ -729,210 +749,208 @@ export default function CashflowView({
         </div>
 
         {/* Closing Balance Trajectory Line Chart (Positioned at bottom of page) */}
-        <div
-          style={{
-            marginTop: "2rem",
-            background: "#ffffff",
-            borderRadius: "8px",
-            border: "1px solid #e5e7eb",
-            padding: "1.25rem 1.5rem",
-            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          }}
-        >
-          {/* Chart Header & Legend */}
+        {data?.showChart !== false && (
           <div
             style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: "10px",
-              marginBottom: "1rem",
+              marginTop: "2rem",
+              background: "#ffffff",
+              borderRadius: "8px",
+              border: "1px solid #e5e7eb",
+              padding: "1.25rem 1.5rem",
+              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
             }}
           >
-            <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>
-              Closing Balance Forecast
-            </span>
+            {/* Chart Header & Legend */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "10px",
+                marginBottom: "1rem",
+              }}
+            >
+              {/* Legend */}
+              <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: "18px",
+                      height: "3px",
+                      borderTop: "2.5px dashed #8B5CF6",
+                    }}
+                  />
+                  <span style={{ fontSize: "12px", fontWeight: 600, color: "#8B5CF6" }}>
+                    Excluding pipeline
+                  </span>
+                </div>
 
-            {/* Legend */}
-            <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: "18px",
-                    height: "3px",
-                    borderTop: "2.5px dashed #8B5CF6",
-                  }}
-                />
-                <span style={{ fontSize: "12px", fontWeight: 600, color: "#8B5CF6" }}>
-                  Excluding pipeline
-                </span>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: "18px",
-                    height: "3px",
-                    borderTop: "2.5px dashed #F59E0B",
-                  }}
-                />
-                <span style={{ fontSize: "12px", fontWeight: 600, color: "#F59E0B" }}>
-                  Including pipeline
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: "18px",
+                      height: "3px",
+                      borderTop: "2.5px dashed #F59E0B",
+                    }}
+                  />
+                  <span style={{ fontSize: "12px", fontWeight: 600, color: "#F59E0B" }}>
+                    Including pipeline
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* SVG Line Chart */}
-          <div style={{ width: "100%", position: "relative" }}>
-            <svg
-              viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-              style={{ width: "100%", height: "auto", display: "block" }}
-            >
-              {/* Horizontal Gridlines & Y-axis labels */}
-              {[0, 0.25, 0.5, 0.75, 1].map((ratio, idx) => {
-                const yVal = minVal + ratio * range;
-                const yPos = getY(yVal);
-
-                return (
-                  <g key={idx}>
-                    <line
-                      x1={padLeft}
-                      y1={yPos}
-                      x2={svgWidth - padRight}
-                      y2={yPos}
-                      stroke="#f1f5f9"
-                      strokeWidth="1"
-                    />
-                    <text
-                      x={padLeft - 10}
-                      y={yPos + 4}
-                      textAnchor="end"
-                      fontSize="10"
-                      fill="#94a3b8"
-                      fontFamily="'Kumbh Sans', sans-serif"
-                    >
-                      £{Math.round(yVal / 1000)}k
-                    </text>
-                  </g>
-                );
-              })}
-
-              {/* Zero baseline if in range */}
-              {minVal < 0 && maxVal > 0 && (
-                <line
-                  x1={padLeft}
-                  y1={getY(0)}
-                  x2={svgWidth - padRight}
-                  y2={getY(0)}
-                  stroke="#cbd5e1"
-                  strokeWidth="1.5"
-                  strokeDasharray="2,2"
-                />
-              )}
-
-              {/* X-axis Month Labels */}
-              {rollingMonths.map((m, idx) => (
-                <text
-                  key={idx}
-                  x={getX(idx)}
-                  y={svgHeight - 12}
-                  textAnchor="middle"
-                  fontSize="11"
-                  fontWeight="600"
-                  fill="#64748b"
-                  fontFamily="'Kumbh Sans', sans-serif"
-                >
-                  {m}
-                </text>
-              ))}
-
-              {/* Excluding Pipeline Line (Purple Dashed) */}
-              <path
-                d={exclPath}
-                fill="none"
-                stroke="#8B5CF6"
-                strokeWidth="2"
-                strokeDasharray="5,5"
-              />
-
-              {/* Including Pipeline Line (Orange Dashed) */}
-              <path
-                d={inclPath}
-                fill="none"
-                stroke="#F59E0B"
-                strokeWidth="2"
-                strokeDasharray="5,5"
-              />
-
-              {/* Data Points */}
-              {rollingMonths.map((_, idx) => {
-                const exVal = exclClosingNums[idx];
-                const inVal = inclClosingNums[idx];
-                const cx = getX(idx);
-                const cyEx = getY(exVal);
-                const cyIn = getY(inVal);
-
-                return (
-                  <g key={idx}>
-                    {/* Excluding circle */}
-                    <circle
-                      cx={cx}
-                      cy={cyEx}
-                      r="4"
-                      fill="#8B5CF6"
-                      stroke="#ffffff"
-                      strokeWidth="1.5"
-                      style={{ cursor: "pointer" }}
-                      onMouseEnter={() => setHoveredPoint({ idx, month: rollingMonths[idx], exVal, inVal, cx, cyEx })}
-                      onMouseLeave={() => setHoveredPoint(null)}
-                    />
-                    {/* Including circle */}
-                    <circle
-                      cx={cx}
-                      cy={cyIn}
-                      r="4"
-                      fill="#F59E0B"
-                      stroke="#ffffff"
-                      strokeWidth="1.5"
-                      style={{ cursor: "pointer" }}
-                      onMouseEnter={() => setHoveredPoint({ idx, month: rollingMonths[idx], exVal, inVal, cx, cyIn })}
-                      onMouseLeave={() => setHoveredPoint(null)}
-                    />
-                  </g>
-                );
-              })}
-            </svg>
-
-            {/* Tooltip on point hover */}
-            {hoveredPoint && (
-              <div
-                style={{
-                  position: "absolute",
-                  left: `${(hoveredPoint.cx / svgWidth) * 100}%`,
-                  top: `${(hoveredPoint.cyEx / svgHeight) * 100}%`,
-                  transform: "translate(-50%, -115%)",
-                  background: "#0f172a",
-                  color: "#ffffff",
-                  padding: "6px 10px",
-                  borderRadius: "6px",
-                  fontSize: "11px",
-                  pointerEvents: "none",
-                  boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)",
-                  zIndex: 10,
-                  whiteSpace: "nowrap",
-                }}
+            {/* SVG Line Chart */}
+            <div style={{ width: "100%", position: "relative" }}>
+              <svg
+                viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                style={{ width: "100%", height: "auto", display: "block" }}
               >
-                <div style={{ fontWeight: 700, marginBottom: "3px" }}>{hoveredPoint.month}</div>
-                <div style={{ color: "#c4b5fd" }}>Excl: {formatMoney(hoveredPoint.exVal)}</div>
-                <div style={{ color: "#fde68a" }}>Incl: {formatMoney(hoveredPoint.inVal)}</div>
-              </div>
-            )}
+                {/* Horizontal Gridlines & Y-axis labels */}
+                {[0, 0.25, 0.5, 0.75, 1].map((ratio, idx) => {
+                  const yVal = minVal + ratio * range;
+                  const yPos = getY(yVal);
+
+                  return (
+                    <g key={idx}>
+                      <line
+                        x1={padLeft}
+                        y1={yPos}
+                        x2={svgWidth - padRight}
+                        y2={yPos}
+                        stroke="#f1f5f9"
+                        strokeWidth="1"
+                      />
+                      <text
+                        x={padLeft - 10}
+                        y={yPos + 4}
+                        textAnchor="end"
+                        fontSize="10"
+                        fill="#94a3b8"
+                        fontFamily="'Kumbh Sans', sans-serif"
+                      >
+                        £{Math.round(yVal / 1000)}k
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {/* Zero baseline if in range */}
+                {minVal < 0 && maxVal > 0 && (
+                  <line
+                    x1={padLeft}
+                    y1={getY(0)}
+                    x2={svgWidth - padRight}
+                    y2={getY(0)}
+                    stroke="#cbd5e1"
+                    strokeWidth="1.5"
+                    strokeDasharray="2,2"
+                  />
+                )}
+
+                {/* X-axis Month Labels */}
+                {rollingMonths.map((m, idx) => (
+                  <text
+                    key={idx}
+                    x={getX(idx)}
+                    y={svgHeight - 12}
+                    textAnchor="middle"
+                    fontSize="11"
+                    fontWeight="600"
+                    fill="#64748b"
+                    fontFamily="'Kumbh Sans', sans-serif"
+                  >
+                    {m}
+                  </text>
+                ))}
+
+                {/* Excluding Pipeline Line (Purple Dashed) */}
+                <path
+                  d={exclPath}
+                  fill="none"
+                  stroke="#8B5CF6"
+                  strokeWidth="2"
+                  strokeDasharray="5,5"
+                />
+
+                {/* Including Pipeline Line (Orange Dashed) */}
+                <path
+                  d={inclPath}
+                  fill="none"
+                  stroke="#F59E0B"
+                  strokeWidth="2"
+                  strokeDasharray="5,5"
+                />
+
+                {/* Data Points */}
+                {rollingMonths.map((_, idx) => {
+                  const exVal = exclClosingNums[idx];
+                  const inVal = inclClosingNums[idx];
+                  const cx = getX(idx);
+                  const cyEx = getY(exVal);
+                  const cyIn = getY(inVal);
+
+                  return (
+                    <g key={idx}>
+                      {/* Excluding circle */}
+                      <circle
+                        cx={cx}
+                        cy={cyEx}
+                        r="4"
+                        fill="#8B5CF6"
+                        stroke="#ffffff"
+                        strokeWidth="1.5"
+                        style={{ cursor: "pointer" }}
+                        onMouseEnter={() => setHoveredPoint({ idx, month: rollingMonths[idx], exVal, inVal, cx, cyEx })}
+                        onMouseLeave={() => setHoveredPoint(null)}
+                      />
+                      {/* Including circle */}
+                      <circle
+                        cx={cx}
+                        cy={cyIn}
+                        r="4"
+                        fill="#F59E0B"
+                        stroke="#ffffff"
+                        strokeWidth="1.5"
+                        style={{ cursor: "pointer" }}
+                        onMouseEnter={() => setHoveredPoint({ idx, month: rollingMonths[idx], exVal, inVal, cx, cyIn })}
+                        onMouseLeave={() => setHoveredPoint(null)}
+                      />
+                    </g>
+                  );
+                })}
+              </svg>
+
+              {/* Tooltip on point hover */}
+              {hoveredPoint && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${(hoveredPoint.cx / svgWidth) * 100}%`,
+                    top: `${(hoveredPoint.cyEx / svgHeight) * 100}%`,
+                    transform: "translate(-50%, -115%)",
+                    background: "#0f172a",
+                    color: "#ffffff",
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    fontSize: "11px",
+                    pointerEvents: "none",
+                    boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)",
+                    zIndex: 10,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: "3px" }}>{hoveredPoint.month}</div>
+                  <div style={{ color: "#c4b5fd" }}>Excl: {formatMoney(hoveredPoint.exVal)}</div>
+                  <div style={{ color: "#fde68a" }}>Incl: {formatMoney(hoveredPoint.inVal)}</div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

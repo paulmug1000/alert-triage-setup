@@ -74,14 +74,17 @@ export default async function handler(req, res) {
     const sheets = await getSheetsClient();
 
     const resp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
+      sheets.spreadsheets.values.batchGet({
         spreadsheetId: clientSheetId,
-        range: "Cash!A1:AZ80",
+        ranges: ["Cash!A1:AZ80", "AppData!G59"],
         valueRenderOption: "FORMATTED_VALUE",
       })
     );
 
-    const rows = resp.data?.values || [];
+    const rows = resp.data?.valueRanges?.[0]?.values || [];
+    const g59Val = String(resp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "").trim().toLowerCase();
+    const showChart = g59Val === "yes";
+
     if (!rows.length) {
       return res.status(404).json({ success: false, error: "Cash sheet is empty or not found" });
     }
@@ -163,6 +166,7 @@ export default async function handler(req, res) {
       allMonths: monthCols.map((m) => m.monthStr),
       excludingPipeline: excludingPipelineRows,
       includingPipeline: includingPipelineRows,
+      showChart,
     };
 
     // Cache in Redis

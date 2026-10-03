@@ -81,8 +81,26 @@ export const PulseMath = {
       return valToReturn;
     }
 
-    // --- STANDARD/RETAINER LOGIC ---
-    // Return precise pre-calculated values from Google Sheets Helper Columns
+    // --- RETAINER LOGIC (Matches Calcs!K2 ret_sum) ---
+    if (isRetainer) {
+      const rev = parseMoney(job.revenue || job.revNum);
+      const dc = parseMoney(job.directCosts || job.dcNum);
+      let prob = 1;
+      if (isPipeline) {
+        prob = parseLikelihood(job.likelihoodNum !== undefined ? job.likelihoodNum : job.likelihood, 0.5);
+      }
+      const retRev = rev * prob;
+      const retDC = dc * prob;
+      const retIncome = retRev - retDC;
+
+      if (valueType === "directCosts") return retDC;
+      if (valueType === "revenue") {
+        return isIncomeMode ? retIncome : retRev;
+      }
+      return 0;
+    }
+
+    // --- STANDARD PROJECT LOGIC (Matches Calcs!K2 std_sum) ---
     let origBaseRev = parseMoney(job.origBaseRev);
     let origBaseIncome = parseMoney(job.origBaseIncome);
     let origBaseDC = origBaseRev - origBaseIncome;
@@ -95,16 +113,10 @@ export const PulseMath = {
       if (isPipeline) {
         prob = parseLikelihood(job.likelihoodNum !== undefined ? job.likelihoodNum : job.likelihood, 0.5);
       }
-      if (isRetainer) {
-        origBaseRev = rev * prob;
-        origBaseIncome = (rev - dc) * prob;
-        origBaseDC = dc * prob;
-      } else {
-        const totalMonths = Math.max(1, (eqEnd.getFullYear() - eqStart.getFullYear()) * 12 + (eqEnd.getMonth() - eqStart.getMonth()) + 1);
-        origBaseRev = (rev / totalMonths) * prob;
-        origBaseIncome = ((rev - dc) / totalMonths) * prob;
-        origBaseDC = (dc / totalMonths) * prob;
-      }
+      const totalMonths = Math.max(1, (eqEnd.getFullYear() - eqStart.getFullYear()) * 12 + (eqEnd.getMonth() - eqStart.getMonth()) + 1);
+      origBaseRev = (rev / totalMonths) * prob;
+      origBaseIncome = ((rev - dc) / totalMonths) * prob;
+      origBaseDC = (dc / totalMonths) * prob;
     }
 
     if (valueType === "directCosts") return origBaseDC;
@@ -170,18 +182,46 @@ export const DeepDiveEngine = {
     });
   },
 
-  getJobsForMonth(allJobs, targetDate, type, isIncomeMode = false) {
+  getJobsForMonth(allJobs, targetDate, type, isIncomeMode = false, isScenarioView = false, scenariosConfig = null) {
     let results = [];
     if (!allJobs || allJobs.length === 0) return results;
 
+    const confirmedJobs = (isScenarioView && scenariosConfig?.confirmedJobs) || new Set();
+    const disabledJobs = (isScenarioView && scenariosConfig?.disabledJobs) || new Set();
+
     allJobs.forEach((job) => {
       let effectiveType = String(job.type || "").toLowerCase();
+      let isAssumedConfirmed = false;
+
+      if (isScenarioView && scenariosConfig) {
+        const pId = Number(job.parentId !== undefined ? job.parentId : (job.rowNumber ? job.rowNumber - 2 : job.id));
+        if (disabledJobs.has(job.id) || disabledJobs.has(pId)) {
+          return;
+        }
+        if (confirmedJobs.has(job.id) || confirmedJobs.has(pId)) {
+          effectiveType = "confirmed";
+          if (String(job.type || "").toLowerCase() === "pipeline") {
+            isAssumedConfirmed = true;
+          }
+        }
+      }
 
       if (type === "confRev" && effectiveType === "pipeline") return;
       if (type === "pipeRev" && effectiveType !== "pipeline") return;
 
       const valueType = type === "dirCosts" ? "directCosts" : "revenue";
-      const monthlyAmount = PulseMath.calcMonthly(job, targetDate, valueType, isIncomeMode);
+      let monthlyAmount = PulseMath.calcMonthly(job, targetDate, valueType, isIncomeMode);
+
+      if (isAssumedConfirmed) {
+        let prob = 1;
+        if (job.likelihoodNum !== undefined && !isNaN(job.likelihoodNum)) {
+          prob = job.likelihoodNum;
+        } else if (job.likelihood) {
+          prob = parseLikelihood(job.likelihood, 1);
+        }
+        if (prob <= 0 || prob > 1) prob = 1;
+        monthlyAmount = prob > 0 ? (monthlyAmount / prob) : 0;
+      }
 
       if (Math.abs(monthlyAmount) >= 0.01) {
         let rawAmount = 0;
@@ -214,7 +254,7 @@ export const DeepDiveEngine = {
           detail,
           startStr: job.startDate,
           endStr: job.endDate,
-          status: job.type,
+          status: effectiveType,
           likelihood: effectiveType === "confirmed" ? "100%" : (job.likelihood || "50%"),
         });
       }
@@ -227,6 +267,205 @@ export const DeepDiveEngine = {
     });
 
     return results;
+  },
+
+  getSalariesForMonth(salariesData, targetDate, isDelivery) {
+    let list = [];
+    if (!salariesData) return list;
+
+    const targetYear = targetDate.getFullYear();
+    const targetMonth = targetDate.getMonth();
+
+    if (salariesData.deepDive && salariesData.monthHeaders) {
+      let colIdx = -1;
+      for (let i = 11; i < salariesData.monthHeaders.length; i += 7) {
+        let hd = DeepDiveEngine.parseHeaderDate(salariesData.monthHeaders[i]);
+        if (hd && hd.getFullYear() === targetYear && hd.getMonth() === targetMonth) {
+          colIdx = i;
+          break;
+        }
+      }
+
+      if (colIdx !== -1) {
+        const staffByRow = {};
+        (salariesData.staff || []).forEach((s) => {
+          if (s.rowNumber) staffByRow[s.rowNumber - 4] = s;
+        });
+
+        for (let i = 0; i < salariesData.deepDive.length; i++) {
+          const row = salariesData.deepDive[i];
+          if (!row) continue;
+
+          // Cross-reference row index i with staffByRow to guarantee name, role and delPct
+          // even if client sheet formula scrambled row 304+ column A
+          const staffObj = staffByRow[i];
+          const name = (row[0] && String(row[0]).trim()) || (staffObj ? staffObj.name : "");
+          if (!name || !name.trim()) continue;
+
+          const role = (row[1] && String(row[1]).trim()) || (staffObj ? staffObj.role : "");
+
+          const salary = parseMoney(row[colIdx]);
+          const erNic = parseMoney(row[colIdx + 2]);
+          const erPen = parseMoney(row[colIdx + 5]);
+          const totalCost = salary + erNic + erPen;
+
+          if (Math.abs(totalCost) < 0.01) continue;
+
+          let delPctRaw = row[6] !== undefined && String(row[6]).trim() !== "" ? row[6] : (staffObj ? staffObj.deliveryPct : "0%");
+          let delPct = parseMoney(delPctRaw);
+          if (String(delPctRaw).includes("%")) delPct = delPct / 100;
+          else if (delPct > 1) delPct = delPct / 100;
+
+          let applicablePct = isDelivery ? delPct : (1 - delPct);
+          if (Math.abs(applicablePct) < 0.001) continue;
+
+          list.push({
+            name: String(name).trim(),
+            role: String(role || "").trim(),
+            amount: Math.round(totalCost * applicablePct),
+            totalCost: totalCost,
+            pct: applicablePct,
+          });
+        }
+      }
+    }
+
+    // Fallback if deepDive not available
+    if (list.length === 0 && salariesData.staff && salariesData.staff.length > 0) {
+      salariesData.staff.forEach((s) => {
+        let delPct = 0;
+        if (s.deliveryPct !== undefined && String(s.deliveryPct).trim() !== "") {
+          delPct = parseMoney(s.deliveryPct);
+          if (String(s.deliveryPct).includes("%")) delPct = delPct / 100;
+          else if (delPct > 1) delPct = delPct / 100;
+        } else if (s.isDelivery) {
+          delPct = 1;
+        }
+        const applicablePct = isDelivery ? delPct : (1 - delPct);
+        if (applicablePct <= 0.001) return;
+        const monthlyCost = s.actualAnnualCost / 12;
+        const amt = Math.round(monthlyCost * applicablePct);
+        if (amt > 0) {
+          list.push({
+            name: s.name,
+            role: s.role || "",
+            amount: amt,
+            totalCost: monthlyCost,
+            pct: applicablePct,
+          });
+        }
+      });
+    }
+
+    list.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+    return list;
+  },
+
+  getDividendsForMonth(dividendsData, targetDate, isDelivery, headersObj = null) {
+    let list = [];
+    if (!dividendsData || !targetDate) return list;
+
+    // A. If dividendsData has years cache (original WebApp structure)
+    if (dividendsData.years) {
+      const targetYear = targetDate.getFullYear();
+      const targetMonth = targetDate.getMonth();
+      let targetYIdx = -1;
+      let targetCIdx = -1;
+
+      for (let y = 0; y < dividendsData.years.length; y++) {
+        const headerRow = dividendsData.years[y].cells?.[0] || [];
+        for (let c = 1; c < headerRow.length; c++) {
+          let hd = DeepDiveEngine.parseHeaderDate(headerRow[c]?.v || headerRow[c]);
+          if (hd && hd.getFullYear() === targetYear && hd.getMonth() === targetMonth) {
+            targetYIdx = y;
+            targetCIdx = c;
+            break;
+          }
+        }
+        if (targetYIdx !== -1) break;
+      }
+      if (targetYIdx === -1) return list;
+
+      const cells = dividendsData.years[targetYIdx].cells || [];
+      for (let i = 1; i < cells.length; i++) {
+        const row = cells[i];
+        const name = row[0]?.v || row[0];
+        if (!name) continue;
+
+        const nameLower = String(name).toLowerCase();
+        const isDelRow = nameLower.includes("total") && nameLower.includes("delivery") && !nameLower.includes("non-delivery");
+        const isNonDelRow = nameLower.includes("total") && nameLower.includes("non-delivery");
+
+        if (!nameLower.includes("div in lieu")) continue;
+        if (isDelivery && !isDelRow) continue;
+        if (!isDelivery && !isNonDelRow) continue;
+
+        const valRaw = row[targetCIdx] ? (row[targetCIdx].v !== undefined ? row[targetCIdx].v : row[targetCIdx]) : 0;
+        const totalCost = parseMoney(valRaw);
+        if (Math.abs(totalCost) < 0.01) continue;
+
+        list.push({
+          name: "Dividends as salary",
+          amount: totalCost,
+          totalCost: totalCost,
+          pct: 1,
+        });
+      }
+      return list;
+    }
+
+    // B. If dividendsData is an array of dividend objects (from keyData.outgoings.dividends)
+    if (Array.isArray(dividendsData)) {
+      const targetYear = targetDate.getFullYear();
+      const targetMonth = targetDate.getMonth();
+      let foundY = -1;
+      let foundC = -1;
+
+      if (headersObj) {
+        for (const y of [1, 2, 3]) {
+          const hList = headersObj[y] || [];
+          for (let c = 0; c < hList.length; c++) {
+            const hd = DeepDiveEngine.parseHeaderDate(hList[c]);
+            if (hd && hd.getFullYear() === targetYear && hd.getMonth() === targetMonth) {
+              foundY = y;
+              foundC = c;
+              break;
+            }
+          }
+          if (foundY !== -1) break;
+        }
+      }
+
+      if (foundY === -1) {
+        foundY = 1;
+        foundC = targetMonth;
+      }
+
+      dividendsData.forEach((d) => {
+        let delPct = 0.5; // default 50%
+        if (d.deliveryPct !== undefined && String(d.deliveryPct).trim() !== "") {
+          delPct = parseMoney(d.deliveryPct);
+          if (String(d.deliveryPct).includes("%")) delPct = delPct / 100;
+          else if (delPct > 1) delPct = delPct / 100;
+        }
+        const applicablePct = isDelivery ? delPct : 1 - delPct;
+        if (applicablePct <= 0.001) return;
+
+        const allocs = d.allocations?.[foundY] || d.monthlyAllocations || [];
+        const rawAmt = parseMoney(allocs[foundC] || 0);
+        const amt = Math.round(rawAmt * applicablePct);
+        if (Math.abs(amt) > 0.01) {
+          list.push({
+            name: d.name || "Dividends as salary",
+            amount: amt,
+            totalCost: rawAmt,
+            pct: applicablePct,
+          });
+        }
+      });
+    }
+
+    return list;
   },
 };
 
@@ -261,6 +500,28 @@ export const CashDeepDiveEngine = {
     const targetMonth = targetDate.getMonth();
     const results = { confirmed: [], pipeline: [] };
     if (!allJobs) return results;
+
+    const cleanInvoiceRef = (rawRef, isRet) => {
+      if (!rawRef) return "";
+      const s = String(rawRef).trim();
+      const lower = s.toLowerCase();
+      if (
+        lower.startsWith("place") ||
+        lower.startsWith("placeholder") ||
+        lower.startsWith("tbd") ||
+        lower === "—" ||
+        lower === "-"
+      ) {
+        return "";
+      }
+      if (isRet && /^invoice\s*\d+$/i.test(lower)) {
+        return "";
+      }
+      if (/^retainer\s*month\s*\d+$/i.test(lower)) {
+        return "";
+      }
+      return s;
+    };
 
     allJobs.forEach((job) => {
       const isRetainer = String(job.projectRetainer || "").toLowerCase().includes("retainer");
@@ -304,7 +565,7 @@ export const CashDeepDiveEngine = {
           const startDate = new Date(parsedStart.y, parsedStart.m, 1);
           const endDate = new Date(parsedEnd.y, parsedEnd.m, 1);
           const status = job.inv1Status || "Pending";
-          const ref = job.inv1Ref || "";
+          const ref = cleanInvoiceRef(job.inv1Ref, true);
 
           let currDate = new Date(startDate.getTime());
           let monthCount = 1;
@@ -320,7 +581,7 @@ export const CashDeepDiveEngine = {
                 client: job.client,
                 jobName: job.jobName,
                 type: job.projectRetainer || "Retainer",
-                ref: ref ? `${ref} (Month ${monthCount})` : `Retainer Month ${monthCount}`,
+                ref: ref || "",
                 amountExVat,
                 vatAmount,
                 totalAmount,
@@ -351,12 +612,13 @@ export const CashDeepDiveEngine = {
           if (sendDate.getFullYear() === targetYear && sendDate.getMonth() === targetMonth) {
             const vatAmount = amountExVat * currentVatRate;
             const totalAmount = amountExVat + vatAmount;
+            const ref = cleanInvoiceRef(job[`inv${i}Ref`], isRetainer);
 
             const invData = {
               client: job.client,
               jobName: job.jobName,
               type: job.projectRetainer || "Project",
-              ref: job[`inv${i}Ref`] || `Invoice ${i}`,
+              ref: ref || "",
               amountExVat,
               vatAmount,
               totalAmount,
@@ -550,23 +812,162 @@ export const CashDeepDiveEngine = {
 
     return results;
   },
+
+  getOutgoingsCash(targetDate, type, keyData) {
+    const results = [];
+    if (!keyData || !keyData.outgoings) return results;
+
+    const isContractor = type.includes("conCash") || type === "cashContractors";
+    const cacheItems = isContractor
+      ? (keyData.outgoings.contractors || [])
+      : (keyData.outgoings.expenses || []).filter(
+          (e) => !e.name || !e.name.toLowerCase().includes("depreciation")
+        );
+
+    const targetYear = targetDate.getFullYear();
+    const targetMonth = targetDate.getMonth();
+
+    let foundY = -1;
+    let foundC = -1;
+    const headersObj = keyData.outgoings.headers || {};
+
+    for (const y of [1, 2, 3]) {
+      const hList = headersObj[y] || [];
+      for (let c = 0; c < hList.length; c++) {
+        const hd = DeepDiveEngine.parseHeaderDate(hList[c]);
+        if (hd && hd.getFullYear() === targetYear && hd.getMonth() === targetMonth) {
+          foundY = y;
+          foundC = c;
+          break;
+        }
+      }
+      if (foundY !== -1) break;
+    }
+
+    if (foundY === -1) {
+      const curY = keyData.outgoings.currentYear || 2;
+      const todayYear = new Date().getFullYear();
+      foundY = Math.min(3, Math.max(1, curY + (targetYear - todayYear)));
+      foundC = targetMonth;
+    }
+
+    cacheItems.forEach((row) => {
+      if (!row.name || row.name.toLowerCase() === "hide") return;
+
+      const payTiming = String(row.paymentTiming || "Curr").toLowerCase();
+      let colToRead = foundC;
+      let yearToRead = foundY;
+
+      if (payTiming === "next") {
+        if (foundC === 0) {
+          yearToRead = foundY - 1;
+          colToRead = 11;
+        } else {
+          colToRead = foundC - 1;
+        }
+      }
+
+      if (yearToRead >= 1 && yearToRead <= 3) {
+        const allocs = row.allocations?.[yearToRead] || [];
+        const rawVal = allocs[colToRead] || 0;
+        let amount = parseMoney(rawVal);
+
+        if (Math.abs(amount) > 0.01) {
+          if (row.vat === "Yes") {
+            amount *= 1.2;
+          }
+          amount = -Math.abs(Math.round(amount));
+          results.push({
+            name: row.name,
+            amount,
+          });
+        }
+      }
+    });
+
+    if (isContractor && keyData.outgoingsMeta) {
+      const payTiming = String(keyData.outgoingsMeta.makingUpCosTiming || "Curr").toLowerCase();
+      const vatStatus = keyData.outgoingsMeta.makingUpCosVat || "";
+
+      let colToRead = foundC;
+      let yearToRead = foundY;
+
+      if (payTiming === "next") {
+        if (foundC === 0) {
+          yearToRead = foundY - 1;
+          colToRead = 11;
+        } else {
+          colToRead = foundC - 1;
+        }
+      }
+
+      const mIdx = colToRead;
+      const yArrIdx = yearToRead - 1;
+      const targetArray =
+        type === "conCash_excl"
+          ? keyData.outgoingsMeta.makingUpCosBaseConf
+          : keyData.outgoingsMeta.makingUpCosBase;
+
+      if (targetArray && yArrIdx >= 0 && yArrIdx < targetArray.length) {
+        const cosRow = targetArray[yArrIdx];
+        if (cosRow && mIdx >= 0 && mIdx < cosRow.length) {
+          let cosAmount = parseMoney(cosRow[mIdx]);
+          if (Math.abs(cosAmount) > 0.01) {
+            if (vatStatus === "Yes") {
+              cosAmount *= 1.2;
+            }
+            cosAmount = -Math.abs(Math.round(cosAmount));
+            results.push({ name: "Making up CoS amount", amount: cosAmount });
+          }
+        }
+      }
+    }
+
+    return results;
+  },
 };
 
 export function getDeepDiveType(rowLabel = "") {
   const l = String(rowLabel).toLowerCase().trim();
+
+  // Explicit exclusions - NEVER open popover for totals or margins
+  if (
+    l === "total overheads" ||
+    l.includes("total overheads") ||
+    l.includes("overheads as %") ||
+    l.includes("overheads %") ||
+    l.includes("gross profit") ||
+    l.includes("operating profit") ||
+    l.includes("total revenue") ||
+    l.includes("total income") ||
+    l.includes("total cost") ||
+    l.includes("staff costs to")
+  ) {
+    return null;
+  }
+
+  // Performance items
   if (l.includes("confirmed revenue") || l.includes("confirmed income") || l.includes("confirmed project") || l.includes("confirmed retainer")) return "confRev";
   if (l.includes("pipeline revenue") || l.includes("pipeline income") || l.includes("pipeline opportunity")) return "pipeRev";
   if (l.includes("staff costs - delivery") || l.includes("delivery staff")) return "staffDel";
-  if (l.includes("staff costs - non-delivery") || l.includes("overhead staff") || l.includes("management staff")) return "staffNonDel";
-  if (l.includes("direct cost payments") || l.includes("direct cost")) return "dirCosts";
-  if (l.includes("other expenses - delivery") || l.includes("delivery expense")) return "expDel";
-  if (l.includes("other expenses - non-delivery") || l.includes("overhead expense") || l.includes("overheads") || l.includes("general overhead")) return "expNonDel";
-  if (l.includes("dividends as salary") || l.includes("dividend")) return "dividends";
+  if (l.includes("staff costs - non-delivery") || l.includes("non-delivery staff")) return "staffNonDel";
+  if (l.includes("direct cost payments") || l.includes("direct costs") || l === "direct cost") return "dirCosts";
+  if (l.includes("other expenses - delivery") || l.includes("delivery expenses")) return "expDel";
+  if (l.includes("other expenses - non-delivery") || l.includes("non-delivery expenses")) return "expNonDel";
+  if (l.includes("dividends as salary") || l === "dividends") return "dividends";
+
+  // Cash flow items
   if (l.includes("confirmed cash incoming") || l.includes("confirmed receipts")) return "cashConfInflow";
   if (l.includes("pipeline cash incoming") || l.includes("pipeline receipts")) return "cashPipeInflow";
   if (l.includes("salaries") || l.includes("net wages") || l.includes("wages")) return "cashSalaries";
   if (l.includes("contractors")) return "cashContractors";
   if (l.includes("other expenses")) return "cashOutgoings";
+  if (l.includes("corporation tax") || l === "taxcash") return "taxCash";
+  if (l === "vat" || l === "vatcash") return "vatCash";
+  if (l.includes("non-operating income") || l === "nonopinccash") return "nonOpIncCash";
+  if (l.includes("non-operating expenses") || l === "nonopexpcash") return "nonOpExpCash";
+  if (l.includes("other cash movements") || l === "othermovecash") return "otherMoveCash";
+
   return null;
 }
 
@@ -577,8 +978,12 @@ export function buildDeepDiveData({
   cellValue,
   yearIndex = 1, // 1, 2, or 3
   targetDate = null,
+  aggregateCount = 1,
   keyData,
   isIncomeMode = false,
+  isRestricted = false,
+  isScenarioView = false,
+  scenariosConfig = null,
 }) {
   if (!keyData) {
     return {
@@ -586,133 +991,188 @@ export function buildDeepDiveData({
       period: periodLabel,
       total: cellValue,
       items: [],
+      sections: null,
     };
   }
 
   const isFYTotal = monthIndex === -1;
+  const count = aggregateCount > 1 ? aggregateCount : (isFYTotal ? 12 : 1);
   const effectiveDate = targetDate || new Date(2025 + (yearIndex - 1), Math.max(0, monthIndex), 1);
+  const mIdx = monthIndex >= 0 ? monthIndex : 0;
+  const yIdx = Math.max(0, yearIndex - 1);
+  const effectiveIncomeMode =
+    Boolean(isIncomeMode) ||
+    String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
+    String(periodLabel || "").toLowerCase().includes("income") ||
+    String(ddType || "").toLowerCase().includes("inc");
 
-  // 1. Confirmed Revenue
+  // 1. Confirmed Revenue / Income
   if (ddType === "confRev") {
     const allJobs = keyData.jobs?.all || [...(keyData.jobs?.confirmed || []), ...(keyData.jobs?.pipeline || [])];
     let items = [];
 
-    if (isFYTotal) {
-      items = DeepDiveEngine.aggregatePeriods(new Date(effectiveDate.getFullYear(), 0, 1), 12, (d) =>
-        DeepDiveEngine.getJobsForMonth(allJobs, d, "confRev", isIncomeMode)
+    if (count > 1) {
+      items = DeepDiveEngine.aggregatePeriods(effectiveDate, count, (d) =>
+        DeepDiveEngine.getJobsForMonth(allJobs, d, "confRev", effectiveIncomeMode, isScenarioView, scenariosConfig)
       );
     } else {
-      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "confRev", isIncomeMode);
+      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "confRev", effectiveIncomeMode, isScenarioView, scenariosConfig);
+    }
+
+    const totalJobs = items.reduce((s, i) => s + i.amount, 0);
+    let drift = Math.round(parseMoney(cellValue) - totalJobs);
+    if (Math.abs(drift) > 0 && Math.abs(drift) <= 2 && items.length > 0) {
+      let maxIdx = 0;
+      for (let k = 1; k < items.length; k++) {
+        if (items[k].amount > items[maxIdx].amount) maxIdx = k;
+      }
+      items[maxIdx].amount += drift;
+      drift = 0;
+    }
+    if (isScenarioView && Math.abs(drift) > 2) {
+      items.push({ name: "Manual scenario adjustment", amount: drift });
+    } else if (!isScenarioView && Math.abs(drift) > 2) {
+      items.push({ name: "Rounding adjustment", amount: drift });
     }
 
     return {
-      title: isIncomeMode ? "Confirmed Income Contributors" : "Confirmed Revenue Contributors",
+      title: effectiveIncomeMode ? "Confirmed income" : "Confirmed revenue",
       period: periodLabel,
       total: cellValue,
       items: items.map((i) => ({
         name: i.name,
         client: i.client,
         detail: i.detail,
-        badge: "Confirmed",
         amount: i.amount,
       })),
+      sections: null,
     };
   }
 
-  // 2. Pipeline Revenue
+  // 2. Pipeline Revenue / Income
   if (ddType === "pipeRev") {
     const allJobs = keyData.jobs?.all || [...(keyData.jobs?.confirmed || []), ...(keyData.jobs?.pipeline || [])];
     let items = [];
 
-    if (isFYTotal) {
-      items = DeepDiveEngine.aggregatePeriods(new Date(effectiveDate.getFullYear(), 0, 1), 12, (d) =>
-        DeepDiveEngine.getJobsForMonth(allJobs, d, "pipeRev", isIncomeMode)
+    if (count > 1) {
+      items = DeepDiveEngine.aggregatePeriods(effectiveDate, count, (d) =>
+        DeepDiveEngine.getJobsForMonth(allJobs, d, "pipeRev", effectiveIncomeMode, isScenarioView, scenariosConfig)
       );
     } else {
-      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "pipeRev", isIncomeMode);
+      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "pipeRev", effectiveIncomeMode, isScenarioView, scenariosConfig);
+    }
+
+    const totalJobs = items.reduce((s, i) => s + i.amount, 0);
+    const drift = Math.round(parseMoney(cellValue) - totalJobs);
+    if (isScenarioView && Math.abs(drift) > 1) {
+      items.push({ name: "Scenario adjustment", amount: drift });
+    } else if (!isScenarioView && Math.abs(drift) > 1) {
+      items.push({ name: "Rounding adjustment", amount: drift });
     }
 
     return {
-      title: isIncomeMode ? "Pipeline Income Opportunities" : "Pipeline Revenue Opportunities",
+      title: effectiveIncomeMode ? "Pipeline income" : "Pipeline revenue",
       period: periodLabel,
       total: cellValue,
       items: items.map((i) => ({
         name: i.name,
         client: i.client,
         detail: `${i.likelihood} likelihood • ${i.detail}`,
-        badge: "Pipeline",
         amount: i.amount,
       })),
+      sections: null,
     };
   }
 
-  // 3 & 4. Staff Costs - Delivery & Non-Delivery (Ported from WebApp.html lines 16413-16527)
+  // 3 & 4. Staff Costs - Delivery & Non-Delivery (Matching Original WebApp lines 16413-16527)
   if (ddType === "staffDel" || ddType === "staffNonDel") {
     const isDel = ddType === "staffDel";
-    const items = [];
-    const yIdx = Math.max(0, yearIndex - 1);
-    const mIdx = monthIndex >= 0 ? monthIndex : 0;
+    const targetYear = effectiveDate.getFullYear();
+    const targetMonth = effectiveDate.getMonth();
+    const monthCount = count > 1 ? count : 1;
 
     // A. Salaries
-    const staffList = keyData.salaries?.staff || [];
-    let calcSalTotal = 0;
-    const salaryItems = [];
-    staffList.forEach((s) => {
-      let delPct = 0;
-      if (s.deliveryPct !== undefined && String(s.deliveryPct).trim() !== "") {
-        delPct = parseMoney(s.deliveryPct);
-        if (String(s.deliveryPct).includes("%")) delPct = delPct / 100;
-        else if (delPct > 1) delPct = delPct / 100;
-      } else if (s.isDelivery) {
-        delPct = 1;
-      }
-      const applicablePct = isDel ? delPct : (1 - delPct);
-      if (applicablePct <= 0.001) return;
+    let salaries = [];
+    if (count > 1) {
+      salaries = DeepDiveEngine.aggregatePeriods(effectiveDate, count, (d) =>
+        DeepDiveEngine.getSalariesForMonth(keyData.salaries, d, isDel)
+      );
+    } else {
+      salaries = DeepDiveEngine.getSalariesForMonth(keyData.salaries, effectiveDate, isDel);
+    }
 
-      const monthlyCost = isFYTotal ? s.actualAnnualCost : (s.actualAnnualCost / 12);
-      const amt = Math.round(monthlyCost * applicablePct);
-      if (amt > 0) {
-        calcSalTotal += amt;
-        const mathText = Math.abs(applicablePct - 1) > 0.01 ? `${Math.round(applicablePct * 100)}% of ${formatMoney(monthlyCost)}` : "";
-        salaryItems.push({
-          name: s.name,
-          client: "",
-          detail: s.role ? (mathText ? `${s.role} • ${mathText}` : s.role) : mathText,
-          badge: isDel ? "Delivery" : "Overhead",
-          amount: amt,
-        });
-      }
-    });
+    let calcSalTotal = salaries.reduce((s, item) => s + item.amount, 0);
 
-    // Employment allowance difference
+    // Calculate actualSalaries from Outgoings to compute employment allowance
+    // Matching WebApp.html lines 16437-16468
     let actualSalaries = 0;
-    if (keyData.outgoingsMeta) {
-      if (isDel && keyData.outgoingsMeta.salariesDel?.[yIdx]) {
-        actualSalaries = isFYTotal
-          ? keyData.outgoingsMeta.salariesDel[yIdx].reduce((a, b) => a + b, 0)
-          : (keyData.outgoingsMeta.salariesDel[yIdx][mIdx] || 0);
-      } else if (!isDel && keyData.outgoingsMeta.salariesNonDel?.[yIdx]) {
-        actualSalaries = isFYTotal
-          ? keyData.outgoingsMeta.salariesNonDel[yIdx].reduce((a, b) => a + b, 0)
-          : (keyData.outgoingsMeta.salariesNonDel[yIdx][mIdx] || 0);
+    for (let i = 0; i < monthCount; i++) {
+      const currDate = new Date(targetYear, targetMonth + i, 1);
+      const cy = currDate.getFullYear();
+      const cm = currDate.getMonth();
+      let foundYIdx = -1;
+      let foundMIdx = -1;
+
+      if (keyData.outgoings?.headers && keyData.outgoingsMeta) {
+        for (const y of [1, 2, 3]) {
+          const hdrs = keyData.outgoings.headers[y] || [];
+          for (let c = 0; c < hdrs.length; c++) {
+            const hd = DeepDiveEngine.parseHeaderDate(hdrs[c]);
+            if (hd && hd.getFullYear() === cy && hd.getMonth() === cm) {
+              foundYIdx = y - 1; // 0-indexed for outgoingsMeta arrays
+              foundMIdx = c;
+              break;
+            }
+          }
+          if (foundYIdx !== -1) break;
+        }
+      }
+
+      if (foundYIdx !== -1 && foundMIdx !== -1) {
+        if (isDel && keyData.outgoingsMeta.salariesDel?.[foundYIdx]) {
+          actualSalaries += parseMoney(keyData.outgoingsMeta.salariesDel[foundYIdx][foundMIdx]);
+        } else if (!isDel && keyData.outgoingsMeta.salariesNonDel?.[foundYIdx]) {
+          actualSalaries += parseMoney(keyData.outgoingsMeta.salariesNonDel[foundYIdx][foundMIdx]);
+        }
+      } else {
+        // Fallback to yearIndex - 1 and (mIdx + i)
+        const fallbackY = Math.max(0, yearIndex - 1);
+        const fallbackM = (mIdx + i) % 12;
+        if (isDel && keyData.outgoingsMeta?.salariesDel?.[fallbackY]) {
+          actualSalaries += parseMoney(keyData.outgoingsMeta.salariesDel[fallbackY][fallbackM]);
+        } else if (!isDel && keyData.outgoingsMeta?.salariesNonDel?.[fallbackY]) {
+          actualSalaries += parseMoney(keyData.outgoingsMeta.salariesNonDel[fallbackY][fallbackM]);
+        }
       }
     }
-    const allowanceDiff = actualSalaries - calcSalTotal;
+
+    const allowanceDiff = Math.round(actualSalaries - calcSalTotal);
     if (Math.abs(allowanceDiff) > 2) {
-      salaryItems.push({
+      salaries.push({
         name: "Employment allowance",
-        client: "",
-        detail: "HMRC allowance adjustment",
-        badge: "Allowance",
-        amount: Math.round(allowanceDiff),
+        role: "",
+        amount: allowanceDiff,
+        totalCost: allowanceDiff,
+        pct: 1,
       });
       calcSalTotal += allowanceDiff;
+    } else if (allowanceDiff !== 0) {
+      // Absorb small £1-£2 penny rounding difference into salaries so calcSalTotal matches actualSalaries exactly
+      if (salaries.length > 0) {
+        let maxIdx = 0;
+        for (let sIdx = 1; sIdx < salaries.length; sIdx++) {
+          if (salaries[sIdx].amount > salaries[maxIdx].amount) maxIdx = sIdx;
+        }
+        salaries[maxIdx].amount += allowanceDiff;
+        salaries[maxIdx].totalCost += allowanceDiff;
+      }
+      calcSalTotal += allowanceDiff;
     }
-    items.push(...salaryItems);
+    const salTotal = calcSalTotal;
 
     // B. Dividends as salary
-    const dividendsList = keyData.outgoings?.dividends || [];
-    dividendsList.forEach((d) => {
+    const dividends = [];
+    (keyData.outgoings?.dividends || []).forEach((d) => {
       let delPct = 0.5; // default 50%
       if (d.deliveryPct !== undefined && String(d.deliveryPct).trim() !== "") {
         delPct = parseMoney(d.deliveryPct);
@@ -722,25 +1182,44 @@ export function buildDeepDiveData({
       const applicablePct = isDel ? delPct : (1 - delPct);
       if (applicablePct <= 0.001) return;
 
-      const allocs = d.allocations?.[yearIndex] || d.monthlyAllocations || [];
-      const rawAmt = isFYTotal
-        ? d.totals?.[yearIndex] || 0
-        : parseMoney(allocs[mIdx] || "0");
+      let rawAmt = 0;
+      for (let i = 0; i < monthCount; i++) {
+        const currDate = new Date(targetYear, targetMonth + i, 1);
+        let foundY = yearIndex;
+        let foundC = (mIdx + i) % 12;
+        if (keyData.outgoings?.headers) {
+          for (const y of [1, 2, 3]) {
+            const hdrs = keyData.outgoings.headers[y] || [];
+            for (let c = 0; c < hdrs.length; c++) {
+              const hd = DeepDiveEngine.parseHeaderDate(hdrs[c]);
+              if (hd && hd.getFullYear() === currDate.getFullYear() && hd.getMonth() === currDate.getMonth()) {
+                foundY = y;
+                foundC = c;
+                break;
+              }
+            }
+          }
+        }
+        const allocs = d.allocations?.[foundY] || d.monthlyAllocations || [];
+        rawAmt += parseMoney(allocs[foundC] || 0);
+      }
+
       const amt = Math.round(rawAmt * applicablePct);
       if (amt > 0) {
-        items.push({
+        dividends.push({
           name: d.name || "Dividends as salary",
-          client: "",
-          detail: `Dividend in lieu • ${Math.round(applicablePct * 100)}%`,
-          badge: "Dividend",
+          role: "",
           amount: amt,
+          totalCost: rawAmt,
+          pct: applicablePct,
         });
       }
     });
+    const divTotal = dividends.reduce((s, d) => s + d.amount, 0);
 
     // C. Contractors
-    const contractorsList = keyData.outgoings?.contractors || [];
-    contractorsList.forEach((c) => {
+    const contractors = [];
+    (keyData.outgoings?.contractors || []).forEach((c) => {
       let delPct = 1.0; // default 100%
       if (c.deliveryPct !== undefined && String(c.deliveryPct).trim() !== "") {
         delPct = parseMoney(c.deliveryPct);
@@ -750,153 +1229,362 @@ export function buildDeepDiveData({
       const applicablePct = isDel ? delPct : (1 - delPct);
       if (applicablePct <= 0.001) return;
 
-      const allocs = c.allocations?.[yearIndex] || c.monthlyAllocations || [];
-      const rawAmt = isFYTotal
-        ? c.totals?.[yearIndex] || 0
-        : parseMoney(allocs[mIdx] || "0");
+      let rawAmt = 0;
+      for (let i = 0; i < monthCount; i++) {
+        const currDate = new Date(targetYear, targetMonth + i, 1);
+        let foundY = yearIndex;
+        let foundC = (mIdx + i) % 12;
+        if (keyData.outgoings?.headers) {
+          for (const y of [1, 2, 3]) {
+            const hdrs = keyData.outgoings.headers[y] || [];
+            for (let c = 0; c < hdrs.length; c++) {
+              const hd = DeepDiveEngine.parseHeaderDate(hdrs[c]);
+              if (hd && hd.getFullYear() === currDate.getFullYear() && hd.getMonth() === currDate.getMonth()) {
+                foundY = y;
+                foundC = c;
+                break;
+              }
+            }
+          }
+        }
+        const allocs = c.allocations?.[foundY] || c.monthlyAllocations || [];
+        rawAmt += parseMoney(allocs[foundC] || 0);
+      }
+
       const amt = Math.round(rawAmt * applicablePct);
       if (amt > 0) {
-        items.push({
+        contractors.push({
           name: c.name,
-          client: "",
-          detail: `Contractor • ${Math.round(applicablePct * 100)}% delivery`,
-          badge: "Contractor",
+          role: "",
           amount: amt,
+          totalCost: rawAmt,
+          pct: applicablePct,
         });
       }
     });
+    const conTotal = contractors.reduce((s, c) => s + c.amount, 0);
 
     // D. Additional staff costs: Making up CoS & Profit share
-    if (isDel && keyData.outgoingsMeta?.makingUpCosBase?.[yIdx]) {
-      const cosVal = isFYTotal
-        ? keyData.outgoingsMeta.makingUpCosBase[yIdx].reduce((a, b) => a + b, 0)
-        : (keyData.outgoingsMeta.makingUpCosBase[yIdx][mIdx] || 0);
-      if (cosVal > 0) {
-        items.push({
-          name: "Making up CoS",
-          client: "",
-          detail: "Cost of sale adjustment",
-          badge: "CoS",
-          amount: Math.round(cosVal),
-        });
+    let cosTotal = 0;
+    let psTotal = 0;
+    let manualStaffAdjTotal = 0;
+
+    for (let i = 0; i < monthCount; i++) {
+      const currDate = new Date(targetYear, targetMonth + i, 1);
+      let foundYIdx = -1;
+      let foundMIdx = -1;
+
+      if (keyData.outgoings?.headers) {
+        for (const y of [1, 2, 3]) {
+          const hdrs = keyData.outgoings.headers[y] || [];
+          for (let c = 0; c < hdrs.length; c++) {
+            const hd = DeepDiveEngine.parseHeaderDate(hdrs[c]);
+            if (hd && hd.getFullYear() === currDate.getFullYear() && hd.getMonth() === currDate.getMonth()) {
+              foundYIdx = y - 1;
+              foundMIdx = c;
+              break;
+            }
+          }
+          if (foundYIdx !== -1) break;
+        }
+      }
+
+      if (foundYIdx === -1) {
+        foundYIdx = Math.max(0, yearIndex - 1);
+        foundMIdx = (mIdx + i) % 12;
+      }
+
+      if (isScenarioView && scenariosConfig?.scenarioMeta) {
+        const sm = scenariosConfig.scenarioMeta;
+        if (isDel) {
+          cosTotal += (sm.mCos?.[foundMIdx] !== undefined)
+            ? sm.mCos[foundMIdx]
+            : parseMoney(keyData.outgoingsMeta?.makingUpCosBase?.[foundYIdx]?.[foundMIdx] || 0);
+          psTotal += (sm.psDel?.[foundMIdx] !== undefined)
+            ? sm.psDel[foundMIdx]
+            : parseMoney(keyData.outgoingsMeta?.profitShareBaseDel?.[foundYIdx]?.[foundMIdx] || 0);
+          manualStaffAdjTotal += sm.adjDelStaff?.[foundMIdx] || 0;
+        } else {
+          psTotal += (sm.psNonDel?.[foundMIdx] !== undefined)
+            ? sm.psNonDel[foundMIdx]
+            : parseMoney(keyData.outgoingsMeta?.profitShareBaseNonDel?.[foundYIdx]?.[foundMIdx] || 0);
+          manualStaffAdjTotal += sm.adjNonDelStaff?.[foundMIdx] || 0;
+        }
+      } else {
+        if (isDel && keyData.outgoingsMeta?.makingUpCosBase?.[foundYIdx]) {
+          cosTotal += parseMoney(keyData.outgoingsMeta.makingUpCosBase[foundYIdx][foundMIdx] || 0);
+        }
+
+        if (keyData.outgoingsMeta) {
+          const psArr = isDel
+            ? keyData.outgoingsMeta.profitShareBaseDel?.[foundYIdx]
+            : keyData.outgoingsMeta.profitShareBaseNonDel?.[foundYIdx];
+          if (psArr) {
+            psTotal += parseMoney(psArr[foundMIdx] || 0);
+          }
+        }
       }
     }
+    cosTotal = Math.round(cosTotal);
+    psTotal = Math.round(psTotal);
+    manualStaffAdjTotal = Math.round(manualStaffAdjTotal);
 
-    if (keyData.outgoingsMeta) {
-      const psArr = isDel ? keyData.outgoingsMeta.profitShareBaseDel?.[yIdx] : keyData.outgoingsMeta.profitShareBaseNonDel?.[yIdx];
-      const psVal = psArr ? (isFYTotal ? psArr.reduce((a, b) => a + b, 0) : (psArr[mIdx] || 0)) : 0;
-      if (psVal > 0) {
-        items.push({
-          name: "Profit share",
-          client: "",
-          detail: "Profit share allocation",
-          badge: "Profit Share",
-          amount: Math.round(psVal),
-        });
-      }
-    }
-
-    // E. Rounding / Drift adjustment to match cellValue exactly
+    // Build expandable and flat sections matching original WebApp (WebApp.html lines 16428-16520)
+    const sections = [];
     const targetCellVal = parseMoney(cellValue);
-    const sumItems = items.reduce((s, i) => s + i.amount, 0);
-    const drift = Math.round(targetCellVal - sumItems);
-    if (Math.abs(drift) >= 1) {
-      items.push({
-        name: "Rounding adjustment",
-        client: "",
-        detail: "Alignment with ledger",
-        badge: "Adjustment",
-        amount: drift,
+
+    if (isRestricted) {
+      // In the original app (WebApp.html line 16431):
+      // restrictedTotal = cellTotal - conTotal - addTotal;
+      // This includes salaries and dividends combined in the cell, without exposing dividend details.
+      const restrictedTotal = Math.round(targetCellVal - conTotal - cosTotal - psTotal - manualStaffAdjTotal);
+      if (Math.abs(restrictedTotal) >= 0.01) {
+        sections.push({
+          key: "salaries",
+          title: "Salaries",
+          amount: restrictedTotal,
+          isAccordion: false,
+          items: [],
+        });
+      }
+    } else {
+      if (Math.abs(salTotal) >= 0.01) {
+        sections.push({
+          key: "salaries",
+          title: "Salaries",
+          amount: salTotal,
+          isAccordion: true,
+          items: salaries,
+        });
+      }
+
+      if (Math.abs(divTotal) >= 0.01) {
+        sections.push({
+          key: "dividends",
+          title: "Dividends as salary",
+          amount: divTotal,
+          isAccordion: false,
+          items: dividends,
+        });
+      }
+    }
+
+    if (Math.abs(conTotal) >= 0.01) {
+      sections.push({
+        key: "contractors",
+        title: "Contractors",
+        amount: conTotal,
+        isAccordion: true,
+        items: contractors,
       });
+    }
+
+    if (Math.abs(cosTotal) >= 0.01) {
+      sections.push({
+        key: "cos",
+        title: "Making up CoS",
+        amount: cosTotal,
+        isAccordion: false,
+        items: [],
+      });
+    }
+
+    if (Math.abs(psTotal) >= 0.01) {
+      sections.push({
+        key: "profitShare",
+        title: "Profit share",
+        amount: psTotal,
+        isAccordion: false,
+        items: [],
+      });
+    }
+
+    if (Math.abs(manualStaffAdjTotal) >= 0.01) {
+      sections.push({
+        key: "manualStaffAdj",
+        title: "Manual scenario adjustment",
+        amount: manualStaffAdjTotal,
+        isAdjustment: true,
+        items: [],
+      });
+    }
+
+    // Drift / Rounding adjustment is strictly restricted to full users (WebApp.html line 16513)
+    if (!isRestricted) {
+      let calculatedTotal = salTotal + divTotal + conTotal + cosTotal + psTotal + manualStaffAdjTotal;
+      let drift = Math.round(targetCellVal - calculatedTotal);
+
+      // If minor rounding drift (<= £2), absorb into the largest section so no rounding error exists
+      if (Math.abs(drift) > 0 && Math.abs(drift) <= 2 && sections.length > 0) {
+        let maxSec = sections[0];
+        for (let s = 1; s < sections.length; s++) {
+          if (!sections[s].isAdjustment && sections[s].amount > maxSec.amount) {
+            maxSec = sections[s];
+          }
+        }
+        maxSec.amount += drift;
+        calculatedTotal += drift;
+        drift = 0;
+      }
+
+      if (isScenarioView && Math.abs(drift) > 2) {
+        sections.push({
+          key: "scenarioAdj",
+          title: "Scenario adjustment",
+          amount: drift,
+          isAdjustment: true,
+        });
+      } else if (!isScenarioView && Math.abs(drift) > 2) {
+        sections.push({
+          key: "roundingAdj",
+          title: "Rounding adjustment",
+          amount: drift,
+          isAdjustment: true,
+        });
+      }
     }
 
     return {
       title: isDel ? "Delivery staff costs" : "Non-delivery staff costs",
       period: periodLabel,
       total: cellValue,
-      items,
+      sections,
+      items: [],
     };
   }
 
   // 5. Direct Costs / Contractors
   if (ddType === "dirCosts") {
-    const contractors = keyData.outgoings?.contractors || [];
-    const items = contractors.map((c) => {
-      const allocs = c.allocations?.[yearIndex] || c.monthlyAllocations || [];
-      const amt = isFYTotal
-        ? c.totals?.[yearIndex] || 0
-        : parseFloat(String(allocs[monthIndex] || "0").replace(/[£,]/g, "")) || 0;
-      return {
-        name: c.name,
-        detail: `Timing: ${c.paymentTiming || "Curr"} • Delivery: ${c.deliveryPct}`,
-        badge: "Contractor",
-        amount: amt,
-      };
-    }).filter((item) => item.amount > 0);
+    const allJobs = keyData.jobs?.all || [...(keyData.jobs?.confirmed || []), ...(keyData.jobs?.pipeline || [])];
+    let items = [];
+
+    if (count > 1) {
+      items = DeepDiveEngine.aggregatePeriods(effectiveDate, count, (d) =>
+        DeepDiveEngine.getJobsForMonth(allJobs, d, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig)
+      );
+    } else {
+      items = DeepDiveEngine.getJobsForMonth(allJobs, effectiveDate, "dirCosts", effectiveIncomeMode, isScenarioView, scenariosConfig);
+    }
+
+    const totalJobs = items.reduce((s, i) => s + i.amount, 0);
+    let drift = Math.round(parseMoney(cellValue) - totalJobs);
+    if (Math.abs(drift) > 0 && Math.abs(drift) <= 2 && items.length > 0) {
+      let maxIdx = 0;
+      for (let k = 1; k < items.length; k++) {
+        if (items[k].amount > items[maxIdx].amount) maxIdx = k;
+      }
+      items[maxIdx].amount += drift;
+      drift = 0;
+    }
+    if (isScenarioView && Math.abs(drift) > 2) {
+      items.push({ name: "Manual scenario adjustment", amount: drift });
+    } else if (!isScenarioView && Math.abs(drift) > 2) {
+      items.push({ name: "Rounding adjustment", amount: drift });
+    }
 
     return {
-      title: "Direct Costs / Contractors Breakdown",
+      title: "Direct costs",
       period: periodLabel,
       total: cellValue,
       items,
+      sections: null,
     };
   }
 
-  // 6. Overhead Expenses
+  // 6. Overhead & Delivery Expenses (NO VAT or Timing per user instructions)
   if (ddType === "expNonDel" || ddType === "expDel") {
     const isDel = ddType === "expDel";
     const expenses = (keyData.outgoings?.expenses || []).filter((e) =>
       isDel ? e.isDelivery : !e.isDelivery
     );
+    const targetYear = effectiveDate.getFullYear();
+    const targetMonth = effectiveDate.getMonth();
+    const monthCount = count > 1 ? count : 1;
+
     const items = expenses.map((e) => {
-      const allocs = e.allocations?.[yearIndex] || e.monthlyAllocations || [];
-      const amt = isFYTotal
-        ? e.totals?.[yearIndex] || 0
-        : parseFloat(String(allocs[monthIndex] || "0").replace(/[£,]/g, "")) || 0;
+      let amt = 0;
+      for (let i = 0; i < monthCount; i++) {
+        const currDate = new Date(targetYear, targetMonth + i, 1);
+        let foundY = yearIndex;
+        let foundC = (mIdx + i) % 12;
+        if (keyData.outgoings?.headers) {
+          for (const y of [1, 2, 3]) {
+            const hdrs = keyData.outgoings.headers[y] || [];
+            for (let c = 0; c < hdrs.length; c++) {
+              const hd = DeepDiveEngine.parseHeaderDate(hdrs[c]);
+              if (hd && hd.getFullYear() === currDate.getFullYear() && hd.getMonth() === currDate.getMonth()) {
+                foundY = y;
+                foundC = c;
+                break;
+              }
+            }
+          }
+        }
+        const allocs = e.allocations?.[foundY] || e.monthlyAllocations || [];
+        amt += parseMoney(allocs[foundC] || 0);
+      }
+
       return {
         name: e.name,
-        detail: `VAT: ${e.vat || "Yes"} • Timing: ${e.paymentTiming || "Curr"}`,
-        badge: isDel ? "Delivery" : "Overhead",
-        amount: amt,
+        detail: "", // No VAT or timing info per instruction
+        amount: Math.round(amt),
       };
     }).filter((item) => item.amount > 0);
 
+    const totalExp = items.reduce((s, i) => s + i.amount, 0);
+    let drift = Math.round(parseMoney(cellValue) - totalExp);
+    if (Math.abs(drift) > 0 && Math.abs(drift) <= 2 && items.length > 0) {
+      let maxIdx = 0;
+      for (let k = 1; k < items.length; k++) {
+        if (items[k].amount > items[maxIdx].amount) maxIdx = k;
+      }
+      items[maxIdx].amount += drift;
+      drift = 0;
+    }
+    if (isScenarioView && Math.abs(drift) > 2) {
+      items.push({ name: "Manual scenario adjustment", amount: drift });
+    } else if (!isScenarioView && Math.abs(drift) > 2) {
+      items.push({ name: "Rounding adjustment", amount: drift });
+    }
+
     return {
-      title: isDel ? "Delivery Expenses Breakdown" : "Overhead Expenses Breakdown",
+      title: isDel ? "Delivery expenses" : "Non-delivery expenses",
       period: periodLabel,
       total: cellValue,
       items,
+      sections: null,
     };
   }
 
-  // 7. Dividends
+  // 7. Dividends (Performance)
   if (ddType === "dividends") {
     const dividends = keyData.outgoings?.dividends || [];
-    const items = dividends.map((d) => {
-      const allocs = d.allocations?.[yearIndex] || d.monthlyAllocations || [];
-      const amt = isFYTotal
-        ? d.totals?.[yearIndex] || 0
-        : parseFloat(String(allocs[monthIndex] || "0").replace(/[£,]/g, "")) || 0;
-      return {
-        name: d.name,
-        detail: `Timing: ${d.paymentTiming || "Curr"}`,
-        badge: "Distribution",
-        amount: amt,
-      };
-    }).filter((item) => item.amount > 0);
+    const items = dividends
+      .map((d) => {
+        const allocs = d.allocations?.[yearIndex] || d.monthlyAllocations || [];
+        const amt = isFYTotal
+          ? d.totals?.[yearIndex] || 0
+          : parseMoney(allocs[monthIndex] || "0");
+        return {
+          name: d.name,
+          amount: Math.round(amt),
+        };
+      })
+      .filter((item) => item.amount > 0);
 
     return {
-      title: "Dividend Projections Breakdown",
+      title: "Dividends as salary",
       period: periodLabel,
       total: cellValue,
       items,
+      sections: null,
     };
   }
 
-  // 8. Confirmed Cash Incoming (Screenshot 2 Match)
-  if (ddType === "cashConfInflow" || ddType === "cashConfInc") {
+  // 8. Confirmed Cash Incoming (Matching WebApp.html lines 17118-17131)
+  if (ddType === "cashConfInflow" || ddType === "cashConfInc" || ddType === "confCash") {
     const allJobs = keyData.jobs?.all || [...(keyData.jobs?.confirmed || []), ...(keyData.jobs?.pipeline || [])];
-    const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, "cashConfInc");
+    const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, "confCash");
     const targetCellVal = parseMoney(cellValue);
     const sumItems = jobCash.reduce((s, i) => s + i.amount, 0);
     const drift = Math.round(targetCellVal - sumItems);
@@ -915,11 +1603,6 @@ export function buildDeepDiveData({
     if (Math.abs(drift) > 2) {
       items.push({
         name: "Manual adjustment",
-        client: "",
-        desc: "",
-        payDate: null,
-        payDateStr: "",
-        status: "",
         amount: drift,
       });
     }
@@ -929,13 +1612,14 @@ export function buildDeepDiveData({
       period: periodLabel,
       total: cellValue,
       items,
+      sections: null,
     };
   }
 
-  // 9. Pipeline Cash Incoming
-  if (ddType === "cashPipeInflow" || ddType === "cashPipeInc") {
+  // 9. Pipeline Cash Incoming (Matching WebApp.html lines 17118-17131)
+  if (ddType === "cashPipeInflow" || ddType === "cashPipeInc" || ddType === "pipeCash") {
     const allJobs = keyData.jobs?.all || [...(keyData.jobs?.confirmed || []), ...(keyData.jobs?.pipeline || [])];
-    const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, "cashPipeInc");
+    const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, "pipeCash");
     const targetCellVal = parseMoney(cellValue);
     const sumItems = jobCash.reduce((s, i) => s + i.amount, 0);
     const drift = Math.round(targetCellVal - sumItems);
@@ -954,11 +1638,6 @@ export function buildDeepDiveData({
     if (Math.abs(drift) > 2) {
       items.push({
         name: "Manual adjustment",
-        client: "",
-        desc: "",
-        payDate: null,
-        payDateStr: "",
-        status: "",
         amount: drift,
       });
     }
@@ -968,62 +1647,74 @@ export function buildDeepDiveData({
       period: periodLabel,
       total: cellValue,
       items,
+      sections: null,
     };
   }
 
-  // 10. Cash Salaries Outflows
-  if (ddType === "cashSalaries") {
-    const staff = keyData.salaries?.staff || [];
-    const items = staff.map((s) => {
-      const amt = isFYTotal ? s.actualAnnualCost : Math.round(s.actualAnnualCost / 12);
+  // 10. Cash Salaries Outflows (Matching WebApp.html lines 17150-17185)
+  if (ddType === "cashSalaries" || ddType === "salCash") {
+    if (isRestricted) {
       return {
-        name: s.name,
-        client: "",
-        desc: `${s.role || "Staff"} • ${s.isDelivery ? "Delivery" : "Overhead"} Payroll`,
-        payDate: effectiveDate,
-        payDateStr: DeepDiveEngine.formatShortDate(effectiveDate),
-        status: "Salary",
-        amount: amt > 0 ? -amt : amt,
+        title: "Salary payments",
+        period: periodLabel,
+        total: cellValue,
+        items: [],
+        sections: [
+          {
+            title: "Salary payments",
+            amount: parseMoney(cellValue),
+            isAccordion: false,
+          },
+        ],
       };
-    }).filter((i) => i.amount !== 0);
+    }
+
+    const items = CashDeepDiveEngine.getSalariesCash(effectiveDate, keyData.salaries);
+    let total = items.reduce((sum, item) => sum + item.amount, 0);
+
+    const targetCellVal = parseMoney(cellValue);
+    const drift = Math.round(targetCellVal - total);
+    if (Math.abs(drift) > 2) {
+      items.push({
+        name: "Manual adjustment",
+        amount: drift,
+      });
+    }
 
     return {
-      title: "Salary payments",
+      title: "Salaries outgoing",
       period: periodLabel,
       total: cellValue,
       items,
+      sections: null,
     };
   }
 
-  // 11. Cash Contractors
-  if (ddType === "cashContractors") {
-    const contractors = keyData.outgoings?.contractors || [];
-    const items = contractors.map((c) => {
-      const allocs = c.allocations?.[yearIndex] || c.monthlyAllocations || [];
-      const rawAmt = isFYTotal ? c.totals?.[yearIndex] || 0 : parseMoney(allocs[monthIndex] || "0");
-      const gross = rawAmt * (c.vat === "Yes" ? 1.2 : 1.0);
-      const amt = -Math.abs(Math.round(gross));
-      return {
-        name: c.name,
-        client: "",
-        desc: `Timing: ${c.paymentTiming || "Curr"} • Delivery: ${c.deliveryPct}`,
-        payDate: effectiveDate,
-        payDateStr: DeepDiveEngine.formatShortDate(effectiveDate),
-        status: "Contractor",
-        amount: amt,
-      };
-    }).filter((i) => Math.abs(i.amount) > 0);
+  // 11. Cash Contractors (Matching WebApp.html lines 17132-17149)
+  if (ddType === "cashContractors" || ddType === "conCash" || ddType === "conCash_incl") {
+    const list = CashDeepDiveEngine.getOutgoingsCash(effectiveDate, "conCash_incl", keyData);
+    const targetCellVal = parseMoney(cellValue);
+    const total = list.reduce((sum, item) => sum + item.amount, 0);
+    const drift = Math.round(targetCellVal - total);
+
+    if (Math.abs(drift) > 2) {
+      list.push({
+        name: "Manual adjustment",
+        amount: drift,
+      });
+    }
 
     return {
-      title: "Contractor payments",
+      title: "Contractors outgoing",
       period: periodLabel,
       total: cellValue,
-      items,
+      items: list,
+      sections: null,
     };
   }
 
-  // 12. Cash Direct Costs
-  if (ddType === "cashDirCosts") {
+  // 12. Cash Direct Costs (Matching WebApp.html lines 17118-17131)
+  if (ddType === "cashDirCosts" || ddType === "dirCash" || ddType === "dirCash_incl") {
     const allJobs = keyData.jobs?.all || [...(keyData.jobs?.confirmed || []), ...(keyData.jobs?.pipeline || [])];
     const jobCash = CashDeepDiveEngine.getJobCash(allJobs, effectiveDate, "cashDirCosts");
     const targetCellVal = parseMoney(cellValue);
@@ -1044,11 +1735,6 @@ export function buildDeepDiveData({
     if (Math.abs(drift) > 2) {
       items.push({
         name: "Manual adjustment",
-        client: "",
-        desc: "",
-        payDate: null,
-        payDateStr: "",
-        status: "",
         amount: drift,
       });
     }
@@ -1058,59 +1744,75 @@ export function buildDeepDiveData({
       period: periodLabel,
       total: cellValue,
       items,
+      sections: null,
     };
   }
 
-  // 13. Cash Outgoings
-  if (ddType === "cashOutgoings") {
-    const expenses = keyData.outgoings?.expenses || [];
-    const items = expenses.map((e) => {
-      const allocs = e.allocations?.[yearIndex] || e.monthlyAllocations || [];
-      const rawAmt = isFYTotal ? e.totals?.[yearIndex] || 0 : parseMoney(allocs[monthIndex] || "0");
-      const gross = rawAmt * (e.vat === "Yes" ? 1.2 : 1.0);
-      const amt = -Math.abs(Math.round(gross));
-      return {
-        name: e.name,
-        client: "",
-        desc: `Timing: ${e.paymentTiming || "Curr"} • VAT: ${e.vat || "Yes"}`,
-        payDate: effectiveDate,
-        payDateStr: DeepDiveEngine.formatShortDate(effectiveDate),
-        status: "Expense",
-        amount: amt,
-      };
-    }).filter((i) => Math.abs(i.amount) > 0);
+  // 13. Cash Outgoings / Other Expenses (Matching WebApp.html lines 17132-17149)
+  if (ddType === "cashOutgoings" || ddType === "expCash") {
+    const list = CashDeepDiveEngine.getOutgoingsCash(effectiveDate, "expCash", keyData);
+    const targetCellVal = parseMoney(cellValue);
+    const total = list.reduce((sum, item) => sum + item.amount, 0);
+    const drift = Math.round(targetCellVal - total);
+
+    if (Math.abs(drift) > 2) {
+      list.push({
+        name: "Manual adjustment",
+        amount: drift,
+      });
+    }
 
     return {
-      title: "Outgoings payments",
+      title: "Other expenses",
       period: periodLabel,
       total: cellValue,
-      items,
+      items: list,
+      sections: null,
     };
   }
 
-  // 14. Cash Dividends
-  if (ddType === "cashDividends") {
-    const dividends = keyData.outgoings?.dividends || [];
-    const items = dividends.map((d) => {
-      const allocs = d.allocations?.[yearIndex] || d.monthlyAllocations || [];
-      const rawAmt = isFYTotal ? d.totals?.[yearIndex] || 0 : parseMoney(allocs[monthIndex] || "0");
-      const amt = -Math.abs(Math.round(rawAmt));
-      return {
-        name: d.name,
-        client: "",
-        desc: `Timing: ${d.paymentTiming || "Curr"}`,
-        payDate: effectiveDate,
-        payDateStr: DeepDiveEngine.formatShortDate(effectiveDate),
-        status: "Dividend",
-        amount: amt,
-      };
-    }).filter((i) => Math.abs(i.amount) > 0);
-
+  // 14. Cash Dividends (Matching WebApp.html line 17273)
+  if (ddType === "cashDividends" || ddType === "divCash") {
     return {
       title: "Dividends as salary",
       period: periodLabel,
       total: cellValue,
-      items,
+      items: [],
+      sections: [
+        {
+          title: "Dividends as salary",
+          amount: parseMoney(cellValue),
+          isAccordion: false,
+        },
+      ],
+    };
+  }
+
+  // 15. Flat Cash Flow Detail Rows (Matching WebApp.html lines 17272-17283)
+  const cashFlatTitles = {
+    taxCash: "Corporation tax",
+    vatCash: "VAT",
+    nonOpIncCash: "Non-operating income",
+    nonOpExpCash: "Non-operating expenses",
+    otherMoveCash: "Other cash movements",
+    cashTaxes: "Tax payments",
+    cashOther: "Other cash movements",
+  };
+
+  if (cashFlatTitles[ddType]) {
+    const displayTitle = cashFlatTitles[ddType];
+    return {
+      title: displayTitle,
+      period: periodLabel,
+      total: cellValue,
+      items: [],
+      sections: [
+        {
+          title: displayTitle,
+          amount: parseMoney(cellValue),
+          isAccordion: false,
+        },
+      ],
     };
   }
 
@@ -1119,6 +1821,7 @@ export function buildDeepDiveData({
     period: periodLabel,
     total: cellValue,
     items: [],
+    sections: null,
   };
 }
 
@@ -1178,6 +1881,17 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
   let sumDeltaConfRev = 0, sumDeltaPipeRev = 0, sumDeltaNB = 0;
   let sumDeltaDC = 0, sumDeltaDelStaff = 0, sumDeltaDelExp = 0;
   let sumDeltaNonDelStaff = 0, sumDeltaNonDelExp = 0;
+
+  const scenarioMeta = {
+    mCos: new Array(12).fill(0),
+    psDel: new Array(12).fill(0),
+    psNonDel: new Array(12).fill(0),
+    adjDelStaff: new Array(12).fill(0),
+    adjNonDelStaff: new Array(12).fill(0),
+    adjDelExp: new Array(12).fill(0),
+    adjNonDelExp: new Array(12).fill(0),
+    adjRev: new Array(12).fill(0),
+  };
 
   for (let m = 0; m <= 12; m++) {
     const isTotalCol = m === 12;
@@ -1305,8 +2019,9 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       let pBase = newTotalRev - newDirectCosts - newOtherExpDel - newOtherExpNonDel - trueStaffDel - trueStaffNonDel;
 
       let p = 0;
-      if (String(outgoingsMeta.profitShareSwitch || "").trim().toLowerCase() === "monthly") {
-        p = outgoingsMeta.profitSharePct || 0;
+      const psSwitch = String(scenariosConfig.profitShareSwitch || outgoingsMeta.profitShareSwitch || "").trim().toLowerCase();
+      if (psSwitch === "monthly") {
+        p = scenariosConfig.profitSharePct !== undefined ? scenariosConfig.profitSharePct : (outgoingsMeta.profitSharePct || 0);
       }
 
       let M = 0, B = 0, B_del = 0, B_nonDel = 0;
@@ -1353,6 +2068,15 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
         B_del = B * d;
         B_nonDel = B * (1 - d);
       }
+
+      scenarioMeta.mCos[m] = Math.round(M);
+      scenarioMeta.psDel[m] = Math.round(B_del);
+      scenarioMeta.psNonDel[m] = Math.round(B_nonDel);
+      scenarioMeta.adjDelStaff[m] = adjDelStaffRaw;
+      scenarioMeta.adjNonDelStaff[m] = adjNonDelStaffRaw;
+      scenarioMeta.adjDelExp[m] = adjDelExp;
+      scenarioMeta.adjNonDelExp[m] = adjNonDelExp;
+      scenarioMeta.adjRev[m] = adjs.rev[m] || 0;
 
       adjDelStaff = Math.round((M - baseM) + (B_del - basePS_del) + adjDelStaffRaw);
       adjNonDelStaff = Math.round((B_nonDel - basePS_nonDel) + adjNonDelStaffRaw);
@@ -1444,6 +2168,7 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
     }
   }
 
+  yearData.scenarioMeta = scenarioMeta;
   return yearData;
 }
 

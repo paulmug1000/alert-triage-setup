@@ -9,6 +9,7 @@ export default function CashflowBreakdownView({
   isLoading,
   error,
   onRefresh,
+  isSenior = false,
 }) {
   const [activeCategory, setActiveCategory] = useState("cashConfInc");
 
@@ -169,6 +170,11 @@ export default function CashflowBreakdownView({
         });
       }
 
+      if (isSenior && results.length > 0) {
+        const totalSal = results.reduce((sum, item) => sum + item.amount, 0);
+        return [{ name: "Salary payments", amount: totalSal }];
+      }
+
       return results;
     }
 
@@ -201,6 +207,7 @@ export default function CashflowBreakdownView({
       if (foundY !== -1) {
         items.forEach((item) => {
           if (!item.name || item.name.toLowerCase() === "hide") return;
+          if (item.name.toLowerCase().includes("depreciation")) return;
           const payTiming = item.paymentTiming || "Curr";
           let yearToRead = foundY;
           let colToRead = foundC;
@@ -321,7 +328,7 @@ export default function CashflowBreakdownView({
     }
 
     return [];
-  }, [activeCategory, allJobs, targetDate, keyData, selectedMonthIdx, data]);
+  }, [activeCategory, allJobs, targetDate, keyData, selectedMonthIdx, data, isSenior]);
 
   // Sum of computed items
   const computedSum = useMemo(() => {
@@ -430,7 +437,7 @@ export default function CashflowBreakdownView({
       >
         <Spinner size={32} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
-          Loading {clientName} cash breakdowns...
+          Please wait - loading
         </p>
       </div>
     );
@@ -474,13 +481,14 @@ export default function CashflowBreakdownView({
   }
 
   const dropdownStyle = {
+    fontFamily: "'Kumbh Sans', sans-serif",
     border: "1.5px solid #0047AB",
     borderRadius: "8px",
-    padding: "6px 14px",
-    fontSize: "15px",
-    fontWeight: 500,
+    padding: "0.6rem 0.85rem",
+    fontSize: "1.1rem",
+    fontWeight: 600,
     color: "#0047AB",
-    background: "#ffffff",
+    backgroundColor: "#f8fafc",
     cursor: "pointer",
     outline: "none",
     boxShadow: "0 1px 2px rgba(0, 0, 0, 0.04)",
@@ -583,100 +591,100 @@ export default function CashflowBreakdownView({
       </div>
 
       {/* Main Breakdown Content Container */}
-      <div style={{ width: "100%", maxWidth: (activeCategory === "cashInvoicesSent" || isTableLayout) ? "960px" : "720px", margin: "0 auto" }}>
+      <div style={{ width: "fit-content", maxWidth: "100%", margin: "0" }}>
         
         {/* 1. Invoices Sent View (Matching original WebApp table layout) */}
         {activeCategory === "cashInvoicesSent" ? (
           <div>
-            {/* Confirmed Sub-table */}
-            {invoicesSentData?.confirmed?.length > 0 && (
-              <div style={{ marginTop: "1rem", marginBottom: "2rem" }}>
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "auto", minWidth: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
-                    <thead>
-                      <tr>
-                        <td colSpan={7} style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "left", padding: "10px 10px 10px 0", borderBottom: "1px solid #e5e7eb" }}>
-                          Confirmed
-                        </td>
-                        <td style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "right", padding: "10px 10px", borderBottom: "1px solid #e5e7eb" }}>
-                          {formatMoney(invoicesSentData.confirmed.reduce((sum, inv) => sum + inv.totalAmount, 0))}
-                        </td>
-                        <td style={{ borderBottom: "1px solid #e5e7eb" }}></td>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {invoicesSentData.confirmed.map((inv, idx) => (
-                        <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                          <td style={{ padding: "12px 10px 12px 0", color: "#6b7280", whiteSpace: "nowrap" }}>
-                            {DeepDiveEngine.formatShortDate(inv.sendDate)}
+            {(invoicesSentData?.confirmed?.length > 0 || invoicesSentData?.pipeline?.length > 0) ? (
+              <div style={{ width: "fit-content", maxWidth: "100%", marginTop: "1rem", marginBottom: "2rem", overflowX: "auto" }}>
+                <table style={{ width: "auto", borderCollapse: "collapse", fontSize: "14px" }}>
+                  {/* Confirmed Section */}
+                  {invoicesSentData?.confirmed?.length > 0 && (
+                    <>
+                      <thead>
+                        <tr>
+                          <td colSpan={7} style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "left", padding: "10px 10px 10px 0", borderBottom: "1px solid #e5e7eb" }}>
+                            Confirmed
                           </td>
-                          <td style={{ padding: "12px 10px", fontWeight: 600, color: "#111827" }}>{inv.client}</td>
-                          <td style={{ padding: "12px 10px", color: "#475569" }}>{inv.jobName}</td>
-                          <td style={{ padding: "12px 10px", color: "#6b7280" }}>{inv.type}</td>
-                          <td style={{ padding: "12px 10px", color: "#6b7280" }}>{inv.ref}</td>
-                          <td style={{ padding: "12px 10px", textAlign: "right", color: "#111827" }}>
-                            {formatMoney(inv.amountExVat)} <span style={{ fontSize: "0.85em", color: "#94a3b8", marginLeft: "4px" }}>ex</span>
+                          <td style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "right", padding: "10px 10px", borderBottom: "1px solid #e5e7eb" }}>
+                            {formatMoney(invoicesSentData.confirmed.reduce((sum, inv) => sum + inv.totalAmount, 0))}
                           </td>
-                          <td style={{ padding: "12px 10px", textAlign: "right", color: "#475569" }}>
-                            {formatMoney(inv.vatAmount)} <span style={{ fontSize: "0.85em", color: "#94a3b8", marginLeft: "4px" }}>VAT</span>
-                          </td>
-                          <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
-                            {formatMoney(inv.totalAmount)}
-                          </td>
-                          <td style={{ padding: "12px 0 12px 10px", color: "#6b7280", textAlign: "right" }}>{inv.status}</td>
+                          <td style={{ borderBottom: "1px solid #e5e7eb" }}></td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+                      </thead>
+                      <tbody>
+                        {invoicesSentData.confirmed.map((inv, idx) => (
+                          <tr key={`conf-${idx}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                            <td style={{ padding: "12px 10px 12px 0", color: "#6b7280", whiteSpace: "nowrap" }}>
+                              {DeepDiveEngine.formatShortDate(inv.sendDate)}
+                            </td>
+                            <td style={{ padding: "12px 10px", fontWeight: 600, color: "#111827" }}>{inv.client}</td>
+                            <td style={{ padding: "12px 10px", color: "#475569" }}>{inv.jobName}</td>
+                            <td style={{ padding: "12px 10px", color: "#6b7280" }}>{inv.type}</td>
+                            <td style={{ padding: "12px 10px", color: "#6b7280" }}>{inv.ref || ""}</td>
+                            <td style={{ padding: "12px 10px", textAlign: "right", color: "#111827", lineHeight: "1.2" }}>
+                              <div>{formatMoney(inv.amountExVat)}</div>
+                              <div style={{ fontSize: "0.78em", color: "#94a3b8", marginTop: "2px" }}>ex</div>
+                            </td>
+                            <td style={{ padding: "12px 10px", textAlign: "right", color: "#475569", lineHeight: "1.2" }}>
+                              <div>{formatMoney(inv.vatAmount)}</div>
+                              <div style={{ fontSize: "0.78em", color: "#94a3b8", marginTop: "2px" }}>VAT</div>
+                            </td>
+                            <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
+                              {formatMoney(inv.totalAmount)}
+                            </td>
+                            <td style={{ padding: "12px 0 12px 10px", color: "#6b7280", textAlign: "right" }}>{inv.status || ""}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </>
+                  )}
 
-            {/* Pipeline Sub-table */}
-            {invoicesSentData?.pipeline?.length > 0 && (
-              <div style={{ marginTop: "1rem", marginBottom: "2rem" }}>
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "auto", minWidth: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
-                    <thead>
-                      <tr>
-                        <td colSpan={7} style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "left", padding: "10px 10px 10px 0", borderBottom: "1px solid #e5e7eb" }}>
-                          Pipeline
-                        </td>
-                        <td style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "right", padding: "10px 10px", borderBottom: "1px solid #e5e7eb" }}>
-                          {formatMoney(invoicesSentData.pipeline.reduce((sum, inv) => sum + inv.totalAmount, 0))}
-                        </td>
-                        <td style={{ borderBottom: "1px solid #e5e7eb" }}></td>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {invoicesSentData.pipeline.map((inv, idx) => (
-                        <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                          <td style={{ padding: "12px 10px 12px 0", color: "#6b7280", whiteSpace: "nowrap" }}>
-                            {DeepDiveEngine.formatShortDate(inv.sendDate)}
+                  {/* Pipeline Section */}
+                  {invoicesSentData?.pipeline?.length > 0 && (
+                    <>
+                      <thead>
+                        <tr>
+                          <td colSpan={7} style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "left", padding: "16px 10px 10px 0", borderBottom: "1px solid #e5e7eb" }}>
+                            Pipeline
                           </td>
-                          <td style={{ padding: "12px 10px", fontWeight: 600, color: "#111827" }}>{inv.client}</td>
-                          <td style={{ padding: "12px 10px", color: "#475569" }}>{inv.jobName}</td>
-                          <td style={{ padding: "12px 10px", color: "#6b7280" }}>{inv.type}</td>
-                          <td style={{ padding: "12px 10px", color: "#6b7280" }}>{inv.ref}</td>
-                          <td style={{ padding: "12px 10px", textAlign: "right", color: "#111827" }}>
-                            {formatMoney(inv.amountExVat)} <span style={{ fontSize: "0.85em", color: "#94a3b8", marginLeft: "4px" }}>ex</span>
+                          <td style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "right", padding: "16px 10px 10px 10px", borderBottom: "1px solid #e5e7eb" }}>
+                            {formatMoney(invoicesSentData.pipeline.reduce((sum, inv) => sum + inv.totalAmount, 0))}
                           </td>
-                          <td style={{ padding: "12px 10px", textAlign: "right", color: "#475569" }}>
-                            {formatMoney(inv.vatAmount)} <span style={{ fontSize: "0.85em", color: "#94a3b8", marginLeft: "4px" }}>VAT</span>
-                          </td>
-                          <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
-                            {formatMoney(inv.totalAmount)}
-                          </td>
-                          <td style={{ padding: "12px 0 12px 10px", color: "#6b7280", textAlign: "right" }}>{inv.status}</td>
+                          <td style={{ borderBottom: "1px solid #e5e7eb" }}></td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {invoicesSentData.pipeline.map((inv, idx) => (
+                          <tr key={`pipe-${idx}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                            <td style={{ padding: "12px 10px 12px 0", color: "#6b7280", whiteSpace: "nowrap" }}>
+                              {DeepDiveEngine.formatShortDate(inv.sendDate)}
+                            </td>
+                            <td style={{ padding: "12px 10px", fontWeight: 600, color: "#111827" }}>{inv.client}</td>
+                            <td style={{ padding: "12px 10px", color: "#475569" }}>{inv.jobName}</td>
+                            <td style={{ padding: "12px 10px", color: "#6b7280" }}>{inv.type}</td>
+                            <td style={{ padding: "12px 10px", color: "#6b7280" }}>{inv.ref || ""}</td>
+                            <td style={{ padding: "12px 10px", textAlign: "right", color: "#111827", lineHeight: "1.2" }}>
+                              <div>{formatMoney(inv.amountExVat)}</div>
+                              <div style={{ fontSize: "0.78em", color: "#94a3b8", marginTop: "2px" }}>ex</div>
+                            </td>
+                            <td style={{ padding: "12px 10px", textAlign: "right", color: "#475569", lineHeight: "1.2" }}>
+                              <div>{formatMoney(inv.vatAmount)}</div>
+                              <div style={{ fontSize: "0.78em", color: "#94a3b8", marginTop: "2px" }}>VAT</div>
+                            </td>
+                            <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
+                              {formatMoney(inv.totalAmount)}
+                            </td>
+                            <td style={{ padding: "12px 0 12px 10px", color: "#6b7280", textAlign: "right" }}></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </>
+                  )}
+                </table>
               </div>
-            )}
-
-            {invoicesSentData?.confirmed?.length === 0 && invoicesSentData?.pipeline?.length === 0 && (
+            ) : (
               <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
                 No invoices sent in this period.
               </div>
@@ -684,8 +692,8 @@ export default function CashflowBreakdownView({
           </div>
         ) : isTableLayout ? (
           /* 2. Confirmed Cash / Pipeline Cash / Direct Cost Payments: Table matching original buildJobCashHtml */
-          <div style={{ overflowX: "auto", paddingBottom: "10px" }}>
-            <table style={{ width: "auto", minWidth: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.95em", whiteSpace: "nowrap" }}>
+          <div style={{ width: "fit-content", maxWidth: "100%", overflowX: "auto", paddingBottom: "10px" }}>
+            <table style={{ width: "auto", borderCollapse: "collapse", textAlign: "left", fontSize: "0.95em", whiteSpace: "nowrap" }}>
               <tbody>
                 {/* Header Total Row */}
                 <tr>
@@ -747,62 +755,47 @@ export default function CashflowBreakdownView({
           </div>
         ) : (
           /* 3. Simple List (Salaries, Contractors, Outgoings, Taxes) matching original buildSimpleListHtml */
-          <div>
-            {/* Top Total */}
-            <div style={{ display: "flex", justifyContent: "flex-end", padding: "10px 0", borderBottom: "1px solid #e5e7eb" }}>
-              <span style={{ fontSize: "1.2rem", fontWeight: 700, color: "#0047AB" }}>
-                {formatMoney(finalDisplayTotal)}
-              </span>
-            </div>
-
-            {listData.length === 0 ? (
-              <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
-                No transactions in this period.
-              </div>
-            ) : (
-              listData.map((item, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    padding: "12px 0",
-                    borderBottom: "1px solid #f1f5f9",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: "15px", fontWeight: 500, color: "#111827" }}>
-                      {item.name || item.client}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: "15px", fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap" }}>
-                    {formatMoney(item.amount)}
-                  </div>
-                </div>
-              ))
-            )}
-
-            {/* Manual Adjustment Row */}
-            {Math.abs(manualAdjustment) > 2 && (
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "12px 0",
-                  borderTop: "1px dashed #e2e8f0",
-                  background: "#fafafa",
-                }}
-              >
-                <div style={{ fontSize: "14px", color: "#64748b", fontStyle: "italic" }}>
-                  Manual adjustment
-                </div>
-                <div style={{ fontSize: "15px", fontWeight: 700, color: "#0047AB" }}>
-                  {formatMoney(manualAdjustment)}
-                </div>
-              </div>
-            )}
+          <div style={{ width: "fit-content", minWidth: "460px", maxWidth: "100%", overflowX: "auto" }}>
+            <table style={{ width: "auto", minWidth: "460px", borderCollapse: "collapse", fontSize: "14px" }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: "10px 48px 10px 0", borderBottom: "1px solid #e5e7eb", textAlign: "left" }}></th>
+                  <th style={{ padding: "10px 0", borderBottom: "1px solid #e5e7eb", textAlign: "right", fontSize: "1.2rem", fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap" }}>
+                    {formatMoney(finalDisplayTotal)}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {listData.length === 0 ? (
+                  <tr>
+                    <td colSpan={2} style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
+                      No transactions in this period.
+                    </td>
+                  </tr>
+                ) : (
+                  listData.map((item, idx) => (
+                    <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                      <td style={{ padding: "12px 48px 12px 0", fontSize: "15px", fontWeight: 500, color: "#111827", textAlign: "left" }}>
+                        {item.name || item.client}
+                      </td>
+                      <td style={{ padding: "12px 0", fontSize: "15px", fontWeight: 700, color: "#0047AB", textAlign: "right", whiteSpace: "nowrap" }}>
+                        {formatMoney(item.amount)}
+                      </td>
+                    </tr>
+                  ))
+                )}
+                {Math.abs(manualAdjustment) > 2 && (
+                  <tr style={{ borderTop: "1px dashed #e2e8f0", background: "#fafafa" }}>
+                    <td style={{ padding: "12px 48px 12px 0", fontSize: "14px", color: "#64748b", fontStyle: "italic", textAlign: "left" }}>
+                      Manual adjustment
+                    </td>
+                    <td style={{ padding: "12px 0", fontSize: "15px", fontWeight: 700, color: "#0047AB", textAlign: "right", whiteSpace: "nowrap" }}>
+                      {formatMoney(manualAdjustment)}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         )}
       </div>

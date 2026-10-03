@@ -93,7 +93,19 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
         if (!row || !row[0] || String(row[0]).trim().length === 0) return null;
         const email = String(row[0] || "").toLowerCase().trim();
         const name = String(row[1] || "").trim();
-        const role = String(row[2] || "").trim().toLowerCase() === "admin" ? "Admin" : "ClientManager";
+        const roleRaw = String(row[2] || "").trim();
+        const roleLower = roleRaw.toLowerCase();
+        let role = "ClientUser";
+        if (roleLower === "admin") {
+          role = "Admin";
+        } else if (roleLower.includes("senior")) {
+          role = "Senior (Restricted)";
+        } else if (roleLower === "clientmanager" || roleLower === "client manager" || roleLower === "manager") {
+          role = "ClientManager";
+        } else if (roleLower === "clientuser" || roleLower === "client user" || roleLower === "client") {
+          role = "ClientUser";
+        }
+
         const assignedRaw = String(row[3] || "").trim();
         const assignedClients = assignedRaw === "*" ? "*" : assignedRaw.split(",").map(c => c.trim()).filter(Boolean);
         const status = String(row[4] || "").trim().toLowerCase() === "suspended" ? "Suspended" : "Active";
@@ -106,6 +118,9 @@ export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_A
           email,
           name: name || email.split("@")[0],
           role,
+          isAdmin: role === "Admin",
+          isSenior: role === "Senior (Restricted)",
+          isClientUser: role === "ClientUser",
           assignedClients,
           status,
           createdAt,
@@ -222,6 +237,35 @@ export function matchesClientName(assignedIdentifier, actualClientName) {
   if (sa.length >= 3 && (sb.includes(sa) || sa.includes(sb))) return true;
   if (ca.length >= 3 && (cb.includes(ca) || ca.includes(cb))) return true;
 
+  return false;
+}
+
+/**
+ * Check if a role is strictly restricted to the client-facing Pulse Portal (never allowed in PMA)
+ */
+export function isPulseOnlyRole(role) {
+  if (!role) return true;
+  const r = String(role).trim().toLowerCase();
+  return r === "clientuser" || r === "client user" || r === "client" || r.includes("senior");
+}
+
+/**
+ * Check if a user is strictly restricted to the Pulse Portal (ClientUser or Senior (Restricted))
+ */
+export function isPulseOnlyUser(user) {
+  if (!user) return false;
+  if (user.isAdmin || user.role === "Admin") return false;
+  if (user.role === "ClientManager") return false;
+  return isPulseOnlyRole(user.role) || Boolean(user.isSenior) || Boolean(user.isClientUser);
+}
+
+/**
+ * Check if a user has permission to access the Pulse Management Area (PMA)
+ */
+export function canAccessPma(user) {
+  if (!user) return false;
+  if (user.isAdmin || user.role === "Admin") return true;
+  if (user.role === "ClientManager") return true;
   return false;
 }
 

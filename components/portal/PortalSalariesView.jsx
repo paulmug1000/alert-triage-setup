@@ -9,9 +9,12 @@ export default function PortalSalariesView({
   error,
   onRefresh,
 }) {
-  const [searchTerm, setSearchTerm] = useState("");
-
   const salariesData = data?.salaries;
+
+  const currentFyLabel = useMemo(() => {
+    const curYear = data?.outgoings?.currentYear || 2;
+    return data?.outgoings?.fyLabels?.[curYear] || "FY27";
+  }, [data]);
 
   // 9-column headers from sheet or standard defaults
   const headers = useMemo(() => {
@@ -59,21 +62,35 @@ export default function PortalSalariesView({
     return [];
   }, [salariesData]);
 
-  // Filter rows by search term
-  const filteredRows = useMemo(() => {
-    if (!searchTerm.trim()) return rows;
-    const q = searchTerm.toLowerCase().trim();
-    return rows.filter((r) =>
-      r.some((cell) => String(cell || "").toLowerCase().includes(q))
-    );
-  }, [rows, searchTerm]);
+  const handleDownloadCSV = () => {
+    if (!rows || rows.length === 0) return;
+    const dateStr = new Date().toISOString().split("T")[0];
+
+    const header = headers || [];
+    const rowsData = rows.map((r) => r.map((c) => String(c || "")));
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [header, ...rowsData]
+        .map((e) =>
+          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
+        )
+        .join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Pulse_Salaries_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   if (isLoading && !salariesData) {
     return (
       <div style={{ textAlign: "center", padding: "4rem 0" }}>
         <Spinner size={36} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Loading Salaries for {clientName}...
+          Please wait - loading
         </p>
       </div>
     );
@@ -134,33 +151,19 @@ export default function PortalSalariesView({
           <span
             style={{
               padding: "2px 8px",
-              borderRadius: "10px",
+              borderRadius: "4px",
               fontSize: "11px",
               fontWeight: 700,
               background: "rgba(0, 71, 171, 0.08)",
               color: "#0047AB",
             }}
           >
-            {rows.length} staff
+            {currentFyLabel}
           </span>
         </div>
 
-        {/* Search & Refresh */}
+        {/* Actions */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <input
-            type="text"
-            placeholder="Search salaries..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            style={{
-              padding: "4px 8px",
-              borderRadius: "6px",
-              border: "1px solid #cbd5e1",
-              fontSize: "12px",
-              width: "180px",
-            }}
-          />
-
           <button
             type="button"
             onClick={onRefresh}
@@ -187,6 +190,29 @@ export default function PortalSalariesView({
                 <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
               </svg>
             )}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadCSV}
+            title="Download CSV"
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#0047AB",
+              borderRadius: "50%",
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
           </button>
         </div>
       </div>
@@ -241,14 +267,14 @@ export default function PortalSalariesView({
             </thead>
 
             <tbody>
-              {filteredRows.length === 0 ? (
+              {rows.length === 0 ? (
                 <tr>
                   <td colSpan={headers.length} style={{ padding: "3rem", textAlign: "center", color: "#64748b" }}>
                     No staff records found.
                   </td>
                 </tr>
               ) : (
-                filteredRows.map((row, rIdx) => {
+                rows.map((row, rIdx) => {
                   return (
                     <tr
                       key={rIdx}

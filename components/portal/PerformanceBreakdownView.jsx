@@ -9,6 +9,7 @@ export default function PerformanceBreakdownView({
   isLoading,
   error,
   onRefresh,
+  isSenior = false,
 }) {
   const years = useMemo(() => data?.years || [], [data?.years]);
 
@@ -176,6 +177,78 @@ export default function PerformanceBreakdownView({
         cellTotal = isFY
           ? parseMoney(targetRow.totalVal)
           : parseMoney(targetRow.monthlyValues?.[activePeriod.monthIdx]);
+      }
+
+      // If user is Senior (Restricted), match original WebApp: restrictedTotal = cellTotal - conTotal - addTotal
+      if (isSenior) {
+        // Contractors
+        const contractorsList = keyData.outgoings?.contractors || [];
+        const conResults = [];
+        contractorsList.forEach((c) => {
+          let delPct = 1.0;
+          if (c.deliveryPct !== undefined && String(c.deliveryPct).trim() !== "") {
+            delPct = parseMoney(c.deliveryPct);
+            if (String(c.deliveryPct).includes("%")) delPct = delPct / 100;
+            else if (delPct > 1) delPct = delPct / 100;
+          }
+          const applicablePct = isDel ? delPct : (1 - delPct);
+          if (applicablePct <= 0.001) return;
+
+          const allocs = c.allocations?.[yIdx + 1] || c.monthlyAllocations || [];
+          const rawAmt = isFY
+            ? (c.totals?.[yIdx + 1] || 0)
+            : parseMoney(allocs[mIdx] || "0");
+          const amt = Math.round(rawAmt * applicablePct);
+          if (amt > 0) {
+            conResults.push({
+              client: c.name,
+              jobName: "Contractors",
+              amount: amt,
+              detail: `Contractor • ${Math.round(applicablePct * 100)}% delivery • Timing: ${c.paymentTiming || "Curr"}`,
+            });
+          }
+        });
+        const conTotal = conResults.reduce((s, i) => s + i.amount, 0);
+
+        let cosVal = 0;
+        if (isDel && keyData.outgoingsMeta?.makingUpCosBase?.[yIdx]) {
+          cosVal = isFY
+            ? keyData.outgoingsMeta.makingUpCosBase[yIdx].reduce((a, b) => a + b, 0)
+            : (keyData.outgoingsMeta.makingUpCosBase[yIdx][mIdx] || 0);
+        }
+        let psVal = 0;
+        if (keyData.outgoingsMeta) {
+          const psArr = isDel ? keyData.outgoingsMeta.profitShareBaseDel?.[yIdx] : keyData.outgoingsMeta.profitShareBaseNonDel?.[yIdx];
+          psVal = psArr ? (isFY ? psArr.reduce((a, b) => a + b, 0) : (psArr[mIdx] || 0)) : 0;
+        }
+
+        const restrictedTotal = Math.round(cellTotal - conTotal - cosVal - psVal);
+        if (Math.abs(restrictedTotal) >= 0.01) {
+          results.push({
+            client: "Salaries",
+            jobName: "Salaries",
+            amount: restrictedTotal,
+            detail: "Salaries & remuneration",
+          });
+        }
+        results.push(...conResults);
+        if (cosVal > 0) {
+          results.push({
+            client: "Making up CoS",
+            jobName: "Additional staff costs",
+            amount: Math.round(cosVal),
+            detail: "Cost of sale adjustment (delivery only)",
+          });
+        }
+        if (psVal > 0) {
+          results.push({
+            client: "Profit share",
+            jobName: "Additional staff costs",
+            amount: Math.round(psVal),
+            detail: `Profit share (${isDel ? "delivery" : "non-delivery"})`,
+          });
+        }
+        return results;
       }
 
       // A. Salaries
@@ -356,7 +429,7 @@ export default function PerformanceBreakdownView({
     }
 
     return [];
-  }, [activePeriod, breakdownType, keyData, isIncomeMode, years]);
+  }, [activePeriod, breakdownType, keyData, isIncomeMode, years, isSenior]);
 
   const totalAmount = useMemo(() => {
     return items.reduce((sum, item) => sum + (item.amount || 0), 0);
@@ -376,7 +449,7 @@ export default function PerformanceBreakdownView({
       >
         <Spinner size={32} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
-          Loading {clientName} performance breakdowns...
+          Please wait - loading
         </p>
       </div>
     );
@@ -465,13 +538,14 @@ export default function PerformanceBreakdownView({
   };
 
   const dropdownStyle = {
+    fontFamily: "'Kumbh Sans', sans-serif",
     border: "1.5px solid #0047AB",
     borderRadius: "8px",
-    padding: "6px 14px",
-    fontSize: "15px",
-    fontWeight: 500,
+    padding: "0.6rem 0.85rem",
+    fontSize: "1.1rem",
+    fontWeight: 600,
     color: "#0047AB",
-    background: "#ffffff",
+    backgroundColor: "#f8fafc",
     cursor: "pointer",
     outline: "none",
     boxShadow: "0 1px 2px rgba(0, 0, 0, 0.04)",

@@ -5,6 +5,22 @@ import { redisClient } from "../../../services/redisClient.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s cache
 
+function parseMonthYear(str) {
+  if (!str) return null;
+  const match = String(str).trim().match(/^([a-zA-Z]{3})[\s\-](\d{2,4})$/);
+  if (match) {
+    const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+    const m = months[match[1].toLowerCase()];
+    let yr = parseInt(match[2], 10);
+    if (yr < 100) yr += 2000;
+    if (m !== undefined && !isNaN(yr)) {
+      return new Date(yr, m, 1);
+    }
+  }
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
@@ -33,6 +49,33 @@ export default async function handler(req, res) {
     }
   }
 
+  const isSeniorUser = Boolean(
+    sessionUser.isSenior ||
+    sessionUser.role === "Senior (Restricted)" ||
+    String(sessionUser.role || "").toLowerCase().includes("senior")
+  );
+
+  // Directly block access to Salaries and Dividends datasets for Senior (Restricted) users
+  // Matching webappserver.gs lines 3371-3372 and 3393-3395
+  if (isSeniorUser && (type === "salaries" || type === "dividends")) {
+    return res.status(403).json({
+      success: false,
+      error: `Permission Denied: ${type === "salaries" ? "Salaries" : "Dividends"}`,
+    });
+  }
+
+  const sanitizeForUser = (data) => {
+    if (!isSeniorUser || !data) return data;
+    return {
+      ...data,
+      salaries: null,
+      outgoings: data.outgoings ? {
+        ...data.outgoings,
+        dividends: null,
+      } : data.outgoings,
+    };
+  };
+
   const cacheKey = `pulse:portal:keydata:${clientSheetId}:${type}`;
 
   // 1. Check Redis cache
@@ -44,7 +87,7 @@ export default async function handler(req, res) {
         return res.status(200).json({
           success: true,
           fromCache: true,
-          data: parsed,
+          data: sanitizeForUser(parsed),
           cachedAt: parsed._cachedAt || null,
         });
       }
@@ -384,11 +427,32 @@ export default async function handler(req, res) {
           const startDate = formatDateVal(startDateRaw);
           const endDate = formatDateVal(endDateRaw);
 
+          const parseDateToYMD = (val, isEnd = false) => {
+            if (!val && val !== 0) return "";
+            const str = String(val).trim();
+            const myMatch = str.match(/^(?:(\d{1,2})[\/\-\s])?([a-zA-Z]{3,})[\/\-\s](\d{2,4})$/);
+            if (myMatch) {
+              const months = { jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12" };
+              const mi = months[myMatch[2].toLowerCase().substring(0, 3)];
+              let yr = parseInt(myMatch[3], 10);
+              if (yr < 100) yr += 2000;
+              if (mi !== undefined) {
+                let day = myMatch[1] ? String(myMatch[1]).padStart(2, "0") : (isEnd ? "28" : "01");
+                if (isEnd && !myMatch[1]) {
+                  const lastDay = new Date(yr, parseInt(mi, 10), 0).getDate();
+                  day = String(lastDay).padStart(2, "0");
+                }
+                return `${yr}-${mi}-${day}`;
+              }
+            }
+            return formatDateVal(val);
+          };
+
           const rawEqStart = row[146] !== undefined && String(row[146]).trim() !== "" ? row[146] : (getValueByHeader(row, colMap, ["start month"]) || startDateRaw);
           const rawErEnd = row[147] !== undefined && String(row[147]).trim() !== "" ? row[147] : (getValueByHeader(row, colMap, ["end month"]) || endDateRaw);
 
-          const eqStartDate = formatDateVal(rawEqStart);
-          const erEndDate = formatDateVal(rawErEnd);
+          const eqStartDate = parseDateToYMD(rawEqStart, false);
+          const erEndDate = parseDateToYMD(rawErEnd, true);
 
           const jobObj = {
             id: `${jobType.toLowerCase()}-${rowNum}`,
@@ -587,10 +651,32 @@ export default async function handler(req, res) {
       return m ? `FY${m[1].slice(-2)}` : fallback;
     };
     const fyLabels = {
-      1: getFy(outgoingsHeadersY1, "FY25"),
-      2: getFy(outgoingsHeadersY2, "FY26"),
-      3: getFy(outgoingsHeadersY3, "FY27"),
+      1: getFy(outgoingsHeadersY1, "FY26"),
+      2: getFy(outgoingsHeadersY2, "FY27"),
+      3: getFy(outgoingsHeadersY3, "FY28"),
     };
+
+    const today = new Date();
+    let currentOutgoingsYear = 2; // Default to Year 2 (current financial year)
+    const yearHeaders = {
+      1: outgoingsHeadersY1,
+      2: outgoingsHeadersY2,
+      3: outgoingsHeadersY3,
+    };
+    for (const y of [1, 2, 3]) {
+      const hdrs = yearHeaders[y] || [];
+      if (hdrs.length > 0) {
+        const first = parseMonthYear(hdrs[0]);
+        if (first) {
+          const start = new Date(first.getFullYear(), first.getMonth(), 1);
+          const end = new Date(first.getFullYear(), first.getMonth() + 12, 0, 23, 59, 59);
+          if (today >= start && today <= end) {
+            currentOutgoingsYear = y;
+            break;
+          }
+        }
+      }
+    }
 
     // Helper: Parse NBtoFind with 3 Years
     const nbHeadersY1 = (nbtofindRows[0] || []).slice(6, 18).map((h) => String(h || "").trim());
@@ -696,6 +782,7 @@ export default async function handler(req, res) {
           2: outgoingsHeadersY2,
           3: outgoingsHeadersY3,
         },
+        currentYear: currentOutgoingsYear,
         fyLabels,
         contractors: contractorsList,
         expenses: expensesList,
@@ -707,12 +794,13 @@ export default async function handler(req, res) {
           2: nbHeadersY2,
           3: nbHeadersY3,
         },
+        currentYear: currentOutgoingsYear,
         allocations: {
           1: nbY1,
           2: nbY2,
           3: nbY3,
         },
-        monthlyAllocations: nbY1,
+        monthlyAllocations: currentOutgoingsYear === 2 ? nbY2 : (currentOutgoingsYear === 3 ? nbY3 : nbY1),
         totalTargets: {
           1: sumNB(nbY1),
           2: sumNB(nbY2),
@@ -733,7 +821,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       fromCache: false,
-      data: keyDataPayload,
+      data: sanitizeForUser(keyDataPayload),
     });
   } catch (err) {
     console.error("❌ /api/portal/key-data error:", err);

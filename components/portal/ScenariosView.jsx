@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
-import { PulseMath, mutateFYDataForScenarios } from "../../services/deepDiveHelper";
+import DeepDivePopover from "./DeepDivePopover";
+import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData } from "../../services/deepDiveHelper";
 
 export default function ScenariosView({
   clientName,
@@ -138,6 +139,55 @@ export default function ScenariosView({
     setConfirmedJobIds(new Set());
   };
 
+  const [activePopover, setActivePopover] = useState(null);
+
+  const handleCellClick = (e, rowLabel, val, mIdx, periodLabel) => {
+    const ddType = getDeepDiveType(rowLabel);
+    if (!ddType || !val || val === "£0" || val === "—" || val === "") return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const isFY = mIdx === -1;
+    const targetDate = isFY
+      ? (headerMonths[0] ? parseHeaderMonthDate(headerMonths[0]) : new Date(2025, 3, 1))
+      : (headerMonths[mIdx] ? parseHeaderMonthDate(headerMonths[mIdx]) : null);
+
+    const isIncomeMode =
+      String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
+      Boolean(activeYear?.rows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
+
+    const ddData = buildDeepDiveData({
+      ddType,
+      periodLabel,
+      monthIndex: mIdx,
+      cellValue: val,
+      yearIndex: activeYearIdx,
+      targetDate,
+      keyData,
+      isIncomeMode,
+      isScenarioView: true,
+      scenariosConfig: {
+        confirmedJobs: confirmedJobIds,
+        disabledJobs: disabledJobIds,
+        adjs,
+        jobs: pipelineJobs,
+        outgoingsMeta: keyData?.outgoingsMeta,
+        profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
+        profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
+        scenarioMeta: mutatedYearData?.scenarioMeta,
+      },
+    });
+
+    setActivePopover({
+      isOpen: true,
+      targetRect: rect,
+      title: ddData.title,
+      period: ddData.period,
+      total: ddData.total,
+      items: ddData.items || [],
+      sections: ddData.sections || null,
+    });
+  };
+
   const parseNum = (val) => {
     if (typeof val === "number") return val;
     if (!val) return 0;
@@ -248,7 +298,9 @@ export default function ScenariosView({
       adjs,
       jobs: pipelineJobs,
       outgoingsMeta: keyData?.outgoingsMeta,
-      yearIndex: activeYearIdx + 1,
+      profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
+      profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
+      yearIndex: activeYearIdx,
     });
   }, [activeYear, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, keyData?.outgoingsMeta, activeYearIdx]);
 
@@ -331,7 +383,7 @@ export default function ScenariosView({
       <div style={{ textAlign: "center", padding: "4rem 0" }}>
         <Spinner size={36} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Loading Scenario Planning for {clientName}...
+          Please wait - loading
         </p>
       </div>
     );
@@ -371,6 +423,18 @@ export default function ScenariosView({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem", width: "100%", fontFamily: "'Kumbh Sans', sans-serif" }}>
+      {/* Deep Dive Popover */}
+      <DeepDivePopover
+        isOpen={Boolean(activePopover?.isOpen)}
+        targetRect={activePopover?.targetRect}
+        title={activePopover?.title}
+        period={activePopover?.period}
+        total={activePopover?.total}
+        items={activePopover?.items || []}
+        sections={activePopover?.sections}
+        onClose={() => setActivePopover(null)}
+      />
+
       {/* Action Bar */}
       <div
         style={{
@@ -511,7 +575,7 @@ export default function ScenariosView({
           >
             <thead>
               {/* Row 1: Header Titles with NO 'Line Item' in top-left cell */}
-              <tr style={{ background: "#002060", color: "#ffffff" }}>
+              <tr style={{ background: "#0047AB", color: "#ffffff" }}>
                 <th
                   style={{
                     padding: "6px 8px",
@@ -520,7 +584,7 @@ export default function ScenariosView({
                     width: "22%",
                     position: "sticky",
                     left: 0,
-                    background: "#002060",
+                    background: "#0047AB",
                     zIndex: 2,
                   }}
                 >
@@ -546,7 +610,7 @@ export default function ScenariosView({
                     textAlign: "right",
                     fontWeight: 800,
                     width: "8.4%",
-                    background: "#002060",
+                    background: "#0047AB",
                   }}
                 >
                   {activeYear?.totalColHeader || "FY Total"}
@@ -610,7 +674,7 @@ export default function ScenariosView({
                       style={{
                         padding: rowStyle.isHeader ? "4px 8px" : "4px 8px",
                         color: rowStyle.color,
-                        fontSize: rowStyle.isHeader ? "11px" : "11.5px",
+                        fontSize: rowStyle.isMajor ? "13px" : rowStyle.isHeader ? "11px" : "11.5px",
                         textTransform: rowStyle.isHeader ? "uppercase" : "none",
                         letterSpacing: rowStyle.isHeader ? "0.5px" : "normal",
                         paddingLeft: !rowStyle.isHeader && !rowStyle.isMajor ? "16px" : "8px",
@@ -631,19 +695,32 @@ export default function ScenariosView({
                     {/* 12 Month Values */}
                     {row.monthlyValues?.map((val, mIdx) => {
                       const mBadge = isPercentageRow ? getMarginBadgeStyle(label, val) : null;
+                      const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
+                      const isClickable = Boolean(ddType && val && val !== "£0" && val !== "—" && val !== "");
+                      const monthLabel = headerMonths[mIdx] || `Month ${mIdx + 1}`;
                       const displayVal = val === "—" ? "" : val || "";
 
                       return (
                         <td
                           key={mIdx}
+                          onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel)}
                           style={{
                             padding: "4px 4px",
                             textAlign: "right",
                             color: rowStyle.isMajor ? "#ffffff" : mBadge ? mBadge.color : rowStyle.color,
                             fontStyle: isPercentageRow ? "italic" : "normal",
-                            fontSize: "11px",
+                            fontSize: rowStyle.isMajor ? "12px" : "11px",
                             background: mBadge ? mBadge.bg : "transparent",
+                            cursor: isClickable ? "pointer" : "default",
+                            textDecoration: isClickable ? "underline dashed #94a3b8 1px" : "none",
+                            textUnderlineOffset: isClickable ? "2px" : "initial",
                             whiteSpace: "nowrap",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (isClickable) e.currentTarget.style.filter = "brightness(0.92)";
+                          }}
+                          onMouseLeave={(e) => {
+                            if (isClickable) e.currentTarget.style.filter = "none";
                           }}
                         >
                           {displayVal}
@@ -652,20 +729,38 @@ export default function ScenariosView({
                     })}
 
                     {/* Total Column */}
-                    <td
-                      style={{
-                        padding: "4px 8px",
-                        textAlign: "right",
-                        fontWeight: 800,
-                        color: rowStyle.isMajor ? "#ffffff" : totalBadge ? totalBadge.color : "#0047AB",
-                        fontStyle: isPercentageRow ? "italic" : "normal",
-                        fontSize: "11.5px",
-                        background: totalBadge ? totalBadge.bg : rowStyle.isMajor ? rowStyle.bg : rowStyle.bg,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {totalVal}
-                    </td>
+                    {(() => {
+                      const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
+                      const isClickable = Boolean(ddType && totalVal && totalVal !== "£0" && totalVal !== "—" && totalVal !== "");
+                      const displayTotal = totalVal === "—" ? "" : totalVal || "";
+
+                      return (
+                        <td
+                          onClick={(e) => isClickable && handleCellClick(e, label, totalVal, -1, `${activeYear?.fyLabel || "FY"} Total`)}
+                          style={{
+                            padding: "4px 8px",
+                            textAlign: "right",
+                            fontWeight: rowStyle.isMajor ? 800 : 700,
+                            color: rowStyle.isMajor ? "#ffffff" : totalBadge ? totalBadge.color : "#0047AB",
+                            fontStyle: isPercentageRow ? "italic" : "normal",
+                            fontSize: rowStyle.isMajor ? "13px" : "11.5px",
+                            background: totalBadge ? totalBadge.bg : (rowStyle.isMajor ? "transparent" : rowStyle.bg),
+                            cursor: isClickable ? "pointer" : "default",
+                            textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
+                            textUnderlineOffset: isClickable ? "2px" : "initial",
+                            whiteSpace: "nowrap",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (isClickable) e.currentTarget.style.filter = "brightness(0.92)";
+                          }}
+                          onMouseLeave={(e) => {
+                            if (isClickable) e.currentTarget.style.filter = "none";
+                          }}
+                        >
+                          {displayTotal}
+                        </td>
+                      );
+                    })()}
                   </tr>
                 );
               })}

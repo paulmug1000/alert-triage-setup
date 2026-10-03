@@ -7,18 +7,32 @@ export default function DeepDivePopover({
   period,
   total,
   items = [],
+  sections = null,
   onClose,
 }) {
   const popoverRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [position, setPosition] = useState({ top: 0, left: 0 });
+  const [openAccordions, setOpenAccordions] = useState({});
+
+  // Initialize all accordion sections to collapsed by default matching original app (WebApp.html line 16304)
+  useEffect(() => {
+    setOpenAccordions({});
+  }, [sections]);
+
+  const toggleAccordion = (key) => {
+    setOpenAccordions((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
 
   // Calculate smart position relative to window
   useEffect(() => {
     if (!isOpen || !targetRect) return;
 
     const popoverWidth = 380;
-    const popoverHeight = 360; // approximate
+    const popoverHeight = 360;
     const padding = 12;
 
     const scrollY = window.scrollY || window.pageYOffset;
@@ -58,7 +72,6 @@ export default function DeepDivePopover({
     };
 
     window.addEventListener("keydown", handleKeyDown);
-    // Timeout prevents immediate trigger from the click that opened it
     const timer = setTimeout(() => {
       document.addEventListener("click", handleClickOutside);
     }, 50);
@@ -72,16 +85,6 @@ export default function DeepDivePopover({
 
   if (!isOpen) return null;
 
-  const filteredItems = items.filter((item) => {
-    if (!searchTerm.trim()) return true;
-    const q = searchTerm.toLowerCase().trim();
-    return (
-      (item.name && item.name.toLowerCase().includes(q)) ||
-      (item.client && item.client.toLowerCase().includes(q)) ||
-      (item.detail && item.detail.toLowerCase().includes(q))
-    );
-  });
-
   const formatGBP = (val) => {
     if (val === null || val === undefined || val === "") return "£0";
     if (typeof val === "number") {
@@ -91,7 +94,8 @@ export default function DeepDivePopover({
         Math.abs(Math.round(val)).toLocaleString("en-GB")
       );
     }
-    const num = parseFloat(String(val).replace(/[£,]/g, ""));
+    const cleanStr = String(val).replace(/[£,]/g, "").trim();
+    const num = parseFloat(cleanStr);
     if (isNaN(num)) return String(val);
     return (
       (num < 0 ? "-" : "") +
@@ -99,6 +103,18 @@ export default function DeepDivePopover({
       Math.abs(Math.round(num)).toLocaleString("en-GB")
     );
   };
+
+  const hasSections = Array.isArray(sections) && sections.length > 0;
+
+  const filteredItems = items.filter((item) => {
+    if (!searchTerm.trim()) return true;
+    const q = searchTerm.toLowerCase().trim();
+    return (
+      (item.name && item.name.toLowerCase().includes(q)) ||
+      (item.client && item.client.toLowerCase().includes(q)) ||
+      (item.detail && item.detail.toLowerCase().includes(q))
+    );
+  });
 
   return (
     <div
@@ -111,8 +127,8 @@ export default function DeepDivePopover({
         maxHeight: "80vh",
         background: "#ffffff",
         border: "1px solid #cbd5e1",
-        borderRadius: "10px",
-        boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1)",
+        borderRadius: "8px",
+        boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.08)",
         zIndex: 9999,
         fontFamily: "'Kumbh Sans', sans-serif",
         display: "flex",
@@ -128,212 +144,293 @@ export default function DeepDivePopover({
         }
       `}</style>
 
-      {/* Header Bar */}
+      {/* Header: Clean White Layout Matching Original WebApp */}
       <div
         style={{
-          background: "#0047AB",
-          padding: "12px 16px",
-          color: "#ffffff",
+          background: "#ffffff",
+          padding: "14px 18px",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          borderTopLeftRadius: "9px",
-          borderTopRightRadius: "9px",
+          borderBottom: "1px solid #e5e7eb",
         }}
       >
-        <div>
-          <div style={{ fontSize: "14px", fontWeight: 700, letterSpacing: "-0.2px" }}>
-            {title}
+        <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", letterSpacing: "-0.2px" }}>
+          {title}
+        </div>
+        {total !== undefined && (
+          <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB" }}>
+            {formatGBP(total)}
           </div>
-          {period && (
-            <div style={{ fontSize: "11px", color: "rgba(255, 255, 255, 0.8)", marginTop: "1px" }}>
-              Period: {period}
-            </div>
-          )}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          {total !== undefined && (
-            <div style={{ fontSize: "15px", fontWeight: 800, color: "#ffffff" }}>
-              {formatGBP(total)}
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={onClose}
-            style={{
-              background: "rgba(255, 255, 255, 0.2)",
-              border: "none",
-              color: "#ffffff",
-              width: "24px",
-              height: "24px",
-              borderRadius: "50%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-              fontSize: "13px",
-              fontWeight: 700,
-              padding: 0,
-            }}
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-
-      {/* Filter input if multiple items */}
-      {items.length > 5 && (
-        <div style={{ padding: "8px 12px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
-          <input
-            type="text"
-            placeholder="Filter contributors..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "4px 8px",
-              borderRadius: "4px",
-              border: "1px solid #cbd5e1",
-              fontSize: "12px",
-            }}
-          />
-        </div>
-      )}
-
-      {/* Itemized Contributor List */}
-      <div
-        style={{
-          maxHeight: "320px",
-          overflowY: "auto",
-          padding: "4px 0",
-        }}
-      >
-        {filteredItems.length === 0 ? (
-          <div style={{ padding: "2rem 1rem", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
-            No individual items recorded for this period
-          </div>
-        ) : (
-          filteredItems.map((item, idx) => {
-            const isAdjustment = item.name === "Manual adjustment" || item.name === "Rounding adjustment";
-
-            if (isAdjustment) {
-              return (
-                <div
-                  key={idx}
-                  style={{
-                    padding: "8px 16px",
-                    borderTop: "1px dashed #cbd5e1",
-                    background: "#f8fafc",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    fontSize: "12px",
-                  }}
-                >
-                  <div style={{ color: "#64748b", fontStyle: "italic", fontSize: "11.5px" }}>
-                    {item.name}
-                  </div>
-                  <div style={{ fontWeight: 700, color: "#0047AB", fontSize: "13px" }}>
-                    {formatGBP(item.amount)}
-                  </div>
-                </div>
-              );
-            }
-
-            const hasCashMeta = Boolean(item.payDateStr || item.desc || item.status);
-
-            return (
-              <div
-                key={idx}
-                style={{
-                  padding: "8px 16px",
-                  borderBottom: idx === filteredItems.length - 1 ? "none" : "1px solid #f1f5f9",
-                  display: "flex",
-                  alignItems: "flex-start",
-                  justifyContent: "space-between",
-                  gap: "10px",
-                  fontSize: "12px",
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, color: "#1e293b", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                    {item.client ? (
-                      <span>
-                        <span style={{ fontWeight: 600, color: "#0f172a" }}>{item.client}</span>
-                        <span style={{ color: "#64748b" }}> – {item.name}</span>
-                      </span>
-                    ) : (
-                      <span>{item.name}</span>
-                    )}
-                    {!hasCashMeta && item.badge && (
-                      <span
-                        style={{
-                          padding: "1px 6px",
-                          borderRadius: "10px",
-                          fontSize: "10px",
-                          fontWeight: 600,
-                          background: "#eff6ff",
-                          color: "#1e40af",
-                        }}
-                      >
-                        {item.badge}
-                      </span>
-                    )}
-                  </div>
-
-                  {hasCashMeta ? (
-                    <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
-                      {item.isPipeline ? (
-                        <span>Expected: {item.payDateStr}</span>
-                      ) : (
-                        <span>
-                          {item.desc && <em style={{ fontStyle: "normal", color: "#475569" }}>{item.desc}</em>}
-                          {item.desc ? " | " : ""}
-                          Expected: {item.payDateStr}
-                          {item.status ? ` | ${item.status}` : ""}
-                        </span>
-                      )}
-                    </div>
-                  ) : item.detail ? (
-                    <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
-                      {item.detail}
-                    </div>
-                  ) : null}
-                </div>
-
-                <div
-                  style={{
-                    fontWeight: 700,
-                    color: "#0047AB",
-                    whiteSpace: "nowrap",
-                    textAlign: "right",
-                    fontSize: "13px",
-                  }}
-                >
-                  {formatGBP(item.amount)}
-                </div>
-              </div>
-            );
-          })
         )}
       </div>
 
-      {/* Footer Summary */}
+      {/* Content Area */}
       <div
         style={{
-          padding: "8px 16px",
-          background: "#f8fafc",
-          borderTop: "1px solid #e2e8f0",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          fontSize: "11px",
-          color: "#64748b",
+          maxHeight: "70vh",
+          overflowY: "auto",
+          padding: hasSections ? "12px" : "6px 0",
         }}
       >
-        <span>{filteredItems.length} contributor{filteredItems.length === 1 ? "" : "s"}</span>
-        <span>Click outside or press Esc to close</span>
+        {/* Render Sections (Staff Costs etc. with Expandable Cards) */}
+        {hasSections ? (
+          <div>
+            {sections.map((sec, sIdx) => {
+              const secKey = sec.key || sIdx;
+              const isAccordion = Boolean(sec.isAccordion);
+              const isExpanded = Boolean(openAccordions[secKey]);
+              const isAdjustment = Boolean(sec.isAdjustment);
+
+              if (isAdjustment) {
+                return (
+                  <div
+                    key={secKey}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      padding: "6px 14px",
+                      color: "#64748b",
+                      fontStyle: "italic",
+                      fontSize: "12px",
+                      borderTop: "1px dashed #e5e7eb",
+                      marginTop: "6px",
+                    }}
+                  >
+                    <span>{sec.title}</span>
+                    <span style={{ fontWeight: 600, color: "#0047AB" }}>{formatGBP(sec.amount)}</span>
+                  </div>
+                );
+              }
+
+              if (isAccordion) {
+                return (
+                  <div
+                    key={secKey}
+                    style={{
+                      border: "1px solid #e5e7eb",
+                      borderRadius: "6px",
+                      background: "#ffffff",
+                      marginBottom: "8px",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      onClick={() => toggleAccordion(secKey)}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        padding: "10px 14px",
+                        background: "#f8fafc",
+                        cursor: "pointer",
+                        fontWeight: 600,
+                        color: "#0047AB",
+                        fontSize: "14px",
+                        userSelect: "none",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span
+                          style={{
+                            fontSize: "10px",
+                            transition: "transform 0.15s",
+                            transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)",
+                            display: "inline-block",
+                          }}
+                        >
+                          ▼
+                        </span>
+                        <span>{sec.title}</span>
+                      </div>
+                      <span>{formatGBP(sec.amount)}</span>
+                    </div>
+
+                    {isExpanded && (
+                      <div style={{ borderTop: "1px solid #e5e7eb" }}>
+                        {(!sec.items || sec.items.length === 0) ? (
+                          <div style={{ padding: "10px 14px", color: "#94a3b8", fontSize: "12px" }}>
+                            None in this period
+                          </div>
+                        ) : (
+                          sec.items.map((item, iIdx) => (
+                            <div
+                              key={iIdx}
+                              style={{
+                                padding: "10px 14px",
+                                borderBottom: iIdx === sec.items.length - 1 ? "none" : "1px solid #f1f5f9",
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                fontSize: "13px",
+                              }}
+                            >
+                              <div style={{ color: "#111827", fontWeight: 500, paddingRight: "10px" }}>
+                                {item.name}{item.role ? ` – ${item.role}` : ""}
+                              </div>
+                              <div style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap" }}>
+                                {formatGBP(item.amount)}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              if (sec.isAdjustment) {
+                return (
+                  <div
+                    key={secKey}
+                    style={{
+                      border: "1px dashed #cbd5e1",
+                      borderRadius: "6px",
+                      background: "#f8fafc",
+                      marginBottom: "8px",
+                      padding: "8px 14px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontSize: "13px",
+                    }}
+                  >
+                    <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "12px" }}>{sec.title}</span>
+                    <span style={{ fontWeight: 700, color: "#0047AB" }}>{formatGBP(sec.amount)}</span>
+                  </div>
+                );
+              }
+
+              // Flat Section (e.g. Dividends as salary, Making up CoS, Profit share)
+              return (
+                <div
+                  key={secKey}
+                  style={{
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    background: "#f8fafc",
+                    marginBottom: "8px",
+                    padding: "10px 14px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    fontWeight: 600,
+                    color: "#0047AB",
+                    fontSize: "14px",
+                    userSelect: "none",
+                  }}
+                >
+                  <span>{sec.title}</span>
+                  <span>{formatGBP(sec.amount)}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          /* Render Regular List (Revenue, Expenses, Cash receipts, Net Payroll/HMRC/Pension) */
+          <div>
+            {filteredItems.length === 0 ? (
+              <div style={{ padding: "2rem 1rem", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
+                No individual items recorded for this period
+              </div>
+            ) : (
+              filteredItems.map((item, idx) => {
+                const isAdjustment =
+                  item.name === "Manual adjustment" ||
+                  item.name === "Rounding adjustment" ||
+                  item.name === "Scenario adjustment" ||
+                  item.name === "Manual scenario adjustment";
+
+                if (isAdjustment) {
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        padding: "8px 16px",
+                        borderTop: "1px dashed #cbd5e1",
+                        background: "#f8fafc",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        fontSize: "12px",
+                      }}
+                    >
+                      <div style={{ color: "#64748b", fontStyle: "italic", fontSize: "11.5px" }}>
+                        {item.name}
+                      </div>
+                      <div style={{ fontWeight: 700, color: "#0047AB", fontSize: "13px" }}>
+                        {formatGBP(item.amount)}
+                      </div>
+                    </div>
+                  );
+                }
+
+                const hasCashMeta = Boolean(item.payDateStr || item.desc || item.status);
+
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: "8px 16px",
+                      borderBottom: idx === filteredItems.length - 1 ? "none" : "1px solid #f1f5f9",
+                      display: "flex",
+                      alignItems: "flex-start",
+                      justifyContent: "space-between",
+                      gap: "10px",
+                      fontSize: "12px",
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, color: "#111827", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                        {item.client ? (
+                          <span>
+                            <span style={{ fontWeight: 600, color: "#0f172a" }}>{item.client}</span>
+                            <span style={{ color: "#64748b" }}> – {item.name}</span>
+                          </span>
+                        ) : (
+                          <span>{item.name}</span>
+                        )}
+                        {/* Note: All pill labels/badges removed per user instruction */}
+                      </div>
+
+                      {hasCashMeta ? (
+                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
+                          {item.isPipeline ? (
+                            <span>Expected: {item.payDateStr}</span>
+                          ) : (
+                            <span>
+                              {item.desc && <em style={{ fontStyle: "normal", color: "#475569" }}>{item.desc}</em>}
+                              {item.desc ? " | " : ""}
+                              Expected: {item.payDateStr}
+                              {item.status ? ` | ${item.status}` : ""}
+                            </span>
+                          )}
+                        </div>
+                      ) : item.detail ? (
+                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
+                          {item.detail}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div
+                      style={{
+                        fontWeight: 700,
+                        color: "#0047AB",
+                        whiteSpace: "nowrap",
+                        textAlign: "right",
+                        fontSize: "13px",
+                      }}
+                    >
+                      {formatGBP(item.amount)}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

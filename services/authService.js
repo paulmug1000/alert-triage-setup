@@ -133,19 +133,19 @@ export async function sendOtp(email, automationCommanderSheetId, clientIp) {
   const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
   const emailPass = process.env.PMA_EMAIL_APP_PASSWORD;
 
-  const subject = `Pulse Management Area Secure Access: Your Verification Code (${code})`;
-  const textBody = `Hello,\n\nYour secure verification code for the Pulse Management Area is: ${code}\n\nThis code will expire in 10 minutes. If you did not request this code, please ignore this email.\n\nBest regards,\nThe Pulse Team\n\n---\nThrive Organisational Consulting Ltd\nThis is an automated security message. Please do not reply.`;
+  const subject = `Pulse Secure Access: Your Verification Code (${code})`;
+  const textBody = `Hello,\n\nYour secure verification code for Pulse is: ${code}\n\nThis code will expire in 10 minutes. If you did not request this code, please ignore this email.\n\nBest regards,\nThe Pulse Team\n\n---\nThrive Organisational Consulting Ltd\nThis is an automated security message. Please do not reply.`;
 
   const htmlBody = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333333;">
-      <h2 style="color: #0047AB; border-bottom: 2px solid #f3f4f6; padding-bottom: 10px; margin-top: 0;">Pulse Management Area Secure Access</h2>
+      <h2 style="color: #0047AB; border-bottom: 2px solid #f3f4f6; padding-bottom: 10px; margin-top: 0;">Pulse Secure Access</h2>
       <p style="font-size: 16px; line-height: 1.5;">Hello,</p>
-      <p style="font-size: 16px; line-height: 1.5;">Your secure verification code to access the Pulse Management Area is:</p>
+      <p style="font-size: 16px; line-height: 1.5;">Your secure verification code to access Pulse is:</p>
       <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; margin: 25px 0; text-align: center;">
         <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #0047AB;">${code}</span>
       </div>
       <p style="font-size: 14px; line-height: 1.5; color: #666666;">This code is valid for the next 10 minutes. For security reasons, please do not share this code with anyone. If you did not request access to the dashboard, you can safely ignore this email.</p>
-      <p style="font-size: 16px; line-height: 1.5; margin-top: 30px;">Best regards,<br><strong>The Pulse Team</strong></p>
+      <p style="font-size: 16px; line-height: 1.5; margin-top: 30px;">Thanks,<br><strong>The Pulse Team</strong></p>
       
       <!-- Corporate Trust & Compliance Markers -->
       <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #9ca3af; line-height: 1.6;">
@@ -281,7 +281,7 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
     return {
       success: false,
       unauthorized: true,
-      message: "This account is not authorized to access PMA or has been suspended."
+      message: "This account is not authorized to access Pulse or has been suspended."
     };
   }
 
@@ -331,7 +331,9 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
     token,
     user: {
       ...payload,
-      isAdmin: user.role === "Admin"
+      isAdmin: user.role === "Admin",
+      isSenior: user.role === "Senior (Restricted)" || String(user.role || "").toLowerCase().includes("senior"),
+      isClientUser: user.role === "ClientUser"
     }
   };
 }
@@ -380,16 +382,20 @@ export function getSessionUser(req) {
       ? "*"
       : (Array.isArray(decoded.assignedClients) ? decoded.assignedClients : []);
 
-    const role = decoded.role || "ClientManager";
+    const role = decoded.role || "ClientUser";
     // Only Admin is an internal staff role able to see all clients
     const isAdmin = role === "Admin";
+    const isSenior = role === "Senior (Restricted)" || String(role).toLowerCase().includes("senior");
+    const isClientUser = role === "ClientUser";
 
     return {
       email: decoded.email,
       name: decoded.name || decoded.email.split("@")[0],
       role,
       assignedClients,
-      isAdmin
+      isAdmin,
+      isSenior,
+      isClientUser
     };
   } catch (err) {
     return null;

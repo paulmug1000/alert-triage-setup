@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine } from "../../services/deepDiveHelper";
 
 export default function PerformanceFYView({
   clientName,
@@ -10,6 +10,7 @@ export default function PerformanceFYView({
   isLoading,
   error,
   onRefresh,
+  isSenior = false,
 }) {
   const years = data?.years || [];
   const [selectedYearIdx, setSelectedYearIdx] = useState(null);
@@ -34,7 +35,7 @@ export default function PerformanceFYView({
       >
         <Spinner size={32} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#0047AB", fontWeight: 500, fontSize: "15px" }}>
-          Please wait - just crunching your numbers
+          Please wait - loading
         </p>
       </div>
     );
@@ -112,23 +113,23 @@ export default function PerformanceFYView({
     if (label.toLowerCase().includes("gross profit margin")) {
       const high = parseFloat(t[0]) || 0.495;
       const low = parseFloat(t[1]) || 0.445;
-      if (num >= high) return { bg: "#d9ead3", color: "#166534" };
-      if (num >= low) return { bg: "#fce5cd", color: "#b45309" };
-      return { bg: "#f4cccc", color: "#991b1b" };
+      if (num >= high) return { bg: "#d9ead3", color: "#000000" };
+      if (num >= low) return { bg: "#fce5cd", color: "#000000" };
+      return { bg: "#f4cccc", color: "#000000" };
     }
     if (label.toLowerCase().includes("overheads as %")) {
       const high = parseFloat(t[5]) || 0.309;
       const low = parseFloat(t[6]) || 0.20;
-      if (num <= low) return { bg: "#d9ead3", color: "#166534" };
-      if (num <= high) return { bg: "#fce5cd", color: "#b45309" };
-      return { bg: "#f4cccc", color: "#991b1b" };
+      if (num <= low) return { bg: "#d9ead3", color: "#000000" };
+      if (num <= high) return { bg: "#fce5cd", color: "#000000" };
+      return { bg: "#f4cccc", color: "#000000" };
     }
-    if (label.toLowerCase().includes("operating profit %")) {
+    if (label.toLowerCase().includes("operating profit %") || label.toLowerCase().includes("operating profit margin")) {
       const high = parseFloat(t[10]) || 0.15;
       const low = parseFloat(t[11]) || 0.05;
-      if (num >= high) return { bg: "#d9ead3", color: "#166534" };
-      if (num >= low) return { bg: "#fce5cd", color: "#b45309" };
-      return { bg: "#f4cccc", color: "#991b1b" };
+      if (num >= high) return { bg: "#d9ead3", color: "#000000" };
+      if (num >= low) return { bg: "#fce5cd", color: "#000000" };
+      return { bg: "#f4cccc", color: "#000000" };
     }
     return null;
   };
@@ -150,6 +151,9 @@ export default function PerformanceFYView({
     if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
       return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
     }
+    if (l.includes("margin") || l.includes("overheads as %") || l.includes("overheads %")) {
+      return { bg: "#efefef", color: "#000000", bold: false, isMajor: false };
+    }
     return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
 
@@ -158,13 +162,35 @@ export default function PerformanceFYView({
     if (!ddType || !val || val === "£0" || val === "—" || val === "") return;
 
     const rect = e.currentTarget.getBoundingClientRect();
+    const isFYTotal = mIdx === -1;
+    const firstMonthStr = activeYear?.headerMonths?.[0] || "Apr 25";
+    const fyStartDate = DeepDiveEngine.parseHeaderDate(firstMonthStr) || new Date(2025, 3, 1);
+
+    let targetDate = null;
+    if (isFYTotal) {
+      targetDate = fyStartDate;
+    } else {
+      const monthStr = activeYear?.headerMonths?.[mIdx];
+      targetDate = monthStr ? DeepDiveEngine.parseHeaderDate(monthStr) : null;
+      if (!targetDate) {
+        targetDate = new Date(fyStartDate.getFullYear(), fyStartDate.getMonth() + mIdx, 1);
+      }
+    }
+
+    const isIncomeMode =
+      String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
+      Boolean(activeYear?.rows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
+
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel,
       monthIndex: mIdx,
       cellValue: val,
       yearIndex: activeYearIdx,
+      targetDate,
       keyData,
+      isIncomeMode,
+      isRestricted: isSenior,
     });
 
     setActivePopover({
@@ -173,12 +199,53 @@ export default function PerformanceFYView({
       title: ddData.title,
       period: ddData.period,
       total: ddData.total,
-      items: ddData.items,
+      items: ddData.items || [],
+      sections: ddData.sections || null,
     });
   };
 
+  const handleDownloadCSV = () => {
+    const dateStr = new Date().toISOString().split("T")[0];
+    const fyName = (activeYear?.fyLabel || activeYear?.displayTitle || "FY").replace(/\s+/g, "_");
+    const exportRows = [];
+    exportRows.push([`Performance: ${activeYear?.fyLabel || activeYear?.displayTitle}`]);
+    exportRows.push([]);
+    exportRows.push(["Metric", ...(activeYear?.headerMonths || []), "", "Total"]);
+    tableRows.forEach((r) => {
+      if (r.type === "section") {
+        exportRows.push([r.label]);
+      } else if (r.type !== "spacer") {
+        const rowVals = (r.monthValues || []).map((v) => v.formatted);
+        exportRows.push([r.label, ...rowVals, "", r.totalValue?.formatted || ""]);
+      }
+    });
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      exportRows
+        .map((e) =>
+          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
+        )
+        .join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Pulse_Performance_${fyName}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1rem", width: "100%" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "1.25rem",
+        width: "100%",
+        fontFamily: "'Kumbh Sans', sans-serif",
+      }}
+    >
       {/* Deep Dive Popover */}
       <DeepDivePopover
         isOpen={Boolean(activePopover?.isOpen)}
@@ -187,6 +254,7 @@ export default function PerformanceFYView({
         period={activePopover?.period}
         total={activePopover?.total}
         items={activePopover?.items || []}
+        sections={activePopover?.sections}
         onClose={() => setActivePopover(null)}
       />
 
@@ -205,80 +273,22 @@ export default function PerformanceFYView({
           <h2 style={{ margin: 0, fontSize: "1.45rem", fontWeight: 700, color: "#0047AB" }}>
             Financial year performance
           </h2>
-        </div>
-
-        {/* Year Navigator Controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <div
+          <span
             style={{
-              display: "flex",
-              alignItems: "center",
-              background: "#f8fafc",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              padding: "2px",
+              fontSize: "11px",
+              fontWeight: 700,
+              color: "#0047AB",
+              background: "rgba(0, 71, 171, 0.08)",
+              padding: "2px 8px",
+              borderRadius: "4px",
             }}
           >
-            <button
-              type="button"
-              disabled={activeYearIdx === 0}
-              onClick={() => setSelectedYearIdx((prev) => Math.max(0, prev - 1))}
-              style={{
-                border: "none",
-                background: "transparent",
-                color: activeYearIdx === 0 ? "#cbd5e1" : "#0047AB",
-                padding: "4px 10px",
-                fontSize: "12px",
-                fontWeight: 700,
-                cursor: activeYearIdx === 0 ? "not-allowed" : "pointer",
-                borderRadius: "4px",
-              }}
-              title="View Previous Year"
-            >
-              ◀ Prev FY
-            </button>
+            {activeYear?.fyLabel || activeYear?.displayTitle}
+          </span>
+        </div>
 
-            <select
-              value={activeYearIdx}
-              onChange={(e) => setSelectedYearIdx(parseInt(e.target.value, 10))}
-              style={{
-                border: "none",
-                background: "#ffffff",
-                padding: "4px 8px",
-                fontSize: "12px",
-                fontWeight: 600,
-                color: "#0f172a",
-                cursor: "pointer",
-                borderRadius: "4px",
-              }}
-            >
-              {years.map((y, idx) => (
-                <option key={y.id} value={idx}>
-                  {y.fyLabel || y.displayTitle} {idx === data?.currentYearIdx ? "(Current)" : ""}
-                </option>
-              ))}
-            </select>
-
-            <button
-              type="button"
-              disabled={activeYearIdx === years.length - 1}
-              onClick={() => setSelectedYearIdx((prev) => Math.min(years.length - 1, prev + 1))}
-              style={{
-                border: "none",
-                background: "transparent",
-                color: activeYearIdx === years.length - 1 ? "#cbd5e1" : "#0047AB",
-                padding: "4px 10px",
-                fontSize: "12px",
-                fontWeight: 700,
-                cursor: activeYearIdx === years.length - 1 ? "not-allowed" : "pointer",
-                borderRadius: "4px",
-              }}
-              title="View Next Year"
-            >
-              Next FY ▶
-            </button>
-          </div>
-
+        {/* Action Controls */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <button
             type="button"
             onClick={onRefresh}
@@ -306,20 +316,73 @@ export default function PerformanceFYView({
               </svg>
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadCSV}
+            title="Download CSV"
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#0047AB",
+              borderRadius: "50%",
+            }}
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
         </div>
       </div>
 
-      {/* Main 12-Month Performance Table (Sized to fit desktop width) */}
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          overflowX: "auto",
-          width: "100%",
-        }}
-      >
+      {/* Main 12-Month Performance Table with Navigation Arrows */}
+      <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+        {activeYearIdx > 0 && (
+          <button
+            type="button"
+            onClick={() => setSelectedYearIdx((prev) => Math.max(0, prev - 1))}
+            title="Previous Year"
+            style={{
+              position: "absolute",
+              left: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ‹
+          </button>
+        )}
+
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+            border: "1px solid #e2e8f0",
+            overflowX: "auto",
+            width: "100%",
+          }}
+        >
         <table
           style={{
             width: "100%",
@@ -503,7 +566,7 @@ export default function PerformanceFYView({
                         style={{
                           padding: "4px 8px",
                           textAlign: "right",
-                          color: rowStyle.isMajor ? "#ffffff" : totalBadge ? totalBadge.color : "#0047AB",
+                          color: rowStyle.isMajor ? "#ffffff" : totalBadge ? totalBadge.color : isPercentageRow ? "#000000" : "#0047AB",
                           fontStyle: isPercentageRow ? "italic" : "normal",
                           fontSize: rowStyle.isMajor ? "13px" : "11.5px",
                           fontWeight: rowStyle.isMajor ? 800 : 700,
@@ -530,6 +593,36 @@ export default function PerformanceFYView({
           </tbody>
         </table>
       </div>
+
+      {activeYearIdx < years.length - 1 && (
+        <button
+          type="button"
+          onClick={() => setSelectedYearIdx((prev) => Math.min(years.length - 1, prev + 1))}
+          title="Next Year"
+          style={{
+            position: "absolute",
+            right: "-42px",
+            top: "50%",
+            transform: "translateY(-50%)",
+            background: "transparent",
+            color: "#a2c4c9",
+            border: "none",
+            fontSize: "2.8rem",
+            fontWeight: "bold",
+            cursor: "pointer",
+            padding: "0",
+            zIndex: 10,
+            lineHeight: 1,
+            userSelect: "none",
+            transition: "color 0.2s",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+          onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+        >
+          ›
+        </button>
+      )}
+    </div>
 
       {/* Financial Year Summary 4 KPI Boxes (MOVED TO UNDERNEATH THE TABLE) */}
       <div

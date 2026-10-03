@@ -28,6 +28,21 @@ export default function BudgetVarianceView({
     ];
   }, [activeYear?.headerMonths]);
 
+  const activeFyLabel = useMemo(() => {
+    const curYearObj = data?.years?.[selectedYearIdx];
+    if (curYearObj?.fyLabel) return curYearObj.fyLabel;
+    if (curYearObj?.fyTotalLabel) {
+      const cleaned = curYearObj.fyTotalLabel.replace(/\s*total/i, "").trim();
+      if (cleaned && !cleaned.toLowerCase().includes("fy")) return `FY${cleaned}`;
+      if (cleaned) return cleaned;
+    }
+    const fyFromPerf = allFYData?.years?.[selectedYearIdx + 1]?.fyLabel || allFYData?.years?.[selectedYearIdx]?.fyLabel;
+    if (fyFromPerf) return fyFromPerf;
+    const fyFromKeyData = keyData?.outgoings?.fyLabels?.[selectedYearIdx + 1];
+    if (fyFromKeyData) return fyFromKeyData;
+    return selectedYearIdx === 0 ? "FY26" : selectedYearIdx === 1 ? "FY27" : "FY28";
+  }, [data, selectedYearIdx, allFYData, keyData]);
+
   // Default to previous calendar month
   const defaultMonthIdx = useMemo(() => {
     if (!months || months.length === 0) return 0;
@@ -216,7 +231,7 @@ export default function BudgetVarianceView({
       <div style={{ textAlign: "center", padding: "4rem 0" }}>
         <Spinner size={36} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Loading Budget Variance for {clientName}...
+          Please wait - loading
         </p>
       </div>
     );
@@ -331,7 +346,47 @@ export default function BudgetVarianceView({
     fontFamily: "'Kumbh Sans', sans-serif",
   };
 
-  const numTotalCols = viewMode === "month" ? 6 : displayedMonths.length + 7;
+  const handleDownloadCSV = () => {
+    const dateStr = new Date().toISOString().split("T")[0];
+    const yearLabel = activeFyLabel.replace(/\s+/g, "_");
+    const exportRows = [];
+    exportRows.push([`Budget variance analysis: ${viewMode.toUpperCase()} - ${activeFyLabel}`]);
+    exportRows.push([]);
+    if (viewMode === "month") {
+      exportRows.push(["Metric", "Actual", "", "Budget", "", "Variance (£)", "Variance (%)"]);
+    } else {
+      exportRows.push(["Metric", ...displayedMonths.map((m) => `${m} (Act)`), "Act Total", "", "Budget Total", "", "Var (£)", "Var (%)"]);
+    }
+    tableRows.forEach((r) => {
+      if (r.type === "section") {
+        exportRows.push([r.label]);
+      } else if (r.type !== "spacer") {
+        if (viewMode === "month") {
+          exportRows.push([r.label, r.data?.[0] || "", "", r.data?.[1] || "", "", r.data?.[2] || "", r.data?.[3] || ""]);
+        } else {
+          const actVals = (r.actuals || []).map((v) => r.isCurrency ? formatMoney(v) : formatPct(v));
+          const actSum = r.isCurrency ? formatMoney(r.actSum) : formatPct(r.actSum);
+          const budSum = r.isCurrency ? formatMoney(r.budSum) : formatPct(r.budSum);
+          exportRows.push([r.label, ...actVals, actSum, "", budSum, "", r.varPounds || "", r.varPct || ""]);
+        }
+      }
+    });
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      exportRows
+        .map((e) =>
+          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
+        )
+        .join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Pulse_Budget_Variance_${viewMode}_${yearLabel}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   return (
     <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "1rem", padding: "0.5rem 0 3rem 0" }}>
@@ -341,8 +396,8 @@ export default function BudgetVarianceView({
           <h2 style={{ fontSize: "1.4rem", fontWeight: 700, color: "#0047AB", margin: 0, fontFamily: "'Kumbh Sans', sans-serif" }}>
             Budget variance analysis
           </h2>
-          <span style={{ fontSize: "11px", fontWeight: 600, color: "#64748b", background: "#f1f5f9", padding: "2px 8px", borderRadius: "4px" }}>
-            {selectedYearIdx === 0 ? "Year 1" : selectedYearIdx === 1 ? "Year 2" : "Year 3"}
+          <span style={{ fontSize: "11px", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.08)", padding: "2px 8px", borderRadius: "4px" }}>
+            {activeFyLabel}
           </span>
         </div>
 
@@ -392,20 +447,6 @@ export default function BudgetVarianceView({
             </div>
           )}
 
-          {/* Year selector */}
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Year:</span>
-            <select
-              value={selectedYearIdx}
-              onChange={(e) => setSelectedYearIdx(parseInt(e.target.value, 10))}
-              style={selectStyle}
-            >
-              <option value={0}>Year 1</option>
-              <option value={1}>Year 2</option>
-              <option value={2}>Year 3</option>
-            </select>
-          </div>
-
           <button
             type="button"
             onClick={onRefresh}
@@ -433,26 +474,79 @@ export default function BudgetVarianceView({
               </svg>
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadCSV}
+            title="Download CSV"
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#0047AB",
+              borderRadius: "50%",
+            }}
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
         </div>
       </div>
 
-      {/* Main Budget Variance Table */}
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          overflow: "hidden",
-          width: "100%",
-        }}
-      >
-        <div style={{ overflowX: "auto", width: "100%" }}>
-          <table
+      {/* Main Budget Variance Table with Navigation Arrows */}
+      <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+        {selectedYearIdx > 0 && (
+          <button
+            type="button"
+            onClick={() => setSelectedYearIdx((prev) => Math.max(0, prev - 1))}
+            title="Previous Year"
             style={{
-              width: "max-content",
-              borderCollapse: "separate",
-              borderSpacing: 0,
+              position: "absolute",
+              left: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ‹
+          </button>
+        )}
+
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+            border: "1px solid #e2e8f0",
+            overflow: "hidden",
+            width: "100%",
+          }}
+        >
+          <div style={{ overflowX: "auto", width: "100%" }}>
+            <table
+              style={{
+                width: "max-content",
+                borderCollapse: "separate",
+                borderSpacing: 0,
               fontSize: "12px",
               fontFamily: "'Kumbh Sans', sans-serif",
             }}
@@ -728,6 +822,36 @@ export default function BudgetVarianceView({
           </table>
         </div>
       </div>
+
+      {selectedYearIdx < 2 && (
+        <button
+          type="button"
+          onClick={() => setSelectedYearIdx((prev) => Math.min(2, prev + 1))}
+          title="Next Year"
+          style={{
+            position: "absolute",
+            right: "-42px",
+            top: "50%",
+            transform: "translateY(-50%)",
+            background: "transparent",
+            color: "#a2c4c9",
+            border: "none",
+            fontSize: "2.8rem",
+            fontWeight: "bold",
+            cursor: "pointer",
+            padding: "0",
+            zIndex: 10,
+            lineHeight: 1,
+            userSelect: "none",
+            transition: "color 0.2s",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+          onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+        >
+          ›
+        </button>
+      )}
     </div>
+  </div>
   );
 }

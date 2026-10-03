@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine } from "../../services/deepDiveHelper";
 
 export default function MonthView({
   clientName,
@@ -9,7 +9,8 @@ export default function MonthView({
   keyData,
   isLoading,
   onRefresh,
-  error
+  error,
+  isSenior = false,
 }) {
   const [activePopover, setActivePopover] = useState(null);
   const [activePeriod, setActivePeriod] = useState("curr"); // 'curr' | 'prev' | 'next'
@@ -67,7 +68,7 @@ export default function MonthView({
       >
         <Spinner size={32} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#0047AB", fontWeight: 500, fontSize: "15px" }}>
-          Please wait - data loading
+          Please wait - loading
         </p>
       </div>
     );
@@ -92,18 +93,28 @@ export default function MonthView({
   };
 
   const handleCellClick = (e, rowLabel, val) => {
+    const l = String(rowLabel || "").toLowerCase();
+    if (l.includes("total overheads") || l.includes("overheads as %") || l.includes("overheads %")) return;
     const ddType = getDeepDiveType(rowLabel);
     if (!ddType || !val || val === "£0" || val === "—") return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const mIdx = getMonthIndexFromPeriod(monthPeriod);
+    const parsedTargetDate = DeepDiveEngine.parseHeaderDate(monthPeriod);
+    const isIncomeMode =
+      String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
+      Boolean(currMonth?.tableRows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
+
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel: monthPeriod,
       monthIndex: mIdx,
       cellValue: val,
       yearIndex: 1,
+      targetDate: parsedTargetDate,
       keyData,
+      isIncomeMode,
+      isRestricted: isSenior,
     });
 
     setActivePopover({
@@ -112,7 +123,8 @@ export default function MonthView({
       title: ddData.title,
       period: ddData.period,
       total: ddData.total,
-      items: ddData.items,
+      items: ddData.items || [],
+      sections: ddData.sections || null,
     });
   };
 
@@ -208,6 +220,7 @@ export default function MonthView({
         period={activePopover?.period}
         total={activePopover?.total}
         items={activePopover?.items || []}
+        sections={activePopover?.sections}
         onClose={() => setActivePopover(null)}
       />
 
@@ -465,7 +478,13 @@ export default function MonthView({
                 const cellBg = threshBg || bgColor;
 
                 // Deep dive clickability
-                const ddType = !isSpacer && !isHide ? getDeepDiveType(label) : null;
+                const isBlockedRow =
+                  i === 25 ||
+                  i === 27 ||
+                  String(label || "").toLowerCase().includes("total overheads") ||
+                  String(label || "").toLowerCase().includes("overheads as %") ||
+                  String(label || "").toLowerCase().includes("overheads %");
+                const ddType = !isSpacer && !isHide && !isBlockedRow ? getDeepDiveType(label) : null;
                 const isClickable = Boolean(ddType && value && value !== "£0" && value !== "—" && value !== "");
 
                 let displayVal = value;

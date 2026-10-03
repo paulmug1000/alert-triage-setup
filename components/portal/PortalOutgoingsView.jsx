@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
 
 export default function PortalOutgoingsView({
@@ -10,14 +10,24 @@ export default function PortalOutgoingsView({
   error,
   onRefresh,
 }) {
-  const [selectedYear, setSelectedYear] = useState(1); // 1, 2, 3
-  const [searchTerm, setSearchTerm] = useState("");
+  const outgoingsData = data?.outgoings;
+  const [selectedYear, setSelectedYear] = useState(outgoingsData?.currentYear || 2); // 1, 2, 3
   const [isEditing, setIsEditing] = useState(false);
   const [editValues, setEditValues] = useState({}); // { [rowNumber]: string[] (12 months) }
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const [optimisticAllocs, setOptimisticAllocs] = useState({}); // { [year]: { [rowNumber]: string[] } }
 
-  const outgoingsData = data?.outgoings;
+  // Clear optimistic allocations when fresh server data arrives
+  useEffect(() => {
+    setOptimisticAllocs({});
+  }, [outgoingsData]);
+
+  useEffect(() => {
+    if (outgoingsData?.currentYear) {
+      setSelectedYear(outgoingsData.currentYear);
+    }
+  }, [outgoingsData?.currentYear]);
 
   const fyLabels = useMemo(() => {
     if (outgoingsData?.fyLabels) return outgoingsData.fyLabels;
@@ -58,14 +68,6 @@ export default function PortalOutgoingsView({
 
   const pageTitle = getPageTitle();
 
-  // Filtered by search
-  const filteredItems = useMemo(() => {
-    if (!itemsList) return [];
-    if (!searchTerm.trim()) return itemsList;
-    const q = searchTerm.toLowerCase().trim();
-    return itemsList.filter((item) => (item.name || "").toLowerCase().includes(q));
-  }, [itemsList, searchTerm]);
-
   const formatGBP = (val) => {
     if (val === null || val === undefined || val === "") return "£0";
     if (typeof val === "number") {
@@ -78,7 +80,8 @@ export default function PortalOutgoingsView({
   const handleStartEdit = () => {
     const initial = {};
     itemsList.forEach((item) => {
-      const yearAlloc = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+      const optAllocs = optimisticAllocs[selectedYear]?.[item.rowNumber];
+      const yearAlloc = optAllocs || item.allocations?.[selectedYear] || item.monthlyAllocations || [];
       initial[item.rowNumber] = yearAlloc.slice(0, 12);
     });
     setEditValues(initial);
@@ -143,6 +146,15 @@ export default function PortalOutgoingsView({
         if (!resData.success) {
           throw new Error(resData.error || "Failed to save outgoings data");
         }
+
+        // Optimistically update local allocations immediately so new values display with zero delay
+        setOptimisticAllocs((prev) => ({
+          ...prev,
+          [selectedYear]: {
+            ...(prev[selectedYear] || {}),
+            ...editValues,
+          },
+        }));
       }
 
       setIsEditing(false);
@@ -155,12 +167,48 @@ export default function PortalOutgoingsView({
     }
   };
 
+  const handleDownloadCSV = () => {
+    if (!itemsList || itemsList.length === 0) return;
+    const fyName = fyLabels[selectedYear] || `FY${selectedYear}`;
+    const dateStr = new Date().toISOString().split("T")[0];
+
+    const header = [pageTitle, ...(monthHeaders || []), "Total"];
+    const rowsData = itemsList.map((item) => {
+      const origAllocs = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+      const currentAllocs = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
+      const liveTotal = currentAllocs.reduce((sum, v) => {
+        const n = parseFloat(String(v).replace(/[£,]/g, "")) || 0;
+        return sum + n;
+      }, 0);
+      return [
+        item.name || "",
+        ...monthHeaders.map((_, mIdx) => currentAllocs[mIdx] || "£0"),
+        formatGBP(liveTotal),
+      ];
+    });
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [header, ...rowsData]
+        .map((e) =>
+          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
+        )
+        .join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Pulse_${pageTitle}_${fyName}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   if (isLoading && !outgoingsData) {
     return (
       <div style={{ textAlign: "center", padding: "4rem 0" }}>
         <Spinner size={36} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Loading {pageTitle} for {clientName}...
+          Please wait - loading
         </p>
       </div>
     );
@@ -218,35 +266,19 @@ export default function PortalOutgoingsView({
           <span
             style={{
               padding: "2px 8px",
-              borderRadius: "10px",
+              borderRadius: "4px",
               fontSize: "11px",
               fontWeight: 700,
               background: "rgba(0, 71, 171, 0.08)",
               color: "#0047AB",
             }}
           >
-            {itemsList.length} items
+            {fyLabels[selectedYear]}
           </span>
         </div>
 
         {/* Controls */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          {/* Year selector */}
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Year:</span>
-            <select
-              value={selectedYear}
-              onChange={(e) => {
-                setSelectedYear(parseInt(e.target.value, 10));
-                setIsEditing(false);
-              }}
-              style={selectStyle}
-            >
-              <option value={1}>{fyLabels[1]} (Current)</option>
-              <option value={2}>{fyLabels[2]}</option>
-              <option value={3}>{fyLabels[3]}</option>
-            </select>
-          </div>
 
           {isEditing ? (
             <>
@@ -309,7 +341,10 @@ export default function PortalOutgoingsView({
                 cursor: "pointer",
               }}
             >
-              <span>✏️</span>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              </svg>
               <span>Edit</span>
             </button>
           )}
@@ -341,6 +376,29 @@ export default function PortalOutgoingsView({
               </svg>
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadCSV}
+            title="Download CSV"
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#0047AB",
+              borderRadius: "50%",
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -359,105 +417,115 @@ export default function PortalOutgoingsView({
         </div>
       )}
 
-      {/* Search Input */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "flex-end",
-          alignItems: "center",
-          marginBottom: "0.5rem",
-        }}
-      >
-        <input
-          type="text"
-          placeholder={`Search ${pageTitle.toLowerCase()}...`}
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          style={{
-            padding: "4px 8px",
-            borderRadius: "6px",
-            border: "1px solid #cbd5e1",
-            fontSize: "12px",
-            width: "200px",
-          }}
-        />
-      </div>
-
-      {/* Main Table (Fitting desktop width) */}
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          overflow: "hidden",
-          width: "100%",
-        }}
-      >
-        <div style={{ overflowX: "auto", width: "100%" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "separate",
-              borderSpacing: 0,
-              fontSize: "12px",
-              tableLayout: "fixed",
+      {/* Main Table with Navigation Arrows */}
+      <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+        {selectedYear > 1 && (
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedYear((prev) => Math.max(1, prev - 1));
+              setIsEditing(false);
             }}
+            title="Previous Year"
+            style={{
+              position: "absolute",
+              left: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
           >
-            <thead>
-              <tr style={{ background: "#0047AB", color: "#ffffff" }}>
-                <th
-                  style={{
-                    padding: "6px 8px",
-                    textAlign: "left",
-                    fontWeight: 700,
-                    width: "24%",
-                    position: "sticky",
-                    left: 0,
-                    background: "#0047AB",
-                    zIndex: 2,
-                  }}
-                >
-                  {/* Empty top-left cell header */}
-                </th>
-                {monthHeaders.map((m, idx) => (
+            ‹
+          </button>
+        )}
+
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+            border: "1px solid #e2e8f0",
+            overflow: "hidden",
+            width: "100%",
+          }}
+        >
+          <div style={{ overflowX: "auto", width: "100%" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "separate",
+                borderSpacing: 0,
+                fontSize: "12px",
+                tableLayout: "fixed",
+              }}
+            >
+              <thead>
+                <tr style={{ background: "#0047AB", color: "#ffffff" }}>
                   <th
-                    key={idx}
                     style={{
-                      padding: "6px 4px",
-                      textAlign: "right",
+                      padding: "6px 8px",
+                      textAlign: "left",
                       fontWeight: 700,
-                      fontSize: "11px",
-                      width: "5.5%",
+                      width: "24%",
+                      position: "sticky",
+                      left: 0,
+                      background: "#0047AB",
+                      zIndex: 2,
                     }}
                   >
-                    {m}
+                    {/* Empty top-left cell header */}
                   </th>
-                ))}
-                <th
-                  style={{
-                    padding: "6px 8px",
-                    textAlign: "right",
-                    fontWeight: 800,
-                    width: "10%",
-                    background: "#003380",
-                  }}
-                >
-                  Total
-                </th>
-              </tr>
-            </thead>
+                  {monthHeaders.map((m, idx) => (
+                    <th
+                      key={idx}
+                      style={{
+                        padding: "6px 4px",
+                        textAlign: "right",
+                        fontWeight: 700,
+                        fontSize: "11px",
+                        width: "5.5%",
+                      }}
+                    >
+                      {m}
+                    </th>
+                  ))}
+                  <th
+                    style={{
+                      padding: "6px 8px",
+                      textAlign: "right",
+                      fontWeight: 800,
+                      width: "10%",
+                      background: "#0047AB",
+                    }}
+                  >
+                    Total
+                  </th>
+                </tr>
+              </thead>
 
             <tbody>
-              {filteredItems.length === 0 ? (
+              {itemsList.length === 0 ? (
                 <tr>
                   <td colSpan={14} style={{ padding: "3rem", textAlign: "center", color: "#64748b" }}>
                     No {pageTitle.toLowerCase()} items found.
                   </td>
                 </tr>
               ) : (
-                filteredItems.map((item, idx) => {
-                  const origAllocs = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
+                itemsList.map((item, idx) => {
+                  const optAllocs = optimisticAllocs[selectedYear]?.[item.rowNumber];
+                  const origAllocs = optAllocs || item.allocations?.[selectedYear] || item.monthlyAllocations || [];
                   const currentAllocs = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
 
                   const liveTotal = currentAllocs.reduce((sum, v) => {
@@ -527,7 +595,7 @@ export default function PortalOutgoingsView({
                           fontWeight: 700,
                           color: "#0047AB",
                           fontSize: "11.5px",
-                          background: "rgba(0, 71, 171, 0.04)",
+                          background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
                         }}
                       >
                         {formatGBP(liveTotal)}
@@ -540,6 +608,39 @@ export default function PortalOutgoingsView({
           </table>
         </div>
       </div>
+
+      {selectedYear < 3 && (
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedYear((prev) => Math.min(3, prev + 1));
+            setIsEditing(false);
+          }}
+          title="Next Year"
+          style={{
+            position: "absolute",
+            right: "-42px",
+            top: "50%",
+            transform: "translateY(-50%)",
+            background: "transparent",
+            color: "#a2c4c9",
+            border: "none",
+            fontSize: "2.8rem",
+            fontWeight: "bold",
+            cursor: "pointer",
+            padding: "0",
+            zIndex: 10,
+            lineHeight: 1,
+            userSelect: "none",
+            transition: "color 0.2s",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+          onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+        >
+          ›
+        </button>
+      )}
+    </div>
     </div>
   );
 }

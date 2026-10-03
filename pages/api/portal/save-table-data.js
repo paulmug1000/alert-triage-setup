@@ -31,6 +31,14 @@ export default async function handler(req, res) {
     }
   }
 
+  const isSenior = sessionUser.isSenior || sessionUser.role === "Senior (Restricted)" || String(sessionUser.role || "").toLowerCase().includes("senior");
+  if (isSenior) {
+    const sLower = String(sheetName || "").toLowerCase();
+    if (sLower.includes("salar") || sLower.includes("divid")) {
+      return res.status(403).json({ success: false, error: "Forbidden: Senior users cannot modify salaries or dividends" });
+    }
+  }
+
   try {
     const sheets = await getSheetsClient();
 

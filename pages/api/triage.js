@@ -184,6 +184,17 @@ export default async function handler(req, res) {
       if (!sessionUser) {
         return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
       }
+
+      // Block ClientUser and Senior (Restricted) from accessing internal PMA actions
+      const isPulseOnly = sessionUser.role === "ClientUser" || 
+                          sessionUser.role === "Senior (Restricted)" || 
+                          Boolean(sessionUser.isSenior) ||
+                          (!sessionUser.isAdmin && sessionUser.role !== "ClientManager");
+
+      const ALLOWED_CLIENT_ACTIONS = new Set(["get_session", "logout", "get_user_preferences", "update_user_preference"]);
+      if (isPulseOnly && !ALLOWED_CLIENT_ACTIONS.has(action)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Access restricted to Pulse Portal" });
+      }
     }
 
     if (action === "send_otp") {

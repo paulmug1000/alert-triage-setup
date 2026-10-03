@@ -70,6 +70,16 @@ function TriageSystemContent({ onBack, appGlobals }) {
   } = auth;
   // Only Admin is an internal staff role able to see all clients
   const isAdmin = !!(user?.isAdmin || user?.role === "Admin");
+  const isPulseOnly = Boolean(
+    user && (user.role === "ClientUser" || user.role === "Senior (Restricted)" || user.isSenior || (!isAdmin && user.role !== "ClientManager"))
+  );
+
+  // If ClientUser or Senior (Restricted) lands on PMA, redirect immediately to Pulse
+  useEffect(() => {
+    if (!authChecking && isAuthenticated && isPulseOnly) {
+      window.location.href = "/pulse";
+    }
+  }, [authChecking, isAuthenticated, isPulseOnly]);
 
   const [screen, setScreen] = useState("initial");
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
@@ -100,12 +110,12 @@ function TriageSystemContent({ onBack, appGlobals }) {
   } = triageEngine;
 
   // --- INITIAL DATA LOAD ---
-  // Explicitly trigger triage data load only when authenticated and scoped to current user.
+  // Explicitly trigger triage data load only when authenticated, scoped to current user, and allowed in PMA
   const currentAuthEmail = user?.email || "";
   const prevAuthEmailRef = useRef("");
 
   useEffect(() => {
-    if (!isAuthenticated || authChecking) return;
+    if (!isAuthenticated || authChecking || isPulseOnly) return;
 
     if (prevAuthEmailRef.current !== currentAuthEmail) {
       prevAuthEmailRef.current = currentAuthEmail;
@@ -116,7 +126,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
       refreshTaskCount?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated, authChecking, currentAuthEmail, sessionId]);
+  }, [isAuthenticated, authChecking, isPulseOnly, currentAuthEmail, sessionId]);
 
   const { overviewData, setOverviewData, overviewLoading, setOverviewLoading, loadOverview } = useOverview(automationCommanderSheetId);
 
@@ -228,6 +238,29 @@ function TriageSystemContent({ onBack, appGlobals }) {
         verifyCode={auth.verifyCode}
         resetToEmailStep={auth.resetToEmailStep}
       />
+    );
+  }
+
+  // ClientUser and Senior (Restricted) must never see or interact with PMA
+  if (isPulseOnly) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#ffffff",
+          gap: "16px",
+          fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, sans-serif"
+        }}
+      >
+        <Spinner size={36} color="#0047AB" />
+        <span style={{ color: "#0047AB", fontWeight: 600, fontSize: "16px" }}>
+          Redirecting to Pulse...
+        </span>
+      </div>
     );
   }
 

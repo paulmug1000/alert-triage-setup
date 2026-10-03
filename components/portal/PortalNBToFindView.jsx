@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
 
 export default function PortalNBToFindView({
@@ -9,21 +9,42 @@ export default function PortalNBToFindView({
   error,
   onRefresh,
 }) {
-  const [selectedYear, setSelectedYear] = useState(2); // Year 2 typically has targets
+  const nbData = data?.nbtofind;
+  const [selectedYear, setSelectedYear] = useState(nbData?.currentYear || 2);
   const [isEditing, setIsEditing] = useState(false);
   const [editValues, setEditValues] = useState([]); // 12 monthly targets
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const [optimisticTarget, setOptimisticTarget] = useState({}); // { [year]: string[] }
 
-  const nbData = data?.nbtofind;
+  useEffect(() => {
+    setOptimisticTarget({});
+  }, [nbData]);
+
+  useEffect(() => {
+    if (nbData?.currentYear) {
+      setSelectedYear(nbData.currentYear);
+    }
+  }, [nbData?.currentYear]);
+
+  const fyLabels = useMemo(() => {
+    if (data?.outgoings?.fyLabels) return data.outgoings.fyLabels;
+    const getFy = (yr) => {
+      const hdrs = nbData?.headers?.[yr] || [];
+      const last = hdrs[hdrs.length - 1] || hdrs[0];
+      const m = String(last).match(/(\d{2,4})/);
+      return m ? `FY${m[1].slice(-2)}` : `FY${25 + yr}`;
+    };
+    return { 1: getFy(1), 2: getFy(2), 3: getFy(3) };
+  }, [data, nbData]);
 
   const monthHeaders = useMemo(() => {
     return nbData?.headers?.[selectedYear] || nbData?.headers?.[1] || [];
   }, [nbData, selectedYear]);
 
   const monthlyAllocations = useMemo(() => {
-    return nbData?.allocations?.[selectedYear] || nbData?.monthlyAllocations || [];
-  }, [nbData, selectedYear]);
+    return optimisticTarget[selectedYear] || nbData?.allocations?.[selectedYear] || nbData?.monthlyAllocations || [];
+  }, [nbData, selectedYear, optimisticTarget]);
 
   const currentAllocations = isEditing ? editValues : monthlyAllocations;
 
@@ -96,6 +117,12 @@ export default function PortalNBToFindView({
         throw new Error(resData.error || "Failed to save new business targets");
       }
 
+      // Optimistically update local target allocations immediately so new values display with zero delay
+      setOptimisticTarget((prev) => ({
+        ...prev,
+        [selectedYear]: [...editValues],
+      }));
+
       setIsEditing(false);
       if (onRefresh) onRefresh();
     } catch (err) {
@@ -106,12 +133,39 @@ export default function PortalNBToFindView({
     }
   };
 
+  const handleDownloadCSV = () => {
+    if (!currentAllocations) return;
+    const dateStr = new Date().toISOString().split("T")[0];
+
+    const header = ["Metric / Target", ...(monthHeaders || []), "Total Target"];
+    const row = [
+      "New Business to Find",
+      ...monthHeaders.map((_, mIdx) => currentAllocations[mIdx] || "£0"),
+      formatGBP(totalTarget),
+    ];
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [header, row]
+        .map((e) =>
+          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
+        )
+        .join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Pulse_NB_To_Find_Year_${selectedYear}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   if (isLoading && !nbData) {
     return (
       <div style={{ textAlign: "center", padding: "4rem 0" }}>
         <Spinner size={36} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Loading New Business targets for {clientName}...
+          Please wait - loading
         </p>
       </div>
     );
@@ -169,35 +223,19 @@ export default function PortalNBToFindView({
           <span
             style={{
               padding: "2px 8px",
-              borderRadius: "10px",
+              borderRadius: "4px",
               fontSize: "11px",
               fontWeight: 700,
               background: "rgba(0, 71, 171, 0.08)",
               color: "#0047AB",
             }}
           >
-            Year {selectedYear} Target: {formatGBP(totalTarget)}
+            {fyLabels[selectedYear]}
           </span>
         </div>
 
         {/* Controls */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          {/* Year selector */}
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Year:</span>
-            <select
-              value={selectedYear}
-              onChange={(e) => {
-                setSelectedYear(parseInt(e.target.value, 10));
-                setIsEditing(false);
-              }}
-              style={selectStyle}
-            >
-              <option value={1}>Year 1</option>
-              <option value={2}>Year 2</option>
-              <option value={3}>Year 3</option>
-            </select>
-          </div>
 
           {isEditing ? (
             <>
@@ -260,7 +298,10 @@ export default function PortalNBToFindView({
                 cursor: "pointer",
               }}
             >
-              <span>✏️</span>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              </svg>
               <span>Edit</span>
             </button>
           )}
@@ -292,6 +333,29 @@ export default function PortalNBToFindView({
               </svg>
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadCSV}
+            title="Download CSV"
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#0047AB",
+              borderRadius: "50%",
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -310,129 +374,195 @@ export default function PortalNBToFindView({
         </div>
       )}
 
-      {/* Target Breakdown Table (Fitting desktop width) */}
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          overflow: "hidden",
-          width: "100%",
-        }}
-      >
-        <div style={{ overflowX: "auto", width: "100%" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "separate",
-              borderSpacing: 0,
-              fontSize: "12px",
-              tableLayout: "fixed",
+      {/* Target Breakdown Table with Navigation Arrows */}
+      <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+        {selectedYear > 1 && (
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedYear((prev) => Math.max(1, prev - 1));
+              setIsEditing(false);
             }}
+            title="Previous Year"
+            style={{
+              position: "absolute",
+              left: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
           >
-            <thead>
-              <tr style={{ background: "#0047AB", color: "#ffffff" }}>
-                <th
-                  style={{
-                    padding: "6px 8px",
-                    textAlign: "left",
-                    fontWeight: 700,
-                    width: "24%",
-                    position: "sticky",
-                    left: 0,
-                    background: "#0047AB",
-                    zIndex: 2,
-                  }}
-                >
-                  Metric / Target
-                </th>
-                {monthHeaders.map((m, idx) => (
+            ‹
+          </button>
+        )}
+
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+            border: "1px solid #e2e8f0",
+            overflow: "hidden",
+            width: "100%",
+          }}
+        >
+          <div style={{ overflowX: "auto", width: "100%" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "separate",
+                borderSpacing: 0,
+                fontSize: "12px",
+                tableLayout: "fixed",
+              }}
+            >
+              <thead>
+                <tr style={{ background: "#0047AB", color: "#ffffff" }}>
                   <th
-                    key={idx}
                     style={{
-                      padding: "6px 4px",
-                      textAlign: "right",
+                      padding: "6px 8px",
+                      textAlign: "left",
                       fontWeight: 700,
-                      fontSize: "11px",
-                      width: "5.5%",
+                      width: "24%",
+                      position: "sticky",
+                      left: 0,
+                      background: "#0047AB",
+                      zIndex: 2,
                     }}
                   >
-                    {m}
+                    Metric / Target
                   </th>
-                ))}
-                <th
-                  style={{
-                    padding: "6px 8px",
-                    textAlign: "right",
-                    fontWeight: 800,
-                    width: "10%",
-                    background: "#003380",
-                  }}
-                >
-                  Total Target
-                </th>
-              </tr>
-            </thead>
-
-            <tbody>
-              <tr style={{ background: "#ffffff", borderBottom: "1px solid #f1f5f9" }}>
-                <td
-                  style={{
-                    padding: "6px 8px",
-                    fontWeight: 700,
-                    color: "#0f172a",
-                    position: "sticky",
-                    left: 0,
-                    background: "#ffffff",
-                    zIndex: 1,
-                  }}
-                >
-                  New Business to Find
-                </td>
-
-                {monthHeaders.map((_, mIdx) => {
-                  const val = currentAllocations[mIdx] || "£0";
-
-                  return (
-                    <td
-                      key={mIdx}
+                  {monthHeaders.map((m, idx) => (
+                    <th
+                      key={idx}
                       style={{
-                        padding: "4px 4px",
+                        padding: "6px 4px",
                         textAlign: "right",
+                        fontWeight: 700,
                         fontSize: "11px",
+                        width: "5.5%",
                       }}
                     >
-                      {isEditing ? (
-                        <input
-                          type="text"
-                          value={val}
-                          onChange={(e) => handleCellChange(mIdx, e.target.value)}
-                          style={inlineInputStyle}
-                        />
-                      ) : (
-                        formatGBP(val)
-                      )}
-                    </td>
-                  );
-                })}
+                      {m}
+                    </th>
+                  ))}
+                  <th
+                    style={{
+                      padding: "6px 8px",
+                      textAlign: "right",
+                      fontWeight: 800,
+                      width: "10%",
+                      background: "#0047AB",
+                    }}
+                  >
+                    Total Target
+                  </th>
+                </tr>
+              </thead>
 
-                <td
-                  style={{
-                    padding: "6px 8px",
-                    textAlign: "right",
-                    fontWeight: 800,
-                    color: "#0047AB",
-                    fontSize: "12px",
-                    background: "rgba(0, 71, 171, 0.04)",
-                  }}
-                >
-                  {formatGBP(totalTarget)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+              <tbody>
+                <tr style={{ background: "#ffffff", borderBottom: "1px solid #f1f5f9" }}>
+                  <td
+                    style={{
+                      padding: "6px 8px",
+                      fontWeight: 700,
+                      color: "#0f172a",
+                      position: "sticky",
+                      left: 0,
+                      background: "#ffffff",
+                      zIndex: 1,
+                    }}
+                  >
+                    New Business to Find
+                  </td>
+
+                  {monthHeaders.map((_, mIdx) => {
+                    const val = currentAllocations[mIdx] || "£0";
+
+                    return (
+                      <td
+                        key={mIdx}
+                        style={{
+                          padding: "4px 4px",
+                          textAlign: "right",
+                          fontSize: "11px",
+                        }}
+                      >
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={val}
+                            onChange={(e) => handleCellChange(mIdx, e.target.value)}
+                            style={inlineInputStyle}
+                          />
+                        ) : (
+                          formatGBP(val)
+                        )}
+                      </td>
+                    );
+                  })}
+
+                  <td
+                    style={{
+                      padding: "6px 8px",
+                      textAlign: "right",
+                      fontWeight: 800,
+                      color: "#0047AB",
+                      fontSize: "12px",
+                      background: "#ffffff",
+                    }}
+                  >
+                    {formatGBP(totalTarget)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
+
+        {selectedYear < 3 && (
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedYear((prev) => Math.min(3, prev + 1));
+              setIsEditing(false);
+            }}
+            title="Next Year"
+            style={{
+              position: "absolute",
+              right: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ›
+          </button>
+        )}
       </div>
     </div>
   );

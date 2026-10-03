@@ -41,12 +41,14 @@ export default async function handler(req, res) {
       const cached = await redisClient.get(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
-        return res.status(200).json({
-          success: true,
-          fromCache: true,
-          payload: parsed,
-          cachedAt: parsed._cachedAt || null,
-        });
+        if (parsed.hasBudget !== undefined || parsed.clientInfo?.hasBudget !== undefined) {
+          return res.status(200).json({
+            success: true,
+            fromCache: true,
+            payload: parsed,
+            cachedAt: parsed._cachedAt || null,
+          });
+        }
       }
     } catch (cacheErr) {
       console.warn("⚠️ Portal payload Redis read error:", cacheErr.message);
@@ -62,7 +64,7 @@ export default async function handler(req, res) {
       withRetry(() =>
         sheets.spreadsheets.values.batchGet({
           spreadsheetId: clientSheetId,
-          ranges: ["KeyInfo!A1:J20", "AppData!A1:BW90"],
+          ranges: ["KeyInfo!A1:J20", "AppData!A1:BW90", "AppData!W40:W44"],
           valueRenderOption: "FORMATTED_VALUE",
         })
       ),
@@ -77,6 +79,7 @@ export default async function handler(req, res) {
 
     const keyInfoData = formattedResp.data.valueRanges?.[0]?.values || [];
     const appDataDisp = formattedResp.data.valueRanges?.[1]?.values || [];
+    const toggles = formattedResp.data.valueRanges?.[2]?.values || [];
     const chartRawRows = unformattedChartResp.data?.values || [];
 
     // --- 1. Client Info (from KeyInfo & AppData) ---
@@ -88,9 +91,9 @@ export default async function handler(req, res) {
     const splitEnabled = keyInfoData[15]?.[3] === "Yes";
     const authMode = keyInfoData[4]?.[9] ? String(keyInfoData[4][9]).trim() : "EmailOTP";
 
-    const version = appDataDisp[39]?.[22] || ""; // W40
-    const showExtraRows = appDataDisp[41]?.[22] === "Yes"; // W42
-    const hasBudget = appDataDisp[43]?.[22] === "Yes"; // W44
+    const version = toggles[0]?.[0] || appDataDisp[39]?.[22] || ""; // W40
+    const showExtraRows = String(toggles[2]?.[0] || appDataDisp[41]?.[22] || "").trim().toLowerCase() === "yes"; // W42
+    const hasBudget = String(toggles[4]?.[0] || appDataDisp[43]?.[22] || "").trim().toLowerCase() === "yes"; // W44
     const numRows = showExtraRows ? 34 : 32;
 
     // --- 2. Month Breakdowns (Curr: BD:BE, Prev: BV:BW, Next: BM:BN) ---
@@ -205,6 +208,7 @@ export default async function handler(req, res) {
 
     const payload = {
       _cachedAt: new Date().toISOString(),
+      hasBudget,
       clientInfo: {
         name: sheetClientName,
         version,

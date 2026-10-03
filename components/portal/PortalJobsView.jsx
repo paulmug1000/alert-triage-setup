@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
 
 export default function PortalJobsView({
@@ -16,7 +16,71 @@ export default function PortalJobsView({
   const [editingJob, setEditingJob] = useState(null); // null or job object
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const [optimisticJobs, setOptimisticJobs] = useState({}); // { [key]: job }
   const pageSize = 25;
+
+  // Clear optimistic jobs when fresh server data arrives
+  useEffect(() => {
+    setOptimisticJobs({});
+  }, [data?.jobs]);
+
+  const formatDateDdMmmYy = (dateVal) => {
+    if (!dateVal) return "—";
+    let d = null;
+    if (dateVal instanceof Date && !isNaN(dateVal.getTime())) {
+      d = dateVal;
+    } else {
+      const str = String(dateVal).trim();
+      if (!str || str === "—") return "—";
+
+      // Already dd-Mmm-yy
+      if (/^\d{2}\-[A-Za-z]{3}\-\d{2}$/.test(str)) return str;
+
+      // dd/mm/yyyy or dd-mm-yyyy
+      const ukMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+      if (ukMatch) {
+        let y = parseInt(ukMatch[3], 10);
+        if (y < 100) y += 2000;
+        d = new Date(y, parseInt(ukMatch[2], 10) - 1, parseInt(ukMatch[1], 10));
+      } else {
+        // yyyy-mm-dd
+        const isoMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+        if (isoMatch) {
+          d = new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+        } else {
+          // dd-Mmm-yyyy e.g. 1-Oct-2026
+          const mmmMatch = str.match(/^(\d{1,2})[\s\-]([a-zA-Z]{3})[\s\-](\d{2,4})$/);
+          if (mmmMatch) {
+            const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+            const mi = months[mmmMatch[2].toLowerCase()];
+            let y = parseInt(mmmMatch[3], 10);
+            if (y < 100) y += 2000;
+            if (mi !== undefined) d = new Date(y, mi, parseInt(mmmMatch[1], 10));
+          } else {
+            const myMatch = str.match(/^([a-zA-Z]{3})[\s\-](\d{2,4})$/);
+            if (myMatch) {
+              const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+              const mi = months[myMatch[1].toLowerCase()];
+              let y = parseInt(myMatch[2], 10);
+              if (y < 100) y += 2000;
+              if (mi !== undefined) d = new Date(y, mi, 1);
+            } else {
+              const parsed = new Date(str);
+              if (!isNaN(parsed.getTime())) d = parsed;
+            }
+          }
+        }
+      }
+    }
+
+    if (!d || isNaN(d.getTime())) return String(dateVal);
+
+    const day = String(d.getDate()).padStart(2, "0");
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const mmm = monthNames[d.getMonth()];
+    const yy = String(d.getFullYear()).slice(-2);
+    return `${day}-${mmm}-${yy}`;
+  };
 
   const jobsData = data?.jobs;
 
@@ -38,7 +102,10 @@ export default function PortalJobsView({
 
   const filteredJobs = useMemo(() => {
     if (!jobsData?.all) return [];
-    let list = [...jobsData.all];
+    let list = jobsData.all.map((j) => {
+      const key = j.id !== undefined ? j.id : (j.parentId !== undefined ? j.parentId : j.rowNumber);
+      return (key !== undefined && optimisticJobs[key]) ? { ...j, ...optimisticJobs[key] } : j;
+    });
 
     // Filter by type
     if (filterType === "confirmed") {
@@ -73,7 +140,7 @@ export default function PortalJobsView({
     });
 
     return list;
-  }, [jobsData, filterType, searchTerm, sortBy]);
+  }, [jobsData, filterType, searchTerm, sortBy, optimisticJobs]);
 
   const totalPages = Math.ceil(filteredJobs.length / pageSize) || 1;
   const paginatedJobs = useMemo(() => {
@@ -204,6 +271,16 @@ export default function PortalJobsView({
         throw new Error(resData.error || "Failed to save job");
       }
 
+      // Optimistically update local job state immediately so new value is visible with zero delay
+      const savedJob = { ...editingJob };
+      const jobKey = savedJob.id !== undefined ? savedJob.id : (savedJob.parentId !== undefined ? savedJob.parentId : savedJob.rowNumber);
+      if (jobKey !== undefined) {
+        setOptimisticJobs((prev) => ({
+          ...prev,
+          [jobKey]: savedJob,
+        }));
+      }
+
       setEditingJob(null);
       if (onRefresh) onRefresh();
     } catch (err) {
@@ -214,12 +291,60 @@ export default function PortalJobsView({
     }
   };
 
+  const handleDownloadCSV = () => {
+    if (!jobsData?.all || jobsData.all.length === 0) return;
+    const dateStr = new Date().toISOString().split("T")[0];
+
+    const header = [
+      "Type",
+      "Client",
+      "Job Name",
+      "Project/Retainer",
+      "Revenue",
+      "Direct Costs",
+      "Likelihood",
+      "Start Date",
+      "End Date",
+      "Product Line",
+      "Lead Source",
+    ];
+
+    const rowsData = (filteredJobs || []).map((j) => [
+      j.type || "",
+      j.client || "",
+      j.jobName || "",
+      j.projectRetainer || "",
+      j.revenue || "",
+      j.directCosts || "",
+      j.likelihood || "",
+      formatDateDdMmmYy(j.startDate),
+      formatDateDdMmmYy(j.endDate),
+      j.productLine || "",
+      j.leadSource || "",
+    ]);
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [header, ...rowsData]
+        .map((e) =>
+          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
+        )
+        .join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Pulse_Jobs_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   if (isLoading && !jobsData) {
     return (
       <div style={{ textAlign: "center", padding: "4rem 0" }}>
         <Spinner size={36} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Loading Jobs for {clientName}...
+          Please wait - loading
         </p>
       </div>
     );
@@ -337,6 +462,29 @@ export default function PortalJobsView({
               </svg>
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadCSV}
+            title="Download CSV"
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#0047AB",
+              borderRadius: "50%",
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -404,6 +552,7 @@ export default function PortalJobsView({
               width: "180px",
             }}
           />
+          <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Sort by:</span>
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
@@ -442,35 +591,35 @@ export default function PortalJobsView({
               width: "100%",
               borderCollapse: "separate",
               borderSpacing: 0,
-              fontSize: "12px",
+              fontSize: "13.8px",
               tableLayout: "fixed",
             }}
           >
             <thead>
               <tr style={{ background: "#0047AB", color: "#ffffff" }}>
-                <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, width: "10%" }}>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "9%", fontSize: "13.5px" }}>
                   Status
                 </th>
-                <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, width: "32%" }}>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "33%", fontSize: "13.5px" }}>
                   Client & Job Name
                 </th>
-                <th style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, width: "10%" }}>
+                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "9%", fontSize: "13.5px" }}>
                   Type
                 </th>
-                <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, width: "12%" }}>
+                <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "13%", fontSize: "13.5px" }}>
                   Revenue
                 </th>
-                <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, width: "12%" }}>
+                <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "12%", fontSize: "13.5px" }}>
                   Direct Costs
                 </th>
-                <th style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, width: "9%" }}>
+                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "8%", fontSize: "13.5px" }}>
                   Likelihood
                 </th>
-                <th style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, width: "9%" }}>
-                  Timeline
+                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "8%", fontSize: "13.5px" }}>
+                  Start Date
                 </th>
-                <th style={{ padding: "8px 10px", textAlign: "center", fontWeight: 700, width: "6%" }}>
-                  Action
+                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "8%", fontSize: "13.5px" }}>
+                  End Date
                 </th>
               </tr>
             </thead>
@@ -478,7 +627,7 @@ export default function PortalJobsView({
             <tbody>
               {paginatedJobs.length === 0 ? (
                 <tr>
-                  <td colSpan={8} style={{ padding: "3rem", textAlign: "center", color: "#64748b" }}>
+                  <td colSpan={8} style={{ padding: "3rem", textAlign: "center", color: "#64748b", fontSize: "14px" }}>
                     No jobs match your search/filter criteria.
                   </td>
                 </tr>
@@ -503,12 +652,12 @@ export default function PortalJobsView({
                       }}
                     >
                       {/* Status */}
-                      <td style={{ padding: "8px 10px" }}>
+                      <td style={{ padding: "10px 12px" }}>
                         <span
                           style={{
                             padding: "2px 8px",
                             borderRadius: "10px",
-                            fontSize: "10px",
+                            fontSize: "11.5px",
                             fontWeight: 700,
                             background: isConfirmed ? "#dcfce7" : "#e0f2fe",
                             color: isConfirmed ? "#166534" : "#0369a1",
@@ -519,21 +668,20 @@ export default function PortalJobsView({
                       </td>
 
                       {/* Client & Job Name */}
-                      <td style={{ padding: "8px 10px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        <div style={{ fontWeight: 700, color: "#0f172a" }}>{job.client}</div>
-                        <div style={{ color: "#64748b", fontSize: "11px" }}>
+                      <td style={{ padding: "10px 12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <div style={{ fontWeight: 700, color: "#0f172a", fontSize: "14px" }}>{job.client}</div>
+                        <div style={{ color: "#64748b", fontSize: "12.5px" }}>
                           {job.jobName}
-                          {job.productLine ? ` • ${job.productLine}` : ""}
                         </div>
                       </td>
 
                       {/* Project / Retainer */}
-                      <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         <span
                           style={{
-                            padding: "1px 6px",
+                            padding: "2px 7px",
                             borderRadius: "4px",
-                            fontSize: "10.5px",
+                            fontSize: "12px",
                             fontWeight: 600,
                             background: "#f1f5f9",
                             color: "#475569",
@@ -544,22 +692,22 @@ export default function PortalJobsView({
                       </td>
 
                       {/* Revenue */}
-                      <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
+                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0047AB", fontSize: "14px" }}>
                         {formatGBP(job.revenue)}
                       </td>
 
                       {/* Direct Costs */}
-                      <td style={{ padding: "8px 10px", textAlign: "right", color: "#64748b" }}>
+                      <td style={{ padding: "10px 12px", textAlign: "right", color: "#64748b", fontSize: "14px" }}>
                         {formatGBP(job.directCosts)}
                       </td>
 
                       {/* Likelihood */}
-                      <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         <span
                           style={{
-                            padding: "1px 6px",
+                            padding: "2px 7px",
                             borderRadius: "10px",
-                            fontSize: "10.5px",
+                            fontSize: "12px",
                             fontWeight: 700,
                             background: isConfirmed ? "#f0fdf4" : "#fef3c7",
                             color: isConfirmed ? "#166534" : "#b45309",
@@ -569,28 +717,14 @@ export default function PortalJobsView({
                         </span>
                       </td>
 
-                      {/* Timeline */}
-                      <td style={{ padding: "8px 10px", textAlign: "center", color: "#64748b", fontSize: "11px" }}>
-                        {job.startDate || "—"}
+                      {/* Start Date */}
+                      <td style={{ padding: "10px 12px", textAlign: "center", color: "#64748b", fontSize: "12.5px", whiteSpace: "nowrap" }}>
+                        {formatDateDdMmmYy(job.startDate)}
                       </td>
 
-                      {/* Edit Button */}
-                      <td style={{ padding: "8px 10px", textAlign: "center" }}>
-                        <button
-                          type="button"
-                          onClick={(e) => handleOpenEditJob(job, e)}
-                          title="Edit job"
-                          style={{
-                            background: "transparent",
-                            border: "none",
-                            cursor: "pointer",
-                            padding: "4px",
-                            color: "#0047AB",
-                            borderRadius: "4px",
-                          }}
-                        >
-                          ✏️
-                        </button>
+                      {/* End Date */}
+                      <td style={{ padding: "10px 12px", textAlign: "center", color: "#64748b", fontSize: "12.5px", whiteSpace: "nowrap" }}>
+                        {formatDateDdMmmYy(job.endDate)}
                       </td>
                     </tr>
                   );

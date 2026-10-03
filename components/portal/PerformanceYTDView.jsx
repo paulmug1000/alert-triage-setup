@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine } from "../../services/deepDiveHelper";
 
 export default function PerformanceYTDView({
   clientName,
@@ -10,6 +10,7 @@ export default function PerformanceYTDView({
   isLoading,
   error,
   onRefresh,
+  isSenior = false,
 }) {
   const years = data?.years || [];
   const [selectedYearIdx, setSelectedYearIdx] = useState(null);
@@ -76,23 +77,23 @@ export default function PerformanceYTDView({
     if (label.toLowerCase().includes("gross profit margin")) {
       const high = parseFloat(t[0]) || 0.495;
       const low = parseFloat(t[1]) || 0.445;
-      if (num >= high) return { bg: "#d9ead3", color: "#166534" };
-      if (num >= low) return { bg: "#fce5cd", color: "#b45309" };
-      return { bg: "#f4cccc", color: "#991b1b" };
+      if (num >= high) return { bg: "#d9ead3", color: "#000000" };
+      if (num >= low) return { bg: "#fce5cd", color: "#000000" };
+      return { bg: "#f4cccc", color: "#000000" };
     }
     if (label.toLowerCase().includes("overheads as %")) {
       const high = parseFloat(t[5]) || 0.309;
       const low = parseFloat(t[6]) || 0.20;
-      if (num <= low) return { bg: "#d9ead3", color: "#166534" };
-      if (num <= high) return { bg: "#fce5cd", color: "#b45309" };
-      return { bg: "#f4cccc", color: "#991b1b" };
+      if (num <= low) return { bg: "#d9ead3", color: "#000000" };
+      if (num <= high) return { bg: "#fce5cd", color: "#000000" };
+      return { bg: "#f4cccc", color: "#000000" };
     }
-    if (label.toLowerCase().includes("operating profit %")) {
+    if (label.toLowerCase().includes("operating profit %") || label.toLowerCase().includes("operating profit margin")) {
       const high = parseFloat(t[10]) || 0.15;
       const low = parseFloat(t[11]) || 0.05;
-      if (num >= high) return { bg: "#d9ead3", color: "#166534" };
-      if (num >= low) return { bg: "#fce5cd", color: "#b45309" };
-      return { bg: "#f4cccc", color: "#991b1b" };
+      if (num >= high) return { bg: "#d9ead3", color: "#000000" };
+      if (num >= low) return { bg: "#fce5cd", color: "#000000" };
+      return { bg: "#f4cccc", color: "#000000" };
     }
     return null;
   };
@@ -114,6 +115,9 @@ export default function PerformanceYTDView({
     if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
       return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
     }
+    if (l.includes("margin") || l.includes("overheads as %") || l.includes("overheads %")) {
+      return { bg: "#efefef", color: "#000000", bold: false, isMajor: false };
+    }
     return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
 
@@ -131,7 +135,7 @@ export default function PerformanceYTDView({
       >
         <Spinner size={32} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
-          Loading {clientName} YTD performance...
+          Please wait - loading
         </p>
       </div>
     );
@@ -241,13 +245,36 @@ export default function PerformanceYTDView({
     if (!ddType || !val || val === "£0" || val === "—" || val === "") return;
 
     const rect = e.currentTarget.getBoundingClientRect();
+    const isYTDTotal = mIdx === -1;
+    const firstMonthStr = displayedMonths?.[0] || activeYear?.headerMonths?.[0] || "Apr 25";
+    const fyStartDate = DeepDiveEngine.parseHeaderDate(firstMonthStr) || new Date(2025, 3, 1);
+
+    let targetDate = null;
+    if (isYTDTotal) {
+      targetDate = fyStartDate;
+    } else {
+      const monthStr = displayedMonths?.[mIdx];
+      targetDate = monthStr ? DeepDiveEngine.parseHeaderDate(monthStr) : null;
+      if (!targetDate) {
+        targetDate = new Date(fyStartDate.getFullYear(), fyStartDate.getMonth() + mIdx, 1);
+      }
+    }
+
+    const isIncomeMode =
+      String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
+      Boolean(activeYear?.rows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
+
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel,
       monthIndex: mIdx,
       cellValue: val,
       yearIndex: activeYearIdx,
+      targetDate,
+      aggregateCount: isYTDTotal ? (displayedMonths?.length || 12) : 1,
       keyData,
+      isIncomeMode,
+      isRestricted: isSenior,
     });
 
     setActivePopover({
@@ -256,8 +283,37 @@ export default function PerformanceYTDView({
       title: ddData.title,
       period: ddData.period,
       total: ddData.total,
-      items: ddData.items,
+      items: ddData.items || [],
+      sections: ddData.sections || null,
     });
+  };
+
+  const handleDownloadCSV = () => {
+    if (!activeYear) return;
+    const fyName = (activeYear.fyLabel || activeYear.displayTitle || "YTD").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const dateStr = new Date().toISOString().split("T")[0];
+
+    const header = ["Line Item", ...(displayedMonths || []), "YTD Total"];
+    const rowsData = ytdRows.map((r) => [
+      r.label || "",
+      ...r.monthVals.map((v) => (v === "—" ? "" : v || "")),
+      r.isPct ? formatPct(r.ytdTotalVal) : formatMoney(r.ytdTotalVal),
+    ]);
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [header, ...rowsData]
+        .map((e) =>
+          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
+        )
+        .join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Pulse_Performance_YTD_${fyName}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   // Fixed column widths fitting 100% desktop width
@@ -274,6 +330,7 @@ export default function PerformanceYTDView({
         period={activePopover?.period}
         total={activePopover?.total}
         items={activePopover?.items || []}
+        sections={activePopover?.sections}
         onClose={() => setActivePopover(null)}
       />
 
@@ -295,6 +352,18 @@ export default function PerformanceYTDView({
           <span
             style={{
               padding: "2px 8px",
+              borderRadius: "4px",
+              fontSize: "11px",
+              fontWeight: 700,
+              background: "rgba(0, 71, 171, 0.08)",
+              color: "#0047AB",
+            }}
+          >
+            {activeYear.fyLabel || activeYear.displayTitle}
+          </span>
+          <span
+            style={{
+              padding: "2px 8px",
               borderRadius: "10px",
               fontSize: "11px",
               fontWeight: 700,
@@ -308,22 +377,6 @@ export default function PerformanceYTDView({
 
         {/* Controls */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-          {/* Year selector */}
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Year:</span>
-            <select
-              value={activeYearIdx}
-              onChange={(e) => setSelectedYearIdx(parseInt(e.target.value, 10))}
-              style={selectStyle}
-            >
-              {years.map((y, idx) => (
-                <option key={y.id} value={idx}>
-                  {y.fyLabel || y.displayTitle} {idx === data?.currentYearIdx ? "(Current)" : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-
           {/* Month Cutoff selector */}
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Through to:</span>
@@ -367,20 +420,73 @@ export default function PerformanceYTDView({
               </svg>
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadCSV}
+            title="Download CSV"
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#0047AB",
+              borderRadius: "50%",
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
         </div>
       </div>
 
-      {/* YTD Cumulative Table (Fitting desktop width) */}
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          overflowX: "auto",
-          width: "100%",
-        }}
-      >
+      {/* YTD Cumulative Table with Navigation Arrows */}
+      <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+        {activeYearIdx > 0 && (
+          <button
+            type="button"
+            onClick={() => setSelectedYearIdx((prev) => Math.max(0, (prev !== null ? prev : activeYearIdx) - 1))}
+            title="Previous Year"
+            style={{
+              position: "absolute",
+              left: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ‹
+          </button>
+        )}
+
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+            border: "1px solid #e2e8f0",
+            overflowX: "auto",
+            width: "100%",
+          }}
+        >
         <table
           style={{
             width: "max-content",
@@ -572,7 +678,7 @@ export default function PerformanceYTDView({
                         style={{
                           padding: "4px 8px",
                           textAlign: "right",
-                          color: rowStyle.isMajor ? "#ffffff" : ytdBadge ? ytdBadge.color : "#0047AB",
+                          color: rowStyle.isMajor ? "#ffffff" : ytdBadge ? ytdBadge.color : isPercentageRow ? "#000000" : "#0047AB",
                           fontStyle: isPercentageRow ? "italic" : "normal",
                           fontSize: rowStyle.isMajor ? "13px" : "11.5px",
                           fontWeight: rowStyle.isMajor ? 800 : 700,
@@ -599,6 +705,36 @@ export default function PerformanceYTDView({
           </tbody>
         </table>
       </div>
+
+      {activeYearIdx < years.length - 1 && (
+        <button
+          type="button"
+          onClick={() => setSelectedYearIdx((prev) => Math.min(years.length - 1, (prev !== null ? prev : activeYearIdx) + 1))}
+          title="Next Year"
+          style={{
+            position: "absolute",
+            right: "-42px",
+            top: "50%",
+            transform: "translateY(-50%)",
+            background: "transparent",
+            color: "#a2c4c9",
+            border: "none",
+            fontSize: "2.8rem",
+            fontWeight: "bold",
+            cursor: "pointer",
+            padding: "0",
+            zIndex: 10,
+            lineHeight: 1,
+            userSelect: "none",
+            transition: "color 0.2s",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+          onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+        >
+          ›
+        </button>
+      )}
+    </div>
 
       {/* YTD Key Summary Cards (Positioned UNDERNEATH the table) */}
       <div

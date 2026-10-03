@@ -23,6 +23,21 @@ export default function BudgetView({
   const rawVals = data?.rawVals || [];
   const mathVals = data?.mathVals || rawVals;
 
+  const activeFyLabel = useMemo(() => {
+    const curYearObj = data?.years?.[selectedYearIdx];
+    if (curYearObj?.fyLabel) return curYearObj.fyLabel;
+    if (curYearObj?.fyTotalLabel) {
+      const cleaned = curYearObj.fyTotalLabel.replace(/\s*total/i, "").trim();
+      if (cleaned && !cleaned.toLowerCase().includes("fy")) return `FY${cleaned}`;
+      if (cleaned) return cleaned;
+    }
+    const fyFromPerf = allFYData?.years?.[selectedYearIdx + 1]?.fyLabel || allFYData?.years?.[selectedYearIdx]?.fyLabel;
+    if (fyFromPerf) return fyFromPerf;
+    const fyFromKeyData = keyData?.outgoings?.fyLabels?.[selectedYearIdx + 1];
+    if (fyFromKeyData) return fyFromKeyData;
+    return selectedYearIdx === 0 ? "FY26" : selectedYearIdx === 1 ? "FY27" : "FY28";
+  }, [data, selectedYearIdx, allFYData, keyData]);
+
   // Year blocks: Year 1 = cols 6..17, Year 2 = 21..32, Year 3 = 36..47
   const blkStart = selectedYearIdx === 0 ? 6 : (selectedYearIdx === 1 ? 21 : 36);
 
@@ -97,7 +112,7 @@ export default function BudgetView({
       <div style={{ textAlign: "center", padding: "4rem 0" }}>
         <Spinner size={36} color="#0047AB" />
         <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-          Loading Budget Overview for {clientName}...
+          Please wait - loading
         </p>
       </div>
     );
@@ -274,6 +289,42 @@ export default function BudgetView({
     fontFamily: "'Kumbh Sans', sans-serif",
   };
 
+  const handleDownloadCSV = () => {
+    const dateStr = new Date().toISOString().split("T")[0];
+    const yearLabel = activeFyLabel.replace(/\s+/g, "_");
+    const exportRows = [];
+    exportRows.push([`Budget overview: ${activeFyLabel}`]);
+    exportRows.push([]);
+    exportRows.push(["Metric", ...monthHeaders, "", "Total"]);
+    tableRows.forEach((r) => {
+      if (r.type === "section") {
+        exportRows.push([r.label]);
+      } else if (r.type !== "spacer") {
+        const rowVals = Array.from({ length: 12 }).map((_, mIdx) => {
+          const val = r.data[mIdx];
+          return r.isCurrency ? formatMoney(val) : formatPct(val);
+        });
+        const totalVal = r.isCurrency ? formatMoney(r.data[12]) : formatPct(r.data[12]);
+        exportRows.push([r.label, ...rowVals, "", totalVal]);
+      }
+    });
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      exportRows
+        .map((e) =>
+          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
+        )
+        .join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Pulse_Budget_Overview_${yearLabel}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div
       style={{
@@ -309,32 +360,19 @@ export default function BudgetView({
           <span
             style={{
               fontSize: "11px",
-              fontWeight: 600,
-              color: "#64748b",
-              background: "#f1f5f9",
+              fontWeight: 700,
+              color: "#0047AB",
+              background: "rgba(0, 71, 171, 0.08)",
               padding: "2px 8px",
               borderRadius: "4px",
             }}
           >
-            {selectedYearIdx === 0 ? "Year 1" : selectedYearIdx === 1 ? "Year 2" : "Year 3"}
+            {activeFyLabel}
           </span>
         </div>
 
         {/* Controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Year:</span>
-            <select
-              value={selectedYearIdx}
-              onChange={(e) => setSelectedYearIdx(parseInt(e.target.value, 10))}
-              style={selectStyle}
-            >
-              <option value={0}>Year 1</option>
-              <option value={1}>Year 2</option>
-              <option value={2}>Year 3</option>
-            </select>
-          </div>
-
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <button
             type="button"
             onClick={onRefresh}
@@ -362,89 +400,141 @@ export default function BudgetView({
               </svg>
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadCSV}
+            title="Download CSV"
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#0047AB",
+              borderRadius: "50%",
+            }}
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
         </div>
       </div>
 
-      {/* Main Budget Table matching WebApp.html blueprint */}
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          overflow: "hidden",
-          width: "100%",
-        }}
-      >
-        <div style={{ overflowX: "auto", width: "100%" }}>
-          <table
+      {/* Main Budget Table with Navigation Arrows */}
+      <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+        {selectedYearIdx > 0 && (
+          <button
+            type="button"
+            onClick={() => setSelectedYearIdx((prev) => Math.max(0, prev - 1))}
+            title="Previous Year"
             style={{
-              width: "max-content",
-              borderCollapse: "separate",
-              borderSpacing: 0,
-              fontSize: "12px",
-              fontFamily: "'Kumbh Sans', sans-serif",
+              position: "absolute",
+              left: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
           >
-            <thead>
-              <tr style={{ background: "#0047AB", color: "#ffffff", height: "31px" }}>
-                <th
-                  style={{
-                    padding: "6px 12px",
-                    textAlign: "left",
-                    fontWeight: 700,
-                    width: "220px",
-                    minWidth: "220px",
-                    position: "sticky",
-                    left: 0,
-                    background: "#0047AB",
-                    zIndex: 2,
-                    fontSize: "14px",
-                  }}
-                >
-                  {/* Empty top-left cell */}
-                </th>
-                {monthHeaders.map((mLabel, idx) => (
+            ‹
+          </button>
+        )}
+
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+            border: "1px solid #e2e8f0",
+            overflow: "hidden",
+            width: "100%",
+          }}
+        >
+          <div style={{ overflowX: "auto", width: "100%" }}>
+            <table
+              style={{
+                width: "100%",
+                tableLayout: "fixed",
+                borderCollapse: "separate",
+                borderSpacing: 0,
+                fontSize: "11.5px",
+                fontFamily: "'Kumbh Sans', sans-serif",
+              }}
+            >
+              <thead>
+                <tr style={{ background: "#0047AB", color: "#ffffff", height: "31px" }}>
                   <th
-                    key={idx}
                     style={{
-                      padding: "6px 4px",
+                      padding: "6px 10px",
+                      textAlign: "left",
+                      fontWeight: 700,
+                      width: "21%",
+                      minWidth: "150px",
+                      position: "sticky",
+                      left: 0,
+                      background: "#0047AB",
+                      zIndex: 2,
+                      fontSize: "13px",
+                    }}
+                  >
+                    {/* Empty top-left cell */}
+                  </th>
+                  {monthHeaders.map((mLabel, idx) => (
+                    <th
+                      key={idx}
+                      style={{
+                        padding: "6px 2px",
+                        textAlign: "right",
+                        fontWeight: 700,
+                        fontSize: "12px",
+                        width: "5.6%",
+                        background: "#0047AB",
+                      }}
+                    >
+                      {mLabel}
+                    </th>
+                  ))}
+                  {/* Gap Column */}
+                  <th
+                    style={{
+                      width: "1.8%",
+                      background: "#0047AB",
+                      padding: 0,
+                    }}
+                  />
+                  {/* Total Column */}
+                  <th
+                    style={{
+                      padding: "6px 8px",
                       textAlign: "right",
                       fontWeight: 700,
-                      fontSize: "14px",
-                      width: "87px",
-                      minWidth: "87px",
+                      fontSize: "13px",
+                      width: "10%",
+                      minWidth: "75px",
                       background: "#0047AB",
                     }}
                   >
-                    {mLabel}
+                    Total
                   </th>
-                ))}
-                {/* 22px Gap Column */}
-                <th
-                  style={{
-                    width: "22px",
-                    minWidth: "22px",
-                    background: "#0047AB",
-                    padding: 0,
-                  }}
-                />
-                {/* 110px Total Column */}
-                <th
-                  style={{
-                    padding: "6px 12px",
-                    textAlign: "right",
-                    fontWeight: 700,
-                    fontSize: "14px",
-                    width: "110px",
-                    minWidth: "110px",
-                    background: "#0047AB",
-                  }}
-                >
-                  Total
-                </th>
-              </tr>
-            </thead>
+                </tr>
+              </thead>
 
             <tbody>
               {tableRows.map((r, rIdx) => {
@@ -549,11 +639,10 @@ export default function BudgetView({
                       );
                     })}
 
-                    {/* Gap cell (22px) connecting seamlessly with major row color */}
+                    {/* Gap cell connecting seamlessly with major row color */}
                     <td
                       style={{
-                        width: "22px",
-                        minWidth: "22px",
+                        width: "1.8%",
                         background: rowBg,
                         padding: 0,
                       }}
@@ -572,7 +661,7 @@ export default function BudgetView({
                       return (
                         <td
                           style={{
-                            padding: "2px 12px",
+                            padding: "2px 8px",
                             textAlign: "right",
                             background: totalBg,
                             color: totalColor,
@@ -593,6 +682,36 @@ export default function BudgetView({
           </table>
         </div>
       </div>
+
+      {selectedYearIdx < 2 && (
+        <button
+          type="button"
+          onClick={() => setSelectedYearIdx((prev) => Math.min(2, prev + 1))}
+          title="Next Year"
+          style={{
+            position: "absolute",
+            right: "-42px",
+            top: "50%",
+            transform: "translateY(-50%)",
+            background: "transparent",
+            color: "#a2c4c9",
+            border: "none",
+            fontSize: "2.8rem",
+            fontWeight: "bold",
+            cursor: "pointer",
+            padding: "0",
+            zIndex: 10,
+            lineHeight: 1,
+            userSelect: "none",
+            transition: "color 0.2s",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+          onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+        >
+          ›
+        </button>
+      )}
     </div>
+  </div>
   );
 }

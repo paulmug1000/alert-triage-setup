@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import Head from "next/head";
 import { useRouter } from "next/router";
 import { useAuth } from "../../hooks/useAuth";
@@ -17,6 +17,7 @@ import PortalNBToFindView from "../../components/portal/PortalNBToFindView";
 import BudgetView from "../../components/portal/BudgetView";
 import BudgetVarianceView from "../../components/portal/BudgetVarianceView";
 import ScenariosView from "../../components/portal/ScenariosView";
+import CompanyChooser from "../../components/portal/CompanyChooser";
 import Spinner from "../../components/Spinner";
 
 export default function PortalPage() {
@@ -26,7 +27,8 @@ export default function PortalPage() {
 
   const [clients, setClients] = useState([]);
   const [selectedClient, setSelectedClient] = useState(null);
-  const [loadingClients, setLoadingClients] = useState(false);
+  const [clientsLoaded, setClientsLoaded] = useState(false);
+  const clientsFetchedRef = useRef(false);
   const [activeView, setActiveView] = useState("month");
 
   // View state from URL query with alias normalization
@@ -280,17 +282,42 @@ export default function PortalPage() {
     }
   }, [activeView, selectedClient, performanceData, keyData, fetchPerformance, fetchKeyData]);
 
-  // Background preload of keyData for deep dive popovers and breakdowns
+  // Background preloading queue: once payload is loaded, preload remaining sections in staggered sequence
   useEffect(() => {
-    if (
-      ["dashboard", "ytd", "month", "cash", "perfBreakdown", "cashBreakdown"].includes(activeView) &&
-      selectedClient?.clientSheetId
-    ) {
+    if (!payload || !selectedClient?.clientSheetId) return;
+
+    const t1 = setTimeout(() => {
+      if (!performanceData && !loadingPerformance) {
+        fetchPerformance(selectedClient, false);
+      }
+    }, 250);
+
+    const t2 = setTimeout(() => {
       if (!keyData && !loadingKeyData) {
         fetchKeyData(selectedClient, false);
       }
-    }
-  }, [activeView, selectedClient, keyData, loadingKeyData, fetchKeyData]);
+    }, 600);
+
+    const t3 = setTimeout(() => {
+      if (!cashflowData && !loadingCashflow) {
+        fetchCashflow(selectedClient, false);
+      }
+    }, 1000);
+
+    const t4 = setTimeout(() => {
+      const clientHasBudget = Boolean(payload?.clientInfo?.hasBudget ?? payload?.hasBudget);
+      if (clientHasBudget && !budgetData && !loadingBudget) {
+        fetchBudget(selectedClient, false);
+      }
+    }, 1400);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+    };
+  }, [payload, selectedClient, performanceData, keyData, cashflowData, budgetData, loadingPerformance, loadingKeyData, loadingCashflow, loadingBudget, fetchPerformance, fetchKeyData, fetchCashflow, fetchBudget]);
 
   // Invalidate budget cache on client change
   useEffect(() => {
@@ -305,10 +332,17 @@ export default function PortalPage() {
 
   // Fetch authorized clients for portal
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) {
+      clientsFetchedRef.current = false;
+      setClientsLoaded(false);
+      setClients([]);
+      setSelectedClient(null);
+      return;
+    }
+
+    if (clientsFetchedRef.current) return;
 
     let isMounted = true;
-    setLoadingClients(true);
 
     fetch("/api/portal/clients")
       .then((res) => res.json())
@@ -316,8 +350,9 @@ export default function PortalPage() {
         if (!isMounted) return;
         if (data.success && Array.isArray(data.clients)) {
           setClients(data.clients);
+          clientsFetchedRef.current = true;
 
-          // Check if client specified in URL query
+          // Check if client specified in legacy URL query or localStorage
           const queryClient = router.query.client;
           let initial = null;
 
@@ -327,22 +362,35 @@ export default function PortalPage() {
             );
           }
 
-          // Or check localStorage
-          if (!initial && typeof window !== "undefined") {
-            const saved = localStorage.getItem("pulse_portal_client");
-            if (saved) {
-              initial = data.clients.find(
-                (c) => c.clientName.toLowerCase() === saved.toLowerCase()
-              );
-            }
-          }
+          const isChooseRequested = router.query.choose === "true";
+          const isPulseOnly = Boolean(
+            user && (user.role === "ClientUser" || user.role === "Senior (Restricted)" || user.isSenior) && !user.isAdmin
+          );
 
-          // Default fallback: choose APPTEST for admins, or the first available client
-          if (!initial) {
-            initial =
-              data.clients.find((c) => c.clientName.toUpperCase() === "APPTEST") ||
-              data.clients[0] ||
-              null;
+          if (data.clients.length === 1) {
+            // Single company: take directly to their company's Pulse app
+            initial = data.clients[0];
+          } else if (data.clients.length > 1) {
+            if (isChooseRequested) {
+              initial = null;
+            } else {
+              // Check localStorage
+              if (!initial && typeof window !== "undefined") {
+                const saved = localStorage.getItem("pulse_portal_client");
+                if (saved) {
+                  initial = data.clients.find(
+                    (c) => c.clientName.toLowerCase() === saved.toLowerCase()
+                  );
+                }
+              }
+              // For internal staff without a prior selection, default to APPTEST or first client
+              if (!initial && !isPulseOnly) {
+                initial =
+                  data.clients.find((c) => c.clientName.toUpperCase() === "APPTEST") ||
+                  data.clients[0] ||
+                  null;
+              }
+            }
           }
 
           setSelectedClient(initial);
@@ -352,20 +400,76 @@ export default function PortalPage() {
         console.error("Failed to load portal clients:", err);
       })
       .finally(() => {
-        if (isMounted) setLoadingClients(false);
+        if (isMounted) {
+          setClientsLoaded(true);
+        }
       });
 
     return () => {
       isMounted = false;
     };
-  }, [isAuthenticated, router.query.client]);
+  }, [isAuthenticated, router.query.client, router.query.choose, user]);
+
+  // Clean URL: Strip any legacy ?client=... or ?choose=... so the address bar stays clean (/pulse)
+  useEffect(() => {
+    if (router.query.client || router.query.choose) {
+      const nextQuery = { ...router.query };
+      delete nextQuery.client;
+      delete nextQuery.choose;
+      router.replace({ pathname: "/pulse", query: nextQuery }, undefined, { shallow: true });
+    }
+  }, [router, router.query.client, router.query.choose]);
+
+  const handleLogout = async () => {
+    clientsFetchedRef.current = false;
+    setClientsLoaded(false);
+    setSelectedClient(null);
+    setPayload(null);
+    setClients([]);
+    await logout();
+  };
 
   const handleSelectClient = (client) => {
     setSelectedClient(client);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("pulse_portal_client", client.clientName);
+    if (client) {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("pulse_portal_client", client.clientName);
+      }
+    } else {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("pulse_portal_client");
+      }
+    }
+    // Clean URL: Keep URL as clean /pulse
+    if (router.query.client || router.query.choose) {
+      const nextQuery = { ...router.query };
+      delete nextQuery.client;
+      delete nextQuery.choose;
+      router.replace({ pathname: "/pulse", query: nextQuery }, undefined, { shallow: true });
     }
   };
+
+  const hasBudget = payload ? Boolean(payload.clientInfo?.hasBudget ?? payload.hasBudget) : false;
+
+  const isSeniorRestricted = Boolean(
+    user?.isSenior ||
+    user?.role === "Senior (Restricted)" ||
+    String(user?.role || "").toLowerCase().includes("senior")
+  );
+
+  // Guard budget views when client does not have budget enabled
+  useEffect(() => {
+    if (payload && !hasBudget && (activeView === "viewBudget" || activeView === "budgetVariance")) {
+      setActiveView("month");
+    }
+  }, [payload, hasBudget, activeView]);
+
+  // Guard salaries & dividends for senior restricted users
+  useEffect(() => {
+    if (isSeniorRestricted && (activeView === "salaries" || activeView === "dividends")) {
+      setActiveView("month");
+    }
+  }, [isSeniorRestricted, activeView]);
 
   // Auth checking loading state
   if (authChecking) {
@@ -383,7 +487,7 @@ export default function PortalPage() {
         }}
       >
         <Spinner size={32} color="#0047AB" />
-        <span style={{ color: "#0047AB", fontWeight: 600, fontSize: "15px" }}>Loading Pulse...</span>
+        <span style={{ color: "#0047AB", fontWeight: 600, fontSize: "15px" }}>Please wait - loading</span>
       </div>
     );
   }
@@ -414,10 +518,49 @@ export default function PortalPage() {
     );
   }
 
+  // Steady initial loading state: show 'Please wait - loading' until clients are determined,
+  // and if a client is selected, until their initial payload arrives (or errors)
+  if (!clientsLoaded || (selectedClient && !payload && !payloadError)) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#ffffff",
+          gap: "12px",
+          fontFamily: "'Kumbh Sans', sans-serif"
+        }}
+      >
+        <Spinner size={32} color="#0047AB" />
+        <span style={{ color: "#0047AB", fontWeight: 600, fontSize: "15px" }}>Please wait - loading</span>
+      </div>
+    );
+  }
+
+  // Chooser state: If no client selected or choose is requested, show CompanyChooser
+  if (!selectedClient) {
+    return (
+      <>
+        <Head>
+          <title>Select Company | Pulse</title>
+        </Head>
+        <CompanyChooser
+          clients={clients}
+          onSelectClient={handleSelectClient}
+          user={user}
+          onLogout={handleLogout}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <Head>
-        <title>Pulse</title>
+        <title>{selectedClient?.clientName ? `Pulse - ${selectedClient.clientName}` : "Pulse"}</title>
       </Head>
 
       <PortalShell
@@ -427,16 +570,9 @@ export default function PortalPage() {
         activeView={activeView}
         onSelectView={setActiveView}
         user={user}
-        onLogout={logout}
+        onLogout={handleLogout}
+        hasBudget={hasBudget}
       >
-        {loadingClients && !selectedClient ? (
-          <div style={{ textAlign: "center", padding: "4rem 0" }}>
-            <Spinner size={32} color="#0047AB" />
-            <p style={{ marginTop: "1rem", color: "#64748b", fontWeight: 500 }}>
-              Connecting to client workspace...
-            </p>
-          </div>
-        ) : (
           <>
             {activeView === "month" && (
               <MonthView
@@ -448,6 +584,7 @@ export default function PortalPage() {
                 isLoading={loadingPayload}
                 error={payloadError}
                 onRefresh={handleRefreshPayload}
+                isSenior={isSeniorRestricted}
               />
             )}
 
@@ -459,6 +596,7 @@ export default function PortalPage() {
                 isLoading={loadingPerformance}
                 error={perfError}
                 onRefresh={handleRefreshPerformance}
+                isSenior={isSeniorRestricted}
               />
             )}
 
@@ -470,6 +608,7 @@ export default function PortalPage() {
                 isLoading={loadingPerformance}
                 error={perfError}
                 onRefresh={handleRefreshPerformance}
+                isSenior={isSeniorRestricted}
               />
             )}
 
@@ -484,6 +623,7 @@ export default function PortalPage() {
                   handleRefreshPerformance();
                   handleRefreshKeyData();
                 }}
+                isSenior={isSeniorRestricted}
               />
             )}
 
@@ -495,6 +635,7 @@ export default function PortalPage() {
                 isLoading={loadingCashflow}
                 error={cashError}
                 onRefresh={handleRefreshCashflow}
+                isSenior={isSeniorRestricted}
               />
             )}
 
@@ -509,6 +650,7 @@ export default function PortalPage() {
                   handleRefreshCashflow();
                   handleRefreshKeyData();
                 }}
+                isSenior={isSeniorRestricted}
               />
             )}
 
@@ -657,7 +799,6 @@ export default function PortalPage() {
               </div>
             )}
           </>
-        )}
       </PortalShell>
     </>
   );

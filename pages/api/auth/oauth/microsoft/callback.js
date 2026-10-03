@@ -246,6 +246,19 @@ export default async function handler(req, res) {
     }
 
     console.log(`✅ Microsoft OAuth login successful for: ${email}`);
+
+    // If user is ClientUser or Senior (Restricted), take them directly to Pulse Portal (never PMA)
+    const userRole = String(result.user?.role || "").trim();
+    const isPulseOnly = userRole === "ClientUser" || 
+                        userRole === "Senior (Restricted)" || 
+                        Boolean(result.user?.isSenior) ||
+                        (!result.user?.isAdmin && userRole !== "ClientManager");
+
+    if (isPulseOnly) {
+      res.redirect("/pulse");
+      return;
+    }
+
     res.redirect("/");
     return;
   } catch (err) {

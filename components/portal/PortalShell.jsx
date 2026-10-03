@@ -9,21 +9,37 @@ export default function PortalShell({
   onSelectView,
   user,
   onLogout,
+  hasBudget = true,
   children
 }) {
   const [openDropdown, setOpenDropdown] = useState(null); // 'perf' | 'cash' | 'keyData' | 'analysis' | 'user' | 'client' | null
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const shellRef = useRef(null);
 
-  // Close dropdowns when clicking outside
+  const isSeniorRestricted = Boolean(
+    user?.isSenior ||
+    user?.role === "Senior (Restricted)" ||
+    String(user?.role || "").toLowerCase().includes("senior")
+  );
+
+  // Close dropdowns when clicking outside or pressing Escape
   useEffect(() => {
     function handleClickOutside(e) {
-      if (shellRef.current && !shellRef.current.contains(e.target)) {
+      if (!e.target.closest(".portal-nav-dropdown")) {
         setOpenDropdown(null);
       }
     }
+    function handleKeyDown(e) {
+      if (e.key === "Escape") {
+        setOpenDropdown(null);
+        setMobileMenuOpen(false);
+      }
+    }
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, []);
 
   const toggleDropdown = (name) => {
@@ -40,10 +56,9 @@ export default function PortalShell({
 
   return (
     <div
-      ref={shellRef}
       style={{
         minHeight: "100vh",
-        background: "#f8fafc",
+        background: "#ffffff",
         fontFamily: "'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         color: "#1e293b",
         display: "flex",
@@ -144,7 +159,7 @@ export default function PortalShell({
             </button>
 
             {/* 2. Performance Dropdown */}
-            <div style={{ position: "relative" }}>
+            <div className="portal-nav-dropdown" style={{ position: "relative" }}>
               <button
                 type="button"
                 onClick={() => toggleDropdown("perf")}
@@ -195,7 +210,7 @@ export default function PortalShell({
             </div>
 
             {/* 3. Cash Dropdown */}
-            <div style={{ position: "relative" }}>
+            <div className="portal-nav-dropdown" style={{ position: "relative" }}>
               <button
                 type="button"
                 onClick={() => toggleDropdown("cash")}
@@ -239,7 +254,7 @@ export default function PortalShell({
             </div>
 
             {/* 4. Key Data Dropdown */}
-            <div style={{ position: "relative" }}>
+            <div className="portal-nav-dropdown" style={{ position: "relative" }}>
               <button
                 type="button"
                 onClick={() => toggleDropdown("keyData")}
@@ -285,20 +300,24 @@ export default function PortalShell({
                   >
                     Expenses
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("salaries")}
-                    style={dropdownItemStyle(activeView === "salaries")}
-                  >
-                    Salaries
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("dividends")}
-                    style={dropdownItemStyle(activeView === "dividends")}
-                  >
-                    Dividends
-                  </button>
+                  {!isSeniorRestricted && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleNavClick("salaries")}
+                        style={dropdownItemStyle(activeView === "salaries")}
+                      >
+                        Salaries
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleNavClick("dividends")}
+                        style={dropdownItemStyle(activeView === "dividends")}
+                      >
+                        Dividends
+                      </button>
+                    </>
+                  )}
                   <button
                     type="button"
                     onClick={() => handleNavClick("nbtofind")}
@@ -311,7 +330,7 @@ export default function PortalShell({
             </div>
 
             {/* 5. Analysis Dropdown */}
-            <div style={{ position: "relative" }}>
+            <div className="portal-nav-dropdown" style={{ position: "relative" }}>
               <button
                 type="button"
                 onClick={() => toggleDropdown("analysis")}
@@ -343,32 +362,36 @@ export default function PortalShell({
                   >
                     Scenarios
                   </button>
-                  <div style={{ borderBottom: "1px solid #e2e8f0", margin: "4px 0" }} />
-                  <div
-                    style={{
-                      padding: "0.4rem 1rem",
-                      fontSize: "0.8rem",
-                      color: "#64748b",
-                      fontStyle: "italic",
-                      pointerEvents: "none"
-                    }}
-                  >
-                    Budget
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("viewBudget")}
-                    style={dropdownItemStyle(activeView === "viewBudget")}
-                  >
-                    View budget
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("budgetVariance")}
-                    style={dropdownItemStyle(activeView === "budgetVariance")}
-                  >
-                    Budget variance analysis
-                  </button>
+                  {hasBudget && (
+                    <>
+                      <div style={{ borderBottom: "1px solid #e2e8f0", margin: "4px 0" }} />
+                      <div
+                        style={{
+                          padding: "0.4rem 1rem",
+                          fontSize: "0.8rem",
+                          color: "#64748b",
+                          fontStyle: "italic",
+                          pointerEvents: "none"
+                        }}
+                      >
+                        Budget
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleNavClick("viewBudget")}
+                        style={dropdownItemStyle(activeView === "viewBudget")}
+                      >
+                        View budget
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleNavClick("budgetVariance")}
+                        style={dropdownItemStyle(activeView === "budgetVariance")}
+                      >
+                        Budget variance analysis
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -378,7 +401,7 @@ export default function PortalShell({
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
             {/* Multi-client Switcher (Admin or Consultant with multiple clients) */}
             {clients.length > 1 && (
-              <div style={{ position: "relative" }}>
+              <div className="portal-nav-dropdown" style={{ position: "relative" }}>
                 <button
                   type="button"
                   onClick={() => toggleDropdown("client")}
@@ -441,13 +464,32 @@ export default function PortalShell({
                         {c.clientName}
                       </button>
                     ))}
+                    <div style={{ borderTop: "1px solid #e2e8f0", margin: "4px 0" }} />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectClient(null);
+                        setOpenDropdown(null);
+                      }}
+                      style={{
+                        ...dropdownItemStyle(false),
+                        color: "#0047AB",
+                        fontWeight: 600,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px"
+                      }}
+                    >
+                      <span>⊞</span>
+                      <span>All Companies...</span>
+                    </button>
                   </div>
                 )}
               </div>
             )}
 
             {/* User Profile / Menu */}
-            <div style={{ position: "relative" }}>
+            <div className="portal-nav-dropdown" style={{ position: "relative" }}>
               <button
                 type="button"
                 onClick={() => toggleDropdown("user")}
@@ -490,21 +532,6 @@ export default function PortalShell({
                     <div style={{ fontSize: "12px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {user?.email}
                     </div>
-                    <div style={{ marginTop: "4px" }}>
-                      <span
-                        style={{
-                          fontSize: "10px",
-                          fontWeight: 700,
-                          padding: "2px 6px",
-                          borderRadius: "4px",
-                          background: user?.isAdmin ? "#e0f2fe" : "#fef3c7",
-                          color: user?.isAdmin ? "#0369a1" : "#92400e",
-                          textTransform: "uppercase"
-                        }}
-                      >
-                        {user?.isAdmin ? "Admin (Internal)" : (user?.role || "Client")}
-                      </span>
-                    </div>
                   </div>
 
                   {/* If user is Admin or ClientManager, offer direct link back to Management Area (PMA) */}
@@ -534,10 +561,12 @@ export default function PortalShell({
                     style={{
                       padding: "0.5rem 1rem",
                       fontSize: "11px",
-                      color: "#94a3b8"
+                      color: "#94a3b8",
+                      lineHeight: "1.4"
                     }}
                   >
-                    Pulse v3.64 Next.js
+                    <div>Pulse v3.64</div>
+                    <div style={{ marginTop: "2px" }}>(C) 2026 Thrive Organisational Consulting Ltd</div>
                   </div>
 
                   <button
@@ -615,6 +644,27 @@ export default function PortalShell({
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {clients.length > 1 && (
+              <button
+                type="button"
+                onClick={() => {
+                  onSelectClient(null);
+                  setMobileMenuOpen(false);
+                }}
+                style={{
+                  ...mobileNavItemStyle(false),
+                  background: "rgba(255, 255, 255, 0.2)",
+                  color: "#ffffff",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px"
+                }}
+              >
+                <span>⊞</span>
+                <span>Switch Company ({clientName})</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => handleNavClick("month")}
@@ -652,12 +702,16 @@ export default function PortalShell({
             <button type="button" onClick={() => handleNavClick("expenses")} style={mobileSubItemStyle(activeView === "expenses")}>
               Expenses
             </button>
-            <button type="button" onClick={() => handleNavClick("salaries")} style={mobileSubItemStyle(activeView === "salaries")}>
-              Salaries
-            </button>
-            <button type="button" onClick={() => handleNavClick("dividends")} style={mobileSubItemStyle(activeView === "dividends")}>
-              Dividends
-            </button>
+            {!isSeniorRestricted && (
+              <>
+                <button type="button" onClick={() => handleNavClick("salaries")} style={mobileSubItemStyle(activeView === "salaries")}>
+                  Salaries
+                </button>
+                <button type="button" onClick={() => handleNavClick("dividends")} style={mobileSubItemStyle(activeView === "dividends")}>
+                  Dividends
+                </button>
+              </>
+            )}
             <button type="button" onClick={() => handleNavClick("nbtofind")} style={mobileSubItemStyle(activeView === "nbtofind")}>
               New business to find
             </button>
@@ -666,12 +720,16 @@ export default function PortalShell({
             <button type="button" onClick={() => handleNavClick("scenarios")} style={mobileSubItemStyle(activeView === "scenarios")}>
               Scenarios
             </button>
-            <button type="button" onClick={() => handleNavClick("viewBudget")} style={mobileSubItemStyle(activeView === "viewBudget")}>
-              View budget
-            </button>
-            <button type="button" onClick={() => handleNavClick("budgetVariance")} style={mobileSubItemStyle(activeView === "budgetVariance")}>
-              Budget variance
-            </button>
+            {hasBudget && (
+              <>
+                <button type="button" onClick={() => handleNavClick("viewBudget")} style={mobileSubItemStyle(activeView === "viewBudget")}>
+                  View budget
+                </button>
+                <button type="button" onClick={() => handleNavClick("budgetVariance")} style={mobileSubItemStyle(activeView === "budgetVariance")}>
+                  Budget variance
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

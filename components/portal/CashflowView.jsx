@@ -190,41 +190,41 @@ export default function CashflowView({
   };
 
   // Row data definitions matching WebApp.html exactly
-  const exclOpening = getValues(exclRows, ["opening balance"], [3]);
-  const exclNet = getValues(exclRows, ["net cash movement"], [31]);
-  const exclClosing = getValues(exclRows, ["closing balance"], [33]);
+  const exclOpening = getValues(exclRows, ["opening balance"], [4]);
+  const exclNet = getValues(exclRows, ["net cash movement"], [32]);
+  const exclClosing = getValues(exclRows, ["closing balance"], [34]);
 
   const exclDetails = [
-    { label: "Confirmed cash incoming", values: getValues(exclRows, ["confirmed cash"], [5]), ddType: "cashConfInflow" },
-    { label: "Salaries", values: getValues(exclRows, ["salaries", "delivery salaries"], [7, 8]), ddType: "cashSalaries" },
-    { label: "Dividends as salary", values: getValues(exclRows, ["dividends as salary"], [9, 10]), ddType: "cashDividends" },
-    { label: "Contractors", values: getValues(exclRows, ["contractors"], [11, 12]), ddType: "cashContractors" },
-    { label: "Direct costs", values: getValues(exclRows, ["direct costs"], [13, 14]), ddType: "cashDirCosts" },
-    { label: "Other expenses", values: getValues(exclRows, ["other expenses"], [15, 16]), ddType: "cashOutgoings" },
-    { label: "Corporation tax", values: getValues(exclRows, ["corporation tax"], [18, 19]), ddType: null },
-    { label: "VAT", values: getValues(exclRows, ["vat"], [20, 21]), ddType: null },
-    { label: "Non-operating income", values: getValues(exclRows, ["non-operating income"], [23, 24]), ddType: null },
-    { label: "Non-operating expenses", values: getValues(exclRows, ["non-operating exp"], [25, 26]), ddType: null },
-    { label: "Other cash movements", values: getValues(exclRows, ["other cash"], [28, 29]), ddType: null },
+    { label: "Confirmed cash incoming", values: getValues(exclRows, ["confirmed cash incoming"], [6]), ddType: "cashConfInflow" },
+    { label: "Salaries", values: getValues(exclRows, ["salaries outgoing", "salaries adjustment"], [8, 9]), ddType: "cashSalaries" },
+    { label: "Dividends as salary", values: getValues(exclRows, ["dividends as salary outgoing", "dividends as salary adjustment"], [10, 11]), ddType: "cashDividends" },
+    { label: "Contractors", values: getValues(exclRows, ["contractors outgoing", "contractors adjustment"], [12, 13]), ddType: "cashContractors" },
+    { label: "Direct costs", values: getValues(exclRows, ["direct costs outgoing", "direct costs adjustment"], [14, 15]), ddType: "cashDirCosts" },
+    { label: "Other expenses", values: getValues(exclRows, ["other expenses outgoing", "other expenses adjustment"], [16, 17]), ddType: "cashOutgoings" },
+    { label: "Corporation tax", values: getValues(exclRows, ["corporation tax"], [19, 20]), ddType: null },
+    { label: "VAT", values: getValues(exclRows, ["vat"], [21, 22]), ddType: null },
+    { label: "Non-operating income", values: getValues(exclRows, ["non-operating income"], [24, 25]), ddType: null },
+    { label: "Non-operating expenses", values: getValues(exclRows, ["non-operating expenses"], [26, 27]), ddType: null },
+    { label: "Other cash movements", values: getValues(exclRows, ["other cash movements", "other adjustments"], [29, 30]), ddType: null },
   ];
 
-  const inclOpening = getValues(inclRows, ["opening balance"], [44]);
-  const inclNet = getValues(inclRows, ["net cash movement"], [73]);
-  const inclClosing = getValues(inclRows, ["closing balance"], [75]);
+  const inclOpening = getValues(inclRows, ["opening balance"], [45]);
+  const inclNet = getValues(inclRows, ["net cash movement"], [74]);
+  const inclClosing = getValues(inclRows, ["closing balance"], [76]);
 
   const inclDetails = [
-    { label: "Confirmed cash incoming", values: getValues(inclRows, ["confirmed cash"], [46]), ddType: "cashConfInflow" },
-    { label: "Pipeline cash incoming", values: getValues(inclRows, ["pipeline cash"], [47]), ddType: "cashPipeInflow" },
-    { label: "Salaries", values: getValues(inclRows, ["salaries", "delivery salaries"], [49, 50]), ddType: "cashSalaries" },
-    { label: "Dividends as salary", values: getValues(inclRows, ["dividends as salary"], [51, 52]), ddType: "cashDividends" },
-    { label: "Contractors", values: getValues(inclRows, ["contractors"], [53, 54]), ddType: "cashContractors" },
-    { label: "Direct costs", values: getValues(inclRows, ["direct costs"], [55, 56]), ddType: "cashDirCosts" },
-    { label: "Other expenses", values: getValues(inclRows, ["other expenses"], [57, 58]), ddType: "cashOutgoings" },
-    { label: "Corporation tax", values: getValues(inclRows, ["corporation tax"], [60, 61]), ddType: null },
-    { label: "VAT", values: getValues(inclRows, ["vat"], [62, 63]), ddType: null },
-    { label: "Non-operating income", values: getValues(inclRows, ["non-operating income"], [65, 66]), ddType: null },
-    { label: "Non-operating expenses", values: getValues(inclRows, ["non-operating exp"], [67, 68]), ddType: null },
-    { label: "Other cash movements", values: getValues(inclRows, ["other cash"], [70, 71]), ddType: null },
+    { label: "Confirmed cash incoming", values: getValues(inclRows, ["confirmed cash incoming"], [47]), ddType: "cashConfInflow" },
+    { label: "Pipeline cash incoming", values: getValues(inclRows, ["pipeline cash incoming"], [48]), ddType: "cashPipeInflow" },
+    { label: "Salaries", values: getValues(inclRows, ["salaries outgoing", "salaries adjustment"], [50, 51]), ddType: "cashSalaries" },
+    { label: "Dividends as salary", values: getValues(inclRows, ["dividends as salary outgoing", "dividends as salary adjustment"], [52, 53]), ddType: "cashDividends" },
+    { label: "Contractors", values: getValues(inclRows, ["contractors outgoing", "contractors adjustment"], [54, 55]), ddType: "cashContractors" },
+    { label: "Direct costs", values: getValues(inclRows, ["direct costs outgoing", "direct costs adjustment"], [56, 57]), ddType: "cashDirCosts" },
+    { label: "Other expenses", values: getValues(inclRows, ["other expenses outgoing", "other expenses adjustment"], [58, 59]), ddType: "cashOutgoings" },
+    { label: "Corporation tax", values: getValues(inclRows, ["corporation tax"], [61, 62]), ddType: null },
+    { label: "VAT", values: getValues(inclRows, ["vat"], [63, 64]), ddType: null },
+    { label: "Non-operating income", values: getValues(inclRows, ["non-operating income"], [66, 67]), ddType: null },
+    { label: "Non-operating expenses", values: getValues(inclRows, ["non-operating expenses"], [68, 69]), ddType: null },
+    { label: "Other cash movements", values: getValues(inclRows, ["other cash movements", "other adjustments"], [71, 72]), ddType: null },
   ];
 
   const isRowEmpty = (vals) => vals.every((v) => Math.abs(parseMoney(v)) < 0.01);

@@ -81,7 +81,11 @@ export default async function handler(req, res) {
     const batchRanges = [];
     if (hasConfirmed) batchRanges.push(`${confirmedTitle}!A1:JF`);
     if (hasPipeline) batchRanges.push(`${pipelineTitle}!A1:JF`);
-    if (hasSalaries) batchRanges.push("Salaries!A1:I100");
+    if (hasSalaries) {
+      batchRanges.push("Salaries!A1:I100");
+      batchRanges.push("Salaries!A1:JC1");
+      batchRanges.push("Salaries!A304:JC368");
+    }
     if (hasOutgoings) batchRanges.push("Outgoings!A1:AV250");
     if (hasNBtoFind) batchRanges.push("NBtoFind!A1:AV50");
     batchRanges.push("KeyInfo!G32:G75"); // Lead sources
@@ -104,6 +108,8 @@ export default async function handler(req, res) {
     const confirmedRows = hasConfirmed ? (valueRanges[rangeIdx++]?.values || []) : [];
     const pipelineRows = hasPipeline ? (valueRanges[rangeIdx++]?.values || []) : [];
     const salariesRows = hasSalaries ? (valueRanges[rangeIdx++]?.values || []) : [];
+    const salariesHeadersRow = hasSalaries ? (valueRanges[rangeIdx++]?.values?.[0] || []) : [];
+    const salariesDeepDiveRows = hasSalaries ? (valueRanges[rangeIdx++]?.values || []) : [];
     const outgoingsRows = hasOutgoings ? (valueRanges[rangeIdx++]?.values || []) : [];
     const nbtofindRows = hasNBtoFind ? (valueRanges[rangeIdx++]?.values || []) : [];
     const leadSourcesRows = valueRanges[rangeIdx++]?.values || [];
@@ -290,13 +296,20 @@ export default async function handler(req, res) {
           };
 
           // Parent invoices
+          let parentHasInvoice = false;
           if (isRetainer) {
             const inv = extractInv(row, 1);
-            if (inv) invoices.push(inv);
+            if (inv) {
+              invoices.push({ ...inv, isChild: false, isParent: true });
+              parentHasInvoice = true;
+            }
           } else {
             for (let s = 1; s <= 3; s++) {
               const inv = extractInv(row, s);
-              if (inv) invoices.push(inv);
+              if (inv) {
+                invoices.push({ ...inv, isChild: false, isParent: true });
+                parentHasInvoice = true;
+              }
             }
           }
 
@@ -304,11 +317,11 @@ export default async function handler(req, res) {
           childRows.forEach((cr) => {
             if (isRetainer) {
               const inv = extractInv(cr.row, 1);
-              if (inv) invoices.push(inv);
+              if (inv) invoices.push({ ...inv, isChild: true, childRowNum: cr.rowNum });
             } else {
               for (let s = 1; s <= 3; s++) {
                 const inv = extractInv(cr.row, s);
-                if (inv) invoices.push(inv);
+                if (inv) invoices.push({ ...inv, isChild: true, childRowNum: cr.rowNum });
               }
             }
           });
@@ -348,12 +361,12 @@ export default async function handler(req, res) {
 
           for (let s = 1; s <= 3; s++) {
             const exp = extractExp(row, s);
-            if (exp) directExpenses.push(exp);
+            if (exp) directExpenses.push({ ...exp, isChild: false, isParent: true });
           }
           childRows.forEach((cr) => {
             for (let s = 1; s <= 3; s++) {
               const exp = extractExp(cr.row, s);
-              if (exp) directExpenses.push(exp);
+              if (exp) directExpenses.push({ ...exp, isChild: true, childRowNum: cr.rowNum });
             }
           });
 
@@ -363,7 +376,10 @@ export default async function handler(req, res) {
           const likelihood = likelihoodRaw || (jobType === "Confirmed" ? "100%" : "50%");
           const revNum = parseFloat(String(revenue).replace(/[£,]/g, "")) || 0;
           const dcNum = parseFloat(String(directCosts).replace(/[£,]/g, "")) || 0;
-          const likelihoodNum = parseFloat(String(likelihood).replace("%", "")) / 100 || (jobType === "Confirmed" ? 1 : 0.5);
+          const parsedLikel = parseFloat(String(likelihood).replace("%", ""));
+          const likelihoodNum = !isNaN(parsedLikel)
+            ? (String(likelihood).includes("%") || parsedLikel >= 1 ? parsedLikel / 100 : parsedLikel)
+            : (jobType === "Confirmed" ? 1 : 0.5);
 
           const startDate = formatDateVal(startDateRaw);
           const endDate = formatDateVal(endDateRaw);
@@ -400,6 +416,8 @@ export default async function handler(req, res) {
             invoices,
             directExpenses,
             childRowNumbers: childRows.map((cr) => cr.rowNum),
+            hasChildRows: childRows.length > 0,
+            parentHasInvoice,
             parentId: rowNum - 2,
             isParent: true,
             totalAmount: revNum,
@@ -422,6 +440,7 @@ export default async function handler(req, res) {
             jobObj[`inv${slot}SendDate`] = inv.sendDate;
             jobObj[`inv${slot}Days`] = inv.days;
             jobObj[`inv${slot}Status`] = inv.status;
+            jobObj[`inv${slot}IsChild`] = !!inv.isChild;
           });
 
           // Flatten direct expenses directly onto jobObj (dirInv1Amount, etc.)
@@ -663,6 +682,8 @@ export default async function handler(req, res) {
         staff: salariesList,
         rawRows: salariesRows,
         headers: salariesRows[0] || [],
+        monthHeaders: salariesHeadersRow,
+        deepDive: salariesDeepDiveRows,
         totalHeadcount,
         deliveryHeadcount,
         nonDeliveryHeadcount,

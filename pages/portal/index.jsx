@@ -585,8 +585,10 @@ export default function PortalPage() {
               <BudgetView
                 clientName={selectedClient?.clientName || "Client"}
                 data={budgetData}
-                isLoading={loadingBudget}
-                error={budgetError}
+                allFYData={performanceData}
+                keyData={keyData}
+                isLoading={loadingBudget || loadingPerformance}
+                error={budgetError || perfError}
                 onRefresh={handleRefreshBudget}
               />
             )}
@@ -595,8 +597,10 @@ export default function PortalPage() {
               <BudgetVarianceView
                 clientName={selectedClient?.clientName || "Client"}
                 data={budgetData}
-                isLoading={loadingBudget}
-                error={budgetError}
+                allFYData={performanceData}
+                keyData={keyData}
+                isLoading={loadingBudget || loadingPerformance}
+                error={budgetError || perfError}
                 onRefresh={handleRefreshBudget}
               />
             )}

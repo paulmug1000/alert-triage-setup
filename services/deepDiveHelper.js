@@ -17,6 +17,20 @@ export function formatMoney(val) {
   return `${sign}£${Math.abs(rounded).toLocaleString()}`;
 }
 
+export function parseLikelihood(likelihoodVal, fallback = 0.5) {
+  if (typeof likelihoodVal === "number" && !isNaN(likelihoodVal)) {
+    return likelihoodVal > 1 ? likelihoodVal / 100 : likelihoodVal;
+  }
+  const rawStr = String(likelihoodVal || "").trim();
+  if (!rawStr) return fallback;
+  const parsed = parseFloat(rawStr.replace("%", ""));
+  if (isNaN(parsed)) return fallback;
+  if (rawStr.includes("%") || parsed >= 1) {
+    return parsed / 100;
+  }
+  return parsed;
+}
+
 export const PulseMath = {
   calcMonthly(job, targetDate, valueType = "revenue", isIncomeMode = false) {
     if (!job || !targetDate) return 0;
@@ -59,11 +73,7 @@ export const PulseMath = {
       }
 
       if (isPipeline) {
-        let prob = 1;
-        if (job.likelihood !== undefined && job.likelihood !== "") {
-          let parsed = parseFloat(String(job.likelihood).replace("%", ""));
-          if (!isNaN(parsed)) prob = parsed > 1 ? parsed / 100 : parsed;
-        }
+        let prob = parseLikelihood(job.likelihoodNum !== undefined ? job.likelihoodNum : job.likelihood, 1);
         if (prob < 0 || prob > 1) prob = 1;
         valToReturn = valToReturn * prob;
       }
@@ -83,8 +93,7 @@ export const PulseMath = {
       const dc = parseMoney(job.directCosts || job.dcNum);
       let prob = 1;
       if (isPipeline) {
-        const parsed = parseFloat(String(job.likelihood || "50").replace("%", ""));
-        if (!isNaN(parsed)) prob = parsed > 1 ? parsed / 100 : parsed;
+        prob = parseLikelihood(job.likelihoodNum !== undefined ? job.likelihoodNum : job.likelihood, 0.5);
       }
       if (isRetainer) {
         origBaseRev = rev * prob;
@@ -260,13 +269,29 @@ export const CashDeepDiveEngine = {
 
       let likelihood = 1;
       if (String(job.type || "").toLowerCase() === "pipeline") {
-        const parsedLikel = parseFloat(String(job.likelihood).replace("%", ""));
-        if (!isNaN(parsedLikel)) {
-          likelihood = parsedLikel > 1 ? parsedLikel / 100 : parsedLikel;
+        if (typeof job.likelihoodNum === "number" && !isNaN(job.likelihoodNum)) {
+          likelihood = job.likelihoodNum;
+        } else {
+          likelihood = parseLikelihood(job.likelihood, 0.5);
         }
       }
 
-      if (isRetainer && !hasMultipleInvoices) {
+      // A retainer recurs monthly IF AND ONLY IF it is on the parent row and does NOT have child-row / milestone invoices
+      const hasChildRows = !!(
+        job.hasChildRows ||
+        (job.childRowNumbers && job.childRowNumbers.length > 0) ||
+        (job.invoices && job.invoices.some((inv) => inv.isChild || inv.childRowNum))
+      );
+      const hasChildInvoice = !!(
+        job.inv1IsChild ||
+        job.inv2IsChild ||
+        job.inv3IsChild ||
+        (job.invoices && job.invoices.some((inv) => inv.isChild || inv.childRowNum))
+      );
+      const parentHasNoInvoice = job.parentHasInvoice === false;
+      const isRecurringRetainer = isRetainer && !hasMultipleInvoices && !hasChildInvoice && !hasChildRows && !parentHasNoInvoice;
+
+      if (isRecurringRetainer) {
         const amountRaw = job.inv1Amount || job.revenue;
         const parsedSend = this.parseSafeDate(job.inv1SendDate || job.inv1RecDate || job.startDate);
         const parsedStart = this.parseSafeDate(job.adjStartDate || job.startDate);
@@ -373,53 +398,83 @@ export const CashDeepDiveEngine = {
 
       let likelihood = 1;
       if (isJobPipeline) {
-        const parsedLikel = parseFloat(String(job.likelihood).replace("%", ""));
-        if (!isNaN(parsedLikel)) {
-          likelihood = parsedLikel > 1 ? parsedLikel / 100 : parsedLikel;
+        if (typeof job.likelihoodNum === "number" && !isNaN(job.likelihoodNum)) {
+          likelihood = job.likelihoodNum;
+        } else {
+          likelihood = parseLikelihood(job.likelihood, 0.5);
         }
       }
 
-      if (isRetainer && !hasMultipleInvoices && !isDirCash) {
+      // A retainer recurs monthly IF AND ONLY IF it is on the parent row and does NOT have child-row / milestone invoices
+      const hasChildRows = !!(
+        job.hasChildRows ||
+        (job.childRowNumbers && job.childRowNumbers.length > 0) ||
+        (job.invoices && job.invoices.some((inv) => inv.isChild || inv.childRowNum)) ||
+        (job.directExpenses && job.directExpenses.some((exp) => exp.isChild || exp.childRowNum))
+      );
+      const hasChildInvoice = !!(
+        job[`${prefix}1IsChild`] ||
+        job[`${prefix}2IsChild`] ||
+        job[`${prefix}3IsChild`] ||
+        (job.invoices && job.invoices.some((inv) => inv.isChild || inv.childRowNum)) ||
+        (job.directExpenses && job.directExpenses.some((exp) => exp.isChild || exp.childRowNum))
+      );
+      const parentHasNoInvoice = job.parentHasInvoice === false;
+      const isRecurringRetainer = isRetainer && !hasMultipleInvoices && !isDirCash && !hasChildInvoice && !hasChildRows && !parentHasNoInvoice;
+
+      if (isRecurringRetainer) {
         const amountRaw = job[`${prefix}1Amount`] || job.revenue;
         const parsedSend = this.parseSafeDate(job[`${prefix}1SendDate`] || job[`${prefix}1RecDate`] || job.startDate);
         const parsedStart = this.parseSafeDate(job.adjStartDate || job.startDate);
         const parsedEnd = this.parseSafeDate(job.adjEndDate || job.endDate);
 
-        if (amountRaw && parsedSend && parsedStart && parsedEnd) {
+        if (amountRaw && parsedStart && parsedEnd) {
           const multiplier = isDirCash ? (job[`dirInv1Vat`] === "Yes" ? (1 + vatRate) : 1) : vatMultiplier;
           let amount = parseMoney(amountRaw) * multiplier * likelihood;
           if (isDirCash) amount = -Math.abs(amount);
 
           if (Math.abs(amount) < 0.01) return;
 
-          const startDate = new Date(parsedStart.y, parsedStart.m, 1);
-          const endDate = new Date(parsedEnd.y, parsedEnd.m, 1);
-          const daysToPay = this.parseSafeDays(job[`${prefix}1Days`]);
+          const daysToPay = this.parseSafeDays(job[`${prefix}1Days`] !== undefined && String(job[`${prefix}1Days`]).trim() !== "" ? job[`${prefix}1Days`] : "30");
           const status = job[`${prefix}1Status`] || "Pending";
           const ref = job[`${prefix}1Ref`] || "";
 
-          let currDate = new Date(startDate.getTime());
-          let monthCount = 1;
+          // First payment date in Google Sheets PipeCalcs / ConfCalcs:
+          // FS = SendDate + DaysToPay
+          // Retainer recurs once per calendar month from month(FS) until month(endDate)
+          const sendD = parsedSend?.d || 1;
+          const sendM = parsedStart.m !== undefined ? parsedStart.m : parsedStart.getMonth();
+          const sendY = parsedStart.y !== undefined ? parsedStart.y : parsedStart.getFullYear();
 
-          while (currDate <= endDate) {
-            const simulatedSendDate = new Date(currDate.getFullYear(), currDate.getMonth(), parsedSend.d || 1);
-            const payDate = new Date(simulatedSendDate.getFullYear(), simulatedSendDate.getMonth(), simulatedSendDate.getDate() + daysToPay);
+          const firstPay = new Date(sendY, sendM, sendD + daysToPay);
+          const startPayY = firstPay.getFullYear();
+          const startPayM = firstPay.getMonth();
 
-            if (payDate.getFullYear() === targetYear && payDate.getMonth() === targetMonth) {
-              const desc = isDirCash ? `Direct cost (Month ${monthCount})` : (ref ? `${ref} (Month ${monthCount})` : `Retainer Month ${monthCount}`);
+          const endY = parsedEnd.y !== undefined ? parsedEnd.y : parsedEnd.getFullYear();
+          const endM = parsedEnd.m !== undefined ? parsedEnd.m : parsedEnd.getMonth();
+          const totalMonths = (endY - sendY) * 12 + (endM - sendM) + 1;
+
+          for (let m = 0; m < totalMonths; m++) {
+            const currentPayMonth = startPayM + m;
+            const payYear = startPayY + Math.floor(currentPayMonth / 12);
+            const payMonth = currentPayMonth % 12;
+
+            if (payYear === targetYear && payMonth === targetMonth) {
+              const monthCount = m + 1;
+              const desc = isDirCash
+                ? `Direct cost (Month ${monthCount})`
+                : (ref ? `${ref} (Month ${monthCount})` : `Retainer Month ${monthCount}`);
               results.push({
                 client: job.client,
                 name: job.jobName,
                 desc: isPipelineType ? "" : desc,
                 amount: Math.round(amount),
-                payDate,
+                payDate: new Date(payYear, payMonth, Math.min(sendD, 28)),
                 status: isPipelineType ? "" : status,
                 isPipeline: isPipelineType,
                 type: job.projectRetainer || "Retainer",
               });
             }
-            currDate.setMonth(currDate.getMonth() + 1);
-            monthCount++;
           }
         }
       } else {
@@ -458,6 +513,41 @@ export const CashDeepDiveEngine = {
     });
 
     results.sort((a, b) => a.payDate - b.payDate);
+    return results;
+  },
+
+  getSalariesCash(targetDate, salariesData) {
+    const results = [];
+    if (!salariesData || !salariesData.deepDive || !salariesData.monthHeaders) return results;
+
+    const targetYear = targetDate.getFullYear();
+    const targetMonth = targetDate.getMonth();
+
+    let colIdx = -1;
+    for (let i = 11; i < salariesData.monthHeaders.length; i += 7) {
+      let hd = DeepDiveEngine.parseHeaderDate(salariesData.monthHeaders[i]);
+      if (hd && hd.getFullYear() === targetYear && hd.getMonth() === targetMonth) {
+        colIdx = i;
+        break;
+      }
+    }
+    if (colIdx === -1) return results;
+
+    const targetCol = colIdx;
+    if (!salariesData.deepDive[56]) return results;
+
+    const rawNet = salariesData.deepDive[56][targetCol];
+    const rawHmrc = salariesData.deepDive[57][targetCol];
+    const rawPension = salariesData.deepDive[58][targetCol];
+
+    const netPayroll = -Math.abs(parseMoney(rawNet));
+    const hmrc = -Math.abs(parseMoney(rawHmrc));
+    const pension = -Math.abs(parseMoney(rawPension));
+
+    if (Math.abs(netPayroll) > 0.01) results.push({ name: "Net Payroll", amount: netPayroll });
+    if (Math.abs(hmrc) > 0.01) results.push({ name: "HMRC (PAYE & NICs)", amount: hmrc });
+    if (Math.abs(pension) > 0.01) results.push({ name: "Pension", amount: pension });
+
     return results;
   },
 };

@@ -4,6 +4,8 @@ import Spinner from "../Spinner";
 export default function BudgetVarianceView({
   clientName,
   data,
+  allFYData,
+  keyData,
   isLoading,
   error,
   onRefresh,
@@ -12,10 +14,19 @@ export default function BudgetVarianceView({
   const [userMonthIdx, setUserMonthIdx] = useState(null);
   const [selectedYearIdx, setSelectedYearIdx] = useState(0);
 
-  const budgetData = data;
-  const years = budgetData?.years || [];
-  const currentYear = years[selectedYearIdx] || years[0];
-  const months = useMemo(() => currentYear?.months || [], [currentYear]);
+  const rawVals = data?.rawVals || [];
+  const mathVals = data?.mathVals || rawVals;
+
+  const years = useMemo(() => allFYData?.years || [], [allFYData?.years]);
+  const activeYearIdx = Math.min(Math.max(0, selectedYearIdx + 1), Math.max(0, years.length - 1));
+  const activeYear = years[activeYearIdx] || years[0];
+
+  const months = useMemo(() => {
+    return activeYear?.headerMonths || [
+      "Month 1", "Month 2", "Month 3", "Month 4", "Month 5", "Month 6",
+      "Month 7", "Month 8", "Month 9", "Month 10", "Month 11", "Month 12"
+    ];
+  }, [activeYear?.headerMonths]);
 
   // Default to previous calendar month
   const defaultMonthIdx = useMemo(() => {
@@ -24,8 +35,7 @@ export default function BudgetVarianceView({
     const currMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     let prevIdx = -1;
     for (let i = 0; i < months.length; i++) {
-      const m = months[i];
-      const mLabel = typeof m === "object" && m !== null ? m.label : m;
+      const mLabel = months[i];
       const match = String(mLabel).trim().match(/^([a-zA-Z]{3})[\s\-](\d{2,4})$/);
       if (match) {
         const monthsMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -43,7 +53,15 @@ export default function BudgetVarianceView({
 
   const selectedMonthIdx = userMonthIdx !== null ? userMonthIdx : defaultMonthIdx;
 
-  const parseNum = (val) => {
+  const isRevMode = useMemo(() => {
+    if (keyData?.outgoingsMeta?.mode) {
+      return !keyData.outgoingsMeta.mode.toLowerCase().includes("income");
+    }
+    const allLabels = (years[0]?.rows || []).map((r) => String(r.label || "").toLowerCase());
+    return !allLabels.some((l) => l.includes("confirmed income") || l.includes("total income"));
+  }, [keyData, years]);
+
+  const parseMoney = (val) => {
     if (typeof val === "number") return val;
     if (!val || val === "—") return 0;
     const clean = String(val).replace(/[£,]/g, "").trim();
@@ -60,97 +78,140 @@ export default function BudgetVarianceView({
 
   const formatPct = (val) => `${Math.round((val || 0) * 100)}%`;
 
-  const getRowStyle = (label) => {
-    const l = String(label || "").toLowerCase().trim();
-    if (l === "total income" || l === "total revenue") {
-      return { bg: "#0000ff", color: "#ffffff", bold: true, isMajor: true };
+  // Budget metric getter
+  const blkStart = selectedYearIdx === 0 ? 6 : (selectedYearIdx === 1 ? 21 : 36);
+  const getBud = (rawRowIdx) => {
+    if (rawRowIdx === null || !rawVals[rawRowIdx]) return new Array(12).fill(0);
+    const row = [];
+    for (let m = 0; m < 12; m++) {
+      let val = parseFloat(mathVals?.[rawRowIdx]?.[blkStart + m]);
+      if (isNaN(val)) {
+        val = parseFloat(String(rawVals?.[rawRowIdx]?.[blkStart + m] || "").replace(/[£$,%]/g, "")) || 0;
+      }
+      row.push(val);
     }
-    if (l === "gross profit") {
-      return { bg: "#e69138", color: "#ffffff", bold: true, isMajor: true };
-    }
-    if (l === "total overheads") {
-      return { bg: "#45818e", color: "#ffffff", bold: true, isMajor: true };
-    }
-    if (l === "operating profit") {
-      return { bg: "#1155cc", color: "#ffffff", bold: true, isMajor: true };
-    }
-    if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
-      return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
-    }
-    return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
+    return row;
   };
 
-  // Determine limit of displayed months
-  const displayedMonthCount = viewMode === "month" ? 1 : viewMode === "ytd" ? selectedMonthIdx + 1 : 12;
-  const displayedMonths = months.slice(0, displayedMonthCount);
+  // Actual metric getter from activeYear in performanceData
+  const getAct = (labelMatch) => {
+    const r = activeYear?.rows?.find((row) =>
+      String(row.label || "").toLowerCase().includes(labelMatch.toLowerCase())
+    );
+    if (!r || !r.monthVals) return new Array(12).fill(0);
+    return r.monthVals.map((v) => parseMoney(v));
+  };
 
-  // Compute variance rows
-  const computedRows = useMemo(() => {
-    if (!currentYear?.rows) return [];
+  const mapMetrics = (arrGet, isBud) => {
+    const conf = arrGet(isBud ? (isRevMode ? 4 : 20) : (isRevMode ? "confirmed revenue" : "confirmed income"));
+    const pipe = arrGet(isBud ? (isRevMode ? 5 : 21) : (isRevMode ? "pipeline revenue" : "pipeline income"));
+    const nb = arrGet(isBud ? (isRevMode ? 6 : 22) : "new business to find");
 
-    return currentYear.rows
-      .filter((r) => {
-        const isBlank = (!r.label || r.label.toLowerCase() === "hide") && !r.total;
-        return !isBlank;
-      })
-      .map((r) => {
-        const label = String(r.label || "").trim();
-        const isHeader = ["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(label.toLowerCase());
-        const isPercentageRow = label.includes("%") || label.toLowerCase().includes("ratio") || label.toLowerCase().includes("margin");
+    const staffDel = arrGet(isBud ? 28 : "staff costs - delivery");
+    const dirCosts = isRevMode ? arrGet(isBud ? 29 : "direct costs") : new Array(12).fill(0);
+    const expDel = arrGet(isBud ? (isRevMode ? 30 : 29) : "other expenses - delivery");
 
-        if (isHeader) {
-          return { label, isHeader, isPercentageRow };
-        }
+    const staffNonDel = arrGet(isBud ? 39 : "staff costs - non-delivery");
+    const expNonDel = arrGet(isBud ? 40 : "other expenses - non-delivery");
 
-        const monthlyActuals = [];
-        for (let m = 0; m < displayedMonthCount; m++) {
-          monthlyActuals.push(parseNum(r.actualValues?.[m]));
-        }
+    const totalRev = conf.map((v, i) => v + pipe[i] + nb[i]);
+    const totalCoS = isRevMode
+      ? staffDel.map((v, i) => v + dirCosts[i] + expDel[i])
+      : staffDel.map((v, i) => v + expDel[i]);
+    const gp = totalRev.map((v, i) => v - totalCoS[i]);
 
-        let actualTotal = 0;
-        let budgetTotal = 0;
+    const totalOverheads = staffNonDel.map((v, i) => v + expNonDel[i]);
+    const opProfit = gp.map((v, i) => v - totalOverheads[i]);
 
-        if (viewMode === "month") {
-          actualTotal = parseNum(r.actualValues?.[selectedMonthIdx]);
-          budgetTotal = parseNum(r.values?.[selectedMonthIdx]);
-        } else if (viewMode === "ytd") {
-          for (let m = 0; m <= selectedMonthIdx; m++) {
-            actualTotal += parseNum(r.actualValues?.[m]);
-            budgetTotal += parseNum(r.values?.[m]);
-          }
-        } else {
-          actualTotal = parseNum(r.actualTotal);
-          budgetTotal = parseNum(r.total);
-        }
+    return {
+      conf, pipe, nb, totalRev,
+      staffDel, dirCosts, expDel, totalCoS,
+      gp,
+      staffNonDel, expNonDel, totalOverheads,
+      opProfit,
+    };
+  };
 
-        const isCost =
-          label.toLowerCase().includes("cost") ||
-          label.toLowerCase().includes("overhead") ||
-          label.toLowerCase().includes("expense") ||
-          label.toLowerCase().includes("salaries");
+  const budMetrics = mapMetrics(getBud, true);
+  const actMetrics = mapMetrics(getAct, false);
 
-        const diff = isCost ? budgetTotal - actualTotal : actualTotal - budgetTotal;
-        const diffAmount = actualTotal - budgetTotal;
-        const pct = budgetTotal !== 0 ? (diff / Math.abs(budgetTotal)) : 0;
-        const isFavorable = diff >= 0;
+  const sumArr = (arr, limit) => arr.slice(0, limit).reduce((a, b) => a + b, 0);
 
-        return {
-          label,
-          isHeader: false,
-          isPercentageRow,
-          monthlyActuals,
-          actualTotal,
-          budgetTotal,
-          diff,
-          diffAmount,
-          pct,
-          isCost,
-          isFavorable,
-        };
-      });
-  }, [currentYear, viewMode, selectedMonthIdx, displayedMonthCount]);
+  const getMarginColor = (label, numVal) => {
+    const t = keyData?.thresholds || [];
+    const parseT = (idx, def) => {
+      const v = t[idx];
+      if (v === undefined || v === null || v === "") return def;
+      const n = parseFloat(String(v).replace(/%/g, "").trim());
+      return isNaN(n) ? def : (String(v).includes("%") || n > 1 ? n / 100 : n);
+    };
 
-  if (isLoading && !budgetData) {
+    if (label.includes("Gross profit margin")) {
+      const z42 = parseT(0, 0.495);
+      const z43 = parseT(1, 0.445);
+      if (numVal < z43) return "#f4cccc";
+      if (numVal <= z42) return "#fce5cd";
+      return "#d9ead3";
+    }
+    if (label.includes("Overheads as %")) {
+      const z47 = parseT(5, 0.309);
+      const z48 = parseT(6, 0.20);
+      if (numVal > z47) return "#f4cccc";
+      if (numVal >= z48) return "#d9ead3";
+      return "#fce5cd";
+    }
+    if (label.includes("Operating profit %")) {
+      const z52 = parseT(10, 0.145);
+      const z53 = parseT(11, 0.05);
+      if (numVal < z53) return "#f4cccc";
+      if (numVal <= z52) return "#fce5cd";
+      return "#d9ead3";
+    }
+    if (label.includes("Staff costs to")) {
+      const z57 = parseT(15, 0.705);
+      const z58 = parseT(16, 0.66);
+      const z59 = parseT(17, 0.54);
+      if (numVal < z59) return "#fce5cd";
+      if (numVal <= z58) return "#d9ead3";
+      if (numVal <= z57) return "#fce5cd";
+      return "#f4cccc";
+    }
+    return "#efefef";
+  };
+
+  const getVarCells = (actVal, budVal, isCost, isMargin, hideVariance, rowBg) => {
+    if (isMargin || hideVariance) {
+      return [
+        { v: "", bg: rowBg, color: rowBg },
+        { v: "", bg: rowBg, color: rowBg },
+      ];
+    }
+
+    const diffAmount = isCost ? (budVal - actVal) : (actVal - budVal);
+    const isGood = diffAmount >= 0;
+    const cellBg = isGood ? "#d9ead3" : "#f4cccc";
+
+    if (budVal === 0 && actVal === 0) {
+      return [
+        { v: formatMoney(0), bg: "#d9ead3", color: "#0047AB" },
+        { v: "0%", bg: "#d9ead3", color: "#0047AB" },
+      ];
+    }
+    if (budVal === 0) {
+      return [
+        { v: formatMoney(diffAmount), bg: cellBg, color: "#cc0000" },
+        { v: "!", bg: "#f4cccc", color: "#cc0000" },
+      ];
+    }
+
+    const pct = diffAmount / Math.abs(budVal);
+    return [
+      { v: formatMoney(diffAmount), bg: cellBg, color: "#0047AB" },
+      { v: `${Math.round(pct * 100)}%`, bg: cellBg, color: "#0047AB" },
+    ];
+  };
+
+  if (isLoading && (!data || rawVals.length === 0)) {
     return (
       <div style={{ textAlign: "center", padding: "4rem 0" }}>
         <Spinner size={36} color="#0047AB" />
@@ -161,136 +222,158 @@ export default function BudgetVarianceView({
     );
   }
 
-  if (error && !budgetData) {
+  if (error && (!data || rawVals.length === 0)) {
     return (
-      <div
-        style={{
-          background: "#fef2f2",
-          border: "1px solid #fecaca",
-          borderRadius: "8px",
-          padding: "1.5rem",
-          color: "#991b1b",
-          margin: "1rem 0",
-        }}
-      >
+      <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "1.5rem", color: "#991b1b", margin: "1rem 0" }}>
         <h4 style={{ margin: "0 0 6px 0", fontWeight: 700 }}>Unable to load budget data</h4>
         <p style={{ margin: "0 0 12px 0", fontSize: "14px" }}>{error}</p>
-        <button
-          onClick={onRefresh}
-          style={{
-            padding: "6px 14px",
-            background: "#dc2626",
-            color: "#ffffff",
-            border: "none",
-            borderRadius: "6px",
-            cursor: "pointer",
-            fontWeight: 600,
-          }}
-        >
+        <button onClick={onRefresh} style={{ padding: "6px 14px", background: "#dc2626", color: "#ffffff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: 600 }}>
           Try Again
         </button>
       </div>
     );
   }
 
-  if (budgetData && !budgetData.hasBudget) {
+  if (data && !data.hasBudget) {
     return (
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          padding: "3rem 2rem",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          textAlign: "center",
-          fontFamily: "'Kumbh Sans', sans-serif",
-        }}
-      >
-        <div style={{ fontSize: "36px", marginBottom: "1rem" }}>📊</div>
-        <h3 style={{ margin: "0 0 8px 0", fontSize: "1.25rem", fontWeight: 700, color: "#1e293b" }}>
-          No Budget Configured
-        </h3>
-        <p style={{ margin: 0, color: "#64748b", fontSize: "0.95rem", maxWidth: "480px", marginInline: "auto" }}>
-          There is no <strong>Budget</strong> sheet currently set up for <strong>{clientName}</strong>.
-        </p>
+      <div style={{ background: "#ffffff", borderRadius: "8px", padding: "3rem 2rem", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)", border: "1px solid #e2e8f0", textAlign: "center", fontFamily: "'Kumbh Sans', sans-serif" }}>
+        <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>📊</div>
+        <h3 style={{ color: "#0047AB", fontWeight: 700, margin: "0 0 8px 0" }}>No Budget Configured</h3>
+        <p style={{ color: "#64748b", maxWidth: "460px", margin: "0 auto" }}>This client does not have budget tracking enabled.</p>
       </div>
     );
   }
 
+  const limit = viewMode === "month" ? 1 : viewMode === "ytd" ? selectedMonthIdx + 1 : 12;
+  const displayedMonths = viewMode === "month" ? [months[selectedMonthIdx]] : months.slice(0, limit);
+
+  // Build the structured rows matching renderBudgetAnalysis
+  const tableRows = [];
+
+  const addSpacer = (height = 6) => {
+    tableRows.push({ type: "spacer", height });
+  };
+
+  const addSectionHeader = (label) => {
+    tableRows.push({ type: "section", label, height: 20 });
+  };
+
+  const addDataRow = (label, metricKey, isCurrency, isBigTotal, isMargin, isCost, isBold = false, hideVariance = false) => {
+    tableRows.push({
+      type: "data",
+      label,
+      metricKey,
+      isCurrency,
+      isBigTotal,
+      isMargin,
+      isCost,
+      isBold: isBigTotal || isBold,
+      hideVariance,
+      bg: isBigTotal ? (label.includes("Total revenue") || label.includes("Total income") ? "#9900ff" : label.includes("Gross") ? "#e69138" : label.includes("overheads") ? "#45818e" : "#1155cc") : "#efefef",
+      color: isBigTotal ? "#ffffff" : "#0047AB",
+      height: isBigTotal ? 31 : (isMargin ? 17 : 20),
+      fontSize: isBigTotal ? 14 : (isMargin ? 9 : 10),
+    });
+  };
+
+  addSpacer(15);
+  addSectionHeader(isRevMode ? "Revenue" : "Income");
+  addDataRow(isRevMode ? "Confirmed revenue" : "Confirmed income", "conf", true, false, false, false, false, true);
+  addDataRow(isRevMode ? "Pipeline revenue" : "Pipeline income", "pipe", true, false, false, false, false, true);
+  addDataRow(isRevMode ? "New business to find revenue" : "New business to find income", "nb", true, false, false, false, false, true);
+  addSpacer(6);
+  addDataRow(isRevMode ? "Total revenue" : "Total income", "totalRev", true, true, false, false);
+  addSpacer(20);
+
+  addSectionHeader("Costs of sale");
+  addDataRow("Staff costs - delivery", "staffDel", true, false, false, true);
+  if (isRevMode) {
+    addDataRow("Direct costs", "dirCosts", true, false, false, true);
+  }
+  addDataRow("Other expenses - delivery", "expDel", true, false, false, true);
+  addSpacer(4);
+  addDataRow("Total costs of sale", "totalCoS", true, false, false, true, true);
+  addSpacer(12);
+  addDataRow("Gross profit", "gp", true, true, false, false);
+  addSpacer(10);
+  addDataRow("Gross profit margin %", "gpMargin", false, false, true, false);
+  addSpacer(16);
+
+  addSectionHeader("Overheads");
+  addDataRow("Staff costs - non-delivery", "staffNonDel", true, false, false, true);
+  addDataRow("Other expenses - non-delivery", "expNonDel", true, false, false, true);
+  addSpacer(20);
+  addDataRow("Total overheads", "totalOverheads", true, true, false, true);
+  addSpacer(12);
+  addDataRow(isRevMode ? "Overheads as % of revenue" : "Overheads as % of income", "overheadsPct", false, false, true, true);
+  addSpacer(20);
+
+  addDataRow("Operating profit", "opProfit", true, true, false, false);
+  addSpacer(12);
+  addDataRow("Operating profit %", "opProfitPct", false, false, true, false);
+
+  const showExtraRows = Boolean(activeYear?.rows?.length > 32);
+  if (showExtraRows) {
+    addSpacer(12);
+    addDataRow(isRevMode ? "Staff costs to revenue %" : "Staff costs to income %", "staffToIncPct", false, false, true, true);
+  }
+
+  const selectStyle = {
+    padding: "5px 12px",
+    borderRadius: "6px",
+    border: "1px solid #cbd5e1",
+    fontSize: "13px",
+    color: "#1e293b",
+    background: "#ffffff",
+    cursor: "pointer",
+    outline: "none",
+    fontWeight: 600,
+    fontFamily: "'Kumbh Sans', sans-serif",
+  };
+
+  const numTotalCols = viewMode === "month" ? 6 : displayedMonths.length + 7;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1rem", width: "100%", fontFamily: "'Kumbh Sans', sans-serif" }}>
-      {/* Action Bar */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: "1rem",
-          padding: "0.25rem 0",
-        }}
-      >
+    <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "1rem", padding: "0.5rem 0 3rem 0" }}>
+      {/* Action Bar Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <h2 style={{ margin: 0, fontSize: "1.45rem", fontWeight: 700, color: "#0047AB" }}>
+          <h2 style={{ fontSize: "1.4rem", fontWeight: 700, color: "#0047AB", margin: 0, fontFamily: "'Kumbh Sans', sans-serif" }}>
             Budget variance analysis
           </h2>
-          <span
-            style={{
-              padding: "2px 8px",
-              borderRadius: "10px",
-              fontSize: "11px",
-              fontWeight: 700,
-              background: "rgba(0, 71, 171, 0.08)",
-              color: "#0047AB",
-            }}
-          >
-            {viewMode === "month"
-              ? `${typeof months[selectedMonthIdx] === "object" ? months[selectedMonthIdx]?.label : months[selectedMonthIdx] || "Month"}`
-              : viewMode === "ytd"
-              ? `YTD Through to ${typeof months[selectedMonthIdx] === "object" ? months[selectedMonthIdx]?.label : months[selectedMonthIdx] || "Month"}`
-              : "Full FY"}
+          <span style={{ fontSize: "11px", fontWeight: 600, color: "#64748b", background: "#f1f5f9", padding: "2px 8px", borderRadius: "4px" }}>
+            {selectedYearIdx === 0 ? "Year 1" : selectedYearIdx === 1 ? "Year 2" : "Year 3"}
           </span>
         </div>
 
         {/* Controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          {/* Mode Switcher */}
-          <div
-            style={{
-              display: "flex",
-              background: "#f1f5f9",
-              padding: "2px",
-              borderRadius: "6px",
-              border: "1px solid #cbd5e1",
-            }}
-          >
-            {[
-              { id: "month", label: "Monthly" },
-              { id: "ytd", label: "YTD" },
-              { id: "fy", label: "Full FY" },
-            ].map((m) => (
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          {/* View Mode Toggle */}
+          <div style={{ display: "flex", background: "#f1f5f9", borderRadius: "6px", padding: "2px" }}>
+            {["month", "ytd", "fy"].map((m) => (
               <button
-                key={m.id}
+                key={m}
                 type="button"
-                onClick={() => setViewMode(m.id)}
+                onClick={() => setViewMode(m)}
                 style={{
-                  padding: "4px 10px",
-                  borderRadius: "4px",
-                  border: "none",
+                  padding: "4px 12px",
                   fontSize: "12px",
-                  fontWeight: viewMode === m.id ? 700 : 500,
+                  fontWeight: 600,
+                  border: "none",
+                  borderRadius: "4px",
                   cursor: "pointer",
-                  background: viewMode === m.id ? "#0047AB" : "transparent",
-                  color: viewMode === m.id ? "#ffffff" : "#475569",
+                  background: viewMode === m ? "#0047AB" : "transparent",
+                  color: viewMode === m ? "#ffffff" : "#64748b",
+                  textTransform: "uppercase",
                 }}
               >
-                {m.label}
+                {m}
               </button>
             ))}
           </div>
 
-          {/* Month Dropdown (for Monthly and YTD) */}
-          {viewMode !== "fy" && months.length > 0 && (
+          {/* Month selector for 'month' or 'ytd' */}
+          {viewMode !== "fy" && (
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>
                 {viewMode === "ytd" ? "Through to:" : "Month:"}
@@ -300,23 +383,34 @@ export default function BudgetVarianceView({
                 onChange={(e) => setUserMonthIdx(parseInt(e.target.value, 10))}
                 style={selectStyle}
               >
-                {months.map((m, idx) => {
-                  const mLabel = typeof m === "object" && m !== null ? m.label : m;
-                  return (
-                    <option key={idx} value={idx}>
-                      {mLabel} (M{idx + 1})
-                    </option>
-                  );
-                })}
+                {months.map((m, idx) => (
+                  <option key={idx} value={idx}>
+                    {m}
+                  </option>
+                ))}
               </select>
             </div>
           )}
+
+          {/* Year selector */}
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Year:</span>
+            <select
+              value={selectedYearIdx}
+              onChange={(e) => setSelectedYearIdx(parseInt(e.target.value, 10))}
+              style={selectStyle}
+            >
+              <option value={0}>Year 1</option>
+              <option value={1}>Year 2</option>
+              <option value={2}>Year 3</option>
+            </select>
+          </div>
 
           <button
             type="button"
             onClick={onRefresh}
             disabled={isLoading}
-            title="Refresh data"
+            title="Refresh budget data"
             style={{
               background: "transparent",
               border: "none",
@@ -342,321 +436,298 @@ export default function BudgetVarianceView({
         </div>
       </div>
 
-      {/* Main Budget Variance Table (max-content width matching original app) */}
+      {/* Main Budget Variance Table */}
       <div
         style={{
           background: "#ffffff",
           borderRadius: "8px",
           boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
           border: "1px solid #e2e8f0",
-          overflowX: "auto",
+          overflow: "hidden",
           width: "100%",
         }}
       >
-        <table
-          style={{
-            width: "max-content",
-            borderCollapse: "separate",
-            borderSpacing: 0,
-            fontSize: "12px",
-            fontFamily: "'Kumbh Sans', sans-serif",
-          }}
-        >
-          <thead>
-            {/* Row 1: Headers */}
-            <tr style={{ background: "#0047AB", color: "#ffffff" }}>
-              <th
-                style={{
-                  padding: "6px 8px",
-                  textAlign: "left",
-                  fontWeight: 700,
-                  fontSize: "12px",
-                  position: "sticky",
-                  left: 0,
-                  background: "#0047AB",
-                  zIndex: 2,
-                  width: "220px",
-                  minWidth: "220px",
-                }}
-              >
-                {/* Empty header */}
-              </th>
-
-              {/* Monthly Actual Columns (in YTD or FY view) */}
-              {viewMode !== "month" &&
-                displayedMonths.map((m, idx) => {
-                  const mLabel = typeof m === "object" && m !== null ? m.label : m;
-                  return (
-                    <th
-                      key={idx}
-                      style={{
-                        padding: "6px 4px",
-                        textAlign: "right",
-                        fontWeight: 700,
-                        fontSize: "11.5px",
-                        width: "87px",
-                        minWidth: "87px",
-                      }}
-                    >
-                      {mLabel}
-                    </th>
-                  );
-                })}
-
-              {/* Total/Period Actual */}
-              <th
-                style={{
-                  padding: "6px 8px",
-                  textAlign: "right",
-                  fontWeight: 800,
-                  fontSize: "12px",
-                  width: "110px",
-                  minWidth: "110px",
-                }}
-              >
-                {viewMode === "month" ? "Actual" : viewMode === "ytd" ? "YTD Actual" : "FY Actual"}
-              </th>
-
-              {/* Budget Column */}
-              <th
-                style={{
-                  padding: "6px 8px",
-                  textAlign: "right",
-                  fontWeight: 700,
-                  fontStyle: "italic",
-                  fontSize: "12px",
-                  width: "110px",
-                  minWidth: "110px",
-                }}
-              >
-                {viewMode === "month" ? "Budget" : viewMode === "ytd" ? "YTD Budget" : "FY Budget"}
-              </th>
-
-              {/* Variance (£) */}
-              <th
-                style={{
-                  padding: "6px 8px",
-                  textAlign: "right",
-                  fontWeight: 700,
-                  fontStyle: "italic",
-                  fontSize: "12px",
-                  width: "87px",
-                  minWidth: "87px",
-                }}
-              >
-                Var (£)
-              </th>
-
-              {/* Variance (%) */}
-              <th
-                style={{
-                  padding: "6px 8px",
-                  textAlign: "right",
-                  fontWeight: 700,
-                  fontStyle: "italic",
-                  fontSize: "12px",
-                  width: "87px",
-                  minWidth: "87px",
-                }}
-              >
-                Var %
-              </th>
-            </tr>
-
-            {/* Row 2: Status row (Actual / Forecast) for multi-month views */}
-            {viewMode !== "month" && (
-              <tr style={{ background: "#efefef", borderBottom: "1px solid #ffffff", fontSize: "10.5px" }}>
-                <td
+        <div style={{ overflowX: "auto", width: "100%" }}>
+          <table
+            style={{
+              width: "max-content",
+              borderCollapse: "separate",
+              borderSpacing: 0,
+              fontSize: "12px",
+              fontFamily: "'Kumbh Sans', sans-serif",
+            }}
+          >
+            <thead>
+              <tr style={{ background: "#0047AB", color: "#ffffff", height: "31px" }}>
+                <th
                   style={{
-                    padding: "3px 8px",
+                    padding: "6px 12px",
+                    textAlign: "left",
+                    fontWeight: 700,
+                    width: "220px",
+                    minWidth: "220px",
                     position: "sticky",
                     left: 0,
-                    background: "#efefef",
+                    background: "#0047AB",
                     zIndex: 2,
+                    fontSize: "14px",
                   }}
-                />
-                {displayedMonths.map((m, idx) => {
-                  const raw = typeof m === "object" && m !== null ? m.status || "Actual" : "Actual";
-                  const text = String(raw).toLowerCase() === "forecast" ? "Forecast" : "Actual";
-                  return (
-                    <td
-                      key={idx}
-                      style={{
-                        padding: "3px 4px",
-                        textAlign: "right",
-                        color: "#666666",
-                        fontStyle: "italic",
-                        background: "#efefef",
-                      }}
-                    >
-                      {text}
-                    </td>
-                  );
-                })}
-                <td style={{ background: "#efefef" }} />
-                <td style={{ background: "#efefef" }} />
-                <td style={{ background: "#efefef" }} />
-                <td style={{ background: "#efefef" }} />
-              </tr>
-            )}
-          </thead>
+                >
+                  {/* Empty top-left */}
+                </th>
 
-          <tbody>
-            {computedRows.map((row, rIdx) => {
-              if (row.isHeader) {
+                {viewMode === "month" ? (
+                  <>
+                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", width: "87px", minWidth: "87px", background: "#0047AB" }}>
+                      Actual
+                    </th>
+                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
+                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
+                      Budget
+                    </th>
+                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
+                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
+                      Var (£)
+                    </th>
+                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
+                      Var %
+                    </th>
+                  </>
+                ) : (
+                  <>
+                    {displayedMonths.map((mLabel, idx) => (
+                      <th
+                        key={idx}
+                        style={{
+                          padding: "6px 4px",
+                          textAlign: "right",
+                          fontWeight: 700,
+                          fontSize: "14px",
+                          width: "87px",
+                          minWidth: "87px",
+                          background: "#0047AB",
+                        }}
+                      >
+                        {mLabel}
+                      </th>
+                    ))}
+                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
+                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", width: "110px", minWidth: "110px", background: "#0047AB" }}>
+                      {viewMode === "ytd" ? "YTD Actual" : "FY Actual"}
+                    </th>
+                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
+                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "110px", minWidth: "110px", background: "#0047AB" }}>
+                      {viewMode === "ytd" ? "YTD Budget" : "FY Budget"}
+                    </th>
+                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
+                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
+                      Var (£)
+                    </th>
+                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
+                      Var %
+                    </th>
+                  </>
+                )}
+              </tr>
+
+              {/* Subheader status row for YTD/FY */}
+              {viewMode !== "month" && (
+                <tr style={{ background: "#efefef", height: "15px" }}>
+                  <td style={{ padding: "2px 12px", background: "#efefef", position: "sticky", left: 0, zIndex: 2 }} />
+                  {displayedMonths.map((_, idx) => {
+                    const text = activeYear?.statusRow?.[idx] || (idx < 6 ? "Actual" : "Forecast");
+                    return (
+                      <td key={idx} style={{ padding: "2px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef", fontSize: "9px" }}>
+                        {text}
+                      </td>
+                    );
+                  })}
+                  {Array.from({ length: 7 }).map((_, cIdx) => (
+                    <td key={cIdx} style={{ padding: 0, background: "#efefef" }} />
+                  ))}
+                </tr>
+              )}
+            </thead>
+
+            <tbody>
+              {tableRows.map((r, rIdx) => {
+                if (r.type === "spacer") {
+                  return (
+                    <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
+                      <td colSpan={numTotalCols + 1} style={{ padding: 0, border: "none", background: "#efefef" }} />
+                    </tr>
+                  );
+                }
+
+                if (r.type === "section") {
+                  return (
+                    <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
+                      <td
+                        style={{
+                          padding: "2px 12px",
+                          textAlign: "left",
+                          fontWeight: 700,
+                          fontSize: "13px",
+                          color: "#0047AB",
+                          position: "sticky",
+                          left: 0,
+                          background: "#efefef",
+                          zIndex: 1,
+                        }}
+                      >
+                        {r.label}
+                      </td>
+                      {Array.from({ length: numTotalCols }).map((_, cIdx) => (
+                        <td key={cIdx} style={{ padding: 0, background: "#efefef" }} />
+                      ))}
+                    </tr>
+                  );
+                }
+
+                // Data row
+                const isBigTotal = r.isBigTotal;
+                const rowBg = r.bg;
+                const rowColor = r.color;
+                const isBold = r.isBold;
+                const isMargin = r.isMargin;
+                const isCost = r.isCost;
+                const rowHeight = r.height;
+                const fontSize = r.fontSize;
+                const borderBottom = isBigTotal ? "none" : "1px solid #ffffff";
+
+                const actArr = actMetrics[r.metricKey] || new Array(12).fill(0);
+                const budArr = budMetrics[r.metricKey] || new Array(12).fill(0);
+
+                if (viewMode === "month") {
+                  const actV = actArr[selectedMonthIdx] || 0;
+                  const budV = budArr[selectedMonthIdx] || 0;
+
+                  let cellBg = rowBg;
+                  let cellColor = rowColor;
+                  if (isMargin) {
+                    cellBg = getMarginColor(r.label, actV);
+                    cellColor = "#000000";
+                  }
+
+                  const varCells = getVarCells(actV, budV, isCost, isMargin, r.hideVariance, rowBg);
+
+                  return (
+                    <tr key={rIdx} style={{ height: `${rowHeight}px`, background: rowBg, borderBottom }}>
+                      <td style={{ padding: "2px 12px", textAlign: "left", color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, position: "sticky", left: 0, background: rowBg, zIndex: 1, whiteSpace: "nowrap" }}>
+                        {r.label}
+                      </td>
+                      <td style={{ padding: "2px 8px", textAlign: "right", background: cellBg, color: cellColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+                        {r.isCurrency ? formatMoney(actV) : formatPct(actV)}
+                      </td>
+                      <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
+                      <td style={{ padding: "2px 8px", textAlign: "right", background: rowBg, color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+                        {r.isCurrency ? formatMoney(budV) : formatPct(budV)}
+                      </td>
+                      <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
+                      <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[0].bg, color: varCells[0].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+                        {varCells[0].v}
+                      </td>
+                      <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[1].bg, color: varCells[1].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+                        {varCells[1].v}
+                      </td>
+                    </tr>
+                  );
+                }
+
+                // YTD or FY Mode
+                let actSum = sumArr(actArr, limit);
+                let budSum = sumArr(budArr, limit);
+
+                if (isMargin) {
+                  if (r.metricKey === "gpMargin") {
+                    const actRev = sumArr(actMetrics.totalRev, limit);
+                    const budRev = sumArr(budMetrics.totalRev, limit);
+                    actSum = actRev ? sumArr(actMetrics.gp, limit) / actRev : 0;
+                    budSum = budRev ? sumArr(budMetrics.gp, limit) / budRev : 0;
+                  } else if (r.metricKey === "overheadsPct") {
+                    const actRev = sumArr(actMetrics.totalRev, limit);
+                    const budRev = sumArr(budMetrics.totalRev, limit);
+                    actSum = actRev ? sumArr(actMetrics.totalOverheads, limit) / actRev : 0;
+                    budSum = budRev ? sumArr(budMetrics.totalOverheads, limit) / budRev : 0;
+                  } else if (r.metricKey === "opProfitPct") {
+                    const actRev = sumArr(actMetrics.totalRev, limit);
+                    const budRev = sumArr(budMetrics.totalRev, limit);
+                    actSum = actRev ? sumArr(actMetrics.opProfit, limit) / actRev : 0;
+                    budSum = budRev ? sumArr(budMetrics.opProfit, limit) / budRev : 0;
+                  } else if (r.metricKey === "staffToIncPct") {
+                    const actRev = sumArr(actMetrics.totalRev, limit);
+                    const budRev = sumArr(budMetrics.totalRev, limit);
+                    actSum = actRev ? (sumArr(actMetrics.staffDel, limit) + sumArr(actMetrics.staffNonDel, limit)) / actRev : 0;
+                    budSum = budRev ? (sumArr(budMetrics.staffDel, limit) + sumArr(budMetrics.staffNonDel, limit)) / budRev : 0;
+                  }
+                }
+
+                const varCells = getVarCells(actSum, budSum, isCost, isMargin, r.hideVariance, rowBg);
+
+                let actTotalBg = rowBg;
+                let actTotalColor = rowColor;
+                if (isMargin) {
+                  actTotalBg = getMarginColor(r.label, actSum);
+                  actTotalColor = "#000000";
+                }
+
                 return (
-                  <tr key={rIdx} style={{ background: "#efefef", borderBottom: "1px solid #ffffff" }}>
-                    <td
-                      colSpan={viewMode === "month" ? 5 : displayedMonthCount + 5}
-                      style={{
-                        padding: "6px 8px",
-                        fontWeight: 700,
-                        color: "#0047AB",
-                        fontSize: "11px",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.5px",
-                        background: "#efefef",
-                        position: "sticky",
-                        left: 0,
-                        zIndex: 1,
-                      }}
-                    >
-                      {row.label}
+                  <tr key={rIdx} style={{ height: `${rowHeight}px`, background: rowBg, borderBottom }}>
+                    <td style={{ padding: "2px 12px", textAlign: "left", color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, position: "sticky", left: 0, background: rowBg, zIndex: 1, whiteSpace: "nowrap" }}>
+                      {r.label}
+                    </td>
+
+                    {/* Monthly actuals */}
+                    {Array.from({ length: limit }).map((_, m) => {
+                      const actV = actArr[m] || 0;
+                      let cellBg = rowBg;
+                      let cellColor = rowColor;
+                      if (isMargin) {
+                        cellBg = getMarginColor(r.label, actV);
+                        cellColor = "#000000";
+                      }
+                      return (
+                        <td key={m} style={{ padding: "2px 4px", textAlign: "right", background: cellBg, color: cellColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+                          {r.isCurrency ? formatMoney(actV) : formatPct(actV)}
+                        </td>
+                      );
+                    })}
+
+                    {/* 22px Gap */}
+                    <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
+
+                    {/* Actual Total */}
+                    <td style={{ padding: "2px 8px", textAlign: "right", background: actTotalBg, color: actTotalColor, fontWeight: isBold ? 700 : 600, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+                      {r.isCurrency ? formatMoney(actSum) : formatPct(actSum)}
+                    </td>
+
+                    {/* 22px Gap */}
+                    <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
+
+                    {/* Budget Total */}
+                    <td style={{ padding: "2px 8px", textAlign: "right", background: rowBg, color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+                      {r.isCurrency ? formatMoney(budSum) : formatPct(budSum)}
+                    </td>
+
+                    {/* 22px Gap */}
+                    <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
+
+                    {/* Var (£) */}
+                    <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[0].bg, color: varCells[0].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+                      {varCells[0].v}
+                    </td>
+
+                    {/* Var (%) */}
+                    <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[1].bg, color: varCells[1].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+                      {varCells[1].v}
                     </td>
                   </tr>
                 );
-              }
-
-              const rowStyle = getRowStyle(row.label);
-              const isPct = row.isPercentageRow;
-              const varColor = row.diff === 0 ? "#0047AB" : row.isFavorable ? "#166534" : "#991b1b";
-              const varBg = row.diff === 0 ? "#efefef" : row.isFavorable ? "#d9ead3" : "#f4cccc";
-
-              return (
-                <tr
-                  key={rIdx}
-                  style={{
-                    borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #ffffff",
-                    background: rowStyle.bg,
-                    fontWeight: rowStyle.bold ? 700 : 400,
-                  }}
-                >
-                  {/* Sticky Line Item */}
-                  <td
-                    style={{
-                      padding: "5px 8px",
-                      color: rowStyle.color,
-                      fontWeight: rowStyle.bold ? 700 : 500,
-                      fontStyle: isPct ? "italic" : "normal",
-                      position: "sticky",
-                      left: 0,
-                      background: rowStyle.bg,
-                      zIndex: 1,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                    title={row.label}
-                  >
-                    {row.label}
-                  </td>
-
-                  {/* Monthly Actual Values (in YTD/FY mode) */}
-                  {viewMode !== "month" &&
-                    row.monthlyActuals?.map((val, mIdx) => (
-                      <td
-                        key={mIdx}
-                        style={{
-                          padding: "4px 4px",
-                          textAlign: "right",
-                          fontSize: "11px",
-                          color: rowStyle.isMajor ? "#ffffff" : rowStyle.color,
-                          fontStyle: isPct ? "italic" : "normal",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {isPct ? formatPct(val) : formatMoney(val)}
-                      </td>
-                    ))}
-
-                  {/* Period Actual */}
-                  <td
-                    style={{
-                      padding: "5px 8px",
-                      textAlign: "right",
-                      fontWeight: rowStyle.bold ? 800 : 600,
-                      color: rowStyle.isMajor ? "#ffffff" : "#0047AB",
-                      fontStyle: isPct ? "italic" : "normal",
-                      fontSize: "11.5px",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {isPct ? formatPct(row.actualTotal) : formatMoney(row.actualTotal)}
-                  </td>
-
-                  {/* Period Budget */}
-                  <td
-                    style={{
-                      padding: "5px 8px",
-                      textAlign: "right",
-                      fontWeight: 600,
-                      color: rowStyle.isMajor ? "rgba(255,255,255,0.9)" : "#0047AB",
-                      fontStyle: "italic",
-                      fontSize: "11.5px",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {isPct ? formatPct(row.budgetTotal) : formatMoney(row.budgetTotal)}
-                  </td>
-
-                  {/* Var (£) */}
-                  <td
-                    style={{
-                      padding: "5px 8px",
-                      textAlign: "right",
-                      fontWeight: 700,
-                      fontStyle: "italic",
-                      fontSize: "11.5px",
-                      background: rowStyle.isMajor ? "transparent" : varBg,
-                      color: rowStyle.isMajor ? "#ffffff" : varColor,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {isPct ? formatPct(row.diffAmount) : formatMoney(row.diffAmount)}
-                  </td>
-
-                  {/* Var (%) */}
-                  <td
-                    style={{
-                      padding: "5px 8px",
-                      textAlign: "right",
-                      fontWeight: 700,
-                      fontStyle: "italic",
-                      fontSize: "11.5px",
-                      background: rowStyle.isMajor ? "transparent" : varBg,
-                      color: rowStyle.isMajor ? "#ffffff" : varColor,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {formatPct(row.pct)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
 }
-
-const selectStyle = {
-  border: "1px solid #cbd5e1",
-  borderRadius: "6px",
-  padding: "4px 8px",
-  fontSize: "12px",
-  fontWeight: 600,
-  color: "#0f172a",
-  background: "#ffffff",
-  cursor: "pointer",
-};

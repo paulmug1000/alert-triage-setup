@@ -93,21 +93,21 @@ export default async function handler(req, res) {
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetId,
-          range: "Budget!A1:AX35",
+          range: "Budget!A1:AX47",
           valueRenderOption: "FORMATTED_VALUE",
         })
       ),
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetId,
-          range: "AppData!A1:AX35",
+          range: "AppData!A1:AX47",
           valueRenderOption: "FORMATTED_VALUE",
         })
       ),
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetId,
-          range: "Budget!A1:AX35",
+          range: "Budget!A1:AX47",
           valueRenderOption: "UNFORMATTED_VALUE",
         })
       ),
@@ -169,9 +169,9 @@ export default async function handler(req, res) {
       const totalColIdx = startCol + 13;
       const fyTotalLabel = monthRow[totalColIdx] || "FY Total";
 
-      // Extract rows (Row 3 to 35)
+      // Extract rows (Row 3 to 47)
       const rows = [];
-      const numRows = Math.min(budgetDisp.length, 35);
+      const numRows = Math.min(budgetDisp.length, 47);
       for (let r = 2; r < numRows; r++) {
         const rowLabel = String(budgetDisp[r]?.[0] || "").trim();
         if (!rowLabel) continue;
@@ -218,6 +218,8 @@ export default async function handler(req, res) {
       hasBudget: true,
       currentYearIdx,
       years: parsedYears,
+      rawVals: budgetDisp,
+      mathVals: budgetMath,
     };
 
     // Cache in Redis

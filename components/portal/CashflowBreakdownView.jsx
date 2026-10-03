@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
 import { CashDeepDiveEngine, DeepDiveEngine, formatMoney, parseMoney } from "../../services/deepDiveHelper";
 
@@ -94,27 +94,30 @@ export default function CashflowBreakdownView({
 
   // Extract sheet cell total from data.includingPipeline (to match original Google Sheets Cash tab exactly)
   const sheetTargetTotal = useMemo(() => {
-    if (!data?.includingPipeline || !rollingMonths[selectedMonthIdx]) return null;
-    const targetMonthStr = rollingMonths[selectedMonthIdx];
+    const rows = data?.includingPipeline || data?.excludingPipeline || [];
+    if (rows.length === 0 || !rollingMonths[selectedMonthIdx]) return null;
 
-    const findRowTotal = (patterns) => {
-      const foundRow = data.includingPipeline.find((r) => {
+    const sumRows = (labelPatterns, rowIndices = []) => {
+      const matching = rows.filter((r) => {
+        if (rowIndices.includes(r.rowIndex)) return true;
         const l = (r.label || "").toLowerCase();
-        return patterns.some((p) => l.includes(p.toLowerCase()));
+        return labelPatterns.some((p) => l === p.toLowerCase() || l.startsWith(p.toLowerCase()));
       });
-      if (!foundRow) return 0;
-      const valStr = foundRow.rollingValues?.[selectedMonthIdx];
-      return parseMoney(valStr);
+      return matching.reduce((sum, r) => sum + parseMoney(r.rollingValues?.[selectedMonthIdx]), 0);
     };
 
-    if (activeCategory === "cashConfInc") return findRowTotal(["confirmed cash incoming", "confirmed receipts"]);
-    if (activeCategory === "cashPipeInc") return findRowTotal(["pipeline cash incoming", "pipeline receipts"]);
-    if (activeCategory === "cashDirCosts") return findRowTotal(["direct cost payments", "direct costs"]);
-    if (activeCategory === "cashSalaries") return findRowTotal(["salary payments", "salaries"]);
-    if (activeCategory === "cashContractors") return findRowTotal(["contractor payments", "contractors"]);
-    if (activeCategory === "cashOutgoings") return findRowTotal(["outgoings payments", "other expenses"]);
-    if (activeCategory === "cashTaxes") return findRowTotal(["tax payments", "corporation tax", "vat payment"]);
-    if (activeCategory === "cashOther") return findRowTotal(["other cash movements"]);
+    if (activeCategory === "cashConfInc") return sumRows(["confirmed cash incoming"], [47]);
+    if (activeCategory === "cashPipeInc") return sumRows(["pipeline cash incoming"], [48]);
+    if (activeCategory === "cashDirCosts") return sumRows(["direct costs outgoing", "direct costs adjustment"], [56, 57]);
+    if (activeCategory === "cashSalaries") {
+      const salVal = sumRows(["salaries outgoing", "salaries adjustment"], [50, 51]);
+      const divVal = sumRows(["dividends as salary outgoing", "dividends as salary adjustment"], [52, 53]);
+      return salVal + divVal;
+    }
+    if (activeCategory === "cashContractors") return sumRows(["contractors outgoing", "contractors adjustment"], [54, 55]);
+    if (activeCategory === "cashOutgoings") return sumRows(["other expenses outgoing", "other expenses adjustment"], [58, 59]);
+    if (activeCategory === "cashTaxes") return sumRows(["corporation tax", "corporation tax adjustment", "vat", "vat adjustment"], [61, 62, 63, 64]);
+    if (activeCategory === "cashOther") return sumRows(["non-operating income", "non-operating expenses", "other cash movements", "other adjustments"], [66, 67, 68, 69, 71, 72]);
     return null;
   }, [data, activeCategory, selectedMonthIdx, rollingMonths]);
 
@@ -133,64 +136,192 @@ export default function CashflowBreakdownView({
     }
 
     if (activeCategory === "cashSalaries") {
-      const staff = keyData?.salaries?.staff || [];
-      return staff.map((s) => ({
-        client: s.name,
-        name: s.role,
-        desc: `${s.isDelivery ? "Delivery" : "Overhead"} Payroll`,
-        amount: -Math.abs(Math.round((s.actualAnnualCost || 0) / 12)),
-        status: "Payroll",
-        type: "Salary",
-      })).filter((i) => Math.abs(i.amount) > 0);
+      let results = [];
+      if (keyData?.salaries?.deepDive && keyData?.salaries?.monthHeaders) {
+        results = CashDeepDiveEngine.getSalariesCash(targetDate, keyData.salaries);
+      }
+
+      // If deepDive is empty or not yet loaded, fall back to the Cash sheet salaries outgoing row
+      if (results.length === 0) {
+        const rows = data?.includingPipeline || data?.excludingPipeline || [];
+        const salRow = rows.find((r) => {
+          const l = (r.label || "").toLowerCase();
+          return l === "salaries" || l === "salaries outgoing" || l === "salary payments";
+        });
+        const val = parseMoney(salRow?.rollingValues?.[selectedMonthIdx]);
+        if (Math.abs(val) > 0.01) {
+          results.push({ name: "Net Payroll", amount: val });
+        }
+      }
+
+      // Add Dividends as salary matching original WebApp.html:17158-17172
+      const rows = data?.includingPipeline || data?.excludingPipeline || [];
+      const divRow = rows.find((r) => {
+        const l = (r.label || "").toLowerCase();
+        return l === "dividends as salary" || l === "dividends as salary outgoing";
+      });
+      const divAdj = rows.find((r) => (r.label || "").toLowerCase() === "dividends as salary adjustment");
+      const divVal = parseMoney(divRow?.rollingValues?.[selectedMonthIdx]) + parseMoney(divAdj?.rollingValues?.[selectedMonthIdx]);
+      if (Math.abs(divVal) > 0.01) {
+        results.push({
+          name: "Dividends as salary",
+          amount: divVal,
+        });
+      }
+
+      return results;
     }
 
-    if (activeCategory === "cashContractors") {
-      const contractors = keyData?.outgoings?.contractors || [];
-      return contractors.map((c) => {
-        const allocs = c.allocations?.[1] || c.monthlyAllocations || [];
-        const rawAmt = parseFloat(String(allocs[selectedMonthIdx] || "0").replace(/[£,]/g, "")) || 0;
-        const gross = rawAmt * (c.vat === "Yes" ? 1.2 : 1.0);
-        return {
-          client: c.name,
-          name: "Contractor Outflow",
-          desc: `Timing: ${c.paymentTiming || "Curr"} • Delivery: ${c.deliveryPct}`,
-          amount: -Math.abs(Math.round(gross)),
-          status: "Contractor",
-          type: "Contractor",
-        };
-      }).filter((i) => Math.abs(i.amount) > 0);
-    }
+    if (activeCategory === "cashContractors" || activeCategory === "cashOutgoings") {
+      const results = [];
+      const isCon = activeCategory === "cashContractors";
+      const items = isCon ? (keyData?.outgoings?.contractors || []) : (keyData?.outgoings?.expenses || []);
+      const headers = keyData?.outgoings?.headers || {};
+      const outgoingsMeta = keyData?.outgoingsMeta;
 
-    if (activeCategory === "cashOutgoings") {
-      const expenses = keyData?.outgoings?.expenses || [];
-      return expenses.map((e) => {
-        const allocs = e.allocations?.[1] || e.monthlyAllocations || [];
-        const rawAmt = parseFloat(String(allocs[selectedMonthIdx] || "0").replace(/[£,]/g, "")) || 0;
-        const gross = rawAmt * (e.vat === "Yes" ? 1.2 : 1.0);
-        return {
-          client: e.name,
-          name: "Outgoings Outflow",
-          desc: `Timing: ${e.paymentTiming || "Curr"} • VAT: ${e.vat || "Yes"}`,
-          amount: -Math.abs(Math.round(gross)),
-          status: "Expense",
-          type: "Expense",
-        };
-      }).filter((i) => Math.abs(i.amount) > 0);
+      const targetYear = targetDate.getFullYear();
+      const targetMonth = targetDate.getMonth();
+
+      // Find which year (1, 2, or 3) and column (0..11) corresponds to targetDate matching WebApp.html:16868-16878
+      let foundY = -1;
+      let foundC = -1;
+      for (const y of [1, 2, 3]) {
+        const yHeaders = headers[y] || [];
+        for (let c = 0; c < yHeaders.length; c++) {
+          const hd = DeepDiveEngine.parseHeaderDate(yHeaders[c]);
+          if (hd && hd.getFullYear() === targetYear && hd.getMonth() === targetMonth) {
+            foundY = y;
+            foundC = c;
+            break;
+          }
+        }
+        if (foundY !== -1) break;
+      }
+
+      if (foundY !== -1) {
+        items.forEach((item) => {
+          if (!item.name || item.name.toLowerCase() === "hide") return;
+          const payTiming = item.paymentTiming || "Curr";
+          let yearToRead = foundY;
+          let colToRead = foundC;
+
+          if (String(payTiming).toLowerCase() === "next") {
+            if (foundC === 0) {
+              yearToRead = foundY - 1;
+              colToRead = 11;
+            } else {
+              colToRead = foundC - 1;
+            }
+          }
+
+          if (yearToRead >= 1 && yearToRead <= 3) {
+            const allocs = item.allocations?.[yearToRead] || [];
+            const rawVal = allocs[colToRead];
+            let amt = parseMoney(rawVal);
+            if (Math.abs(amt) > 0.01) {
+              if (item.vat === "Yes") {
+                amt *= 1.2;
+              }
+              amt = -Math.abs(amt);
+              results.push({
+                name: item.name,
+                amount: Math.round(amt),
+              });
+            }
+          }
+        });
+
+        // Making up CoS amount for contractors matching WebApp.html:16921-16953
+        if (isCon && outgoingsMeta) {
+          const payTiming = outgoingsMeta.makingUpCosTiming || "Curr";
+          const vatStatus = outgoingsMeta.makingUpCosVat || "";
+          let yearToRead = foundY;
+          let colToRead = foundC;
+
+          if (String(payTiming).toLowerCase() === "next") {
+            if (foundC === 0) {
+              yearToRead = foundY - 1;
+              colToRead = 11;
+            } else {
+              colToRead = foundC - 1;
+            }
+          }
+
+          const targetArray = outgoingsMeta.makingUpCosBase;
+          const yIdx = yearToRead - 1;
+          if (targetArray && yIdx >= 0 && yIdx < targetArray.length) {
+            const cosRow = targetArray[yIdx];
+            if (cosRow && colToRead >= 0 && colToRead < cosRow.length) {
+              let cosAmount = parseMoney(cosRow[colToRead]);
+              if (Math.abs(cosAmount) > 0.01) {
+                if (vatStatus === "Yes") {
+                  cosAmount *= 1.2;
+                }
+                cosAmount = -Math.abs(cosAmount);
+                results.push({
+                  name: "Making up CoS amount",
+                  amount: Math.round(cosAmount),
+                });
+              }
+            }
+          }
+        }
+      }
+
+      return results;
     }
 
     if (activeCategory === "cashTaxes") {
-      return [
-        { client: "HMRC", name: "Corporation Tax", desc: "Estimated quarterly liability", amount: 0, status: "Tax" },
-        { client: "HMRC", name: "VAT Payment", desc: "Quarterly return payment", amount: 0, status: "Tax" },
-      ].filter((i) => i.amount !== 0);
+      const results = [];
+      const rows = data?.includingPipeline || data?.excludingPipeline || [];
+      const corpRow = rows.find((r) => (r.label || "").toLowerCase() === "corporation tax");
+      const corpAdj = rows.find((r) => (r.label || "").toLowerCase() === "corporation tax adjustment");
+      const vatRow = rows.find((r) => (r.label || "").toLowerCase() === "vat");
+      const vatAdj = rows.find((r) => (r.label || "").toLowerCase() === "vat adjustment");
+
+      const corpVal = parseMoney(corpRow?.rollingValues?.[selectedMonthIdx]) + parseMoney(corpAdj?.rollingValues?.[selectedMonthIdx]);
+      if (Math.abs(corpVal) > 0.01) {
+        results.push({
+          name: "Corporation tax",
+          amount: corpVal,
+        });
+      }
+
+      const vatVal = parseMoney(vatRow?.rollingValues?.[selectedMonthIdx]) + parseMoney(vatAdj?.rollingValues?.[selectedMonthIdx]);
+      if (Math.abs(vatVal) > 0.01) {
+        results.push({
+          name: "VAT",
+          amount: vatVal,
+        });
+      }
+
+      return results;
     }
 
     if (activeCategory === "cashOther") {
-      return [];
+      const results = [];
+      const rows = data?.includingPipeline || data?.excludingPipeline || [];
+      const findRow = (label) => rows.find((r) => String(r.label || "").toLowerCase().includes(label.toLowerCase()));
+      const nonOpInc = findRow("non-operating income");
+      const nonOpExp = findRow("non-operating expenses");
+      const otherMove = findRow("other cash movements");
+      if (nonOpInc) {
+        const val = parseMoney(nonOpInc.rollingValues?.[selectedMonthIdx]);
+        if (Math.abs(val) > 0.01) results.push({ client: "Other", name: "Non-operating income", desc: "", amount: val, status: "", type: "Income" });
+      }
+      if (nonOpExp) {
+        const val = parseMoney(nonOpExp.rollingValues?.[selectedMonthIdx]);
+        if (Math.abs(val) > 0.01) results.push({ client: "Other", name: "Non-operating expenses", desc: "", amount: -Math.abs(val), status: "", type: "Expense" });
+      }
+      if (otherMove) {
+        const val = parseMoney(otherMove.rollingValues?.[selectedMonthIdx]);
+        if (Math.abs(val) > 0.01) results.push({ client: "Other", name: "Other cash movements", desc: "", amount: val, status: "", type: "Movement" });
+      }
+      return results;
     }
 
     return [];
-  }, [activeCategory, allJobs, targetDate, keyData, selectedMonthIdx]);
+  }, [activeCategory, allJobs, targetDate, keyData, selectedMonthIdx, data]);
 
   // Sum of computed items
   const computedSum = useMemo(() => {
@@ -452,7 +583,7 @@ export default function CashflowBreakdownView({
       </div>
 
       {/* Main Breakdown Content Container */}
-      <div style={{ width: "100%", maxWidth: (activeCategory === "cashInvoicesSent" || isTableLayout) ? "100%" : "800px" }}>
+      <div style={{ width: "100%", maxWidth: (activeCategory === "cashInvoicesSent" || isTableLayout) ? "960px" : "720px", margin: "0 auto" }}>
         
         {/* 1. Invoices Sent View (Matching original WebApp table layout) */}
         {activeCategory === "cashInvoicesSent" ? (
@@ -461,7 +592,7 @@ export default function CashflowBreakdownView({
             {invoicesSentData?.confirmed?.length > 0 && (
               <div style={{ marginTop: "1rem", marginBottom: "2rem" }}>
                 <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
+                  <table style={{ width: "auto", minWidth: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
                     <thead>
                       <tr>
                         <td colSpan={7} style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "left", padding: "10px 10px 10px 0", borderBottom: "1px solid #e5e7eb" }}>
@@ -505,7 +636,7 @@ export default function CashflowBreakdownView({
             {invoicesSentData?.pipeline?.length > 0 && (
               <div style={{ marginTop: "1rem", marginBottom: "2rem" }}>
                 <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
+                  <table style={{ width: "auto", minWidth: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
                     <thead>
                       <tr>
                         <td colSpan={7} style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "left", padding: "10px 10px 10px 0", borderBottom: "1px solid #e5e7eb" }}>
@@ -552,9 +683,9 @@ export default function CashflowBreakdownView({
             )}
           </div>
         ) : isTableLayout ? (
-          /* 2. Confirmed Cash / Pipeline Cash / Direct Cost Payments: 7-Column Table exactly matching original buildJobCashHtml */
+          /* 2. Confirmed Cash / Pipeline Cash / Direct Cost Payments: Table matching original buildJobCashHtml */
           <div style={{ overflowX: "auto", paddingBottom: "10px" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.95em", whiteSpace: "nowrap" }}>
+            <table style={{ width: "auto", minWidth: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.95em", whiteSpace: "nowrap" }}>
               <tbody>
                 {/* Header Total Row */}
                 <tr>
@@ -589,7 +720,7 @@ export default function CashflowBreakdownView({
                       <td style={{ padding: "12px 10px", color: "#6b7280" }}>
                         {item.desc || ""}
                       </td>
-                      <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: item.amount < 0 ? "#b91c1c" : "#0047AB" }}>
+                      <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
                         {formatMoney(item.amount)}
                       </td>
                       <td style={{ padding: "12px 0 12px 10px", color: "#6b7280", textAlign: "right" }}>
@@ -641,16 +772,11 @@ export default function CashflowBreakdownView({
                   }}
                 >
                   <div>
-                    <div style={{ fontSize: "15px", fontWeight: 600, color: "#111827" }}>
-                      {item.client || item.name}
+                    <div style={{ fontSize: "15px", fontWeight: 500, color: "#111827" }}>
+                      {item.name || item.client}
                     </div>
-                    {item.desc && (
-                      <div style={{ fontSize: "13px", color: "#64748b", marginTop: "2px" }}>
-                        {item.desc}
-                      </div>
-                    )}
                   </div>
-                  <div style={{ fontSize: "15px", fontWeight: 700, color: item.amount < 0 ? "#b91c1c" : "#0047AB", whiteSpace: "nowrap" }}>
+                  <div style={{ fontSize: "15px", fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap" }}>
                     {formatMoney(item.amount)}
                   </div>
                 </div>

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
-import { DeepDiveEngine, PulseMath } from "../../services/deepDiveHelper";
+import { DeepDiveEngine, buildDeepDiveData, getDeepDiveType, parseMoney, formatMoney } from "../../services/deepDiveHelper";
 
 export default function PerformanceBreakdownView({
   clientName,
@@ -78,6 +78,18 @@ export default function PerformanceBreakdownView({
 
   const [selectedPeriodKey, setSelectedPeriodKey] = useState("");
   const [breakdownType, setBreakdownType] = useState("confRev");
+  const [openAccordions, setOpenAccordions] = useState({});
+
+  useEffect(() => {
+    setOpenAccordions({});
+  }, [selectedPeriodKey, breakdownType]);
+
+  const toggleAccordion = (key) => {
+    setOpenAccordions((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
 
   useEffect(() => {
     if (defaultPeriodKey && (!selectedPeriodKey || !periodOptions.some((p) => p.key === selectedPeriodKey))) {
@@ -99,341 +111,69 @@ export default function PerformanceBreakdownView({
     }
   }, [isIncomeMode, breakdownType]);
 
-  const formatMoney = (val) => {
-    const rounded = Math.round(val || 0);
-    const sign = rounded < 0 ? "-" : "";
-    return `${sign}£${Math.abs(rounded).toLocaleString()}`;
-  };
-
-  const formatDateDisplay = (dateVal) => {
-    if (!dateVal) return "";
-    const d = new Date(dateVal);
-    if (isNaN(d.getTime())) return String(dateVal);
-    const day = d.getDate();
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const month = months[d.getMonth()];
-    const yr = String(d.getFullYear()).slice(-2);
-    return `${day}-${month}-${yr}`;
-  };
-
-  // Build items based on active period and breakdownType using DeepDiveEngine
-  const items = useMemo(() => {
-    if (!activePeriod || !keyData) return [];
+  // Build deep dive data based on active period and breakdownType using shared buildDeepDiveData
+  const ddData = useMemo(() => {
+    if (!activePeriod || !keyData) {
+      return { items: [], sections: null, total: "£0" };
+    }
 
     const isFY = activePeriod.isFY;
-    const targetDate = activePeriod.date;
+    const yIdx = activePeriod.yearIdx;
+    const activeYearData = years[yIdx];
+    const firstMonthStr = activeYearData?.headerMonths?.[0];
+    const fyStartDate = DeepDiveEngine.parseHeaderDate(firstMonthStr) || new Date(2025 + yIdx, 3, 1);
 
-    // 1. Confirmed Revenue / Pipeline Revenue / Direct Costs
-    if (breakdownType === "confRev" || breakdownType === "pipeRev" || breakdownType === "dirCosts") {
-      const allJobs = keyData.jobs?.all || [
-        ...(keyData.jobs?.confirmed || []),
-        ...(keyData.jobs?.pipeline || []),
-      ];
-
-      if (isFY) {
-        // Find first month date of active FY
-        const fyYear = years[activePeriod.yearIdx];
-        const firstMonthStr = fyYear?.headerMonths?.[0];
-        const startDate = DeepDiveEngine.parseHeaderDate(firstMonthStr) || new Date(2025, 4, 1);
-        const aggregated = DeepDiveEngine.aggregatePeriods(startDate, 12, (d) =>
-          DeepDiveEngine.getJobsForMonth(allJobs, d, breakdownType, isIncomeMode)
-        );
-        return aggregated.map((i) => ({
-          client: i.client,
-          jobName: i.name,
-          amount: i.amount,
-          detail: i.detail,
-        }));
-      }
-
-      if (targetDate) {
-        const monthItems = DeepDiveEngine.getJobsForMonth(allJobs, targetDate, breakdownType, isIncomeMode);
-        return monthItems.map((i) => ({
-          client: i.client,
-          jobName: i.name,
-          amount: i.amount,
-          detail: i.detail,
-        }));
-      }
-
-      return [];
+    let targetDate = null;
+    if (isFY) {
+      targetDate = fyStartDate;
+    } else {
+      const monthStr = activeYearData?.headerMonths?.[activePeriod.monthIdx];
+      targetDate = monthStr
+        ? DeepDiveEngine.parseHeaderDate(monthStr)
+        : (activePeriod.date || new Date(fyStartDate.getFullYear(), fyStartDate.getMonth() + activePeriod.monthIdx, 1));
     }
 
-    // 2. Staff Costs (Delivery or Non-Delivery) - Ported from WebApp.html lines 16413-16527
-    if (breakdownType === "staffDel" || breakdownType === "staffNonDel") {
-      const isDel = breakdownType === "staffDel";
-      const results = [];
-      const yIdx = activePeriod.yearIdx;
-      const mIdx = activePeriod.monthIdx >= 0 ? activePeriod.monthIdx : 0;
+    // Find target row in table matching breakdownType
+    const targetRow = (activeYearData?.rows || []).find((r) => {
+      const dt = getDeepDiveType(r.label);
+      if (dt === breakdownType) return true;
+      const l = String(r.label || "").toLowerCase();
+      if (breakdownType === "staffDel" && l.includes("staff costs - delivery")) return true;
+      if (breakdownType === "staffNonDel" && l.includes("staff costs - non-delivery")) return true;
+      return false;
+    });
 
-      // Extract target total from sheet table row
-      const activeYearData = years[yIdx];
-      const targetLabel = isDel ? "staff costs - delivery" : "staff costs - non-delivery";
-      const targetRow = (activeYearData?.rows || []).find((r) =>
-        String(r.label || "").toLowerCase().includes(targetLabel)
-      );
-      let cellTotal = 0;
-      if (targetRow) {
-        cellTotal = isFY
-          ? parseMoney(targetRow.totalVal)
-          : parseMoney(targetRow.monthlyValues?.[activePeriod.monthIdx]);
-      }
-
-      // If user is Senior (Restricted), match original WebApp: restrictedTotal = cellTotal - conTotal - addTotal
-      if (isSenior) {
-        // Contractors
-        const contractorsList = keyData.outgoings?.contractors || [];
-        const conResults = [];
-        contractorsList.forEach((c) => {
-          let delPct = 1.0;
-          if (c.deliveryPct !== undefined && String(c.deliveryPct).trim() !== "") {
-            delPct = parseMoney(c.deliveryPct);
-            if (String(c.deliveryPct).includes("%")) delPct = delPct / 100;
-            else if (delPct > 1) delPct = delPct / 100;
-          }
-          const applicablePct = isDel ? delPct : (1 - delPct);
-          if (applicablePct <= 0.001) return;
-
-          const allocs = c.allocations?.[yIdx + 1] || c.monthlyAllocations || [];
-          const rawAmt = isFY
-            ? (c.totals?.[yIdx + 1] || 0)
-            : parseMoney(allocs[mIdx] || "0");
-          const amt = Math.round(rawAmt * applicablePct);
-          if (amt > 0) {
-            conResults.push({
-              client: c.name,
-              jobName: "Contractors",
-              amount: amt,
-              detail: `Contractor • ${Math.round(applicablePct * 100)}% delivery • Timing: ${c.paymentTiming || "Curr"}`,
-            });
-          }
-        });
-        const conTotal = conResults.reduce((s, i) => s + i.amount, 0);
-
-        let cosVal = 0;
-        if (isDel && keyData.outgoingsMeta?.makingUpCosBase?.[yIdx]) {
-          cosVal = isFY
-            ? keyData.outgoingsMeta.makingUpCosBase[yIdx].reduce((a, b) => a + b, 0)
-            : (keyData.outgoingsMeta.makingUpCosBase[yIdx][mIdx] || 0);
-        }
-        let psVal = 0;
-        if (keyData.outgoingsMeta) {
-          const psArr = isDel ? keyData.outgoingsMeta.profitShareBaseDel?.[yIdx] : keyData.outgoingsMeta.profitShareBaseNonDel?.[yIdx];
-          psVal = psArr ? (isFY ? psArr.reduce((a, b) => a + b, 0) : (psArr[mIdx] || 0)) : 0;
-        }
-
-        const restrictedTotal = Math.round(cellTotal - conTotal - cosVal - psVal);
-        if (Math.abs(restrictedTotal) >= 0.01) {
-          results.push({
-            client: "Salaries",
-            jobName: "Salaries",
-            amount: restrictedTotal,
-            detail: "Salaries & remuneration",
-          });
-        }
-        results.push(...conResults);
-        if (cosVal > 0) {
-          results.push({
-            client: "Making up CoS",
-            jobName: "Additional staff costs",
-            amount: Math.round(cosVal),
-            detail: "Cost of sale adjustment (delivery only)",
-          });
-        }
-        if (psVal > 0) {
-          results.push({
-            client: "Profit share",
-            jobName: "Additional staff costs",
-            amount: Math.round(psVal),
-            detail: `Profit share (${isDel ? "delivery" : "non-delivery"})`,
-          });
-        }
-        return results;
-      }
-
-      // A. Salaries
-      const staffList = keyData.salaries?.staff || [];
-      let calcSalTotal = 0;
-      staffList.forEach((s) => {
-        let delPct = 0;
-        if (s.deliveryPct !== undefined && String(s.deliveryPct).trim() !== "") {
-          delPct = parseMoney(s.deliveryPct);
-          if (String(s.deliveryPct).includes("%")) delPct = delPct / 100;
-          else if (delPct > 1) delPct = delPct / 100;
-        } else if (s.isDelivery) {
-          delPct = 1;
-        }
-        const applicablePct = isDel ? delPct : (1 - delPct);
-        if (applicablePct <= 0.001) return;
-
-        const baseCost = isFY ? (s.actualAnnualCost || 0) : ((s.actualAnnualCost || 0) / 12);
-        const amt = Math.round(baseCost * applicablePct);
-        if (amt > 0) {
-          calcSalTotal += amt;
-          const mathText = Math.abs(applicablePct - 1) > 0.01 ? ` (${Math.round(applicablePct * 100)}% of ${formatMoney(baseCost)})` : "";
-          results.push({
-            client: s.name,
-            jobName: "Salaries",
-            amount: amt,
-            detail: `${s.role || "Staff"}${mathText} | FTE: ${s.fte || "1.00"}`,
-          });
-        }
-      });
-
-      // Employment allowance
-      let actualSalaries = 0;
-      if (keyData.outgoingsMeta) {
-        if (isDel && keyData.outgoingsMeta.salariesDel?.[yIdx]) {
-          actualSalaries = isFY
-            ? keyData.outgoingsMeta.salariesDel[yIdx].reduce((a, b) => a + b, 0)
-            : (keyData.outgoingsMeta.salariesDel[yIdx][mIdx] || 0);
-        } else if (!isDel && keyData.outgoingsMeta.salariesNonDel?.[yIdx]) {
-          actualSalaries = isFY
-            ? keyData.outgoingsMeta.salariesNonDel[yIdx].reduce((a, b) => a + b, 0)
-            : (keyData.outgoingsMeta.salariesNonDel[yIdx][mIdx] || 0);
-        }
-      }
-      const allowanceDiff = actualSalaries - calcSalTotal;
-      if (Math.abs(allowanceDiff) > 2) {
-        results.push({
-          client: "Employment allowance",
-          jobName: "Salaries",
-          amount: Math.round(allowanceDiff),
-          detail: "HMRC employment allowance adjustment",
-        });
-        calcSalTotal += allowanceDiff;
-      }
-
-      // B. Dividends as salary
-      const dividendsList = keyData.outgoings?.dividends || [];
-      dividendsList.forEach((d) => {
-        let delPct = 0.5; // default 50%
-        if (d.deliveryPct !== undefined && String(d.deliveryPct).trim() !== "") {
-          delPct = parseMoney(d.deliveryPct);
-          if (String(d.deliveryPct).includes("%")) delPct = delPct / 100;
-          else if (delPct > 1) delPct = delPct / 100;
-        }
-        const applicablePct = isDel ? delPct : (1 - delPct);
-        if (applicablePct <= 0.001) return;
-
-        const allocs = d.allocations?.[yIdx + 1] || d.monthlyAllocations || [];
-        const rawAmt = isFY
-          ? (d.totals?.[yIdx + 1] || 0)
-          : parseMoney(allocs[mIdx] || "0");
-        const amt = Math.round(rawAmt * applicablePct);
-        if (amt > 0) {
-          results.push({
-            client: d.name || "Dividends as salary",
-            jobName: "Dividends as salary",
-            amount: amt,
-            detail: `Dividend in lieu • ${Math.round(applicablePct * 100)}% allocation`,
-          });
-        }
-      });
-
-      // C. Contractors
-      const contractorsList = keyData.outgoings?.contractors || [];
-      contractorsList.forEach((c) => {
-        let delPct = 1.0; // default 100%
-        if (c.deliveryPct !== undefined && String(c.deliveryPct).trim() !== "") {
-          delPct = parseMoney(c.deliveryPct);
-          if (String(c.deliveryPct).includes("%")) delPct = delPct / 100;
-          else if (delPct > 1) delPct = delPct / 100;
-        }
-        const applicablePct = isDel ? delPct : (1 - delPct);
-        if (applicablePct <= 0.001) return;
-
-        const allocs = c.allocations?.[yIdx + 1] || c.monthlyAllocations || [];
-        const rawAmt = isFY
-          ? (c.totals?.[yIdx + 1] || 0)
-          : parseMoney(allocs[mIdx] || "0");
-        const amt = Math.round(rawAmt * applicablePct);
-        if (amt > 0) {
-          results.push({
-            client: c.name,
-            jobName: "Contractors",
-            amount: amt,
-            detail: `Contractor • ${Math.round(applicablePct * 100)}% delivery • Timing: ${c.paymentTiming || "Curr"}`,
-          });
-        }
-      });
-
-      // D. Additional staff costs: Making up CoS & Profit share
-      if (isDel && keyData.outgoingsMeta?.makingUpCosBase?.[yIdx]) {
-        const cosVal = isFY
-          ? keyData.outgoingsMeta.makingUpCosBase[yIdx].reduce((a, b) => a + b, 0)
-          : (keyData.outgoingsMeta.makingUpCosBase[yIdx][mIdx] || 0);
-        if (cosVal > 0) {
-          results.push({
-            client: "Making up CoS",
-            jobName: "Additional staff costs",
-            amount: Math.round(cosVal),
-            detail: "Cost of sale adjustment (delivery only)",
-          });
-        }
-      }
-
-      if (keyData.outgoingsMeta) {
-        const psArr = isDel ? keyData.outgoingsMeta.profitShareBaseDel?.[yIdx] : keyData.outgoingsMeta.profitShareBaseNonDel?.[yIdx];
-        const psVal = psArr ? (isFY ? psArr.reduce((a, b) => a + b, 0) : (psArr[mIdx] || 0)) : 0;
-        if (psVal > 0) {
-          results.push({
-            client: "Profit share",
-            jobName: "Additional staff costs",
-            amount: Math.round(psVal),
-            detail: `Profit share (${isDel ? "delivery" : "non-delivery"})`,
-          });
-        }
-      }
-
-      // E. Rounding adjustment so grand total matches cellTotal exactly
-      if (cellTotal > 0) {
-        const sumItems = results.reduce((s, i) => s + i.amount, 0);
-        const drift = Math.round(cellTotal - sumItems);
-        if (Math.abs(drift) >= 1) {
-          results.push({
-            client: "Rounding adjustment",
-            jobName: "Adjustment",
-            amount: drift,
-            detail: "Ledger alignment adjustment",
-          });
-        }
-      }
-
-      return results;
+    let cellValue = "£0";
+    if (targetRow) {
+      cellValue = isFY
+        ? (targetRow.totalVal || "£0")
+        : (targetRow.monthlyValues?.[activePeriod.monthIdx] || "£0");
     }
 
-    // 3. Expenses (Delivery or Non-Delivery)
-    if (breakdownType === "expDel" || breakdownType === "expNonDel") {
-      const isDel = breakdownType === "expDel";
-      const expenses = (keyData.outgoings?.expenses || []).filter((e) => (isDel ? e.isDelivery : !e.isDelivery));
-      const results = [];
-
-      expenses.forEach((e) => {
-        const allocs = e.allocations?.[activePeriod.yearIdx] || e.monthlyAllocations || [];
-        const amt = isFY
-          ? e.totals?.[activePeriod.yearIdx] || 0
-          : parseFloat(String(allocs[activePeriod.monthIdx] || "0").replace(/[£,]/g, "")) || 0;
-
-        if (amt > 0) {
-          results.push({
-            client: e.name,
-            jobName: "",
-            amount: Math.round(amt),
-            detail: `Timing: ${e.paymentTiming || "Curr"} | VAT: ${e.vat || "Yes"}`,
-          });
-        }
-      });
-
-      return results;
-    }
-
-    return [];
+    return buildDeepDiveData({
+      ddType: breakdownType,
+      periodLabel: activePeriod.label,
+      monthIndex: isFY ? -1 : activePeriod.monthIdx,
+      cellValue,
+      yearIndex: yIdx + 1,
+      targetDate,
+      aggregateCount: isFY ? 12 : 1,
+      keyData,
+      isIncomeMode,
+      isRestricted: isSenior,
+    });
   }, [activePeriod, breakdownType, keyData, isIncomeMode, years, isSenior]);
 
+  const hasSections = Array.isArray(ddData?.sections) && ddData.sections.length > 0;
+  const sections = ddData?.sections || [];
+  const items = ddData?.items || [];
+
   const totalAmount = useMemo(() => {
-    return items.reduce((sum, item) => sum + (item.amount || 0), 0);
-  }, [items]);
+    if (Array.isArray(ddData?.sections) && ddData.sections.length > 0) {
+      return ddData.sections.reduce((sum, sec) => sum + (sec.amount || 0), 0);
+    }
+    return (ddData?.items || []).reduce((sum, item) => sum + (item.amount || 0), 0);
+  }, [ddData]);
 
   if (isLoading && !data && !keyData) {
     return (
@@ -511,12 +251,34 @@ export default function PerformanceBreakdownView({
 
     rows.push([`Performance breakdown: ${metricName} - ${activePeriod?.label || ""}`]);
     rows.push([]);
-    rows.push(["Client", "Name", "Details", "Amount"]);
-    items.forEach((item) => {
-      rows.push([item.client || "", item.name || "", item.desc || "", item.amount || 0]);
-    });
-    rows.push([]);
-    rows.push(["", "", "Total", totalAmount]);
+
+    if (hasSections) {
+      rows.push(["Section", "Name / Role", "Details", "Amount"]);
+      sections.forEach((sec) => {
+        if (sec.items && sec.items.length > 0) {
+          rows.push([sec.title, "", "", sec.amount || 0]);
+          sec.items.forEach((item) => {
+            rows.push(["", item.name || "", item.role || item.detail || "", item.amount || 0]);
+          });
+        } else {
+          rows.push([sec.title, "", "", sec.amount || 0]);
+        }
+      });
+      rows.push([]);
+      rows.push(["Total", "", "", totalAmount]);
+    } else {
+      rows.push(["Client", "Name", "Details", "Amount"]);
+      items.forEach((item) => {
+        rows.push([
+          item.client || item.name || "",
+          item.jobName || item.name || "",
+          item.detail || "",
+          item.amount || 0,
+        ]);
+      });
+      rows.push([]);
+      rows.push(["", "", "Total", totalAmount]);
+    }
 
     const csvContent =
       "data:text/csv;charset=utf-8," +
@@ -555,10 +317,11 @@ export default function PerformanceBreakdownView({
     <div style={{ display: "flex", flexDirection: "column", width: "100%", fontFamily: "'Kumbh Sans', sans-serif" }}>
       {/* Top Header Bar matching original app */}
       <div
+        className="breakdown-header-bar"
         style={{
           display: "flex",
           alignItems: "center",
-          gap: "1rem",
+          gap: "0.75rem",
           flexWrap: "wrap",
           marginBottom: "1.5rem",
         }}
@@ -569,6 +332,7 @@ export default function PerformanceBreakdownView({
 
         {/* Metric Dropdown */}
         <select
+          className="breakdown-select"
           value={breakdownType}
           onChange={(e) => setBreakdownType(e.target.value)}
           style={dropdownStyle}
@@ -584,6 +348,7 @@ export default function PerformanceBreakdownView({
 
         {/* Combined Month-Year Dropdown */}
         <select
+          className="breakdown-select"
           value={selectedPeriodKey}
           onChange={(e) => setSelectedPeriodKey(e.target.value)}
           style={dropdownStyle}
@@ -656,6 +421,7 @@ export default function PerformanceBreakdownView({
             justifyContent: "flex-end",
             paddingBottom: "10px",
             borderBottom: "1px solid #f1f5f9",
+            marginBottom: "12px",
           }}
         >
           <span style={{ fontSize: "1.25rem", fontWeight: 700, color: "#0047AB" }}>
@@ -663,49 +429,243 @@ export default function PerformanceBreakdownView({
           </span>
         </div>
 
-        {/* Item Rows */}
-        {items.length === 0 ? (
-          <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
-            No items in this period.
-          </div>
-        ) : (
-          items.map((item, idx) => (
-            <div
-              key={idx}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                padding: "12px 0",
-                borderBottom: "1px solid #f1f5f9",
-              }}
-            >
-              <div style={{ paddingRight: "1rem" }}>
-                <div style={{ fontSize: "15px", color: "#0f172a" }}>
-                  <strong style={{ fontWeight: 700 }}>{item.client}</strong>
-                  {item.jobName && <span style={{ color: "#334155" }}> – {item.jobName}</span>}
-                </div>
-                {item.detail && (
-                  <div style={{ fontSize: "13px", color: "#64748b", fontStyle: "italic", marginTop: "3px" }}>
-                    {item.detail}
-                  </div>
-                )}
-              </div>
-              <div
-                style={{
-                  fontSize: "15px",
-                  fontWeight: 700,
-                  color: "#0047AB",
-                  textAlign: "right",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {formatMoney(item.amount)}
-              </div>
+        {/* Sections or Item Rows */}
+        {hasSections ? (
+          sections.length === 0 ? (
+            <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
+              No items in this period.
             </div>
-          ))
+          ) : (
+            <div>
+              {sections.map((sec, sIdx) => {
+                const secKey = sec.key || sIdx;
+                const isAccordion = Boolean(sec.isAccordion);
+                const isExpanded = Boolean(openAccordions[secKey]);
+                const isAdjustment = Boolean(sec.isAdjustment);
+
+                if (isAdjustment) {
+                  return (
+                    <div
+                      key={secKey}
+                      style={{
+                        border: "1px dashed #cbd5e1",
+                        borderRadius: "8px",
+                        background: "#f8fafc",
+                        marginBottom: "10px",
+                        padding: "10px 16px",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        fontSize: "14px",
+                      }}
+                    >
+                      <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "13px" }}>{sec.title}</span>
+                      <span style={{ fontWeight: 700, color: "#0047AB" }}>{formatMoney(sec.amount)}</span>
+                    </div>
+                  );
+                }
+
+                if (isAccordion) {
+                  return (
+                    <div
+                      key={secKey}
+                      style={{
+                        border: "1px solid #e2e8f0",
+                        borderRadius: "8px",
+                        background: "#ffffff",
+                        marginBottom: "10px",
+                        overflow: "hidden",
+                        boxShadow: "0 1px 2px rgba(0, 0, 0, 0.03)",
+                      }}
+                    >
+                      <div
+                        onClick={() => toggleAccordion(secKey)}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          padding: "12px 16px",
+                          background: "#f8fafc",
+                          cursor: "pointer",
+                          fontWeight: 600,
+                          color: "#0047AB",
+                          fontSize: "15px",
+                          userSelect: "none",
+                          transition: "background 0.15s ease",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              transition: "transform 0.15s ease",
+                              transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)",
+                              display: "inline-block",
+                            }}
+                          >
+                            ▼
+                          </span>
+                          <span>{sec.title}</span>
+                        </div>
+                        <span style={{ fontWeight: 700 }}>{formatMoney(sec.amount)}</span>
+                      </div>
+
+                      {isExpanded && (
+                        <div style={{ borderTop: "1px solid #e2e8f0", background: "#ffffff" }}>
+                          {(!sec.items || sec.items.length === 0) ? (
+                            <div style={{ padding: "12px 18px", color: "#94a3b8", fontSize: "13px", fontStyle: "italic" }}>
+                              None in this period
+                            </div>
+                          ) : (
+                            sec.items.map((item, iIdx) => (
+                              <div
+                                key={iIdx}
+                                style={{
+                                  padding: "11px 18px 11px 32px",
+                                  borderBottom: iIdx === sec.items.length - 1 ? "none" : "1px solid #f1f5f9",
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "center",
+                                  fontSize: "14px",
+                                }}
+                              >
+                                <div style={{ color: "#1e293b", fontWeight: 500, paddingRight: "10px" }}>
+                                  {item.name}{item.role ? ` – ${item.role}` : ""}
+                                </div>
+                                <div style={{ fontWeight: 600, color: "#0047AB", whiteSpace: "nowrap" }}>
+                                  {formatMoney(item.amount)}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                // Flat Section (Dividends as salary, Making up CoS, Profit share)
+                return (
+                  <div
+                    key={secKey}
+                    style={{
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "8px",
+                      background: "#f8fafc",
+                      marginBottom: "10px",
+                      padding: "12px 16px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontWeight: 600,
+                      color: "#0047AB",
+                      fontSize: "15px",
+                      userSelect: "none",
+                      boxShadow: "0 1px 2px rgba(0, 0, 0, 0.03)",
+                    }}
+                  >
+                    <span>{sec.title}</span>
+                    <span style={{ fontWeight: 700 }}>{formatMoney(sec.amount)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        ) : (
+          /* Render Regular List (Revenue, Expenses, Direct Costs) */
+          items.length === 0 ? (
+            <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
+              No items in this period.
+            </div>
+          ) : (
+            items.map((item, idx) => {
+              const isAdjustment =
+                item.name === "Manual adjustment" ||
+                item.name === "Rounding adjustment" ||
+                item.name === "Scenario adjustment" ||
+                item.name === "Manual scenario adjustment";
+
+              if (isAdjustment) {
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      border: "1px dashed #cbd5e1",
+                      borderRadius: "8px",
+                      background: "#f8fafc",
+                      marginBottom: "8px",
+                      padding: "10px 16px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontSize: "14px",
+                    }}
+                  >
+                    <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "13px" }}>{item.name}</span>
+                    <span style={{ fontWeight: 700, color: "#0047AB" }}>{formatMoney(item.amount)}</span>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    padding: "12px 0",
+                    borderBottom: "1px solid #f1f5f9",
+                  }}
+                >
+                  <div style={{ paddingRight: "1rem" }}>
+                    <div style={{ fontSize: "15px", color: "#0f172a" }}>
+                      {item.client ? (
+                        <>
+                          <strong style={{ fontWeight: 700 }}>{item.client}</strong>
+                          {(item.name || item.jobName) && (
+                            <span style={{ color: "#334155" }}> – {item.jobName || item.name}</span>
+                          )}
+                        </>
+                      ) : (
+                        <strong style={{ fontWeight: 700 }}>{item.name || item.jobName}</strong>
+                      )}
+                    </div>
+                    {item.detail && (
+                      <div style={{ fontSize: "13px", color: "#64748b", fontStyle: "italic", marginTop: "3px" }}>
+                        {item.detail}
+                      </div>
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "15px",
+                      fontWeight: 700,
+                      color: "#0047AB",
+                      textAlign: "right",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {formatMoney(item.amount)}
+                  </div>
+                </div>
+              );
+            })
+          )
         )}
       </div>
+
+      <style jsx>{`
+        @media (max-width: 640px) {
+          .breakdown-header-bar {
+            gap: 0.5rem !important;
+          }
+          .breakdown-select {
+            font-size: 0.95rem !important;
+            padding: 0.45rem 0.65rem !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

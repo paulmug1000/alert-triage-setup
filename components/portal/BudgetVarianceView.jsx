@@ -261,6 +261,7 @@ export default function BudgetVarianceView({
 
   const limit = viewMode === "month" ? 1 : viewMode === "ytd" ? selectedMonthIdx + 1 : 12;
   const displayedMonths = viewMode === "month" ? [months[selectedMonthIdx]] : months.slice(0, limit);
+  const numTotalCols = viewMode === "month" ? 6 : displayedMonths.length + 7;
 
   // Build the structured rows matching renderBudgetAnalysis
   const tableRows = [];

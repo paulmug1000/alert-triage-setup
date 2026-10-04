@@ -2,6 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { matchesClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
+import { memoryCache } from "../../../services/cacheService.js";
 
 const PAYLOAD_CACHE_TTL_SECS = 60; // 60 seconds cache
 
@@ -35,16 +36,30 @@ export default async function handler(req, res) {
 
   const cacheKey = `pulse:portal:payload:${clientSheetId}`;
 
-  // 1. Try Redis cache if not bypassing
+  // 1. Try L1 Memory Cache first (sub-millisecond)
   if (!bypassCache) {
+    const memCached = memoryCache.get(cacheKey);
+    if (memCached && (memCached.hasBudget !== undefined || memCached.clientInfo?.hasBudget !== undefined)) {
+      return res.status(200).json({
+        success: true,
+        fromCache: true,
+        fromMemory: true,
+        payload: memCached,
+        cachedAt: memCached._cachedAt || null,
+      });
+    }
+
+    // 2. Try Redis cache (distributed L2)
     try {
       const cached = await redisClient.get(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed.hasBudget !== undefined || parsed.clientInfo?.hasBudget !== undefined) {
+          memoryCache.set(cacheKey, parsed, PAYLOAD_CACHE_TTL_SECS);
           return res.status(200).json({
             success: true,
             fromCache: true,
+            fromRedis: true,
             payload: parsed,
             cachedAt: parsed._cachedAt || null,
           });
@@ -251,7 +266,8 @@ export default async function handler(req, res) {
       },
     };
 
-    // Cache in Redis asynchronously
+    // Cache in L1 memory and Redis
+    memoryCache.set(cacheKey, payload, PAYLOAD_CACHE_TTL_SECS);
     redisClient
       .set(cacheKey, JSON.stringify(payload), { EX: PAYLOAD_CACHE_TTL_SECS })
       .catch((err) => console.warn("⚠️ Failed to write portal payload to Redis:", err.message));

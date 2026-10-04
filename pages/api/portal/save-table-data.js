@@ -2,6 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { matchesClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
+import { memoryCache } from "../../../services/cacheService.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -65,14 +66,15 @@ export default async function handler(req, res) {
       })
     );
 
-    // Invalidate Redis caches for this client
+    // Invalidate caches for this client
     try {
+      memoryCache.del(`pulse:portal:*:${clientSheetId}*`);
       const keys = await redisClient.keys(`pulse:portal:*:${clientSheetId}*`);
       if (keys.length > 0) {
         await redisClient.del(keys);
       }
     } catch (cacheErr) {
-      console.warn("⚠️ Redis invalidation warning:", cacheErr.message);
+      console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }
 
     return res.status(200).json({

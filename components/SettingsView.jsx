@@ -3,12 +3,10 @@ import Spinner from "./Spinner";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
 
-// ============================================================================
-// PULSE MANAGEMENT APP (PMA)
-// Version: 1.42
-// Rule: Always increment this version by 0.01 whenever changes are made to the PMA app.
-// ============================================================================
-export const PMA_VERSION = "1.42";
+import { SYSTEM_VERSION, getSystemCopyright } from "../config/version";
+
+// Re-export for backwards compatibility
+export const PMA_VERSION = SYSTEM_VERSION;
 
 export default function SettingsView({
   automationCommanderSheetId,
@@ -167,7 +165,7 @@ export default function SettingsView({
     <div style={{ padding: "20px", maxWidth: "800px" }}>
       {/* Top Application Version & Copyright Header */}
       <div style={{ fontSize: "11px", fontStyle: "italic", color: "#666", marginBottom: "16px" }}>
-        Pulse Management Area v{PMA_VERSION} - (C) 2026 Thrive Organisational Consulting Ltd
+        Pulse Management Area v{SYSTEM_VERSION} - {getSystemCopyright()}
       </div>
 
       <h2 style={{ margin: "0 0 20px", fontSize: "20px", fontWeight: "700" }}>Settings</h2>

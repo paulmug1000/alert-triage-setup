@@ -507,7 +507,7 @@ export default function CashflowBreakdownView({
           marginBottom: "1.5rem",
         }}
       >
-        <h1 style={{ margin: 0, fontSize: "1.85rem", fontWeight: 700, color: "#0047AB" }}>
+        <h1 style={{ margin: 0, fontSize: "1.45rem", fontWeight: 700, color: "#0047AB" }}>
           Cash breakdowns
         </h1>
 
@@ -595,7 +595,7 @@ export default function CashflowBreakdownView({
 
       {/* Main Breakdown Content Container */}
       <div style={{ width: "100%", maxWidth: "100%", margin: "0" }}>
-        
+
         {/* 1. Invoices Sent View (Matching original WebApp table layout) */}
         {activeCategory === "cashInvoicesSent" ? (
           <div>

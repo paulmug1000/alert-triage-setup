@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import { SYSTEM_VERSION, getSystemCopyright } from "../../config/version";
 
 export default function PortalShell({
   clientName,
@@ -117,19 +118,112 @@ export default function PortalShell({
             </button>
 
             {clientName && (
-              <span
-                className="portal-client-title"
-                style={{
-                  color: "#ffffff",
-                  fontSize: "0.85rem",
-                  fontWeight: 400,
-                  letterSpacing: "0.2px",
-                  lineHeight: "1.1",
-                  paddingLeft: "2px"
-                }}
-              >
-                {clientName}
-              </span>
+              clients.length > 1 ? (
+                <div className="portal-nav-dropdown" style={{ position: "relative" }}>
+                  <button
+                    type="button"
+                    onClick={() => toggleDropdown("client")}
+                    style={{
+                      background: openDropdown === "client" ? "rgba(255, 255, 255, 0.1)" : "transparent",
+                      border: "1px solid rgba(255, 255, 255, 0.28)",
+                      borderRadius: "4px",
+                      padding: "1px 5px",
+                      color: "#ffffff",
+                      fontSize: "0.85rem",
+                      fontWeight: 400,
+                      letterSpacing: "0.2px",
+                      lineHeight: "1.1",
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      fontFamily: "inherit",
+                      transition: "background 0.15s, border-color 0.15s"
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "rgba(255, 255, 255, 0.12)";
+                      e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.45)";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (openDropdown !== "client") {
+                        e.currentTarget.style.background = "transparent";
+                        e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.28)";
+                      }
+                    }}
+                    title="Switch client"
+                  >
+                    <span
+                      className="portal-client-title"
+                      style={{
+                        color: "#ffffff",
+                        fontSize: "0.85rem",
+                        fontWeight: 400,
+                        letterSpacing: "0.2px",
+                        lineHeight: "1.1"
+                      }}
+                    >
+                      {clientName}
+                    </span>
+                    <span style={{ fontSize: "9px", opacity: 0.75, lineHeight: 1, userSelect: "none" }}>▾</span>
+                  </button>
+
+                  {openDropdown === "client" && (
+                    <div
+                      style={{
+                        ...dropdownMenuStyle,
+                        left: 0,
+                        right: "auto",
+                        top: "calc(100% + 4px)",
+                        maxHeight: "360px",
+                        overflowY: "auto",
+                        minWidth: "200px",
+                        zIndex: 1100
+                      }}
+                    >
+                      <div
+                        style={{
+                          padding: "0.5rem 0.85rem",
+                          fontSize: "11px",
+                          fontWeight: 700,
+                          color: "#64748b",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.5px",
+                          borderBottom: "1px solid #e2e8f0"
+                        }}
+                      >
+                        Switch Client
+                      </div>
+                      {clients.map((c) => (
+                        <button
+                          key={c.clientName}
+                          type="button"
+                          onClick={() => {
+                            onSelectClient(c);
+                            setOpenDropdown(null);
+                          }}
+                          style={dropdownItemStyle(c.clientName === clientName)}
+                        >
+                          {c.clientName}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <span
+                  className="portal-client-title"
+                  style={{
+                    color: "#ffffff",
+                    fontSize: "0.85rem",
+                    fontWeight: 400,
+                    letterSpacing: "0.2px",
+                    lineHeight: "1.1",
+                    paddingLeft: "2px"
+                  }}
+                >
+                  {clientName}
+                </span>
+              )
             )}
           </div>
 
@@ -400,96 +494,8 @@ export default function PortalShell({
             </div>
           </nav>
 
-          {/* Right Header Utilities: Client Switcher + User Account */}
+          {/* Right Header Utilities: User Account & Mobile Toggle */}
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-            {/* Multi-client Switcher (Admin or Consultant with multiple clients) */}
-            {clients.length > 1 && (
-              <div className="portal-nav-dropdown" style={{ position: "relative" }}>
-                <button
-                  type="button"
-                  onClick={() => toggleDropdown("client")}
-                  style={{
-                    background: "rgba(255, 255, 255, 0.15)",
-                    border: "1px solid rgba(255, 255, 255, 0.25)",
-                    color: "#ffffff",
-                    padding: "0.45rem 0.85rem",
-                    borderRadius: "6px",
-                    fontSize: "13px",
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    transition: "background 0.15s"
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255, 255, 255, 0.25)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255, 255, 255, 0.15)"; }}
-                >
-                  <span style={{ opacity: 0.85 }}>Client:</span>
-                  <span>{clientName || "Select"}</span>
-                  <span style={{ fontSize: "10px", opacity: 0.8 }}>▾</span>
-                </button>
-
-                {openDropdown === "client" && (
-                  <div
-                    style={{
-                      ...dropdownMenuStyle,
-                      right: 0,
-                      left: "auto",
-                      maxHeight: "320px",
-                      overflowY: "auto",
-                      minWidth: "200px"
-                    }}
-                  >
-                    <div
-                      style={{
-                        padding: "0.5rem 0.85rem",
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        color: "#64748b",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.5px",
-                        borderBottom: "1px solid #e2e8f0"
-                      }}
-                    >
-                      Switch Client
-                    </div>
-                    {clients.map((c) => (
-                      <button
-                        key={c.clientName}
-                        type="button"
-                        onClick={() => {
-                          onSelectClient(c);
-                          setOpenDropdown(null);
-                        }}
-                        style={dropdownItemStyle(c.clientName === clientName)}
-                      >
-                        {c.clientName}
-                      </button>
-                    ))}
-                    <div style={{ borderTop: "1px solid #e2e8f0", margin: "4px 0" }} />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectClient(null);
-                        setOpenDropdown(null);
-                      }}
-                      style={{
-                        ...dropdownItemStyle(false),
-                        color: "#0047AB",
-                        fontWeight: 600,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px"
-                      }}
-                    >
-                      <span>⊞</span>
-                      <span>All Companies...</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* User Profile / Menu */}
             <div className="portal-nav-dropdown" style={{ position: "relative" }}>
@@ -556,7 +562,7 @@ export default function PortalShell({
                       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                     >
                       <span>←</span>
-                      <span>Management Area (PMA)</span>
+                      <span>Pulse Management Area</span>
                     </Link>
                   )}
 
@@ -568,8 +574,8 @@ export default function PortalShell({
                       lineHeight: "1.4"
                     }}
                   >
-                    <div>Pulse v3.64</div>
-                    <div style={{ marginTop: "2px" }}>(C) 2026 Thrive Organisational Consulting Ltd</div>
+                    <div>Pulse v{SYSTEM_VERSION}</div>
+                    <div style={{ marginTop: "2px" }}>{getSystemCopyright()}</div>
                   </div>
 
                   <button
@@ -667,26 +673,6 @@ export default function PortalShell({
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-              {clients.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onSelectClient(null);
-                    setMobileMenuOpen(false);
-                  }}
-                  style={{
-                    ...mobileNavItemStyle(false),
-                    background: "rgba(255, 255, 255, 0.2)",
-                    color: "#ffffff",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px"
-                  }}
-                >
-                  <span>⊞</span>
-                  <span>Switch Company ({clientName})</span>
-                </button>
-              )}
 
               <button
                 type="button"
@@ -791,7 +777,7 @@ export default function PortalShell({
             height: 32px !important;
           }
           .portal-client-title {
-            max-width: 145px !important;
+            max-width: 200px !important;
             white-space: nowrap !important;
             overflow: hidden !important;
             text-overflow: ellipsis !important;

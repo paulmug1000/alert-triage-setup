@@ -296,7 +296,7 @@ export default function NavShell({
                 onMouseLeave={e => { e.currentTarget.style.background = "#0047AB"; }}
                 title="Open Client Portal View"
               >
-                Client Portal →
+                Pulse →
               </button>
             </Link>
             {onLogout && (

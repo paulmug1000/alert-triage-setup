@@ -1,6 +1,7 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../services/userPermissions.js";
+import { memoryCache } from "../../../services/cacheService.js";
 
 function extractSheetIdFromUrl(url) {
   if (!url) return "";
@@ -21,37 +22,45 @@ export default async function handler(req, res) {
   }
 
   try {
-    const sheets = await getSheetsClient();
     const acId = req.query.automationCommanderSheetId || req.body?.automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+    const bypassCache = req.query.bypassCache === "true" || req.body?.bypassCache === true;
+    const cacheKey = `pulse:portal:allClients:${acId}`;
 
-    const resp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: acId,
-        range: "AutoUpdates!A2:N500",
-      })
-    );
+    let allClients = !bypassCache ? memoryCache.get(cacheKey) : null;
 
-    const rows = resp.data.values || [];
-    const allClients = [];
+    if (!allClients) {
+      const sheets = await getSheetsClient();
+      const resp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: acId,
+          range: "AutoUpdates!A2:N500",
+        })
+      );
 
-    for (const row of rows) {
-      const clientName = String(row[0] || "").trim();
-      const clientSheetUrl = row[11];
-      const masterSheetUrl = row[12];
+      const rows = resp.data.values || [];
+      allClients = [];
 
-      if (!clientName || !clientSheetUrl) continue;
-      if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
+      for (const row of rows) {
+        const clientName = String(row[0] || "").trim();
+        const clientSheetUrl = row[11];
+        const masterSheetUrl = row[12];
 
-      const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
-      const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
+        if (!clientName || !clientSheetUrl) continue;
+        if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
 
-      if (!clientSheetId && !masterSheetId) continue;
+        const clientSheetId = extractSheetIdFromUrl(clientSheetUrl);
+        const masterSheetId = extractSheetIdFromUrl(masterSheetUrl);
 
-      allClients.push({
-        clientName,
-        clientSheetId,
-        masterSheetId,
-      });
+        if (!clientSheetId && !masterSheetId) continue;
+
+        allClients.push({
+          clientName,
+          clientSheetId,
+          masterSheetId,
+        });
+      }
+
+      memoryCache.set(cacheKey, allClients, 300); // Cache in memory for 5 minutes
     }
 
     // Role-based scoping:

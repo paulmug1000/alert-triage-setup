@@ -15,6 +15,7 @@ export default function PortalJobsView({
   const [currentPage, setCurrentPage] = useState(1);
   const [editingJob, setEditingJob] = useState(null); // null or job object
   const [isSaving, setIsSaving] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [optimisticJobs, setOptimisticJobs] = useState({}); // { [key]: job }
   const pageSize = 25;
@@ -23,6 +24,20 @@ export default function PortalJobsView({
   useEffect(() => {
     setOptimisticJobs({});
   }, [data?.jobs]);
+
+  // Lock background scroll when modal is open
+  useEffect(() => {
+    if (editingJob) {
+      const origBodyOverflow = document.body.style.overflow;
+      const origHtmlOverflow = document.documentElement.style.overflow;
+      document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = origBodyOverflow;
+        document.documentElement.style.overflow = origHtmlOverflow;
+      };
+    }
+  }, [editingJob]);
 
   const formatDateDdMmmYy = (dateVal) => {
     if (!dateVal) return "—";
@@ -176,8 +191,9 @@ export default function PortalJobsView({
       vat: "Yes",
       projectCode: "",
       dateConfirmed: "",
-      invoices: [{ num: 1, amount: "", ref: "", sendDate: "", days: "30", status: "Draft" }],
-      directExpenses: [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "Received" }],
+      childRowNumbers: [],
+      invoices: [{ num: 1, amount: "", ref: "", sendDate: "", days: "30", status: "" }],
+      directExpenses: [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" }],
     });
   };
 
@@ -186,12 +202,13 @@ export default function PortalJobsView({
     setSaveError(null);
     setEditingJob({
       ...job,
+      childRowNumbers: Array.isArray(job.childRowNumbers) ? job.childRowNumbers : [],
       invoices: Array.isArray(job.invoices) && job.invoices.length > 0
-        ? job.invoices.map((inv, i) => ({ ...inv, num: i + 1 }))
-        : [{ num: 1, amount: "", ref: "", sendDate: "", days: "30", status: "Draft" }],
+        ? job.invoices.map((inv, i) => ({ ...inv, num: i + 1, status: inv.status || "" }))
+        : [{ num: 1, amount: "", ref: "", sendDate: "", days: "30", status: "" }],
       directExpenses: Array.isArray(job.directExpenses) && job.directExpenses.length > 0
-        ? job.directExpenses.map((exp, i) => ({ ...exp, num: i + 1 }))
-        : [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "Received" }],
+        ? job.directExpenses.map((exp, i) => ({ ...exp, num: i + 1, status: exp.status || "" }))
+        : [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" }],
     });
   };
 
@@ -200,7 +217,7 @@ export default function PortalJobsView({
       ...prev,
       invoices: [
         ...(prev.invoices || []),
-        { num: (prev.invoices?.length || 0) + 1, amount: "", ref: "", sendDate: "", days: "30", status: "Draft" },
+        { num: (prev.invoices?.length || 0) + 1, amount: "", ref: "", sendDate: "", days: "30", status: "" },
       ],
     }));
   };
@@ -225,7 +242,7 @@ export default function PortalJobsView({
       ...prev,
       directExpenses: [
         ...(prev.directExpenses || []),
-        { num: (prev.directExpenses?.length || 0) + 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "Received" },
+        { num: (prev.directExpenses?.length || 0) + 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" },
       ],
     }));
   };
@@ -243,6 +260,62 @@ export default function PortalJobsView({
       exps[idx] = { ...exps[idx], [field]: val };
       return { ...prev, directExpenses: exps };
     });
+  };
+
+  const handleConfirmJob = async () => {
+    if (!editingJob?.rowNumber) return;
+    setIsConfirming(true);
+    setSaveError(null);
+    try {
+      const res = await fetch("/api/portal/confirm-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientSheetId,
+          clientName,
+          pipelineRow: editingJob.rowNumber,
+        }),
+      });
+      const resData = await res.json();
+      if (!resData.success) {
+        throw new Error(resData.error || "Failed to confirm job");
+      }
+      setEditingJob(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error("Confirm job error:", err);
+      setSaveError(err.message || "Failed to confirm job");
+    } finally {
+      setIsConfirming(false);
+    }
+  };
+
+  const handleUnconfirmJob = async () => {
+    if (!editingJob?.rowNumber) return;
+    setIsConfirming(true);
+    setSaveError(null);
+    try {
+      const res = await fetch("/api/portal/unconfirm-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientSheetId,
+          clientName,
+          confirmedRow: editingJob.rowNumber,
+        }),
+      });
+      const resData = await res.json();
+      if (!resData.success) {
+        throw new Error(resData.error || "Failed to unconfirm job");
+      }
+      setEditingJob(null);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error("Unconfirm job error:", err);
+      setSaveError(err.message || "Failed to unconfirm job");
+    } finally {
+      setIsConfirming(false);
+    }
   };
 
   const handleSaveJob = async (e) => {
@@ -273,6 +346,13 @@ export default function PortalJobsView({
 
       // Optimistically update local job state immediately so new value is visible with zero delay
       const savedJob = { ...editingJob };
+      const parsedRev = parseFloat(String(savedJob.revenue || "").replace(/[£$€,\s]/g, ""));
+      const parsedDc = parseFloat(String(savedJob.directCosts || "").replace(/[£$€,\s]/g, ""));
+      savedJob.revNum = isNaN(parsedRev) ? 0 : parsedRev;
+      savedJob.dcNum = isNaN(parsedDc) ? 0 : parsedDc;
+      if (resData.rowNumber) savedJob.rowNumber = resData.rowNumber;
+      if (resData.childRowNumbers) savedJob.childRowNumbers = resData.childRowNumbers;
+
       const jobKey = savedJob.id !== undefined ? savedJob.id : (savedJob.parentId !== undefined ? savedJob.parentId : savedJob.rowNumber);
       if (jobKey !== undefined) {
         setOptimisticJobs((prev) => ({
@@ -789,32 +869,35 @@ export default function PortalJobsView({
             justifyContent: "center",
             zIndex: 9999,
             padding: "1rem",
+            overscrollBehavior: "contain",
           }}
-          onClick={() => !isSaving && setEditingJob(null)}
+          onClick={() => !isSaving && !isConfirming && setEditingJob(null)}
         >
           <div
             style={{
               background: "#ffffff",
               borderRadius: "12px",
-              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2)",
+              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
               maxWidth: "860px",
               width: "100%",
               maxHeight: "90vh",
-              overflowY: "auto",
-              padding: "1.75rem",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
               fontFamily: "'Kumbh Sans', sans-serif",
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
+            {/* Modal Header (Fixed at top) */}
             <div
               style={{
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
                 borderBottom: "1px solid #e2e8f0",
-                paddingBottom: "0.75rem",
-                marginBottom: "1rem",
+                padding: "1.25rem 1.75rem 1rem",
+                background: "#ffffff",
+                flexShrink: 0,
               }}
             >
               <h3 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 700, color: "#0047AB" }}>
@@ -823,7 +906,7 @@ export default function PortalJobsView({
               <button
                 type="button"
                 onClick={() => setEditingJob(null)}
-                disabled={isSaving}
+                disabled={isSaving || isConfirming}
                 style={{
                   background: "transparent",
                   border: "none",
@@ -836,24 +919,33 @@ export default function PortalJobsView({
               </button>
             </div>
 
-            {saveError && (
-              <div
-                style={{
-                  background: "#fef2f2",
-                  border: "1px solid #fecaca",
-                  borderRadius: "6px",
-                  padding: "0.6rem 0.85rem",
-                  color: "#991b1b",
-                  fontSize: "12px",
-                  marginBottom: "1rem",
-                }}
-              >
-                {saveError}
-              </div>
-            )}
+            {/* Scrollable Form Body */}
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                padding: "1.25rem 1.75rem",
+                overscrollBehavior: "contain",
+              }}
+            >
+              {saveError && (
+                <div
+                  style={{
+                    background: "#fef2f2",
+                    border: "1px solid #fecaca",
+                    borderRadius: "6px",
+                    padding: "0.6rem 0.85rem",
+                    color: "#991b1b",
+                    fontSize: "12px",
+                    marginBottom: "1rem",
+                  }}
+                >
+                  {saveError}
+                </div>
+              )}
 
-            {/* Form */}
-            <form onSubmit={handleSaveJob} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              {/* Form */}
+              <form id="job-modal-form" onSubmit={handleSaveJob} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
               {/* Row 1: Client Name (25%) | Job Name (75%) */}
               <div className="modal-form-row modal-form-row-1" style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: "0.75rem" }}>
                 <div>
@@ -1123,10 +1215,11 @@ export default function PortalJobsView({
                       <div>
                         <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
                         <select
-                          value={inv.status || "Draft"}
+                          value={inv.status || ""}
                           onChange={(e) => updateInvoice(idx, "status", e.target.value)}
                           style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
                         >
+                          <option value="">Select...</option>
                           <option value="Draft">Draft</option>
                           <option value="Invoiced">Invoiced</option>
                           <option value="Paid">Paid</option>
@@ -1263,10 +1356,11 @@ export default function PortalJobsView({
                       <div>
                         <label style={{ fontSize: "9.5px", fontWeight: 700, color: "#64748b" }}>Status</label>
                         <select
-                          value={exp.status || "Received"}
+                          value={exp.status || ""}
                           onChange={(e) => updateExpense(idx, "status", e.target.value)}
                           style={{ ...formInputStyle, padding: "4px 6px", fontSize: "12px" }}
                         >
+                          <option value="">Select...</option>
                           <option value="Received">Received</option>
                           <option value="Paid">Paid</option>
                           <option value="Overdue">Overdue</option>
@@ -1294,26 +1388,88 @@ export default function PortalJobsView({
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  gap: "10px",
-                  borderTop: "1px solid #e2e8f0",
-                  paddingTop: "1rem",
-                  marginTop: "0.5rem",
-                }}
-              >
+              </form>
+            </div>
+
+            {/* Sticky / Hovering Action Bar (Always visible at bottom of modal) */}
+            <div
+              style={{
+                flexShrink: 0,
+                borderTop: "1px solid #e2e8f0",
+                background: "#f8fafc",
+                boxShadow: "0 -4px 6px -1px rgba(0, 0, 0, 0.04)",
+                padding: "0.85rem 1.75rem",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                zIndex: 10,
+              }}
+            >
+              {/* Left side: Confirm / Unconfirm button */}
+              <div>
+                {editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "pipeline" && (
+                  <button
+                    type="button"
+                    onClick={handleConfirmJob}
+                    disabled={isSaving || isConfirming}
+                    style={{
+                      background: "#16a34a",
+                      border: "none",
+                      color: "#ffffff",
+                      padding: "7px 16px",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: 700,
+                      cursor: isConfirming ? "wait" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      opacity: isConfirming ? 0.7 : 1,
+                      boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)",
+                    }}
+                  >
+                    {isConfirming ? <Spinner size={14} color="#ffffff" /> : null}
+                    <span>{isConfirming ? "Confirming..." : "Confirm Job"}</span>
+                  </button>
+                )}
+
+                {editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "confirmed" && (
+                  <button
+                    type="button"
+                    onClick={handleUnconfirmJob}
+                    disabled={isSaving || isConfirming}
+                    style={{
+                      background: "#fffbeb",
+                      border: "1px solid #f59e0b",
+                      color: "#b45309",
+                      padding: "7px 16px",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: 700,
+                      cursor: isConfirming ? "wait" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      opacity: isConfirming ? 0.7 : 1,
+                    }}
+                  >
+                    {isConfirming ? <Spinner size={14} color="#b45309" /> : null}
+                    <span>{isConfirming ? "Unconfirming..." : "Unconfirm Job"}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Right side: Cancel & Save buttons */}
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <button
                   type="button"
                   onClick={() => setEditingJob(null)}
-                  disabled={isSaving}
+                  disabled={isSaving || isConfirming}
                   style={{
-                    background: "#f1f5f9",
+                    background: "#ffffff",
                     border: "1px solid #cbd5e1",
                     color: "#475569",
-                    padding: "6px 14px",
+                    padding: "7px 16px",
                     borderRadius: "6px",
                     fontSize: "13px",
                     fontWeight: 600,
@@ -1325,12 +1481,13 @@ export default function PortalJobsView({
 
                 <button
                   type="submit"
-                  disabled={isSaving}
+                  form="job-modal-form"
+                  disabled={isSaving || isConfirming}
                   style={{
                     background: "#0047AB",
                     border: "none",
                     color: "#ffffff",
-                    padding: "6px 18px",
+                    padding: "7px 20px",
                     borderRadius: "6px",
                     fontSize: "13px",
                     fontWeight: 700,
@@ -1338,13 +1495,14 @@ export default function PortalJobsView({
                     display: "flex",
                     alignItems: "center",
                     gap: "6px",
+                    boxShadow: "0 1px 2px rgba(0, 71, 171, 0.2)",
                   }}
                 >
                   {isSaving ? <Spinner size={14} color="#ffffff" /> : null}
                   <span>{isSaving ? "Saving..." : "Save Job"}</span>
                 </button>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}

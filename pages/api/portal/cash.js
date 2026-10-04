@@ -2,6 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { matchesClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
+import { memoryCache } from "../../../services/cacheService.js";
 
 const CASH_CACHE_TTL_SECS = 60; // 60 seconds cache
 
@@ -51,15 +52,29 @@ export default async function handler(req, res) {
 
   const cacheKey = `pulse:portal:cash:${clientSheetId}`;
 
-  // 1. Try Redis cache
+  // 1. Try L1 Memory Cache
   if (!bypassCache) {
+    const memCached = memoryCache.get(cacheKey);
+    if (memCached) {
+      return res.status(200).json({
+        success: true,
+        fromCache: true,
+        fromMemory: true,
+        data: memCached,
+        cachedAt: memCached._cachedAt || null,
+      });
+    }
+
+    // 2. Try Redis cache
     try {
       const cached = await redisClient.get(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
+        memoryCache.set(cacheKey, parsed, CASH_CACHE_TTL_SECS);
         return res.status(200).json({
           success: true,
           fromCache: true,
+          fromRedis: true,
           data: parsed,
           cachedAt: parsed._cachedAt || null,
         });
@@ -169,7 +184,8 @@ export default async function handler(req, res) {
       showChart,
     };
 
-    // Cache in Redis
+    // Cache in L1 memory and Redis
+    memoryCache.set(cacheKey, cashPayload, CASH_CACHE_TTL_SECS);
     redisClient
       .set(cacheKey, JSON.stringify(cashPayload), { EX: CASH_CACHE_TTL_SECS })
       .catch((err) => console.warn("⚠️ Failed to write cash payload to Redis:", err.message));

@@ -564,7 +564,7 @@ export const CashDeepDiveEngine = {
 
           const startDate = new Date(parsedStart.y, parsedStart.m, 1);
           const endDate = new Date(parsedEnd.y, parsedEnd.m, 1);
-          const status = job.inv1Status || "Pending";
+          const status = job.inv1Status || "";
           const ref = cleanInvoiceRef(job.inv1Ref, true);
 
           let currDate = new Date(startDate.getTime());
@@ -623,7 +623,7 @@ export const CashDeepDiveEngine = {
               vatAmount,
               totalAmount,
               sendDate,
-              status: String(job.type || "").toLowerCase() === "pipeline" ? "" : (job[`inv${i}Status`] || "Pending"),
+              status: String(job.type || "").toLowerCase() === "pipeline" ? "" : (job[`inv${i}Status`] || ""),
             };
 
             if (String(job.type || "").toLowerCase() === "pipeline") results.pipeline.push(invData);
@@ -698,7 +698,7 @@ export const CashDeepDiveEngine = {
           if (Math.abs(amount) < 0.01) return;
 
           const daysToPay = this.parseSafeDays(job[`${prefix}1Days`] !== undefined && String(job[`${prefix}1Days`]).trim() !== "" ? job[`${prefix}1Days`] : "30");
-          const status = job[`${prefix}1Status`] || "Pending";
+          const status = job[`${prefix}1Status`] || "";
           const ref = job[`${prefix}1Ref`] || "";
 
           // First payment date in Google Sheets PipeCalcs / ConfCalcs:
@@ -765,7 +765,7 @@ export const CashDeepDiveEngine = {
               desc: isPipelineType ? "" : actualDesc,
               amount: Math.round(amount),
               payDate,
-              status: isPipelineType ? "" : (job[`${prefix}${i}Status`] || "Pending"),
+              status: isPipelineType ? "" : (job[`${prefix}${i}Status`] || ""),
               isPipeline: isPipelineType,
               type: job.projectRetainer || "Project",
             });

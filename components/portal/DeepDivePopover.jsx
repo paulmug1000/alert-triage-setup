@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
 
 export default function DeepDivePopover({
   isOpen,
@@ -12,8 +13,12 @@ export default function DeepDivePopover({
 }) {
   const popoverRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState("");
-  const [position, setPosition] = useState({ top: 0, left: 0 });
   const [openAccordions, setOpenAccordions] = useState({});
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Initialize all accordion sections to collapsed by default matching original app (WebApp.html line 16304)
   useEffect(() => {
@@ -27,37 +32,54 @@ export default function DeepDivePopover({
     }));
   };
 
-  // Calculate smart position relative to window
-  useEffect(() => {
-    if (!isOpen || !targetRect) return;
-
-    const popoverWidth = 380;
-    const popoverHeight = 360;
-    const padding = 12;
-
-    const scrollY = window.scrollY || window.pageYOffset;
-    const scrollX = window.scrollX || window.pageXOffset;
-
-    let left = targetRect.left + (targetRect.width / 2) - (popoverWidth / 2) + scrollX;
-    let top = targetRect.bottom + 8 + scrollY;
-
-    // Viewport bounds check
-    const maxLeft = window.innerWidth - popoverWidth - padding;
-    if (left < padding) left = padding;
-    if (left > maxLeft) left = maxLeft;
-
-    // Check if overflows viewport bottom -> place above cell
-    if (targetRect.bottom + popoverHeight > window.innerHeight) {
-      const topAbove = targetRect.top - popoverHeight - 8 + scrollY;
-      if (topAbove > scrollY + padding) {
-        top = topAbove;
-      }
+  // Calculate smart position relative to viewport
+  const placement = useMemo(() => {
+    if (!targetRect || typeof window === "undefined") {
+      return { isAbove: false, top: "0px", bottom: "auto", left: "0px", maxHeight: "400px" };
     }
 
-    setPosition({ top, left });
-  }, [isOpen, targetRect]);
+    const popoverWidth = 380;
+    const padding = 12;
 
-  // Click outside and escape key dismiss
+    // Viewport coordinates
+    const spaceBelow = window.innerHeight - targetRect.bottom - padding;
+    const spaceAbove = targetRect.top - padding;
+
+    // Decide if it should open above:
+    // If not enough space below (< 280px) and there's more space above than below, open above
+    const isAbove = spaceBelow < 280 && spaceAbove > spaceBelow;
+
+    // Horizontal placement: center popover over target cell, clamped within viewport
+    const targetCenter = targetRect.left + targetRect.width / 2;
+    let left = targetCenter - popoverWidth / 2;
+    const maxLeft = window.innerWidth - popoverWidth - padding;
+    if (left < padding) left = padding;
+    if (left > maxLeft) left = Math.max(padding, maxLeft);
+
+    let top = "auto";
+    let bottom = "auto";
+    let maxHeight = 400;
+
+    if (isAbove) {
+      // Anchoring the bottom of the popover directly 8px above the top of the clicked cell
+      bottom = window.innerHeight - targetRect.top + 8;
+      maxHeight = Math.max(160, Math.min(window.innerHeight * 0.8, spaceAbove - 8));
+    } else {
+      // Anchoring the top of the popover directly 8px below the bottom of the clicked cell
+      top = targetRect.bottom + 8;
+      maxHeight = Math.max(160, Math.min(window.innerHeight * 0.8, spaceBelow - 8));
+    }
+
+    return {
+      isAbove,
+      top: top === "auto" ? "auto" : `${top}px`,
+      bottom: bottom === "auto" ? "auto" : `${bottom}px`,
+      left: `${left}px`,
+      maxHeight: `${maxHeight}px`,
+    };
+  }, [targetRect]);
+
+  // Click outside, escape key, and scroll/resize dismiss
   useEffect(() => {
     if (!isOpen) return;
 
@@ -65,25 +87,30 @@ export default function DeepDivePopover({
       if (e.key === "Escape") onClose();
     };
 
-    const handleClickOutside = (e) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target)) {
-        onClose();
+    const handleScroll = (e) => {
+      // Allow scrolling inside the popover's content area
+      if (popoverRef.current && popoverRef.current.contains(e.target)) {
+        return;
       }
+      onClose();
+    };
+
+    const handleResize = () => {
+      onClose();
     };
 
     window.addEventListener("keydown", handleKeyDown);
-    const timer = setTimeout(() => {
-      document.addEventListener("click", handleClickOutside);
-    }, 50);
+    window.addEventListener("scroll", handleScroll, true);
+    window.addEventListener("resize", handleResize);
 
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
-      document.removeEventListener("click", handleClickOutside);
-      clearTimeout(timer);
+      window.removeEventListener("scroll", handleScroll, true);
+      window.removeEventListener("resize", handleResize);
     };
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
+  if (!mounted || !isOpen || !targetRect) return null;
 
   const formatGBP = (val) => {
     if (val === null || val === undefined || val === "") return "£0";
@@ -116,18 +143,19 @@ export default function DeepDivePopover({
     );
   });
 
-  return (
+  const popoverMarkup = (
     <div className="deep-dive-backdrop" onClick={onClose}>
       <div
         ref={popoverRef}
         className="deep-dive-box"
         onClick={(e) => e.stopPropagation()}
         style={{
-          position: "absolute",
-          top: `${position.top}px`,
-          left: `${position.left}px`,
+          position: "fixed",
+          top: placement.top,
+          bottom: placement.bottom,
+          left: placement.left,
           width: "380px",
-          maxHeight: "80vh",
+          maxHeight: placement.maxHeight,
           background: "#ffffff",
           border: "1px solid #cbd5e1",
           borderRadius: "8px",
@@ -137,12 +165,30 @@ export default function DeepDivePopover({
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
-          animation: "popoverIn 0.15s ease-out forwards",
+          animation: `${placement.isAbove ? "popoverInAbove" : "popoverInBelow"} 0.15s ease-out forwards`,
         }}
       >
         <style>{`
-          @keyframes popoverIn {
+          .deep-dive-backdrop {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            bottom: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 9998 !important;
+            background: transparent !important;
+            pointer-events: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          @keyframes popoverInBelow {
             from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          @keyframes popoverInAbove {
+            from { opacity: 0; transform: translateY(-4px); }
             to { opacity: 1; transform: translateY(0); }
           }
           @keyframes sheetSlideUp {
@@ -151,11 +197,6 @@ export default function DeepDivePopover({
           }
           @media (max-width: 768px) {
             .deep-dive-backdrop {
-              position: fixed !important;
-              top: 0 !important;
-              left: 0 !important;
-              right: 0 !important;
-              bottom: 0 !important;
               background: rgba(0, 0, 0, 0.45) !important;
               backdrop-filter: blur(2px) !important;
               z-index: 10000 !important;
@@ -166,7 +207,9 @@ export default function DeepDivePopover({
             .deep-dive-box {
               position: relative !important;
               top: auto !important;
+              bottom: auto !important;
               left: auto !important;
+              right: auto !important;
               width: 100% !important;
               max-width: 500px !important;
               max-height: 85vh !important;
@@ -207,6 +250,7 @@ export default function DeepDivePopover({
             alignItems: "center",
             justifyContent: "space-between",
             borderBottom: "1px solid #e5e7eb",
+            flexShrink: 0,
           }}
         >
           <div style={{ fontSize: "16px", fontWeight: 700, color: "#0047AB", letterSpacing: "-0.2px" }}>
@@ -238,14 +282,15 @@ export default function DeepDivePopover({
           </div>
         </div>
 
-      {/* Content Area */}
-      <div
-        style={{
-          maxHeight: "70vh",
-          overflowY: "auto",
-          padding: hasSections ? "12px" : "6px 0",
-        }}
-      >
+        {/* Content Area */}
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            padding: hasSections ? "12px" : "6px 0",
+          }}
+        >
         {/* Render Sections (Staff Costs etc. with Expandable Cards) */}
         {hasSections ? (
           <div>
@@ -508,4 +553,6 @@ export default function DeepDivePopover({
     </div>
   </div>
   );
+
+  return createPortal(popoverMarkup, document.body);
 }

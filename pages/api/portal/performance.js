@@ -2,6 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { matchesClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
+import { memoryCache } from "../../../services/cacheService.js";
 
 const PERF_CACHE_TTL_SECS = 60; // 60 seconds cache
 
@@ -51,15 +52,29 @@ export default async function handler(req, res) {
 
   const cacheKey = `pulse:portal:performance:${clientSheetId}`;
 
-  // 1. Check Redis cache
+  // 1. Check L1 Memory Cache
   if (!bypassCache) {
+    const memCached = memoryCache.get(cacheKey);
+    if (memCached) {
+      return res.status(200).json({
+        success: true,
+        fromCache: true,
+        fromMemory: true,
+        data: memCached,
+        cachedAt: memCached._cachedAt || null,
+      });
+    }
+
+    // 2. Check Redis cache
     try {
       const cached = await redisClient.get(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
+        memoryCache.set(cacheKey, parsed, PERF_CACHE_TTL_SECS);
         return res.status(200).json({
           success: true,
           fromCache: true,
+          fromRedis: true,
           data: parsed,
           cachedAt: parsed._cachedAt || null,
         });
@@ -228,7 +243,8 @@ export default async function handler(req, res) {
       years,
     };
 
-    // Cache in Redis
+    // Cache in L1 memory and Redis
+    memoryCache.set(cacheKey, performanceData, PERF_CACHE_TTL_SECS);
     redisClient
       .set(cacheKey, JSON.stringify(performanceData), { EX: PERF_CACHE_TTL_SECS })
       .catch((err) => console.warn("⚠️ Failed to write performance data to Redis:", err.message));

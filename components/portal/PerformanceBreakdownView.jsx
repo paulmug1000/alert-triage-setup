@@ -238,16 +238,16 @@ export default function PerformanceBreakdownView({
       breakdownType === "confRev"
         ? isIncomeMode ? "Confirmed income" : "Confirmed revenue"
         : breakdownType === "pipeRev"
-        ? isIncomeMode ? "Pipeline income" : "Pipeline revenue"
-        : breakdownType === "dirCosts"
-        ? "Direct costs"
-        : breakdownType === "staffDel"
-        ? "Delivery staff costs"
-        : breakdownType === "staffNonDel"
-        ? "Non-delivery staff costs"
-        : breakdownType === "expDel"
-        ? "Delivery expenses"
-        : "Non-delivery expenses";
+          ? isIncomeMode ? "Pipeline income" : "Pipeline revenue"
+          : breakdownType === "dirCosts"
+            ? "Direct costs"
+            : breakdownType === "staffDel"
+              ? "Delivery staff costs"
+              : breakdownType === "staffNonDel"
+                ? "Non-delivery staff costs"
+                : breakdownType === "expDel"
+                  ? "Delivery expenses"
+                  : "Non-delivery expenses";
 
     rows.push([`Performance breakdown: ${metricName} - ${activePeriod?.label || ""}`]);
     rows.push([]);
@@ -326,7 +326,7 @@ export default function PerformanceBreakdownView({
           marginBottom: "1.5rem",
         }}
       >
-        <h1 style={{ margin: 0, fontSize: "1.85rem", fontWeight: 700, color: "#0047AB" }}>
+        <h1 style={{ margin: 0, fontSize: "1.45rem", fontWeight: 700, color: "#0047AB" }}>
           Performance breakdowns
         </h1>
 

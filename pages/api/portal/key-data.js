@@ -2,6 +2,7 @@ import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { matchesClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
+import { memoryCache } from "../../../services/cacheService.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s cache
 
@@ -78,15 +79,29 @@ export default async function handler(req, res) {
 
   const cacheKey = `pulse:portal:keydata:${clientSheetId}:${type}`;
 
-  // 1. Check Redis cache
+  // 1. Check L1 Memory Cache
   if (!bypassCache) {
+    const memCached = memoryCache.get(cacheKey);
+    if (memCached) {
+      return res.status(200).json({
+        success: true,
+        fromCache: true,
+        fromMemory: true,
+        data: sanitizeForUser(memCached),
+        cachedAt: memCached._cachedAt || null,
+      });
+    }
+
+    // 2. Check Redis cache
     try {
       const cached = await redisClient.get(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
+        memoryCache.set(cacheKey, parsed, KEYDATA_CACHE_TTL_SECS);
         return res.status(200).json({
           success: true,
           fromCache: true,
+          fromRedis: true,
           data: sanitizeForUser(parsed),
           cachedAt: parsed._cachedAt || null,
         });
@@ -323,7 +338,7 @@ export default async function handler(req, res) {
             const ref = getValueByHeader(r, colMap, refH);
             const sendDateRaw = getValueByHeader(r, colMap, dateH);
             const days = getValueByHeader(r, colMap, daysH) || "30";
-            const status = getValueByHeader(r, colMap, statusH) || "Pending";
+            const status = getValueByHeader(r, colMap, statusH) || "";
 
             if (amt || ref || sendDateRaw) {
               return {
@@ -386,7 +401,7 @@ export default async function handler(req, res) {
             const vat = getValueByHeader(r, colMap, vatH) || "Yes";
             const recDateRaw = getValueByHeader(r, colMap, dateH);
             const days = getValueByHeader(r, colMap, daysH) || "30";
-            const status = getValueByHeader(r, colMap, statusH) || "Pending";
+            const status = getValueByHeader(r, colMap, statusH) || "";
 
             if (amt || desc || recDateRaw) {
               return {
@@ -813,7 +828,8 @@ export default async function handler(req, res) {
       },
     };
 
-    // Cache in Redis
+    // Cache in L1 memory and Redis
+    memoryCache.set(cacheKey, keyDataPayload, KEYDATA_CACHE_TTL_SECS);
     redisClient
       .set(cacheKey, JSON.stringify(keyDataPayload), { EX: KEYDATA_CACHE_TTL_SECS })
       .catch((err) => console.warn("⚠️ Failed to write key-data to Redis:", err.message));

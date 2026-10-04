@@ -84,24 +84,30 @@ export default function PortalPage() {
   const [loadingBudget, setLoadingBudget] = useState(false);
   const [budgetError, setBudgetError] = useState(null);
 
-  const fetchPayload = useCallback(async (client, bypassCache = false) => {
+  const fetchPayload = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
-    setLoadingPayload(true);
-    setPayloadError(null);
+    if (!isSilent) {
+      setLoadingPayload(true);
+      setPayloadError(null);
+    }
     try {
       const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.payload) {
         setPayload(data.payload);
-      } else {
+      } else if (!isSilent) {
         throw new Error(data.error || "Failed to load client data");
       }
     } catch (err) {
       console.error("Payload fetch error:", err);
-      setPayloadError(err.message || "Failed to connect to client sheet");
+      if (!isSilent) {
+        setPayloadError(err.message || "Failed to connect to client sheet");
+      }
     } finally {
-      setLoadingPayload(false);
+      if (!isSilent) {
+        setLoadingPayload(false);
+      }
     }
   }, []);
 
@@ -118,24 +124,30 @@ export default function PortalPage() {
     }
   };
 
-  const fetchPerformance = useCallback(async (client, bypassCache = false) => {
+  const fetchPerformance = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
-    setLoadingPerformance(true);
-    setPerfError(null);
+    if (!isSilent) {
+      setLoadingPerformance(true);
+      setPerfError(null);
+    }
     try {
       const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
         setPerformanceData(data.data);
-      } else {
+      } else if (!isSilent) {
         throw new Error(data.error || "Failed to load performance data");
       }
     } catch (err) {
       console.error("Performance fetch error:", err);
-      setPerfError(err.message || "Failed to connect to client sheet");
+      if (!isSilent) {
+        setPerfError(err.message || "Failed to connect to client sheet");
+      }
     } finally {
-      setLoadingPerformance(false);
+      if (!isSilent) {
+        setLoadingPerformance(false);
+      }
     }
   }, []);
 
@@ -159,24 +171,30 @@ export default function PortalPage() {
     }
   };
 
-  const fetchCashflow = useCallback(async (client, bypassCache = false) => {
+  const fetchCashflow = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
-    setLoadingCashflow(true);
-    setCashError(null);
+    if (!isSilent) {
+      setLoadingCashflow(true);
+      setCashError(null);
+    }
     try {
       const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
         setCashflowData(data.data);
-      } else {
+      } else if (!isSilent) {
         throw new Error(data.error || "Failed to load cashflow data");
       }
     } catch (err) {
       console.error("Cashflow fetch error:", err);
-      setCashError(err.message || "Failed to connect to client sheet");
+      if (!isSilent) {
+        setCashError(err.message || "Failed to connect to client sheet");
+      }
     } finally {
-      setLoadingCashflow(false);
+      if (!isSilent) {
+        setLoadingCashflow(false);
+      }
     }
   }, []);
 
@@ -200,24 +218,30 @@ export default function PortalPage() {
     }
   };
 
-  const fetchKeyData = useCallback(async (client, bypassCache = false) => {
+  const fetchKeyData = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
-    setLoadingKeyData(true);
-    setKeyDataError(null);
+    if (!isSilent) {
+      setLoadingKeyData(true);
+      setKeyDataError(null);
+    }
     try {
       const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
         setKeyData(data.data);
-      } else {
+      } else if (!isSilent) {
         throw new Error(data.error || "Failed to load key data");
       }
     } catch (err) {
       console.error("Key data fetch error:", err);
-      setKeyDataError(err.message || "Failed to connect to client sheet");
+      if (!isSilent) {
+        setKeyDataError(err.message || "Failed to connect to client sheet");
+      }
     } finally {
-      setLoadingKeyData(false);
+      if (!isSilent) {
+        setLoadingKeyData(false);
+      }
     }
   }, []);
 
@@ -244,24 +268,30 @@ export default function PortalPage() {
     }
   };
 
-  const fetchBudget = useCallback(async (client, bypassCache = false) => {
+  const fetchBudget = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
-    setLoadingBudget(true);
-    setBudgetError(null);
+    if (!isSilent) {
+      setLoadingBudget(true);
+      setBudgetError(null);
+    }
     try {
       const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.data) {
         setBudgetData(data.data);
-      } else {
+      } else if (!isSilent) {
         throw new Error(data.error || "Failed to load budget data");
       }
     } catch (err) {
       console.error("Budget fetch error:", err);
-      setBudgetError(err.message || "Failed to connect to client sheet");
+      if (!isSilent) {
+        setBudgetError(err.message || "Failed to connect to client sheet");
+      }
     } finally {
-      setLoadingBudget(false);
+      if (!isSilent) {
+        setLoadingBudget(false);
+      }
     }
   }, []);
 
@@ -330,6 +360,52 @@ export default function PortalPage() {
     }
   };
 
+  // 60-Second Background Auto-Refresh (matching original GAS WebApp REFRESH_INTERVAL = 60000)
+  useEffect(() => {
+    if (!selectedClient?.clientSheetId) return;
+
+    const intervalId = setInterval(() => {
+      // Silently refresh current payload and active view data in background with bypassCache=true
+      // so latest numbers from sheets/integrations are kept up to date
+      fetchPayload(selectedClient, true, true);
+
+      if (["dashboard", "ytd", "perfBreakdown", "scenarios"].includes(activeView)) {
+        fetchPerformance(selectedClient, true, true);
+      }
+      if (["cash", "cashBreakdown"].includes(activeView)) {
+        fetchCashflow(selectedClient, true, true);
+      }
+      if (["jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "cashBreakdown", "scenarios", "perfBreakdown"].includes(activeView)) {
+        fetchKeyData(selectedClient, true, true);
+      }
+      if (["viewBudget", "budgetVariance"].includes(activeView)) {
+        fetchBudget(selectedClient, true, true);
+      }
+    }, 60000);
+
+    return () => clearInterval(intervalId);
+  }, [selectedClient, activeView, fetchPayload, fetchPerformance, fetchCashflow, fetchKeyData, fetchBudget]);
+
+  // Fast client restore on mount from localStorage to eliminate waterfall delay
+  useEffect(() => {
+    if (typeof window === "undefined" || !isAuthenticated) return;
+    try {
+      if (router.query.choose === "true") return;
+      const savedObj = localStorage.getItem("pulse_portal_active_client_obj");
+      if (savedObj) {
+        const parsed = JSON.parse(savedObj);
+        if (parsed?.clientSheetId) {
+          setSelectedClient((curr) => {
+            if (!curr || curr.clientSheetId !== parsed.clientSheetId) {
+              return parsed;
+            }
+            return curr;
+          });
+        }
+      }
+    } catch (e) {}
+  }, [isAuthenticated, router.query.choose]);
+
   // Fetch authorized clients for portal
   useEffect(() => {
     if (!isAuthenticated) {
@@ -374,7 +450,19 @@ export default function PortalPage() {
             if (isChooseRequested) {
               initial = null;
             } else {
-              // Check localStorage
+              // Priority 1: Match currently selected client (e.g. from fast restore)
+              if (selectedClient?.clientSheetId) {
+                initial = data.clients.find(
+                  (c) => c.clientSheetId === selectedClient.clientSheetId || c.clientName?.toLowerCase() === selectedClient.clientName?.toLowerCase()
+                );
+              }
+              // Priority 2: Check query client
+              if (!initial && queryClient) {
+                initial = data.clients.find(
+                  (c) => c.clientName.toLowerCase() === String(queryClient).toLowerCase()
+                );
+              }
+              // Priority 3: Check localStorage
               if (!initial && typeof window !== "undefined") {
                 const saved = localStorage.getItem("pulse_portal_client");
                 if (saved) {
@@ -383,7 +471,7 @@ export default function PortalPage() {
                   );
                 }
               }
-              // For internal staff without a prior selection, default to APPTEST or first client
+              // Priority 4: For internal staff without a prior selection, default to APPTEST or first client
               if (!initial && !isPulseOnly) {
                 initial =
                   data.clients.find((c) => c.clientName.toUpperCase() === "APPTEST") ||
@@ -394,6 +482,10 @@ export default function PortalPage() {
           }
 
           setSelectedClient(initial);
+          if (initial && typeof window !== "undefined") {
+            localStorage.setItem("pulse_portal_client", initial.clientName);
+            localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(initial));
+          }
         }
       })
       .catch((err) => {
@@ -408,7 +500,7 @@ export default function PortalPage() {
     return () => {
       isMounted = false;
     };
-  }, [isAuthenticated, router.query.client, router.query.choose, user]);
+  }, [isAuthenticated, router.query.client, router.query.choose, user, selectedClient]);
 
   // Clean URL: Strip any legacy ?client=... or ?choose=... so the address bar stays clean (/pulse)
   useEffect(() => {
@@ -426,6 +518,10 @@ export default function PortalPage() {
     setSelectedClient(null);
     setPayload(null);
     setClients([]);
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("pulse_portal_client");
+      localStorage.removeItem("pulse_portal_active_client_obj");
+    }
     await logout();
   };
 
@@ -434,10 +530,12 @@ export default function PortalPage() {
     if (client) {
       if (typeof window !== "undefined") {
         localStorage.setItem("pulse_portal_client", client.clientName);
+        localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(client));
       }
     } else {
       if (typeof window !== "undefined") {
         localStorage.removeItem("pulse_portal_client");
+        localStorage.removeItem("pulse_portal_active_client_obj");
       }
     }
     // Clean URL: Keep URL as clean /pulse

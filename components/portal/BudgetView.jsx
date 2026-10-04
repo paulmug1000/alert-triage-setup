@@ -485,7 +485,7 @@ export default function BudgetView({
             <table
               style={{
                 width: "100%",
-                minWidth: "940px",
+                minWidth: "960px",
                 tableLayout: "fixed",
                 borderCollapse: "separate",
                 borderSpacing: 0,
@@ -500,8 +500,8 @@ export default function BudgetView({
                       padding: "6px 10px",
                       textAlign: "left",
                       fontWeight: 700,
-                      width: "12%",
-                      minWidth: "140px",
+                      width: "18%",
+                      minWidth: "150px",
                       position: "sticky",
                       left: 0,
                       background: "#0000ff",
@@ -519,7 +519,7 @@ export default function BudgetView({
                         textAlign: "right",
                         fontWeight: 700,
                         fontSize: "12px",
-                        width: "6.7%",
+                        width: "6.2%",
                         background: "#0000ff",
                       }}
                     >
@@ -529,7 +529,7 @@ export default function BudgetView({
                   {/* Gap Column */}
                   <th
                     style={{
-                      width: "1.0%",
+                      width: "0.8%",
                       background: "#0000ff",
                       padding: 0,
                     }}
@@ -541,7 +541,7 @@ export default function BudgetView({
                       textAlign: "right",
                       fontWeight: 700,
                       fontSize: "13px",
-                      width: "6.6%",
+                      width: "6.8%",
                       minWidth: "75px",
                       background: "#0000ff",
                     }}
@@ -734,7 +734,21 @@ export default function BudgetView({
     </div>
 
     <style jsx>{`
-      @media (max-width: 1024px) {
+      @media (orientation: landscape) and (max-width: 1024px) {
+        .fy-table-scroll-wrapper {
+          margin: 0 !important;
+          width: 100% !important;
+        }
+        .fy-nav-arrow-left {
+          left: -32px !important;
+          font-size: 2.4rem !important;
+        }
+        .fy-nav-arrow-right {
+          right: -32px !important;
+          font-size: 2.4rem !important;
+        }
+      }
+      @media (max-width: 768px) and (orientation: portrait) {
         .fy-nav-arrow-left {
           left: 2px !important;
           font-size: 2.2rem !important;

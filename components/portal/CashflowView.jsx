@@ -376,8 +376,8 @@ export default function CashflowView({
         </div>
       </div>
 
-      {/* Main Cashflow Table Container (Matching WebApp.html 75% max width on desktop) */}
-      <div className="cashflow-table-container" style={{ maxWidth: "75%", width: "100%" }}>
+      {/* Main Cashflow Table Container (Only taking as much space as it actually needs with clear space to the right) */}
+      <div className="cashflow-table-container" style={{ width: "fit-content", maxWidth: "100%" }}>
         <div
           style={{
             background: "#ffffff",
@@ -391,7 +391,7 @@ export default function CashflowView({
             <table
               className="cashflow-main-table"
               style={{
-                width: "100%",
+                width: "max-content",
                 minWidth: "680px",
                 borderCollapse: "separate",
                 borderSpacing: 0,
@@ -960,8 +960,10 @@ export default function CashflowView({
       </div>
 
       <style jsx>{`
-        @media (max-width: 1150px), (orientation: landscape) {
+        @media (orientation: landscape) and (max-width: 1024px) {
           .cashflow-table-container {
+            margin: 0 !important;
+            width: fit-content !important;
             max-width: 100% !important;
           }
         }

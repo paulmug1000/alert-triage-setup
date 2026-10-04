@@ -486,7 +486,7 @@ export default function ScenariosView({
               cursor: "pointer",
             }}
           >
-            Reset Scenarios
+            Reset scenario
           </button>
 
           <button
@@ -564,211 +564,386 @@ export default function ScenariosView({
         >
           <div style={{ overflowX: "auto", width: "100%" }}>
             <table
-            style={{
-              width: "100%",
-              minWidth: "860px",
-              borderCollapse: "separate",
-              borderSpacing: 0,
-              fontSize: "12px",
-              tableLayout: "fixed",
-            }}
-          >
-            <thead>
-              {/* Row 1: Header Titles with NO 'Line Item' in top-left cell */}
-              <tr style={{ background: "#0000ff", color: "#ffffff" }}>
-                <th
-                  style={{
-                    padding: "6px 8px",
-                    textAlign: "left",
-                    fontWeight: 700,
-                    width: "15%",
-                    position: "sticky",
-                    left: 0,
-                    background: "#0000ff",
-                    zIndex: 2,
-                  }}
-                >
-                  {/* Empty top-left cell */}
-                </th>
-                {headerMonths.map((m, idx) => (
+              style={{
+                width: "100%",
+                minWidth: "1180px",
+                borderCollapse: "separate",
+                borderSpacing: 0,
+                fontSize: "12px",
+                tableLayout: "fixed",
+              }}
+            >
+              <thead>
+                {/* Row 1: Header Titles with NO 'Line Item' in top-left cell */}
+                <tr style={{ background: "#0000ff", color: "#ffffff" }}>
                   <th
-                    key={idx}
                     style={{
-                      padding: "6px 4px",
-                      textAlign: "right",
+                      padding: "6px 8px",
+                      textAlign: "left",
                       fontWeight: 700,
-                      fontSize: "11px",
-                      width: "6.4%",
+                      width: "220px",
+                      minWidth: "220px",
+                      position: "sticky",
+                      left: 0,
+                      background: "#0000ff",
+                      zIndex: 2,
                     }}
                   >
-                    {m}
+                    {/* Empty top-left cell */}
                   </th>
-                ))}
-                <th
-                  style={{
-                    padding: "6px 8px",
-                    textAlign: "right",
-                    fontWeight: 800,
-                    width: "8.2%",
-                    background: "#0047AB",
-                  }}
-                >
-                  {activeYear?.totalColHeader || "FY Total"}
-                </th>
-              </tr>
+                  {headerMonths.map((m, idx) => (
+                    <th
+                      key={idx}
+                      style={{
+                        padding: "6px 4px",
+                        textAlign: "right",
+                        fontWeight: 700,
+                        fontSize: "11px",
+                        width: "7.0%",
+                        minWidth: "72px",
+                      }}
+                    >
+                      {m}
+                    </th>
+                  ))}
+                  <th
+                    style={{
+                      padding: "6px 8px",
+                      textAlign: "right",
+                      fontWeight: 800,
+                      width: "8.5%",
+                      minWidth: "88px",
+                      background: "#0000ff",
+                    }}
+                  >
+                    {activeYear?.totalColHeader || "FY Total"}
+                  </th>
+                </tr>
 
-              {/* Row 2: Status row (Actual vs Forecast) with NO column header */}
-              <tr style={{ background: "#efefef", borderBottom: "1px solid #ffffff", fontSize: "10.5px" }}>
-                <td
-                  style={{
-                    padding: "3px 8px",
-                    position: "sticky",
-                    left: 0,
-                    background: "#efefef",
-                    zIndex: 2,
-                  }}
-                >
-                  {/* Empty cell, NO Status label */}
-                </td>
-                {activeYear?.statusValues?.map((st, idx) => {
-                  const raw = String(st || "").trim();
-                  const text = raw.toLowerCase() === "actual" ? "Actual" : raw.toLowerCase() === "forecast" ? "Forecast" : raw;
+                {/* Row 2: Status row (Actual vs Forecast) with NO column header */}
+                <tr style={{ background: "#efefef", borderBottom: "1px solid #ffffff", fontSize: "10.5px" }}>
+                  <td
+                    style={{
+                      padding: "3px 8px",
+                      position: "sticky",
+                      left: 0,
+                      background: "#efefef",
+                      zIndex: 2,
+                      width: "220px",
+                      minWidth: "220px",
+                    }}
+                  >
+                    {/* Empty cell, NO Status label */}
+                  </td>
+                  {activeYear?.statusValues?.map((st, idx) => {
+                    const raw = String(st || "").trim();
+                    const text = raw.toLowerCase() === "actual" ? "Actual" : raw.toLowerCase() === "forecast" ? "Forecast" : raw;
+                    return (
+                      <td key={idx} style={{ padding: "3px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef", width: "7.0%", minWidth: "72px" }}>
+                        {text}
+                      </td>
+                    );
+                  })}
+                  <td style={{ padding: "3px 8px", textAlign: "right", background: "#efefef", width: "8.5%", minWidth: "88px" }}></td>
+                </tr>
+              </thead>
+
+              <tbody>
+                {mutatedRows.map((row, rIdx) => {
+                  const label = row.label;
+                  const totalVal = row.totalVal;
+
+                  if (!label || label.toLowerCase() === "hide") {
+                    return (
+                      <tr key={rIdx} style={{ height: "6px", background: "#efefef" }}>
+                        <td colSpan={14} style={{ padding: 0, background: "#efefef" }} />
+                      </tr>
+                    );
+                  }
+
+                  const rowStyle = getRowStyle(label);
+                  const isPercentageRow = label.includes("%") || label.toLowerCase().includes("ratio") || label.toLowerCase().includes("margin");
+                  const totalBadge = isPercentageRow ? getMarginBadgeStyle(label, totalVal) : null;
+
                   return (
-                    <td key={idx} style={{ padding: "3px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef" }}>
-                      {text}
-                    </td>
-                  );
-                })}
-                <td style={{ padding: "3px 8px", textAlign: "right", background: "#efefef" }}></td>
-              </tr>
-            </thead>
+                    <tr
+                      key={rIdx}
+                      style={{
+                        borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #ffffff",
+                        background: rowStyle.bg,
+                        fontWeight: rowStyle.bold ? 700 : 400,
+                      }}
+                    >
+                      {/* Sticky Line Item */}
+                      <td
+                        style={{
+                          padding: rowStyle.isHeader ? "4px 8px" : "4px 8px",
+                          color: rowStyle.color,
+                          fontSize: rowStyle.isMajor ? "13px" : rowStyle.isHeader ? "11px" : "11.5px",
+                          textTransform: rowStyle.isHeader ? "uppercase" : "none",
+                          letterSpacing: rowStyle.isHeader ? "0.5px" : "normal",
+                          paddingLeft: !rowStyle.isHeader && !rowStyle.isMajor ? "16px" : "8px",
+                          fontStyle: isPercentageRow ? "italic" : "normal",
+                          position: "sticky",
+                          left: 0,
+                          background: rowStyle.bg,
+                          zIndex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          width: "220px",
+                          minWidth: "220px",
+                          maxWidth: "220px",
+                        }}
+                        title={label}
+                      >
+                        {label}
+                      </td>
 
-            <tbody>
-              {mutatedRows.map((row, rIdx) => {
-                const label = row.label;
-                const totalVal = row.totalVal;
+                      {/* 12 Month Values */}
+                      {row.monthlyValues?.map((val, mIdx) => {
+                        const mBadge = isPercentageRow ? getMarginBadgeStyle(label, val) : null;
+                        const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
+                        const isClickable = Boolean(ddType && val && val !== "£0" && val !== "—" && val !== "");
+                        const monthLabel = headerMonths[mIdx] || `Month ${mIdx + 1}`;
+                        const displayVal = val === "—" ? "" : val || "";
 
-                if (!label || label.toLowerCase() === "hide") {
-                  return (
-                    <tr key={rIdx} style={{ height: "6px", background: "#efefef" }}>
-                      <td colSpan={14} style={{ padding: 0, background: "#efefef" }} />
+                        return (
+                          <td
+                            key={mIdx}
+                            onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel)}
+                            style={{
+                              padding: "4px 4px",
+                              textAlign: "right",
+                              color: rowStyle.isMajor ? "#ffffff" : mBadge ? mBadge.color : rowStyle.color,
+                              fontStyle: isPercentageRow ? "italic" : "normal",
+                              fontSize: rowStyle.isMajor ? "13px" : "11px",
+                              fontWeight: rowStyle.isMajor ? 700 : (rowStyle.bold ? 700 : 400),
+                              background: mBadge ? mBadge.bg : "transparent",
+                              cursor: isClickable ? "pointer" : "default",
+                              textDecoration: isClickable ? "underline dashed #94a3b8 1px" : "none",
+                              textUnderlineOffset: isClickable ? "2px" : "initial",
+                              whiteSpace: "nowrap",
+                            }}
+                            onMouseEnter={(e) => {
+                              if (isClickable) e.currentTarget.style.filter = "brightness(0.92)";
+                            }}
+                            onMouseLeave={(e) => {
+                              if (isClickable) e.currentTarget.style.filter = "none";
+                            }}
+                          >
+                            {displayVal}
+                          </td>
+                        );
+                      })}
+
+                      {/* Total Column */}
+                      {(() => {
+                        const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
+                        const isClickable = Boolean(ddType && totalVal && totalVal !== "£0" && totalVal !== "—" && totalVal !== "");
+                        const displayTotal = totalVal === "—" ? "" : totalVal || "";
+
+                        return (
+                          <td
+                            onClick={(e) => isClickable && handleCellClick(e, label, totalVal, -1, `${activeYear?.fyLabel || "FY"} Total`)}
+                            style={{
+                              padding: "4px 8px",
+                              textAlign: "right",
+                              fontWeight: rowStyle.isMajor ? 800 : (rowStyle.bold ? 700 : 400),
+                              color: rowStyle.isMajor ? "#ffffff" : totalBadge ? totalBadge.color : "#0047AB",
+                              fontStyle: isPercentageRow ? "italic" : "normal",
+                              fontSize: rowStyle.isMajor ? "13px" : "11.5px",
+                              background: totalBadge ? totalBadge.bg : (rowStyle.isMajor ? "transparent" : rowStyle.bg),
+                              cursor: isClickable ? "pointer" : "default",
+                              textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
+                              textUnderlineOffset: isClickable ? "2px" : "initial",
+                              whiteSpace: "nowrap",
+                            }}
+                            onMouseEnter={(e) => {
+                              if (isClickable) e.currentTarget.style.filter = "brightness(0.92)";
+                            }}
+                            onMouseLeave={(e) => {
+                              if (isClickable) e.currentTarget.style.filter = "none";
+                            }}
+                          >
+                            {displayTotal}
+                          </td>
+                        );
+                      })()}
                     </tr>
                   );
-                }
+                })}
 
-                const rowStyle = getRowStyle(label);
-                const isPercentageRow = label.includes("%") || label.toLowerCase().includes("ratio") || label.toLowerCase().includes("margin");
-                const totalBadge = isPercentageRow ? getMarginBadgeStyle(label, totalVal) : null;
-
-                return (
-                  <tr
-                    key={rIdx}
+                {/* Synchronized Financial Adjustments Section Divider Row */}
+                <tr style={{ background: "#f8fafc", borderTop: "2px solid #cbd5e1", borderBottom: "1px solid #cbd5e1" }}>
+                  <td
                     style={{
-                      borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #ffffff",
-                      background: rowStyle.bg,
-                      fontWeight: rowStyle.bold ? 700 : 400,
+                      padding: "8px 12px",
+                      background: "#f8fafc",
+                      position: "sticky",
+                      left: 0,
+                      zIndex: 2,
+                      width: "220px",
+                      minWidth: "220px",
+                      maxWidth: "220px",
+                      fontSize: "13px",
+                      fontWeight: 700,
+                      color: "#0047AB",
+                      whiteSpace: "nowrap",
                     }}
                   >
-                    {/* Sticky Line Item */}
-                    <td
-                      style={{
-                        padding: rowStyle.isHeader ? "4px 8px" : "4px 8px",
-                        color: rowStyle.color,
-                        fontSize: rowStyle.isMajor ? "13px" : rowStyle.isHeader ? "11px" : "11.5px",
-                        textTransform: rowStyle.isHeader ? "uppercase" : "none",
-                        letterSpacing: rowStyle.isHeader ? "0.5px" : "normal",
-                        paddingLeft: !rowStyle.isHeader && !rowStyle.isMajor ? "16px" : "8px",
-                        fontStyle: isPercentageRow ? "italic" : "normal",
-                        position: "sticky",
-                        left: 0,
-                        background: rowStyle.bg,
-                        zIndex: 1,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                      title={label}
-                    >
-                      {label}
+                    Scenario adjustments
+                  </td>
+                  <td
+                    colSpan={headerMonths.length + 1}
+                    style={{
+                      padding: "8px 12px",
+                      fontSize: "11px",
+                      color: "#64748b",
+                      background: "#f8fafc",
+                    }}
+                  >
+                    Enter adjustments (+/-) to build your scenario
+                  </td>
+                </tr>
+
+                {/* Include NB to Find Checkboxes */}
+                <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
+                  <td style={{ padding: "6px 8px", fontWeight: 600, color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 2, whiteSpace: "nowrap", width: "220px", minWidth: "220px", maxWidth: "220px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <input
+                        type="checkbox"
+                        checked={adjs.nbChecked.every(Boolean)}
+                        onChange={handleToggleMasterNB}
+                        style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
+                        title="Toggle all months"
+                      />
+                      <span>Include NB to find?</span>
+                    </div>
+                  </td>
+                  {headerMonths.map((_, mIdx) => (
+                    <td key={mIdx} style={{ padding: "4px 4px", textAlign: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={adjs.nbChecked[mIdx]}
+                        onChange={() => handleToggleNBMonth(mIdx)}
+                        style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
+                      />
                     </td>
+                  ))}
+                  <td style={{ padding: "6px 8px", textAlign: "right", fontSize: "11px", color: "#64748b" }}>
+                    {adjs.nbChecked.filter(Boolean).length}/12 Months
+                  </td>
+                </tr>
 
-                    {/* 12 Month Values */}
-                    {row.monthlyValues?.map((val, mIdx) => {
-                      const mBadge = isPercentageRow ? getMarginBadgeStyle(label, val) : null;
-                      const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                      const isClickable = Boolean(ddType && val && val !== "£0" && val !== "—" && val !== "");
-                      const monthLabel = headerMonths[mIdx] || `Month ${mIdx + 1}`;
-                      const displayVal = val === "—" ? "" : val || "";
+                {/* Additional Revenue Inputs */}
+                <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
+                  <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 2, whiteSpace: "nowrap", width: "220px", minWidth: "220px", maxWidth: "220px" }}>
+                    Addl. revenue
+                  </td>
+                  {headerMonths.map((_, mIdx) => (
+                    <td key={mIdx} style={{ padding: "3px 3px" }}>
+                      <input
+                        type="text"
+                        value={adjs.rev[mIdx] || ""}
+                        onChange={(e) => handleAdjMonthChange("rev", mIdx, e.target.value)}
+                        placeholder="0"
+                        style={gridInputStyle}
+                      />
+                    </td>
+                  ))}
+                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
+                    {formatMoney(adjs.rev.reduce((a, b) => a + b, 0))}
+                  </td>
+                </tr>
 
-                      return (
-                        <td
-                          key={mIdx}
-                          onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel)}
-                          style={{
-                            padding: "4px 4px",
-                            textAlign: "right",
-                            color: rowStyle.isMajor ? "#ffffff" : mBadge ? mBadge.color : rowStyle.color,
-                            fontStyle: isPercentageRow ? "italic" : "normal",
-                            fontSize: rowStyle.isMajor ? "13px" : "11px",
-                            fontWeight: rowStyle.isMajor ? 700 : (rowStyle.bold ? 700 : 400),
-                            background: mBadge ? mBadge.bg : "transparent",
-                            cursor: isClickable ? "pointer" : "default",
-                            textDecoration: isClickable ? "underline dashed #94a3b8 1px" : "none",
-                            textUnderlineOffset: isClickable ? "2px" : "initial",
-                            whiteSpace: "nowrap",
-                          }}
-                          onMouseEnter={(e) => {
-                            if (isClickable) e.currentTarget.style.filter = "brightness(0.92)";
-                          }}
-                          onMouseLeave={(e) => {
-                            if (isClickable) e.currentTarget.style.filter = "none";
-                          }}
-                        >
-                          {displayVal}
-                        </td>
-                      );
-                    })}
+                {/* Additional delivery staff costs */}
+                <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
+                  <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 2, whiteSpace: "nowrap", width: "220px", minWidth: "220px", maxWidth: "220px" }}>
+                    Addl. delivery staff costs
+                  </td>
+                  {headerMonths.map((_, mIdx) => (
+                    <td key={mIdx} style={{ padding: "3px 3px" }}>
+                      <input
+                        type="text"
+                        value={adjs.delStaff[mIdx] || ""}
+                        onChange={(e) => handleAdjMonthChange("delStaff", mIdx, e.target.value)}
+                        placeholder="0"
+                        style={gridInputStyle}
+                      />
+                    </td>
+                  ))}
+                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
+                    {formatMoney(adjs.delStaff.reduce((a, b) => a + b, 0))}
+                  </td>
+                </tr>
 
-                    {/* Total Column */}
-                    {(() => {
-                      const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                      const isClickable = Boolean(ddType && totalVal && totalVal !== "£0" && totalVal !== "—" && totalVal !== "");
-                      const displayTotal = totalVal === "—" ? "" : totalVal || "";
+                {/* Additional delivery expenses */}
+                <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
+                  <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 2, whiteSpace: "nowrap", width: "220px", minWidth: "220px", maxWidth: "220px" }}>
+                    Addl. delivery expenses
+                  </td>
+                  {headerMonths.map((_, mIdx) => (
+                    <td key={mIdx} style={{ padding: "3px 3px" }}>
+                      <input
+                        type="text"
+                        value={adjs.delExp[mIdx] || ""}
+                        onChange={(e) => handleAdjMonthChange("delExp", mIdx, e.target.value)}
+                        placeholder="0"
+                        style={gridInputStyle}
+                      />
+                    </td>
+                  ))}
+                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
+                    {formatMoney(adjs.delExp.reduce((a, b) => a + b, 0))}
+                  </td>
+                </tr>
 
-                      return (
-                        <td
-                          onClick={(e) => isClickable && handleCellClick(e, label, totalVal, -1, `${activeYear?.fyLabel || "FY"} Total`)}
-                          style={{
-                            padding: "4px 8px",
-                            textAlign: "right",
-                            fontWeight: rowStyle.isMajor ? 800 : (rowStyle.bold ? 700 : 400),
-                            color: rowStyle.isMajor ? "#ffffff" : totalBadge ? totalBadge.color : "#0047AB",
-                            fontStyle: isPercentageRow ? "italic" : "normal",
-                            fontSize: rowStyle.isMajor ? "13px" : "11.5px",
-                            background: totalBadge ? totalBadge.bg : (rowStyle.isMajor ? "transparent" : rowStyle.bg),
-                            cursor: isClickable ? "pointer" : "default",
-                            textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
-                            textUnderlineOffset: isClickable ? "2px" : "initial",
-                            whiteSpace: "nowrap",
-                          }}
-                          onMouseEnter={(e) => {
-                            if (isClickable) e.currentTarget.style.filter = "brightness(0.92)";
-                          }}
-                          onMouseLeave={(e) => {
-                            if (isClickable) e.currentTarget.style.filter = "none";
-                          }}
-                        >
-                          {displayTotal}
-                        </td>
-                      );
-                    })()}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                {/* Additional non-delivery staff costs */}
+                <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
+                  <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 2, whiteSpace: "nowrap", width: "220px", minWidth: "220px", maxWidth: "220px" }}>
+                    Addl. non-delivery staff costs
+                  </td>
+                  {headerMonths.map((_, mIdx) => (
+                    <td key={mIdx} style={{ padding: "3px 3px" }}>
+                      <input
+                        type="text"
+                        value={adjs.nonDelStaff[mIdx] || ""}
+                        onChange={(e) => handleAdjMonthChange("nonDelStaff", mIdx, e.target.value)}
+                        placeholder="0"
+                        style={gridInputStyle}
+                      />
+                    </td>
+                  ))}
+                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
+                    {formatMoney(adjs.nonDelStaff.reduce((a, b) => a + b, 0))}
+                  </td>
+                </tr>
+
+                {/* Additional non-delivery expenses */}
+                <tr style={{ background: "#efefef" }}>
+                  <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 2, whiteSpace: "nowrap", width: "220px", minWidth: "220px", maxWidth: "220px" }}>
+                    Addl. non-delivery expenses
+                  </td>
+                  {headerMonths.map((_, mIdx) => (
+                    <td key={mIdx} style={{ padding: "3px 3px" }}>
+                      <input
+                        type="text"
+                        value={adjs.nonDelExp[mIdx] || ""}
+                        onChange={(e) => handleAdjMonthChange("nonDelExp", mIdx, e.target.value)}
+                        placeholder="0"
+                        style={gridInputStyle}
+                      />
+                    </td>
+                  ))}
+                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
+                    {formatMoney(adjs.nonDelExp.reduce((a, b) => a + b, 0))}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
 
         {activeYearIdx < years.length - 1 && (
           <button
@@ -799,201 +974,6 @@ export default function ScenariosView({
             ›
           </button>
         )}
-      </div>
-
-      {/* 2. MIDDLE SECTION: Synchronized Financial Adjustments Grid */}
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          overflow: "hidden",
-          width: "100%",
-        }}
-      >
-        <div
-          style={{
-            padding: "0.6rem 1rem",
-            background: "#f8fafc",
-            borderBottom: "1px solid #e2e8f0",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <span style={{ fontSize: "12px", fontWeight: 700, color: "#0047AB" }}>
-            Scenario adjustments
-          </span>
-          <span style={{ fontSize: "11px", color: "#64748b" }}>
-            Enter adjustments (+/-) to build your scenario
-          </span>
-        </div>
-
-        <div style={{ overflowX: "auto", width: "100%" }}>
-          <table
-            style={{
-              width: "100%",
-              minWidth: "860px",
-              borderCollapse: "separate",
-              borderSpacing: 0,
-              fontSize: "12px",
-              tableLayout: "fixed",
-            }}
-          >
-            <thead>
-              <tr style={{ background: "#f1f5f9", color: "#475569" }}>
-                <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 700, width: "15%", position: "sticky", left: 0, background: "#f1f5f9", zIndex: 2 }}>
-
-                </th>
-                {headerMonths.map((m, idx) => (
-                  <th key={idx} style={{ padding: "6px 4px", textAlign: "center", fontWeight: 600, fontSize: "11px", width: "6.4%" }}>
-                    {m}
-                  </th>
-                ))}
-                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, width: "8.2%" }}>
-                  Total difference
-                </th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {/* Include NB to Find Checkboxes */}
-              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", fontWeight: 600, color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <input
-                      type="checkbox"
-                      checked={adjs.nbChecked.every(Boolean)}
-                      onChange={handleToggleMasterNB}
-                      style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
-                      title="Toggle all months"
-                    />
-                    <span>Include NB to find?</span>
-                  </div>
-                </td>
-                {headerMonths.map((_, mIdx) => (
-                  <td key={mIdx} style={{ padding: "4px 4px", textAlign: "center" }}>
-                    <input
-                      type="checkbox"
-                      checked={adjs.nbChecked[mIdx]}
-                      onChange={() => handleToggleNBMonth(mIdx)}
-                      style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
-                    />
-                  </td>
-                ))}
-                <td style={{ padding: "6px 8px", textAlign: "right", fontSize: "11px", color: "#64748b" }}>
-                  {adjs.nbChecked.filter(Boolean).length}/12 Months
-                </td>
-              </tr>
-
-              {/* Additional Revenue Inputs */}
-              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
-                  Addl. revenue
-                </td>
-                {headerMonths.map((_, mIdx) => (
-                  <td key={mIdx} style={{ padding: "3px 3px" }}>
-                    <input
-                      type="text"
-                      value={adjs.rev[mIdx] || ""}
-                      onChange={(e) => handleAdjMonthChange("rev", mIdx, e.target.value)}
-                      placeholder="0"
-                      style={gridInputStyle}
-                    />
-                  </td>
-                ))}
-                <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
-                  {formatMoney(adjs.rev.reduce((a, b) => a + b, 0))}
-                </td>
-              </tr>
-
-              {/* Additional delivery staff costs */}
-              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
-                  Addl. delivery staff costs
-                </td>
-                {headerMonths.map((_, mIdx) => (
-                  <td key={mIdx} style={{ padding: "3px 3px" }}>
-                    <input
-                      type="text"
-                      value={adjs.delStaff[mIdx] || ""}
-                      onChange={(e) => handleAdjMonthChange("delStaff", mIdx, e.target.value)}
-                      placeholder="0"
-                      style={gridInputStyle}
-                    />
-                  </td>
-                ))}
-                <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
-                  {formatMoney(adjs.delStaff.reduce((a, b) => a + b, 0))}
-                </td>
-              </tr>
-
-              {/* Additional delivery expenses */}
-              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
-                  Addl. delivery expenses
-                </td>
-                {headerMonths.map((_, mIdx) => (
-                  <td key={mIdx} style={{ padding: "3px 3px" }}>
-                    <input
-                      type="text"
-                      value={adjs.delExp[mIdx] || ""}
-                      onChange={(e) => handleAdjMonthChange("delExp", mIdx, e.target.value)}
-                      placeholder="0"
-                      style={gridInputStyle}
-                    />
-                  </td>
-                ))}
-                <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
-                  {formatMoney(adjs.delExp.reduce((a, b) => a + b, 0))}
-                </td>
-              </tr>
-
-              {/* Additional non-delivery staff costs */}
-              <tr style={{ borderBottom: "1px solid #ffffff", background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
-                  Addl. non-delivery staff costs
-                </td>
-                {headerMonths.map((_, mIdx) => (
-                  <td key={mIdx} style={{ padding: "3px 3px" }}>
-                    <input
-                      type="text"
-                      value={adjs.nonDelStaff[mIdx] || ""}
-                      onChange={(e) => handleAdjMonthChange("nonDelStaff", mIdx, e.target.value)}
-                      placeholder="0"
-                      style={gridInputStyle}
-                    />
-                  </td>
-                ))}
-                <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
-                  {formatMoney(adjs.nonDelStaff.reduce((a, b) => a + b, 0))}
-                </td>
-              </tr>
-
-              {/* Additional non-delivery expenses */}
-              <tr style={{ background: "#efefef" }}>
-                <td style={{ padding: "6px 8px", color: "#0047AB", position: "sticky", left: 0, background: "#efefef", zIndex: 1, whiteSpace: "nowrap" }}>
-                  Addl. non-delivery expenses
-                </td>
-                {headerMonths.map((_, mIdx) => (
-                  <td key={mIdx} style={{ padding: "3px 3px" }}>
-                    <input
-                      type="text"
-                      value={adjs.nonDelExp[mIdx] || ""}
-                      onChange={(e) => handleAdjMonthChange("nonDelExp", mIdx, e.target.value)}
-                      placeholder="0"
-                      style={gridInputStyle}
-                    />
-                  </td>
-                ))}
-                <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
-                  {formatMoney(adjs.nonDelExp.reduce((a, b) => a + b, 0))}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
       </div>
 
       {/* 3. BOTTOM SECTION: Pipeline Table (Exact 10 Columns Matching Original WebApp) */}
@@ -1261,7 +1241,29 @@ export default function ScenariosView({
       </div>
 
       <style jsx>{`
-        @media (max-width: 1024px) {
+        @media (orientation: landscape) and (max-width: 1024px) {
+          .fy-table-scroll-wrapper {
+            margin: 0 !important;
+            width: 100% !important;
+          }
+          .fy-nav-arrow-left {
+            left: -32px !important;
+            font-size: 2.4rem !important;
+          }
+          .fy-nav-arrow-right {
+            right: -32px !important;
+            font-size: 2.4rem !important;
+          }
+          .scenario-pipeline-table {
+            font-size: 11px !important;
+            min-width: 100% !important;
+          }
+          .scenario-pipeline-table th,
+          .scenario-pipeline-table td {
+            padding: 6px 4px !important;
+          }
+        }
+        @media (max-width: 768px) and (orientation: portrait) {
           .fy-nav-arrow-left {
             left: 2px !important;
             font-size: 2.2rem !important;

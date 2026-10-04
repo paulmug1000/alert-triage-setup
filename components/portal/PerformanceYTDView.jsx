@@ -466,7 +466,7 @@ export default function PerformanceYTDView({
       </div>
 
       {/* YTD Cumulative Table with Navigation Arrows */}
-      <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+      <div style={{ position: "relative", width: "fit-content", maxWidth: "100%", display: "flex", alignItems: "center" }}>
         {activeYearIdx > 0 && (
           <button
             type="button"
@@ -505,17 +505,16 @@ export default function PerformanceYTDView({
             boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
             border: "1px solid #e2e8f0",
             overflowX: "auto",
-            width: "100%",
+            width: "fit-content",
+            maxWidth: "100%",
           }}
         >
         <table
           className="fy-main-table"
           style={{
-            width: "100%",
-            minWidth: "720px",
+            width: "max-content",
             borderCollapse: "separate",
             borderSpacing: 0,
-            tableLayout: "fixed",
             fontSize: "12px",
             fontFamily: "'Kumbh Sans', sans-serif",
           }}
@@ -533,7 +532,8 @@ export default function PerformanceYTDView({
                   left: 0,
                   background: "#0000ff",
                   zIndex: 2,
-                  width: displayedMonths.length <= 6 ? "28%" : "22%",
+                  width: "220px",
+                  minWidth: "220px",
                 }}
               >
                 {/* Empty header, NO Line item label */}
@@ -546,7 +546,8 @@ export default function PerformanceYTDView({
                     textAlign: "right",
                     fontWeight: 700,
                     fontSize: "11.5px",
-                    width: displayedMonths.length <= 6 ? `${58 / displayedMonths.length}%` : `${68 / displayedMonths.length}%`,
+                    width: "96px",
+                    minWidth: "96px",
                   }}
                 >
                   {m}
@@ -559,7 +560,8 @@ export default function PerformanceYTDView({
                   fontWeight: 800,
                   fontSize: "12px",
                   background: "#0000ff",
-                  width: displayedMonths.length <= 6 ? "14%" : "10%",
+                  width: "110px",
+                  minWidth: "110px",
                 }}
               >
                 YTD Total
@@ -822,7 +824,22 @@ export default function PerformanceYTDView({
       </div>
 
       <style jsx>{`
-        @media (max-width: 1024px) {
+        @media (orientation: landscape) and (max-width: 1024px) {
+          .fy-table-scroll-wrapper {
+            margin: 0 !important;
+            width: fit-content !important;
+            max-width: 100% !important;
+          }
+          .fy-nav-arrow-left {
+            left: -32px !important;
+            font-size: 2.4rem !important;
+          }
+          .fy-nav-arrow-right {
+            right: -32px !important;
+            font-size: 2.4rem !important;
+          }
+        }
+        @media (max-width: 768px) and (orientation: portrait) {
           .fy-nav-arrow-left {
             left: 2px !important;
             font-size: 2.2rem !important;

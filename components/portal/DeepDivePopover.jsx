@@ -39,7 +39,7 @@ export default function DeepDivePopover({
     }
 
     const popoverWidth = 380;
-    const padding = 12;
+    const padding = 20;
 
     // Viewport coordinates
     const spaceBelow = window.innerHeight - targetRect.bottom - padding;
@@ -63,11 +63,11 @@ export default function DeepDivePopover({
     if (isAbove) {
       // Anchoring the bottom of the popover directly 8px above the top of the clicked cell
       bottom = window.innerHeight - targetRect.top + 8;
-      maxHeight = Math.max(160, Math.min(window.innerHeight * 0.8, spaceAbove - 8));
+      maxHeight = Math.max(160, Math.min(window.innerHeight * 0.75, spaceAbove - 24));
     } else {
       // Anchoring the top of the popover directly 8px below the bottom of the clicked cell
       top = targetRect.bottom + 8;
-      maxHeight = Math.max(160, Math.min(window.innerHeight * 0.8, spaceBelow - 8));
+      maxHeight = Math.max(160, Math.min(window.innerHeight * 0.75, spaceBelow - 24));
     }
 
     return {
@@ -206,6 +206,7 @@ export default function DeepDivePopover({
               border-radius: 16px 16px 0 0 !important;
               border-bottom: none !important;
               box-shadow: 0 -8px 25px rgba(0, 0, 0, 0.2) !important;
+              padding-bottom: max(32px, env(safe-area-inset-bottom, 24px)) !important;
               animation: sheetSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
             }
             .deep-dive-pull-handle {
@@ -278,7 +279,7 @@ export default function DeepDivePopover({
             flex: 1,
             minHeight: 0,
             overflowY: "auto",
-            padding: hasSections ? "12px 12px 28px 12px" : "6px 0 28px 0",
+            padding: hasSections ? "12px 12px 48px 12px" : "6px 0 48px 0",
           }}
         >
         {/* Render Sections (Staff Costs etc. with Expandable Cards) */}
@@ -434,7 +435,7 @@ export default function DeepDivePopover({
                 </div>
               );
             })}
-            <div style={{ height: "20px", width: "100%", flexShrink: 0 }} />
+            <div style={{ height: "48px", width: "100%", flexShrink: 0 }} />
           </div>
         ) : (
           /* Render Regular List (Revenue, Expenses, Cash receipts, Net Payroll/HMRC/Pension) */
@@ -538,7 +539,7 @@ export default function DeepDivePopover({
                 );
               })
             )}
-            <div style={{ height: "20px", width: "100%", flexShrink: 0 }} />
+            <div style={{ height: "48px", width: "100%", flexShrink: 0 }} />
           </div>
         )}
       </div>

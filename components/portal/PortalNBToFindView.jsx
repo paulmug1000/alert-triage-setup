@@ -570,7 +570,21 @@ export default function PortalNBToFindView({
       </div>
 
       <style jsx>{`
-        @media (max-width: 1024px) {
+        @media (orientation: landscape) and (max-width: 1024px) {
+          .fy-table-scroll-wrapper {
+            margin: 0 !important;
+            width: 100% !important;
+          }
+          .fy-nav-arrow-left {
+            left: -32px !important;
+            font-size: 2.4rem !important;
+          }
+          .fy-nav-arrow-right {
+            right: -32px !important;
+            font-size: 2.4rem !important;
+          }
+        }
+        @media (max-width: 768px) and (orientation: portrait) {
           .fy-nav-arrow-left {
             left: 2px !important;
             font-size: 2.2rem !important;

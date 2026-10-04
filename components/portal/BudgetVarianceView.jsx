@@ -340,31 +340,26 @@ export default function BudgetVarianceView({
     }
     if (viewMode === "fy") {
       // 12 months + Col A + 3 gaps + Act + Bud + Var £ + Var % = 20 columns
-      // Col A: 16%, 12 months @ 4.5% = 54%, 3 gaps @ 0.8% = 2.4%, Act 7%, Bud 7%, Var £ 7%, Var % 6.6% -> 100%
+      // Col A: 16%, 12 months @ 5.0% = 60%, 3 gaps @ 0.6% = 1.8%, Act 5.6%, Bud 5.6%, Var £ 5.6%, Var % 5.4% -> 100%
       return {
         colA: "16%",
-        month: "4.5%",
-        gap: "0.8%",
-        act: "7.0%",
-        bud: "7.0%",
-        varAmt: "7.0%",
-        varPct: "6.6%",
+        month: "5.0%",
+        gap: "0.6%",
+        act: "5.6%",
+        bud: "5.6%",
+        varAmt: "5.6%",
+        varPct: "5.4%",
       };
     }
-    // YTD mode: limit months (e.g. 1 to 12)
-    const mCount = displayedMonths.length || 1;
-    // 3 gaps @ 1% = 3%, Act 8.5%, Bud 8.5%, Var £ 7.5%, Var % 6.5% -> Total 34%
-    // Remaining 66% split between Col A and mCount months
-    const colAPct = mCount <= 6 ? 24 : Math.max(16, 24 - (mCount - 6) * 1.3);
-    const mPct = (66 - colAPct) / mCount;
+    // YTD mode: clean fixed column widths that take up only as much space as they actually need
     return {
-      colA: `${colAPct}%`,
-      month: `${mPct}%`,
-      gap: "1%",
-      act: "8.5%",
-      bud: "8.5%",
-      varAmt: "7.5%",
-      varPct: "6.5%",
+      colA: "220px",
+      month: "96px",
+      gap: "10px",
+      act: "110px",
+      bud: "110px",
+      varAmt: "95px",
+      varPct: "85px",
     };
   })();
 
@@ -607,7 +602,7 @@ export default function BudgetVarianceView({
       </div>
 
       {/* Main Budget Variance Table with Navigation Arrows */}
-      <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+      <div style={{ position: "relative", width: viewMode === "fy" ? "100%" : "fit-content", maxWidth: "100%", display: "flex", alignItems: "center" }}>
         {selectedYearIdx > 0 && (
           <button
             type="button"
@@ -649,16 +644,17 @@ export default function BudgetVarianceView({
             boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
             border: "1px solid #e2e8f0",
             overflow: "hidden",
-            width: "100%",
+            width: viewMode === "fy" ? "100%" : "fit-content",
+            maxWidth: "100%",
           }}
         >
           <div style={{ overflowX: "auto", width: "100%" }}>
             <table
               style={{
-                width: "100%",
+                width: viewMode === "fy" ? "100%" : "max-content",
                 maxWidth: viewMode === "month" ? "680px" : "100%",
                 margin: viewMode === "month" ? "0 auto" : "0",
-                minWidth: viewMode === "month" ? "480px" : (viewMode === "ytd" ? "720px" : "960px"),
+                minWidth: viewMode === "month" ? "480px" : (viewMode === "ytd" ? "790px" : "1050px"),
                 borderCollapse: "separate",
                 borderSpacing: 0,
                 tableLayout: "fixed",
@@ -1029,7 +1025,21 @@ export default function BudgetVarianceView({
       </div>
 
     <style jsx>{`
-      @media (max-width: 1024px) {
+      @media (orientation: landscape) and (max-width: 1024px) {
+        .fy-table-scroll-wrapper {
+          margin: 0 !important;
+          width: 100% !important;
+        }
+        .fy-nav-arrow-left {
+          left: -32px !important;
+          font-size: 2.4rem !important;
+        }
+        .fy-nav-arrow-right {
+          right: -32px !important;
+          font-size: 2.4rem !important;
+        }
+      }
+      @media (max-width: 768px) and (orientation: portrait) {
         .fy-nav-arrow-left {
           left: 2px !important;
           font-size: 2.2rem !important;

@@ -303,8 +303,8 @@ export default function PerformanceBreakdownView({
     fontFamily: "'Kumbh Sans', sans-serif",
     border: "1.5px solid #0047AB",
     borderRadius: "8px",
-    padding: "0.6rem 0.85rem",
-    fontSize: "1.1rem",
+    padding: "0.5rem 0.75rem",
+    fontSize: "0.88rem",
     fontWeight: 600,
     color: "#0047AB",
     backgroundColor: "#f8fafc",
@@ -489,7 +489,7 @@ export default function PerformanceBreakdownView({
                           cursor: "pointer",
                           fontWeight: 600,
                           color: "#0047AB",
-                          fontSize: "15px",
+                          fontSize: "14px",
                           userSelect: "none",
                           transition: "background 0.15s ease",
                         }}
@@ -513,7 +513,7 @@ export default function PerformanceBreakdownView({
                       {isExpanded && (
                         <div style={{ borderTop: "1px solid #e2e8f0", background: "#ffffff" }}>
                           {(!sec.items || sec.items.length === 0) ? (
-                            <div style={{ padding: "12px 18px", color: "#94a3b8", fontSize: "13px", fontStyle: "italic" }}>
+                            <div style={{ padding: "12px 18px", color: "#94a3b8", fontSize: "12.3px", fontStyle: "italic" }}>
                               None in this period
                             </div>
                           ) : (
@@ -526,7 +526,7 @@ export default function PerformanceBreakdownView({
                                   display: "flex",
                                   justifyContent: "space-between",
                                   alignItems: "center",
-                                  fontSize: "14px",
+                                  fontSize: "13.3px",
                                 }}
                               >
                                 <div style={{ color: "#1e293b", fontWeight: 500, paddingRight: "10px" }}>
@@ -559,7 +559,7 @@ export default function PerformanceBreakdownView({
                       alignItems: "center",
                       fontWeight: 600,
                       color: "#0047AB",
-                      fontSize: "15px",
+                      fontSize: "14px",
                       userSelect: "none",
                       boxShadow: "0 1px 2px rgba(0, 0, 0, 0.03)",
                     }}
@@ -598,10 +598,10 @@ export default function PerformanceBreakdownView({
                       display: "flex",
                       justifyContent: "space-between",
                       alignItems: "center",
-                      fontSize: "14px",
+                      fontSize: "13.3px",
                     }}
                   >
-                    <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "13px" }}>{item.name}</span>
+                    <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "12.3px" }}>{item.name}</span>
                     <span style={{ fontWeight: 700, color: "#0047AB" }}>{formatMoney(item.amount)}</span>
                   </div>
                 );
@@ -619,7 +619,7 @@ export default function PerformanceBreakdownView({
                   }}
                 >
                   <div style={{ paddingRight: "1rem" }}>
-                    <div style={{ fontSize: "15px", color: "#0f172a" }}>
+                    <div style={{ fontSize: "14px", color: "#0f172a" }}>
                       {item.client ? (
                         <>
                           <strong style={{ fontWeight: 700 }}>{item.client}</strong>
@@ -632,14 +632,14 @@ export default function PerformanceBreakdownView({
                       )}
                     </div>
                     {item.detail && (
-                      <div style={{ fontSize: "13px", color: "#64748b", fontStyle: "italic", marginTop: "3px" }}>
+                      <div style={{ fontSize: "12.3px", color: "#64748b", fontStyle: "italic", marginTop: "3px" }}>
                         {item.detail}
                       </div>
                     )}
                   </div>
                   <div
                     style={{
-                      fontSize: "15px",
+                      fontSize: "14px",
                       fontWeight: 700,
                       color: "#0047AB",
                       textAlign: "right",
@@ -661,8 +661,8 @@ export default function PerformanceBreakdownView({
             gap: 0.5rem !important;
           }
           .breakdown-select {
-            font-size: 0.95rem !important;
-            padding: 0.45rem 0.65rem !important;
+            font-size: 0.78rem !important;
+            padding: 0.4rem 0.55rem !important;
           }
         }
       `}</style>

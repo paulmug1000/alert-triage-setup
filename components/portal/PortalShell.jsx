@@ -774,7 +774,7 @@ export default function PortalShell({
             gap: 0.5rem !important;
           }
           .portal-brand-logo {
-            height: 32px !important;
+            height: 40px !important;
           }
           .portal-client-title {
             max-width: 200px !important;
@@ -785,6 +785,16 @@ export default function PortalShell({
           }
           .portal-main-content-wrapper {
             padding: 0.75rem 0.5rem !important;
+          }
+        }
+        @media (orientation: landscape) and (max-height: 520px), (orientation: landscape) and (max-width: 1024px) {
+          .portal-header-bar-inner {
+            padding-left: max(2.5rem, calc(env(safe-area-inset-left, 0px) + 1.25rem)) !important;
+            padding-right: max(2.5rem, calc(env(safe-area-inset-right, 0px) + 1.25rem)) !important;
+          }
+          .portal-main-content-wrapper {
+            padding-left: max(2.5rem, calc(env(safe-area-inset-left, 0px) + 1.25rem)) !important;
+            padding-right: max(2.5rem, calc(env(safe-area-inset-right, 0px) + 1.25rem)) !important;
           }
         }
       `}</style>

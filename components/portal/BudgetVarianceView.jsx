@@ -1029,18 +1029,18 @@ export default function BudgetVarianceView({
       </div>
 
     <style jsx>{`
-      @media (max-width: 768px) {
+      @media (max-width: 1024px) {
         .fy-nav-arrow-left {
-          left: -12px !important;
+          left: 2px !important;
           font-size: 2.2rem !important;
         }
         .fy-nav-arrow-right {
-          right: -12px !important;
+          right: 2px !important;
           font-size: 2.2rem !important;
         }
         .fy-table-scroll-wrapper {
-          margin: 0 16px !important;
-          width: calc(100% - 32px) !important;
+          margin: 0 24px !important;
+          width: calc(100% - 48px) !important;
         }
       }
     `}</style>

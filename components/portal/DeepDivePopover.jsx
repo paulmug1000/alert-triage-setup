@@ -87,25 +87,15 @@ export default function DeepDivePopover({
       if (e.key === "Escape") onClose();
     };
 
-    const handleScroll = (e) => {
-      // Allow scrolling inside the popover's content area
-      if (popoverRef.current && popoverRef.current.contains(e.target)) {
-        return;
-      }
-      onClose();
-    };
-
     const handleResize = () => {
       onClose();
     };
 
     window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("scroll", handleScroll, true);
     window.addEventListener("resize", handleResize);
 
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("scroll", handleScroll, true);
       window.removeEventListener("resize", handleResize);
     };
   }, [isOpen, onClose]);
@@ -288,7 +278,7 @@ export default function DeepDivePopover({
             flex: 1,
             minHeight: 0,
             overflowY: "auto",
-            padding: hasSections ? "12px" : "6px 0",
+            padding: hasSections ? "12px 12px 28px 12px" : "6px 0 28px 0",
           }}
         >
         {/* Render Sections (Staff Costs etc. with Expandable Cards) */}
@@ -444,6 +434,7 @@ export default function DeepDivePopover({
                 </div>
               );
             })}
+            <div style={{ height: "20px", width: "100%", flexShrink: 0 }} />
           </div>
         ) : (
           /* Render Regular List (Revenue, Expenses, Cash receipts, Net Payroll/HMRC/Pension) */
@@ -547,6 +538,7 @@ export default function DeepDivePopover({
                 );
               })
             )}
+            <div style={{ height: "20px", width: "100%", flexShrink: 0 }} />
           </div>
         )}
       </div>

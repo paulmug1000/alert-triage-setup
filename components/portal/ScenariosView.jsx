@@ -566,7 +566,7 @@ export default function ScenariosView({
             <table
             style={{
               width: "100%",
-              minWidth: "780px",
+              minWidth: "860px",
               borderCollapse: "separate",
               borderSpacing: 0,
               fontSize: "12px",
@@ -581,7 +581,7 @@ export default function ScenariosView({
                     padding: "6px 8px",
                     textAlign: "left",
                     fontWeight: 700,
-                    width: "22%",
+                    width: "15%",
                     position: "sticky",
                     left: 0,
                     background: "#0000ff",
@@ -598,7 +598,7 @@ export default function ScenariosView({
                       textAlign: "right",
                       fontWeight: 700,
                       fontSize: "11px",
-                      width: "5.8%",
+                      width: "6.4%",
                     }}
                   >
                     {m}
@@ -609,8 +609,8 @@ export default function ScenariosView({
                     padding: "6px 8px",
                     textAlign: "right",
                     fontWeight: 800,
-                    width: "8.4%",
-                    background: "#0000ff",
+                    width: "8.2%",
+                    background: "#0047AB",
                   }}
                 >
                   {activeYear?.totalColHeader || "FY Total"}
@@ -834,7 +834,7 @@ export default function ScenariosView({
           <table
             style={{
               width: "100%",
-              minWidth: "780px",
+              minWidth: "860px",
               borderCollapse: "separate",
               borderSpacing: 0,
               fontSize: "12px",
@@ -843,15 +843,15 @@ export default function ScenariosView({
           >
             <thead>
               <tr style={{ background: "#f1f5f9", color: "#475569" }}>
-                <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 700, width: "22%", position: "sticky", left: 0, background: "#f1f5f9", zIndex: 2 }}>
+                <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 700, width: "15%", position: "sticky", left: 0, background: "#f1f5f9", zIndex: 2 }}>
 
                 </th>
                 {headerMonths.map((m, idx) => (
-                  <th key={idx} style={{ padding: "6px 4px", textAlign: "center", fontWeight: 600, fontSize: "11px", width: "5.8%" }}>
+                  <th key={idx} style={{ padding: "6px 4px", textAlign: "center", fontWeight: 600, fontSize: "11px", width: "6.4%" }}>
                     {m}
                   </th>
                 ))}
-                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, width: "8.4%" }}>
+                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, width: "8.2%" }}>
                   Total difference
                 </th>
               </tr>
@@ -1054,9 +1054,9 @@ export default function ScenariosView({
 
         <div style={{ overflowX: "auto", width: "100%" }}>
           <table
+            className="scenario-pipeline-table"
             style={{
               width: "100%",
-              minWidth: "750px",
               borderCollapse: "collapse",
               background: "#ffffff",
               textAlign: "left",
@@ -1259,6 +1259,31 @@ export default function ScenariosView({
           </table>
         </div>
       </div>
+
+      <style jsx>{`
+        @media (max-width: 1024px) {
+          .fy-nav-arrow-left {
+            left: 2px !important;
+            font-size: 2.2rem !important;
+          }
+          .fy-nav-arrow-right {
+            right: 2px !important;
+            font-size: 2.2rem !important;
+          }
+          .fy-table-scroll-wrapper {
+            margin: 0 24px !important;
+            width: calc(100% - 48px) !important;
+          }
+          .scenario-pipeline-table {
+            font-size: 11px !important;
+            min-width: 100% !important;
+          }
+          .scenario-pipeline-table th,
+          .scenario-pipeline-table td {
+            padding: 6px 4px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

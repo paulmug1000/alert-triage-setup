@@ -467,7 +467,7 @@ export default function PortalOutgoingsView({
             <table
               style={{
                 width: "100%",
-                minWidth: "780px",
+                minWidth: "860px",
                 borderCollapse: "separate",
                 borderSpacing: 0,
                 fontSize: "12px",
@@ -481,7 +481,7 @@ export default function PortalOutgoingsView({
                       padding: "6px 8px",
                       textAlign: "left",
                       fontWeight: 700,
-                      width: "24%",
+                      width: "18.8%",
                       position: "sticky",
                       left: 0,
                       background: "#0047AB",
@@ -498,7 +498,7 @@ export default function PortalOutgoingsView({
                         textAlign: "right",
                         fontWeight: 700,
                         fontSize: "11px",
-                        width: "5.5%",
+                        width: "6.1%",
                       }}
                     >
                       {m}
@@ -509,7 +509,7 @@ export default function PortalOutgoingsView({
                       padding: "6px 8px",
                       textAlign: "right",
                       fontWeight: 800,
-                      width: "10%",
+                      width: "8.0%",
                       background: "#0047AB",
                     }}
                   >
@@ -647,18 +647,18 @@ export default function PortalOutgoingsView({
     </div>
 
     <style jsx>{`
-      @media (max-width: 768px) {
+      @media (max-width: 1024px) {
         .fy-nav-arrow-left {
-          left: -12px !important;
+          left: 2px !important;
           font-size: 2.2rem !important;
         }
         .fy-nav-arrow-right {
-          right: -12px !important;
+          right: 2px !important;
           font-size: 2.2rem !important;
         }
         .fy-table-scroll-wrapper {
-          margin: 0 16px !important;
-          width: calc(100% - 32px) !important;
+          margin: 0 24px !important;
+          width: calc(100% - 48px) !important;
         }
       }
     `}</style>

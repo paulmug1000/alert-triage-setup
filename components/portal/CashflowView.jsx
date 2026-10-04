@@ -445,11 +445,13 @@ export default function CashflowView({
                       fontWeight: 700,
                       color: "#0f172a",
                       padding: "10px 14px",
-                      fontSize: "12px",
+                      fontSize: "10.8px",
                       letterSpacing: "0.3px",
                     }}
                   >
-                    Excluding pipeline
+                    <span style={{ position: "sticky", left: "14px", display: "inline-block" }}>
+                      Excluding pipeline
+                    </span>
                   </td>
                 </tr>
 
@@ -602,12 +604,14 @@ export default function CashflowView({
                       fontWeight: 700,
                       color: "#0f172a",
                       padding: "10px 14px",
-                      fontSize: "12px",
+                      fontSize: "10.8px",
                       letterSpacing: "0.3px",
                       borderTop: "2px solid #cbd5e1",
                     }}
                   >
-                    Including pipeline
+                    <span style={{ position: "sticky", left: "14px", display: "inline-block" }}>
+                      Including pipeline
+                    </span>
                   </td>
                 </tr>
 
@@ -956,7 +960,7 @@ export default function CashflowView({
       </div>
 
       <style jsx>{`
-        @media (max-width: 900px) {
+        @media (max-width: 1150px), (orientation: landscape) {
           .cashflow-table-container {
             max-width: 100% !important;
           }

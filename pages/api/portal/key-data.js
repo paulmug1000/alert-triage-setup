@@ -151,6 +151,7 @@ export default async function handler(req, res) {
     batchRanges.push("KeyInfo!F11:F12"); // Profit share % and switch
     batchRanges.push("KeyInfo!B15");     // Mode (Revenue vs Income)
     batchRanges.push("KeyInfo!B20");     // Contractor source
+    batchRanges.push("KeyInfo!D15:D16"); // Split method (D15) & split enabled (D16)
 
     const batchResp = await withRetry(() =>
       sheets.spreadsheets.values.batchGet({
@@ -175,9 +176,12 @@ export default async function handler(req, res) {
     const profitShareRows = valueRanges[rangeIdx++]?.values || [];
     const modeRows = valueRanges[rangeIdx++]?.values || [];
     const contractorSourceRows = valueRanges[rangeIdx++]?.values || [];
+    const splitInfoRows = valueRanges[rangeIdx++]?.values || [];
 
     const leadSources = leadSourcesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
     const productLines = productLinesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
+    const splitMethod = String(splitInfoRows[0]?.[0] || "Even By Month").trim();
+    const splitEnabled = String(splitInfoRows[1]?.[0] || "").trim().toLowerCase() === "yes";
 
     const profitSharePctRaw = profitShareRows[0]?.[0] || "0%";
     const profitSharePct = parseFloat(String(profitSharePctRaw).replace("%", "")) / 100 || 0;
@@ -825,7 +829,11 @@ export default async function handler(req, res) {
       formOptions: {
         leadSources,
         productLines,
+        splitEnabled,
+        splitMethod,
       },
+      splitEnabled,
+      splitMethod,
     };
 
     // Cache in L1 memory and Redis

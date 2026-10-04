@@ -18,6 +18,8 @@ export default function PortalJobsView({
   const [isConfirming, setIsConfirming] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [optimisticJobs, setOptimisticJobs] = useState({}); // { [key]: job }
+  const [enableSplit, setEnableSplit] = useState(false);
+  const [lockedMonths, setLockedMonths] = useState({});
   const pageSize = 25;
 
   // Clear optimistic jobs when fresh server data arrives
@@ -39,57 +41,61 @@ export default function PortalJobsView({
     }
   }, [editingJob]);
 
-  const formatDateDdMmmYy = (dateVal) => {
-    if (!dateVal) return "—";
-    let d = null;
-    if (dateVal instanceof Date && !isNaN(dateVal.getTime())) {
-      d = dateVal;
-    } else {
-      const str = String(dateVal).trim();
-      if (!str || str === "—") return "—";
+  const parseDate = (dateVal) => {
+    if (!dateVal) return null;
+    if (dateVal instanceof Date && !isNaN(dateVal.getTime())) return dateVal;
+    const str = String(dateVal).trim();
+    if (!str || str === "—") return null;
 
-      // Already dd-Mmm-yy
-      if (/^\d{2}\-[A-Za-z]{3}\-\d{2}$/.test(str)) return str;
+    // yyyy-mm-dd
+    const isoMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (isoMatch) {
+      const d = new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+      return isNaN(d.getTime()) ? null : d;
+    }
 
-      // dd/mm/yyyy or dd-mm-yyyy
-      const ukMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-      if (ukMatch) {
-        let y = parseInt(ukMatch[3], 10);
-        if (y < 100) y += 2000;
-        d = new Date(y, parseInt(ukMatch[2], 10) - 1, parseInt(ukMatch[1], 10));
-      } else {
-        // yyyy-mm-dd
-        const isoMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-        if (isoMatch) {
-          d = new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
-        } else {
-          // dd-Mmm-yyyy e.g. 1-Oct-2026
-          const mmmMatch = str.match(/^(\d{1,2})[\s\-]([a-zA-Z]{3})[\s\-](\d{2,4})$/);
-          if (mmmMatch) {
-            const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-            const mi = months[mmmMatch[2].toLowerCase()];
-            let y = parseInt(mmmMatch[3], 10);
-            if (y < 100) y += 2000;
-            if (mi !== undefined) d = new Date(y, mi, parseInt(mmmMatch[1], 10));
-          } else {
-            const myMatch = str.match(/^([a-zA-Z]{3})[\s\-](\d{2,4})$/);
-            if (myMatch) {
-              const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-              const mi = months[myMatch[1].toLowerCase()];
-              let y = parseInt(myMatch[2], 10);
-              if (y < 100) y += 2000;
-              if (mi !== undefined) d = new Date(y, mi, 1);
-            } else {
-              const parsed = new Date(str);
-              if (!isNaN(parsed.getTime())) d = parsed;
-            }
-          }
-        }
+    // dd/mm/yyyy or dd-mm-yyyy
+    const ukMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+    if (ukMatch) {
+      let y = parseInt(ukMatch[3], 10);
+      if (y < 100) y += 2000;
+      const d = new Date(y, parseInt(ukMatch[2], 10) - 1, parseInt(ukMatch[1], 10));
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    // dd-Mmm-yyyy e.g. 1-Oct-2026 or 01-Oct-26
+    const mmmMatch = str.match(/^(\d{1,2})[\s\-]([a-zA-Z]{3})[\s\-](\d{2,4})$/);
+    if (mmmMatch) {
+      const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+      const mi = months[mmmMatch[2].toLowerCase()];
+      let y = parseInt(mmmMatch[3], 10);
+      if (y < 100) y += 2000;
+      if (mi !== undefined) {
+        const d = new Date(y, mi, parseInt(mmmMatch[1], 10));
+        return isNaN(d.getTime()) ? null : d;
       }
     }
 
-    if (!d || isNaN(d.getTime())) return String(dateVal);
+    // Mmm-yy or Mmm-yyyy
+    const myMatch = str.match(/^([a-zA-Z]{3})[\s\-](\d{2,4})$/);
+    if (myMatch) {
+      const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+      const mi = months[myMatch[1].toLowerCase()];
+      let y = parseInt(myMatch[2], 10);
+      if (y < 100) y += 2000;
+      if (mi !== undefined) {
+        const d = new Date(y, mi, 1);
+        return isNaN(d.getTime()) ? null : d;
+      }
+    }
 
+    const parsed = new Date(str);
+    return !isNaN(parsed.getTime()) ? parsed : null;
+  };
+
+  const formatDateDdMmmYy = (dateVal) => {
+    const d = parseDate(dateVal);
+    if (!d) return dateVal ? String(dateVal) : "—";
     const day = String(d.getDate()).padStart(2, "0");
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const mmm = monthNames[d.getMonth()];
@@ -174,6 +180,8 @@ export default function PortalJobsView({
 
   const handleOpenAddJob = () => {
     setSaveError(null);
+    setEnableSplit(false);
+    setLockedMonths({});
     setEditingJob({
       id: "new",
       rowNumber: null,
@@ -200,6 +208,26 @@ export default function PortalJobsView({
   const handleOpenEditJob = (job, e) => {
     if (e) e.stopPropagation();
     setSaveError(null);
+
+    const splitStr = String(job?.splitStr || "").trim();
+    if (splitStr.toLowerCase().startsWith("[split]")) {
+      setEnableSplit(true);
+      const initialLocked = {};
+      const parts = splitStr.split(",");
+      parts.forEach((p) => {
+        const match = p.match(/([a-zA-Z]{3}-\d{2})\s*:\s*([^,]+)/);
+        if (match) {
+          const mKey = match[1].toLowerCase().trim();
+          const mVal = parseFloat(String(match[2]).replace(/[^0-9.-]/g, "")) || 0;
+          initialLocked[mKey] = mVal;
+        }
+      });
+      setLockedMonths(initialLocked);
+    } else {
+      setEnableSplit(false);
+      setLockedMonths({});
+    }
+
     setEditingJob({
       ...job,
       childRowNumbers: Array.isArray(job.childRowNumbers) ? job.childRowNumbers : [],
@@ -211,6 +239,91 @@ export default function PortalJobsView({
         : [{ num: 1, desc: "", amount: "", vat: "Yes", recDate: "", days: "30", status: "" }],
     });
   };
+
+  // Uneven Revenue Split calculations
+  const currencySymbol = data?.currencySymbol || data?.clientInfo?.currencySymbol || "£";
+  const isProject = String(editingJob?.projectRetainer || "Project").toLowerCase() === "project";
+  const clientSplitEnabled = data?.formOptions?.splitEnabled !== undefined
+    ? data.formOptions.splitEnabled
+    : (data?.splitEnabled !== undefined ? data.splitEnabled : true);
+  const hasExistingSplit = Boolean(editingJob?.splitStr && String(editingJob.splitStr).trim().toLowerCase().startsWith("[split]"));
+  const isSplitSectionVisible = isProject && (clientSplitEnabled || hasExistingSplit || enableSplit);
+
+  const { splitMonths, splitDateError } = useMemo(() => {
+    if (!editingJob?.startDate || !editingJob?.endDate) {
+      return { splitMonths: [], splitDateError: "Please enter a Start Date and End Date to split revenue." };
+    }
+    const sDate = parseDate(editingJob.startDate);
+    const eDate = parseDate(editingJob.endDate);
+    if (!sDate || !eDate) {
+      return { splitMonths: [], splitDateError: "Please enter a Start Date and End Date to split revenue." };
+    }
+    let currYear = sDate.getFullYear();
+    let currMonth = sDate.getMonth();
+    const endYear = eDate.getFullYear();
+    const endMonth = eDate.getMonth();
+
+    if (new Date(currYear, currMonth, 1) > new Date(endYear, endMonth, 1)) {
+      return { splitMonths: [], splitDateError: "End Date must be after Start Date." };
+    }
+
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const mList = [];
+    while (currYear < endYear || (currYear === endYear && currMonth <= endMonth)) {
+      mList.push(`${monthNames[currMonth]}-${String(currYear).slice(-2)}`);
+      currMonth++;
+      if (currMonth > 11) {
+        currMonth = 0;
+        currYear++;
+      }
+    }
+    return { splitMonths: mList, splitDateError: "" };
+  }, [editingJob?.startDate, editingJob?.endDate]);
+
+  const totRev = useMemo(() => {
+    return parseFloat(String(editingJob?.revenue || "0").replace(/[^0-9.-]/g, "")) || 0;
+  }, [editingJob?.revenue]);
+
+  const { validLocked, lockedSum, lockedCount, remaining, unlockedCount, evenSplit } = useMemo(() => {
+    const vLocked = {};
+    let lSum = 0;
+    let lCount = 0;
+    splitMonths.forEach((m) => {
+      const k = m.toLowerCase();
+      if (lockedMonths[k] !== undefined) {
+        vLocked[k] = lockedMonths[k];
+        lSum += lockedMonths[k];
+        lCount++;
+      }
+    });
+    const rem = totRev - lSum;
+    const uCount = splitMonths.length - lCount;
+    const eSplit = uCount > 0 ? rem / uCount : 0;
+    return {
+      validLocked: vLocked,
+      lockedSum: lSum,
+      lockedCount: lCount,
+      remaining: rem,
+      unlockedCount: uCount,
+      evenSplit: eSplit,
+    };
+  }, [splitMonths, lockedMonths, totRev]);
+
+  const { isSplitError, splitErrorText } = useMemo(() => {
+    if (!enableSplit) return { isSplitError: false, splitErrorText: "" };
+    if (splitDateError) return { isSplitError: true, splitErrorText: splitDateError };
+    if (isNaN(totRev) || totRev <= 0) return { isSplitError: true, splitErrorText: "Please enter a valid Total Revenue." };
+    if (lockedSum > totRev + 0.05) return { isSplitError: true, splitErrorText: "Allocated revenue exceeds the total job revenue." };
+    if (unlockedCount === 0 && Math.abs(remaining) > 0.05) {
+      return { isSplitError: true, splitErrorText: "Total allocated revenue does not perfectly match the job revenue." };
+    }
+    return { isSplitError: false, splitErrorText: "" };
+  }, [enableSplit, splitDateError, totRev, lockedSum, unlockedCount, remaining]);
+
+  const formatSummaryNum = (num) =>
+    Number.isInteger(num)
+      ? num.toLocaleString()
+      : num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const addInvoice = () => {
     setEditingJob((prev) => ({
@@ -325,8 +438,31 @@ export default function PortalJobsView({
       return;
     }
 
+    if (enableSplit && isSplitError) {
+      setSaveError(splitErrorText || "Please resolve the errors in the Uneven Revenue Split section before saving.");
+      return;
+    }
+
     setIsSaving(true);
     setSaveError(null);
+
+    let splitStrResult = "";
+    if (enableSplit && splitMonths.length > 0 && String(editingJob?.projectRetainer || "").toLowerCase() === "project") {
+      let str = "[Split]";
+      splitMonths.forEach((m) => {
+        const mKey = m.toLowerCase();
+        const isLocked = validLocked[mKey] !== undefined;
+        const val = isLocked ? validLocked[mKey] : evenSplit;
+        const cleanVal = Number.isInteger(val) ? val : Math.round(val * 100) / 100;
+        str += `,${m}:${cleanVal}`;
+      });
+      splitStrResult = str;
+    }
+
+    const jobToSave = {
+      ...editingJob,
+      splitStr: splitStrResult,
+    };
 
     try {
       const res = await fetch("/api/portal/save-job", {
@@ -335,7 +471,7 @@ export default function PortalJobsView({
         body: JSON.stringify({
           clientSheetId,
           clientName,
-          job: editingJob,
+          job: jobToSave,
         }),
       });
 
@@ -345,7 +481,7 @@ export default function PortalJobsView({
       }
 
       // Optimistically update local job state immediately so new value is visible with zero delay
-      const savedJob = { ...editingJob };
+      const savedJob = { ...jobToSave };
       const parsedRev = parseFloat(String(savedJob.revenue || "").replace(/[£$€,\s]/g, ""));
       const parsedDc = parseFloat(String(savedJob.directCosts || "").replace(/[£$€,\s]/g, ""));
       savedJob.revNum = isNaN(parsedRev) ? 0 : parsedRev;
@@ -760,7 +896,7 @@ export default function PortalJobsView({
                       </td>
 
                       {/* Project / Retainer */}
-                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                      <td style={{ padding: "10px 12px", textAlign: "center", whiteSpace: "nowrap" }}>
                         <span
                           style={{
                             padding: "2px 7px",
@@ -773,6 +909,24 @@ export default function PortalJobsView({
                         >
                           {job.projectRetainer || "Project"}
                         </span>
+                        {String(job.splitStr || "").trim().toLowerCase().startsWith("[split]") && (
+                          <span
+                            style={{
+                              marginLeft: "5px",
+                              padding: "1px 6px",
+                              borderRadius: "4px",
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              background: "#eff6ff",
+                              color: "#1d4ed8",
+                              border: "1px solid #bfdbfe",
+                              display: "inline-block",
+                            }}
+                            title={job.splitStr}
+                          >
+                            Split
+                          </span>
+                        )}
                       </td>
 
                       {/* Revenue */}
@@ -976,7 +1130,14 @@ export default function PortalJobsView({
                   <label style={formLabelStyle}>Type *</label>
                   <select
                     value={editingJob.projectRetainer || "Project"}
-                    onChange={(e) => setEditingJob({ ...editingJob, projectRetainer: e.target.value })}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setEditingJob({ ...editingJob, projectRetainer: val });
+                      if (val === "Retainer") {
+                        setEnableSplit(false);
+                        setLockedMonths({});
+                      }
+                    }}
                     style={formInputStyle}
                   >
                     <option value="Project">Project</option>
@@ -1117,6 +1278,165 @@ export default function PortalJobsView({
                   </select>
                 </div>
               </div>
+
+              {/* Uneven Revenue Split Section */}
+              {isSplitSectionVisible && (
+                <div
+                  id="split-revenue-section"
+                  style={{
+                    marginTop: "1rem",
+                    marginBottom: "0.75rem",
+                    padding: "1rem",
+                    border: `1px solid ${isSplitError ? "#ef4444" : "#cbd5e1"}`,
+                    borderRadius: "8px",
+                    background: "#f8fafc",
+                    transition: "border-color 0.2s ease",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <input
+                      type="checkbox"
+                      id="enable-split"
+                      name="enableSplit"
+                      checked={enableSplit}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setEnableSplit(checked);
+                        if (!checked) setLockedMonths({});
+                      }}
+                      style={{ width: "18px", height: "18px", cursor: "pointer" }}
+                    />
+                    <label
+                      htmlFor="enable-split"
+                      style={{
+                        fontWeight: 600,
+                        color: "#0047AB",
+                        cursor: "pointer",
+                        userSelect: "none",
+                        fontSize: "14px",
+                      }}
+                    >
+                      Uneven revenue split?
+                    </label>
+                  </div>
+
+                  {enableSplit && isSplitError && (
+                    <div
+                      id="split-error-message"
+                      style={{
+                        color: "#ef4444",
+                        fontSize: "0.85rem",
+                        marginTop: "0.5rem",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {splitErrorText || "Revenue split must be updated to match the total before saving."}
+                    </div>
+                  )}
+
+                  {enableSplit && (
+                    <div id="split-grid-container" style={{ marginTop: "0.75rem" }}>
+                      {splitDateError ? (
+                        <p style={{ color: "#64748b", fontSize: "0.9rem", margin: "0.5rem 0" }}>
+                          {splitDateError}
+                        </p>
+                      ) : (
+                        <>
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))",
+                              gap: "0.75rem",
+                              marginBottom: "1rem",
+                            }}
+                          >
+                            {splitMonths.map((m) => {
+                              const mKey = m.toLowerCase();
+                              const isLocked = validLocked[mKey] !== undefined;
+                              const val = isLocked ? validLocked[mKey] : evenSplit;
+                              const valStr = Number.isInteger(val) ? val.toString() : val.toFixed(2);
+
+                              return (
+                                <SplitMonthInputCard
+                                  key={m}
+                                  month={m}
+                                  mKey={mKey}
+                                  isLocked={isLocked}
+                                  displayVal={valStr}
+                                  currencySymbol={currencySymbol}
+                                  onCommit={(k, newVal) => {
+                                    setLockedMonths((prev) => {
+                                      const next = { ...prev };
+                                      if (newVal === null || newVal === undefined || isNaN(newVal)) {
+                                        delete next[k];
+                                      } else {
+                                        next[k] = newVal;
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                />
+                              );
+                            })}
+                          </div>
+
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "flex-end",
+                              alignItems: "center",
+                              flexWrap: "wrap",
+                              gap: "1.25rem",
+                              paddingTop: "0.75rem",
+                              borderTop: "1px dashed #cbd5e1",
+                              fontSize: "0.85rem",
+                            }}
+                          >
+                            <div>
+                              <span style={{ color: "#64748b" }}>Job Revenue:</span>{" "}
+                              <strong style={{ color: "#1e293b" }}>
+                                {currencySymbol}{formatSummaryNum(totRev)}
+                              </strong>
+                            </div>
+                            <div>
+                              <span style={{ color: "#64748b" }}>Locked Assigned:</span>{" "}
+                              <strong style={{ color: "#0047AB" }}>
+                                {currencySymbol}{formatSummaryNum(lockedSum)}
+                              </strong>
+                            </div>
+                            <div
+                              style={{
+                                color:
+                                  (unlockedCount === 0 && Math.abs(remaining) > 0.05) || lockedSum > totRev + 0.05
+                                    ? "#ef4444"
+                                    : "#64748b",
+                              }}
+                            >
+                              <span style={{ opacity: 0.9 }}>
+                                {unlockedCount === 0 ? "Unassigned:" : "Remaining (Auto-spread):"}
+                              </span>{" "}
+                              <strong>
+                                {currencySymbol}{formatSummaryNum(remaining)}
+                              </strong>
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              textAlign: "right",
+                              marginTop: "0.5rem",
+                              fontSize: "0.8rem",
+                              color: "#64748b",
+                              fontStyle: "italic",
+                            }}
+                          >
+                            Delete an amount to unlock that month and return to automatic allocations.
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Invoices Section */}
               <div
@@ -1579,3 +1899,102 @@ const pageBtnStyle = {
   color: "#0047AB",
   cursor: "pointer",
 };
+
+function SplitMonthInputCard({ month, mKey, isLocked, displayVal, currencySymbol, onCommit }) {
+  const [localVal, setLocalVal] = useState(displayVal);
+  const [isFocused, setIsFocused] = useState(false);
+
+  useEffect(() => {
+    if (!isFocused) {
+      setLocalVal(displayVal);
+    }
+  }, [displayVal, isFocused]);
+
+  const handleBlur = () => {
+    setIsFocused(false);
+    const trimmed = String(localVal).trim();
+    if (trimmed === "") {
+      onCommit(mKey, null);
+    } else {
+      const parsed = parseFloat(trimmed);
+      if (isNaN(parsed)) {
+        onCommit(mKey, null);
+      } else {
+        onCommit(mKey, parsed);
+      }
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") {
+      e.currentTarget.blur();
+    }
+  };
+
+  return (
+    <div
+      style={{
+        background: "#fff",
+        padding: "0.5rem",
+        borderRadius: "6px",
+        border: `1px solid ${isLocked ? "#0047AB" : "#cbd5e1"}`,
+        boxShadow: isLocked ? "0 1px 3px rgba(0,71,171,0.12)" : "none",
+        transition: "border-color 0.15s ease",
+      }}
+    >
+      <label
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          fontSize: "0.8rem",
+          fontWeight: isLocked ? "700" : "500",
+          color: isLocked ? "#0047AB" : "#64748b",
+          marginBottom: "0.35rem",
+        }}
+      >
+        <span>{month}</span>
+        <span style={{ fontSize: "0.7rem", opacity: 0.75 }}>
+          {isLocked ? "🔒" : "Auto"}
+        </span>
+      </label>
+      <div style={{ position: "relative" }}>
+        <span
+          style={{
+            position: "absolute",
+            left: "8px",
+            top: "50%",
+            transform: "translateY(-50%)",
+            color: "#64748b",
+            fontSize: "0.85rem",
+            pointerEvents: "none",
+          }}
+        >
+          {currencySymbol}
+        </span>
+        <input
+          type="number"
+          step="0.01"
+          placeholder="Auto"
+          value={localVal}
+          onFocus={() => setIsFocused(true)}
+          onChange={(e) => setLocalVal(e.target.value)}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
+          style={{
+            paddingLeft: "22px",
+            width: "100%",
+            minHeight: "32px",
+            fontSize: "0.95rem",
+            border: "1px solid transparent",
+            background: "#f8fafc",
+            borderRadius: "4px",
+            color: isLocked ? "#0047AB" : "#1e293b",
+            fontWeight: isLocked ? 700 : 400,
+            outline: "none",
+            boxSizing: "border-box",
+          }}
+        />
+      </div>
+    </div>
+  );
+}

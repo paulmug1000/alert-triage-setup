@@ -367,7 +367,9 @@ export default async function handler(req, res) {
       lead: getColIdx(["lead"]),
       dateConfirmed: getColIdx(["date conf", "date originally added to pipeline", "date confirmed", "date added"]),
       leadSource: getColIdx(["lead src", "lead source"]),
-      splitStr: getColIdx(["revunevensplit"]),
+      splitStr: getColIdx(["revunevensplit", "rev uneven split", "rev_uneven_split", "uneven split"]) !== -1
+        ? getColIdx(["revunevensplit", "rev uneven split", "rev_uneven_split", "uneven split"])
+        : 30,
       revenue: getColIdx(["revenue (proj total / ongoing pm) - excl vat", "revenue"]),
       directCosts: getColIdx(["direct costs (proj total / ongoing pm) - excl vat", "direct costs"]),
       vat: getColIdx(["vat?"]),

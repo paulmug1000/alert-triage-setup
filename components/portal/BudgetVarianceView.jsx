@@ -326,7 +326,7 @@ export default function BudgetVarianceView({
   const displayedMonths = viewMode === "month" ? [months[selectedMonthIdx]] : months.slice(0, limit);
   const numTotalCols = viewMode === "month" ? 6 : displayedMonths.length + 7;
 
-  const colPercents = useMemo(() => {
+  const colPercents = (() => {
     if (viewMode === "month") {
       return {
         colA: "36%",
@@ -366,7 +366,7 @@ export default function BudgetVarianceView({
       varAmt: "7.5%",
       varPct: "6.5%",
     };
-  }, [viewMode, displayedMonths.length]);
+  })();
 
   // Build the structured rows matching renderBudgetAnalysis
   const tableRows = [];

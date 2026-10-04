@@ -666,96 +666,96 @@ export default function PortalShell({
               </button>
             </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-            {clients.length > 1 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              {clients.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectClient(null);
+                    setMobileMenuOpen(false);
+                  }}
+                  style={{
+                    ...mobileNavItemStyle(false),
+                    background: "rgba(255, 255, 255, 0.2)",
+                    color: "#ffffff",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px"
+                  }}
+                >
+                  <span>⊞</span>
+                  <span>Switch Company ({clientName})</span>
+                </button>
+              )}
+
               <button
                 type="button"
-                onClick={() => {
-                  onSelectClient(null);
-                  setMobileMenuOpen(false);
-                }}
-                style={{
-                  ...mobileNavItemStyle(false),
-                  background: "rgba(255, 255, 255, 0.2)",
-                  color: "#ffffff",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px"
-                }}
+                onClick={() => handleNavClick("month")}
+                style={mobileNavItemStyle(activeView === "month")}
               >
-                <span>⊞</span>
-                <span>Switch Company ({clientName})</span>
+                Home
               </button>
-            )}
 
-            <button
-              type="button"
-              onClick={() => handleNavClick("month")}
-              style={mobileNavItemStyle(activeView === "month")}
-            >
-              Home (Month)
-            </button>
+              <div style={mobileSectionHeaderStyle}>Performance</div>
+              <button type="button" onClick={() => handleNavClick("dashboard")} style={mobileSubItemStyle(activeView === "dashboard")}>
+                Financial year
+              </button>
+              <button type="button" onClick={() => handleNavClick("ytd")} style={mobileSubItemStyle(activeView === "ytd")}>
+                Year-to-date
+              </button>
+              <button type="button" onClick={() => handleNavClick("perfBreakdown")} style={mobileSubItemStyle(activeView === "perfBreakdown")}>
+                Breakdowns
+              </button>
 
-            <div style={mobileSectionHeaderStyle}>Performance</div>
-            <button type="button" onClick={() => handleNavClick("dashboard")} style={mobileSubItemStyle(activeView === "dashboard")}>
-              Financial year
-            </button>
-            <button type="button" onClick={() => handleNavClick("ytd")} style={mobileSubItemStyle(activeView === "ytd")}>
-              Year-to-date
-            </button>
-            <button type="button" onClick={() => handleNavClick("perfBreakdown")} style={mobileSubItemStyle(activeView === "perfBreakdown")}>
-              Breakdowns
-            </button>
+              <div style={mobileSectionHeaderStyle}>Cash</div>
+              <button type="button" onClick={() => handleNavClick("cash")} style={mobileSubItemStyle(activeView === "cash")}>
+                Cashflow forecast
+              </button>
+              <button type="button" onClick={() => handleNavClick("cashBreakdown")} style={mobileSubItemStyle(activeView === "cashBreakdown")}>
+                Breakdowns
+              </button>
 
-            <div style={mobileSectionHeaderStyle}>Cash</div>
-            <button type="button" onClick={() => handleNavClick("cash")} style={mobileSubItemStyle(activeView === "cash")}>
-              Cashflow forecast
-            </button>
-            <button type="button" onClick={() => handleNavClick("cashBreakdown")} style={mobileSubItemStyle(activeView === "cashBreakdown")}>
-              Breakdowns
-            </button>
+              <div style={mobileSectionHeaderStyle}>Key data</div>
+              <button type="button" onClick={() => handleNavClick("jobs")} style={mobileSubItemStyle(activeView === "jobs")}>
+                Jobs
+              </button>
+              <button type="button" onClick={() => handleNavClick("contractors")} style={mobileSubItemStyle(activeView === "contractors")}>
+                Contractors
+              </button>
+              <button type="button" onClick={() => handleNavClick("expenses")} style={mobileSubItemStyle(activeView === "expenses")}>
+                Expenses
+              </button>
+              {!isSeniorRestricted && (
+                <>
+                  <button type="button" onClick={() => handleNavClick("salaries")} style={mobileSubItemStyle(activeView === "salaries")}>
+                    Salaries
+                  </button>
+                  <button type="button" onClick={() => handleNavClick("dividends")} style={mobileSubItemStyle(activeView === "dividends")}>
+                    Dividends
+                  </button>
+                </>
+              )}
+              <button type="button" onClick={() => handleNavClick("nbtofind")} style={mobileSubItemStyle(activeView === "nbtofind")}>
+                New business to find
+              </button>
 
-            <div style={mobileSectionHeaderStyle}>Key data</div>
-            <button type="button" onClick={() => handleNavClick("jobs")} style={mobileSubItemStyle(activeView === "jobs")}>
-              Jobs
-            </button>
-            <button type="button" onClick={() => handleNavClick("contractors")} style={mobileSubItemStyle(activeView === "contractors")}>
-              Contractors
-            </button>
-            <button type="button" onClick={() => handleNavClick("expenses")} style={mobileSubItemStyle(activeView === "expenses")}>
-              Expenses
-            </button>
-            {!isSeniorRestricted && (
-              <>
-                <button type="button" onClick={() => handleNavClick("salaries")} style={mobileSubItemStyle(activeView === "salaries")}>
-                  Salaries
-                </button>
-                <button type="button" onClick={() => handleNavClick("dividends")} style={mobileSubItemStyle(activeView === "dividends")}>
-                  Dividends
-                </button>
-              </>
-            )}
-            <button type="button" onClick={() => handleNavClick("nbtofind")} style={mobileSubItemStyle(activeView === "nbtofind")}>
-              New business to find
-            </button>
-
-            <div style={mobileSectionHeaderStyle}>Analysis</div>
-            <button type="button" onClick={() => handleNavClick("scenarios")} style={mobileSubItemStyle(activeView === "scenarios")}>
-              Scenarios
-            </button>
-            {hasBudget && (
-              <>
-                <button type="button" onClick={() => handleNavClick("viewBudget")} style={mobileSubItemStyle(activeView === "viewBudget")}>
-                  View budget
-                </button>
-                <button type="button" onClick={() => handleNavClick("budgetVariance")} style={mobileSubItemStyle(activeView === "budgetVariance")}>
-                  Budget variance
-                </button>
-              </>
-            )}
+              <div style={mobileSectionHeaderStyle}>Analysis</div>
+              <button type="button" onClick={() => handleNavClick("scenarios")} style={mobileSubItemStyle(activeView === "scenarios")}>
+                Scenarios
+              </button>
+              {hasBudget && (
+                <>
+                  <button type="button" onClick={() => handleNavClick("viewBudget")} style={mobileSubItemStyle(activeView === "viewBudget")}>
+                    View budget
+                  </button>
+                  <button type="button" onClick={() => handleNavClick("budgetVariance")} style={mobileSubItemStyle(activeView === "budgetVariance")}>
+                    Budget variance
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         </div>
-      </div>
       )}
 
       {/* Main Content Area */}

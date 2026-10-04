@@ -148,18 +148,6 @@ export default function PortalSalariesView({
           <h2 style={{ margin: 0, fontSize: "1.45rem", fontWeight: 700, color: "#0047AB" }}>
             Salaries
           </h2>
-          <span
-            style={{
-              padding: "2px 8px",
-              borderRadius: "4px",
-              fontSize: "11px",
-              fontWeight: 700,
-              background: "rgba(0, 71, 171, 0.08)",
-              color: "#0047AB",
-            }}
-          >
-            {currentFyLabel}
-          </span>
         </div>
 
         {/* Actions */}

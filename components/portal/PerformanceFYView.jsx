@@ -649,61 +649,6 @@ export default function PerformanceFYView({
       )}
     </div>
 
-      {/* Financial Year Summary 4 KPI Boxes (MOVED TO UNDERNEATH THE TABLE) */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-          gap: "1rem",
-          marginTop: "3rem",
-        }}
-      >
-        <div style={kpiCardStyle}>
-          <span style={kpiLabelStyle}>FY Revenue</span>
-          <div style={kpiValueStyle}>{totalRevRow?.totalVal || "£0"}</div>
-          <span style={{ fontSize: "11px", color: "#64748b" }}>Full Year Target / Total</span>
-        </div>
-
-        <div style={kpiCardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={kpiLabelStyle}>Gross Profit</span>
-            {gpMarginRow?.totalVal && (
-              <span style={{ ...badgeStyle, background: "#dcfce7", color: "#166534" }}>
-                {gpMarginRow.totalVal}
-              </span>
-            )}
-          </div>
-          <div style={{ ...kpiValueStyle, color: "#166534" }}>{grossProfitRow?.totalVal || "£0"}</div>
-          <span style={{ fontSize: "11px", color: "#64748b" }}>After Delivery Costs</span>
-        </div>
-
-        <div style={kpiCardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={kpiLabelStyle}>Total Overheads</span>
-            {overheadsPctRow?.totalVal && (
-              <span style={{ ...badgeStyle, background: "#fef3c7", color: "#b45309" }}>
-                {overheadsPctRow.totalVal}
-              </span>
-            )}
-          </div>
-          <div style={{ ...kpiValueStyle, color: "#b45309" }}>{overheadsRow?.totalVal || "£0"}</div>
-          <span style={{ fontSize: "11px", color: "#64748b" }}>Non-Delivery & Operations</span>
-        </div>
-
-        <div style={kpiCardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={kpiLabelStyle}>Operating Profit</span>
-            {opMarginRow?.totalVal && (
-              <span style={{ ...badgeStyle, background: "#f0fdf4", color: "#166534" }}>
-                {opMarginRow.totalVal}
-              </span>
-            )}
-          </div>
-          <div style={{ ...kpiValueStyle, color: "#0047AB" }}>{opProfitRow?.totalVal || "£0"}</div>
-          <span style={{ fontSize: "11px", color: "#64748b" }}>Net Trading Result</span>
-        </div>
-      </div>
-
       <style jsx>{`
         @media (orientation: landscape) and (max-width: 1024px) {
           .fy-table-scroll-wrapper {

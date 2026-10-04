@@ -761,68 +761,6 @@ export default function PerformanceYTDView({
       )}
     </div>
 
-      {/* YTD Key Summary Cards (Positioned UNDERNEATH the table) */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-          gap: "1rem",
-          marginTop: "3rem",
-        }}
-      >
-        <div style={kpiCardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={kpiLabelStyle}>YTD Revenue</span>
-            <span style={{ ...badgeStyle, background: "#e0f2fe", color: "#0369a1" }}>
-              {fyProgressPct}% of FY
-            </span>
-          </div>
-          <div style={kpiValueStyle}>{formatMoney(ytdRevTotal)}</div>
-          <span style={{ fontSize: "11px", color: "#64748b" }}>
-            FY Target: {ytdRevRow?.totalVal || "£0"}
-          </span>
-        </div>
-
-        <div style={kpiCardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={kpiLabelStyle}>YTD Gross Profit</span>
-            <span style={{ ...badgeStyle, background: "#dcfce7", color: "#166534" }}>
-              {formatPct(ytdGpMarginPct)}
-            </span>
-          </div>
-          <div style={{ ...kpiValueStyle, color: "#166534" }}>{formatMoney(ytdGpTotal)}</div>
-          <span style={{ fontSize: "11px", color: "#64748b" }}>
-            FY Target: {ytdGpRow?.totalVal || "£0"}
-          </span>
-        </div>
-
-        <div style={kpiCardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={kpiLabelStyle}>YTD Overheads</span>
-            <span style={{ ...badgeStyle, background: "#fef3c7", color: "#b45309" }}>
-              {formatPct(ytdOverheadsPct)}
-            </span>
-          </div>
-          <div style={{ ...kpiValueStyle, color: "#b45309" }}>{formatMoney(ytdOverheadsTotal)}</div>
-          <span style={{ fontSize: "11px", color: "#64748b" }}>
-            FY Budget: {ytdOverheadsRow?.totalVal || "£0"}
-          </span>
-        </div>
-
-        <div style={kpiCardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={kpiLabelStyle}>YTD Operating Profit</span>
-            <span style={{ ...badgeStyle, background: "#f0fdf4", color: "#166534" }}>
-              {formatPct(ytdOpMarginPct)}
-            </span>
-          </div>
-          <div style={{ ...kpiValueStyle, color: "#0047AB" }}>{formatMoney(ytdOpTotal)}</div>
-          <span style={{ fontSize: "11px", color: "#64748b" }}>
-            FY Target: {ytdOpRow?.totalVal || "£0"}
-          </span>
-        </div>
-      </div>
-
       <style jsx>{`
         @media (orientation: landscape) and (max-width: 1024px) {
           .fy-table-scroll-wrapper {

@@ -302,9 +302,6 @@ export default function CompanyChooser({
               <div style={{ fontSize: "13px", fontWeight: 600, color: "#1e293b" }}>
                 {user?.name || user?.email}
               </div>
-              <div style={{ fontSize: "11px", color: "#64748b" }}>
-                {user?.role || "Client"}
-              </div>
             </div>
           </div>
 

@@ -69,31 +69,50 @@ export default function PerformanceYTDView({
 
   // Margin threshold badge styling
   const getMarginBadgeStyle = (label, valStr) => {
-    if (!valStr || !valStr.includes("%")) return null;
-    const num = parseFloat(valStr.replace(/%/g, "")) / 100;
+    if (!valStr || !String(valStr).includes("%")) return null;
+    const num = parseFloat(String(valStr).replace(/%/g, "")) / 100;
     if (isNaN(num)) return null;
 
     const t = data?.thresholds || [];
-    if (label.toLowerCase().includes("gross profit margin")) {
-      const high = parseFloat(t[0]) || 0.495;
-      const low = parseFloat(t[1]) || 0.445;
-      if (num >= high) return { bg: "#d9ead3", color: "#000000" };
-      if (num >= low) return { bg: "#fce5cd", color: "#000000" };
-      return { bg: "#f4cccc", color: "#000000" };
+    const parseT = (idx, def) => {
+      const v = t[idx];
+      if (v === undefined || v === null || v === "") return def;
+      if (typeof v === "number") return v > 1 ? v / 100 : v;
+      const n = parseFloat(String(v).replace(/%/g, "").trim());
+      return isNaN(n) ? def : (String(v).includes("%") || n > 1 ? n / 100 : n);
+    };
+
+    const l = String(label || "").toLowerCase();
+
+    if (l.includes("gross profit margin")) {
+      const high = parseT(0, 0.495);
+      const low = parseT(1, 0.445);
+      if (num >= high) return { bg: "#d9ead3", color: "#0047AB" };
+      if (num >= low) return { bg: "#fce5cd", color: "#0047AB" };
+      return { bg: "#f4cccc", color: "#0047AB" };
     }
-    if (label.toLowerCase().includes("overheads as %")) {
-      const high = parseFloat(t[5]) || 0.309;
-      const low = parseFloat(t[6]) || 0.20;
-      if (num <= low) return { bg: "#d9ead3", color: "#000000" };
-      if (num <= high) return { bg: "#fce5cd", color: "#000000" };
-      return { bg: "#f4cccc", color: "#000000" };
+    if (l.includes("overheads as %") || l.includes("overheads %")) {
+      const high = parseT(5, 0.309);
+      const low = parseT(6, 0.20);
+      if (num <= low) return { bg: "#d9ead3", color: "#0047AB" };
+      if (num <= high) return { bg: "#fce5cd", color: "#0047AB" };
+      return { bg: "#f4cccc", color: "#0047AB" };
     }
-    if (label.toLowerCase().includes("operating profit %") || label.toLowerCase().includes("operating profit margin")) {
-      const high = parseFloat(t[10]) || 0.15;
-      const low = parseFloat(t[11]) || 0.05;
-      if (num >= high) return { bg: "#d9ead3", color: "#000000" };
-      if (num >= low) return { bg: "#fce5cd", color: "#000000" };
-      return { bg: "#f4cccc", color: "#000000" };
+    if (l.includes("operating profit %") || l.includes("operating profit margin")) {
+      const high = parseT(10, 0.145);
+      const low = parseT(11, 0.05);
+      if (num >= high) return { bg: "#d9ead3", color: "#0047AB" };
+      if (num >= low) return { bg: "#fce5cd", color: "#0047AB" };
+      return { bg: "#f4cccc", color: "#0047AB" };
+    }
+    if (l.includes("staff costs to") || l.includes("staff ratio")) {
+      const z57 = parseT(15, 0.705);
+      const z58 = parseT(16, 0.66);
+      const z59 = parseT(17, 0.54);
+      if (num < z59) return { bg: "#fce5cd", color: "#0047AB" };
+      if (num <= z58) return { bg: "#d9ead3", color: "#0047AB" };
+      if (num <= z57) return { bg: "#fce5cd", color: "#0047AB" };
+      return { bg: "#f4cccc", color: "#0047AB" };
     }
     return null;
   };
@@ -101,7 +120,7 @@ export default function PerformanceYTDView({
   const getRowStyle = (label) => {
     const l = String(label || "").toLowerCase().trim();
     if (l === "total income" || l === "total revenue") {
-      return { bg: "#0000ff", color: "#ffffff", bold: true, isMajor: true };
+      return { bg: "#9900ff", color: "#ffffff", bold: true, isMajor: true };
     }
     if (l === "gross profit") {
       return { bg: "#e69138", color: "#ffffff", bold: true, isMajor: true };
@@ -115,8 +134,8 @@ export default function PerformanceYTDView({
     if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
       return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
     }
-    if (l.includes("margin") || l.includes("overheads as %") || l.includes("overheads %")) {
-      return { bg: "#efefef", color: "#000000", bold: false, isMajor: false };
+    if (l.includes("margin") || l.includes("overheads as %") || l.includes("overheads %") || l.includes("staff costs to") || l.includes("staff ratio")) {
+      return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
     }
     return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
@@ -452,7 +471,7 @@ export default function PerformanceYTDView({
           <button
             type="button"
             className="fy-nav-arrow-left"
-            onClick={() => setSelectedYearIdx((prev) => Math.max(0, (prev !== null ? prev : activeYearIdx) - 1))}
+            onClick={() => setSelectedYearIdx(Math.max(0, activeYearIdx - 1))}
             title="Previous Year"
             style={{
               position: "absolute",
@@ -493,16 +512,17 @@ export default function PerformanceYTDView({
           className="fy-main-table"
           style={{
             width: "100%",
-            minWidth: "780px",
+            minWidth: "720px",
             borderCollapse: "separate",
             borderSpacing: 0,
+            tableLayout: "fixed",
             fontSize: "12px",
             fontFamily: "'Kumbh Sans', sans-serif",
           }}
         >
           <thead>
             {/* Header Row: Line item, displayed months, YTD Total */}
-            <tr style={{ background: "#0047AB", color: "#ffffff" }}>
+            <tr style={{ background: "#0000ff", color: "#ffffff" }}>
               <th
                 style={{
                   padding: "6px 8px",
@@ -511,10 +531,9 @@ export default function PerformanceYTDView({
                   fontSize: "12px",
                   position: "sticky",
                   left: 0,
-                  background: "#0047AB",
+                  background: "#0000ff",
                   zIndex: 2,
-                  width: "220px",
-                  minWidth: "220px",
+                  width: displayedMonths.length <= 6 ? "28%" : "22%",
                 }}
               >
                 {/* Empty header, NO Line item label */}
@@ -527,8 +546,7 @@ export default function PerformanceYTDView({
                     textAlign: "right",
                     fontWeight: 700,
                     fontSize: "11.5px",
-                    width: "87px",
-                    minWidth: "87px",
+                    width: displayedMonths.length <= 6 ? `${58 / displayedMonths.length}%` : `${68 / displayedMonths.length}%`,
                   }}
                 >
                   {m}
@@ -540,9 +558,8 @@ export default function PerformanceYTDView({
                   textAlign: "right",
                   fontWeight: 800,
                   fontSize: "12px",
-                  background: "#0047AB",
-                  width: "110px",
-                  minWidth: "110px",
+                  background: "#0000ff",
+                  width: displayedMonths.length <= 6 ? "14%" : "10%",
                 }}
               >
                 YTD Total
@@ -651,7 +668,8 @@ export default function PerformanceYTDView({
                           textAlign: "right",
                           color: rowStyle.isMajor ? "#ffffff" : mBadge ? mBadge.color : rowStyle.color,
                           fontStyle: isPercentageRow ? "italic" : "normal",
-                          fontSize: "11px",
+                          fontSize: rowStyle.isMajor ? "13px" : "11px",
+                          fontWeight: rowStyle.isMajor ? 700 : (rowStyle.bold ? 700 : 400),
                           background: mBadge ? mBadge.bg : "transparent",
                           cursor: isClickable ? "pointer" : "default",
                           textDecoration: isClickable ? "underline dashed #94a3b8 1px" : "none",
@@ -682,10 +700,10 @@ export default function PerformanceYTDView({
                         style={{
                           padding: "4px 8px",
                           textAlign: "right",
-                          color: rowStyle.isMajor ? "#ffffff" : ytdBadge ? ytdBadge.color : isPercentageRow ? "#000000" : "#0047AB",
+                          color: rowStyle.isMajor ? "#ffffff" : ytdBadge ? ytdBadge.color : "#0047AB",
                           fontStyle: isPercentageRow ? "italic" : "normal",
                           fontSize: rowStyle.isMajor ? "13px" : "11.5px",
-                          fontWeight: rowStyle.isMajor ? 800 : 700,
+                          fontWeight: rowStyle.isMajor ? 800 : (rowStyle.bold ? 700 : 400),
                           background: ytdBadge ? ytdBadge.bg : (rowStyle.isMajor ? "transparent" : rowStyle.bg),
                           cursor: isClickable ? "pointer" : "default",
                           textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
@@ -714,7 +732,7 @@ export default function PerformanceYTDView({
         <button
           type="button"
           className="fy-nav-arrow-right"
-          onClick={() => setSelectedYearIdx((prev) => Math.min(years.length - 1, (prev !== null ? prev : activeYearIdx) + 1))}
+          onClick={() => setSelectedYearIdx(Math.min(years.length - 1, activeYearIdx + 1))}
           title="Next Year"
           style={{
             position: "absolute",

@@ -12,7 +12,19 @@ export default function BudgetVarianceView({
 }) {
   const [viewMode, setViewMode] = useState("ytd"); // 'month' | 'ytd' | 'fy'
   const [userMonthIdx, setUserMonthIdx] = useState(null);
-  const [selectedYearIdx, setSelectedYearIdx] = useState(0);
+  const [userYearIdx, setUserYearIdx] = useState(null);
+
+  const defaultYearIdx = useMemo(() => {
+    if (allFYData?.currentYearIdx !== undefined && allFYData.currentYearIdx > 0) {
+      return Math.min(2, Math.max(0, allFYData.currentYearIdx - 1));
+    }
+    if (data?.currentYearIdx !== undefined) {
+      return Math.min(2, Math.max(0, data.currentYearIdx));
+    }
+    return 1; // Default to Year 2 (FY27)
+  }, [allFYData?.currentYearIdx, data?.currentYearIdx]);
+
+  const selectedYearIdx = userYearIdx !== null ? userYearIdx : defaultYearIdx;
 
   const rawVals = data?.rawVals || [];
   const mathVals = data?.mathVals || rawVals;
@@ -77,12 +89,18 @@ export default function BudgetVarianceView({
   }, [keyData, years]);
 
   const parseMoney = (val) => {
-    if (typeof val === "number") return val;
-    if (!val || val === "—") return 0;
-    const clean = String(val).replace(/[£,]/g, "").trim();
-    if (clean.includes("%")) return parseFloat(clean) / 100;
-    const n = parseFloat(clean);
-    return isNaN(n) ? 0 : n;
+    if (typeof val === "number") return isNaN(val) ? 0 : val;
+    if (!val || val === "—" || val === "–" || val === "-") return 0;
+    let s = String(val).replace(/[£,\s]/g, "").trim();
+    const isParenNeg = s.startsWith("(") && s.endsWith(")");
+    if (isParenNeg) s = s.slice(1, -1);
+    if (s.includes("%")) {
+      const p = parseFloat(s.replace(/%/g, ""));
+      return isNaN(p) ? 0 : (p / 100) * (isParenNeg ? -1 : 1);
+    }
+    const n = parseFloat(s);
+    if (isNaN(n)) return 0;
+    return isParenNeg ? -Math.abs(n) : n;
   };
 
   const formatMoney = (val) => {
@@ -93,15 +111,22 @@ export default function BudgetVarianceView({
 
   const formatPct = (val) => `${Math.round((val || 0) * 100)}%`;
 
+  const cleanStr = (s) => String(s || "").toLowerCase().replace(/[–—]/g, "-").replace(/\s+/g, " ").trim();
+
   // Budget metric getter
   const blkStart = selectedYearIdx === 0 ? 6 : (selectedYearIdx === 1 ? 21 : 36);
-  const getBud = (rawRowIdx) => {
-    if (rawRowIdx === null || !rawVals[rawRowIdx]) return new Array(12).fill(0);
+  const getBud = (rawRowIdx, fallbackLabel = "") => {
+    let targetRow = rawVals[rawRowIdx];
+    if (fallbackLabel && (!targetRow || !cleanStr(targetRow[0]).includes(cleanStr(fallbackLabel)))) {
+      const foundRow = rawVals.find((r) => cleanStr(r?.[0]).includes(cleanStr(fallbackLabel)));
+      if (foundRow) targetRow = foundRow;
+    }
+    if (!targetRow) return new Array(12).fill(0);
     const row = [];
     for (let m = 0; m < 12; m++) {
       let val = parseFloat(mathVals?.[rawRowIdx]?.[blkStart + m]);
       if (isNaN(val)) {
-        val = parseFloat(String(rawVals?.[rawRowIdx]?.[blkStart + m] || "").replace(/[£$,%]/g, "")) || 0;
+        val = parseFloat(String(targetRow?.[blkStart + m] || "").replace(/[£$,%]/g, "")) || 0;
       }
       row.push(val);
     }
@@ -110,24 +135,60 @@ export default function BudgetVarianceView({
 
   // Actual metric getter from activeYear in performanceData
   const getAct = (labelMatch) => {
-    const r = activeYear?.rows?.find((row) =>
-      String(row.label || "").toLowerCase().includes(labelMatch.toLowerCase())
-    );
-    if (!r || !r.monthVals) return new Array(12).fill(0);
-    return r.monthVals.map((v) => parseMoney(v));
+    const target = cleanStr(labelMatch);
+    const r = activeYear?.rows?.find((row) => {
+      const l = cleanStr(row.label);
+      if (l.includes(target)) return true;
+      if (target === "staff costs - delivery") {
+        return l.includes("staff costs") && l.includes("delivery") && !l.includes("non");
+      }
+      if (target === "other expenses - delivery") {
+        return (l.includes("other expenses") || l.includes("expenses")) && l.includes("delivery") && !l.includes("non");
+      }
+      if (target === "staff costs - non-delivery") {
+        return l.includes("staff costs") && (l.includes("non-delivery") || l.includes("nondelivery") || l.includes("non delivery"));
+      }
+      if (target === "other expenses - non-delivery") {
+        return (l.includes("other expenses") || l.includes("expenses")) && (l.includes("non-delivery") || l.includes("nondelivery") || l.includes("non delivery"));
+      }
+      return false;
+    });
+
+    if (!r) return new Array(12).fill(0);
+    return Array.from({ length: 12 }, (_, m) => {
+      if (typeof r.monthlyMath?.[m] === "number") return r.monthlyMath[m];
+      const v = r.monthlyValues?.[m] ?? r.monthVals?.[m];
+      return parseMoney(v);
+    });
   };
 
   const mapMetrics = (arrGet, isBud) => {
-    const conf = arrGet(isBud ? (isRevMode ? 4 : 20) : (isRevMode ? "confirmed revenue" : "confirmed income"));
-    const pipe = arrGet(isBud ? (isRevMode ? 5 : 21) : (isRevMode ? "pipeline revenue" : "pipeline income"));
-    const nb = arrGet(isBud ? (isRevMode ? 6 : 22) : "new business to find");
+    const conf = isBud
+      ? getBud(isRevMode ? 4 : 20, isRevMode ? "confirmed revenue" : "confirmed income")
+      : getAct(isRevMode ? "confirmed revenue" : "confirmed income");
+    const pipe = isBud
+      ? getBud(isRevMode ? 5 : 21, isRevMode ? "pipeline revenue" : "pipeline income")
+      : getAct(isRevMode ? "pipeline revenue" : "pipeline income");
+    const nb = isBud
+      ? getBud(isRevMode ? 6 : 22, "new business to find")
+      : getAct("new business to find");
 
-    const staffDel = arrGet(isBud ? 28 : "staff costs - delivery");
-    const dirCosts = isRevMode ? arrGet(isBud ? 29 : "direct costs") : new Array(12).fill(0);
-    const expDel = arrGet(isBud ? (isRevMode ? 30 : 29) : "other expenses - delivery");
+    const staffDel = isBud
+      ? getBud(28, "staff costs - delivery")
+      : getAct("staff costs - delivery");
+    const dirCosts = isRevMode
+      ? (isBud ? getBud(29, "direct costs") : getAct("direct costs"))
+      : new Array(12).fill(0);
+    const expDel = isBud
+      ? getBud(isRevMode ? 30 : 29, "other expenses - delivery")
+      : getAct("other expenses - delivery");
 
-    const staffNonDel = arrGet(isBud ? 39 : "staff costs - non-delivery");
-    const expNonDel = arrGet(isBud ? 40 : "other expenses - non-delivery");
+    const staffNonDel = isBud
+      ? getBud(39, "staff costs - non-delivery")
+      : getAct("staff costs - non-delivery");
+    const expNonDel = isBud
+      ? getBud(40, "other expenses - non-delivery")
+      : getAct("other expenses - non-delivery");
 
     const totalRev = conf.map((v, i) => v + pipe[i] + nb[i]);
     const totalCoS = isRevMode
@@ -153,36 +214,38 @@ export default function BudgetVarianceView({
   const sumArr = (arr, limit) => arr.slice(0, limit).reduce((a, b) => a + b, 0);
 
   const getMarginColor = (label, numVal) => {
-    const t = keyData?.thresholds || [];
+    const t = allFYData?.thresholds || keyData?.thresholds || [];
     const parseT = (idx, def) => {
       const v = t[idx];
       if (v === undefined || v === null || v === "") return def;
+      if (typeof v === "number") return v > 1 ? v / 100 : v;
       const n = parseFloat(String(v).replace(/%/g, "").trim());
       return isNaN(n) ? def : (String(v).includes("%") || n > 1 ? n / 100 : n);
     };
 
-    if (label.includes("Gross profit margin")) {
+    const l = (label || "").toLowerCase();
+    if (l.includes("gross profit margin")) {
       const z42 = parseT(0, 0.495);
       const z43 = parseT(1, 0.445);
       if (numVal < z43) return "#f4cccc";
       if (numVal <= z42) return "#fce5cd";
       return "#d9ead3";
     }
-    if (label.includes("Overheads as %")) {
+    if (l.includes("overheads as %")) {
       const z47 = parseT(5, 0.309);
       const z48 = parseT(6, 0.20);
       if (numVal > z47) return "#f4cccc";
       if (numVal >= z48) return "#d9ead3";
       return "#fce5cd";
     }
-    if (label.includes("Operating profit %")) {
+    if (l.includes("operating profit %")) {
       const z52 = parseT(10, 0.145);
       const z53 = parseT(11, 0.05);
       if (numVal < z53) return "#f4cccc";
       if (numVal <= z52) return "#fce5cd";
       return "#d9ead3";
     }
-    if (label.includes("Staff costs to")) {
+    if (l.includes("staff costs to") || l.includes("staff ratio")) {
       const z57 = parseT(15, 0.705);
       const z58 = parseT(16, 0.66);
       const z59 = parseT(17, 0.54);
@@ -263,6 +326,48 @@ export default function BudgetVarianceView({
   const displayedMonths = viewMode === "month" ? [months[selectedMonthIdx]] : months.slice(0, limit);
   const numTotalCols = viewMode === "month" ? 6 : displayedMonths.length + 7;
 
+  const colPercents = useMemo(() => {
+    if (viewMode === "month") {
+      return {
+        colA: "36%",
+        act: "15%",
+        gap1: "2%",
+        bud: "15%",
+        gap2: "2%",
+        varAmt: "15%",
+        varPct: "15%",
+      };
+    }
+    if (viewMode === "fy") {
+      // 12 months + Col A + 3 gaps + Act + Bud + Var £ + Var % = 20 columns
+      // Col A: 16%, 12 months @ 4.5% = 54%, 3 gaps @ 0.8% = 2.4%, Act 7%, Bud 7%, Var £ 7%, Var % 6.6% -> 100%
+      return {
+        colA: "16%",
+        month: "4.5%",
+        gap: "0.8%",
+        act: "7.0%",
+        bud: "7.0%",
+        varAmt: "7.0%",
+        varPct: "6.6%",
+      };
+    }
+    // YTD mode: limit months (e.g. 1 to 12)
+    const mCount = displayedMonths.length || 1;
+    // 3 gaps @ 1% = 3%, Act 8.5%, Bud 8.5%, Var £ 7.5%, Var % 6.5% -> Total 34%
+    // Remaining 66% split between Col A and mCount months
+    const colAPct = mCount <= 6 ? 24 : Math.max(16, 24 - (mCount - 6) * 1.3);
+    const mPct = (66 - colAPct) / mCount;
+    return {
+      colA: `${colAPct}%`,
+      month: `${mPct}%`,
+      gap: "1%",
+      act: "8.5%",
+      bud: "8.5%",
+      varAmt: "7.5%",
+      varPct: "6.5%",
+    };
+  }, [viewMode, displayedMonths.length]);
+
   // Build the structured rows matching renderBudgetAnalysis
   const tableRows = [];
 
@@ -271,7 +376,7 @@ export default function BudgetVarianceView({
   };
 
   const addSectionHeader = (label) => {
-    tableRows.push({ type: "section", label, height: 20 });
+    tableRows.push({ type: "section", label, height: 22 });
   };
 
   const addDataRow = (label, metricKey, isCurrency, isBigTotal, isMargin, isCost, isBold = false, hideVariance = false) => {
@@ -288,7 +393,7 @@ export default function BudgetVarianceView({
       bg: isBigTotal ? (label.includes("Total revenue") || label.includes("Total income") ? "#9900ff" : label.includes("Gross") ? "#e69138" : label.includes("overheads") ? "#45818e" : "#1155cc") : "#efefef",
       color: isBigTotal ? "#ffffff" : "#0047AB",
       height: isBigTotal ? 31 : (isMargin ? 17 : 20),
-      fontSize: isBigTotal ? 14 : (isMargin ? 9 : 10),
+      fontSize: isBigTotal ? 13 : (isMargin ? 11.5 : 11.5),
     });
   };
 
@@ -507,7 +612,10 @@ export default function BudgetVarianceView({
           <button
             type="button"
             className="fy-nav-arrow-left"
-            onClick={() => setSelectedYearIdx((prev) => Math.max(0, prev - 1))}
+            onClick={() => {
+              setUserYearIdx(Math.max(0, selectedYearIdx - 1));
+              setUserMonthIdx(null);
+            }}
             title="Previous Year"
             style={{
               position: "absolute",
@@ -547,316 +655,378 @@ export default function BudgetVarianceView({
           <div style={{ overflowX: "auto", width: "100%" }}>
             <table
               style={{
-                width: "max-content",
-                minWidth: "780px",
+                width: "100%",
+                maxWidth: viewMode === "month" ? "680px" : "100%",
+                margin: viewMode === "month" ? "0 auto" : "0",
+                minWidth: viewMode === "month" ? "480px" : (viewMode === "ytd" ? "720px" : "960px"),
                 borderCollapse: "separate",
                 borderSpacing: 0,
-              fontSize: "12px",
-              fontFamily: "'Kumbh Sans', sans-serif",
-            }}
-          >
-            <thead>
-              <tr style={{ background: "#0047AB", color: "#ffffff", height: "31px" }}>
-                <th
-                  style={{
-                    padding: "6px 12px",
-                    textAlign: "left",
-                    fontWeight: 700,
-                    width: "220px",
-                    minWidth: "220px",
-                    position: "sticky",
-                    left: 0,
-                    background: "#0047AB",
-                    zIndex: 2,
-                    fontSize: "14px",
-                  }}
-                >
-                  {/* Empty top-left */}
-                </th>
+                tableLayout: "fixed",
+                fontSize: viewMode === "fy" ? "11px" : "12px",
+                fontFamily: "'Kumbh Sans', sans-serif",
+              }}
+            >
+              <thead>
+                <tr style={{ background: "#0000ff", color: "#ffffff", height: "31px" }}>
+                  <th
+                    style={{
+                      padding: viewMode === "fy" ? "6px 6px" : "6px 12px",
+                      textAlign: "left",
+                      fontWeight: 700,
+                      width: colPercents.colA,
+                      position: "sticky",
+                      left: 0,
+                      background: "#0000ff",
+                      zIndex: 2,
+                      fontSize: viewMode === "fy" ? "12px" : "13px",
+                    }}
+                  >
+                    {/* Empty top-left */}
+                  </th>
 
-                {viewMode === "month" ? (
-                  <>
-                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", width: "87px", minWidth: "87px", background: "#0047AB" }}>
-                      Actual
-                    </th>
-                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
-                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
-                      Budget
-                    </th>
-                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
-                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
-                      Var (£)
-                    </th>
-                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
-                      Var %
-                    </th>
-                  </>
-                ) : (
-                  <>
-                    {displayedMonths.map((mLabel, idx) => (
-                      <th
-                        key={idx}
-                        style={{
-                          padding: "6px 4px",
-                          textAlign: "right",
-                          fontWeight: 700,
-                          fontSize: "14px",
-                          width: "87px",
-                          minWidth: "87px",
-                          background: "#0047AB",
-                        }}
-                      >
-                        {mLabel}
+                  {viewMode === "month" ? (
+                    <>
+                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", width: colPercents.act, background: "#0000ff" }}>
+                        Actual
                       </th>
-                    ))}
-                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
-                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", width: "110px", minWidth: "110px", background: "#0047AB" }}>
-                      {viewMode === "ytd" ? "YTD Actual" : "FY Actual"}
-                    </th>
-                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
-                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "110px", minWidth: "110px", background: "#0047AB" }}>
-                      {viewMode === "ytd" ? "YTD Budget" : "FY Budget"}
-                    </th>
-                    <th style={{ width: "22px", minWidth: "22px", background: "#0047AB", padding: 0 }} />
-                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
-                      Var (£)
-                    </th>
-                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "14px", fontStyle: "italic", width: "87px", minWidth: "87px", background: "#0047AB" }}>
-                      Var %
-                    </th>
-                  </>
-                )}
-              </tr>
-
-              {/* Subheader status row for YTD/FY */}
-              {viewMode !== "month" && (
-                <tr style={{ background: "#efefef", height: "15px" }}>
-                  <td style={{ padding: "2px 12px", background: "#efefef", position: "sticky", left: 0, zIndex: 2 }} />
-                  {displayedMonths.map((_, idx) => {
-                    const text = activeYear?.statusRow?.[idx] || (idx < 6 ? "Actual" : "Forecast");
-                    return (
-                      <td key={idx} style={{ padding: "2px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef", fontSize: "9px" }}>
-                        {text}
-                      </td>
-                    );
-                  })}
-                  {Array.from({ length: 7 }).map((_, cIdx) => (
-                    <td key={cIdx} style={{ padding: 0, background: "#efefef" }} />
-                  ))}
-                </tr>
-              )}
-            </thead>
-
-            <tbody>
-              {tableRows.map((r, rIdx) => {
-                if (r.type === "spacer") {
-                  return (
-                    <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
-                      <td colSpan={numTotalCols + 1} style={{ padding: 0, border: "none", background: "#efefef" }} />
-                    </tr>
-                  );
-                }
-
-                if (r.type === "section") {
-                  return (
-                    <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
-                      <td
-                        style={{
-                          padding: "2px 12px",
-                          textAlign: "left",
-                          fontWeight: 700,
-                          fontSize: "13px",
-                          color: "#0047AB",
-                          position: "sticky",
-                          left: 0,
-                          background: "#efefef",
-                          zIndex: 1,
-                        }}
-                      >
-                        {r.label}
-                      </td>
-                      {Array.from({ length: numTotalCols }).map((_, cIdx) => (
-                        <td key={cIdx} style={{ padding: 0, background: "#efefef" }} />
+                      <th style={{ width: colPercents.gap1, background: "#0000ff", padding: 0 }} />
+                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.bud, background: "#0000ff" }}>
+                        Budget
+                      </th>
+                      <th style={{ width: colPercents.gap2, background: "#0000ff", padding: 0 }} />
+                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.varAmt, background: "#0000ff" }}>
+                        Var (£)
+                      </th>
+                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.varPct, background: "#0000ff" }}>
+                        Var %
+                      </th>
+                    </>
+                  ) : (
+                    <>
+                      {displayedMonths.map((mLabel, idx) => (
+                        <th
+                          key={idx}
+                          style={{
+                            padding: viewMode === "fy" ? "6px 2px" : "6px 4px",
+                            textAlign: "right",
+                            fontWeight: 700,
+                            fontSize: viewMode === "fy" ? "11px" : "12px",
+                            width: colPercents.month,
+                            background: "#0000ff",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {mLabel}
+                        </th>
                       ))}
-                    </tr>
-                  );
-                }
+                      <th style={{ width: colPercents.gap, background: "#0000ff", padding: 0 }} />
+                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", width: colPercents.act, background: "#0000ff", whiteSpace: "nowrap" }}>
+                        {viewMode === "ytd" ? "YTD Actual" : "FY Actual"}
+                      </th>
+                      <th style={{ width: colPercents.gap, background: "#0000ff", padding: 0 }} />
+                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.bud, background: "#0000ff", whiteSpace: "nowrap" }}>
+                        {viewMode === "ytd" ? "YTD Budget" : "FY Budget"}
+                      </th>
+                      <th style={{ width: colPercents.gap, background: "#0000ff", padding: 0 }} />
+                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.varAmt, background: "#0000ff", whiteSpace: "nowrap" }}>
+                        Var (£)
+                      </th>
+                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.varPct, background: "#0000ff", whiteSpace: "nowrap" }}>
+                        Var %
+                      </th>
+                    </>
+                  )}
+                </tr>
 
-                // Data row
-                const isBigTotal = r.isBigTotal;
-                const rowBg = r.bg;
-                const rowColor = r.color;
-                const isBold = r.isBold;
-                const isMargin = r.isMargin;
-                const isCost = r.isCost;
-                const rowHeight = r.height;
-                const fontSize = r.fontSize;
-                const borderBottom = isBigTotal ? "none" : "1px solid #ffffff";
+                {/* Subheader status row for YTD/FY */}
+                {viewMode !== "month" && (
+                  <tr style={{ background: "#efefef", height: "15px" }}>
+                    <td style={{ padding: "2px 8px", background: "#efefef", position: "sticky", left: 0, zIndex: 2 }} />
+                    {displayedMonths.map((_, idx) => {
+                      const text = activeYear?.statusRow?.[idx] || (idx < 6 ? "Actual" : "Forecast");
+                      return (
+                        <td key={idx} style={{ padding: viewMode === "fy" ? "2px 2px" : "2px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef", fontSize: "9px" }}>
+                          {text}
+                        </td>
+                      );
+                    })}
+                    {Array.from({ length: 7 }).map((_, cIdx) => (
+                      <td key={cIdx} style={{ padding: 0, background: "#efefef" }} />
+                    ))}
+                  </tr>
+                )}
+              </thead>
 
-                const actArr = actMetrics[r.metricKey] || new Array(12).fill(0);
-                const budArr = budMetrics[r.metricKey] || new Array(12).fill(0);
-
-                if (viewMode === "month") {
-                  const actV = actArr[selectedMonthIdx] || 0;
-                  const budV = budArr[selectedMonthIdx] || 0;
-
-                  let cellBg = rowBg;
-                  let cellColor = rowColor;
-                  if (isMargin) {
-                    cellBg = getMarginColor(r.label, actV);
-                    cellColor = "#000000";
+              <tbody>
+                {tableRows.map((r, rIdx) => {
+                  if (r.type === "spacer") {
+                    return (
+                      <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
+                        <td colSpan={numTotalCols + 1} style={{ padding: 0, border: "none", background: "#efefef" }} />
+                      </tr>
+                    );
                   }
 
-                  const varCells = getVarCells(actV, budV, isCost, isMargin, r.hideVariance, rowBg);
+                  if (r.type === "section") {
+                    return (
+                      <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
+                        <td
+                          style={{
+                            padding: viewMode === "fy" ? "2px 6px" : "2px 8px",
+                            textAlign: "left",
+                            fontWeight: 700,
+                            fontSize: "11px",
+                            letterSpacing: "0.5px",
+                            textTransform: "uppercase",
+                            color: "#0047AB",
+                            position: "sticky",
+                            left: 0,
+                            background: "#efefef",
+                            zIndex: 1,
+                          }}
+                        >
+                          {r.label}
+                        </td>
+                        {Array.from({ length: numTotalCols }).map((_, cIdx) => (
+                          <td key={cIdx} style={{ padding: 0, background: "#efefef" }} />
+                        ))}
+                      </tr>
+                    );
+                  }
+
+                  // Data row
+                  const isBigTotal = r.isBigTotal;
+                  const rowBg = r.bg;
+                  const rowColor = r.color;
+                  const isBold = r.isBold;
+                  const isMargin = r.isMargin;
+                  const isCost = r.isCost;
+                  const rowHeight = r.height;
+                  const borderBottom = isBigTotal ? "none" : "1px solid #ffffff";
+
+                  const actArr = actMetrics[r.metricKey] || new Array(12).fill(0);
+                  const budArr = budMetrics[r.metricKey] || new Array(12).fill(0);
+
+                  if (viewMode === "month") {
+                    const actV = actArr[selectedMonthIdx] || 0;
+                    const budV = budArr[selectedMonthIdx] || 0;
+
+                    let cellBg = rowBg;
+                    let cellColor = isMargin ? "#0047AB" : rowColor;
+                    if (isMargin) {
+                      cellBg = getMarginColor(r.label, actV);
+                    }
+
+                    const varCells = getVarCells(actV, budV, isCost, isMargin, r.hideVariance, rowBg);
+
+                    return (
+                      <tr key={rIdx} style={{ height: `${rowHeight}px`, background: rowBg, borderBottom }}>
+                        <td style={{ padding: isBigTotal ? "2px 8px" : "2px 14px", textAlign: "left", color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: isBigTotal ? "13px" : "12px", position: "sticky", left: 0, background: rowBg, zIndex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {r.label}
+                        </td>
+                        <td style={{ padding: "2px 8px", textAlign: "right", background: cellBg, color: cellColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: isBigTotal ? "13px" : "12px", whiteSpace: "nowrap" }}>
+                          {r.isCurrency ? formatMoney(actV) : formatPct(actV)}
+                        </td>
+                        <td style={{ width: colPercents.gap1, background: rowBg, padding: 0 }} />
+                        <td style={{ padding: "2px 8px", textAlign: "right", background: rowBg, color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: "italic", fontSize: isBigTotal ? "13px" : "12px", whiteSpace: "nowrap" }}>
+                          {r.isCurrency ? formatMoney(budV) : formatPct(budV)}
+                        </td>
+                        <td style={{ width: colPercents.gap2, background: rowBg, padding: 0 }} />
+                        <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[0].bg, color: varCells[0].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: isBigTotal ? "13px" : "12px", whiteSpace: "nowrap" }}>
+                          {varCells[0].v}
+                        </td>
+                        <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[1].bg, color: varCells[1].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: isBigTotal ? "13px" : "12px", whiteSpace: "nowrap" }}>
+                          {varCells[1].v}
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  // YTD or FY Mode
+                  let actSum = sumArr(actArr, limit);
+                  let budSum = sumArr(budArr, limit);
+
+                  if (isMargin) {
+                    if (r.metricKey === "gpMargin") {
+                      const actRev = sumArr(actMetrics.totalRev, limit);
+                      const budRev = sumArr(budMetrics.totalRev, limit);
+                      actSum = actRev ? sumArr(actMetrics.gp, limit) / actRev : 0;
+                      budSum = budRev ? sumArr(budMetrics.gp, limit) / budRev : 0;
+                    } else if (r.metricKey === "overheadsPct") {
+                      const actRev = sumArr(actMetrics.totalRev, limit);
+                      const budRev = sumArr(budMetrics.totalRev, limit);
+                      actSum = actRev ? sumArr(actMetrics.totalOverheads, limit) / actRev : 0;
+                      budSum = budRev ? sumArr(budMetrics.totalOverheads, limit) / budRev : 0;
+                    } else if (r.metricKey === "opProfitPct") {
+                      const actRev = sumArr(actMetrics.totalRev, limit);
+                      const budRev = sumArr(budMetrics.totalRev, limit);
+                      actSum = actRev ? sumArr(actMetrics.opProfit, limit) / actRev : 0;
+                      budSum = budRev ? sumArr(budMetrics.opProfit, limit) / budRev : 0;
+                    } else if (r.metricKey === "staffToIncPct") {
+                      const actRev = sumArr(actMetrics.totalRev, limit);
+                      const budRev = sumArr(budMetrics.totalRev, limit);
+                      actSum = actRev ? (sumArr(actMetrics.staffDel, limit) + sumArr(actMetrics.staffNonDel, limit)) / actRev : 0;
+                      budSum = budRev ? (sumArr(budMetrics.staffDel, limit) + sumArr(budMetrics.staffNonDel, limit)) / budRev : 0;
+                    }
+                  }
+
+                  const varCells = getVarCells(actSum, budSum, isCost, isMargin, r.hideVariance, rowBg);
+
+                  let actTotalBg = rowBg;
+                  let actTotalColor = isMargin ? "#0047AB" : rowColor;
+                  if (isMargin) {
+                    actTotalBg = getMarginColor(r.label, actSum);
+                  }
 
                   return (
                     <tr key={rIdx} style={{ height: `${rowHeight}px`, background: rowBg, borderBottom }}>
-                      <td style={{ padding: "2px 12px", textAlign: "left", color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, position: "sticky", left: 0, background: rowBg, zIndex: 1, whiteSpace: "nowrap" }}>
+                      <td style={{
+                        padding: viewMode === "fy" ? (isBigTotal ? "2px 6px" : "2px 8px") : (isBigTotal ? "2px 8px" : "2px 14px"),
+                        textAlign: "left",
+                        color: rowColor,
+                        fontWeight: isBold ? 700 : 400,
+                        fontStyle: isMargin ? "italic" : "normal",
+                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
+                        position: "sticky",
+                        left: 0,
+                        background: rowBg,
+                        zIndex: 1,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}>
                         {r.label}
                       </td>
-                      <td style={{ padding: "2px 8px", textAlign: "right", background: cellBg, color: cellColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
-                        {r.isCurrency ? formatMoney(actV) : formatPct(actV)}
+
+                      {/* Monthly actuals */}
+                      {Array.from({ length: limit }).map((_, m) => {
+                        const actV = actArr[m] || 0;
+                        let cellBg = rowBg;
+                        let cellColor = isMargin ? "#0047AB" : rowColor;
+                        if (isMargin) {
+                          cellBg = getMarginColor(r.label, actV);
+                        }
+                        return (
+                          <td key={m} style={{
+                            padding: viewMode === "fy" ? "2px 2px" : "2px 4px",
+                            textAlign: "right",
+                            background: cellBg,
+                            color: cellColor,
+                            fontWeight: isBold ? 700 : 400,
+                            fontStyle: isMargin ? "italic" : "normal",
+                            fontSize: viewMode === "fy" ? "10.5px" : "11.5px",
+                            whiteSpace: "nowrap",
+                          }}>
+                            {r.isCurrency ? formatMoney(actV) : formatPct(actV)}
+                          </td>
+                        );
+                      })}
+
+                      {/* Gap */}
+                      <td style={{ width: colPercents.gap, background: rowBg, padding: 0 }} />
+
+                      {/* Actual Total */}
+                      <td style={{
+                        padding: viewMode === "fy" ? "2px 3px" : "2px 6px",
+                        textAlign: "right",
+                        background: actTotalBg,
+                        color: actTotalColor,
+                        fontWeight: isBold ? 700 : 600,
+                        fontStyle: isMargin ? "italic" : "normal",
+                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
+                        whiteSpace: "nowrap",
+                      }}>
+                        {r.isCurrency ? formatMoney(actSum) : formatPct(actSum)}
                       </td>
-                      <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
-                      <td style={{ padding: "2px 8px", textAlign: "right", background: rowBg, color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
-                        {r.isCurrency ? formatMoney(budV) : formatPct(budV)}
+
+                      {/* Gap */}
+                      <td style={{ width: colPercents.gap, background: rowBg, padding: 0 }} />
+
+                      {/* Budget Total */}
+                      <td style={{
+                        padding: viewMode === "fy" ? "2px 3px" : "2px 6px",
+                        textAlign: "right",
+                        background: rowBg,
+                        color: rowColor,
+                        fontWeight: isBold ? 700 : 400,
+                        fontStyle: "italic",
+                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
+                        whiteSpace: "nowrap",
+                      }}>
+                        {r.isCurrency ? formatMoney(budSum) : formatPct(budSum)}
                       </td>
-                      <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
-                      <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[0].bg, color: varCells[0].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+
+                      {/* Gap */}
+                      <td style={{ width: colPercents.gap, background: rowBg, padding: 0 }} />
+
+                      {/* Var (£) */}
+                      <td style={{
+                        padding: viewMode === "fy" ? "2px 3px" : "2px 6px",
+                        textAlign: "right",
+                        background: varCells[0].bg,
+                        color: varCells[0].color,
+                        fontWeight: isBold ? 700 : 600,
+                        fontStyle: "italic",
+                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
+                        whiteSpace: "nowrap",
+                      }}>
                         {varCells[0].v}
                       </td>
-                      <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[1].bg, color: varCells[1].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
+
+                      {/* Var (%) */}
+                      <td style={{
+                        padding: viewMode === "fy" ? "2px 3px" : "2px 6px",
+                        textAlign: "right",
+                        background: varCells[1].bg,
+                        color: varCells[1].color,
+                        fontWeight: isBold ? 700 : 600,
+                        fontStyle: "italic",
+                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
+                        whiteSpace: "nowrap",
+                      }}>
                         {varCells[1].v}
                       </td>
                     </tr>
                   );
-                }
-
-                // YTD or FY Mode
-                let actSum = sumArr(actArr, limit);
-                let budSum = sumArr(budArr, limit);
-
-                if (isMargin) {
-                  if (r.metricKey === "gpMargin") {
-                    const actRev = sumArr(actMetrics.totalRev, limit);
-                    const budRev = sumArr(budMetrics.totalRev, limit);
-                    actSum = actRev ? sumArr(actMetrics.gp, limit) / actRev : 0;
-                    budSum = budRev ? sumArr(budMetrics.gp, limit) / budRev : 0;
-                  } else if (r.metricKey === "overheadsPct") {
-                    const actRev = sumArr(actMetrics.totalRev, limit);
-                    const budRev = sumArr(budMetrics.totalRev, limit);
-                    actSum = actRev ? sumArr(actMetrics.totalOverheads, limit) / actRev : 0;
-                    budSum = budRev ? sumArr(budMetrics.totalOverheads, limit) / budRev : 0;
-                  } else if (r.metricKey === "opProfitPct") {
-                    const actRev = sumArr(actMetrics.totalRev, limit);
-                    const budRev = sumArr(budMetrics.totalRev, limit);
-                    actSum = actRev ? sumArr(actMetrics.opProfit, limit) / actRev : 0;
-                    budSum = budRev ? sumArr(budMetrics.opProfit, limit) / budRev : 0;
-                  } else if (r.metricKey === "staffToIncPct") {
-                    const actRev = sumArr(actMetrics.totalRev, limit);
-                    const budRev = sumArr(budMetrics.totalRev, limit);
-                    actSum = actRev ? (sumArr(actMetrics.staffDel, limit) + sumArr(actMetrics.staffNonDel, limit)) / actRev : 0;
-                    budSum = budRev ? (sumArr(budMetrics.staffDel, limit) + sumArr(budMetrics.staffNonDel, limit)) / budRev : 0;
-                  }
-                }
-
-                const varCells = getVarCells(actSum, budSum, isCost, isMargin, r.hideVariance, rowBg);
-
-                let actTotalBg = rowBg;
-                let actTotalColor = rowColor;
-                if (isMargin) {
-                  actTotalBg = getMarginColor(r.label, actSum);
-                  actTotalColor = "#000000";
-                }
-
-                return (
-                  <tr key={rIdx} style={{ height: `${rowHeight}px`, background: rowBg, borderBottom }}>
-                    <td style={{ padding: "2px 12px", textAlign: "left", color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, position: "sticky", left: 0, background: rowBg, zIndex: 1, whiteSpace: "nowrap" }}>
-                      {r.label}
-                    </td>
-
-                    {/* Monthly actuals */}
-                    {Array.from({ length: limit }).map((_, m) => {
-                      const actV = actArr[m] || 0;
-                      let cellBg = rowBg;
-                      let cellColor = rowColor;
-                      if (isMargin) {
-                        cellBg = getMarginColor(r.label, actV);
-                        cellColor = "#000000";
-                      }
-                      return (
-                        <td key={m} style={{ padding: "2px 4px", textAlign: "right", background: cellBg, color: cellColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
-                          {r.isCurrency ? formatMoney(actV) : formatPct(actV)}
-                        </td>
-                      );
-                    })}
-
-                    {/* 22px Gap */}
-                    <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
-
-                    {/* Actual Total */}
-                    <td style={{ padding: "2px 8px", textAlign: "right", background: actTotalBg, color: actTotalColor, fontWeight: isBold ? 700 : 600, fontStyle: isMargin ? "italic" : "normal", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
-                      {r.isCurrency ? formatMoney(actSum) : formatPct(actSum)}
-                    </td>
-
-                    {/* 22px Gap */}
-                    <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
-
-                    {/* Budget Total */}
-                    <td style={{ padding: "2px 8px", textAlign: "right", background: rowBg, color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
-                      {r.isCurrency ? formatMoney(budSum) : formatPct(budSum)}
-                    </td>
-
-                    {/* 22px Gap */}
-                    <td style={{ width: "22px", minWidth: "22px", background: rowBg, padding: 0 }} />
-
-                    {/* Var (£) */}
-                    <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[0].bg, color: varCells[0].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
-                      {varCells[0].v}
-                    </td>
-
-                    {/* Var (%) */}
-                    <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[1].bg, color: varCells[1].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: `${fontSize}px`, whiteSpace: "nowrap" }}>
-                      {varCells[1].v}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
 
-      {selectedYearIdx < 2 && (
-        <button
-          type="button"
-          className="fy-nav-arrow-right"
-          onClick={() => setSelectedYearIdx((prev) => Math.min(2, prev + 1))}
-          title="Next Year"
-          style={{
-            position: "absolute",
-            right: "-42px",
-            top: "50%",
-            transform: "translateY(-50%)",
-            background: "transparent",
-            color: "#a2c4c9",
-            border: "none",
-            fontSize: "2.8rem",
-            fontWeight: "bold",
-            cursor: "pointer",
-            padding: "0",
-            zIndex: 10,
-            lineHeight: 1,
-            userSelect: "none",
-            transition: "color 0.2s",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
-        >
-          ›
-        </button>
-      )}
-    </div>
+        {selectedYearIdx < 2 && (
+          <button
+            type="button"
+            className="fy-nav-arrow-right"
+            onClick={() => {
+              setUserYearIdx(Math.min(2, selectedYearIdx + 1));
+              setUserMonthIdx(null);
+            }}
+            title="Next Year"
+            style={{
+              position: "absolute",
+              right: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ›
+          </button>
+        )}
+      </div>
 
     <style jsx>{`
       @media (max-width: 768px) {

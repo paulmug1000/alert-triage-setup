@@ -10,7 +10,18 @@ export default function BudgetView({
   error,
   onRefresh,
 }) {
-  const [selectedYearIdx, setSelectedYearIdx] = useState(data?.currentYearIdx || 0);
+  const defaultYearIdx = useMemo(() => {
+    if (allFYData?.currentYearIdx !== undefined && allFYData.currentYearIdx > 0) {
+      return Math.max(0, allFYData.currentYearIdx - 1);
+    }
+    if (data?.currentYearIdx !== undefined) {
+      return data.currentYearIdx;
+    }
+    return 1;
+  }, [allFYData?.currentYearIdx, data?.currentYearIdx]);
+
+  const [userYearIdx, setUserYearIdx] = useState(null);
+  const selectedYearIdx = userYearIdx !== null ? userYearIdx : defaultYearIdx;
 
   const isRevMode = useMemo(() => {
     if (keyData?.outgoingsMeta?.mode) {
@@ -66,10 +77,11 @@ export default function BudgetView({
   const formatPct = (val) => `${Math.round((val || 0) * 100)}%`;
 
   const getMarginColor = (label, numVal) => {
-    const t = keyData?.thresholds || [];
+    const t = allFYData?.thresholds || keyData?.thresholds || [];
     const parseT = (idx, def) => {
       const v = t[idx];
       if (v === undefined || v === null || v === "") return def;
+      if (typeof v === "number") return v > 1 ? v / 100 : v;
       const n = parseFloat(String(v).replace(/%/g, "").trim());
       return isNaN(n) ? def : (String(v).includes("%") || n > 1 ? n / 100 : n);
     };
@@ -216,7 +228,7 @@ export default function BudgetView({
   };
 
   const addSectionHeader = (label) => {
-    tableRows.push({ type: "section", label, height: 20 });
+    tableRows.push({ type: "section", label, height: 22 });
   };
 
   const addDataRow = (label, dataArr, isCurrency, isBigTotal, isMargin, bg, color, isBold = false) => {
@@ -231,7 +243,7 @@ export default function BudgetView({
       color: color || "#0047AB",
       isBold: isBigTotal || isBold,
       height: isBigTotal ? 31 : (isMargin ? 17 : 20),
-      fontSize: isBigTotal ? 14 : (isMargin ? 9 : 10),
+      fontSize: isBigTotal ? 13 : (isMargin ? 11.5 : 11.5),
     });
   };
 
@@ -432,7 +444,7 @@ export default function BudgetView({
           <button
             type="button"
             className="fy-nav-arrow-left"
-            onClick={() => setSelectedYearIdx((prev) => Math.max(0, prev - 1))}
+            onClick={() => setUserYearIdx(Math.max(0, selectedYearIdx - 1))}
             title="Previous Year"
             style={{
               position: "absolute",
@@ -482,7 +494,7 @@ export default function BudgetView({
               }}
             >
               <thead>
-                <tr style={{ background: "#0047AB", color: "#ffffff", height: "31px" }}>
+                <tr style={{ background: "#0000ff", color: "#ffffff", height: "31px" }}>
                   <th
                     style={{
                       padding: "6px 10px",
@@ -492,7 +504,7 @@ export default function BudgetView({
                       minWidth: "150px",
                       position: "sticky",
                       left: 0,
-                      background: "#0047AB",
+                      background: "#0000ff",
                       zIndex: 2,
                       fontSize: "13px",
                     }}
@@ -508,7 +520,7 @@ export default function BudgetView({
                         fontWeight: 700,
                         fontSize: "12px",
                         width: "5.6%",
-                        background: "#0047AB",
+                        background: "#0000ff",
                       }}
                     >
                       {mLabel}
@@ -518,7 +530,7 @@ export default function BudgetView({
                   <th
                     style={{
                       width: "1.8%",
-                      background: "#0047AB",
+                      background: "#0000ff",
                       padding: 0,
                     }}
                   />
@@ -531,7 +543,7 @@ export default function BudgetView({
                       fontSize: "13px",
                       width: "10%",
                       minWidth: "75px",
-                      background: "#0047AB",
+                      background: "#0000ff",
                     }}
                   >
                     Total
@@ -554,10 +566,13 @@ export default function BudgetView({
                     <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
                       <td
                         style={{
-                          padding: "2px 12px",
+                          padding: "2px 8px",
+                          paddingLeft: "8px",
                           textAlign: "left",
                           fontWeight: 700,
-                          fontSize: "13px",
+                          fontSize: "11px",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.5px",
                           color: "#0047AB",
                           position: "sticky",
                           left: 0,
@@ -581,9 +596,9 @@ export default function BudgetView({
                 const isBold = r.isBold;
                 const isMargin = r.isMargin;
                 const rowHeight = r.height;
-                const fontSize = r.fontSize;
+                const fontSize = isBigTotal ? 13 : r.fontSize;
 
-                const borderBottom = isBigTotal ? "none" : "1px solid #ffffff";
+                const borderBottom = isBigTotal ? "2px solid #cbd5e1" : "1px solid #ffffff";
 
                 return (
                   <tr
@@ -597,7 +612,8 @@ export default function BudgetView({
                     {/* Line item label (Col A) */}
                     <td
                       style={{
-                        padding: "2px 12px",
+                        padding: "2px 8px",
+                        paddingLeft: isBigTotal ? "8px" : "16px",
                         textAlign: "left",
                         color: rowColor,
                         fontWeight: isBold ? 700 : 400,
@@ -620,7 +636,7 @@ export default function BudgetView({
                       let cellColor = rowColor;
                       if (isMargin) {
                         cellBg = getMarginColor(r.label, val);
-                        cellColor = "#000000";
+                        cellColor = "#0047AB";
                       }
 
                       return (
@@ -658,7 +674,7 @@ export default function BudgetView({
                       let totalColor = rowColor;
                       if (isMargin) {
                         totalBg = getMarginColor(r.label, totalVal);
-                        totalColor = "#000000";
+                        totalColor = "#0047AB";
                       }
 
                       return (
@@ -690,7 +706,7 @@ export default function BudgetView({
         <button
           type="button"
           className="fy-nav-arrow-right"
-          onClick={() => setSelectedYearIdx((prev) => Math.min(2, prev + 1))}
+          onClick={() => setUserYearIdx(Math.min(2, selectedYearIdx + 1))}
           title="Next Year"
           style={{
             position: "absolute",

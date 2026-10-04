@@ -147,7 +147,8 @@ export default function MonthView({
   };
 
   // Calculate threshold background color for percentage cells
-  const getThresholdBg = (rowIndex, valueStr) => {
+  // Calculate threshold background color for percentage cells
+  const getThresholdBg = (rowIndex, labelStr, valueStr) => {
     if (!valueStr || !valueStr.includes("%")) return null;
     const num = parseFloat(valueStr.replace(/[%£,]/g, "")) / 100;
     if (isNaN(num)) return null;
@@ -160,7 +161,9 @@ export default function MonthView({
       return isNaN(n) ? def : (String(v).includes("%") || n > 1 ? n / 100 : n);
     };
 
-    if (rowIndex === 19) {
+    const l = String(labelStr || "").toLowerCase().trim();
+
+    if (rowIndex === 19 || l.includes("gross profit margin")) {
       // Gross profit margin %
       const z42 = parseT(0, 0.495);
       const z43 = parseT(1, 0.445);
@@ -169,7 +172,7 @@ export default function MonthView({
       return "#d9ead3";
     }
 
-    if (rowIndex === 27) {
+    if (rowIndex === 27 || l.includes("overheads as %") || l.includes("overheads %")) {
       // Overheads as %
       const z47 = parseT(5, 0.309);
       const z48 = parseT(6, 0.20);
@@ -178,7 +181,7 @@ export default function MonthView({
       return "#fce5cd";
     }
 
-    if (rowIndex === 31) {
+    if (rowIndex === 31 || l.includes("operating profit %")) {
       // Operating profit %
       const z52 = parseT(10, 0.145);
       const z53 = parseT(11, 0.05);
@@ -187,8 +190,8 @@ export default function MonthView({
       return "#d9ead3";
     }
 
-    if (rowIndex === 33) {
-      // Staff ratio
+    if (rowIndex === 33 || l.includes("staff costs to") || l.includes("staff ratio")) {
+      // Staff ratio / Staff costs to revenue/income %
       const z57 = parseT(15, 0.705);
       const z58 = parseT(16, 0.66);
       const z59 = parseT(17, 0.54);
@@ -401,11 +404,26 @@ export default function MonthView({
                 const spacers = [6, 7, 9, 14, 16, 18, 20, 24, 26, 28, 30, 32];
                 const isSpacer = spacers.includes(i) || (!label && !value);
 
+                const normLabel = label.toLowerCase().trim();
+                const isSectionHeader =
+                  ["revenue", "income", "costs of sale", "cost of sales", "overheads"].includes(normLabel) ||
+                  i === 2 ||
+                  i === 10 ||
+                  i === 21;
+
+                const isTotalRevenue = normLabel === "total revenue" || normLabel === "total income" || i === 8;
+                const isGrossProfit = normLabel === "gross profit" || i === 17;
+                const isTotalOverheads = normLabel === "total overheads" || i === 25;
+                const isOpProfit = normLabel === "operating profit" || i === 29;
+                const isTotalCosts = normLabel === "total costs of sale" || normLabel === "total cost of sales" || i === 15;
+                const isPercentage = normLabel.includes("%") || normLabel.includes("margin") || normLabel.includes("ratio") || [19, 27, 31, 33].includes(i);
+                const isMajor = isTotalRevenue || isGrossProfit || isTotalOverheads || isOpProfit;
+
                 let bgColor = "#efefef";
-                let textColor = "#000000";
+                let textColor = "#0047AB";
                 let isBold = false;
                 let isItalic = false;
-                let fontSize = 12;
+                let fontSize = 11.5;
                 let rowHeight = 22;
 
                 if (isSpacer) {
@@ -414,79 +432,69 @@ export default function MonthView({
                   rowHeight = 6;
                   fontSize = 2;
                 } else if (i === 0) {
-                  // Header (e.g. Revenue & Current Month)
+                  // Top Header (Current Month)
                   bgColor = "#0000ff";
                   textColor = "#ffffff";
                   isBold = true;
-                  fontSize = 14;
+                  fontSize = 13;
                   rowHeight = 31;
                 } else if (i === 1) {
+                  // Status (Forecast vs Actual)
                   isItalic = true;
-                  fontSize = 11;
+                  fontSize = 10.5;
                   textColor = "#666666";
-                } else if (i === 2) {
+                } else if (isSectionHeader) {
+                  // Section headers (REVENUE, COSTS OF SALE, OVERHEADS) matching FY table
+                  bgColor = "#efefef";
+                  textColor = "#0047AB";
                   isBold = true;
-                  fontSize = 13;
-                } else if (i === 8) {
-                  // Total Income / Revenue
+                  fontSize = 11;
+                  rowHeight = 22;
+                } else if (isTotalRevenue) {
                   bgColor = "#9900ff";
                   textColor = "#ffffff";
                   isBold = true;
-                  fontSize = 14;
+                  fontSize = 14.3;
                   rowHeight = 31;
-                } else if (i === 10) {
+                } else if (isTotalCosts) {
+                  bgColor = "#efefef";
+                  textColor = "#0047AB";
                   isBold = true;
-                  fontSize = 13;
-                } else if (i === 15) {
-                  isBold = true;
-                  fontSize = 12;
-                } else if (i === 17) {
-                  // Gross Profit
+                  fontSize = 11.5;
+                } else if (isGrossProfit) {
                   bgColor = "#e69138";
                   textColor = "#ffffff";
                   isBold = true;
-                  fontSize = 13;
+                  fontSize = 14.3;
                   rowHeight = 31;
-                } else if (i === 19) {
-                  isItalic = true;
-                  fontSize = 11;
-                } else if (i === 21) {
-                  isBold = true;
-                  fontSize = 13;
-                } else if (i === 25) {
-                  // Total Overheads
+                } else if (isTotalOverheads) {
                   bgColor = "#45818e";
                   textColor = "#ffffff";
                   isBold = true;
-                  fontSize = 13;
+                  fontSize = 14.3;
                   rowHeight = 31;
-                } else if (i === 27) {
-                  isItalic = true;
-                  fontSize = 11;
-                } else if (i === 29) {
-                  // Operating Profit
+                } else if (isOpProfit) {
                   bgColor = "#1155cc";
                   textColor = "#ffffff";
                   isBold = true;
-                  fontSize = 15;
+                  fontSize = 14.3;
                   rowHeight = 31;
-                } else if (i === 31 || i === 33) {
+                } else if (isPercentage) {
                   isItalic = true;
-                  fontSize = 11;
+                  textColor = "#0047AB";
+                  fontSize = 11.5;
                 }
 
                 // Dynamic KPI threshold background for the value column
-                const threshBg = getThresholdBg(i, value);
+                const threshBg = isPercentage ? getThresholdBg(i, label, value) : null;
                 const cellBg = threshBg || bgColor;
 
                 // Deep dive clickability
                 const isBlockedRow =
-                  i === 25 ||
-                  i === 27 ||
-                  String(label || "").toLowerCase().includes("total overheads") ||
-                  String(label || "").toLowerCase().includes("overheads as %") ||
-                  String(label || "").toLowerCase().includes("overheads %");
-                const ddType = !isSpacer && !isHide && !isBlockedRow ? getDeepDiveType(label) : null;
+                  isTotalOverheads ||
+                  normLabel.includes("overheads as %") ||
+                  normLabel.includes("overheads %");
+                const ddType = !isSpacer && !isHide && !isBlockedRow && !isSectionHeader ? getDeepDiveType(label) : null;
                 const isClickable = Boolean(ddType && value && value !== "£0" && value !== "—" && value !== "");
 
                 let displayVal = value;
@@ -513,21 +521,24 @@ export default function MonthView({
                     style={{
                       height: `${rowHeight}px`,
                       background: bgColor,
-                      borderBottom: "1px solid #ffffff"
+                      borderBottom: isMajor ? "2px solid #cbd5e1" : "1px solid #ffffff",
                     }}
                   >
                     {/* Column A: Line Item */}
                     <td
                       style={{
-                        padding: "4px 16px",
+                        padding: isSectionHeader ? "4px 8px" : "4px 8px",
+                        paddingLeft: isSectionHeader ? "8px" : isMajor ? "8px" : "16px",
                         textAlign: "left",
                         color: textColor,
                         fontWeight: isBold ? 700 : 400,
                         fontStyle: isItalic ? "italic" : "normal",
                         fontSize: `${fontSize}px`,
+                        textTransform: isSectionHeader ? "uppercase" : "none",
+                        letterSpacing: isSectionHeader ? "0.5px" : "normal",
                       }}
                     >
-                      {label}
+                      {i === 0 ? "" : isSectionHeader ? label.toUpperCase() : label}
                     </td>
 
                     {/* Column B: Amount */}
@@ -537,7 +548,7 @@ export default function MonthView({
                         padding: "4px 16px",
                         textAlign: "right",
                         background: cellBg,
-                        color: threshBg ? "#000000" : textColor,
+                        color: (isMajor || i === 0 || textColor === "#ffffff") ? "#ffffff" : "#0047AB",
                         fontWeight: isBold ? 700 : 400,
                         fontStyle: isItalic ? "italic" : "normal",
                         fontSize: `${fontSize}px`,
@@ -554,7 +565,7 @@ export default function MonthView({
                         if (isClickable) e.currentTarget.style.filter = "none";
                       }}
                     >
-                      {displayVal || ""}
+                      {isSectionHeader ? "" : displayVal || ""}
                     </td>
                   </tr>
                 );
@@ -593,17 +604,17 @@ export default function MonthView({
         </div>
       </div>
 
-      {/* 12-Month Performance Trend Line Chart (matching original app size & title) */}
+      {/* 12-Month Performance Trend Line Chart (wider than table, matching original app max-width) */}
       {activePeriod === "curr" && chartData?.showChart && chartData?.months?.length > 0 && (
         <div
           style={{
-            maxWidth: "410px",
-            margin: "1.5rem auto 0 auto",
+            maxWidth: "850px",
+            margin: "2rem auto 0 auto",
             width: "100%",
             background: "#ffffff",
             borderRadius: "8px",
             border: "1px solid #e5e7eb",
-            padding: "1rem",
+            padding: "1.25rem 1.5rem",
             boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)"
           }}
         >
@@ -652,9 +663,9 @@ export default function MonthView({
 
 // Clean, smooth SVG Line Chart mirroring Chart.js
 function HomeLineChart({ months = [], revenue = [], grossProfit = [], operatingProfit = [] }) {
-  const width = 410;
-  const height = 205;
-  const padding = { top: 15, right: 15, bottom: 25, left: 62 };
+  const width = 850;
+  const height = 280;
+  const padding = { top: 20, right: 30, bottom: 25, left: 65 };
 
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;

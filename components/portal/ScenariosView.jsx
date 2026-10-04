@@ -310,7 +310,7 @@ export default function ScenariosView({
   const getRowStyle = (label) => {
     const l = String(label || "").toLowerCase().trim();
     if (l === "total income" || l === "total revenue") {
-      return { bg: "#0000ff", color: "#ffffff", bold: true, isMajor: true };
+      return { bg: "#9900ff", color: "#ffffff", bold: true, isMajor: true };
     }
     if (l === "gross profit") {
       return { bg: "#e69138", color: "#ffffff", bold: true, isMajor: true };
@@ -321,11 +321,14 @@ export default function ScenariosView({
     if (l === "operating profit") {
       return { bg: "#1155cc", color: "#ffffff", bold: true, isMajor: true };
     }
-    if (["income", "costs of sale", "overheads"].includes(l)) {
+    if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
       return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
     }
     if (l === "total costs of sale" || l === "total cost of sales") {
       return { bg: "#efefef", color: "#0047AB", bold: true, isMajor: false };
+    }
+    if (l.includes("margin") || l.includes("overheads as %") || l.includes("overheads %") || l.includes("staff costs to") || l.includes("staff ratio")) {
+      return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
     }
     return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
   };
@@ -340,7 +343,7 @@ export default function ScenariosView({
       const v = t[idx];
       if (v === undefined || v === null || v === "") return def;
       if (typeof v === "number") return v > 1 ? v / 100 : v;
-      const n = parseFloat(String(v).replace(/%/g, ""));
+      const n = parseFloat(String(v).replace(/%/g, "").trim());
       return isNaN(n) ? def : (String(v).includes("%") || n > 1 ? n / 100 : n);
     };
 
@@ -348,32 +351,32 @@ export default function ScenariosView({
     if (l.includes("gross profit margin")) {
       const z42 = parseT(0, 0.495);
       const z43 = parseT(1, 0.445);
-      if (num < z43) return { bg: "#f4cccc", color: "#000000" };
-      if (num <= z42) return { bg: "#fce5cd", color: "#000000" };
-      return { bg: "#d9ead3", color: "#000000" };
+      if (num < z43) return { bg: "#f4cccc", color: "#0047AB" };
+      if (num <= z42) return { bg: "#fce5cd", color: "#0047AB" };
+      return { bg: "#d9ead3", color: "#0047AB" };
     }
     if (l.includes("overheads as %") || l.includes("overheads %")) {
       const z47 = parseT(5, 0.309);
       const z48 = parseT(6, 0.20);
-      if (num > z47) return { bg: "#f4cccc", color: "#000000" };
-      if (num >= z48) return { bg: "#d9ead3", color: "#000000" };
-      return { bg: "#fce5cd", color: "#000000" };
+      if (num > z47) return { bg: "#f4cccc", color: "#0047AB" };
+      if (num >= z48) return { bg: "#d9ead3", color: "#0047AB" };
+      return { bg: "#fce5cd", color: "#0047AB" };
     }
     if (l.includes("operating profit %")) {
       const z52 = parseT(10, 0.145);
       const z53 = parseT(11, 0.05);
-      if (num < z53) return { bg: "#f4cccc", color: "#000000" };
-      if (num <= z52) return { bg: "#fce5cd", color: "#000000" };
-      return { bg: "#d9ead3", color: "#000000" };
+      if (num < z53) return { bg: "#f4cccc", color: "#0047AB" };
+      if (num <= z52) return { bg: "#fce5cd", color: "#0047AB" };
+      return { bg: "#d9ead3", color: "#0047AB" };
     }
-    if (l.includes("staff costs to income") || l.includes("staff ratio")) {
+    if (l.includes("staff costs to") || l.includes("staff ratio")) {
       const z57 = parseT(15, 0.705);
       const z58 = parseT(16, 0.66);
       const z59 = parseT(17, 0.54);
-      if (num < z59) return { bg: "#fce5cd", color: "#000000" };
-      if (num <= z58) return { bg: "#d9ead3", color: "#000000" };
-      if (num <= z57) return { bg: "#fce5cd", color: "#000000" };
-      return { bg: "#f4cccc", color: "#000000" };
+      if (num < z59) return { bg: "#fce5cd", color: "#0047AB" };
+      if (num <= z58) return { bg: "#d9ead3", color: "#0047AB" };
+      if (num <= z57) return { bg: "#fce5cd", color: "#0047AB" };
+      return { bg: "#f4cccc", color: "#0047AB" };
     }
     return null;
   };
@@ -450,25 +453,7 @@ export default function ScenariosView({
           <h2 style={{ margin: 0, fontSize: "1.45rem", fontWeight: 700, color: "#0047AB" }}>
             Scenario planning
           </h2>
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            {years.length > 1 && (
-              <button
-                type="button"
-                onClick={() => setSelectedYearIdx((prev) => Math.max(0, prev - 1))}
-                disabled={activeYearIdx <= 0}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  cursor: activeYearIdx <= 0 ? "not-allowed" : "pointer",
-                  color: activeYearIdx <= 0 ? "#cbd5e1" : "#0047AB",
-                  fontSize: "14px",
-                  fontWeight: 700,
-                  padding: "0 4px",
-                }}
-              >
-                ‹
-              </button>
-            )}
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             <span
               style={{
                 padding: "2px 8px",
@@ -481,24 +466,6 @@ export default function ScenariosView({
             >
               {activeYear?.fyLabel || activeYear?.displayTitle}
             </span>
-            {years.length > 1 && (
-              <button
-                type="button"
-                onClick={() => setSelectedYearIdx((prev) => Math.min(years.length - 1, prev + 1))}
-                disabled={activeYearIdx >= years.length - 1}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  cursor: activeYearIdx >= years.length - 1 ? "not-allowed" : "pointer",
-                  color: activeYearIdx >= years.length - 1 ? "#cbd5e1" : "#0047AB",
-                  fontSize: "14px",
-                  fontWeight: 700,
-                  padding: "0 4px",
-                }}
-              >
-                ›
-              </button>
-            )}
           </div>
         </div>
 
@@ -552,19 +519,51 @@ export default function ScenariosView({
         </div>
       </div>
 
-      {/* 1. TOP SECTION: Full Financial Year Performance Table (All Rows Reflecting Scenarios) */}
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "8px",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
-          overflow: "hidden",
-          width: "100%",
-        }}
-      >
-        <div style={{ overflowX: "auto", width: "100%" }}>
-          <table
+      {/* 1. TOP SECTION: Full Financial Year Performance Table with Navigation Arrows */}
+      <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+        {activeYearIdx > 0 && (
+          <button
+            type="button"
+            className="fy-nav-arrow-left"
+            onClick={() => setSelectedYearIdx(Math.max(0, activeYearIdx - 1))}
+            title="Previous Year"
+            style={{
+              position: "absolute",
+              left: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ‹
+          </button>
+        )}
+
+        <div
+          className="fy-table-scroll-wrapper"
+          style={{
+            background: "#ffffff",
+            borderRadius: "8px",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+            border: "1px solid #e2e8f0",
+            overflow: "hidden",
+            width: "100%",
+          }}
+        >
+          <div style={{ overflowX: "auto", width: "100%" }}>
+            <table
             style={{
               width: "100%",
               minWidth: "780px",
@@ -576,7 +575,7 @@ export default function ScenariosView({
           >
             <thead>
               {/* Row 1: Header Titles with NO 'Line Item' in top-left cell */}
-              <tr style={{ background: "#0047AB", color: "#ffffff" }}>
+              <tr style={{ background: "#0000ff", color: "#ffffff" }}>
                 <th
                   style={{
                     padding: "6px 8px",
@@ -585,7 +584,7 @@ export default function ScenariosView({
                     width: "22%",
                     position: "sticky",
                     left: 0,
-                    background: "#0047AB",
+                    background: "#0000ff",
                     zIndex: 2,
                   }}
                 >
@@ -611,7 +610,7 @@ export default function ScenariosView({
                     textAlign: "right",
                     fontWeight: 800,
                     width: "8.4%",
-                    background: "#0047AB",
+                    background: "#0000ff",
                   }}
                 >
                   {activeYear?.totalColHeader || "FY Total"}
@@ -710,7 +709,8 @@ export default function ScenariosView({
                             textAlign: "right",
                             color: rowStyle.isMajor ? "#ffffff" : mBadge ? mBadge.color : rowStyle.color,
                             fontStyle: isPercentageRow ? "italic" : "normal",
-                            fontSize: rowStyle.isMajor ? "12px" : "11px",
+                            fontSize: rowStyle.isMajor ? "13px" : "11px",
+                            fontWeight: rowStyle.isMajor ? 700 : (rowStyle.bold ? 700 : 400),
                             background: mBadge ? mBadge.bg : "transparent",
                             cursor: isClickable ? "pointer" : "default",
                             textDecoration: isClickable ? "underline dashed #94a3b8 1px" : "none",
@@ -741,7 +741,7 @@ export default function ScenariosView({
                           style={{
                             padding: "4px 8px",
                             textAlign: "right",
-                            fontWeight: rowStyle.isMajor ? 800 : 700,
+                            fontWeight: rowStyle.isMajor ? 800 : (rowStyle.bold ? 700 : 400),
                             color: rowStyle.isMajor ? "#ffffff" : totalBadge ? totalBadge.color : "#0047AB",
                             fontStyle: isPercentageRow ? "italic" : "normal",
                             fontSize: rowStyle.isMajor ? "13px" : "11.5px",
@@ -768,6 +768,37 @@ export default function ScenariosView({
             </tbody>
           </table>
         </div>
+      </div>
+
+        {activeYearIdx < years.length - 1 && (
+          <button
+            type="button"
+            className="fy-nav-arrow-right"
+            onClick={() => setSelectedYearIdx(Math.min(years.length - 1, activeYearIdx + 1))}
+            title="Next Year"
+            style={{
+              position: "absolute",
+              right: "-42px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              color: "#a2c4c9",
+              border: "none",
+              fontSize: "2.8rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              padding: "0",
+              zIndex: 10,
+              lineHeight: 1,
+              userSelect: "none",
+              transition: "color 0.2s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#8fb5bb")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#a2c4c9")}
+          >
+            ›
+          </button>
+        )}
       </div>
 
       {/* 2. MIDDLE SECTION: Synchronized Financial Adjustments Grid */}

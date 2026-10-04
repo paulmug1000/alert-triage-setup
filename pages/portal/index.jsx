@@ -151,9 +151,9 @@ export default function PortalPage() {
     }
   }, []);
 
-  // Fetch performance data when switching to a performance view
+  // Fetch performance data when switching to a performance view or budget view (for actuals)
   useEffect(() => {
-    if (["dashboard", "ytd", "perfBreakdown", "scenarios"].includes(activeView) && selectedClient?.clientSheetId) {
+    if (["dashboard", "ytd", "perfBreakdown", "scenarios", "viewBudget", "budgetVariance"].includes(activeView) && selectedClient?.clientSheetId) {
       if (!performanceData) {
         fetchPerformance(selectedClient, false);
       }
@@ -357,6 +357,7 @@ export default function PortalPage() {
   const handleRefreshBudget = () => {
     if (selectedClient) {
       fetchBudget(selectedClient, true);
+      fetchPerformance(selectedClient, true);
     }
   };
 

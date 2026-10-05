@@ -3,6 +3,7 @@ import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { matchesClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
+import { logPulseActivity } from "../../../services/pulseLogger.js";
 
 // Helper to convert 0-indexed column number to letters (e.g. 0 -> A, 27 -> AB)
 function colToLetter(colIndex) {
@@ -288,6 +289,13 @@ export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+  }
+
+  if (sessionUser.isReadOnly) {
+    return res.status(403).json({
+      success: false,
+      error: "Pulse is read-only when logged in with a one-time password.",
+    });
   }
 
   const { clientSheetId, clientName, job } = req.body || {};
@@ -750,6 +758,34 @@ export default async function handler(req, res) {
       }
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
+    }
+
+    // 9. LOG ACTIVITY
+    try {
+      const jobName = job.jobName || "Untitled Job";
+      const action = isNewJob ? "JOB_CREATED" : "JOB_MODIFIED";
+      const summary = isNewJob
+        ? `Created new job: "${jobName}" (${sheetName})`
+        : `Updated job: "${jobName}" (${sheetName})`;
+
+      await logPulseActivity(sheets, {
+        clientName: clientName || "Client",
+        category: "JOB",
+        action,
+        summary,
+        details: {
+          jobName,
+          client: job.client,
+          sheetName,
+          revenue: job.revenue,
+          isNewJob,
+          rowNumber: parentRow,
+          childRows: actualChildRows.length
+        },
+        user: sessionUser.name || sessionUser.email
+      });
+    } catch (logErr) {
+      console.warn("⚠️ Failed to log job activity:", logErr.message);
     }
 
     return res.status(200).json({

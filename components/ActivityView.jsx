@@ -60,8 +60,11 @@ function CardScrollContainer({ children, hasEvents }) {
 export default function ActivityView({
   automationCommanderSheetId,
   allOutgoingsClients = [],
-  styles
+  styles,
+  isAdmin = false,
+  user
 }) {
+  const effectiveIsAdmin = !!(isAdmin || user?.isAdmin || user?.role === "Admin");
   const {
     activityData,
     selectedClient,
@@ -1220,6 +1223,9 @@ export default function ActivityView({
               }}
             >
               <option value="ALL">All Clients ({allOutgoingsClients.length})</option>
+              {effectiveIsAdmin && (
+                <option value="SYSTEM">🛡️ System & Security (Global)</option>
+              )}
               {allOutgoingsClients.map(c => (
                 <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
               ))}

@@ -3,6 +3,7 @@ import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { matchesClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
+import { logPulseActivity } from "../../../services/pulseLogger.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -12,6 +13,13 @@ export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+  }
+
+  if (sessionUser.isReadOnly) {
+    return res.status(403).json({
+      success: false,
+      error: "Pulse is read-only when logged in with a one-time password.",
+    });
   }
 
   const { clientSheetId, clientName, sheetName, updates } = req.body || {};
@@ -75,6 +83,40 @@ export default async function handler(req, res) {
       }
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
+    }
+
+    // Log Activity
+    try {
+      const sLower = String(sheetName || "").toLowerCase();
+      let category = "OUTGOINGS";
+      let action = "OUTGOINGS_MODIFIED";
+      if (sLower.includes("salar")) {
+        category = "SALARIES";
+        action = "SALARIES_MODIFIED";
+      } else if (sLower.includes("divid")) {
+        category = "DIVIDENDS";
+        action = "DIVIDENDS_MODIFIED";
+      } else if (sLower.includes("nb to find") || sLower.includes("nbtofind")) {
+        category = "NB_TO_FIND";
+        action = "NB_TO_FIND_MODIFIED";
+      }
+
+      const summary = `Updated ${sheetName} (${data.length} cell${data.length > 1 ? "s" : ""} updated)`;
+
+      await logPulseActivity(sheets, {
+        clientName: clientName || "Client",
+        category,
+        action,
+        summary,
+        details: {
+          sheetName,
+          clientName,
+          cellCount: data.length
+        },
+        user: sessionUser.name || sessionUser.email
+      });
+    } catch (logErr) {
+      console.warn("⚠️ Failed to log table update activity:", logErr.message);
     }
 
     return res.status(200).json({

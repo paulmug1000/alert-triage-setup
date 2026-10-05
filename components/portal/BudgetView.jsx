@@ -116,7 +116,7 @@ export default function BudgetView({
       if (numVal <= z57) return "#fce5cd";
       return "#f4cccc";
     }
-    return "#efefef";
+    return null;
   };
 
   if (isLoading && (!data || rawVals.length === 0)) {
@@ -232,6 +232,13 @@ export default function BudgetView({
   };
 
   const addDataRow = (label, dataArr, isCurrency, isBigTotal, isMargin, bg, color, isBold = false) => {
+    let accentBar = null;
+    const l = String(label || "").toLowerCase();
+    if (l.includes("gross profit margin") || l.includes("gross profit %")) accentBar = "#e69138";
+    else if (l.includes("overheads as %") || l.includes("overheads %")) accentBar = "#45818e";
+    else if (l.includes("operating profit %")) accentBar = "#1155cc";
+    else if (l.includes("staff costs to") || l.includes("staff ratio")) accentBar = "#64748b";
+
     tableRows.push({
       type: "data",
       label,
@@ -239,53 +246,54 @@ export default function BudgetView({
       isCurrency,
       isBigTotal,
       isMargin,
-      bg: bg || "#efefef",
+      accentBar,
+      bg: bg || "#ffffff",
       color: color || "#0047AB",
       isBold: isBigTotal || isBold,
-      height: isBigTotal ? 31 : (isMargin ? 17 : 20),
-      fontSize: isBigTotal ? 13 : (isMargin ? 11.5 : 11.5),
+      height: isBigTotal ? 32 : (isMargin ? 21 : 25),
+      fontSize: isBigTotal ? 13 : (isMargin ? 11 : 11.5),
     });
   };
 
   addSpacer(15);
   addSectionHeader(isRevMode ? "Revenue" : "Income");
-  addDataRow(isRevMode ? "Confirmed revenue" : "Confirmed income", conf, true, false, false, "#efefef", "#0047AB");
-  addDataRow(isRevMode ? "Pipeline revenue" : "Pipeline income", pipe, true, false, false, "#efefef", "#0047AB");
-  addDataRow(isRevMode ? "New business to find revenue" : "New business to find income", nb, true, false, false, "#efefef", "#0047AB");
+  addDataRow(isRevMode ? "Confirmed revenue" : "Confirmed income", conf, true, false, false, "#ffffff", "#0047AB");
+  addDataRow(isRevMode ? "Pipeline revenue" : "Pipeline income", pipe, true, false, false, "#ffffff", "#0047AB");
+  addDataRow(isRevMode ? "New business to find revenue" : "New business to find income", nb, true, false, false, "#ffffff", "#0047AB");
   addSpacer(6);
   addDataRow(isRevMode ? "Total revenue" : "Total income", totalRev, true, true, false, "#9900ff", "#ffffff");
   addSpacer(20);
 
   addSectionHeader("Costs of sale");
-  addDataRow("Staff costs - delivery", staffDel, true, false, false, "#efefef", "#0047AB");
+  addDataRow("Staff costs - delivery", staffDel, true, false, false, "#ffffff", "#0047AB");
   if (isRevMode) {
-    addDataRow("Direct costs", dirCosts, true, false, false, "#efefef", "#0047AB");
+    addDataRow("Direct costs", dirCosts, true, false, false, "#ffffff", "#0047AB");
   }
-  addDataRow("Other expenses - delivery", expDel, true, false, false, "#efefef", "#0047AB");
+  addDataRow("Other expenses - delivery", expDel, true, false, false, "#ffffff", "#0047AB");
   addSpacer(4);
-  addDataRow("Total costs of sale", totalCoS, true, false, false, "#efefef", "#0047AB", true);
+  addDataRow("Total costs of sale", totalCoS, true, false, false, "#ffffff", "#0047AB", true);
   addSpacer(12);
   addDataRow("Gross profit", gp, true, true, false, "#e69138", "#ffffff");
   addSpacer(10);
-  addDataRow("Gross profit margin %", gpMargin, false, false, true, "#efefef", "#0047AB");
+  addDataRow("Gross profit margin %", gpMargin, false, false, true, "#ffffff", "#0047AB");
   addSpacer(16);
 
   addSectionHeader("Overheads");
-  addDataRow("Staff costs - non-delivery", staffNonDel, true, false, false, "#efefef", "#0047AB");
-  addDataRow("Other expenses - non-delivery", expNonDel, true, false, false, "#efefef", "#0047AB");
+  addDataRow("Staff costs - non-delivery", staffNonDel, true, false, false, "#ffffff", "#0047AB");
+  addDataRow("Other expenses - non-delivery", expNonDel, true, false, false, "#ffffff", "#0047AB");
   addSpacer(20);
   addDataRow("Total overheads", totalOverheads, true, true, false, "#45818e", "#ffffff");
   addSpacer(12);
-  addDataRow(isRevMode ? "Overheads as % of revenue" : "Overheads as % of income", overheadsPct, false, false, true, "#efefef", "#0047AB");
+  addDataRow(isRevMode ? "Overheads as % of revenue" : "Overheads as % of income", overheadsPct, false, false, true, "#ffffff", "#0047AB");
   addSpacer(20);
 
   addDataRow("Operating profit", opProfit, true, true, false, "#1155cc", "#ffffff");
   addSpacer(12);
-  addDataRow("Operating profit %", opProfitPct, false, false, true, "#efefef", "#0047AB");
+  addDataRow("Operating profit %", opProfitPct, false, false, true, "#ffffff", "#0047AB");
 
   if (showExtraRows) {
-    addSpacer(12);
-    addDataRow(isRevMode ? "Staff costs to revenue %" : "Staff costs to income %", staffToIncPct, false, false, true, "#efefef", "#0047AB");
+    addSpacer(18);
+    addDataRow(isRevMode ? "Staff costs to revenue %" : "Staff costs to income %", staffToIncPct, false, false, true, "#ffffff", "#0047AB");
   }
 
   const selectStyle = {
@@ -485,7 +493,6 @@ export default function BudgetView({
             <table
               style={{
                 width: "100%",
-                minWidth: "960px",
                 tableLayout: "fixed",
                 borderCollapse: "separate",
                 borderSpacing: 0,
@@ -494,19 +501,18 @@ export default function BudgetView({
               }}
             >
               <thead>
-                <tr style={{ background: "#0000ff", color: "#ffffff", height: "31px" }}>
+                <tr style={{ background: "#0047AB", color: "#ffffff", height: "31px" }}>
                   <th
                     style={{
                       padding: "6px 10px",
                       textAlign: "left",
                       fontWeight: 700,
-                      width: "18%",
-                      minWidth: "150px",
+                      width: "19%",
                       position: "sticky",
                       left: 0,
-                      background: "#0000ff",
-                      zIndex: 2,
-                      fontSize: "13px",
+                      background: "#0047AB",
+                      zIndex: 3,
+                      fontSize: "12px",
                     }}
                   >
                     {/* Empty top-left cell */}
@@ -515,35 +521,27 @@ export default function BudgetView({
                     <th
                       key={idx}
                       style={{
-                        padding: "6px 2px",
+                        padding: "6px 4px",
                         textAlign: "right",
                         fontWeight: 700,
-                        fontSize: "12px",
-                        width: "6.2%",
-                        background: "#0000ff",
+                        fontSize: "11.5px",
+                        width: "6.1%",
+                        background: "#0047AB",
                       }}
                     >
                       {mLabel}
                     </th>
                   ))}
-                  {/* Gap Column */}
-                  <th
-                    style={{
-                      width: "0.8%",
-                      background: "#0000ff",
-                      padding: 0,
-                    }}
-                  />
                   {/* Total Column */}
                   <th
                     style={{
-                      padding: "6px 8px",
+                      padding: "6px 10px",
                       textAlign: "right",
-                      fontWeight: 700,
-                      fontSize: "13px",
-                      width: "6.8%",
-                      minWidth: "75px",
-                      background: "#0000ff",
+                      fontWeight: 800,
+                      fontSize: "12px",
+                      width: "7.8%",
+                      background: "#0047AB",
+                      borderLeft: "1px solid #cbd5e1",
                     }}
                   >
                     Total
@@ -551,153 +549,280 @@ export default function BudgetView({
                 </tr>
               </thead>
 
-            <tbody>
-              {tableRows.map((r, rIdx) => {
-                if (r.type === "spacer") {
-                  return (
-                    <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
-                      <td colSpan={15} style={{ padding: 0, border: "none", background: "#efefef" }} />
-                    </tr>
-                  );
-                }
+              <tbody>
+                {tableRows.map((r, rIdx) => {
+                  if (r.type === "spacer") {
+                    return (
+                      <tr key={rIdx} style={{ height: `${r.height}px`, lineHeight: 0 }}>
+                        <td
+                          style={{
+                            padding: 0,
+                            background: "#ffffff",
+                            position: "sticky",
+                            left: 0,
+                            zIndex: 2,
+                            border: "none",
+                          }}
+                        />
+                        {Array.from({ length: 12 }).map((_, cIdx) => (
+                          <td key={cIdx} style={{ padding: 0, background: "#ffffff", border: "none" }} />
+                        ))}
+                        <td
+                          style={{
+                            padding: 0,
+                            background: "rgba(0, 71, 171, 0.04)",
+                            border: "none",
+                            borderLeft: "1px solid #cbd5e1",
+                          }}
+                        />
+                      </tr>
+                    );
+                  }
 
-                if (r.type === "section") {
+                  if (r.type === "section") {
+                    return (
+                      <tr key={rIdx} style={{ height: "26px", borderBottom: "1px solid #f1f5f9" }}>
+                        <td
+                          style={{
+                            padding: "5px 10px",
+                            paddingLeft: "10px",
+                            textAlign: "left",
+                            fontWeight: 700,
+                            fontSize: "11px",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.6px",
+                            color: "#0047AB",
+                            position: "sticky",
+                            left: 0,
+                            background: "#ffffff",
+                            zIndex: 2,
+                            boxShadow: "2px 0 3px rgba(0,0,0,0.02)",
+                          }}
+                        >
+                          {r.label}
+                        </td>
+                        {Array.from({ length: 12 }).map((_, cIdx) => (
+                          <td key={cIdx} style={{ padding: 0, background: "#ffffff", border: "none" }} />
+                        ))}
+                        <td
+                          style={{
+                            padding: 0,
+                            background: "rgba(0, 71, 171, 0.04)",
+                            border: "none",
+                            borderLeft: "1px solid #cbd5e1",
+                          }}
+                        />
+                      </tr>
+                    );
+                  }
+
+                  // Data Row
+                  const isBigTotal = r.isBigTotal;
+                  const rowBg = r.bg;
+                  const rowColor = r.color;
+                  const isBold = r.isBold;
+                  const isMargin = r.isMargin;
+                  const rowHeight = isBigTotal ? "32px" : isMargin ? "21px" : "25px";
+                  const fontSize = isBigTotal ? "13px" : isMargin ? "11px" : "11.5px";
+                  const borderBottom = isBigTotal ? "2px solid #cbd5e1" : "1px solid #f1f5f9";
+
                   return (
-                    <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
+                    <tr
+                      key={rIdx}
+                      style={{
+                        height: rowHeight,
+                        background: isBigTotal ? rowBg : "#ffffff",
+                        borderBottom,
+                        fontWeight: isBold ? 700 : 400,
+                      }}
+                    >
+                      {/* Line item label (Col A) */}
                       <td
                         style={{
-                          padding: "2px 8px",
-                          paddingLeft: "8px",
+                          padding: isMargin ? "2px 10px" : "4.5px 10px",
+                          paddingLeft: isMargin ? "20px" : isBigTotal ? "10px" : "16px",
                           textAlign: "left",
-                          fontWeight: 700,
-                          fontSize: "11px",
-                          textTransform: "uppercase",
-                          letterSpacing: "0.5px",
-                          color: "#0047AB",
+                          color: isBigTotal ? "#ffffff" : rowColor,
+                          fontWeight: isBold ? 700 : 400,
+                          fontStyle: isMargin ? "italic" : "normal",
+                          fontSize: fontSize,
                           position: "sticky",
                           left: 0,
-                          background: "#efefef",
-                          zIndex: 1,
+                          background: isBigTotal ? rowBg : "#ffffff",
+                          borderLeft: isMargin && r.accentBar ? `4px solid ${r.accentBar}` : "none",
+                          zIndex: 2,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          boxShadow: "2px 0 3px rgba(0,0,0,0.02)",
                         }}
+                        title={r.label}
                       >
                         {r.label}
                       </td>
-                      {Array.from({ length: 14 }).map((_, cIdx) => (
-                        <td key={cIdx} style={{ padding: 0, background: "#efefef" }} />
-                      ))}
+
+                      {/* 12 Month values */}
+                      {Array.from({ length: 12 }).map((_, mIdx) => {
+                        const val = r.data[mIdx];
+                        const displayVal = r.isCurrency ? formatMoney(val) : formatPct(val);
+
+                        if (isBigTotal) {
+                          return (
+                            <td
+                              key={mIdx}
+                              style={{
+                                padding: "4.5px 4px",
+                                textAlign: "right",
+                                color: "#ffffff",
+                                fontSize: "13px",
+                                fontWeight: 700,
+                                background: "transparent",
+                                whiteSpace: "nowrap",
+                                fontVariantNumeric: "tabular-nums",
+                              }}
+                            >
+                              {displayVal}
+                            </td>
+                          );
+                        }
+
+                        if (isMargin) {
+                          const threshBg = getMarginColor(r.label, val);
+                          return (
+                            <td
+                              key={mIdx}
+                              style={{
+                                padding: "1px 2px",
+                                background: "#ffffff",
+                                textAlign: "right",
+                                height: "21px",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "inline-block",
+                                  width: "100%",
+                                  padding: "1.5px 3px",
+                                  borderRadius: "4px",
+                                  background: threshBg || "transparent",
+                                  color: "#0047AB",
+                                  border: threshBg ? "1.5px solid #ffffff" : "none",
+                                  fontStyle: "italic",
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  fontVariantNumeric: "tabular-nums",
+                                  boxSizing: "border-box",
+                                }}
+                              >
+                                {displayVal}
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        return (
+                          <td
+                            key={mIdx}
+                            style={{
+                              padding: "4.5px 4px",
+                              textAlign: "right",
+                              background: "#ffffff",
+                              color: rowColor,
+                              fontWeight: isBold ? 700 : 400,
+                              fontStyle: isMargin ? "italic" : "normal",
+                              fontSize: fontSize,
+                              whiteSpace: "nowrap",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {displayVal}
+                          </td>
+                        );
+                      })}
+
+                      {/* Total cell (Continuous unbroken Total column shading) */}
+                      {(() => {
+                        const totalVal = r.data[12];
+                        const displayTotal = r.isCurrency ? formatMoney(totalVal) : formatPct(totalVal);
+                        const totalColBg = "rgba(0, 71, 171, 0.04)";
+
+                        if (isBigTotal) {
+                          return (
+                            <td
+                              style={{
+                                padding: "4.5px 10px",
+                                textAlign: "right",
+                                background: "transparent",
+                                borderLeft: "1px solid #cbd5e1",
+                                color: "#ffffff",
+                                fontWeight: 800,
+                                fontSize: "13px",
+                                whiteSpace: "nowrap",
+                                fontVariantNumeric: "tabular-nums",
+                              }}
+                            >
+                              {displayTotal}
+                            </td>
+                          );
+                        }
+
+                        if (isMargin) {
+                          const totalThreshBg = getMarginColor(r.label, totalVal);
+                          return (
+                            <td
+                              style={{
+                                padding: "1px 2px",
+                                background: totalColBg,
+                                borderLeft: "1px solid #cbd5e1",
+                                textAlign: "right",
+                                height: "21px",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "inline-block",
+                                  width: "100%",
+                                  padding: "1.5px 6px",
+                                  borderRadius: "4px",
+                                  background: totalThreshBg || "transparent",
+                                  color: "#0047AB",
+                                  border: totalThreshBg ? `1.5px solid ${totalColBg}` : "none",
+                                  fontStyle: "italic",
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  fontVariantNumeric: "tabular-nums",
+                                  boxSizing: "border-box",
+                                }}
+                              >
+                                {displayTotal}
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        return (
+                          <td
+                            style={{
+                              padding: "4.5px 10px",
+                              textAlign: "right",
+                              background: totalColBg,
+                              borderLeft: "1px solid #cbd5e1",
+                              color: "#0047AB",
+                              fontWeight: isBold ? 700 : 600,
+                              fontStyle: isMargin ? "italic" : "normal",
+                              fontSize: fontSize,
+                              whiteSpace: "nowrap",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {displayTotal}
+                          </td>
+                        );
+                      })()}
                     </tr>
                   );
-                }
-
-                // Data Row
-                const isBigTotal = r.isBigTotal;
-                const rowBg = r.bg;
-                const rowColor = r.color;
-                const isBold = r.isBold;
-                const isMargin = r.isMargin;
-                const rowHeight = r.height;
-                const fontSize = isBigTotal ? 13 : r.fontSize;
-
-                const borderBottom = isBigTotal ? "2px solid #cbd5e1" : "1px solid #ffffff";
-
-                return (
-                  <tr
-                    key={rIdx}
-                    style={{
-                      height: `${rowHeight}px`,
-                      background: rowBg,
-                      borderBottom,
-                    }}
-                  >
-                    {/* Line item label (Col A) */}
-                    <td
-                      style={{
-                        padding: "2px 8px",
-                        paddingLeft: isBigTotal ? "8px" : "16px",
-                        textAlign: "left",
-                        color: rowColor,
-                        fontWeight: isBold ? 700 : 400,
-                        fontStyle: isMargin ? "italic" : "normal",
-                        fontSize: `${fontSize}px`,
-                        position: "sticky",
-                        left: 0,
-                        background: rowBg,
-                        zIndex: 1,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {r.label}
-                    </td>
-
-                    {/* 12 Month values */}
-                    {Array.from({ length: 12 }).map((_, mIdx) => {
-                      const val = r.data[mIdx];
-                      let cellBg = rowBg;
-                      let cellColor = rowColor;
-                      if (isMargin) {
-                        cellBg = getMarginColor(r.label, val);
-                        cellColor = "#0047AB";
-                      }
-
-                      return (
-                        <td
-                          key={mIdx}
-                          style={{
-                            padding: "2px 4px",
-                            textAlign: "right",
-                            background: cellBg,
-                            color: cellColor,
-                            fontWeight: isBold ? 700 : 400,
-                            fontStyle: isMargin ? "italic" : "normal",
-                            fontSize: `${fontSize}px`,
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {r.isCurrency ? formatMoney(val) : formatPct(val)}
-                        </td>
-                      );
-                    })}
-
-                    {/* Gap cell connecting seamlessly with major row color */}
-                    <td
-                      style={{
-                        width: "1.8%",
-                        background: rowBg,
-                        padding: 0,
-                      }}
-                    />
-
-                    {/* 13th Total cell */}
-                    {(() => {
-                      const totalVal = r.data[12];
-                      let totalBg = rowBg;
-                      let totalColor = rowColor;
-                      if (isMargin) {
-                        totalBg = getMarginColor(r.label, totalVal);
-                        totalColor = "#0047AB";
-                      }
-
-                      return (
-                        <td
-                          style={{
-                            padding: "2px 8px",
-                            textAlign: "right",
-                            background: totalBg,
-                            color: totalColor,
-                            fontWeight: isBold ? 700 : 600,
-                            fontStyle: isMargin ? "italic" : "normal",
-                            fontSize: `${fontSize}px`,
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {r.isCurrency ? formatMoney(totalVal) : formatPct(totalVal)}
-                        </td>
-                      );
-                    })()}
-                  </tr>
-                );
-              })}
-            </tbody>
+                })}
+              </tbody>
           </table>
         </div>
       </div>

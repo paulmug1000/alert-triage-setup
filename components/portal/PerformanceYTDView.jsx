@@ -132,12 +132,24 @@ export default function PerformanceYTDView({
       return { bg: "#1155cc", color: "#ffffff", bold: true, isMajor: true };
     }
     if (["income", "revenue", "costs of sale", "cost of sales", "overheads"].includes(l)) {
-      return { bg: "#efefef", color: "#0047AB", bold: true, isHeader: true };
+      return { bg: "#ffffff", color: "#0047AB", bold: true, isHeader: true };
     }
-    if (l.includes("margin") || l.includes("overheads as %") || l.includes("overheads %") || l.includes("staff costs to") || l.includes("staff ratio")) {
-      return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
+    if (l.includes("gross profit margin") || l.includes("gross profit %")) {
+      return { bg: "#ffffff", color: "#0047AB", bold: false, isMajor: false, isMarginRow: true, accentBar: "#e69138" };
     }
-    return { bg: "#efefef", color: "#0047AB", bold: false, isMajor: false };
+    if (l.includes("overheads as %") || l.includes("overheads %")) {
+      return { bg: "#ffffff", color: "#0047AB", bold: false, isMajor: false, isMarginRow: true, accentBar: "#45818e" };
+    }
+    if (l.includes("operating profit %") || l.includes("operating profit margin")) {
+      return { bg: "#ffffff", color: "#0047AB", bold: false, isMajor: false, isMarginRow: true, accentBar: "#1155cc" };
+    }
+    if (l.includes("staff costs to") || l.includes("staff ratio")) {
+      return { bg: "#ffffff", color: "#0047AB", bold: false, isMajor: false, isMarginRow: true, accentBar: "#64748b" };
+    }
+    if (l.includes("margin") || l.includes("ratio") || l.includes("%")) {
+      return { bg: "#ffffff", color: "#0047AB", bold: false, isMajor: false, isMarginRow: true, accentBar: null };
+    }
+    return { bg: "#ffffff", color: "#0047AB", bold: false, isMajor: false };
   };
 
   if (isLoading && !data) {
@@ -521,7 +533,7 @@ export default function PerformanceYTDView({
         >
           <thead>
             {/* Header Row: Line item, displayed months, YTD Total */}
-            <tr style={{ background: "#0000ff", color: "#ffffff" }}>
+            <tr style={{ background: "#0047AB", color: "#ffffff" }}>
               <th
                 style={{
                   padding: "6px 8px",
@@ -530,10 +542,10 @@ export default function PerformanceYTDView({
                   fontSize: "12px",
                   position: "sticky",
                   left: 0,
-                  background: "#0000ff",
-                  zIndex: 2,
-                  width: "220px",
-                  minWidth: "220px",
+                  background: "#0047AB",
+                  zIndex: 3,
+                  width: "240px",
+                  minWidth: "240px",
                 }}
               >
                 {/* Empty header, NO Line item label */}
@@ -555,13 +567,14 @@ export default function PerformanceYTDView({
               ))}
               <th
                 style={{
-                  padding: "6px 8px",
+                  padding: "6px 10px",
                   textAlign: "right",
                   fontWeight: 800,
                   fontSize: "12px",
-                  background: "#0000ff",
+                  background: "#0047AB",
                   width: "110px",
                   minWidth: "110px",
+                  borderLeft: "1px solid #cbd5e1",
                 }}
               >
                 YTD Total
@@ -569,14 +582,15 @@ export default function PerformanceYTDView({
             </tr>
 
             {/* Status row: Actual / Forecast markers */}
-            <tr style={{ background: "#efefef", borderBottom: "1px solid #ffffff", fontSize: "10.5px" }}>
+            <tr style={{ background: "#ffffff", borderBottom: "1px solid #cbd5e1", fontSize: "10.5px" }}>
               <td
                 style={{
                   padding: "3px 8px",
                   position: "sticky",
                   left: 0,
-                  background: "#efefef",
-                  zIndex: 2,
+                  background: "#ffffff",
+                  zIndex: 3,
+                  border: "none",
                 }}
               >
                 {/* Empty cell, NO Status label */}
@@ -585,13 +599,32 @@ export default function PerformanceYTDView({
                 const st = (activeYear.statusValues || activeYear.monthStatuses || [])[idx] || "";
                 const raw = String(st).trim();
                 const text = raw.toLowerCase() === "actual" ? "Actual" : raw.toLowerCase() === "forecast" ? "Forecast" : raw;
+                const isAct = raw.toLowerCase() === "actual";
                 return (
-                  <td key={idx} style={{ padding: "3px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef" }}>
+                  <td
+                    key={idx}
+                    style={{
+                      padding: "3px 4px",
+                      textAlign: "right",
+                      color: "#64748b",
+                      fontStyle: "italic",
+                      background: isAct ? "#f4f7fa" : "#ffffff",
+                      border: "none",
+                    }}
+                  >
                     {text}
                   </td>
                 );
               })}
-              <td style={{ padding: "3px 8px", textAlign: "right", background: "#efefef" }}></td>
+              <td
+                style={{
+                  padding: "3px 10px",
+                  textAlign: "right",
+                  background: "rgba(0, 71, 171, 0.04)",
+                  border: "none",
+                  borderLeft: "1px solid #cbd5e1",
+                }}
+              />
             </tr>
           </thead>
 
@@ -600,16 +633,73 @@ export default function PerformanceYTDView({
               if (rIdx < 2) return null;
 
               const label = String(row.label || "").trim();
+
+              // Detect if this spacer is the gap between Operating Profit % and Staff costs ratio
+              let prevLbl = "";
+              for (let k = rIdx - 1; k >= 2; k--) {
+                if (ytdRows[k]?.label && ytdRows[k].label.toLowerCase() !== "hide") {
+                  prevLbl = ytdRows[k].label.toLowerCase();
+                  break;
+                }
+              }
+              let nextLbl = "";
+              for (let k = rIdx + 1; k < ytdRows.length; k++) {
+                if (ytdRows[k]?.label && ytdRows[k].label.toLowerCase() !== "hide") {
+                  nextLbl = ytdRows[k].label.toLowerCase();
+                  break;
+                }
+              }
+              const isOpToStaffGap =
+                (prevLbl.includes("operating profit %") || prevLbl.includes("operating profit margin")) &&
+                (nextLbl.includes("staff costs to") || nextLbl.includes("staff ratio"));
+
               if (label.toLowerCase() === "hide" || (!label && !row.totalVal)) {
+                const spacerHeight = isOpToStaffGap ? 18 : 6;
                 return (
-                  <tr key={rIdx} style={{ height: "6px", background: "#efefef" }}>
-                    <td colSpan={displayedMonths.length + 2} style={{ padding: 0, background: "#efefef" }} />
+                  <tr key={rIdx} style={{ height: `${spacerHeight}px`, lineHeight: 0 }}>
+                    <td
+                      style={{
+                        padding: 0,
+                        background: "#ffffff",
+                        position: "sticky",
+                        left: 0,
+                        zIndex: 2,
+                        border: "none",
+                      }}
+                    />
+                    {displayedMonths.map((_, mIdx) => {
+                      const st = String((activeYear.statusValues || activeYear.monthStatuses || [])[mIdx] || "").trim().toLowerCase();
+                      const isAct = st === "actual";
+                      return (
+                        <td
+                          key={mIdx}
+                          style={{
+                            padding: 0,
+                            background: isAct ? "#f4f7fa" : "#ffffff",
+                            border: "none",
+                          }}
+                        />
+                      );
+                    })}
+                    <td
+                      style={{
+                        padding: 0,
+                        background: "rgba(0, 71, 171, 0.04)",
+                        border: "none",
+                        borderLeft: "1px solid #cbd5e1",
+                      }}
+                    />
                   </tr>
                 );
               }
 
               const rowStyle = getRowStyle(label);
               const isPercentageRow = row.isPct || label.includes("%") || label.toLowerCase().includes("ratio") || label.toLowerCase().includes("margin");
+              const isMarginRow = Boolean(rowStyle.isMarginRow);
+
+              // Row height: narrower for KPI margin rows (21px) vs regular (25px) vs major (32px)
+              const rowHeight = rowStyle.isMajor ? "32px" : isMarginRow ? "21px" : "25px";
+              const fontSize = rowStyle.isMajor ? "13px" : isMarginRow ? "11px" : rowStyle.isHeader ? "11px" : "11.5px";
 
               // YTD Total formatted string
               let ytdDisplay = "";
@@ -626,27 +716,35 @@ export default function PerformanceYTDView({
                 <tr
                   key={rIdx}
                   style={{
-                    borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #ffffff",
-                    background: rowStyle.bg,
+                    height: rowHeight,
+                    borderBottom: rowStyle.isMajor ? "2px solid #cbd5e1" : "1px solid #f1f5f9",
+                    background: rowStyle.isMajor ? rowStyle.bg : "#ffffff",
                     fontWeight: rowStyle.bold ? 700 : 400,
                   }}
                 >
+                  {/* Sticky Line Item Column */}
                   <td
                     style={{
-                      padding: "4px 8px",
-                      color: rowStyle.color,
-                      fontSize: rowStyle.isMajor ? "13px" : rowStyle.isHeader ? "11px" : "11.5px",
+                      padding: rowStyle.isHeader ? "5px 10px" : isMarginRow ? "2px 10px" : "4.5px 10px",
+                      color: rowStyle.isMajor ? "#ffffff" : rowStyle.color,
+                      fontSize: fontSize,
                       textTransform: rowStyle.isHeader ? "uppercase" : "none",
-                      letterSpacing: rowStyle.isHeader ? "0.5px" : "normal",
-                      paddingLeft: !rowStyle.isHeader && !rowStyle.isMajor ? "16px" : "8px",
+                      letterSpacing: rowStyle.isHeader ? "0.6px" : "normal",
+                      paddingLeft: isMarginRow
+                        ? "20px"
+                        : !rowStyle.isHeader && !rowStyle.isMajor
+                        ? "16px"
+                        : "10px",
                       fontStyle: isPercentageRow ? "italic" : "normal",
                       position: "sticky",
                       left: 0,
-                      background: rowStyle.bg,
-                      zIndex: 1,
+                      background: rowStyle.isMajor ? rowStyle.bg : "#ffffff",
+                      borderLeft: isMarginRow && rowStyle.accentBar ? `4px solid ${rowStyle.accentBar}` : "none",
+                      zIndex: 2,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
+                      boxShadow: "2px 0 3px rgba(0,0,0,0.02)",
                     }}
                     title={label}
                   >
@@ -660,23 +758,87 @@ export default function PerformanceYTDView({
                     const isClickable = Boolean(ddType && val && val !== "£0" && val !== "—" && val !== "");
                     const monthLabel = activeYear.headerMonths?.[mIdx] || `Month ${mIdx + 1}`;
                     const displayVal = val === "—" ? "" : val || "";
+                    const st = String((activeYear.statusValues || activeYear.monthStatuses || [])[mIdx] || "").trim().toLowerCase();
+                    const isAct = st === "actual";
+                    const colBg = isAct ? "#f4f7fa" : "#ffffff";
 
+                    // If major row: solid band, transparent cell
+                    if (rowStyle.isMajor) {
+                      return (
+                        <td
+                          key={mIdx}
+                          onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel)}
+                          style={{
+                            padding: "4.5px 4px",
+                            textAlign: "right",
+                            color: "#ffffff",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                            background: "transparent",
+                            cursor: isClickable ? "pointer" : "default",
+                            textDecoration: isClickable ? "underline dashed rgba(255,255,255,0.6) 1px" : "none",
+                            textUnderlineOffset: "2px",
+                            whiteSpace: "nowrap",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {displayVal}
+                        </td>
+                      );
+                    }
+
+                    // If KPI margin row: narrower, with column-colored border buffer
+                    if (isMarginRow) {
+                      return (
+                        <td
+                          key={mIdx}
+                          style={{
+                            padding: "1px 2px",
+                            background: colBg,
+                            textAlign: "right",
+                            height: "21px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "inline-block",
+                              width: "100%",
+                              padding: "1.5px 3px",
+                              borderRadius: "4px",
+                              background: mBadge ? mBadge.bg : "transparent",
+                              color: mBadge ? mBadge.color : "#0047AB",
+                              border: mBadge ? `1.5px solid ${colBg}` : "none",
+                              fontStyle: "italic",
+                              fontSize: "11px",
+                              fontWeight: mBadge ? 700 : 400,
+                              fontVariantNumeric: "tabular-nums",
+                              boxSizing: "border-box",
+                            }}
+                          >
+                            {displayVal}
+                          </div>
+                        </td>
+                      );
+                    }
+
+                    // Regular data row
                     return (
                       <td
                         key={mIdx}
                         onClick={(e) => isClickable && handleCellClick(e, label, val, mIdx, monthLabel)}
                         style={{
-                          padding: "4px 4px",
+                          padding: "4.5px 4px",
                           textAlign: "right",
-                          color: rowStyle.isMajor ? "#ffffff" : mBadge ? mBadge.color : rowStyle.color,
-                          fontStyle: isPercentageRow ? "italic" : "normal",
-                          fontSize: rowStyle.isMajor ? "13px" : "11px",
-                          fontWeight: rowStyle.isMajor ? 700 : (rowStyle.bold ? 700 : 400),
-                          background: mBadge ? mBadge.bg : "transparent",
+                          color: rowStyle.color,
+                          fontSize: "11.5px",
+                          fontWeight: rowStyle.bold ? 700 : 400,
+                          background: colBg,
                           cursor: isClickable ? "pointer" : "default",
                           textDecoration: isClickable ? "underline dashed #94a3b8 1px" : "none",
-                          textUnderlineOffset: isClickable ? "2px" : "initial",
+                          textUnderlineOffset: "2px",
                           whiteSpace: "nowrap",
+                          fontVariantNumeric: "tabular-nums",
+                          transition: "background-color 0.15s ease",
                         }}
                         onMouseEnter={(e) => {
                           if (isClickable) e.currentTarget.style.filter = "brightness(0.92)";
@@ -685,32 +847,99 @@ export default function PerformanceYTDView({
                           if (isClickable) e.currentTarget.style.filter = "none";
                         }}
                       >
-                        {displayVal}
+                        {rowStyle.isHeader ? "" : displayVal}
                       </td>
                     );
                   })}
 
-                  {/* YTD Total Column */}
+                  {/* YTD Total Column (Continuous unbroken Total column shading) */}
                   {(() => {
                     const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
                     const isClickable = Boolean(ddType && ytdDisplay && ytdDisplay !== "£0" && ytdDisplay !== "—" && ytdDisplay !== "");
                     const ytdBadge = isPercentageRow ? getMarginBadgeStyle(label, ytdDisplay) : null;
+                    const displayTotal = ytdDisplay === "—" ? "" : ytdDisplay || "";
+                    const totalColBg = "rgba(0, 71, 171, 0.04)";
+
+                    if (rowStyle.isMajor) {
+                      return (
+                        <td
+                          onClick={(e) =>
+                            isClickable &&
+                            handleCellClick(e, label, ytdDisplay, -1, `YTD Through ${cutoffLabel}`)
+                          }
+                          style={{
+                            padding: "4.5px 10px",
+                            textAlign: "right",
+                            color: "#ffffff",
+                            fontSize: "13px",
+                            fontWeight: 800,
+                            background: "transparent",
+                            borderLeft: "1px solid #cbd5e1",
+                            cursor: isClickable ? "pointer" : "default",
+                            textDecoration: isClickable ? "underline dashed rgba(255,255,255,0.6) 1px" : "none",
+                            textUnderlineOffset: "2px",
+                            whiteSpace: "nowrap",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {displayTotal}
+                        </td>
+                      );
+                    }
+
+                    if (isMarginRow) {
+                      return (
+                        <td
+                          style={{
+                            padding: "1px 2px",
+                            background: totalColBg,
+                            borderLeft: "1px solid #cbd5e1",
+                            textAlign: "right",
+                            height: "21px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "inline-block",
+                              width: "100%",
+                              padding: "1.5px 6px",
+                              borderRadius: "4px",
+                              background: ytdBadge ? ytdBadge.bg : "transparent",
+                              color: ytdBadge ? ytdBadge.color : "#0047AB",
+                              border: ytdBadge ? `1.5px solid ${totalColBg}` : "none",
+                              fontStyle: "italic",
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              fontVariantNumeric: "tabular-nums",
+                              boxSizing: "border-box",
+                            }}
+                          >
+                            {displayTotal}
+                          </div>
+                        </td>
+                      );
+                    }
 
                     return (
                       <td
-                        onClick={(e) => isClickable && handleCellClick(e, label, ytdDisplay, -1, `YTD Through ${cutoffLabel}`)}
+                        onClick={(e) =>
+                          isClickable &&
+                          handleCellClick(e, label, ytdDisplay, -1, `YTD Through ${cutoffLabel}`)
+                        }
                         style={{
-                          padding: "4px 8px",
+                          padding: "4.5px 10px",
                           textAlign: "right",
-                          color: rowStyle.isMajor ? "#ffffff" : ytdBadge ? ytdBadge.color : "#0047AB",
-                          fontStyle: isPercentageRow ? "italic" : "normal",
-                          fontSize: rowStyle.isMajor ? "13px" : "11.5px",
-                          fontWeight: rowStyle.isMajor ? 800 : (rowStyle.bold ? 700 : 400),
-                          background: ytdBadge ? ytdBadge.bg : (rowStyle.isMajor ? "transparent" : rowStyle.bg),
+                          color: "#0047AB",
+                          fontSize: "11.5px",
+                          fontWeight: rowStyle.bold ? 700 : 600,
+                          background: totalColBg,
+                          borderLeft: "1px solid #cbd5e1",
                           cursor: isClickable ? "pointer" : "default",
                           textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
-                          textUnderlineOffset: isClickable ? "2px" : "initial",
+                          textUnderlineOffset: "2px",
                           whiteSpace: "nowrap",
+                          fontVariantNumeric: "tabular-nums",
+                          transition: "background-color 0.15s ease",
                         }}
                         onMouseEnter={(e) => {
                           if (isClickable) e.currentTarget.style.filter = "brightness(0.92)";
@@ -719,7 +948,7 @@ export default function PerformanceYTDView({
                           if (isClickable) e.currentTarget.style.filter = "none";
                         }}
                       >
-                        {ytdDisplay}
+                        {rowStyle.isHeader ? "" : displayTotal}
                       </td>
                     );
                   })()}

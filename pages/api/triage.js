@@ -17,6 +17,7 @@ import {
   readPrecomputeLog, 
   readBuildOptionsLog 
 } from "../../services/systemLogs";
+import { fetchSecurityAuditLogs } from "../../services/pulseLogger";
 import {
   handleBulkCreateTasks, handleCreateTask, handleGetTasks, handleAddTaskNote,
   handleSnoozeTask, handleRevertTaskToAlert, handleResolveTask, handleUpdateTask,
@@ -764,6 +765,12 @@ export default async function handler(req, res) {
     } else if (action === "get_build_options_log") {
       const runs = await readBuildOptionsLog(sheets, req.body.automationCommanderSheetId);
       return res.status(200).json({ success: true, runs });
+    } else if (action === "get_security_audit_log") {
+      if (!sessionUser || !sessionUser.isAdmin) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
+      const logs = await fetchSecurityAuditLogs(sheets, req.body.automationCommanderSheetId);
+      return res.status(200).json({ success: true, logs });
 
     } else {
       res.status(400).json({ error: "Invalid action" });

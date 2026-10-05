@@ -108,6 +108,7 @@ export default async function handler(req, res) {
 
     const version = toggles[0]?.[0] || appDataDisp[39]?.[22] || ""; // W40
     const showExtraRows = String(toggles[2]?.[0] || appDataDisp[41]?.[22] || "").trim().toLowerCase() === "yes"; // W42
+    const hasCash = String(toggles[3]?.[0] || appDataDisp[42]?.[22] || "").trim().toLowerCase() === "yes"; // W43
     const hasBudget = String(toggles[4]?.[0] || appDataDisp[43]?.[22] || "").trim().toLowerCase() === "yes"; // W44
     const numRows = showExtraRows ? 34 : 32;
 
@@ -180,10 +181,10 @@ export default async function handler(req, res) {
     // --- 3. Chart Data (Rows 71-90) ---
     // Row 71 in sheet is index 0 of chartRawRows
     const switchValues = chartRawRows[0] || [];
-    const showChart = String(switchValues[0] || "").toLowerCase() === "yes";
-    const showTrendlines = String(switchValues[2] || "").toLowerCase() === "yes";
+    const showChart = String(switchValues[0] || "").trim().toLowerCase() === "yes";
+    const showTrendlines = String(switchValues[2] || "").trim().toLowerCase() === "yes";
 
-    let chartData = { showChart: false };
+    let chartData = { showChart: false, showTrendlines: false };
     if (showChart) {
       // Row 87 = months (index 16), Row 88 = revenue (index 17), Row 89 = gross profit (index 18), Row 90 = op profit (index 19)
       const monthsFormatted = [];
@@ -224,6 +225,7 @@ export default async function handler(req, res) {
     const payload = {
       _cachedAt: new Date().toISOString(),
       hasBudget,
+      hasCash,
       clientInfo: {
         name: sheetClientName,
         version,
@@ -231,6 +233,7 @@ export default async function handler(req, res) {
         thousandsSeparator,
         vatRate,
         hasBudget,
+        hasCash,
         splitMethod,
         splitEnabled,
         authMode,

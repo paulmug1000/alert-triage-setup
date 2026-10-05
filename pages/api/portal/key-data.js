@@ -1,5 +1,5 @@
 import { getSessionUser } from "../../../services/authService.js";
-import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { matchesClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
@@ -152,6 +152,7 @@ export default async function handler(req, res) {
     batchRanges.push("KeyInfo!B15");     // Mode (Revenue vs Income)
     batchRanges.push("KeyInfo!B20");     // Contractor source
     batchRanges.push("KeyInfo!D15:D16"); // Split method (D15) & split enabled (D16)
+    batchRanges.push("KeyInfo!D1");      // Master Sheet URL
 
     const batchResp = await withRetry(() =>
       sheets.spreadsheets.values.batchGet({
@@ -177,6 +178,7 @@ export default async function handler(req, res) {
     const modeRows = valueRanges[rangeIdx++]?.values || [];
     const contractorSourceRows = valueRanges[rangeIdx++]?.values || [];
     const splitInfoRows = valueRanges[rangeIdx++]?.values || [];
+    const masterUrlRows = valueRanges[rangeIdx++]?.values || [];
 
     const leadSources = leadSourcesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
     const productLines = productLinesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
@@ -188,6 +190,9 @@ export default async function handler(req, res) {
     const profitShareSwitch = String(profitShareRows[1]?.[0] || "").trim();
     const mode = String(modeRows[0]?.[0] || "Revenue").trim();
     const contractorSource = String(contractorSourceRows[0]?.[0] || "Cell Values").trim();
+    const isNotesMode = contractorSource.toLowerCase().includes("notes");
+    const masterUrl = String(masterUrlRows[0]?.[0] || "").trim();
+    const masterSheetId = extractSheetIdFromUrl(masterUrl);
 
     // Helper: Safely parse dates, including Google Sheets serial numbers (e.g. 46296 or 55000), returning YYYY-MM-DD
     const formatDateVal = (val) => {
@@ -663,6 +668,89 @@ export default async function handler(req, res) {
     // Expenses: rows 126 to 225 (indices 125 to 224)
     const expensesList = parseOutgoingsSection(125, 224);
 
+    // In Notes metadata mode, fetch and parse transactions from Master Sheet's OutgNotes tab
+    let contractorTransactions = [];
+    if (isNotesMode && masterSheetId) {
+      try {
+        const notesResp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: masterSheetId,
+            range: "OutgNotes!A1:AV112",
+            valueRenderOption: "FORMATTED_VALUE",
+          })
+        );
+        const notesRows = notesResp.data.values || [];
+        const blockRegex = /\{App ID:\s*([^}]+)\}\{Amt:\s*([^}]+)\}(?:\{Status:\s*([^}]*)\})?(?:\{Rec date:\s*([^}]*)\})?(?:\{Pay date:\s*([^}]*)\})?(?:\{Description:\s*([^}]*)\})?/g;
+
+        // Loop rows 13 to 111 (0-indexed indices 12 to 110)
+        // Row 111 (index 110) is "Making up CoS amount"
+        for (let r = 12; r <= 110 && r < notesRows.length; r++) {
+          const contractorRow = outgoingsRows[r] || [];
+          const contractorName = String(
+            contractorRow[0] || (r === 110 ? "Making up CoS amount" : `Contractor ${r - 11}`)
+          ).trim();
+          if (!contractorName || contractorName.toLowerCase() === "hide") continue;
+
+          // VAT setting from Col B of Outgoings (Row 111 VAT setting in Col B)
+          const vatSetting = String(contractorRow[1] || "").trim();
+          const isVat = vatSetting.toLowerCase() === "yes";
+
+          const notesCells = notesRows[r] || [];
+          for (let c = 0; c < notesCells.length; c++) {
+            const cellText = notesCells[c];
+            if (!cellText || !cellText.includes("{App ID:")) continue;
+
+            let match;
+            blockRegex.lastIndex = 0;
+            while ((match = blockRegex.exec(cellText)) !== null) {
+              const appId = match[1]?.trim() || "";
+              const netAmount = parseFloat(String(match[2] || "").replace(/[£$€,\s]/g, "")) || 0;
+              const status = match[3]?.trim() || "";
+              const recDate = match[4]?.trim() || "";
+              const payDate = match[5]?.trim() || "";
+              const rawDesc = match[6]?.trim() || "";
+
+              let vendor = contractorName;
+              let itemDesc = rawDesc;
+              const parenMatch = rawDesc.match(/^(.*?)\s*\((.*)\)$/);
+              if (parenMatch && parenMatch[1].trim() && parenMatch[2].trim()) {
+                vendor = parenMatch[1].trim();
+                itemDesc = parenMatch[2].trim();
+              } else if (rawDesc.startsWith("Placeholder Entry - ")) {
+                vendor = rawDesc.replace("Placeholder Entry - ", "").trim() || vendor;
+                itemDesc = "Placeholder Entry";
+              } else if (rawDesc === "Placeholder Entry") {
+                vendor = contractorName;
+                itemDesc = "Placeholder Entry";
+              }
+
+              const vatAmount = isVat ? Math.round(netAmount * 0.20 * 100) / 100 : 0;
+              const grossAmount = Math.round((netAmount + vatAmount) * 100) / 100;
+
+              contractorTransactions.push({
+                appId,
+                vendor,
+                itemDesc,
+                rawDesc,
+                contractorName,
+                netAmount,
+                vatAmount,
+                grossAmount,
+                amount: -Math.abs(grossAmount),
+                vatSetting: isVat ? "Yes" : "No",
+                status,
+                recDate,
+                payDate,
+                rowNumber: r + 1,
+              });
+            }
+          }
+        }
+      } catch (notesErr) {
+        console.warn("⚠️ Failed to fetch OutgNotes from master sheet:", notesErr.message);
+      }
+    }
+
     const getFy = (headers, fallback) => {
       if (!headers || headers.length === 0) return fallback;
       const last = headers[headers.length - 1] || headers[0];
@@ -731,6 +819,8 @@ export default async function handler(req, res) {
       profitShareBaseDel: [],
       profitShareBaseNonDel: [],
       contractorSource: contractorSource || "Cell Values",
+      isNotesMode,
+      contractorTransactions,
       makingUpCosVat: "",
       makingUpCosTiming: "Curr",
       profitSharePct,
@@ -806,6 +896,9 @@ export default async function handler(req, res) {
         contractors: contractorsList,
         expenses: expensesList,
         dividends: dividendsList,
+        contractorSource: contractorSource || "Cell Values",
+        isNotesMode,
+        contractorTransactions,
       },
       nbtofind: {
         headers: {

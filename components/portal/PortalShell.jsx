@@ -11,6 +11,7 @@ export default function PortalShell({
   user,
   onLogout,
   hasBudget = true,
+  hasCash = false,
   children
 }) {
   const [openDropdown, setOpenDropdown] = useState(null); // 'perf' | 'cash' | 'keyData' | 'analysis' | 'user' | 'client' | null
@@ -307,48 +308,50 @@ export default function PortalShell({
             </div>
 
             {/* 3. Cash Dropdown */}
-            <div className="portal-nav-dropdown" style={{ position: "relative" }}>
-              <button
-                type="button"
-                onClick={() => toggleDropdown("cash")}
-                style={{
-                  padding: "0.5rem 0.95rem",
-                  borderRadius: "6px",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: "15px",
-                  fontWeight: isViewInGroup(["cash", "cashBreakdown"]) ? 700 : 500,
-                  background: isViewInGroup(["cash", "cashBreakdown"]) ? "#ffffff" : "transparent",
-                  color: isViewInGroup(["cash", "cashBreakdown"]) ? "#0047AB" : "#ffffff",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  transition: "all 0.15s ease"
-                }}
-              >
-                <span>Cash</span>
-                <span style={{ fontSize: "11px", opacity: 0.8 }}>▾</span>
-              </button>
+            {hasCash && (
+              <div className="portal-nav-dropdown" style={{ position: "relative" }}>
+                <button
+                  type="button"
+                  onClick={() => toggleDropdown("cash")}
+                  style={{
+                    padding: "0.5rem 0.95rem",
+                    borderRadius: "6px",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: "15px",
+                    fontWeight: isViewInGroup(["cash", "cashBreakdown"]) ? 700 : 500,
+                    background: isViewInGroup(["cash", "cashBreakdown"]) ? "#ffffff" : "transparent",
+                    color: isViewInGroup(["cash", "cashBreakdown"]) ? "#0047AB" : "#ffffff",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    transition: "all 0.15s ease"
+                  }}
+                >
+                  <span>Cash</span>
+                  <span style={{ fontSize: "11px", opacity: 0.8 }}>▾</span>
+                </button>
 
-              {openDropdown === "cash" && (
-                <div style={dropdownMenuStyle}>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("cash")}
-                    style={dropdownItemStyle(activeView === "cash")}
-                  >
-                    Cashflow forecast
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick("cashBreakdown")}
-                    style={dropdownItemStyle(activeView === "cashBreakdown")}
-                  >
-                    Breakdowns
-                  </button>
-                </div>
-              )}
-            </div>
+                {openDropdown === "cash" && (
+                  <div style={dropdownMenuStyle}>
+                    <button
+                      type="button"
+                      onClick={() => handleNavClick("cash")}
+                      style={dropdownItemStyle(activeView === "cash")}
+                    >
+                      Cashflow forecast
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleNavClick("cashBreakdown")}
+                      style={dropdownItemStyle(activeView === "cashBreakdown")}
+                    >
+                      Breakdowns
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 4. Key Data Dropdown */}
             <div className="portal-nav-dropdown" style={{ position: "relative" }}>
@@ -497,6 +500,42 @@ export default function PortalShell({
           {/* Right Header Utilities: User Account & Mobile Toggle */}
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
 
+            {/* Read-Only Badge if logged in with OTP */}
+            {user?.isReadOnly && (
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "5px",
+                  padding: "4px 10px",
+                  borderRadius: "20px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  background: "rgba(255, 255, 255, 0.16)",
+                  color: "#ffffff",
+                  border: "1px solid rgba(255, 255, 255, 0.3)",
+                  letterSpacing: "0.2px",
+                  userSelect: "none"
+                }}
+                title="Logged in with one-time password (read-only mode)"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+                <span>Read-only</span>
+              </div>
+            )}
+
             {/* User Profile / Menu */}
             <div className="portal-nav-dropdown" style={{ position: "relative" }}>
               <button
@@ -541,6 +580,22 @@ export default function PortalShell({
                     <div style={{ fontSize: "12px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {user?.email}
                     </div>
+                    {user?.isReadOnly && (
+                      <div
+                        style={{
+                          fontSize: "11px",
+                          color: "#b45309",
+                          background: "#fef3c7",
+                          padding: "2px 8px",
+                          borderRadius: "4px",
+                          display: "inline-block",
+                          marginTop: "5px",
+                          fontWeight: 600
+                        }}
+                      >
+                        Read-only (OTP login)
+                      </div>
+                    )}
                   </div>
 
                   {/* If user is Admin or ClientManager, offer direct link back to Management Area (PMA) */}
@@ -693,13 +748,17 @@ export default function PortalShell({
                 Breakdowns
               </button>
 
-              <div style={mobileSectionHeaderStyle}>Cash</div>
-              <button type="button" onClick={() => handleNavClick("cash")} style={mobileSubItemStyle(activeView === "cash")}>
-                Cashflow forecast
-              </button>
-              <button type="button" onClick={() => handleNavClick("cashBreakdown")} style={mobileSubItemStyle(activeView === "cashBreakdown")}>
-                Breakdowns
-              </button>
+              {hasCash && (
+                <>
+                  <div style={mobileSectionHeaderStyle}>Cash</div>
+                  <button type="button" onClick={() => handleNavClick("cash")} style={mobileSubItemStyle(activeView === "cash")}>
+                    Cashflow forecast
+                  </button>
+                  <button type="button" onClick={() => handleNavClick("cashBreakdown")} style={mobileSubItemStyle(activeView === "cashBreakdown")}>
+                    Breakdowns
+                  </button>
+                </>
+              )}
 
               <div style={mobileSectionHeaderStyle}>Key data</div>
               <button type="button" onClick={() => handleNavClick("jobs")} style={mobileSubItemStyle(activeView === "jobs")}>

@@ -185,6 +185,9 @@ export default function DeepDivePopover({
             from { transform: translateY(100%); }
             to { transform: translateY(0); }
           }
+          .deep-dive-mobile-spacer {
+            display: none !important;
+          }
           @media (max-width: 768px) {
             .deep-dive-backdrop {
               background: rgba(0, 0, 0, 0.45) !important;
@@ -211,6 +214,12 @@ export default function DeepDivePopover({
             }
             .deep-dive-pull-handle {
               display: block !important;
+            }
+            .deep-dive-mobile-spacer {
+              display: block !important;
+              height: 48px !important;
+              width: 100% !important;
+              flex-shrink: 0 !important;
             }
           }
           @media (min-width: 769px) {
@@ -275,11 +284,12 @@ export default function DeepDivePopover({
 
         {/* Content Area */}
         <div
+          className="deep-dive-content-area"
           style={{
             flex: 1,
             minHeight: 0,
             overflowY: "auto",
-            padding: hasSections ? "12px 12px 48px 12px" : "6px 0 48px 0",
+            padding: hasSections ? "12px 12px 8px 12px" : "6px 0 8px 0",
           }}
         >
         {/* Render Sections (Staff Costs etc. with Expandable Cards) */}
@@ -435,7 +445,7 @@ export default function DeepDivePopover({
                 </div>
               );
             })}
-            <div style={{ height: "48px", width: "100%", flexShrink: 0 }} />
+            <div className="deep-dive-mobile-spacer" />
           </div>
         ) : (
           /* Render Regular List (Revenue, Expenses, Cash receipts, Net Payroll/HMRC/Pension) */
@@ -510,8 +520,12 @@ export default function DeepDivePopover({
                             <span>Expected: {item.payDateStr}</span>
                           ) : (
                             <span>
-                              {item.desc && <em style={{ fontStyle: "normal", color: "#475569" }}>{item.desc}</em>}
-                              {item.desc ? " | " : ""}
+                              {item.desc && item.desc !== item.name && (
+                                <>
+                                  <em style={{ fontStyle: "normal", color: "#475569" }}>{item.desc}</em>
+                                  <span> | </span>
+                                </>
+                              )}
                               Expected: {item.payDateStr}
                               {item.status ? ` | ${item.status}` : ""}
                             </span>
@@ -539,7 +553,7 @@ export default function DeepDivePopover({
                 );
               })
             )}
-            <div style={{ height: "48px", width: "100%", flexShrink: 0 }} />
+            <div className="deep-dive-mobile-spacer" />
           </div>
         )}
       </div>

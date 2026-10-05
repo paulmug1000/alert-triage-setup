@@ -8,6 +8,7 @@ export default function PortalNBToFindView({
   isLoading,
   error,
   onRefresh,
+  isReadOnly = false,
 }) {
   const nbData = data?.nbtofind;
   const [selectedYear, setSelectedYear] = useState(nbData?.currentYear || 2);
@@ -66,6 +67,7 @@ export default function PortalNBToFindView({
   };
 
   const handleStartEdit = () => {
+    if (isReadOnly) return;
     setEditValues(monthlyAllocations.slice(0, 12));
     setIsEditing(true);
     setSaveError(null);
@@ -78,6 +80,7 @@ export default function PortalNBToFindView({
   };
 
   const handleCellChange = (mIdx, val) => {
+    if (isReadOnly) return;
     setEditValues((prev) => {
       const copy = [...prev];
       copy[mIdx] = val;
@@ -86,6 +89,7 @@ export default function PortalNBToFindView({
   };
 
   const handleSaveData = async () => {
+    if (isReadOnly) return;
     setIsSaving(true);
     setSaveError(null);
 
@@ -279,7 +283,7 @@ export default function PortalNBToFindView({
                 <span>{isSaving ? "Saving..." : "Save"}</span>
               </button>
             </>
-          ) : (
+          ) : !isReadOnly ? (
             <button
               type="button"
               onClick={handleStartEdit}
@@ -304,7 +308,7 @@ export default function PortalNBToFindView({
               </svg>
               <span>Edit</span>
             </button>
-          )}
+          ) : null}
 
           <button
             type="button"

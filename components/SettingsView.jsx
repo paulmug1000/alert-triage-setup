@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
@@ -52,6 +52,53 @@ export default function SettingsView({
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagResult, setDiagResult] = useState(null);
   const [diagError, setDiagError] = useState("");
+
+  // Security & Global Audit Logs (Admin only)
+  const [securityLogs, setSecurityLogs] = useState([]);
+  const [securityLogsLoading, setSecurityLogsLoading] = useState(false);
+  const [securityLogsLoaded, setSecurityLogsLoaded] = useState(false);
+  const [securityFilter, setSecurityFilter] = useState("all");
+  const [securitySearch, setSecuritySearch] = useState("");
+  const [expandedLogId, setExpandedLogId] = useState(null);
+
+  const loadSecurityLogs = useCallback(async () => {
+    if (!effectiveIsAdmin || !automationCommanderSheetId) return;
+    setSecurityLogsLoading(true);
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "get_security_audit_log",
+          automationCommanderSheetId
+        })
+      });
+      const d = await res.json();
+      if (d.success) {
+        setSecurityLogs(d.logs || []);
+        setSecurityLogsLoaded(true);
+      }
+    } catch (err) {
+      console.error("loadSecurityLogs error:", err);
+    } finally {
+      setSecurityLogsLoading(false);
+    }
+  }, [effectiveIsAdmin, automationCommanderSheetId]);
+
+  const getSecurityBadgeStyle = (action = "") => {
+    const act = String(action).toUpperCase();
+    if (act.includes("SUCCESS") || act.includes("ENTERED")) {
+      return { bg: "#dcfce7", color: "#166534", border: "#bbf7d0", label: act.includes("ENTERED") ? "Workspace Entered" : "Login Success" };
+    }
+    if (act.includes("FAILED") || act.includes("BLOCKED") || act.includes("LOCKED")) {
+      const label = act.includes("BLOCKED") ? "Login Blocked" : act.includes("LOCKED") ? "Rate Limited" : "Login Failed";
+      return { bg: "#fee2e2", color: "#991b1b", border: "#fecaca", label };
+    }
+    if (act.includes("REQUESTED") || act.includes("OTP")) {
+      return { bg: "#e0f2fe", color: "#0369a1", border: "#bae6fd", label: "Passcode Sent" };
+    }
+    return { bg: "#f3f4f6", color: "#374151", border: "#e5e7eb", label: action || "Event" };
+  };
 
   // Initialize user preferences on mount (all users)
   useEffect(() => {
@@ -117,6 +164,7 @@ export default function SettingsView({
     if (!flagSweepLogLoaded) loadFlagSweepLog();
     if (!buildOptionsLogLoaded) loadBuildOptionsLog();
     if (!precomputeLogLoaded) loadPrecomputeLog();
+    if (!securityLogsLoaded) loadSecurityLogs();
 
     fetch("/api/triage", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -137,7 +185,8 @@ export default function SettingsView({
     loadBuildOptionsLog, loadFlagSweepLog, loadPrecomputeLog,
     loadSweepSchedule, precomputeLogLoaded, setSettingsData,
     setSettingsEditAnomaly, setSettingsEditDaily, setSettingsEditHourly,
-    setSettingsLoading, sweepScheduleLoaded, effectiveIsAdmin
+    setSettingsLoading, sweepScheduleLoaded, effectiveIsAdmin,
+    loadSecurityLogs, securityLogsLoaded
   ]);
 
   const saveSettings = async () => {
@@ -673,6 +722,254 @@ export default function SettingsView({
                     )}
                   </div>
                 </details>
+              </div>
+
+              {/* Platform Access & Security Log */}
+              <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontSize: "16px" }}>🛡️</span>
+                      <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Platform Access & Security Log</h3>
+                    </div>
+                    <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#666" }}>
+                      Global authentication activity, login requests, verification outcomes, and cross-client portal access.
+                    </p>
+                  </div>
+                  <button
+                    onClick={loadSecurityLogs}
+                    disabled={securityLogsLoading}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "6px 14px",
+                      background: "#f0f4ff",
+                      color: "#0066cc",
+                      border: "1px solid #d0e0ff",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      cursor: securityLogsLoading ? "wait" : "pointer",
+                      transition: "all 0.15s ease"
+                    }}
+                  >
+                    {securityLogsLoading ? <Spinner size={12} color="#0066cc" /> : "↻"} Refresh Log
+                  </button>
+                </div>
+
+                {/* Summary KPI Cards */}
+                {(() => {
+                  const total = securityLogs.length;
+                  const logins = securityLogs.filter(l => l.action?.includes("SUCCESS") || l.action?.includes("ENTERED")).length;
+                  const requested = securityLogs.filter(l => l.action?.includes("REQUESTED") || l.action?.includes("OTP")).length;
+                  const blocked = securityLogs.filter(l => l.action?.includes("FAILED") || l.action?.includes("BLOCKED") || l.action?.includes("LOCKED")).length;
+
+                  const filtered = securityLogs.filter(item => {
+                    if (securityFilter === "success") {
+                      if (!item.action?.includes("SUCCESS") && !item.action?.includes("ENTERED")) return false;
+                    } else if (securityFilter === "requested") {
+                      if (!item.action?.includes("REQUESTED") && !item.action?.includes("OTP")) return false;
+                    } else if (securityFilter === "failure") {
+                      if (!item.action?.includes("FAILED") && !item.action?.includes("BLOCKED") && !item.action?.includes("LOCKED")) return false;
+                    }
+
+                    if (securitySearch.trim()) {
+                      const q = securitySearch.toLowerCase();
+                      const combined = `${item.user || ""} ${item.client || ""} ${item.action || ""} ${item.ip || ""} ${item.summary || ""} ${item.provider || ""}`.toLowerCase();
+                      if (!combined.includes(q)) return false;
+                    }
+                    return true;
+                  });
+
+                  return (
+                    <div>
+                      {/* Metric Chips */}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px", marginBottom: "16px" }}>
+                        {[
+                          { label: "Total Events", count: total, color: "#1a56db", bg: "#f8f9ff", border: "#e8eaf0" },
+                          { label: "Logins & Access", count: logins, color: "#166534", bg: "#f0fdf4", border: "#bbf7d0" },
+                          { label: "Passcodes Sent", count: requested, color: "#0369a1", bg: "#f0f9ff", border: "#bae6fd" },
+                          { label: "Failed / Blocked", count: blocked, color: blocked > 0 ? "#991b1b" : "#666", bg: blocked > 0 ? "#fef2f2" : "#f9fafb", border: blocked > 0 ? "#fecaca" : "#e5e7eb" }
+                        ].map(k => (
+                          <div key={k.label} style={{ background: k.bg, borderRadius: "8px", padding: "10px 14px", border: `1px solid ${k.border}` }}>
+                            <div style={{ fontSize: "11px", color: "#666", marginBottom: "2px" }}>{k.label}</div>
+                            <div style={{ fontSize: "20px", fontWeight: "700", color: k.color }}>{securityLogsLoading ? "–" : k.count}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Filter Pills and Search */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px", flexWrap: "wrap" }}>
+                        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                          {[
+                            { key: "all", label: `All (${total})` },
+                            { key: "success", label: `Logins & Access (${logins})` },
+                            { key: "requested", label: `Passcodes (${requested})` },
+                            { key: "failure", label: `Failures & Blocks (${blocked})` }
+                          ].map(f => (
+                            <button
+                              key={f.key}
+                              onClick={() => setSecurityFilter(f.key)}
+                              style={{
+                                padding: "5px 11px",
+                                borderRadius: "20px",
+                                border: securityFilter === f.key ? "1px solid #1a56db" : "1px solid #d1d5db",
+                                background: securityFilter === f.key ? "#1a56db" : "#fff",
+                                color: securityFilter === f.key ? "#fff" : "#4b5563",
+                                fontSize: "12px",
+                                fontWeight: securityFilter === f.key ? "600" : "500",
+                                cursor: "pointer",
+                                transition: "all 0.1s ease"
+                              }}
+                            >
+                              {f.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div style={{ minWidth: "220px", flex: "1 1 220px", maxWidth: "340px" }}>
+                          <input
+                            type="text"
+                            value={securitySearch}
+                            onChange={e => setSecuritySearch(e.target.value)}
+                            placeholder="Filter by email, client, IP..."
+                            style={{
+                              width: "100%",
+                              padding: "6px 12px",
+                              borderRadius: "6px",
+                              border: "1px solid #d1d5db",
+                              fontSize: "12px",
+                              boxSizing: "border-box"
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Table or Empty State */}
+                      {securityLogsLoading && securityLogs.length === 0 ? (
+                        <div style={{ textAlign: "center", padding: "30px", color: "#666", fontSize: "13px" }}>
+                          <Spinner size={18} color="#0066cc" />
+                          <div style={{ marginTop: "8px" }}>Loading security events...</div>
+                        </div>
+                      ) : filtered.length === 0 ? (
+                        <div style={{ padding: "24px", textAlign: "center", background: "#f9fafb", borderRadius: "8px", border: "1px dashed #d1d5db", color: "#6b7280", fontSize: "13px" }}>
+                          {securitySearch.trim() || securityFilter !== "all"
+                            ? "No security events match the active filters."
+                            : "No security or authentication events recorded yet."}
+                        </div>
+                      ) : (
+                        <div style={{ overflowX: "auto", border: "1px solid #e5e7eb", borderRadius: "8px" }}>
+                          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", textAlign: "left" }}>
+                            <thead>
+                              <tr style={{ background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
+                                {["Time", "Status", "User", "Client / Scope", "IP / Method", "Details"].map(h => (
+                                  <th key={h} style={{ padding: "8px 12px", fontWeight: "600", color: "#4b5563", whiteSpace: "nowrap" }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filtered.map((r, i) => {
+                                const badge = getSecurityBadgeStyle(r.action);
+                                const isExpanded = expandedLogId === r.id;
+                                const isSystemScope = r.client === "System" || r.client === "Multi-Client" || r.client === "Unregistered";
+                                return (
+                                  <React.Fragment key={r.id || i}>
+                                    <tr
+                                      style={{
+                                        borderBottom: isExpanded ? "none" : "1px solid #f3f4f6",
+                                        background: i % 2 === 0 ? "#fff" : "#fafafa"
+                                      }}
+                                    >
+                                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap", color: "#6b7280", fontSize: "11px" }}>
+                                        {r.timestamp}
+                                      </td>
+                                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                                        <span style={{
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: "4px",
+                                          padding: "2px 8px",
+                                          borderRadius: "12px",
+                                          background: badge.bg,
+                                          color: badge.color,
+                                          border: `1px solid ${badge.border}`,
+                                          fontSize: "11px",
+                                          fontWeight: "600"
+                                        }}>
+                                          {badge.label}
+                                        </span>
+                                      </td>
+                                      <td style={{ padding: "8px 12px", color: "#111827", fontWeight: "500", whiteSpace: "nowrap" }}>
+                                        {r.user || "–"}
+                                      </td>
+                                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                                        <span style={{
+                                          display: "inline-block",
+                                          padding: "2px 6px",
+                                          borderRadius: "4px",
+                                          background: isSystemScope ? "#f3e8ff" : "#eff6ff",
+                                          color: isSystemScope ? "#6b21a8" : "#1e40af",
+                                          border: `1px solid ${isSystemScope ? "#e9d5ff" : "#dbeafe"}`,
+                                          fontSize: "11px",
+                                          fontWeight: "500"
+                                        }}>
+                                          {r.client || "System"}
+                                        </span>
+                                      </td>
+                                      <td style={{ padding: "8px 12px", color: "#6b7280", whiteSpace: "nowrap", fontSize: "11px" }}>
+                                        {r.ip !== "-" ? r.ip : ""} {r.provider !== "-" ? `(${r.provider})` : ""}
+                                      </td>
+                                      <td style={{ padding: "8px 12px", color: "#374151" }}>
+                                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                                          <span style={{ fontSize: "12px" }}>{r.summary}</span>
+                                          {r.details && Object.keys(r.details).length > 0 && (
+                                            <button
+                                              onClick={() => setExpandedLogId(isExpanded ? null : r.id)}
+                                              style={{
+                                                background: "none",
+                                                border: "none",
+                                                color: "#0066cc",
+                                                cursor: "pointer",
+                                                fontSize: "11px",
+                                                padding: "2px 6px",
+                                                whiteSpace: "nowrap"
+                                              }}
+                                            >
+                                              {isExpanded ? "Hide" : "JSON"}
+                                            </button>
+                                          )}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                    {isExpanded && r.details && (
+                                      <tr style={{ background: "#f8f9fa", borderBottom: "1px solid #e5e7eb" }}>
+                                        <td colSpan={6} style={{ padding: "8px 16px" }}>
+                                          <pre style={{
+                                            margin: 0,
+                                            padding: "8px 12px",
+                                            background: "#1f2937",
+                                            color: "#f3f4f6",
+                                            borderRadius: "6px",
+                                            fontSize: "11px",
+                                            overflowX: "auto",
+                                            fontFamily: "monospace"
+                                          }}>
+                                            {JSON.stringify(r.details, null, 2)}
+                                          </pre>
+                                        </td>
+                                      </tr>
+                                    )}
+                                  </React.Fragment>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Triage Diagnostic */}

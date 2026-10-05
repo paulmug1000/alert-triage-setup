@@ -5,6 +5,7 @@ import { redisClient } from "./redisClient.js";
 import { getSheetsClient } from "./sheetsClient.js";
 import { getUserByEmail, updateUserLastLogin } from "./userPermissions.js";
 import { logPmaActivity } from "./pmaLogger.js";
+import { logPulseActivity } from "./pulseLogger.js";
 
 const OTP_EXPIRY_SECS = 600; // 10 minutes
 const COOLDOWN_SECS = 60; // 60 seconds
@@ -48,6 +49,11 @@ export function getJwtSecret() {
 }
 
 
+export function isBlockedOtpRole(role) {
+  const r = String(role || "").toLowerCase().trim();
+  return r === "admin" || r === "clientmanager" || r === "client manager";
+}
+
 /**
  * Send an OTP verification code to the given email address
  */
@@ -89,10 +95,48 @@ export async function sendOtp(email, automationCommanderSheetId, clientIp) {
 
   if (!user || user.status === "Suspended") {
     console.log(`❌ Auth check failed for email: ${normalizedEmail} (not in Users tab or Suspended)`);
+    try {
+      const sheets = await getSheetsClient();
+      const targetClient = user ? (Array.isArray(user.assignedClients) && user.assignedClients.length === 1 ? user.assignedClients[0] : "Multi-Client") : "Unregistered";
+      logPulseActivity(sheets, {
+        automationCommanderSheetId,
+        clientName: targetClient,
+        category: "AUTH",
+        action: "LOGIN_BLOCKED",
+        summary: `Blocked verification request for ${normalizedEmail}: ${!user ? "Email not registered" : "Account suspended"}`,
+        details: { email: normalizedEmail, provider: "EmailOTP", reason: !user ? "Unregistered email" : "Account suspended", ip: clientIp || "-" },
+        user: normalizedEmail
+      }).catch(() => {});
+    } catch {}
+
     // Generic message to avoid email enumeration
     return {
       success: true,
       message: "If this email address is registered, a verification code has been sent. Please check your inbox."
+    };
+  }
+
+  // Block Admin and Client Manager from logging in via OTP
+  const isBlockedRole = user && (user.isAdmin || user.role === "Admin" || user.role === "ClientManager" || String(user.role || "").toLowerCase() === "clientmanager");
+  if (isBlockedRole) {
+    console.log(`❌ Auth check blocked: ${normalizedEmail} has role ${user.role} and cannot log in via Email OTP.`);
+    try {
+      const sheets = await getSheetsClient();
+      logPulseActivity(sheets, {
+        automationCommanderSheetId,
+        clientName: "System",
+        category: "AUTH",
+        action: "LOGIN_BLOCKED",
+        summary: `Blocked OTP login for ${user.role} (${normalizedEmail}): Admin and Client Manager must use SSO`,
+        details: { email: normalizedEmail, role: user.role, provider: "EmailOTP", reason: "OTP not permitted for Admin/ClientManager", ip: clientIp || "-" },
+        user: normalizedEmail
+      }).catch(() => {});
+    } catch {}
+
+    return {
+      success: false,
+      adminOtpBlocked: true,
+      message: "You cannot access Pulse or the Pulse Management Area using a one-time password. Please log in using Google or Microsoft."
     };
   }
 
@@ -128,6 +172,21 @@ export async function sendOtp(email, automationCommanderSheetId, clientIp) {
     console.error("❌ Redis OTP storage error:", e.message);
     return { success: false, message: "Internal server error storing verification code." };
   }
+
+  // Log successful OTP generation
+  try {
+    const sheets = await getSheetsClient();
+    const targetClient = user.isAdmin ? "System" : (Array.isArray(user.assignedClients) && user.assignedClients.length === 1 ? user.assignedClients[0] : "Multi-Client");
+    logPulseActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: targetClient,
+      category: "AUTH",
+      action: "AUTH_CODE_REQUESTED",
+      summary: `Verification code generated and sent to ${normalizedEmail}`,
+      details: { email: normalizedEmail, provider: "EmailOTP", role: user.role, assignedClients: user.assignedClients, ip: clientIp || "-" },
+      user: user.name || normalizedEmail
+    }).catch(() => {});
+  } catch {}
 
   // Dispatch Email
   const emailUser = process.env.PMA_EMAIL_USER || "pulse@pulsedashboard.co.uk";
@@ -206,7 +265,7 @@ export async function sendOtp(email, automationCommanderSheetId, clientIp) {
 /**
  * Verify OTP code and issue session token & cookie
  */
-export async function verifyOtp(email, code, automationCommanderSheetId, res) {
+export async function verifyOtp(email, code, automationCommanderSheetId, res, clientIp = "-") {
   const normalizedEmail = String(email || "").toLowerCase().trim();
   const enteredCode = String(code || "").trim();
 
@@ -224,6 +283,18 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res) {
   }
 
   if (!cachedData) {
+    getSheetsClient().then(sheets => {
+      logPulseActivity(sheets, {
+        automationCommanderSheetId,
+        clientName: "System",
+        category: "AUTH",
+        action: "LOGIN_FAILED",
+        summary: `Failed verification for ${normalizedEmail} (Code expired or invalid)`,
+        details: { email: normalizedEmail, reason: "Verification code expired or invalid", ip: clientIp },
+        user: normalizedEmail
+      });
+    }).catch(() => {});
+
     return {
       success: false,
       message: "Verification code has expired or is invalid. Please request a new code."
@@ -234,6 +305,18 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res) {
   if (currentAttempts >= 4) {
     // 5th failed attempt purges code
     try { await redisClient.del(otpKey); } catch { }
+    getSheetsClient().then(sheets => {
+      logPulseActivity(sheets, {
+        automationCommanderSheetId,
+        clientName: "System",
+        category: "AUTH",
+        action: "AUTH_LOCKED",
+        summary: `Account locked for ${normalizedEmail} (Exceeded 5 failed attempts)`,
+        details: { email: normalizedEmail, reason: "Max attempts exceeded", ip: clientIp },
+        user: normalizedEmail
+      });
+    }).catch(() => {});
+
     return {
       success: false,
       message: "Too many failed attempts. Please request a new verification code."
@@ -249,6 +332,18 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res) {
     } catch { }
 
     const remaining = 5 - newAttempts;
+    getSheetsClient().then(sheets => {
+      logPulseActivity(sheets, {
+        automationCommanderSheetId,
+        clientName: "System",
+        category: "AUTH",
+        action: "LOGIN_FAILED",
+        summary: `Failed verification for ${normalizedEmail} (Incorrect code, attempt ${newAttempts}/5)`,
+        details: { email: normalizedEmail, reason: "Incorrect code", attempt: newAttempts, maxAttempts: 5, ip: clientIp },
+        user: normalizedEmail
+      });
+    }).catch(() => {});
+
     return {
       success: false,
       message: `Invalid verification code. You have ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`
@@ -258,13 +353,13 @@ export async function verifyOtp(email, code, automationCommanderSheetId, res) {
   // Code matches! Destroy OTP from Redis
   try { await redisClient.del(otpKey); } catch { }
 
-  return await createSessionForVerifiedEmail(normalizedEmail, res, "EmailOTP", automationCommanderSheetId);
+  return await createSessionForVerifiedEmail(normalizedEmail, res, "EmailOTP", automationCommanderSheetId, clientIp);
 }
 
 /**
  * Create a session for an already verified email (via OAuth or OTP)
  */
-export async function createSessionForVerifiedEmail(email, res, provider = "OAuth", automationCommanderSheetId) {
+export async function createSessionForVerifiedEmail(email, res, provider = "OAuth", automationCommanderSheetId, clientIp = "-") {
   const normalizedEmail = String(email || "").toLowerCase().trim();
   if (!normalizedEmail) {
     return { success: false, message: "Email is required" };
@@ -278,10 +373,31 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
   const user = await getUserByEmail(normalizedEmail, sheets, automationCommanderSheetId, true);
 
   if (!user || user.status === "Suspended") {
+    const targetClient = user ? (Array.isArray(user.assignedClients) && user.assignedClients.length === 1 ? user.assignedClients[0] : "Multi-Client") : "Unregistered";
+    logPulseActivity(sheets, {
+      automationCommanderSheetId,
+      clientName: targetClient,
+      category: "AUTH",
+      action: "LOGIN_BLOCKED",
+      summary: `Blocked sign-in for ${normalizedEmail} via ${provider}: ${!user ? "Account not authorized" : "Account suspended"}`,
+      details: { email: normalizedEmail, provider, reason: !user ? "Not authorized" : "Suspended", ip: clientIp },
+      user: normalizedEmail
+    }).catch(() => {});
+
     return {
       success: false,
       unauthorized: true,
       message: "This account is not authorized to access Pulse or has been suspended."
+    };
+  }
+
+  // Block Admin or ClientManager if logging in via EmailOTP
+  const isBlockedRole = provider === "EmailOTP" && user && (user.isAdmin || user.role === "Admin" || user.role === "ClientManager" || String(user.role || "").toLowerCase() === "clientmanager");
+  if (isBlockedRole) {
+    return {
+      success: false,
+      adminOtpBlocked: true,
+      message: "You cannot access Pulse or the Pulse Management Area using a one-time password. Please log in using Google or Microsoft."
     };
   }
 
@@ -290,10 +406,25 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
     console.warn("⚠️ Failed to update user last login:", err.message);
   });
 
-  // Log activity
+  const targetClient = user.isAdmin
+    ? "System"
+    : (Array.isArray(user.assignedClients) && user.assignedClients.length === 1 ? user.assignedClients[0] : "Multi-Client");
+
+  // Log activity to PulseActivityLog
+  logPulseActivity(sheets, {
+    automationCommanderSheetId,
+    clientName: targetClient,
+    category: "AUTH",
+    action: "LOGIN_SUCCESS",
+    summary: `User signed in: ${user.name} (${user.email}) via ${provider}`,
+    details: { role: user.role, assignedClients: user.assignedClients, provider, ip: clientIp },
+    user: user.name || user.email
+  }).catch(() => { });
+
+  // Log activity to PmaActivityLog
   logPmaActivity(sheets, {
     automationCommanderSheetId,
-    clientName: "System",
+    clientName: targetClient,
     category: "Auth",
     action: "USER_LOGIN",
     summary: `User signed in: ${user.name} (${user.email}) via ${provider}`,
@@ -301,13 +432,17 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
     user: user.name || user.email
   }).catch(() => { });
 
+  const isReadOnly = provider === "EmailOTP";
+
   // Sign JWT session
   const payload = {
     tokenType: "session",
     email: user.email,
     name: user.name,
     role: user.role,
-    assignedClients: user.assignedClients
+    assignedClients: user.assignedClients,
+    authProvider: provider,
+    isReadOnly
   };
 
   const secret = getJwtSecret();
@@ -333,7 +468,9 @@ export async function createSessionForVerifiedEmail(email, res, provider = "OAut
       ...payload,
       isAdmin: user.role === "Admin",
       isSenior: user.role === "Senior (Restricted)" || String(user.role || "").toLowerCase().includes("senior"),
-      isClientUser: user.role === "ClientUser"
+      isClientUser: user.role === "ClientUser",
+      isReadOnly,
+      authProvider: provider
     }
   };
 }
@@ -387,6 +524,12 @@ export function getSessionUser(req) {
     const isAdmin = role === "Admin";
     const isSenior = role === "Senior (Restricted)" || String(role).toLowerCase().includes("senior");
     const isClientUser = role === "ClientUser";
+    const isReadOnly = Boolean(decoded.isReadOnly || decoded.authProvider === "EmailOTP");
+
+    // Admins and Client Managers are strictly forbidden from having OTP sessions
+    if (decoded.authProvider === "EmailOTP" && (isAdmin || isBlockedOtpRole(role))) {
+      return null;
+    }
 
     return {
       email: decoded.email,
@@ -395,7 +538,9 @@ export function getSessionUser(req) {
       assignedClients,
       isAdmin,
       isSenior,
-      isClientUser
+      isClientUser,
+      isReadOnly,
+      authProvider: decoded.authProvider || "OAuth"
     };
   } catch (err) {
     return null;

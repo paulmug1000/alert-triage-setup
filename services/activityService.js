@@ -16,6 +16,7 @@
 import { withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import { fetchPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger.js";
+import { fetchPulseActivity } from "./pulseLogger.js";
 import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, filterClientsForUser, matchesClientName } from "./userPermissions.js";
 
@@ -1109,7 +1110,7 @@ function deduplicateEvents(events) {
 /**
  * Fetch and parse activity for a single client with Redis caching
  */
-export async function fetchClientActivity(sheets, client, includeRoutine = false, forceRefresh = false, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, skipPma = false) {
+export async function fetchClientActivity(sheets, client, includeRoutine = false, forceRefresh = false, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, skipPma = false, skipPulse = false) {
   const { clientName, clientSheetId, masterSheetId } = client;
   if (!clientName && !clientSheetId && !masterSheetId) {
     return { clientName, events: [], totalEvents: 0 };
@@ -1154,8 +1155,22 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
     }
   }
 
-  // 2. Read Client Sheet AppLog (Expanded bounded range A2:E200)
-  if (clientSheetId) {
+  // 2. Read Pulse Activity from central Automation Commander PulseActivityLog
+  if (!skipPulse) {
+    try {
+      const pulseEvents = await fetchPulseActivity(sheets, automationCommanderSheetId, clientName);
+      pulseEvents.forEach(ev => {
+        if (includeRoutine || !ev.isRoutine) {
+          events.push(ev);
+        }
+      });
+    } catch (err) {
+      console.warn(`⚠️ Could not read PulseActivityLog for ${clientName}:`, err.message);
+    }
+  }
+
+  // Fallback: Read Client Sheet AppLog only if no pulseEvents were found and clientSheetId provided (legacy support)
+  if (clientSheetId && events.filter(e => e.source === "user").length === 0) {
     try {
       const resp = await withRetry(() =>
         sheets.spreadsheets.values.get({
@@ -1172,7 +1187,7 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
         }
       });
     } catch (err) {
-      console.warn(`⚠️ Could not read AppLog for ${clientName}:`, err.message);
+      // Legacy AppLog might not exist or fail gracefully
     }
   }
 
@@ -1243,7 +1258,7 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
   for (let i = 0; i < clientsList.length; i += BATCH_SIZE) {
     const batch = clientsList.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.all(
-      batch.map(client => fetchClientActivity(sheets, client, includeRoutine, forceRefresh, automationCommanderSheetId, true))
+      batch.map(client => fetchClientActivity(sheets, client, includeRoutine, forceRefresh, automationCommanderSheetId, true, true))
     );
 
     for (const res of batchResults) {
@@ -1260,7 +1275,22 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
     }
   }
 
-  // 2. Fetch PMA Activity across all clients from Automation Commander in 1 single call
+  // 2. Fetch Pulse Activity across all clients from Automation Commander in 1 single call
+  try {
+    const pulseEvents = await fetchPulseActivity(sheets, automationCommanderSheetId, null);
+    for (const ev of pulseEvents) {
+      if (ev.clientName && clientsData[ev.clientName]) {
+        clientsData[ev.clientName].events.push(ev);
+        clientsData[ev.clientName].events.sort((a, b) => b.timestampMs - a.timestampMs);
+        clientsData[ev.clientName].totalEvents = clientsData[ev.clientName].events.length;
+      }
+      allEvents.push(ev);
+    }
+  } catch (err) {
+    console.warn("⚠️ Could not fetch all Pulse activity in fetchAllClientsActivity:", err.message);
+  }
+
+  // 3. Fetch PMA Activity across all clients from Automation Commander in 1 single call
   try {
     const pmaEvents = await fetchPmaActivity(sheets, automationCommanderSheetId, null);
     for (const ev of pmaEvents) {
@@ -1332,8 +1362,27 @@ export async function handleGetActivity(req, res, sheets) {
       return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
     }
 
-    // 1. Single Client View
+    // 1. Single Client or System View
     if (clientName && clientName !== "ALL") {
+      if (clientName === "SYSTEM") {
+        if (!sessionUser.isAdmin) {
+          return res.status(403).json({ success: false, error: "Access denied to system logs" });
+        }
+        const pulseEvents = await fetchPulseActivity(sheets, acId, "SYSTEM");
+        const pmaEvents = await fetchPmaActivity(sheets, acId, "System");
+        const merged = deduplicateEvents([...pulseEvents, ...pmaEvents].sort((a, b) => b.timestampMs - a.timestampMs));
+        return res.status(200).json({
+          success: true,
+          clientName: "SYSTEM",
+          data: {
+            clientName: "SYSTEM",
+            events: merged,
+            totalEvents: merged.length,
+            cachedAt: new Date().toISOString()
+          }
+        });
+      }
+
       if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
         return res.status(403).json({ success: false, error: "Access denied to this client" });
       }

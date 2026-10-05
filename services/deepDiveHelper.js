@@ -487,6 +487,34 @@ export const CashDeepDiveEngine = {
     return { y: d.getFullYear(), m: d.getMonth(), d: d.getDate() };
   },
 
+  parsePayDate(str) {
+    if (!str) return null;
+    const s = String(str).trim();
+    const monMatch = s.match(/^(\d{1,2})[\s\-\/]([a-zA-Z]{3})[\s\-\/](\d{2,4})$/);
+    if (monMatch) {
+      const day = parseInt(monMatch[1], 10);
+      const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+      const month = months[monMatch[2].toLowerCase()];
+      let year = parseInt(monMatch[3], 10);
+      if (year < 100) year += 2000;
+      if (month !== undefined && !isNaN(year) && !isNaN(day)) {
+        return new Date(year, month, day);
+      }
+    }
+    const isoMatch = s.match(/^(\d{4})[\s\-\/](\d{1,2})[\s\-\/](\d{1,2})$/);
+    if (isoMatch) {
+      return new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+    }
+    const ukMatch = s.match(/^(\d{1,2})[\/](\d{1,2})[\/](\d{2,4})$/);
+    if (ukMatch) {
+      let year = parseInt(ukMatch[3], 10);
+      if (year < 100) year += 2000;
+      return new Date(year, parseInt(ukMatch[2], 10) - 1, parseInt(ukMatch[1], 10));
+    }
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+  },
+
   parseSafeDays(daysVal) {
     if (!daysVal && daysVal !== 0) return 0;
     if (typeof daysVal === "number") return daysVal;
@@ -818,14 +846,65 @@ export const CashDeepDiveEngine = {
     if (!keyData || !keyData.outgoings) return results;
 
     const isContractor = type.includes("conCash") || type === "cashContractors";
+    const contractorSource = String(
+      keyData?.outgoingsMeta?.contractorSource || keyData?.outgoings?.contractorSource || ""
+    ).toLowerCase();
+    const isNotesMode = contractorSource.includes("notes");
+
+    const targetYear = targetDate.getFullYear();
+    const targetMonth = targetDate.getMonth();
+
+    // In Notes metadata mode, contractor payments are driven by transaction {Pay date} across the OutgNotes grid
+    if (isContractor && isNotesMode) {
+      const allTx = keyData?.outgoings?.contractorTransactions || keyData?.outgoingsMeta?.contractorTransactions || [];
+
+      allTx.forEach((tx) => {
+        const pd = CashDeepDiveEngine.parsePayDate(tx.payDate);
+        if (pd && pd.getFullYear() === targetYear && pd.getMonth() === targetMonth) {
+          const rawAmt = -Math.abs(tx.grossAmount || tx.amount || 0);
+          const netAmt = -Math.abs(tx.netAmount || tx.amountNet || 0);
+          const vatAmt = tx.vatAmount > 0 || tx.vatSetting === "Yes" ? -Math.abs(tx.vatAmount || 0) : 0;
+
+          results.push({
+            appId: tx.appId || "",
+            vendor: tx.vendor || tx.contractorName || "",
+            client: tx.vendor || tx.contractorName || "",
+            name: tx.vendor || tx.contractorName || "",
+            desc: tx.itemDesc || tx.rawDesc || "",
+            itemDesc: tx.itemDesc || tx.rawDesc || "",
+            rawDesc: tx.rawDesc || "",
+            amountNet: netAmt,
+            vatAmount: vatAmt,
+            grossAmount: rawAmt,
+            amount: rawAmt,
+            vatSetting: tx.vatSetting || "No",
+            status: tx.status || "",
+            recDate: tx.recDate || "",
+            payDate: tx.payDate || "",
+            payDateStr: DeepDiveEngine.formatShortDate(tx.payDate),
+            rowNumber: tx.rowNumber || null,
+          });
+        }
+      });
+
+      // Sort by payDate ascending, then vendor name
+      results.sort((a, b) => {
+        const da = CashDeepDiveEngine.parsePayDate(a.payDate);
+        const db = CashDeepDiveEngine.parsePayDate(b.payDate);
+        const ta = da ? da.getTime() : 0;
+        const tb = db ? db.getTime() : 0;
+        if (ta !== tb) return ta - tb;
+        return String(a.vendor || "").localeCompare(String(b.vendor || ""));
+      });
+
+      return results;
+    }
+
     const cacheItems = isContractor
       ? (keyData.outgoings.contractors || [])
       : (keyData.outgoings.expenses || []).filter(
           (e) => !e.name || !e.name.toLowerCase().includes("depreciation")
         );
-
-    const targetYear = targetDate.getFullYear();
-    const targetMonth = targetDate.getMonth();
 
     let foundY = -1;
     let foundC = -1;

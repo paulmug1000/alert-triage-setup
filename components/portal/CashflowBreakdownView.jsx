@@ -93,6 +93,12 @@ export default function CashflowBreakdownView({
     ];
   }, [keyData]);
 
+  const isNotesMode = useMemo(() => {
+    return String(
+      keyData?.outgoingsMeta?.contractorSource || keyData?.outgoings?.contractorSource || ""
+    ).toLowerCase().includes("notes");
+  }, [keyData]);
+
   // Extract sheet cell total from data.includingPipeline (to match original Google Sheets Cash tab exactly)
   const sheetTargetTotal = useMemo(() => {
     const rows = data?.includingPipeline || data?.excludingPipeline || [];
@@ -115,12 +121,15 @@ export default function CashflowBreakdownView({
       const divVal = sumRows(["dividends as salary outgoing", "dividends as salary adjustment"], [52, 53]);
       return salVal + divVal;
     }
-    if (activeCategory === "cashContractors") return sumRows(["contractors outgoing", "contractors adjustment"], [54, 55]);
+    if (activeCategory === "cashContractors") {
+      if (isNotesMode) return null;
+      return sumRows(["contractors outgoing", "contractors adjustment"], [54, 55]);
+    }
     if (activeCategory === "cashOutgoings") return sumRows(["other expenses outgoing", "other expenses adjustment"], [58, 59]);
     if (activeCategory === "cashTaxes") return sumRows(["corporation tax", "corporation tax adjustment", "vat", "vat adjustment"], [61, 62, 63, 64]);
     if (activeCategory === "cashOther") return sumRows(["non-operating income", "non-operating expenses", "other cash movements", "other adjustments"], [66, 67, 68, 69, 71, 72]);
     return null;
-  }, [data, activeCategory, selectedMonthIdx, rollingMonths]);
+  }, [data, activeCategory, selectedMonthIdx, rollingMonths, isNotesMode]);
 
   // Invoices Sent Data (Confirmed & Pipeline lists)
   const invoicesSentData = useMemo(() => {
@@ -176,6 +185,10 @@ export default function CashflowBreakdownView({
       }
 
       return results;
+    }
+
+    if (activeCategory === "cashContractors" && isNotesMode) {
+      return CashDeepDiveEngine.getOutgoingsCash(targetDate, "cashContractors", keyData);
     }
 
     if (activeCategory === "cashContractors" || activeCategory === "cashOutgoings") {
@@ -328,7 +341,7 @@ export default function CashflowBreakdownView({
     }
 
     return [];
-  }, [activeCategory, allJobs, targetDate, keyData, selectedMonthIdx, data, isSenior]);
+  }, [activeCategory, allJobs, targetDate, keyData, selectedMonthIdx, data, isSenior, isNotesMode]);
 
   // Sum of computed items
   const computedSum = useMemo(() => {
@@ -385,6 +398,26 @@ export default function CashflowBreakdownView({
           inv.status,
         ]);
       });
+    } else if (activeCategory === "cashContractors" && isNotesMode) {
+      rows.push(["Pay date", "Vendor", "Description", "Total excl VAT", "VAT included", "Total incl VAT", "Received date", "Status"]);
+      listData.forEach((item) => {
+        rows.push([
+          DeepDiveEngine.formatShortDate(item.payDate),
+          item.vendor || item.contractorName || "",
+          item.itemDesc || item.rawDesc || "",
+          item.amountNet || 0,
+          item.vatAmount || 0,
+          item.amount || 0,
+          item.recDate ? DeepDiveEngine.formatShortDate(item.recDate) : "",
+          item.status || "",
+        ]);
+      });
+      const totNet = listData.reduce((s, i) => s + (i.amountNet || 0), 0);
+      const totVat = listData.reduce((s, i) => s + (i.vatAmount || 0), 0);
+      if (Math.abs(manualAdjustment) > 2) {
+        rows.push(["", "Manual adjustment", "", "", "", manualAdjustment, "", ""]);
+      }
+      rows.push(["", "", "Total", totNet, totVat, finalDisplayTotal, "", ""]);
     } else if (isTableLayout) {
       rows.push(["Date", "Client", "Job Name / Description", "Type", "Invoice Ref", "Amount", "Status"]);
       listData.forEach((item) => {
@@ -692,6 +725,93 @@ export default function CashflowBreakdownView({
                 No invoices sent in this period.
               </div>
             )}
+          </div>
+        ) : (activeCategory === "cashContractors" && isNotesMode) ? (
+          /* Detailed Contractor Payments Table (Notes Metadata Mode) */
+          <div className="breakdown-scroll-wrapper" style={{ width: "100%", maxWidth: "100%", overflowX: "auto", paddingBottom: "10px" }}>
+            <table style={{ width: "100%", minWidth: "860px", borderCollapse: "collapse", textAlign: "left", fontSize: "0.95em" }}>
+              <thead>
+                {/* Header Total Row */}
+                <tr>
+                  <td colSpan={3} style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.1rem", textAlign: "left", padding: "10px 10px 10px 0", borderBottom: "1px solid #e5e7eb" }}>
+                    Contractor payments ({listData.length} {listData.length === 1 ? "transaction" : "transactions"})
+                  </td>
+                  <td style={{ fontWeight: 600, color: "#111827", fontSize: "1rem", textAlign: "right", padding: "10px 10px", borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap" }}>
+                    {formatMoney(listData.reduce((sum, item) => sum + (item.amountNet || 0), 0))}
+                  </td>
+                  <td style={{ fontWeight: 600, color: "#64748b", fontSize: "1rem", textAlign: "right", padding: "10px 10px", borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap" }}>
+                    {formatMoney(listData.reduce((sum, item) => sum + (item.vatAmount || 0), 0))}
+                  </td>
+                  <td style={{ fontWeight: 700, color: "#0047AB", fontSize: "1.2rem", textAlign: "right", padding: "10px 10px", borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap" }}>
+                    {formatMoney(finalDisplayTotal)}
+                  </td>
+                  <td colSpan={2} style={{ borderBottom: "1px solid #e5e7eb" }}></td>
+                </tr>
+                {/* Column Headers */}
+                <tr style={{ borderBottom: "1px solid #cbd5e1" }}>
+                  <th style={{ textAlign: "left", padding: "10px 10px 10px 0", color: "#64748b", fontWeight: 600, fontSize: "0.85rem", whiteSpace: "nowrap" }}>Pay date</th>
+                  <th style={{ textAlign: "left", padding: "10px 10px", color: "#64748b", fontWeight: 600, fontSize: "0.85rem", whiteSpace: "nowrap" }}>Vendor</th>
+                  <th style={{ textAlign: "left", padding: "10px 10px", color: "#64748b", fontWeight: 600, fontSize: "0.85rem" }}>Description</th>
+                  <th style={{ textAlign: "right", padding: "10px 10px", color: "#64748b", fontWeight: 600, fontSize: "0.85rem", whiteSpace: "nowrap" }}>Total excl VAT</th>
+                  <th style={{ textAlign: "right", padding: "10px 10px", color: "#64748b", fontWeight: 600, fontSize: "0.85rem", whiteSpace: "nowrap" }}>VAT included</th>
+                  <th style={{ textAlign: "right", padding: "10px 10px", color: "#64748b", fontWeight: 600, fontSize: "0.85rem", whiteSpace: "nowrap" }}>Total incl VAT</th>
+                  <th style={{ textAlign: "left", padding: "10px 10px", color: "#64748b", fontWeight: 600, fontSize: "0.85rem", whiteSpace: "nowrap" }}>Received date</th>
+                  <th style={{ textAlign: "right", padding: "10px 0 10px 10px", color: "#64748b", fontWeight: 600, fontSize: "0.85rem", whiteSpace: "nowrap" }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {listData.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
+                      No contractor transactions in this period.
+                    </td>
+                  </tr>
+                ) : (
+                  listData.map((item, idx) => (
+                    <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                      <td style={{ padding: "12px 10px 12px 0", color: "#6b7280", whiteSpace: "nowrap" }}>
+                        {DeepDiveEngine.formatShortDate(item.payDate)}
+                      </td>
+                      <td style={{ padding: "12px 10px", fontWeight: 600, color: "#111827", whiteSpace: "nowrap" }}>
+                        {item.vendor || item.contractorName || "—"}
+                      </td>
+                      <td style={{ padding: "12px 10px", color: "#475569", minWidth: "220px" }}>
+                        {item.itemDesc || item.rawDesc || "—"}
+                      </td>
+                      <td style={{ padding: "12px 10px", textAlign: "right", color: "#111827", whiteSpace: "nowrap" }}>
+                        <div>{formatMoney(item.amountNet)}</div>
+                        <div style={{ fontSize: "0.78em", color: "#94a3b8", marginTop: "2px" }}>ex</div>
+                      </td>
+                      <td style={{ padding: "12px 10px", textAlign: "right", color: "#475569", whiteSpace: "nowrap" }}>
+                        <div>{formatMoney(item.vatAmount)}</div>
+                        <div style={{ fontSize: "0.78em", color: "#94a3b8", marginTop: "2px" }}>VAT</div>
+                      </td>
+                      <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap" }}>
+                        {formatMoney(item.amount)}
+                      </td>
+                      <td style={{ padding: "12px 10px", color: "#6b7280", whiteSpace: "nowrap" }}>
+                        {item.recDate ? DeepDiveEngine.formatShortDate(item.recDate) : "—"}
+                      </td>
+                      <td style={{ padding: "12px 0 12px 10px", color: "#6b7280", textAlign: "right", whiteSpace: "nowrap" }}>
+                        {item.status || "—"}
+                      </td>
+                    </tr>
+                  ))
+                )}
+                {/* Manual Adjustment Row if applicable */}
+                {Math.abs(manualAdjustment) > 2 && (
+                  <tr style={{ borderTop: "1px dashed #e2e8f0", background: "#fafafa" }}>
+                    <td colSpan={5} style={{ padding: "12px 10px 12px 0", color: "#64748b" }}>
+                      <em>Manual adjustment</em>
+                    </td>
+                    <td style={{ padding: "12px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB" }}>
+                      {formatMoney(manualAdjustment)}
+                    </td>
+                    <td colSpan={2}></td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         ) : isTableLayout ? (
           /* 2. Confirmed Cash / Pipeline Cash / Direct Cost Payments: Table matching original buildJobCashHtml */

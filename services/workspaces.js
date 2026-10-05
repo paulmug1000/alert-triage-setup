@@ -24,7 +24,7 @@ export async function resolveClientNameBySheetId(sheets, sheetId, acId = DEFAULT
     const resp = await withRetry(() =>
       sheets.spreadsheets.values.get({
         spreadsheetId: acId || DEFAULT_AC_SHEET_ID,
-        range: "AutoUpdates!A2:L70"
+        range: "AutoUpdates!A2:N500"
       })
     );
     const rows = resp.data.values || [];

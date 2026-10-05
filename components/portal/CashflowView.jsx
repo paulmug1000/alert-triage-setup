@@ -102,11 +102,26 @@ export default function CashflowView({
 
   // Helper to extract or sum values across matching rows
   const getValues = (rows, labelPatterns, rowIndices = []) => {
-    const matching = rows.filter((r) => {
-      if (rowIndices.includes(r.rowIndex)) return true;
-      const l = (r.label || "").toLowerCase();
-      return labelPatterns.some((p) => l.includes(p.toLowerCase()));
-    });
+    let matching = [];
+
+    // Prioritize explicit row indices to avoid accidental double-counting of auxiliary rows
+    if (rowIndices && rowIndices.length > 0) {
+      matching = rows.filter((r) => rowIndices.includes(r.rowIndex));
+    }
+
+    // Fallback: match by label if row index was not found in dataset
+    if (matching.length === 0) {
+      matching = rows.filter((r) => {
+        const l = (r.label || "").toLowerCase().trim();
+        return labelPatterns.some((p) => {
+          const pat = p.toLowerCase().trim();
+          if (l === pat) return true;
+          // Crucial: avoid matching "actual closing balance" when searching for "closing balance"
+          if (pat === "closing balance" && l.includes("actual")) return false;
+          return l.includes(pat);
+        });
+      });
+    }
 
     if (matching.length === 0) return Array(rollingMonths.length).fill("£0");
 
@@ -195,7 +210,29 @@ export default function CashflowView({
   // Row data definitions matching WebApp.html exactly
   const exclOpening = getValues(exclRows, ["opening balance"], [4]);
   const exclNet = getValues(exclRows, ["net cash movement"], [32]);
-  const exclClosing = getValues(exclRows, ["closing balance"], [34]);
+  const rawExclClosing = getValues(exclRows, ["closing balance"], [34]);
+
+  const inclOpening = getValues(inclRows, ["opening balance"], [45]);
+  const inclNet = getValues(inclRows, ["net cash movement"], [74]);
+  const rawInclClosing = getValues(inclRows, ["closing balance"], [76]);
+
+  // Actual closing balance check for the first month (previous calendar month)
+  // Per business rule: if actual closing balance exists in Row 36 for month 0, it overrides the calculated closing balance for month 0
+  const actualClosingRow = exclRows.find((r) => r.rowIndex === 36 || (r.label || "").toLowerCase().includes("actual closing"));
+
+  const applyActualClosing = (closingVals) => {
+    if (!actualClosingRow?.rollingValues || closingVals.length === 0) return closingVals;
+    const actual0 = actualClosingRow.rollingValues[0];
+    if (actual0 && actual0 !== "£0" && actual0 !== "—" && Math.abs(parseMoney(actual0)) > 0.01) {
+      const updated = [...closingVals];
+      updated[0] = formatMoney(parseMoney(actual0));
+      return updated;
+    }
+    return closingVals;
+  };
+
+  const exclClosing = applyActualClosing(rawExclClosing);
+  const inclClosing = applyActualClosing(rawInclClosing);
 
   const exclDetails = [
     { label: "Confirmed cash incoming", values: getValues(exclRows, ["confirmed cash incoming"], [6]), ddType: "cashConfInflow" },
@@ -218,10 +255,6 @@ export default function CashflowView({
     { label: "Non-operating expenses", values: getValues(exclRows, ["non-operating expenses"], [26, 27]), ddType: "nonOpExpCash" },
     { label: "Other cash movements", values: getValues(exclRows, ["other cash movements", "other adjustments"], [29, 30]), ddType: "otherMoveCash" },
   ];
-
-  const inclOpening = getValues(inclRows, ["opening balance"], [45]);
-  const inclNet = getValues(inclRows, ["net cash movement"], [74]);
-  const inclClosing = getValues(inclRows, ["closing balance"], [76]);
 
   const inclDetails = [
     { label: "Confirmed cash incoming", values: getValues(inclRows, ["confirmed cash incoming"], [47]), ddType: "cashConfInflow" },
@@ -253,17 +286,35 @@ export default function CashflowView({
   const inclClosingNums = inclClosing.map(parseMoney);
 
   const allNums = [...exclClosingNums, ...inclClosingNums];
-  const maxVal = Math.max(...allNums, 1000);
-  const minVal = Math.min(...allNums, 0);
+  const rawMax = Math.max(...allNums, 10000);
+  const rawMin = Math.min(...allNums, 0);
+
+  const span = Math.max(rawMax - (rawMin < 0 ? rawMin : 0), 10000);
+  const targetTicks = 5;
+  const roughStep = span / targetTicks;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const residual = roughStep / magnitude;
+  let niceFactor = 1;
+  if (residual > 5) niceFactor = 10;
+  else if (residual > 2) niceFactor = 5;
+  else if (residual > 1) niceFactor = 2;
+  const niceStep = niceFactor * magnitude;
+  const minVal = Math.floor(rawMin / niceStep) * niceStep;
+  const maxVal = Math.ceil(rawMax / niceStep) * niceStep;
   const range = maxVal - minVal || 1;
 
+  const yTicks = [];
+  for (let t = minVal; t <= maxVal + niceStep * 0.5; t += niceStep) {
+    yTicks.push(t);
+  }
+
   // Chart coordinates
-  const svgWidth = 700;
-  const svgHeight = 260;
-  const padLeft = 70;
-  const padRight = 30;
-  const padTop = 30;
-  const padBottom = 40;
+  const svgWidth = 720;
+  const svgHeight = 440;
+  const padLeft = 52;
+  const padRight = 36;
+  const padTop = 20;
+  const padBottom = 44;
 
   const getX = (idx) => padLeft + (idx / Math.max(1, rollingMonths.length - 1)) * (svgWidth - padLeft - padRight);
   const getY = (val) => padTop + (1 - (val - minVal) / range) * (svgHeight - padTop - padBottom);
@@ -293,6 +344,25 @@ export default function CashflowView({
 
   const exclPath = makeSmoothPath(exclClosingNums);
   const inclPath = makeSmoothPath(inclClosingNums);
+
+  const buildAreaPath = (linePath, count) => {
+    if (!linePath || count < 2) return "";
+    const xFirst = getX(0);
+    const xLast = getX(count - 1);
+    const yBottom = svgHeight - padBottom;
+    return `${linePath} L ${xLast.toFixed(1)} ${yBottom.toFixed(1)} L ${xFirst.toFixed(1)} ${yBottom.toFixed(1)} Z`;
+  };
+
+  const exclArea = buildAreaPath(exclPath, rollingMonths.length);
+  const inclArea = buildAreaPath(inclPath, rollingMonths.length);
+
+  const formatShortMoney = (n) => {
+    if (n === 0) return "£0";
+    const abs = Math.abs(n);
+    if (abs >= 1000000) return `${n < 0 ? "-" : ""}£${(abs / 1000000).toFixed(1)}m`;
+    if (abs >= 1000) return `${n < 0 ? "-" : ""}£${Math.round(abs / 1000)}k`;
+    return `${n < 0 ? "-" : ""}£${Math.round(abs)}`;
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem", width: "100%", fontFamily: "'Kumbh Sans', sans-serif" }}>
@@ -376,595 +446,733 @@ export default function CashflowView({
         </div>
       </div>
 
-      {/* Main Cashflow Table Container (Only taking as much space as it actually needs with clear space to the right) */}
-      <div className="cashflow-table-container" style={{ width: "fit-content", maxWidth: "100%" }}>
-        <div
-          style={{
-            background: "#ffffff",
-            borderRadius: "8px",
-            border: "1px solid #e5e7eb",
-            overflow: "hidden",
-            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-          }}
-        >
-          <div style={{ overflowX: "auto", width: "100%" }}>
-            <table
-              className="cashflow-main-table"
-              style={{
-                width: "max-content",
-                minWidth: "680px",
-                borderCollapse: "separate",
-                borderSpacing: 0,
-                fontSize: "13px",
-                fontFamily: "'Kumbh Sans', sans-serif",
-              }}
-            >
-              <thead>
-                <tr>
-                  <th
-                    style={{
-                      background: "#3C78D8",
-                      color: "#ffffff",
-                      padding: "10px 14px",
-                      textAlign: "left",
-                      position: "sticky",
-                      left: 0,
-                      zIndex: 20,
-                      fontWeight: 700,
-                      width: "30%",
-                      borderBottom: "1px solid #e2e8f0",
-                    }}
-                  />
-                  {rollingMonths.map((m, idx) => (
+      {/* 2-Column Responsive Cashflow Workspace Grid */}
+      <div className="cashflow-workspace-grid">
+        {/* Left Column: Cashflow Table */}
+        <div className="cashflow-col-left">
+          <div
+            className="cashflow-table-card"
+            style={{
+              background: "#ffffff",
+              borderRadius: "8px",
+              border: "1px solid #e2e8f0",
+              overflow: "hidden",
+              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+              width: "fit-content",
+              maxWidth: "100%",
+            }}
+          >
+            <div style={{ overflowX: "auto", width: "100%" }}>
+              <table
+                className="cashflow-main-table"
+                style={{
+                  width: "max-content",
+                  tableLayout: "fixed",
+                  borderCollapse: "separate",
+                  borderSpacing: 0,
+                  fontSize: "13px",
+                  fontFamily: "'Kumbh Sans', sans-serif",
+                }}
+              >
+                <colgroup>
+                  <col style={{ width: "190px", minWidth: "190px", maxWidth: "190px" }} />
+                  {rollingMonths.map((_, idx) => (
+                    <col key={idx} style={{ width: "68px", minWidth: "68px" }} />
+                  ))}
+                </colgroup>
+                <thead>
+                  <tr style={{ background: "#0047AB", color: "#ffffff", height: "44px" }}>
                     <th
-                      key={idx}
                       style={{
-                        background: "#3C78D8",
+                        background: "#0047AB",
                         color: "#ffffff",
-                        padding: "10px 12px",
-                        textAlign: "right",
+                        padding: "12px 10px",
+                        textAlign: "left",
+                        position: "sticky",
+                        left: 0,
+                        zIndex: 20,
                         fontWeight: 700,
-                        whiteSpace: "nowrap",
-                        borderBottom: "1px solid #e2e8f0",
-                        width: "10%",
+                        width: "190px",
+                        minWidth: "190px",
+                        maxWidth: "190px",
+                        boxSizing: "border-box",
+                        borderBottom: "1px solid #0047AB",
+                        borderRight: "2px solid rgba(255, 255, 255, 0.2)",
                       }}
-                    >
-                      {m}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
+                    />
+                    {rollingMonths.map((m, idx) => (
+                      <th
+                        key={idx}
+                        style={{
+                          background: "#0047AB",
+                          color: "#ffffff",
+                          padding: "12px 6px",
+                          textAlign: "right",
+                          fontWeight: 700,
+                          fontSize: "12px",
+                          whiteSpace: "nowrap",
+                          borderBottom: "1px solid #0047AB",
+                          width: "68px",
+                          minWidth: "68px",
+                          boxSizing: "border-box",
+                        }}
+                      >
+                        {m}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
 
-              <tbody>
-                {/* 1. EXCLUDING PIPELINE SECTION */}
-                <tr style={{ background: "#e2e8f0" }}>
-                  <td
-                    colSpan={rollingMonths.length + 1}
-                    style={{
-                      background: "#e2e8f0",
-                      fontWeight: 700,
-                      color: "#0f172a",
-                      padding: "10px 14px",
-                      fontSize: "10.8px",
-                      letterSpacing: "0.3px",
-                    }}
-                  >
-                    <span style={{ position: "sticky", left: "14px", display: "inline-block" }}>
-                      Excluding pipeline
-                    </span>
-                  </td>
-                </tr>
-
-                {/* Opening balance */}
-                <tr style={{ background: "#efefef", borderBottom: "1px solid #e2e8f0" }}>
-                  <td style={{ ...stickyColStyle, background: "#efefef" }}>Opening balance</td>
-                  {exclOpening.map((val, idx) => (
-                    <td key={idx} style={{ ...dataCellStyle, background: "#efefef" }}>
-                      {val}
-                    </td>
-                  ))}
-                </tr>
-
-                {/* Net cash movement accordion */}
-                <tr
-                  onClick={() => setExclOpen((prev) => !prev)}
-                  style={{
-                    cursor: "pointer",
-                    background: "#f1f5f9",
-                    borderTop: "1px solid #cbd5e1",
-                    borderBottom: "2px solid #cbd5e1",
-                  }}
-                >
-                  <td
-                    style={{
-                      ...stickyColStyle,
-                      background: "#f1f5f9",
-                      fontWeight: 700,
-                      color: "#0047AB",
-                    }}
-                  >
-                    <span
+                <tbody>
+                  {/* 1. EXCLUDING PIPELINE SECTION */}
+                  <tr style={{ background: "#f0f5fc", borderTop: "2px solid #cbd5e1", borderBottom: "1px solid #cbd5e1", height: "42px" }}>
+                    <td
+                      colSpan={rollingMonths.length + 1}
                       style={{
-                        display: "inline-block",
-                        transition: "transform 0.2s ease",
-                        marginRight: "6px",
-                        fontSize: "0.8em",
+                        background: "#f0f5fc",
+                        fontWeight: 700,
                         color: "#0047AB",
-                        transform: exclOpen ? "rotate(90deg)" : "rotate(0deg)",
+                        padding: "11px 16px",
+                        fontSize: "11px",
+                        letterSpacing: "0.8px",
+                        textTransform: "uppercase",
+                        fontFamily: "'Kumbh Sans', sans-serif",
                       }}
                     >
-                      ▶
-                    </span>
-                    Net cash movement
-                  </td>
-                  {exclNet.map((val, idx) => (
-                    <td
-                      key={idx}
-                      style={{
-                        ...dataCellStyle,
-                        fontWeight: 600,
-                        background: "#f1f5f9",
-                      }}
-                    >
-                      {val}
+                      <span style={{ position: "sticky", left: "14px", display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#9900ff" }} />
+                        Excluding pipeline
+                      </span>
                     </td>
-                  ))}
-                </tr>
+                  </tr>
 
-                {/* Sub-rows when open */}
-                {exclOpen &&
-                  exclDetails.map((detail, dIdx) => {
-                    if (isRowEmpty(detail.values)) return null;
+                  {/* Opening balance */}
+                  <tr style={{ background: "#ffffff", borderBottom: "1px solid #f1f5f9", height: "42px" }}>
+                    <td style={{ ...stickyColStyle, background: "#ffffff", color: "#334155" }}>Opening balance</td>
+                    {exclOpening.map((val, idx) => (
+                      <td key={idx} style={{ ...dataCellStyle, color: "#334155", background: "#ffffff" }}>
+                        {val}
+                      </td>
+                    ))}
+                  </tr>
 
-                    return (
-                      <tr key={dIdx} style={{ background: "#efefef", borderBottom: "1px solid #e2e8f0" }}>
-                        <td
-                          style={{
-                            ...stickyColStyle,
-                            background: "#efefef",
-                            paddingLeft: "30px",
-                            color: "#334155",
-                            fontSize: "12.5px",
-                            fontWeight: 400,
-                          }}
-                        >
-                          {detail.label}
-                        </td>
-                        {detail.values.map((val, mIdx) => {
-                          const isClickable = Boolean(detail.ddType && val && val !== "£0" && val !== "—");
-
-                          return (
-                            <td
-                              key={mIdx}
-                              onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType)}
-                              style={{
-                                ...dataCellStyle,
-                                background: "#efefef",
-                                color: isClickable ? "#0047AB" : "#475569",
-                                fontSize: "12px",
-                                cursor: isClickable ? "pointer" : "default",
-                                textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
-                                textUnderlineOffset: isClickable ? "2px" : "initial",
-                              }}
-                              onMouseEnter={(e) => {
-                                if (isClickable) e.currentTarget.style.backgroundColor = "#e2e8f0";
-                              }}
-                              onMouseLeave={(e) => {
-                                if (isClickable) e.currentTarget.style.backgroundColor = "#efefef";
-                              }}
-                            >
-                              {val}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-
-                {/* Closing balance */}
-                <tr style={{ background: "#f1f5f9", borderTop: "2px solid #94a3b8" }}>
-                  <td
+                  {/* Net cash movement accordion */}
+                  <tr
+                    onClick={() => setExclOpen((prev) => !prev)}
                     style={{
-                      ...stickyColStyle,
-                      background: "#f1f5f9",
-                      fontWeight: 800,
-                      color: "#0047AB",
-                      borderTop: "2px solid #94a3b8",
+                      cursor: "pointer",
+                      background: "#f8fafc",
+                      borderTop: "1px solid #e2e8f0",
+                      borderBottom: "1px solid #e2e8f0",
+                      height: "44px",
                     }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f1f5f9")}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "#f8fafc")}
                   >
-                    Closing balance
-                  </td>
-                  {exclClosing.map((val, idx) => (
                     <td
-                      key={idx}
                       style={{
-                        ...dataCellStyle,
+                        ...stickyColStyle,
+                        background: "inherit",
+                        fontWeight: 700,
+                        color: "#0047AB",
+                      }}
+                    >
+                      <svg
+                        width="9"
+                        height="9"
+                        viewBox="0 0 10 10"
+                        style={{
+                          display: "inline-block",
+                          marginRight: "8px",
+                          verticalAlign: "middle",
+                          transition: "transform 0.2s ease",
+                          transform: exclOpen ? "rotate(90deg)" : "rotate(0deg)",
+                          transformOrigin: "center center",
+                        }}
+                      >
+                        <polygon points="1.5,1 8.5,5 1.5,9" fill="#0047AB" />
+                      </svg>
+                      Net cash movement
+                    </td>
+                    {exclNet.map((val, idx) => (
+                      <td
+                        key={idx}
+                        style={{
+                          ...dataCellStyle,
+                          fontWeight: 600,
+                          background: "inherit",
+                        }}
+                      >
+                        {val}
+                      </td>
+                    ))}
+                  </tr>
+
+                  {/* Sub-rows when open */}
+                  {exclOpen &&
+                    exclDetails.map((detail, dIdx) => {
+                      if (isRowEmpty(detail.values)) return null;
+
+                      return (
+                        <tr
+                          key={dIdx}
+                          style={{ background: "#ffffff", borderBottom: "1px solid #f1f5f9" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#fafcff")}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "#ffffff")}
+                        >
+                          <td
+                            style={{
+                              ...stickyColStyle,
+                              background: "inherit",
+                              paddingLeft: "34px",
+                              color: "#475569",
+                              fontSize: "12px",
+                              fontWeight: 400,
+                            }}
+                          >
+                            {detail.label}
+                          </td>
+                          {detail.values.map((val, mIdx) => {
+                            const isClickable = Boolean(detail.ddType && val && val !== "£0" && val !== "—");
+
+                            return (
+                              <td
+                                key={mIdx}
+                                onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType)}
+                                style={{
+                                  ...dataCellStyle,
+                                  background: "inherit",
+                                  color: isClickable ? "#0047AB" : "#475569",
+                                  fontSize: "12px",
+                                  cursor: isClickable ? "pointer" : "default",
+                                  textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
+                                  textUnderlineOffset: isClickable ? "2px" : "initial",
+                                }}
+                              >
+                                {val}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+
+                  {/* Closing balance (Milestone row) */}
+                  <tr style={{ background: "rgba(0, 71, 171, 0.04)", borderTop: "2px solid #cbd5e1", borderBottom: "2px solid #cbd5e1", height: "46px" }}>
+                    <td
+                      style={{
+                        ...stickyColStyle,
+                        background: "rgba(0, 71, 171, 0.04)",
                         fontWeight: 800,
                         color: "#0047AB",
-                        background: "#f1f5f9",
-                        borderTop: "2px solid #94a3b8",
+                        fontSize: "13.5px",
+                        borderTop: "2px solid #cbd5e1",
+                        borderBottom: "2px solid #cbd5e1",
+                        padding: "13px 14px",
                       }}
                     >
-                      {val}
+                      Closing balance
                     </td>
-                  ))}
-                </tr>
+                    {exclClosing.map((val, idx) => (
+                      <td
+                        key={idx}
+                        style={{
+                          ...dataCellStyle,
+                          fontWeight: 800,
+                          color: "#0047AB",
+                          fontSize: "13.5px",
+                          background: "rgba(0, 71, 171, 0.04)",
+                          borderTop: "2px solid #cbd5e1",
+                          borderBottom: "2px solid #cbd5e1",
+                          padding: "13px 12px",
+                        }}
+                      >
+                        {val}
+                      </td>
+                    ))}
+                  </tr>
 
-                {/* White spacer row */}
-                <tr style={{ height: "20px", background: "#ffffff" }}>
-                  <td colSpan={rollingMonths.length + 1} style={{ border: "none", background: "#ffffff" }} />
-                </tr>
+                  {/* Generous 3x spacer row between scenarios */}
+                  <tr style={{ height: "54px", background: "#ffffff" }}>
+                    <td colSpan={rollingMonths.length + 1} style={{ height: "54px", border: "none", background: "#ffffff" }} />
+                  </tr>
 
-                {/* 2. INCLUDING PIPELINE SECTION */}
-                <tr style={{ background: "#e2e8f0" }}>
-                  <td
-                    colSpan={rollingMonths.length + 1}
-                    style={{
-                      background: "#e2e8f0",
-                      fontWeight: 700,
-                      color: "#0f172a",
-                      padding: "10px 14px",
-                      fontSize: "10.8px",
-                      letterSpacing: "0.3px",
-                      borderTop: "2px solid #cbd5e1",
-                    }}
-                  >
-                    <span style={{ position: "sticky", left: "14px", display: "inline-block" }}>
-                      Including pipeline
-                    </span>
-                  </td>
-                </tr>
-
-                {/* Opening balance */}
-                <tr style={{ background: "#efefef", borderBottom: "1px solid #e2e8f0" }}>
-                  <td style={{ ...stickyColStyle, background: "#efefef" }}>Opening balance</td>
-                  {inclOpening.map((val, idx) => (
-                    <td key={idx} style={{ ...dataCellStyle, background: "#efefef" }}>
-                      {val}
-                    </td>
-                  ))}
-                </tr>
-
-                {/* Net cash movement accordion */}
-                <tr
-                  onClick={() => setInclOpen((prev) => !prev)}
-                  style={{
-                    cursor: "pointer",
-                    background: "#f1f5f9",
-                    borderTop: "1px solid #cbd5e1",
-                    borderBottom: "2px solid #cbd5e1",
-                  }}
-                >
-                  <td
-                    style={{
-                      ...stickyColStyle,
-                      background: "#f1f5f9",
-                      fontWeight: 700,
-                      color: "#0047AB",
-                    }}
-                  >
-                    <span
+                  {/* 2. INCLUDING PIPELINE SECTION */}
+                  <tr style={{ background: "#f0f5fc", borderTop: "2px solid #cbd5e1", borderBottom: "1px solid #cbd5e1", height: "42px" }}>
+                    <td
+                      colSpan={rollingMonths.length + 1}
                       style={{
-                        display: "inline-block",
-                        transition: "transform 0.2s ease",
-                        marginRight: "6px",
-                        fontSize: "0.8em",
+                        background: "#f0f5fc",
+                        fontWeight: 700,
                         color: "#0047AB",
-                        transform: inclOpen ? "rotate(90deg)" : "rotate(0deg)",
+                        padding: "11px 16px",
+                        fontSize: "11px",
+                        letterSpacing: "0.8px",
+                        textTransform: "uppercase",
+                        fontFamily: "'Kumbh Sans', sans-serif",
                       }}
                     >
-                      ▶
-                    </span>
-                    Net cash movement
-                  </td>
-                  {inclNet.map((val, idx) => (
-                    <td
-                      key={idx}
-                      style={{
-                        ...dataCellStyle,
-                        fontWeight: 600,
-                        background: "#f1f5f9",
-                      }}
-                    >
-                      {val}
+                      <span style={{ position: "sticky", left: "14px", display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#e69138" }} />
+                        Including pipeline
+                      </span>
                     </td>
-                  ))}
-                </tr>
+                  </tr>
 
-                {/* Sub-rows when open */}
-                {inclOpen &&
-                  inclDetails.map((detail, dIdx) => {
-                    if (isRowEmpty(detail.values)) return null;
+                  {/* Opening balance */}
+                  <tr style={{ background: "#ffffff", borderBottom: "1px solid #f1f5f9", height: "42px" }}>
+                    <td style={{ ...stickyColStyle, background: "#ffffff", color: "#334155" }}>Opening balance</td>
+                    {inclOpening.map((val, idx) => (
+                      <td key={idx} style={{ ...dataCellStyle, color: "#334155", background: "#ffffff" }}>
+                        {val}
+                      </td>
+                    ))}
+                  </tr>
 
-                    return (
-                      <tr key={dIdx} style={{ background: "#efefef", borderBottom: "1px solid #e2e8f0" }}>
-                        <td
-                          style={{
-                            ...stickyColStyle,
-                            background: "#efefef",
-                            paddingLeft: "30px",
-                            color: "#334155",
-                            fontSize: "12.5px",
-                            fontWeight: 400,
-                          }}
-                        >
-                          {detail.label}
-                        </td>
-                        {detail.values.map((val, mIdx) => {
-                          const isClickable = Boolean(detail.ddType && val && val !== "£0" && val !== "—");
-
-                          return (
-                            <td
-                              key={mIdx}
-                              onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType)}
-                              style={{
-                                ...dataCellStyle,
-                                background: "#efefef",
-                                color: isClickable ? "#0047AB" : "#475569",
-                                fontSize: "12px",
-                                cursor: isClickable ? "pointer" : "default",
-                                textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
-                                textUnderlineOffset: isClickable ? "2px" : "initial",
-                              }}
-                              onMouseEnter={(e) => {
-                                if (isClickable) e.currentTarget.style.backgroundColor = "#e2e8f0";
-                              }}
-                              onMouseLeave={(e) => {
-                                if (isClickable) e.currentTarget.style.backgroundColor = "#efefef";
-                              }}
-                            >
-                              {val}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-
-                {/* Closing balance */}
-                <tr style={{ background: "#f1f5f9", borderTop: "2px solid #94a3b8" }}>
-                  <td
+                  {/* Net cash movement accordion */}
+                  <tr
+                    onClick={() => setInclOpen((prev) => !prev)}
                     style={{
-                      ...stickyColStyle,
-                      background: "#f1f5f9",
-                      fontWeight: 800,
-                      color: "#0047AB",
-                      borderTop: "2px solid #94a3b8",
+                      cursor: "pointer",
+                      background: "#f8fafc",
+                      borderTop: "1px solid #e2e8f0",
+                      borderBottom: "1px solid #e2e8f0",
+                      height: "44px",
                     }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f1f5f9")}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "#f8fafc")}
                   >
-                    Closing balance
-                  </td>
-                  {inclClosing.map((val, idx) => (
                     <td
-                      key={idx}
                       style={{
-                        ...dataCellStyle,
+                        ...stickyColStyle,
+                        background: "inherit",
+                        fontWeight: 700,
+                        color: "#0047AB",
+                      }}
+                    >
+                      <svg
+                        width="9"
+                        height="9"
+                        viewBox="0 0 10 10"
+                        style={{
+                          display: "inline-block",
+                          marginRight: "8px",
+                          verticalAlign: "middle",
+                          transition: "transform 0.2s ease",
+                          transform: inclOpen ? "rotate(90deg)" : "rotate(0deg)",
+                          transformOrigin: "center center",
+                        }}
+                      >
+                        <polygon points="1.5,1 8.5,5 1.5,9" fill="#0047AB" />
+                      </svg>
+                      Net cash movement
+                    </td>
+                    {inclNet.map((val, idx) => (
+                      <td
+                        key={idx}
+                        style={{
+                          ...dataCellStyle,
+                          fontWeight: 600,
+                          background: "inherit",
+                        }}
+                      >
+                        {val}
+                      </td>
+                    ))}
+                  </tr>
+
+                  {/* Sub-rows when open */}
+                  {inclOpen &&
+                    inclDetails.map((detail, dIdx) => {
+                      if (isRowEmpty(detail.values)) return null;
+
+                      return (
+                        <tr
+                          key={dIdx}
+                          style={{ background: "#ffffff", borderBottom: "1px solid #f1f5f9" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#fafcff")}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "#ffffff")}
+                        >
+                          <td
+                            style={{
+                              ...stickyColStyle,
+                              background: "inherit",
+                              paddingLeft: "34px",
+                              color: "#334155",
+                              fontSize: "12px",
+                              fontWeight: 400,
+                            }}
+                          >
+                            {detail.label}
+                          </td>
+                          {detail.values.map((val, mIdx) => {
+                            const isClickable = Boolean(detail.ddType && val && val !== "£0" && val !== "—");
+
+                            return (
+                              <td
+                                key={mIdx}
+                                onClick={(e) => isClickable && handleCellClick(e, detail.label, val, mIdx, detail.ddType)}
+                                style={{
+                                  ...dataCellStyle,
+                                  background: "inherit",
+                                  color: isClickable ? "#0047AB" : "#475569",
+                                  fontSize: "12px",
+                                  cursor: isClickable ? "pointer" : "default",
+                                  textDecoration: isClickable ? "underline dashed #0047AB 1px" : "none",
+                                  textUnderlineOffset: isClickable ? "2px" : "initial",
+                                }}
+                              >
+                                {val}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+
+                  {/* Closing balance (Milestone row) */}
+                  <tr style={{ background: "rgba(0, 71, 171, 0.04)", borderTop: "2px solid #cbd5e1", borderBottom: "2px solid #cbd5e1", height: "46px" }}>
+                    <td
+                      style={{
+                        ...stickyColStyle,
+                        background: "rgba(0, 71, 171, 0.04)",
                         fontWeight: 800,
                         color: "#0047AB",
-                        background: "#f1f5f9",
-                        borderTop: "2px solid #94a3b8",
+                        fontSize: "13.5px",
+                        borderTop: "2px solid #cbd5e1",
+                        borderBottom: "2px solid #cbd5e1",
+                        padding: "13px 14px",
                       }}
                     >
-                      {val}
+                      Closing balance
                     </td>
-                  ))}
-                </tr>
-              </tbody>
-            </table>
+                    {inclClosing.map((val, idx) => (
+                      <td
+                        key={idx}
+                        style={{
+                          ...dataCellStyle,
+                          fontWeight: 800,
+                          color: "#0047AB",
+                          fontSize: "13.5px",
+                          background: "rgba(0, 71, 171, 0.04)",
+                          borderTop: "2px solid #cbd5e1",
+                          borderBottom: "2px solid #cbd5e1",
+                          padding: "13px 12px",
+                        }}
+                      >
+                        {val}
+                      </td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
-        {/* Closing Balance Trajectory Line Chart (Positioned at bottom of page) */}
+        {/* Right Column: Chart */}
         {data?.showChart !== false && (
-          <div
-            style={{
-              marginTop: "2rem",
-              background: "#ffffff",
-              borderRadius: "8px",
-              border: "1px solid #e5e7eb",
-              padding: "1.25rem 1.5rem",
-              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
-            }}
-          >
-            {/* Chart Header & Legend */}
+          <div className="cashflow-col-right">
             <div
+              className="cashflow-chart-card"
               style={{
+                background: "#ffffff",
+                borderRadius: "8px",
+                border: "1px solid #e2e8f0",
+                padding: "16px 20px",
+                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
                 display: "flex",
-                justifyContent: "flex-end",
-                alignItems: "center",
-                flexWrap: "wrap",
-                gap: "10px",
-                marginBottom: "1rem",
+                flexDirection: "column",
+                boxSizing: "border-box",
+                justifyContent: "space-between",
               }}
             >
-              {/* Legend */}
-              <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                  <span
-                    style={{
-                      display: "inline-block",
-                      width: "18px",
-                      height: "3px",
-                      borderTop: "2.5px dashed #8B5CF6",
-                    }}
-                  />
-                  <span style={{ fontSize: "12px", fontWeight: 600, color: "#8B5CF6" }}>
-                    Excluding pipeline
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                  <span
-                    style={{
-                      display: "inline-block",
-                      width: "18px",
-                      height: "3px",
-                      borderTop: "2.5px dashed #F59E0B",
-                    }}
-                  />
-                  <span style={{ fontSize: "12px", fontWeight: 600, color: "#F59E0B" }}>
-                    Including pipeline
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* SVG Line Chart */}
-            <div style={{ width: "100%", position: "relative" }}>
-              <svg
-                viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-                style={{ width: "100%", height: "auto", display: "block" }}
+              {/* Chart Header & Legend */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: "12px",
+                  marginBottom: "10px",
+                }}
               >
-                {/* Horizontal Gridlines & Y-axis labels */}
-                {[0, 0.25, 0.5, 0.75, 1].map((ratio, idx) => {
-                  const yVal = minVal + ratio * range;
-                  const yPos = getY(yVal);
-
-                  return (
-                    <g key={idx}>
-                      <line
-                        x1={padLeft}
-                        y1={yPos}
-                        x2={svgWidth - padRight}
-                        y2={yPos}
-                        stroke="#f1f5f9"
-                        strokeWidth="1"
-                      />
-                      <text
-                        x={padLeft - 10}
-                        y={yPos + 4}
-                        textAnchor="end"
-                        fontSize="10"
-                        fill="#94a3b8"
-                        fontFamily="'Kumbh Sans', sans-serif"
-                      >
-                        £{Math.round(yVal / 1000)}k
-                      </text>
-                    </g>
-                  );
-                })}
-
-                {/* Zero baseline if in range */}
-                {minVal < 0 && maxVal > 0 && (
-                  <line
-                    x1={padLeft}
-                    y1={getY(0)}
-                    x2={svgWidth - padRight}
-                    y2={getY(0)}
-                    stroke="#cbd5e1"
-                    strokeWidth="1.5"
-                    strokeDasharray="2,2"
-                  />
-                )}
-
-                {/* X-axis Month Labels */}
-                {rollingMonths.map((m, idx) => (
-                  <text
-                    key={idx}
-                    x={getX(idx)}
-                    y={svgHeight - 12}
-                    textAnchor="middle"
-                    fontSize="11"
-                    fontWeight="600"
-                    fill="#64748b"
-                    fontFamily="'Kumbh Sans', sans-serif"
-                  >
-                    {m}
-                  </text>
-                ))}
-
-                {/* Excluding Pipeline Line (Purple Dashed) */}
-                <path
-                  d={exclPath}
-                  fill="none"
-                  stroke="#8B5CF6"
-                  strokeWidth="2"
-                  strokeDasharray="5,5"
-                />
-
-                {/* Including Pipeline Line (Orange Dashed) */}
-                <path
-                  d={inclPath}
-                  fill="none"
-                  stroke="#F59E0B"
-                  strokeWidth="2"
-                  strokeDasharray="5,5"
-                />
-
-                {/* Data Points */}
-                {rollingMonths.map((_, idx) => {
-                  const exVal = exclClosingNums[idx];
-                  const inVal = inclClosingNums[idx];
-                  const cx = getX(idx);
-                  const cyEx = getY(exVal);
-                  const cyIn = getY(inVal);
-
-                  return (
-                    <g key={idx}>
-                      {/* Excluding circle */}
-                      <circle
-                        cx={cx}
-                        cy={cyEx}
-                        r="4"
-                        fill="#8B5CF6"
-                        stroke="#ffffff"
-                        strokeWidth="1.5"
-                        style={{ cursor: "pointer" }}
-                        onMouseEnter={() => setHoveredPoint({ idx, month: rollingMonths[idx], exVal, inVal, cx, cyEx })}
-                        onMouseLeave={() => setHoveredPoint(null)}
-                      />
-                      {/* Including circle */}
-                      <circle
-                        cx={cx}
-                        cy={cyIn}
-                        r="4"
-                        fill="#F59E0B"
-                        stroke="#ffffff"
-                        strokeWidth="1.5"
-                        style={{ cursor: "pointer" }}
-                        onMouseEnter={() => setHoveredPoint({ idx, month: rollingMonths[idx], exVal, inVal, cx, cyIn })}
-                        onMouseLeave={() => setHoveredPoint(null)}
-                      />
-                    </g>
-                  );
-                })}
-              </svg>
-
-              {/* Tooltip on point hover */}
-              {hoveredPoint && (
                 <div
                   style={{
-                    position: "absolute",
-                    left: `${(hoveredPoint.cx / svgWidth) * 100}%`,
-                    top: `${(hoveredPoint.cyEx / svgHeight) * 100}%`,
-                    transform: "translate(-50%, -115%)",
-                    background: "#0f172a",
-                    color: "#ffffff",
-                    padding: "6px 10px",
-                    borderRadius: "6px",
-                    fontSize: "11px",
-                    pointerEvents: "none",
-                    boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)",
-                    zIndex: 10,
-                    whiteSpace: "nowrap",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    letterSpacing: "0.8px",
+                    textTransform: "uppercase",
+                    color: "#64748b",
+                    fontFamily: "'Kumbh Sans', sans-serif",
                   }}
                 >
-                  <div style={{ fontWeight: 700, marginBottom: "3px" }}>{hoveredPoint.month}</div>
-                  <div style={{ color: "#c4b5fd" }}>Excl: {formatMoney(hoveredPoint.exVal)}</div>
-                  <div style={{ color: "#fde68a" }}>Incl: {formatMoney(hoveredPoint.inVal)}</div>
+                  CASHFLOW TRAJECTORY
                 </div>
-              )}
+
+                {/* Legend - Both Lines Solid */}
+                <div style={{ display: "flex", alignItems: "center", gap: "18px", fontSize: "11px", fontFamily: "'Kumbh Sans', sans-serif" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: "16px",
+                        height: "3px",
+                        background: "#9900ff",
+                        borderRadius: "2px",
+                      }}
+                    />
+                    <span style={{ fontWeight: 600, color: "#334155" }}>
+                      Excluding pipeline
+                    </span>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: "16px",
+                        height: "3px",
+                        background: "#e69138",
+                        borderRadius: "2px",
+                      }}
+                    />
+                    <span style={{ fontWeight: 600, color: "#334155" }}>
+                      Including pipeline
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* SVG Line Chart */}
+              <div style={{ width: "100%", flex: 1, minHeight: 0, position: "relative" }}>
+                <svg
+                  viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                  style={{ width: "100%", height: "100%", display: "block" }}
+                >
+                  <defs>
+                    <linearGradient id="cfExclGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#9900ff" stopOpacity="0.18" />
+                      <stop offset="100%" stopColor="#9900ff" stopOpacity="0.0" />
+                    </linearGradient>
+                    <linearGradient id="cfInclGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#e69138" stopOpacity="0.15" />
+                      <stop offset="100%" stopColor="#e69138" stopOpacity="0.0" />
+                    </linearGradient>
+                  </defs>
+
+                  {/* Horizontal Gridlines & Y-axis labels (Aligned left with heading, 16px font) */}
+                  {yTicks.map((yVal, idx) => {
+                    const yPos = getY(yVal);
+                    return (
+                      <g key={idx}>
+                        <line
+                          x1={padLeft}
+                          y1={yPos}
+                          x2={svgWidth - padRight}
+                          y2={yPos}
+                          stroke="#f1f5f9"
+                          strokeWidth="1"
+                        />
+                        <text
+                          x={0}
+                          y={yPos + 5}
+                          textAnchor="start"
+                          fontSize="16"
+                          fontWeight="600"
+                          fill="#64748b"
+                          fontFamily="'Kumbh Sans', sans-serif"
+                        >
+                          {formatShortMoney(yVal)}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {/* Zero baseline if in range */}
+                  {minVal <= 0 && maxVal >= 0 && (
+                    <line
+                      x1={padLeft}
+                      y1={getY(0)}
+                      x2={svgWidth - padRight}
+                      y2={getY(0)}
+                      stroke="#cbd5e1"
+                      strokeWidth="1.5"
+                      strokeDasharray="4 4"
+                    />
+                  )}
+
+                  {/* Area Gradient Glows under curves */}
+                  {exclArea && <path d={exclArea} fill="url(#cfExclGrad)" />}
+                  {inclArea && <path d={inclArea} fill="url(#cfInclGrad)" />}
+
+                  {/* X-axis Month Labels (16px font, padded right to prevent cutoff) */}
+                  {rollingMonths.map((m, idx) => (
+                    <text
+                      key={idx}
+                      x={getX(idx)}
+                      y={svgHeight - 12}
+                      textAnchor="middle"
+                      fontSize="16"
+                      fontWeight="600"
+                      fill="#64748b"
+                      fontFamily="'Kumbh Sans', sans-serif"
+                    >
+                      {m}
+                    </text>
+                  ))}
+
+                  {/* Trajectory Lines - Both Solid */}
+                  {/* Excluding Pipeline Line (Purple Solid) */}
+                  <path
+                    d={exclPath}
+                    fill="none"
+                    stroke="#9900ff"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+
+                  {/* Including Pipeline Line (Amber Solid) */}
+                  <path
+                    d={inclPath}
+                    fill="none"
+                    stroke="#e69138"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+
+                  {/* Data Points */}
+                  {rollingMonths.map((_, idx) => {
+                    const exVal = exclClosingNums[idx];
+                    const inVal = inclClosingNums[idx];
+                    const cx = getX(idx);
+                    const cyEx = getY(exVal);
+                    const cyIn = getY(inVal);
+
+                    return (
+                      <g key={idx}>
+                        {/* Excluding circle */}
+                        <circle
+                          cx={cx}
+                          cy={cyEx}
+                          r="4.5"
+                          fill="#9900ff"
+                          stroke="#ffffff"
+                          strokeWidth="2"
+                          style={{ cursor: "pointer" }}
+                          onMouseEnter={() => setHoveredPoint({ idx, month: rollingMonths[idx], exVal, inVal, cx, cy: cyEx })}
+                          onMouseLeave={() => setHoveredPoint(null)}
+                        />
+                        {/* Including circle */}
+                        <circle
+                          cx={cx}
+                          cy={cyIn}
+                          r="4.5"
+                          fill="#e69138"
+                          stroke="#ffffff"
+                          strokeWidth="2"
+                          style={{ cursor: "pointer" }}
+                          onMouseEnter={() => setHoveredPoint({ idx, month: rollingMonths[idx], exVal, inVal, cx, cy: cyIn })}
+                          onMouseLeave={() => setHoveredPoint(null)}
+                        />
+                      </g>
+                    );
+                  })}
+                </svg>
+
+                {/* Tooltip on point hover */}
+                {hoveredPoint && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: `${(hoveredPoint.cx / svgWidth) * 100}%`,
+                      top: `${(hoveredPoint.cy / svgHeight) * 100}%`,
+                      transform: "translate(-50%, -120%)",
+                      background: "#0f172a",
+                      color: "#ffffff",
+                      padding: "8px 12px",
+                      borderRadius: "6px",
+                      fontSize: "11px",
+                      pointerEvents: "none",
+                      boxShadow: "0 4px 12px rgba(0, 0, 0, 0.2)",
+                      border: "1px solid rgba(255, 255, 255, 0.1)",
+                      zIndex: 10,
+                      whiteSpace: "nowrap",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "4px",
+                      fontFamily: "'Kumbh Sans', sans-serif",
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, color: "#e2e8f0", borderBottom: "1px solid rgba(255, 255, 255, 0.15)", paddingBottom: "2px" }}>
+                      {hoveredPoint.month}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#d8b4fe" }}>
+                      <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#9900ff" }} />
+                      <span>Excl: <strong>{formatMoney(hoveredPoint.exVal)}</strong></span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#fde68a" }}>
+                      <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#e69138" }} />
+                      <span>Incl: <strong>{formatMoney(hoveredPoint.inVal)}</strong></span>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
       </div>
 
       <style jsx>{`
-        @media (orientation: landscape) and (max-width: 1024px) {
-          .cashflow-table-container {
-            margin: 0 !important;
-            width: fit-content !important;
-            max-width: 100% !important;
+        .cashflow-workspace-grid {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          column-gap: 28px;
+          row-gap: 24px;
+          align-items: start;
+          width: 100%;
+          box-sizing: border-box;
+        }
+        .cashflow-col-left {
+          display: flex;
+          flex-direction: column;
+          width: fit-content;
+          max-width: 100%;
+          min-width: 0;
+        }
+        .cashflow-col-right {
+          display: flex;
+          flex-direction: column;
+          width: 100%;
+          min-width: 0;
+          align-self: start;
+        }
+        .cashflow-chart-card {
+          height: 448px;
+          min-height: 448px;
+          max-height: 448px;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+        }
+
+        @media (max-width: 1150px) {
+          .cashflow-workspace-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+          }
+          .cashflow-col-left {
+            width: 100%;
+          }
+          .cashflow-col-right {
+            height: auto !important;
+          }
+          .cashflow-chart-card {
+            height: 420px !important;
+            min-height: 420px !important;
+            max-height: none !important;
           }
         }
       `}</style>
@@ -973,21 +1181,27 @@ export default function CashflowView({
 }
 
 const stickyColStyle = {
-  padding: "9px 14px",
+  padding: "11px 10px",
   textAlign: "left",
   position: "sticky",
   left: 0,
-  background: "#efefef",
+  background: "#ffffff",
   zIndex: 5,
   fontWeight: 500,
   color: "#0f172a",
   borderRight: "2px solid #cbd5e1",
   whiteSpace: "nowrap",
+  width: "190px",
+  minWidth: "190px",
+  maxWidth: "190px",
+  boxSizing: "border-box",
 };
 
 const dataCellStyle = {
-  padding: "9px 12px",
+  padding: "11px 6px",
   textAlign: "right",
   color: "#0047AB",
   whiteSpace: "nowrap",
+  fontVariantNumeric: "tabular-nums",
+  boxSizing: "border-box",
 };

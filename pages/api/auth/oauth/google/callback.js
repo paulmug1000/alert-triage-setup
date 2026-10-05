@@ -226,7 +226,9 @@ export default async function handler(req, res) {
     }
 
     // 3. Verify user authorization in Users sheet and mint session cookie for PMA
-    const result = await createSessionForVerifiedEmail(email, res, "Google");
+    const forwarded = req.headers["x-forwarded-for"];
+    const clientIp = (typeof forwarded === "string" ? forwarded.split(",")[0] : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "127.0.0.1";
+    const result = await createSessionForVerifiedEmail(email, res, "Google", undefined, clientIp);
 
     if (!result.success) {
       console.warn(`⛔ Access denied for Google user ${email}:`, result.message);

@@ -68,18 +68,18 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const {
     isAuthenticated, authChecking, user, logout
   } = auth;
-  // Only Admin is an internal staff role able to see all clients
-  const isAdmin = !!(user?.isAdmin || user?.role === "Admin");
+  // Only Admin is an internal staff role able to see all clients (never when in read-only OTP mode)
+  const isAdmin = !user?.isReadOnly && !!(user?.isAdmin || user?.role === "Admin");
   const isPulseOnly = Boolean(
-    user && (user.role === "ClientUser" || user.role === "Senior (Restricted)" || user.isSenior || (!isAdmin && user.role !== "ClientManager"))
+    user && (user.isReadOnly || user.role === "ClientUser" || user.role === "Senior (Restricted)" || user.isSenior || (!isAdmin && user.role !== "ClientManager"))
   );
 
-  // If ClientUser or Senior (Restricted) lands on PMA, redirect immediately to Pulse
+  // If ClientUser, Senior (Restricted), or Read-Only (OTP) lands on PMA, redirect immediately to Pulse
   useEffect(() => {
-    if (!authChecking && isAuthenticated && isPulseOnly) {
+    if (!authChecking && isAuthenticated && (isPulseOnly || user?.isReadOnly)) {
       window.location.href = "/pulse";
     }
-  }, [authChecking, isAuthenticated, isPulseOnly]);
+  }, [authChecking, isAuthenticated, isPulseOnly, user?.isReadOnly]);
 
   const [screen, setScreen] = useState("initial");
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
@@ -382,6 +382,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
           automationCommanderSheetId={automationCommanderSheetId}
           allOutgoingsClients={allOutgoingsClients}
           styles={styles}
+          isAdmin={isAdmin}
+          user={user}
         />
       );
     }

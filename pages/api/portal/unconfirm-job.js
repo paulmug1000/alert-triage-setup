@@ -3,6 +3,7 @@ import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { matchesClientName } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
+import { logPulseActivity } from "../../../services/pulseLogger.js";
 
 function colToLetter(colIndex) {
   let temp, letter = "";
@@ -23,6 +24,13 @@ export default async function handler(req, res) {
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+  }
+
+  if (sessionUser.isReadOnly) {
+    return res.status(403).json({
+      success: false,
+      error: "Pulse is read-only when logged in with a one-time password.",
+    });
   }
 
   const { clientSheetId, clientName, confirmedRow } = req.body || {};
@@ -399,6 +407,26 @@ export default async function handler(req, res) {
       }
     } catch (cacheErr) {
       console.warn("⚠️ Redis invalidation warning:", cacheErr.message);
+    }
+
+    // 9. Log Activity
+    try {
+      await logPulseActivity(sheets, {
+        clientName: clientName || parentClient || "Client",
+        category: "JOB",
+        action: "JOB_UNCONFIRMED",
+        summary: `Unconfirmed job: "${parentJobName || "Job"}" (Confirmed row ${cRow} → Pipeline row ${pipelineRow})`,
+        details: {
+          jobName: parentJobName,
+          client: parentClient,
+          confirmedRow: cRow,
+          pipelineRow,
+          childRowsCount: confirmedChildRows.length
+        },
+        user: sessionUser.name || sessionUser.email
+      });
+    } catch (logErr) {
+      console.warn("⚠️ Failed to log unconfirm-job activity:", logErr.message);
     }
 
     return res.status(200).json({

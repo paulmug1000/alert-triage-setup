@@ -29,6 +29,7 @@ export default function PortalPage() {
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientsLoaded, setClientsLoaded] = useState(false);
   const clientsFetchedRef = useRef(false);
+  const lastLoggedClientRef = useRef(null);
   const [activeView, setActiveView] = useState("month");
 
   // View state from URL query with alias normalization
@@ -407,6 +408,22 @@ export default function PortalPage() {
     } catch (e) {}
   }, [isAuthenticated, router.query.choose]);
 
+  const logWorkspaceAccess = useCallback((client) => {
+    if (!client || !client.clientName) return;
+    if (lastLoggedClientRef.current === client.clientName) return;
+    lastLoggedClientRef.current = client.clientName;
+
+    fetch("/api/portal/log-access", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientName: client.clientName,
+        clientSheetId: client.clientSheetId,
+        action: "PORTAL_ENTERED"
+      })
+    }).catch(() => {});
+  }, []);
+
   // Fetch authorized clients for portal
   useEffect(() => {
     if (!isAuthenticated) {
@@ -487,6 +504,9 @@ export default function PortalPage() {
             localStorage.setItem("pulse_portal_client", initial.clientName);
             localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(initial));
           }
+          if (initial) {
+            logWorkspaceAccess(initial);
+          }
         }
       })
       .catch((err) => {
@@ -501,7 +521,7 @@ export default function PortalPage() {
     return () => {
       isMounted = false;
     };
-  }, [isAuthenticated, router.query.client, router.query.choose, user, selectedClient]);
+  }, [isAuthenticated, router.query.client, router.query.choose, user, selectedClient, logWorkspaceAccess]);
 
   // Clean URL: Strip any legacy ?client=... or ?choose=... so the address bar stays clean (/pulse)
   useEffect(() => {
@@ -515,6 +535,7 @@ export default function PortalPage() {
 
   const handleLogout = async () => {
     clientsFetchedRef.current = false;
+    lastLoggedClientRef.current = null;
     setClientsLoaded(false);
     setSelectedClient(null);
     setPayload(null);
@@ -533,7 +554,9 @@ export default function PortalPage() {
         localStorage.setItem("pulse_portal_client", client.clientName);
         localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(client));
       }
+      logWorkspaceAccess(client);
     } else {
+      lastLoggedClientRef.current = null;
       if (typeof window !== "undefined") {
         localStorage.removeItem("pulse_portal_client");
         localStorage.removeItem("pulse_portal_active_client_obj");
@@ -549,12 +572,14 @@ export default function PortalPage() {
   };
 
   const hasBudget = payload ? Boolean(payload.clientInfo?.hasBudget ?? payload.hasBudget) : false;
+  const hasCash = payload ? Boolean(payload.clientInfo?.hasCash ?? payload.hasCash) : false;
 
   const isSeniorRestricted = Boolean(
     user?.isSenior ||
     user?.role === "Senior (Restricted)" ||
     String(user?.role || "").toLowerCase().includes("senior")
   );
+  const isReadOnly = Boolean(user?.isReadOnly);
 
   // Guard budget views when client does not have budget enabled
   useEffect(() => {
@@ -562,6 +587,13 @@ export default function PortalPage() {
       setActiveView("month");
     }
   }, [payload, hasBudget, activeView]);
+
+  // Guard cash views when client does not have cash enabled (AppData!W43 !== 'Yes')
+  useEffect(() => {
+    if (payload && !hasCash && (activeView === "cash" || activeView === "cashBreakdown")) {
+      setActiveView("month");
+    }
+  }, [payload, hasCash, activeView]);
 
   // Guard salaries & dividends for senior restricted users
   useEffect(() => {
@@ -671,6 +703,7 @@ export default function PortalPage() {
         user={user}
         onLogout={handleLogout}
         hasBudget={hasBudget}
+        hasCash={hasCash}
       >
           <>
             {activeView === "month" && (
@@ -680,6 +713,7 @@ export default function PortalPage() {
                 masterSheetId={selectedClient?.masterSheetId}
                 payload={payload}
                 keyData={keyData}
+                performanceData={performanceData}
                 isLoading={loadingPayload}
                 error={payloadError}
                 onRefresh={handleRefreshPayload}
@@ -761,6 +795,7 @@ export default function PortalPage() {
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
+                isReadOnly={isReadOnly}
               />
             )}
 
@@ -773,6 +808,7 @@ export default function PortalPage() {
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
+                isReadOnly={isReadOnly}
               />
             )}
 
@@ -785,6 +821,7 @@ export default function PortalPage() {
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
+                isReadOnly={isReadOnly}
               />
             )}
 
@@ -797,6 +834,7 @@ export default function PortalPage() {
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
+                isReadOnly={isReadOnly}
               />
             )}
 
@@ -819,6 +857,7 @@ export default function PortalPage() {
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
+                isReadOnly={isReadOnly}
               />
             )}
 

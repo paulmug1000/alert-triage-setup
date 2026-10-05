@@ -8,6 +8,7 @@ export default function PortalJobsView({
   isLoading,
   error,
   onRefresh,
+  isReadOnly = false,
 }) {
   const [filterType, setFilterType] = useState("all"); // 'all' | 'confirmed' | 'pipeline' | 'project' | 'retainer'
   const [searchTerm, setSearchTerm] = useState("");
@@ -152,12 +153,71 @@ export default function PortalJobsView({
 
     // Sort
     list.sort((a, b) => {
-      if (sortBy === "revDesc") return (b.revNum || 0) - (a.revNum || 0);
-      if (sortBy === "revAsc") return (a.revNum || 0) - (b.revNum || 0);
-      if (sortBy === "clientAsc") return (a.client || "").localeCompare(b.client || "");
-      const dateA = a.startDate ? new Date(a.startDate).getTime() : 0;
-      const dateB = b.startDate ? new Date(b.startDate).getTime() : 0;
-      return dateB - dateA;
+      if (sortBy === "startDateDesc") {
+        const timeA = parseDate(a.startDate)?.getTime() || 0;
+        const timeB = parseDate(b.startDate)?.getTime() || 0;
+        if (timeB !== timeA) return timeB - timeA;
+        return (a.client || "").localeCompare(b.client || "");
+      }
+      if (sortBy === "startDateAsc") {
+        const timeA = parseDate(a.startDate)?.getTime() || 0;
+        const timeB = parseDate(b.startDate)?.getTime() || 0;
+        if (timeA !== timeB) return timeA - timeB;
+        return (a.client || "").localeCompare(b.client || "");
+      }
+      if (sortBy === "clientAsc") {
+        const cmp = (a.client || "").localeCompare(b.client || "");
+        if (cmp !== 0) return cmp;
+        return (a.jobName || "").localeCompare(b.jobName || "");
+      }
+      if (sortBy === "likelihoodDesc") {
+        const likA = typeof a.likelihoodNum === "number" && !isNaN(a.likelihoodNum)
+          ? a.likelihoodNum
+          : (parseFloat(String(a.likelihood || "").replace("%", "")) || 0);
+        const likB = typeof b.likelihoodNum === "number" && !isNaN(b.likelihoodNum)
+          ? b.likelihoodNum
+          : (parseFloat(String(b.likelihood || "").replace("%", "")) || 0);
+        if (likB !== likA) return likB - likA;
+        return (b.revNum || 0) - (a.revNum || 0);
+      }
+      if (sortBy === "likelihoodAsc") {
+        const likA = typeof a.likelihoodNum === "number" && !isNaN(a.likelihoodNum)
+          ? a.likelihoodNum
+          : (parseFloat(String(a.likelihood || "").replace("%", "")) || 0);
+        const likB = typeof b.likelihoodNum === "number" && !isNaN(b.likelihoodNum)
+          ? b.likelihoodNum
+          : (parseFloat(String(b.likelihood || "").replace("%", "")) || 0);
+        if (likA !== likB) return likA - likB;
+        return (b.revNum || 0) - (a.revNum || 0);
+      }
+      if (sortBy === "revDesc") {
+        const revA = typeof a.revNum === "number" && !isNaN(a.revNum)
+          ? a.revNum
+          : (parseFloat(String(a.revenue || "").replace(/[£,]/g, "")) || 0);
+        const revB = typeof b.revNum === "number" && !isNaN(b.revNum)
+          ? b.revNum
+          : (parseFloat(String(b.revenue || "").replace(/[£,]/g, "")) || 0);
+        if (revB !== revA) return revB - revA;
+        const timeA = parseDate(a.startDate)?.getTime() || 0;
+        const timeB = parseDate(b.startDate)?.getTime() || 0;
+        return timeB - timeA;
+      }
+      if (sortBy === "revAsc") {
+        const revA = typeof a.revNum === "number" && !isNaN(a.revNum)
+          ? a.revNum
+          : (parseFloat(String(a.revenue || "").replace(/[£,]/g, "")) || 0);
+        const revB = typeof b.revNum === "number" && !isNaN(b.revNum)
+          ? b.revNum
+          : (parseFloat(String(b.revenue || "").replace(/[£,]/g, "")) || 0);
+        if (revA !== revB) return revA - revB;
+        const timeA = parseDate(a.startDate)?.getTime() || 0;
+        const timeB = parseDate(b.startDate)?.getTime() || 0;
+        return timeB - timeA;
+      }
+      // Default: Start date (descending)
+      const timeA = parseDate(a.startDate)?.getTime() || 0;
+      const timeB = parseDate(b.startDate)?.getTime() || 0;
+      return timeB - timeA;
     });
 
     return list;
@@ -179,6 +239,7 @@ export default function PortalJobsView({
   };
 
   const handleOpenAddJob = () => {
+    if (isReadOnly) return;
     setSaveError(null);
     setEnableSplit(false);
     setLockedMonths({});
@@ -376,7 +437,7 @@ export default function PortalJobsView({
   };
 
   const handleConfirmJob = async () => {
-    if (!editingJob?.rowNumber) return;
+    if (isReadOnly || !editingJob?.rowNumber) return;
     setIsConfirming(true);
     setSaveError(null);
     try {
@@ -404,7 +465,7 @@ export default function PortalJobsView({
   };
 
   const handleUnconfirmJob = async () => {
-    if (!editingJob?.rowNumber) return;
+    if (isReadOnly || !editingJob?.rowNumber) return;
     setIsConfirming(true);
     setSaveError(null);
     try {
@@ -432,7 +493,8 @@ export default function PortalJobsView({
   };
 
   const handleSaveJob = async (e) => {
-    e.preventDefault();
+    if (e && typeof e.preventDefault === "function") e.preventDefault();
+    if (isReadOnly) return;
     if (!editingJob.client?.trim() || !editingJob.jobName?.trim()) {
       setSaveError("Client name and Job name are required.");
       return;
@@ -631,26 +693,28 @@ export default function PortalJobsView({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          <button
-            type="button"
-            onClick={handleOpenAddJob}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              background: "#0047AB",
-              color: "#ffffff",
-              border: "none",
-              borderRadius: "6px",
-              padding: "6px 14px",
-              fontSize: "12.5px",
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            <span>+</span>
-            <span>Add Job</span>
-          </button>
+          {!isReadOnly && (
+            <button
+              type="button"
+              onClick={handleOpenAddJob}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                background: "#0047AB",
+                color: "#ffffff",
+                border: "none",
+                borderRadius: "6px",
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              <span>+</span>
+              <span>Add Job</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -773,7 +837,10 @@ export default function PortalJobsView({
           <span style={{ fontSize: "12px", fontWeight: 600, color: "#64748b" }}>Sort by:</span>
           <select
             value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
+            onChange={(e) => {
+              setSortBy(e.target.value);
+              setCurrentPage(1);
+            }}
             style={{
               padding: "4px 8px",
               borderRadius: "6px",
@@ -784,10 +851,13 @@ export default function PortalJobsView({
               cursor: "pointer",
             }}
           >
-            <option value="startDateDesc">Start Date (Latest)</option>
-            <option value="revDesc">Revenue (High to Low)</option>
-            <option value="revAsc">Revenue (Low to High)</option>
-            <option value="clientAsc">Client (A-Z)</option>
+            <option value="startDateDesc">Start date (descending)</option>
+            <option value="startDateAsc">Start date (ascending)</option>
+            <option value="clientAsc">Client name</option>
+            <option value="likelihoodDesc">Likelihood % (descending)</option>
+            <option value="likelihoodAsc">Likelihood % (ascending)</option>
+            <option value="revDesc">Revenue (descending)</option>
+            <option value="revAsc">Revenue (ascending)</option>
           </select>
         </div>
       </div>
@@ -1054,9 +1124,26 @@ export default function PortalJobsView({
                 flexShrink: 0,
               }}
             >
-              <h3 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 700, color: "#0047AB" }}>
-                {editingJob.rowNumber ? "Edit Job" : "Add New Job"}
-              </h3>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <h3 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 700, color: "#0047AB" }}>
+                  {isReadOnly ? "View Job" : (editingJob.rowNumber ? "Edit Job" : "Add New Job")}
+                </h3>
+                {isReadOnly && (
+                  <span
+                    style={{
+                      background: "#f1f5f9",
+                      color: "#475569",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "12px",
+                      padding: "2px 8px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Read-only
+                  </span>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => setEditingJob(null)}
@@ -1100,6 +1187,7 @@ export default function PortalJobsView({
 
               {/* Form */}
               <form id="job-modal-form" onSubmit={handleSaveJob} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                <fieldset disabled={isReadOnly} style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "1rem" }}>
               {/* Row 1: Client Name (25%) | Job Name (75%) */}
               <div className="modal-form-row modal-form-row-1" style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: "0.75rem" }}>
                 <div>
@@ -1457,22 +1545,24 @@ export default function PortalJobsView({
                   <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB" }}>
                     Invoices
                   </h4>
-                  <button
-                    type="button"
-                    onClick={addInvoice}
-                    style={{
-                      background: "#f0fdf4",
-                      border: "1px solid #bbf7d0",
-                      color: "#166534",
-                      fontSize: "11px",
-                      fontWeight: 700,
-                      padding: "3px 10px",
-                      borderRadius: "4px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    + Add Invoice
-                  </button>
+                  {!isReadOnly && (
+                    <button
+                      type="button"
+                      onClick={addInvoice}
+                      style={{
+                        background: "#f0fdf4",
+                        border: "1px solid #bbf7d0",
+                        color: "#166534",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        padding: "3px 10px",
+                        borderRadius: "4px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      + Add Invoice
+                    </button>
+                  )}
                 </div>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -1482,7 +1572,7 @@ export default function PortalJobsView({
                       className="modal-sub-grid-row"
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "1.2fr 1fr 1.2fr 0.7fr 1fr 28px",
+                        gridTemplateColumns: isReadOnly ? "1.2fr 1fr 1.2fr 0.7fr 1fr" : "1.2fr 1fr 1.2fr 0.7fr 1fr 28px",
                         gap: "6px",
                         alignItems: "center",
                         background: "#f8fafc",
@@ -1546,23 +1636,25 @@ export default function PortalJobsView({
                           <option value="Overdue">Overdue</option>
                         </select>
                       </div>
-                      <div style={{ paddingTop: "14px", textAlign: "center" }}>
-                        <button
-                          type="button"
-                          onClick={() => removeInvoice(idx)}
-                          title="Delete invoice"
-                          style={{
-                            background: "transparent",
-                            border: "none",
-                            color: "#ef4444",
-                            cursor: "pointer",
-                            fontSize: "14px",
-                            padding: "2px",
-                          }}
-                        >
-                          ✕
-                        </button>
-                      </div>
+                      {!isReadOnly && (
+                        <div style={{ paddingTop: "14px", textAlign: "center" }}>
+                          <button
+                            type="button"
+                            onClick={() => removeInvoice(idx)}
+                            title="Delete invoice"
+                            style={{
+                              background: "transparent",
+                              border: "none",
+                              color: "#ef4444",
+                              cursor: "pointer",
+                              fontSize: "14px",
+                              padding: "2px",
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1587,22 +1679,24 @@ export default function PortalJobsView({
                   <h4 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#0047AB" }}>
                     Direct Expenses
                   </h4>
-                  <button
-                    type="button"
-                    onClick={addExpense}
-                    style={{
-                      background: "#f0fdf4",
-                      border: "1px solid #bbf7d0",
-                      color: "#166534",
-                      fontSize: "11px",
-                      fontWeight: 700,
-                      padding: "3px 10px",
-                      borderRadius: "4px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    + Add Direct Expense
-                  </button>
+                  {!isReadOnly && (
+                    <button
+                      type="button"
+                      onClick={addExpense}
+                      style={{
+                        background: "#f0fdf4",
+                        border: "1px solid #bbf7d0",
+                        color: "#166534",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        padding: "3px 10px",
+                        borderRadius: "4px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      + Add Direct Expense
+                    </button>
+                  )}
                 </div>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -1612,7 +1706,7 @@ export default function PortalJobsView({
                       className="modal-sub-grid-row"
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr 28px",
+                        gridTemplateColumns: isReadOnly ? "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr" : "1.2fr 1fr 0.7fr 1.2fr 0.6fr 1fr 28px",
                         gap: "6px",
                         alignItems: "center",
                         background: "#f8fafc",
@@ -1686,28 +1780,31 @@ export default function PortalJobsView({
                           <option value="Overdue">Overdue</option>
                         </select>
                       </div>
-                      <div style={{ paddingTop: "14px", textAlign: "center" }}>
-                        <button
-                          type="button"
-                          onClick={() => removeExpense(idx)}
-                          title="Delete expense"
-                          style={{
-                            background: "transparent",
-                            border: "none",
-                            color: "#ef4444",
-                            cursor: "pointer",
-                            fontSize: "14px",
-                            padding: "2px",
-                          }}
-                        >
-                          ✕
-                        </button>
-                      </div>
+                      {!isReadOnly && (
+                        <div style={{ paddingTop: "14px", textAlign: "center" }}>
+                          <button
+                            type="button"
+                            onClick={() => removeExpense(idx)}
+                            title="Delete expense"
+                            style={{
+                              background: "transparent",
+                              border: "none",
+                              color: "#ef4444",
+                              cursor: "pointer",
+                              fontSize: "14px",
+                              padding: "2px",
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
               </div>
 
+                </fieldset>
               </form>
             </div>
 
@@ -1727,7 +1824,7 @@ export default function PortalJobsView({
             >
               {/* Left side: Confirm / Unconfirm button */}
               <div>
-                {editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "pipeline" && (
+                {!isReadOnly && editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "pipeline" && (
                   <button
                     type="button"
                     onClick={handleConfirmJob}
@@ -1753,7 +1850,7 @@ export default function PortalJobsView({
                   </button>
                 )}
 
-                {editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "confirmed" && (
+                {!isReadOnly && editingJob.rowNumber && String(editingJob.type || "").toLowerCase() === "confirmed" && (
                   <button
                     type="button"
                     onClick={handleUnconfirmJob}
@@ -1796,31 +1893,33 @@ export default function PortalJobsView({
                     cursor: "pointer",
                   }}
                 >
-                  Cancel
+                  {isReadOnly ? "Close" : "Cancel"}
                 </button>
 
-                <button
-                  type="submit"
-                  form="job-modal-form"
-                  disabled={isSaving || isConfirming}
-                  style={{
-                    background: "#0047AB",
-                    border: "none",
-                    color: "#ffffff",
-                    padding: "7px 20px",
-                    borderRadius: "6px",
-                    fontSize: "13px",
-                    fontWeight: 700,
-                    cursor: isSaving ? "wait" : "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    boxShadow: "0 1px 2px rgba(0, 71, 171, 0.2)",
-                  }}
-                >
-                  {isSaving ? <Spinner size={14} color="#ffffff" /> : null}
-                  <span>{isSaving ? "Saving..." : "Save Job"}</span>
-                </button>
+                {!isReadOnly && (
+                  <button
+                    type="submit"
+                    form="job-modal-form"
+                    disabled={isSaving || isConfirming}
+                    style={{
+                      background: "#0047AB",
+                      border: "none",
+                      color: "#ffffff",
+                      padding: "7px 20px",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: 700,
+                      cursor: isSaving ? "wait" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      boxShadow: "0 1px 2px rgba(0, 71, 171, 0.2)",
+                    }}
+                  >
+                    {isSaving ? <Spinner size={14} color="#ffffff" /> : null}
+                    <span>{isSaving ? "Saving..." : "Save Job"}</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>

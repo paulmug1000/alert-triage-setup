@@ -106,6 +106,10 @@ export function useAuth() {
         return true;
       } else {
         setAuthError(data.message || "Failed to send verification code");
+        if (data.adminOtpBlocked) {
+          setAuthStep("email");
+          setCodeInput("");
+        }
         return false;
       }
     } catch (err) {
@@ -150,6 +154,9 @@ export function useAuth() {
         return true;
       } else {
         setAuthError(data.message || "Invalid verification code");
+        if (data.adminOtpBlocked) {
+          setAuthStep("email");
+        }
         setCodeInput("");
         return false;
       }

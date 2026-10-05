@@ -154,6 +154,13 @@ export default function AuthGateView({
 
   const activeError = oauthError || error;
 
+  const [showEmailOption, setShowEmailOption] = useState(false);
+  const OTP_ADMIN_BLOCKED_MSG =
+    "You cannot access Pulse or the Pulse Management Area using a one-time password. Please log in using Google or Microsoft.";
+  const isOtpBlocked =
+    activeError === OTP_ADMIN_BLOCKED_MSG ||
+    (typeof activeError === "string" && activeError.includes("using a one-time password"));
+
   return (
     <div
       style={{
@@ -237,9 +244,40 @@ export default function AuthGateView({
               opacity: 0.95
             }}
           >
-            Enter your email to get started
+            Sign in to get started
           </p>
         </div>
+
+        {/* Prominent Message Above Login Boxes if Admin / ClientManager attempted OTP login */}
+        {isOtpBlocked && (
+          <div
+            className="admin-otp-blocked-banner"
+            style={{
+              background: "#fff1f2",
+              color: "#9f1239",
+              border: "2px solid #f43f5e",
+              borderRadius: "10px",
+              padding: "1rem 1.25rem",
+              marginBottom: "1.5rem",
+              boxShadow: "0 6px 20px rgba(0, 0, 0, 0.15)",
+              textAlign: "center"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", marginBottom: "6px" }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#e11d48" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+              <span style={{ fontSize: "14px", fontWeight: 700, letterSpacing: "0.3px", textTransform: "uppercase" }}>
+                Notice
+              </span>
+            </div>
+            <div style={{ fontSize: "14.5px", fontWeight: 600, lineHeight: 1.45 }}>
+              You cannot access Pulse or the Pulse Management Area using a one-time password. Please log in using Google or Microsoft.
+            </div>
+          </div>
+        )}
 
         {/* SSO Options: Microsoft & Google */}
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
@@ -371,102 +409,179 @@ export default function AuthGateView({
           style={{
             display: "flex",
             alignItems: "center",
-            margin: "1.75rem 0 1.5rem 0",
+            margin: "1.75rem 0 1.25rem 0",
             gap: "12px"
           }}
         >
           <div style={{ flex: 1, height: "1px", background: "rgba(255, 255, 255, 0.25)" }} />
           <span
             style={{
-              color: "rgba(255, 255, 255, 0.85)",
-              fontSize: "13px",
+              color: "rgba(255, 255, 255, 0.75)",
+              fontSize: "12px",
+              textTransform: "uppercase",
               fontWeight: 500,
-              letterSpacing: "0.2px"
+              letterSpacing: "0.5px"
             }}
           >
-            or continue with email
+            or
           </span>
           <div style={{ flex: 1, height: "1px", background: "rgba(255, 255, 255, 0.25)" }} />
         </div>
 
-        {/* Email OTP Step 1: Email Entry */}
+        {/* Email OTP Step 1: Expansion Toggle & Email Entry */}
         {step === "email" && (
           <div>
-            <div style={{ marginBottom: "1rem" }}>
-              <label
-                style={{
-                  display: "block",
-                  color: "#ffffff",
-                  fontWeight: 500,
-                  marginBottom: "0.5rem",
-                  fontSize: "0.9rem"
-                }}
-              >
-                Email Address
-              </label>
-              <input
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  if (activeError) {
-                    setError("");
-                    setOauthError("");
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSendCode();
-                }}
-                className="login-input"
-                style={{
-                  width: "100%",
-                  padding: "0.875rem 1rem",
-                  border: "2px solid rgba(255, 255, 255, 0.3)",
-                  borderRadius: "8px",
-                  fontSize: "16px",
-                  boxSizing: "border-box",
-                  background: "#ffffff",
-                  color: "#0047AB",
-                  fontWeight: 500,
-                  outline: "none",
-                  transition: "border-color 0.2s"
-                }}
-              />
-            </div>
+            {!showEmailOption ? (
+              <div style={{ textAlign: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEmailOption(true);
+                    if (activeError) {
+                      setError("");
+                      setOauthError("");
+                    }
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "rgba(255, 255, 255, 0.95)",
+                    fontSize: "14px",
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "0.5rem 0.75rem",
+                    borderRadius: "6px",
+                    textDecoration: "underline",
+                    textUnderlineOffset: "3px",
+                    transition: "color 0.15s, background 0.15s"
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = "#ffffff";
+                    e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = "rgba(255, 255, 255, 0.95)";
+                    e.currentTarget.style.background = "none";
+                  }}
+                >
+                  <span>Use email address and one-time password</span>
+                  <span style={{ fontSize: "11px" }}>▼</span>
+                </button>
+              </div>
+            ) : (
+              <div>
+                <div style={{ marginBottom: "0.5rem" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                    <label
+                      style={{
+                        display: "block",
+                        color: "#ffffff",
+                        fontWeight: 500,
+                        fontSize: "0.9rem"
+                      }}
+                    >
+                      Email Address
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowEmailOption(false)}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "rgba(255, 255, 255, 0.75)",
+                        fontSize: "12px",
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                        padding: 0
+                      }}
+                    >
+                      Hide
+                    </button>
+                  </div>
+                  <input
+                    type="email"
+                    placeholder="you@example.com"
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      if (activeError) {
+                        setError("");
+                        setOauthError("");
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSendCode();
+                    }}
+                    autoFocus
+                    className="login-input"
+                    style={{
+                      width: "100%",
+                      padding: "0.875rem 1rem",
+                      border: "2px solid rgba(255, 255, 255, 0.3)",
+                      borderRadius: "8px",
+                      fontSize: "16px",
+                      boxSizing: "border-box",
+                      background: "#ffffff",
+                      color: "#0047AB",
+                      fontWeight: 500,
+                      outline: "none",
+                      transition: "border-color 0.2s"
+                    }}
+                  />
+                  {/* Read-Only Notice beneath email box */}
+                  <div
+                    style={{
+                      fontSize: "14.5px",
+                      color: "rgba(255, 255, 255, 0.9)",
+                      margin: "1.25rem 0 1.25rem 0",
+                      lineHeight: "1.4",
+                      fontStyle: "italic",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px"
+                    }}
+                  >
+                    <span>Note: Pulse will be read-only if you use a one-time password to log in..</span>
+                  </div>
+                </div>
 
-            <button
-              type="button"
-              onClick={() => handleSendCode()}
-              disabled={loading}
-              className="login-button"
-              style={{
-                width: "100%",
-                background: "#ffffff",
-                color: "#0047AB",
-                border: "none",
-                padding: "1rem",
-                borderRadius: "8px",
-                fontSize: "1rem",
-                fontWeight: 600,
-                cursor: loading ? "wait" : "pointer",
-                boxShadow: "0 4px 14px rgba(0, 0, 0, 0.12)",
-                transition: "background 0.2s, transform 0.15s",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "8px"
-              }}
-            >
-              {loading ? (
-                <>
-                  <Spinner size={16} color="#0047AB" />
-                  <span>Sending code...</span>
-                </>
-              ) : (
-                "Send Verification Code"
-              )}
-            </button>
+                <button
+                  type="button"
+                  onClick={() => handleSendCode()}
+                  disabled={loading}
+                  className="login-button"
+                  style={{
+                    width: "100%",
+                    background: "#ffffff",
+                    color: "#0047AB",
+                    border: "none",
+                    padding: "1rem",
+                    borderRadius: "8px",
+                    fontSize: "1rem",
+                    fontWeight: 600,
+                    cursor: loading ? "wait" : "pointer",
+                    boxShadow: "0 4px 14px rgba(0, 0, 0, 0.12)",
+                    transition: "background 0.2s, transform 0.15s",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "8px"
+                  }}
+                >
+                  {loading ? (
+                    <>
+                      <Spinner size={16} color="#0047AB" />
+                      <span>Sending code...</span>
+                    </>
+                  ) : (
+                    "Send Verification Code"
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -623,7 +738,7 @@ export default function AuthGateView({
         )}
 
         {/* Error Alert Box - Matching WebApp.html .login-error */}
-        {activeError && (
+        {activeError && !isOtpBlocked && (
           <div
             className="login-error"
             style={{
@@ -673,7 +788,6 @@ export default function AuthGateView({
             letterSpacing: "0.3px"
           }}
         >
-          Authorised users only.
         </div>
       </div>
 

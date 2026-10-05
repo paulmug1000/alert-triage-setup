@@ -199,12 +199,21 @@ export default function BudgetVarianceView({
     const totalOverheads = staffNonDel.map((v, i) => v + expNonDel[i]);
     const opProfit = gp.map((v, i) => v - totalOverheads[i]);
 
+    const gpMargin = totalRev.map((r, i) => (r ? gp[i] / r : 0));
+    const overheadsPct = totalRev.map((r, i) => (r ? totalOverheads[i] / r : 0));
+    const opProfitPct = totalRev.map((r, i) => (r ? opProfit[i] / r : 0));
+    const staffToIncPct = totalRev.map((r, i) => (r ? (staffDel[i] + staffNonDel[i]) / r : 0));
+
     return {
       conf, pipe, nb, totalRev,
       staffDel, dirCosts, expDel, totalCoS,
       gp,
+      gpMargin,
       staffNonDel, expNonDel, totalOverheads,
+      overheadsPct,
       opProfit,
+      opProfitPct,
+      staffToIncPct,
     };
   };
 
@@ -254,7 +263,7 @@ export default function BudgetVarianceView({
       if (numVal <= z57) return "#fce5cd";
       return "#f4cccc";
     }
-    return "#efefef";
+    return null;
   };
 
   const getVarCells = (actVal, budVal, isCost, isMargin, hideVariance, rowBg) => {
@@ -363,6 +372,18 @@ export default function BudgetVarianceView({
     };
   })();
 
+  const getMonthIsAct = (mIdx) => {
+    const statuses = activeYear?.statusValues || activeYear?.monthStatuses || [];
+    const st = String(statuses[mIdx] || (mIdx < 6 ? "actual" : "forecast")).trim().toLowerCase();
+    return st === "actual";
+  };
+
+  const getMonthStatusText = (mIdx) => {
+    const statuses = activeYear?.statusValues || activeYear?.monthStatuses || [];
+    const st = String(statuses[mIdx] || (mIdx < 6 ? "Actual" : "Forecast")).trim();
+    return st.toLowerCase() === "actual" ? "Actual" : st.toLowerCase() === "forecast" ? "Forecast" : st;
+  };
+
   // Build the structured rows matching renderBudgetAnalysis
   const tableRows = [];
 
@@ -375,6 +396,13 @@ export default function BudgetVarianceView({
   };
 
   const addDataRow = (label, metricKey, isCurrency, isBigTotal, isMargin, isCost, isBold = false, hideVariance = false) => {
+    let accentBar = null;
+    const l = String(label || "").toLowerCase();
+    if (l.includes("gross profit margin") || l.includes("gross profit %")) accentBar = "#e69138";
+    else if (l.includes("overheads as %") || l.includes("overheads %")) accentBar = "#45818e";
+    else if (l.includes("operating profit %")) accentBar = "#1155cc";
+    else if (l.includes("staff costs to") || l.includes("staff ratio")) accentBar = "#64748b";
+
     tableRows.push({
       type: "data",
       label,
@@ -383,12 +411,13 @@ export default function BudgetVarianceView({
       isBigTotal,
       isMargin,
       isCost,
+      accentBar,
       isBold: isBigTotal || isBold,
       hideVariance,
-      bg: isBigTotal ? (label.includes("Total revenue") || label.includes("Total income") ? "#9900ff" : label.includes("Gross") ? "#e69138" : label.includes("overheads") ? "#45818e" : "#1155cc") : "#efefef",
+      bg: isBigTotal ? (label.includes("Total revenue") || label.includes("Total income") ? "#9900ff" : label.includes("Gross") ? "#e69138" : label.includes("overheads") ? "#45818e" : "#1155cc") : "#ffffff",
       color: isBigTotal ? "#ffffff" : "#0047AB",
-      height: isBigTotal ? 31 : (isMargin ? 17 : 20),
-      fontSize: isBigTotal ? 13 : (isMargin ? 11.5 : 11.5),
+      height: isBigTotal ? 32 : (isMargin ? 21 : 25),
+      fontSize: isBigTotal ? 13 : (isMargin ? 11 : 11.5),
     });
   };
 
@@ -430,7 +459,7 @@ export default function BudgetVarianceView({
 
   const showExtraRows = Boolean(activeYear?.rows?.length > 32);
   if (showExtraRows) {
-    addSpacer(12);
+    addSpacer(18);
     addDataRow(isRevMode ? "Staff costs to revenue %" : "Staff costs to income %", "staffToIncPct", false, false, true, true);
   }
 
@@ -663,7 +692,7 @@ export default function BudgetVarianceView({
               }}
             >
               <thead>
-                <tr style={{ background: "#0000ff", color: "#ffffff", height: "31px" }}>
+                <tr style={{ background: "#0047AB", color: "#ffffff", height: "31px" }}>
                   <th
                     style={{
                       padding: viewMode === "fy" ? "6px 6px" : "6px 12px",
@@ -672,8 +701,8 @@ export default function BudgetVarianceView({
                       width: colPercents.colA,
                       position: "sticky",
                       left: 0,
-                      background: "#0000ff",
-                      zIndex: 2,
+                      background: "#0047AB",
+                      zIndex: 3,
                       fontSize: viewMode === "fy" ? "12px" : "13px",
                     }}
                   >
@@ -682,18 +711,18 @@ export default function BudgetVarianceView({
 
                   {viewMode === "month" ? (
                     <>
-                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", width: colPercents.act, background: "#0000ff" }}>
+                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", width: colPercents.act, background: "#0047AB" }}>
                         Actual
                       </th>
-                      <th style={{ width: colPercents.gap1, background: "#0000ff", padding: 0 }} />
-                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.bud, background: "#0000ff" }}>
+                      <th style={{ width: colPercents.gap1, background: "#0047AB", padding: 0 }} />
+                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.bud, background: "#0047AB" }}>
                         Budget
                       </th>
-                      <th style={{ width: colPercents.gap2, background: "#0000ff", padding: 0 }} />
-                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.varAmt, background: "#0000ff" }}>
+                      <th style={{ width: colPercents.gap2, background: "#0047AB", padding: 0 }} />
+                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.varAmt, background: "#0047AB" }}>
                         Var (£)
                       </th>
-                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.varPct, background: "#0000ff" }}>
+                      <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.varPct, background: "#0047AB" }}>
                         Var %
                       </th>
                     </>
@@ -708,26 +737,26 @@ export default function BudgetVarianceView({
                             fontWeight: 700,
                             fontSize: viewMode === "fy" ? "11px" : "12px",
                             width: colPercents.month,
-                            background: "#0000ff",
+                            background: "#0047AB",
                             whiteSpace: "nowrap",
                           }}
                         >
                           {mLabel}
                         </th>
                       ))}
-                      <th style={{ width: colPercents.gap, background: "#0000ff", padding: 0 }} />
-                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", width: colPercents.act, background: "#0000ff", whiteSpace: "nowrap" }}>
+                      <th style={{ width: colPercents.gap, background: "#0047AB", padding: 0 }} />
+                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", width: colPercents.act, background: "#0047AB", whiteSpace: "nowrap" }}>
                         {viewMode === "ytd" ? "YTD Actual" : "FY Actual"}
                       </th>
-                      <th style={{ width: colPercents.gap, background: "#0000ff", padding: 0 }} />
-                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.bud, background: "#0000ff", whiteSpace: "nowrap" }}>
+                      <th style={{ width: colPercents.gap, background: "#0047AB", padding: 0 }} />
+                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.bud, background: "#0047AB", whiteSpace: "nowrap" }}>
                         {viewMode === "ytd" ? "YTD Budget" : "FY Budget"}
                       </th>
-                      <th style={{ width: colPercents.gap, background: "#0000ff", padding: 0 }} />
-                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.varAmt, background: "#0000ff", whiteSpace: "nowrap" }}>
+                      <th style={{ width: colPercents.gap, background: "#0047AB", padding: 0 }} />
+                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.varAmt, background: "#0047AB", whiteSpace: "nowrap" }}>
                         Var (£)
                       </th>
-                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.varPct, background: "#0000ff", whiteSpace: "nowrap" }}>
+                      <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.varPct, background: "#0047AB", whiteSpace: "nowrap" }}>
                         Var %
                       </th>
                     </>
@@ -736,56 +765,142 @@ export default function BudgetVarianceView({
 
                 {/* Subheader status row for YTD/FY */}
                 {viewMode !== "month" && (
-                  <tr style={{ background: "#efefef", height: "15px" }}>
-                    <td style={{ padding: "2px 8px", background: "#efefef", position: "sticky", left: 0, zIndex: 2 }} />
+                  <tr style={{ background: "#ffffff", borderBottom: "1px solid #cbd5e1", height: "18px" }}>
+                    <td style={{ padding: "2px 8px", background: "#ffffff", position: "sticky", left: 0, zIndex: 3, border: "none" }} />
                     {displayedMonths.map((_, idx) => {
-                      const text = activeYear?.statusRow?.[idx] || (idx < 6 ? "Actual" : "Forecast");
+                      const text = getMonthStatusText(idx);
+                      const isAct = getMonthIsAct(idx);
                       return (
-                        <td key={idx} style={{ padding: viewMode === "fy" ? "2px 2px" : "2px 4px", textAlign: "right", color: "#666666", fontStyle: "italic", background: "#efefef", fontSize: "9px" }}>
+                        <td
+                          key={idx}
+                          style={{
+                            padding: viewMode === "fy" ? "2px 2px" : "2px 4px",
+                            textAlign: "right",
+                            color: "#64748b",
+                            fontStyle: "italic",
+                            background: isAct ? "#f4f7fa" : "#ffffff",
+                            fontSize: "10px",
+                            border: "none",
+                          }}
+                        >
                           {text}
                         </td>
                       );
                     })}
-                    {Array.from({ length: 7 }).map((_, cIdx) => (
-                      <td key={cIdx} style={{ padding: 0, background: "#efefef" }} />
-                    ))}
+                    <td style={{ width: colPercents.gap, background: "#ffffff", border: "none", padding: 0 }} />
+                    <td style={{ padding: 0, background: "#f4f7fa", border: "none" }} />
+                    <td style={{ width: colPercents.gap, background: "#ffffff", border: "none", padding: 0 }} />
+                    <td style={{ padding: 0, background: "#ffffff", border: "none" }} />
+                    <td style={{ width: colPercents.gap, background: "#ffffff", border: "none", padding: 0 }} />
+                    <td style={{ padding: 0, background: "#ffffff", border: "none" }} />
+                    <td style={{ padding: 0, background: "#ffffff", border: "none" }} />
                   </tr>
                 )}
               </thead>
 
               <tbody>
                 {tableRows.map((r, rIdx) => {
+                  // Detect 18px gap between Operating profit % and Staff costs ratio
+                  let prevLbl = "";
+                  for (let k = rIdx - 1; k >= 0; k--) {
+                    if (tableRows[k]?.label) {
+                      prevLbl = tableRows[k].label.toLowerCase();
+                      break;
+                    }
+                  }
+                  let nextLbl = "";
+                  for (let k = rIdx + 1; k < tableRows.length; k++) {
+                    if (tableRows[k]?.label) {
+                      nextLbl = tableRows[k].label.toLowerCase();
+                      break;
+                    }
+                  }
+                  const isOpToStaffGap =
+                    (prevLbl.includes("operating profit %") || prevLbl.includes("operating profit margin")) &&
+                    (nextLbl.includes("staff costs to") || nextLbl.includes("staff ratio"));
+
                   if (r.type === "spacer") {
+                    const spacerHeight = isOpToStaffGap ? 18 : r.height || 6;
                     return (
-                      <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
-                        <td colSpan={numTotalCols + 1} style={{ padding: 0, border: "none", background: "#efefef" }} />
+                      <tr key={rIdx} style={{ height: `${spacerHeight}px`, lineHeight: 0 }}>
+                        <td style={{ padding: 0, border: "none", background: "#ffffff", position: "sticky", left: 0, zIndex: 2 }} />
+                        {viewMode === "month" ? (
+                          <>
+                            <td style={{ padding: 0, border: "none", background: "#f4f7fa" }} />
+                            <td style={{ width: colPercents.gap1, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                            <td style={{ width: colPercents.gap2, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                          </>
+                        ) : (
+                          <>
+                            {displayedMonths.map((_, mIdx) => {
+                              const isAct = getMonthIsAct(mIdx);
+                              return (
+                                <td key={mIdx} style={{ padding: 0, border: "none", background: isAct ? "#f4f7fa" : "#ffffff" }} />
+                              );
+                            })}
+                            <td style={{ width: colPercents.gap, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#f4f7fa" }} />
+                            <td style={{ width: colPercents.gap, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                            <td style={{ width: colPercents.gap, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                          </>
+                        )}
                       </tr>
                     );
                   }
 
                   if (r.type === "section") {
                     return (
-                      <tr key={rIdx} style={{ height: `${r.height}px`, background: "#efefef" }}>
+                      <tr key={rIdx} style={{ height: "26px", borderBottom: "1px solid #f1f5f9" }}>
                         <td
                           style={{
-                            padding: viewMode === "fy" ? "2px 6px" : "2px 8px",
+                            padding: viewMode === "fy" ? "4px 6px" : "5px 10px",
                             textAlign: "left",
                             fontWeight: 700,
                             fontSize: "11px",
-                            letterSpacing: "0.5px",
+                            letterSpacing: "0.6px",
                             textTransform: "uppercase",
                             color: "#0047AB",
                             position: "sticky",
                             left: 0,
-                            background: "#efefef",
-                            zIndex: 1,
+                            background: "#ffffff",
+                            zIndex: 2,
+                            boxShadow: "2px 0 3px rgba(0,0,0,0.02)",
                           }}
                         >
                           {r.label}
                         </td>
-                        {Array.from({ length: numTotalCols }).map((_, cIdx) => (
-                          <td key={cIdx} style={{ padding: 0, background: "#efefef" }} />
-                        ))}
+                        {viewMode === "month" ? (
+                          <>
+                            <td style={{ padding: 0, border: "none", background: "#f4f7fa" }} />
+                            <td style={{ width: colPercents.gap1, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                            <td style={{ width: colPercents.gap2, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                          </>
+                        ) : (
+                          <>
+                            {displayedMonths.map((_, mIdx) => {
+                              const isAct = getMonthIsAct(mIdx);
+                              return (
+                                <td key={mIdx} style={{ padding: 0, border: "none", background: isAct ? "#f4f7fa" : "#ffffff" }} />
+                              );
+                            })}
+                            <td style={{ width: colPercents.gap, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#f4f7fa" }} />
+                            <td style={{ width: colPercents.gap, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                            <td style={{ width: colPercents.gap, background: "#ffffff", border: "none", padding: 0 }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                            <td style={{ padding: 0, border: "none", background: "#ffffff" }} />
+                          </>
+                        )}
                       </tr>
                     );
                   }
@@ -797,8 +912,9 @@ export default function BudgetVarianceView({
                   const isBold = r.isBold;
                   const isMargin = r.isMargin;
                   const isCost = r.isCost;
-                  const rowHeight = r.height;
-                  const borderBottom = isBigTotal ? "none" : "1px solid #ffffff";
+                  const rowHeight = isBigTotal ? "32px" : isMargin ? "21px" : "25px";
+                  const fontSize = isBigTotal ? 13 : isMargin ? 11 : (viewMode === "fy" ? 10.5 : 11.5);
+                  const borderBottom = isBigTotal ? "2px solid #cbd5e1" : "1px solid #f1f5f9";
 
                   const actArr = actMetrics[r.metricKey] || new Array(12).fill(0);
                   const budArr = budMetrics[r.metricKey] || new Array(12).fill(0);
@@ -807,8 +923,7 @@ export default function BudgetVarianceView({
                     const actV = actArr[selectedMonthIdx] || 0;
                     const budV = budArr[selectedMonthIdx] || 0;
 
-                    let cellBg = rowBg;
-                    let cellColor = isMargin ? "#0047AB" : rowColor;
+                    let cellBg = null;
                     if (isMargin) {
                       cellBg = getMarginColor(r.label, actV);
                     }
@@ -816,23 +931,157 @@ export default function BudgetVarianceView({
                     const varCells = getVarCells(actV, budV, isCost, isMargin, r.hideVariance, rowBg);
 
                     return (
-                      <tr key={rIdx} style={{ height: `${rowHeight}px`, background: rowBg, borderBottom }}>
-                        <td style={{ padding: isBigTotal ? "2px 8px" : "2px 14px", textAlign: "left", color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: isBigTotal ? "13px" : "12px", position: "sticky", left: 0, background: rowBg, zIndex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      <tr
+                        key={rIdx}
+                        style={{
+                          height: rowHeight,
+                          background: isBigTotal ? rowBg : "#ffffff",
+                          borderBottom,
+                          fontWeight: isBold ? 700 : 400,
+                        }}
+                      >
+                        <td
+                          style={{
+                            padding: isMargin ? "2px 10px" : "4.5px 10px",
+                            paddingLeft: isMargin ? "20px" : isBigTotal ? "10px" : "16px",
+                            textAlign: "left",
+                            color: isBigTotal ? "#ffffff" : rowColor,
+                            fontWeight: isBold ? 700 : 400,
+                            fontStyle: isMargin ? "italic" : "normal",
+                            fontSize: fontSize,
+                            position: "sticky",
+                            left: 0,
+                            background: isBigTotal ? rowBg : "#ffffff",
+                            borderLeft: isMargin && r.accentBar ? `4px solid ${r.accentBar}` : "none",
+                            zIndex: 2,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            boxShadow: "2px 0 3px rgba(0,0,0,0.02)",
+                          }}
+                        >
                           {r.label}
                         </td>
-                        <td style={{ padding: "2px 8px", textAlign: "right", background: cellBg, color: cellColor, fontWeight: isBold ? 700 : 400, fontStyle: isMargin ? "italic" : "normal", fontSize: isBigTotal ? "13px" : "12px", whiteSpace: "nowrap" }}>
-                          {r.isCurrency ? formatMoney(actV) : formatPct(actV)}
+
+                        {/* Actual Cell */}
+                        <td
+                          style={{
+                            padding: isMargin ? "1px 2px" : "4.5px 8px",
+                            textAlign: "right",
+                            background: isBigTotal ? "transparent" : "#f4f7fa",
+                            color: isBigTotal ? "#ffffff" : "#0047AB",
+                            fontWeight: isBold ? 700 : 400,
+                            fontStyle: isMargin ? "italic" : "normal",
+                            fontSize: fontSize,
+                            whiteSpace: "nowrap",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {isMargin ? (
+                            <div
+                              style={{
+                                display: "inline-block",
+                                width: "100%",
+                                padding: "1.5px 4px",
+                                borderRadius: "4px",
+                                background: cellBg || "transparent",
+                                color: "#0047AB",
+                                border: cellBg ? "1.5px solid #f4f7fa" : "none",
+                                fontStyle: "italic",
+                                fontWeight: 700,
+                                boxSizing: "border-box",
+                              }}
+                            >
+                              {r.isCurrency ? formatMoney(actV) : formatPct(actV)}
+                            </div>
+                          ) : (
+                            r.isCurrency ? formatMoney(actV) : formatPct(actV)
+                          )}
                         </td>
-                        <td style={{ width: colPercents.gap1, background: rowBg, padding: 0 }} />
-                        <td style={{ padding: "2px 8px", textAlign: "right", background: rowBg, color: rowColor, fontWeight: isBold ? 700 : 400, fontStyle: "italic", fontSize: isBigTotal ? "13px" : "12px", whiteSpace: "nowrap" }}>
+
+                        <td style={{ width: colPercents.gap1, background: isBigTotal ? rowBg : "#ffffff", padding: 0 }} />
+
+                        {/* Budget Cell */}
+                        <td
+                          style={{
+                            padding: "4.5px 8px",
+                            textAlign: "right",
+                            background: isBigTotal ? "transparent" : "#ffffff",
+                            color: isBigTotal ? "#ffffff" : rowColor,
+                            fontWeight: isBold ? 700 : 400,
+                            fontStyle: "italic",
+                            fontSize: fontSize,
+                            whiteSpace: "nowrap",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
                           {r.isCurrency ? formatMoney(budV) : formatPct(budV)}
                         </td>
-                        <td style={{ width: colPercents.gap2, background: rowBg, padding: 0 }} />
-                        <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[0].bg, color: varCells[0].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: isBigTotal ? "13px" : "12px", whiteSpace: "nowrap" }}>
-                          {varCells[0].v}
+
+                        <td style={{ width: colPercents.gap2, background: isBigTotal ? rowBg : "#ffffff", padding: 0 }} />
+
+                        {/* Var (£) */}
+                        <td
+                          style={{
+                            padding: isBigTotal || isMargin ? "4.5px 8px" : "2px 4px",
+                            textAlign: "right",
+                            background: isBigTotal ? "transparent" : "#ffffff",
+                            whiteSpace: "nowrap",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {!isMargin && varCells[0]?.v ? (
+                            <div
+                              style={{
+                                display: "inline-block",
+                                width: "100%",
+                                padding: "1.5px 4px",
+                                borderRadius: "4px",
+                                background: isBigTotal ? "transparent" : varCells[0].bg,
+                                color: isBigTotal ? "#ffffff" : varCells[0].color,
+                                fontWeight: isBold ? 700 : 600,
+                                fontStyle: "italic",
+                                fontSize: fontSize,
+                                boxSizing: "border-box",
+                              }}
+                            >
+                              {varCells[0].v}
+                            </div>
+                          ) : isBigTotal ? (
+                            varCells[0]?.v
+                          ) : null}
                         </td>
-                        <td style={{ padding: "2px 8px", textAlign: "right", background: varCells[1].bg, color: varCells[1].color, fontWeight: isBold ? 700 : 600, fontStyle: "italic", fontSize: isBigTotal ? "13px" : "12px", whiteSpace: "nowrap" }}>
-                          {varCells[1].v}
+
+                        {/* Var (%) */}
+                        <td
+                          style={{
+                            padding: isBigTotal || isMargin ? "4.5px 8px" : "2px 4px",
+                            textAlign: "right",
+                            background: isBigTotal ? "transparent" : "#ffffff",
+                            whiteSpace: "nowrap",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {!isMargin && varCells[1]?.v ? (
+                            <div
+                              style={{
+                                display: "inline-block",
+                                width: "100%",
+                                padding: "1.5px 4px",
+                                borderRadius: "4px",
+                                background: isBigTotal ? "transparent" : varCells[1].bg,
+                                color: isBigTotal ? "#ffffff" : varCells[1].color,
+                                fontWeight: isBold ? 700 : 600,
+                                fontStyle: "italic",
+                                fontSize: fontSize,
+                                boxSizing: "border-box",
+                              }}
+                            >
+                              {varCells[1].v}
+                            </div>
+                          ) : isBigTotal ? (
+                            varCells[1]?.v
+                          ) : null}
                         </td>
                       </tr>
                     );
@@ -868,119 +1117,252 @@ export default function BudgetVarianceView({
 
                   const varCells = getVarCells(actSum, budSum, isCost, isMargin, r.hideVariance, rowBg);
 
-                  let actTotalBg = rowBg;
-                  let actTotalColor = isMargin ? "#0047AB" : rowColor;
+                  let actTotalBg = null;
                   if (isMargin) {
                     actTotalBg = getMarginColor(r.label, actSum);
                   }
 
                   return (
-                    <tr key={rIdx} style={{ height: `${rowHeight}px`, background: rowBg, borderBottom }}>
-                      <td style={{
-                        padding: viewMode === "fy" ? (isBigTotal ? "2px 6px" : "2px 8px") : (isBigTotal ? "2px 8px" : "2px 14px"),
-                        textAlign: "left",
-                        color: rowColor,
+                    <tr
+                      key={rIdx}
+                      style={{
+                        height: rowHeight,
+                        background: isBigTotal ? rowBg : "#ffffff",
+                        borderBottom,
                         fontWeight: isBold ? 700 : 400,
-                        fontStyle: isMargin ? "italic" : "normal",
-                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
-                        position: "sticky",
-                        left: 0,
-                        background: rowBg,
-                        zIndex: 1,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}>
+                      }}
+                    >
+                      <td
+                        style={{
+                          padding: isMargin ? "2px 10px" : viewMode === "fy" ? (isBigTotal ? "4px 6px" : "4px 8px") : (isBigTotal ? "4.5px 8px" : "4.5px 10px"),
+                          paddingLeft: isMargin ? "20px" : isBigTotal ? "10px" : "16px",
+                          textAlign: "left",
+                          color: isBigTotal ? "#ffffff" : rowColor,
+                          fontWeight: isBold ? 700 : 400,
+                          fontStyle: isMargin ? "italic" : "normal",
+                          fontSize: fontSize,
+                          position: "sticky",
+                          left: 0,
+                          background: isBigTotal ? rowBg : "#ffffff",
+                          borderLeft: isMargin && r.accentBar ? `4px solid ${r.accentBar}` : "none",
+                          zIndex: 2,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          boxShadow: "2px 0 3px rgba(0,0,0,0.02)",
+                        }}
+                        title={r.label}
+                      >
                         {r.label}
                       </td>
 
                       {/* Monthly actuals */}
                       {Array.from({ length: limit }).map((_, m) => {
                         const actV = actArr[m] || 0;
-                        let cellBg = rowBg;
-                        let cellColor = isMargin ? "#0047AB" : rowColor;
-                        if (isMargin) {
-                          cellBg = getMarginColor(r.label, actV);
+                        const isAct = getMonthIsAct(m);
+                        const colBg = isAct ? "#f4f7fa" : "#ffffff";
+                        const displayVal = r.isCurrency ? formatMoney(actV) : formatPct(actV);
+
+                        if (isBigTotal) {
+                          return (
+                            <td
+                              key={m}
+                              style={{
+                                padding: viewMode === "fy" ? "4.5px 2px" : "4.5px 4px",
+                                textAlign: "right",
+                                color: "#ffffff",
+                                fontSize: fontSize,
+                                fontWeight: 700,
+                                background: "transparent",
+                                whiteSpace: "nowrap",
+                                fontVariantNumeric: "tabular-nums",
+                              }}
+                            >
+                              {displayVal}
+                            </td>
+                          );
                         }
+
+                        if (isMargin) {
+                          const cellBg = getMarginColor(r.label, actV);
+                          return (
+                            <td
+                              key={m}
+                              style={{
+                                padding: "1px 2px",
+                                textAlign: "right",
+                                background: colBg,
+                                height: "21px",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "inline-block",
+                                  width: "100%",
+                                  padding: "1.5px 3px",
+                                  borderRadius: "4px",
+                                  background: cellBg || "transparent",
+                                  color: "#0047AB",
+                                  border: cellBg ? `1.5px solid ${colBg}` : "none",
+                                  fontStyle: "italic",
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  fontVariantNumeric: "tabular-nums",
+                                  boxSizing: "border-box",
+                                }}
+                              >
+                                {displayVal}
+                              </div>
+                            </td>
+                          );
+                        }
+
                         return (
-                          <td key={m} style={{
-                            padding: viewMode === "fy" ? "2px 2px" : "2px 4px",
-                            textAlign: "right",
-                            background: cellBg,
-                            color: cellColor,
-                            fontWeight: isBold ? 700 : 400,
-                            fontStyle: isMargin ? "italic" : "normal",
-                            fontSize: viewMode === "fy" ? "10.5px" : "11.5px",
-                            whiteSpace: "nowrap",
-                          }}>
-                            {r.isCurrency ? formatMoney(actV) : formatPct(actV)}
+                          <td
+                            key={m}
+                            style={{
+                              padding: viewMode === "fy" ? "4.5px 2px" : "4.5px 4px",
+                              textAlign: "right",
+                              background: colBg,
+                              color: rowColor,
+                              fontWeight: isBold ? 700 : 400,
+                              fontStyle: isMargin ? "italic" : "normal",
+                              fontSize: fontSize,
+                              whiteSpace: "nowrap",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {displayVal}
                           </td>
                         );
                       })}
 
                       {/* Gap */}
-                      <td style={{ width: colPercents.gap, background: rowBg, padding: 0 }} />
+                      <td style={{ width: colPercents.gap, background: isBigTotal ? rowBg : "#ffffff", padding: 0 }} />
 
                       {/* Actual Total */}
-                      <td style={{
-                        padding: viewMode === "fy" ? "2px 3px" : "2px 6px",
-                        textAlign: "right",
-                        background: actTotalBg,
-                        color: actTotalColor,
-                        fontWeight: isBold ? 700 : 600,
-                        fontStyle: isMargin ? "italic" : "normal",
-                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
-                        whiteSpace: "nowrap",
-                      }}>
-                        {r.isCurrency ? formatMoney(actSum) : formatPct(actSum)}
+                      <td
+                        style={{
+                          padding: isMargin ? "1px 2px" : viewMode === "fy" ? "4.5px 3px" : "4.5px 6px",
+                          textAlign: "right",
+                          background: isBigTotal ? "transparent" : "#f4f7fa",
+                          color: isBigTotal ? "#ffffff" : "#0047AB",
+                          fontWeight: isBold ? 700 : 600,
+                          fontStyle: isMargin ? "italic" : "normal",
+                          fontSize: fontSize,
+                          whiteSpace: "nowrap",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {isMargin ? (
+                          <div
+                            style={{
+                              display: "inline-block",
+                              width: "100%",
+                              padding: "1.5px 4px",
+                              borderRadius: "4px",
+                              background: actTotalBg || "transparent",
+                              color: "#0047AB",
+                              border: actTotalBg ? "1.5px solid #f4f7fa" : "none",
+                              fontStyle: "italic",
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              fontVariantNumeric: "tabular-nums",
+                              boxSizing: "border-box",
+                            }}
+                          >
+                            {r.isCurrency ? formatMoney(actSum) : formatPct(actSum)}
+                          </div>
+                        ) : (
+                          r.isCurrency ? formatMoney(actSum) : formatPct(actSum)
+                        )}
                       </td>
 
                       {/* Gap */}
-                      <td style={{ width: colPercents.gap, background: rowBg, padding: 0 }} />
+                      <td style={{ width: colPercents.gap, background: isBigTotal ? rowBg : "#ffffff", padding: 0 }} />
 
                       {/* Budget Total */}
-                      <td style={{
-                        padding: viewMode === "fy" ? "2px 3px" : "2px 6px",
-                        textAlign: "right",
-                        background: rowBg,
-                        color: rowColor,
-                        fontWeight: isBold ? 700 : 400,
-                        fontStyle: "italic",
-                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
-                        whiteSpace: "nowrap",
-                      }}>
+                      <td
+                        style={{
+                          padding: viewMode === "fy" ? "4.5px 3px" : "4.5px 6px",
+                          textAlign: "right",
+                          background: isBigTotal ? "transparent" : "#ffffff",
+                          color: isBigTotal ? "#ffffff" : rowColor,
+                          fontWeight: isBold ? 700 : 400,
+                          fontStyle: "italic",
+                          fontSize: fontSize,
+                          whiteSpace: "nowrap",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
                         {r.isCurrency ? formatMoney(budSum) : formatPct(budSum)}
                       </td>
 
                       {/* Gap */}
-                      <td style={{ width: colPercents.gap, background: rowBg, padding: 0 }} />
+                      <td style={{ width: colPercents.gap, background: isBigTotal ? rowBg : "#ffffff", padding: 0 }} />
 
                       {/* Var (£) */}
-                      <td style={{
-                        padding: viewMode === "fy" ? "2px 3px" : "2px 6px",
-                        textAlign: "right",
-                        background: varCells[0].bg,
-                        color: varCells[0].color,
-                        fontWeight: isBold ? 700 : 600,
-                        fontStyle: "italic",
-                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
-                        whiteSpace: "nowrap",
-                      }}>
-                        {varCells[0].v}
+                      <td
+                        style={{
+                          padding: isBigTotal || isMargin ? (viewMode === "fy" ? "4.5px 3px" : "4.5px 6px") : "2px 3px",
+                          textAlign: "right",
+                          background: isBigTotal ? "transparent" : "#ffffff",
+                          whiteSpace: "nowrap",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {!isMargin && varCells[0]?.v ? (
+                          <div
+                            style={{
+                              display: "inline-block",
+                              width: "100%",
+                              padding: "1.5px 4px",
+                              borderRadius: "4px",
+                              background: isBigTotal ? "transparent" : varCells[0].bg,
+                              color: isBigTotal ? "#ffffff" : varCells[0].color,
+                              fontWeight: isBold ? 700 : 600,
+                              fontStyle: "italic",
+                              fontSize: fontSize,
+                              boxSizing: "border-box",
+                            }}
+                          >
+                            {varCells[0].v}
+                          </div>
+                        ) : isBigTotal ? (
+                          varCells[0]?.v
+                        ) : null}
                       </td>
 
                       {/* Var (%) */}
-                      <td style={{
-                        padding: viewMode === "fy" ? "2px 3px" : "2px 6px",
-                        textAlign: "right",
-                        background: varCells[1].bg,
-                        color: varCells[1].color,
-                        fontWeight: isBold ? 700 : 600,
-                        fontStyle: "italic",
-                        fontSize: viewMode === "fy" ? (isBigTotal ? "11.5px" : "10.5px") : (isBigTotal ? "12.5px" : "11.5px"),
-                        whiteSpace: "nowrap",
-                      }}>
-                        {varCells[1].v}
+                      <td
+                        style={{
+                          padding: isBigTotal || isMargin ? (viewMode === "fy" ? "4.5px 3px" : "4.5px 6px") : "2px 3px",
+                          textAlign: "right",
+                          background: isBigTotal ? "transparent" : "#ffffff",
+                          whiteSpace: "nowrap",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {!isMargin && varCells[1]?.v ? (
+                          <div
+                            style={{
+                              display: "inline-block",
+                              width: "100%",
+                              padding: "1.5px 4px",
+                              borderRadius: "4px",
+                              background: isBigTotal ? "transparent" : varCells[1].bg,
+                              color: isBigTotal ? "#ffffff" : varCells[1].color,
+                              fontWeight: isBold ? 700 : 600,
+                              fontStyle: "italic",
+                              fontSize: fontSize,
+                              boxSizing: "border-box",
+                            }}
+                          >
+                            {varCells[1].v}
+                          </div>
+                        ) : isBigTotal ? (
+                          varCells[1]?.v
+                        ) : null}
                       </td>
                     </tr>
                   );

@@ -12,11 +12,17 @@ export default async function handler(req, res) {
   }
 
   // Verify Vercel cron secret
+  const cronSecret = process.env.CRON_SECRET?.trim();
+  if (!cronSecret) {
+    console.error("❌ Cron: CRON_SECRET is not configured on server");
+    return res.status(500).json({ error: "Cron secret not configured on server" });
+  }
+
   const authHeader = req.headers.authorization;
-  const expectedSecret = `Bearer ${process.env.CRON_SECRET}`;
+  const expectedBearer = `Bearer ${cronSecret}`;
   const providedSecret = req.body?.secret || req.query?.secret || authHeader;
 
-  if (providedSecret !== process.env.CRON_SECRET && providedSecret !== expectedSecret) {
+  if (!providedSecret || (providedSecret !== cronSecret && providedSecret !== expectedBearer)) {
     console.error("❌ Cron: invalid or missing secret");
     return res.status(401).json({ error: "Unauthorised" });
   }

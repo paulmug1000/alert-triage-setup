@@ -9,8 +9,7 @@ import { logPulseActivity } from "./pulseLogger.js";
 
 const OTP_EXPIRY_SECS = 600; // 10 minutes
 const COOLDOWN_SECS = 60; // 60 seconds
-const SESSION_MAX_AGE_SECS = 7 * 24 * 60 * 60; // 7 days (reduced from 90 days for security)
-export const FALLBACK_JWT_SECRET = "pma_jwt_secret_pulse_mgmt_auth_2026_x89a74bf20ec91";
+export const SESSION_MAX_AGE_SECS = 7 * 24 * 60 * 60; // 7 days
 
 function serializeCookie(name, val, options = {}) {
   let str = `${encodeURIComponent(name)}=${encodeURIComponent(val)}`;
@@ -41,11 +40,20 @@ function parseCookies(cookieHeader) {
   }, {});
 }
 
+const _devEphemeralSecret = crypto.randomBytes(32).toString("hex");
+
 /**
- * Get JWT Secret from environment or shared fallback
+ * Get JWT Secret from environment with fail-closed production enforcement
  */
 export function getJwtSecret() {
-  return process.env.PMA_JWT_SECRET || FALLBACK_JWT_SECRET;
+  if (process.env.PMA_JWT_SECRET && process.env.PMA_JWT_SECRET.trim().length > 0) {
+    return process.env.PMA_JWT_SECRET.trim();
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("FATAL: PMA_JWT_SECRET environment variable is missing or empty in production.");
+  }
+  console.warn("⚠️ WARNING: PMA_JWT_SECRET is unset. Using ephemeral development secret.");
+  return _devEphemeralSecret;
 }
 
 

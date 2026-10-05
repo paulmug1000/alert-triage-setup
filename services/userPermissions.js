@@ -234,10 +234,110 @@ export function matchesClientName(assignedIdentifier, actualClientName) {
   const cb = clean(sb);
   if (ca && cb && ca === cb) return true;
 
-  if (sa.length >= 3 && (sb.includes(sa) || sa.includes(sb))) return true;
-  if (ca.length >= 3 && (cb.includes(ca) || ca.includes(cb))) return true;
+  // Prefix match with word boundary (e.g. "Orinoco" matches "Orinoco Communications")
+  if (sb.startsWith(sa + " ") || sa.startsWith(sb + " ")) return true;
+  if (cb.startsWith(ca) && ca.length >= 4) return true;
+  if (ca.startsWith(cb) && cb.length >= 4) return true;
+
+  // Token set overlap (e.g. "Ayefour Design" matches "Ayefour")
+  const tokensA = sa.split(/[\s\-_]+/).filter(t => t.length > 2 && t !== "the" && t !== "ltd" && t !== "limited");
+  const tokensB = sb.split(/[\s\-_]+/).filter(t => t.length > 2 && t !== "the" && t !== "ltd" && t !== "limited");
+  if (tokensA.length > 0 && tokensB.length > 0) {
+    const hasSharedSignificantToken = tokensA.some(t => tokensB.includes(t) && t.length >= 4);
+    if (hasSharedSignificantToken) return true;
+  }
 
   return false;
+}
+
+const clientSheetIdToNameCache = new Map();
+
+/**
+ * Resolves a clientName from a clientSheetId or masterSheetId using AutoUpdates mapping
+ */
+export async function resolveClientNameBySheetId(sheets, sheetId, acId = DEFAULT_AC_SHEET_ID) {
+  if (!sheetId) return "";
+  const cleanId = extractSheetIdFromUrl(sheetId) || sheetId;
+  if (clientSheetIdToNameCache.has(cleanId)) {
+    return clientSheetIdToNameCache.get(cleanId);
+  }
+  try {
+    const resp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: acId || DEFAULT_AC_SHEET_ID,
+        range: "AutoUpdates!A2:N500"
+      })
+    );
+    const rows = resp.data.values || [];
+    for (const r of rows) {
+      const cName = String(r[0] || "").trim();
+      const clientUrl = String(r[11] || "").trim();
+      const masterUrl = String(r[12] || "").trim();
+      const cId = extractSheetIdFromUrl(clientUrl) || clientUrl;
+      const mId = extractSheetIdFromUrl(masterUrl) || masterUrl;
+      if (cId && cName) clientSheetIdToNameCache.set(cId, cName);
+      if (mId && cName) clientSheetIdToNameCache.set(mId, cName);
+      if ((cId === cleanId || mId === cleanId) && cName) {
+        return cName;
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ Error resolving clientName by sheetId:", err.message);
+  }
+  return "";
+}
+
+/**
+ * Universal Fail-Closed Authorization Guard for spreadsheet operations.
+ * Binds sheetId to verified tenant identity and enforces role/client permissions.
+ */
+export async function verifyUserAuthorizedForSheet(sessionUser, sheetId, clientNameClaim, sheets, acId = DEFAULT_AC_SHEET_ID) {
+  if (!sessionUser) {
+    return { authorized: false, status: 401, error: "Unauthorized: Active session required" };
+  }
+  if (sessionUser.isAdmin) {
+    return { authorized: true, clientName: clientNameClaim || "Admin" };
+  }
+  if (!sheetId) {
+    return { authorized: false, status: 400, error: "Missing sheet ID" };
+  }
+
+  // 1. Resolve registered tenant name from spreadsheet ID
+  let resolvedClient = await resolveClientNameBySheetId(sheets, sheetId, acId);
+
+  // 2. Fallback check to KeyInfo!B1 if sheet is not yet indexed in AutoUpdates
+  if (!resolvedClient) {
+    try {
+      const cleanId = extractSheetIdFromUrl(sheetId) || sheetId;
+      const b1Resp = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: cleanId,
+          range: "KeyInfo!B1"
+        })
+      );
+      resolvedClient = String(b1Resp.data.values?.[0]?.[0] || "").trim();
+      if (resolvedClient) {
+        clientSheetIdToNameCache.set(cleanId, resolvedClient);
+      }
+    } catch (e) {}
+  }
+
+  if (!resolvedClient) {
+    return { authorized: false, status: 403, error: "Forbidden: Unrecognized or unmapped client spreadsheet" };
+  }
+
+  // 3. Ensure clientName claim (if supplied) matches the actual sheet
+  if (clientNameClaim && !matchesClientName(clientNameClaim, resolvedClient)) {
+    return { authorized: false, status: 403, error: "Forbidden: Client identifier mismatch for requested spreadsheet" };
+  }
+
+  // 4. Verify user assignment for this client
+  const isAuthorized = isUserAuthorizedForClient(sessionUser, resolvedClient);
+  if (!isAuthorized) {
+    return { authorized: false, status: 403, error: "Forbidden: Not authorized for this client" };
+  }
+
+  return { authorized: true, clientName: resolvedClient };
 }
 
 /**

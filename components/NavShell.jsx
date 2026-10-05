@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/router";
+import { SYSTEM_VERSION, getSystemCopyright } from "../config/version";
+import Spinner from "./Spinner";
 
 // Global styles injected once - handles :hover/:active which React inline styles can't do
 const GLOBAL_STYLES = `
@@ -24,7 +27,7 @@ const GLOBAL_STYLES = `
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 12px;
     box-sizing: border-box;
   }
   .pma-topbar-brand {
@@ -34,16 +37,10 @@ const GLOBAL_STYLES = `
     min-width: 0;
     flex-shrink: 1;
   }
-  .pma-topbar-logo {
-    width: 24px;
-    height: 24px;
-    background: #0066cc;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 14px;
+  .pma-topbar-brand-logo {
+    height: 32px;
+    width: auto;
+    display: block;
     flex-shrink: 0;
   }
   .pma-topbar-title {
@@ -60,104 +57,25 @@ const GLOBAL_STYLES = `
     gap: 12px;
     flex-shrink: 0;
   }
-  .pma-topbar-user-pill {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: rgba(255, 255, 255, 0.08);
-    padding: 4px 10px;
-    border-radius: 20px;
-  }
-  .pma-topbar-avatar {
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: #0066cc;
-    color: #fff;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 12px;
-    font-weight: 600;
-    flex-shrink: 0;
-  }
-  .pma-topbar-name {
-    font-size: 13px;
-    font-weight: 500;
-    color: #e2e8f0;
-    white-space: nowrap;
-  }
-  .pma-topbar-role {
-    font-size: 11px;
-    padding: 1px 6px;
-    border-radius: 10px;
-    font-weight: 600;
-    white-space: nowrap;
-    line-height: 1.3;
-  }
-  .pma-topbar-signout {
-    background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 6px;
-    color: #cbd5e1;
-    font-size: 12px;
-    padding: 4px 10px;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: all 0.15s ease;
-  }
 
   /* Mobile Portrait and Small Screens */
   @media (max-width: 600px) {
     .pma-topbar {
-      padding: 8px 10px;
-      gap: 6px;
+      padding: 8px 12px;
+      gap: 8px;
     }
     .pma-topbar-brand {
-      gap: 6px;
+      gap: 8px;
     }
-    .pma-topbar-logo {
-      width: 20px;
-      height: 20px;
-      font-size: 12px;
-      border-radius: 5px;
+    .pma-topbar-brand-logo {
+      height: 26px;
     }
     .pma-topbar-title {
       font-size: 13.5px;
       letter-spacing: -0.1px;
-      white-space: nowrap;
     }
     .pma-topbar-user-area {
-      gap: 6px;
-    }
-    .pma-topbar-user-pill {
-      padding: 2px 6px;
-      gap: 4px;
-      border-radius: 12px;
-    }
-    .pma-topbar-avatar {
-      width: 17px;
-      height: 17px;
-      font-size: 9.5px;
-    }
-    .pma-topbar-name {
-      font-size: 10.5px;
-      max-width: 65px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .pma-topbar-role {
-      font-size: 8.5px;
-      padding: 1px 4px;
-      border-radius: 6px;
-      line-height: 1.1;
-      letter-spacing: 0.2px;
-    }
-    .pma-topbar-signout {
-      padding: 2px 6px;
-      font-size: 10.5px;
-      border-radius: 4px;
+      gap: 8px;
     }
   }
 
@@ -166,20 +84,11 @@ const GLOBAL_STYLES = `
     .pma-topbar {
       padding: 6px 8px;
     }
+    .pma-topbar-brand-logo {
+      height: 22px;
+    }
     .pma-topbar-title {
       font-size: 12px;
-    }
-    .pma-topbar-name {
-      max-width: 45px;
-      font-size: 9.5px;
-    }
-    .pma-topbar-role {
-      font-size: 8px;
-      padding: 0.5px 3.5px;
-    }
-    .pma-topbar-signout {
-      padding: 2px 5px;
-      font-size: 9.5px;
     }
   }
 `;
@@ -199,10 +108,16 @@ if (typeof document !== "undefined") {
 export default function NavShell({
   activeNav, onHome, onOverview, onTasks, onActivity, onAppLog,
   onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onSettings,
-  homeAlertCount, taskCount, user, onLogout, children
+  homeAlertCount, taskCount, user, onLogout, clients = [], children
 }) {
+  const router = useRouter();
   const [showMore, setShowMore] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [pulseDropdownOpen, setPulseDropdownOpen] = useState(false);
+  const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const [portalClients, setPortalClients] = useState(clients || []);
+  const [clientsLoading, setClientsLoading] = useState(false);
+  const [clientSearch, setClientSearch] = useState("");
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth <= 840);
@@ -211,17 +126,66 @@ export default function NavShell({
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // Close dropdown when clicking outside
+  // Fetch authorized portal clients if not already provided
   useEffect(() => {
-    if (!showMore) return;
+    if (clients && clients.length > 0) {
+      setPortalClients(clients);
+      return;
+    }
+    if (!user) return;
+    setClientsLoading(true);
+    fetch("/api/portal/clients")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.success && Array.isArray(d.clients)) {
+          setPortalClients(d.clients);
+        }
+      })
+      .catch((e) => console.error("NavShell: failed to fetch clients", e))
+      .finally(() => setClientsLoading(false));
+  }, [clients, user]);
+
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    if (!showMore && !pulseDropdownOpen && !profileDropdownOpen) return;
     const close = (e) => {
-      if (!e.target.closest(".nav-more-dropdown") && !e.target.closest(".nav-more-btn")) {
+      if (showMore && !e.target.closest(".nav-more-dropdown") && !e.target.closest(".nav-more-btn")) {
         setShowMore(false);
       }
+      if (pulseDropdownOpen && !e.target.closest(".pma-pulse-dropdown") && !e.target.closest(".pma-pulse-btn")) {
+        setPulseDropdownOpen(false);
+      }
+      if (profileDropdownOpen && !e.target.closest(".pma-profile-dropdown") && !e.target.closest(".pma-profile-btn")) {
+        setProfileDropdownOpen(false);
+      }
     };
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [showMore]);
+    const handleKey = (e) => {
+      if (e.key === "Escape") {
+        setShowMore(false);
+        setPulseDropdownOpen(false);
+        setProfileDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [showMore, pulseDropdownOpen, profileDropdownOpen]);
+
+  const handleSelectPulseClient = (client) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("pulse_portal_client", client.clientName);
+      localStorage.setItem("pulse_portal_active_client_obj", JSON.stringify(client));
+    }
+    setPulseDropdownOpen(false);
+    router.push(`/pulse?client=${encodeURIComponent(client.clientName)}`);
+  };
+
+  const filteredClients = portalClients.filter((c) =>
+    c.clientName?.toLowerCase().includes(clientSearch.toLowerCase().trim())
+  );
 
   const Badge = ({ count }) => count > 0 ? (
     <span style={{
@@ -263,57 +227,262 @@ export default function NavShell({
       <style dangerouslySetInnerHTML={{ __html: GLOBAL_STYLES }} />
       <div className="pma-topbar">
         <div className="pma-topbar-brand">
-          <div className="pma-topbar-logo">P</div>
-          <span className="pma-topbar-title">Pulse Management Area</span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/pulselogo-transparent.png"
+            alt="Pulse"
+            className="pma-topbar-brand-logo"
+            style={{
+              height: "32px",
+              width: "auto",
+              display: "block",
+              flexShrink: 0
+            }}
+          />
+          <span className="pma-topbar-title">Management Area</span>
         </div>
         {user && (
-          <div className="pma-topbar-user-area">
-            <div className="pma-topbar-user-pill">
-              <div className="pma-topbar-avatar">
-                {(user.name || user.email || "U")[0].toUpperCase()}
-              </div>
-              <span className="pma-topbar-name" title={user.name || user.email}>{user.name || user.email}</span>
-              <span
-                className="pma-topbar-role"
-                style={{
-                  background: user.isAdmin ? "rgba(56, 189, 248, 0.2)" : "rgba(245, 158, 11, 0.2)",
-                  color: user.isAdmin ? "#7dd3fc" : "#fcd34d",
-                }}
-              >
-                {user.isAdmin ? "Admin" : (Array.isArray(user.assignedClients) ? `${user.assignedClients.length} clients` : "User")}
-              </span>
-            </div>
-            <Link href="/pulse" style={{ textDecoration: "none" }}>
+          <div className="pma-topbar-user-area" style={{ position: "relative" }}>
+            {/* Pulse Button with Client Chooser Dropdown */}
+            <div style={{ position: "relative" }}>
               <button
-                className="pma-topbar-signout"
+                type="button"
+                className="pma-pulse-btn triage-btn"
+                onClick={() => {
+                  setPulseDropdownOpen((v) => !v);
+                  setProfileDropdownOpen(false);
+                }}
                 style={{
                   background: "#0047AB",
-                  borderColor: "#0047AB",
+                  border: "1px solid #0047AB",
+                  borderRadius: "6px",
                   color: "#ffffff",
-                  fontWeight: 600
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  padding: "5px 12px",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  transition: "all 0.15s ease",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.2)"
                 }}
-                onMouseEnter={e => { e.currentTarget.style.background = "#003b8e"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = "#0047AB"; }}
-                title="Open Client Portal View"
+                onMouseEnter={(e) => { e.currentTarget.style.background = "#003b8e"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "#0047AB"; }}
+                title="Select client to visit in Pulse"
               >
-                Pulse →
+                <span>Pulse</span>
+                <span style={{ fontSize: "10px", opacity: 0.85, lineHeight: 1 }}>{pulseDropdownOpen ? "▲" : "▼"}</span>
               </button>
-            </Link>
-            {onLogout && (
+
+              {pulseDropdownOpen && (
+                <div
+                  className="pma-pulse-dropdown"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 8px)",
+                    right: 0,
+                    background: "#ffffff",
+                    borderRadius: "8px",
+                    boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.15)",
+                    border: "1px solid #cbd5e1",
+                    zIndex: 1000,
+                    minWidth: "220px",
+                    maxWidth: "280px",
+                    overflow: "hidden"
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: "0.55rem 0.85rem",
+                      fontSize: "11px",
+                      fontWeight: 700,
+                      color: "#64748b",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.5px",
+                      borderBottom: "1px solid #e2e8f0",
+                      background: "#f8fafc"
+                    }}
+                  >
+                    Select Client
+                  </div>
+
+                  {portalClients.length > 5 && (
+                    <div style={{ padding: "6px 8px", borderBottom: "1px solid #e2e8f0", background: "#ffffff" }}>
+                      <input
+                        type="text"
+                        placeholder="Search client..."
+                        value={clientSearch}
+                        onChange={(e) => setClientSearch(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          width: "100%",
+                          padding: "5px 8px",
+                          fontSize: "12px",
+                          borderRadius: "4px",
+                          border: "1px solid #cbd5e1",
+                          outline: "none",
+                          boxSizing: "border-box",
+                          fontFamily: "inherit"
+                        }}
+                        autoFocus
+                      />
+                    </div>
+                  )}
+
+                  <div style={{ maxHeight: "280px", overflowY: "auto" }}>
+                    {clientsLoading ? (
+                      <div style={{ padding: "14px", fontSize: "13px", color: "#64748b", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+                        <Spinner size={14} color="#0047AB" /> Loading clients...
+                      </div>
+                    ) : filteredClients.length === 0 ? (
+                      <div style={{ padding: "14px", fontSize: "13px", color: "#94a3b8", textAlign: "center" }}>
+                        No clients found
+                      </div>
+                    ) : (
+                      filteredClients.map((c) => (
+                        <button
+                          key={c.clientName}
+                          type="button"
+                          onClick={() => handleSelectPulseClient(c)}
+                          style={{
+                            width: "100%",
+                            padding: "8px 14px",
+                            textAlign: "left",
+                            fontSize: "13px",
+                            fontWeight: 500,
+                            color: "#1e293b",
+                            background: "transparent",
+                            border: "none",
+                            borderBottom: "1px solid #f1f5f9",
+                            cursor: "pointer",
+                            display: "block",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            transition: "background 0.12s, color 0.12s"
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.background = "#f0f7ff";
+                            e.currentTarget.style.color = "#0047AB";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = "transparent";
+                            e.currentTarget.style.color = "#1e293b";
+                          }}
+                        >
+                          {c.clientName}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Profile Menu Button */}
+            <div style={{ position: "relative" }}>
               <button
-                className="pma-topbar-signout"
-                onClick={onLogout}
-                onMouseEnter={e => { e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)"; e.currentTarget.style.borderColor = "#ef4444"; e.currentTarget.style.color = "#fca5a5"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)"; e.currentTarget.style.color = "#cbd5e1"; }}
-                title="Sign out of Pulse"
+                type="button"
+                className="pma-profile-btn triage-btn"
+                onClick={() => {
+                  setProfileDropdownOpen((v) => !v);
+                  setPulseDropdownOpen(false);
+                }}
+                style={{
+                  background: "rgba(255, 255, 255, 0.15)",
+                  border: "1px solid rgba(255, 255, 255, 0.25)",
+                  color: "#ffffff",
+                  width: "32px",
+                  height: "32px",
+                  borderRadius: "50%",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontWeight: 700,
+                  fontSize: "13px",
+                  transition: "background 0.15s"
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255, 255, 255, 0.25)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255, 255, 255, 0.15)"; }}
+                title={user?.email || "Account"}
               >
-                Sign out
+                {(user?.name || user?.email || "U")[0].toUpperCase()}
               </button>
-            )}
+
+              {profileDropdownOpen && (
+                <div
+                  className="pma-profile-dropdown"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 8px)",
+                    right: 0,
+                    background: "#ffffff",
+                    borderRadius: "8px",
+                    boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.15)",
+                    border: "1px solid #cbd5e1",
+                    zIndex: 1000,
+                    minWidth: "220px",
+                    padding: "0.5rem 0"
+                  }}
+                >
+                  <div style={{ padding: "0.5rem 1rem", borderBottom: "1px solid #e2e8f0" }}>
+                    <div style={{ fontSize: "14px", fontWeight: 700, color: "#1e293b" }}>
+                      {user?.name || "User"}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {user?.email}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: "0.5rem 1rem",
+                      fontSize: "11px",
+                      color: "#94a3b8",
+                      lineHeight: "1.4"
+                    }}
+                  >
+                    <div>Pulse v{SYSTEM_VERSION}</div>
+                    <div style={{ marginTop: "2px" }}>{getSystemCopyright()}</div>
+                  </div>
+
+                  {onLogout && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProfileDropdownOpen(false);
+                        onLogout();
+                      }}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        padding: "0.65rem 1rem",
+                        fontSize: "13px",
+                        fontWeight: 600,
+                        color: "#ef4444",
+                        background: "transparent",
+                        border: "none",
+                        borderTop: "1px solid #e2e8f0",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        transition: "background 0.15s"
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = "#fee2e2"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                    >
+                      Sign out
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
-      <div style={{
+      <div className="pma-navbar" style={{
         background: "#fff",
         borderBottom: "1px solid #e0e0e0",
         padding: "0 8px",

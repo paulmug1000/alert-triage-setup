@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { matchesClientName } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, sanitizeFormulaInput } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -31,36 +31,40 @@ export default async function handler(req, res) {
     });
   }
 
-  // Authorization check
-  if (!sessionUser.isAdmin && clientName) {
-    const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-    const isAuthorized = assignedList.some((assigned) => matchesClientName(assigned, clientName));
-    if (!isAuthorized) {
-      return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client" });
-    }
-  }
-
-  const isSenior = sessionUser.isSenior || sessionUser.role === "Senior (Restricted)" || String(sessionUser.role || "").toLowerCase().includes("senior");
-  if (isSenior) {
-    const sLower = String(sheetName || "").toLowerCase();
-    if (sLower.includes("salar") || sLower.includes("divid")) {
-      return res.status(403).json({ success: false, error: "Forbidden: Senior users cannot modify salaries or dividends" });
-    }
-  }
-
   try {
     const sheets = await getSheetsClient();
 
-    // Prepare batch update data
+    // Universal Fail-Closed Authorization Guard: binds sheetId to tenant identity
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error });
+    }
+    const verifiedClientName = auth.clientName;
+
+    const isSenior = sessionUser.isSenior || sessionUser.role === "Senior (Restricted)" || String(sessionUser.role || "").toLowerCase().includes("senior");
+    if (isSenior) {
+      const sLower = String(sheetName || "").toLowerCase();
+      if (sLower.includes("salar") || sLower.includes("divid")) {
+        return res.status(403).json({ success: false, error: "Forbidden: Senior users cannot modify salaries or dividends" });
+      }
+    }
+
+    function sanitizeCell(v) {
+      if (Array.isArray(v)) return v.map(sanitizeCell);
+      return sanitizeFormulaInput(v);
+    }
+
+    // Prepare batch update data with formula injection neutralization
     const data = updates.map((u) => {
       // u: { range: "Salaries!A3:I3" or cell coordinate "C5", values: [["..."]] or [val] }
       let fullRange = u.range;
       if (!fullRange.includes("!")) {
         fullRange = `${sheetName}!${fullRange}`;
       }
+      const rawValues = Array.isArray(u.values) ? u.values : [[u.value]];
       return {
         range: fullRange,
-        values: Array.isArray(u.values) ? u.values : [[u.value]],
+        values: rawValues.map(row => (Array.isArray(row) ? row.map(sanitizeCell) : [sanitizeCell(row)])),
       };
     });
 
@@ -104,13 +108,13 @@ export default async function handler(req, res) {
       const summary = `Updated ${sheetName} (${data.length} cell${data.length > 1 ? "s" : ""} updated)`;
 
       await logPulseActivity(sheets, {
-        clientName: clientName || "Client",
+        clientName: verifiedClientName || clientName || "Client",
         category,
         action,
         summary,
         details: {
           sheetName,
-          clientName,
+          clientName: verifiedClientName || clientName,
           cellCount: data.length
         },
         user: sessionUser.name || sessionUser.email

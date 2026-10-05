@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { matchesClientName } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -40,16 +40,15 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "Valid clientSheetId and confirmedRow (>= 2) are required" });
   }
 
-  if (!sessionUser.isAdmin && clientName) {
-    const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-    const isAuthorized = assignedList.some((assigned) => matchesClientName(assigned, clientName));
-    if (!isAuthorized) {
-      return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client" });
-    }
-  }
-
   try {
     const sheets = await getSheetsClient();
+
+    // Universal Fail-Closed Authorization Guard: binds sheetId to tenant identity
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error });
+    }
+    const verifiedClientName = auth.clientName;
 
     // 1. Get sheet metadata
     const metaResp = await withRetry(() =>
@@ -412,7 +411,7 @@ export default async function handler(req, res) {
     // 9. Log Activity
     try {
       await logPulseActivity(sheets, {
-        clientName: clientName || parentClient || "Client",
+        clientName: verifiedClientName || clientName || parentClient || "Client",
         category: "JOB",
         action: "JOB_UNCONFIRMED",
         summary: `Unconfirmed job: "${parentJobName || "Job"}" (Confirmed row ${cRow} → Pipeline row ${pipelineRow})`,

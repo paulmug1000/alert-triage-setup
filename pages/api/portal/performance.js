@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { matchesClientName } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 
@@ -41,13 +41,12 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "clientSheetId is required" });
   }
 
-  // Authorization check
-  if (!sessionUser.isAdmin && clientName) {
-    const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-    const isAuthorized = assignedList.some((assigned) => matchesClientName(assigned, clientName));
-    if (!isAuthorized) {
-      return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client" });
-    }
+  const sheets = await getSheetsClient();
+
+  // Universal Fail-Closed Authorization Guard: binds sheetId to tenant identity
+  const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+  if (!auth.authorized) {
+    return res.status(auth.status || 403).json({ success: false, error: auth.error });
   }
 
   const cacheKey = `pulse:portal:performance:${clientSheetId}`;
@@ -86,8 +85,6 @@ export default async function handler(req, res) {
 
   // 2. Fetch fresh data from Google Sheets API
   try {
-    const sheets = await getSheetsClient();
-
     const [formattedResp, mathResp] = await Promise.all([
       withRetry(() =>
         sheets.spreadsheets.values.batchGet({

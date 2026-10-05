@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import Spinner from "../Spinner";
 
 export default function CompanyChooser({
   clients = [],
@@ -8,6 +9,7 @@ export default function CompanyChooser({
   onCancel = null
 }) {
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectingClientName, setSelectingClientName] = useState(null);
 
   const filteredClients = clients.filter(c =>
     (c.clientName || "").toLowerCase().includes(searchTerm.toLowerCase().trim())
@@ -176,10 +178,13 @@ export default function CompanyChooser({
                   <button
                     key={client.clientName}
                     type="button"
-                    onClick={() => onSelectClient(client)}
+                    onClick={() => {
+                      setSelectingClientName(client.clientName);
+                      onSelectClient(client);
+                    }}
                     style={{
                       background: "#ffffff",
-                      border: "1.5px solid #e2e8f0",
+                      border: selectingClientName === client.clientName ? "1.5px solid #0047AB" : "1.5px solid #e2e8f0",
                       borderRadius: "12px",
                       padding: "1.25rem 1.25rem",
                       cursor: "pointer",
@@ -199,7 +204,9 @@ export default function CompanyChooser({
                       if (arrow) arrow.style.transform = "translateX(3px)";
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = "#e2e8f0";
+                      if (selectingClientName !== client.clientName) {
+                        e.currentTarget.style.borderColor = "#e2e8f0";
+                      }
                       e.currentTarget.style.boxShadow = "0 2px 6px rgba(0, 0, 0, 0.04)";
                       e.currentTarget.style.transform = "translateY(0)";
                       const arrow = e.currentTarget.querySelector(".client-arrow");
@@ -250,10 +257,16 @@ export default function CompanyChooser({
                         fontSize: "18px",
                         fontWeight: 700,
                         transition: "transform 0.15s ease",
-                        flexShrink: 0
+                        flexShrink: 0,
+                        display: "flex",
+                        alignItems: "center"
                       }}
                     >
-                      →
+                      {selectingClientName === client.clientName ? (
+                        <Spinner size={18} color="#0047AB" />
+                      ) : (
+                        "→"
+                      )}
                     </div>
                   </button>
                 );

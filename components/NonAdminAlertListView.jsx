@@ -199,18 +199,6 @@ export default function NonAdminAlertListView({
                           )}
                         </div>
                         <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
-                          {selectedClient?.clientSheetId && (
-                            <button
-                              className="triage-btn"
-                              onClick={() => {
-                                if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
-                                if (selectedClient.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.masterSheetId}/edit`, "_blank");
-                              }}
-                              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px", color: "#1d4ed8", borderColor: "#93c5fd" }}
-                            >
-                              📊 Open Sheets
-                            </button>
-                          )}
                           {!analysis && !isLoading && (
                             <button className="triage-btn" onClick={() => analyzeNoActionFlag(na)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
                               🔍 Analyse
@@ -385,12 +373,6 @@ export default function NonAdminAlertListView({
                         </div>
                         {!isResolved && (
                           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                            {clientInfo && (clientInfo.clientSheetId || clientInfo.masterSheetId) && (
-                              <button className="triage-btn" onClick={() => {
-                                if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
-                                if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
-                              }} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>📊 Open Sheets</button>
-                            )}
                             <button
                               className="triage-btn"
                               onClick={() => openCreateTaskModal(na, false, true)}
@@ -640,18 +622,6 @@ export default function NonAdminAlertListView({
                           const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
                           return (
                             <>
-                              {(clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
-                                <button
-                                  className="triage-btn"
-                                  onClick={() => {
-                                    if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
-                                    if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
-                                  }}
-                                  style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}
-                                >
-                                  📊 Open Sheets
-                                </button>
-                              )}
                               {alert.alertType === "expenseDashboardDiscr" && clientInfo && (
                                 <button className="triage-btn" onClick={() => setActiveNav("outgoings")} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#059669", borderColor: "#6ee7b7" }}>📤 Assign Expense</button>
                               )}

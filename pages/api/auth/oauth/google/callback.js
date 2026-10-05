@@ -34,11 +34,11 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
   </div>
   <script>
     if (window.opener) {
-      var targetOrigin = '*';
+      var targetOrigin = window.location.origin;
       try {
         if (document.referrer) {
           var ref = new URL(document.referrer).origin;
-          if (ref === 'https://script.google.com' || ref.endsWith('.googleusercontent.com') || ref.endsWith('.pulsedashboard.co.uk')) {
+          if (ref === 'https://script.google.com' || ref.endsWith('.googleusercontent.com') || ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
             targetOrigin = ref;
           }
         }
@@ -72,11 +72,11 @@ function renderPopupResponse(res, { email, provider, ssoToken, error }) {
   <script>
     try {
       if (window.opener) {
-        var targetOrigin = '*';
+        var targetOrigin = window.location.origin;
         try {
           if (document.referrer) {
             var ref = new URL(document.referrer).origin;
-            if (ref === 'https://script.google.com' || ref.endsWith('.googleusercontent.com') || ref.endsWith('.pulsedashboard.co.uk')) {
+            if (ref === 'https://script.google.com' || ref.endsWith('.googleusercontent.com') || ref.endsWith('.pulsedashboard.co.uk') || ref === window.location.origin) {
               targetOrigin = ref;
             }
           }

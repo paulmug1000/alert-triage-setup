@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
-import { matchesClientName } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, sanitizeFormulaInput } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
@@ -20,32 +20,32 @@ function colToLetter(colIndex) {
 const parseMoney = (val) => {
   if (val === undefined || val === null || val === "") return "";
   const num = parseFloat(String(val).replace(/[£$€,\s]/g, ""));
-  return isNaN(num) ? val : num;
+  return isNaN(num) ? sanitizeFormulaInput(String(val)) : num;
 };
 
 const formatDate = (val) => {
   if (!val) return "";
   const str = String(val).trim();
   if (!str) return "";
-  return str;
+  return sanitizeFormulaInput(str);
 };
 
 const parseNumber = (val, defaultVal = "") => {
   if (val === undefined || val === null || val === "") return defaultVal;
   const num = parseFloat(String(val).replace(/[£$€,\s%]/g, ""));
-  return isNaN(num) ? val : num;
+  return isNaN(num) ? sanitizeFormulaInput(String(val)) : num;
 };
 
 const parseText = (val) => {
   if (val === undefined || val === null) return "";
-  return String(val).trim();
+  return sanitizeFormulaInput(String(val).trim());
 };
 
 const parseStatus = (val) => {
   if (val === undefined || val === null) return "";
   const s = String(val).trim();
   if (s.toLowerCase() === "pending") return "";
-  return s;
+  return sanitizeFormulaInput(s);
 };
 
 /**
@@ -304,17 +304,15 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "clientSheetId and job object are required" });
   }
 
-  // Authorization check
-  if (!sessionUser.isAdmin && clientName) {
-    const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-    const isAuthorized = assignedList.some((assigned) => matchesClientName(assigned, clientName));
-    if (!isAuthorized) {
-      return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client" });
-    }
-  }
-
   try {
     const sheets = await getSheetsClient();
+
+    // Universal Fail-Closed Authorization Guard: binds sheetId to tenant identity
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error });
+    }
+    const verifiedClientName = auth.clientName;
 
     // 1. Determine target sheet name and sheet metadata
     const isTargetConfirmed = String(job.type || "").toLowerCase() === "confirmed";
@@ -769,7 +767,7 @@ export default async function handler(req, res) {
         : `Updated job: "${jobName}" (${sheetName})`;
 
       await logPulseActivity(sheets, {
-        clientName: clientName || "Client",
+        clientName: verifiedClientName || clientName || "Client",
         category: "JOB",
         action,
         summary,

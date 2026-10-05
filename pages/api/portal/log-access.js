@@ -1,6 +1,6 @@
 import { getSessionUser } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
-import { matchesClientName } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, isUserAuthorizedForClient } from "../../../services/userPermissions.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
 
 export default async function handler(req, res) {
@@ -15,21 +15,23 @@ export default async function handler(req, res) {
 
   const { clientName, clientSheetId, action = "PORTAL_ENTERED" } = req.body || {};
 
-  if (!clientName) {
-    return res.status(400).json({ success: false, error: "clientName is required" });
-  }
-
-  // Authorization check for non-admin users
-  if (!sessionUser.isAdmin) {
-    const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
-    const isAuthorized = assignedList.some(assigned => matchesClientName(assigned, clientName));
-    if (!isAuthorized) {
-      return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client" });
-    }
+  if (!clientName && !clientSheetId) {
+    return res.status(400).json({ success: false, error: "clientName or clientSheetId is required" });
   }
 
   try {
     const sheets = await getSheetsClient();
+
+    let targetClient = (clientName || "").trim();
+    if (clientSheetId) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+      if (!auth.authorized) {
+        return res.status(auth.status || 403).json({ success: false, error: auth.error });
+      }
+      targetClient = auth.clientName;
+    } else if (!isUserAuthorizedForClient(sessionUser, targetClient)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client" });
+    }
     const forwarded = req.headers["x-forwarded-for"];
     const clientIp = (typeof forwarded === "string" ? forwarded.split(",")[0] : forwarded?.[0])?.trim() || req.socket?.remoteAddress || "-";
 

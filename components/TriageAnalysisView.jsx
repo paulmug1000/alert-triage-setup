@@ -72,7 +72,7 @@ export default function TriageAnalysisView({
               info = allClientsMap[selectedClient.clientName] || selectedClient;
             }
 
-            if (!info?.clientSheetId && !info?.masterSheetId) return null;
+            if (!isAdmin || (!info?.clientSheetId && !info?.masterSheetId)) return null;
             return (
               <button className="triage-btn" onClick={() => {
                 if (info.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.clientSheetId}/edit`, "_blank");
@@ -978,7 +978,7 @@ export default function TriageAnalysisView({
           >
             📋 Create Task
           </button>
-          {(selectedClient?.clientSheetId || selectedClient?.masterSheetId) && (
+          {isAdmin && (selectedClient?.clientSheetId || selectedClient?.masterSheetId) && (
             <button className="triage-btn"
               onClick={() => {
                 const clientUrl = selectedClient.clientSheetId

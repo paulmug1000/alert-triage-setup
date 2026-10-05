@@ -11,7 +11,8 @@ import { isPlaceholderExpense } from "../utils/helpers";
 
 export default function OutgoingsView({
   allOutgoingsClients,
-  styles
+  styles,
+  isAdmin = false
 }) {
   const {
     automationCommanderSheetId, assignedAppIds, assignedByClient,
@@ -247,7 +248,7 @@ export default function OutgoingsView({
           <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
             {outgoingsClient ? outgoingsClient.clientName : "Contractors"}
           </h2>
-          {outgoingsClient && (
+          {isAdmin && outgoingsClient && (
             <button className="triage-btn"
               onClick={() => {
                 if (outgoingsClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${outgoingsClient.clientSheetId}/edit`, "_blank");

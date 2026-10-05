@@ -302,6 +302,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
           allOutgoingsClients={allOutgoingsClients}
           styles={styles}
           withModal={withModal}
+          isAdmin={isAdmin}
         />
       );
     }
@@ -493,6 +494,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
         taskCount={navTaskCount}
         user={user}
         onLogout={logout}
+        clients={allOutgoingsClients}
       >
         {renderActiveView()}
       </NavShell>

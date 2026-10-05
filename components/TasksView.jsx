@@ -448,7 +448,7 @@ export default function TasksView({
             {(() => {
               const clientSheetId = taskAlert.clientId || allClientsMap[selectedTask.clientName]?.clientSheetId;
               const masterSheetId = taskAlert.masterSheetId || allClientsMap[selectedTask.clientName]?.masterSheetId;
-              if (!clientSheetId && !masterSheetId) return null;
+              if (!isAdmin || (!clientSheetId && !masterSheetId)) return null;
               return (
                 <button className="triage-btn"
                   onClick={() => {

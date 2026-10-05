@@ -145,6 +145,60 @@ export default async function handler(req, res) {
     // Handle both POST (req.body) and GET (req.query) requests
     const action = req.method === "GET" ? req.query.action : req.body.action;
     const automationCommanderSheetId = req.body?.automationCommanderSheetId || req.query?.automationCommanderSheetId;
+
+    // Enforce POST for all state-mutating actions
+    const READ_ONLY_ACTIONS = new Set([
+      "get_session",
+      "get_alerts",
+      "get_precomputed",
+      "get_ignored_alerts",
+      "get_proactive_alerts",
+      "get_activity",
+      "get_client_view_data",
+      "get_cashflow_recon_data",
+      "get_users",
+      "get_user_preferences",
+      "get_tasks",
+      "check_existing_task",
+      "get_app_log",
+      "get_flag_sweep_log",
+      "get_precompute_log",
+      "get_build_options_log",
+      "get_security_audit_log",
+      "get_security_audit_logs",
+      "get_claude_settings",
+      "check_claude_budget",
+      "get_sweep_schedule",
+      "get_agent_run_progress",
+      "get_all_clients",
+      "get_assigned_expenses",
+      "get_outgoings_inbox",
+      "get_invoices_inbox",
+      "get_outgoings",
+      "get_direct_costs_jobs",
+      "get_invoice_jobs",
+      "get_all_client_jobs",
+      "get_retainer_jobs",
+      "eom_get_templates",
+      "eom_get_excluded_clients",
+      "eom_get_client_tasks",
+      "eom_get_client_detail",
+      "eom_get_month_status",
+      "eom_get_bank_accounts",
+      "eom_get_cash_balance_progress",
+      "eom_get_pl_comp_data",
+      "get_cash_cells",
+      "get_cash_inbox",
+      "get_cash_adjustments"
+    ]);
+
+    if (req.method === "GET" && !READ_ONLY_ACTIONS.has(action)) {
+      return res.status(405).json({
+        success: false,
+        error: `Method Not Allowed: Action '${action}' modifies state and requires POST.`
+      });
+    }
+
     const sheets = await getSheetsClient();
 
     console.log(`\n📍 API Request: method=${req.method}, action=${action}, bodyKeys=${Object.keys(req.body || {}).join(",")}, bodySize=${JSON.stringify(req.body || {}).length}`);

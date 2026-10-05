@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine } from "../../services/deepDiveHelper";
+import PerformanceTrajectoryChartRow from "./PerformanceTrajectoryChartRow";
 
 export default function PerformanceYTDView({
   clientName,
@@ -17,6 +18,28 @@ export default function PerformanceYTDView({
   const [activePopover, setActivePopover] = useState(null);
   const activeYearIdx = selectedYearIdx !== null ? selectedYearIdx : (data?.currentYearIdx !== undefined ? data.currentYearIdx : (years.length > 1 ? 1 : 0));
   const activeYear = years[activeYearIdx];
+
+  const tableScrollRef = useRef(null);
+  const chartScrollRef = useRef(null);
+  const isSyncingScrollRef = useRef(false);
+
+  const handleTableScroll = () => {
+    if (isSyncingScrollRef.current) return;
+    isSyncingScrollRef.current = true;
+    if (chartScrollRef.current && tableScrollRef.current) {
+      chartScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
+    }
+    isSyncingScrollRef.current = false;
+  };
+
+  const handleChartScroll = () => {
+    if (isSyncingScrollRef.current) return;
+    isSyncingScrollRef.current = true;
+    if (tableScrollRef.current && chartScrollRef.current) {
+      tableScrollRef.current.scrollLeft = chartScrollRef.current.scrollLeft;
+    }
+    isSyncingScrollRef.current = false;
+  };
 
   // Determine previous calendar month cutoff
   const defaultMonthCutoff = useMemo(() => {
@@ -262,6 +285,11 @@ export default function PerformanceYTDView({
   const ytdOverheadsTotal = ytdOverheadsRow?.ytdTotalVal || 0;
   const ytdOpTotal = ytdOpRow?.ytdTotalVal || 0;
   const ytdStaffTotal = (ytdStaffDelRow?.ytdTotalVal || 0) + (ytdStaffNonDelRow?.ytdTotalVal || 0);
+
+  // Trajectory series extraction
+  const chartRevVals = (ytdRevRow?.monthVals || []).map(parseNum);
+  const chartGpVals = (ytdGpRow?.monthVals || []).map(parseNum);
+  const chartOpVals = (ytdOpRow?.monthVals || []).map(parseNum);
 
   const ytdGpMarginPct = ytdRevTotal > 0 ? ytdGpTotal / ytdRevTotal : 0;
   const ytdOverheadsPct = ytdRevTotal > 0 ? ytdOverheadsTotal / ytdRevTotal : 0;
@@ -511,6 +539,8 @@ export default function PerformanceYTDView({
 
         <div
           className="fy-table-scroll-wrapper"
+          ref={tableScrollRef}
+          onScroll={handleTableScroll}
           style={{
             background: "#ffffff",
             borderRadius: "8px",
@@ -989,6 +1019,18 @@ export default function PerformanceYTDView({
         </button>
       )}
     </div>
+
+      {/* Performance Trajectory Chart sitting below the table with 3x white space */}
+      <PerformanceTrajectoryChartRow
+        months={displayedMonths}
+        statuses={(activeYear.statusValues || activeYear.monthStatuses || []).slice(0, displayedMonths.length)}
+        revenue={chartRevVals}
+        grossProfit={chartGpVals}
+        operatingProfit={chartOpVals}
+        layout="ytd"
+        scrollRef={chartScrollRef}
+        onScroll={handleChartScroll}
+      />
 
       <style jsx>{`
         @media (orientation: landscape) and (max-width: 1024px) {

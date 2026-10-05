@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine } from "../../services/deepDiveHelper";
+import PerformanceTrajectoryChartRow from "./PerformanceTrajectoryChartRow";
 
 export default function PerformanceFYView({
   clientName,
@@ -20,6 +21,28 @@ export default function PerformanceFYView({
   const defaultYearIdx = data?.currentYearIdx !== undefined ? data.currentYearIdx : (years.length > 1 ? 1 : 0);
   const activeYearIdx = selectedYearIdx !== null ? Math.min(Math.max(0, selectedYearIdx), Math.max(0, years.length - 1)) : defaultYearIdx;
   const activeYear = years[activeYearIdx];
+
+  const tableScrollRef = useRef(null);
+  const chartScrollRef = useRef(null);
+  const isSyncingScrollRef = useRef(false);
+
+  const handleTableScroll = () => {
+    if (isSyncingScrollRef.current) return;
+    isSyncingScrollRef.current = true;
+    if (chartScrollRef.current && tableScrollRef.current) {
+      chartScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
+    }
+    isSyncingScrollRef.current = false;
+  };
+
+  const handleChartScroll = () => {
+    if (isSyncingScrollRef.current) return;
+    isSyncingScrollRef.current = true;
+    if (tableScrollRef.current && chartScrollRef.current) {
+      tableScrollRef.current.scrollLeft = chartScrollRef.current.scrollLeft;
+    }
+    isSyncingScrollRef.current = false;
+  };
 
   if (isLoading && !data) {
     return (
@@ -95,13 +118,42 @@ export default function PerformanceFYView({
     });
   };
 
+  // Parse numerical money string (e.g. "£45,270" -> 45270, "(£12,000)" -> -12000)
+  const parseNum = (val) => {
+    if (typeof val === "number") return isNaN(val) ? 0 : val;
+    if (!val) return 0;
+    let clean = String(val).replace(/[£,\s]/g, "").trim();
+    let isNegative = false;
+    if (clean.startsWith("(") && clean.endsWith(")")) {
+      isNegative = true;
+      clean = clean.slice(1, -1);
+    } else if (clean.startsWith("-")) {
+      isNegative = true;
+      clean = clean.slice(1);
+    }
+    const n = parseFloat(clean);
+    if (isNaN(n)) return 0;
+    return isNegative ? -n : n;
+  };
+
   const totalRevRow = findRow(["total income", "total revenue", "income"]);
-  const grossProfitRow = findRow(["gross profit"]);
+  const grossProfitRow = activeYear.rows?.find((r) => {
+    const l = String(r.label || "").toLowerCase().trim();
+    return l === "gross profit";
+  });
   const gpMarginRow = findRow(["gross profit margin"]);
   const overheadsRow = findRow(["total overheads", "overheads"]);
   const overheadsPctRow = findRow(["overheads as %"]);
-  const opProfitRow = findRow(["operating profit"]);
+  const opProfitRow = activeYear.rows?.find((r) => {
+    const l = String(r.label || "").toLowerCase().trim();
+    return l === "operating profit";
+  });
   const opMarginRow = findRow(["operating profit %"]);
+
+  // Trajectory chart values
+  const chartRevVals = (totalRevRow?.monthlyValues || []).map(parseNum);
+  const chartGpVals = (grossProfitRow?.monthlyValues || []).map(parseNum);
+  const chartOpVals = (opProfitRow?.monthlyValues || []).map(parseNum);
 
   // Threshold margin styling
   const getMarginBadgeStyle = (label, valStr) => {
@@ -408,6 +460,8 @@ export default function PerformanceFYView({
         {/* Scrollable Table Container */}
         <div
           className="fy-table-scroll-wrapper"
+          ref={tableScrollRef}
+          onScroll={handleTableScroll}
           style={{
             background: "#ffffff",
             borderRadius: "8px",
@@ -881,6 +935,18 @@ export default function PerformanceFYView({
         </button>
       )}
     </div>
+
+      {/* Performance Trajectory Chart sitting below the table with 3x white space */}
+      <PerformanceTrajectoryChartRow
+        months={activeYear.headerMonths || []}
+        statuses={activeYear.statusValues || activeYear.monthStatuses || []}
+        revenue={chartRevVals}
+        grossProfit={chartGpVals}
+        operatingProfit={chartOpVals}
+        layout="fy"
+        scrollRef={chartScrollRef}
+        onScroll={handleChartScroll}
+      />
 
       <style jsx>{`
         @media (orientation: landscape) and (max-width: 1024px) {

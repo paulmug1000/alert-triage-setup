@@ -107,7 +107,7 @@ export default function PortalShell({
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src="/pulselogo.png"
+                src="/pulselogo-transparent.png"
                 alt="Pulse"
                 className="portal-brand-logo"
                 style={{

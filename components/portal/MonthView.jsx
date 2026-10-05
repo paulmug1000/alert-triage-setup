@@ -3,6 +3,16 @@ import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney } from "../../services/deepDiveHelper";
 
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export default function MonthView({
   clientName,
   payload,
@@ -235,7 +245,7 @@ export default function MonthView({
       style={{
         width: "100%",
         margin: "0 auto",
-        padding: "0.5rem 1rem 3rem 46px",
+        padding: "0.5rem 0 3rem 0",
         display: "flex",
         flexDirection: "column",
         gap: "1rem"
@@ -385,7 +395,7 @@ export default function MonthView({
                   fontFamily: "'Kumbh Sans', sans-serif",
                 }}
                 dangerouslySetInnerHTML={{
-                  __html: headerSummaryText
+                  __html: escapeHtml(headerSummaryText)
                     .replace(/([£$€¥]\s*\d[\d,]*(?:\.\d+)?)/g, "<strong style='font-weight: 700; color: #0047AB; font-size: 1.2em;'>$1</strong>")
                     .replace(/\n/g, "<br />"),
                 }}
@@ -895,7 +905,7 @@ export default function MonthView({
             boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
             display: "flex",
             flexDirection: "column",
-            flex: 1,
+            flex: "1 1 0%",
             minHeight: 0,
             boxSizing: "border-box",
           }}
@@ -954,10 +964,12 @@ export default function MonthView({
       gap: 20px;
       width: 100%;
       min-width: 0;
+      min-height: 0;
       height: 100%;
     }
     .home-chart-card {
-      flex: 1;
+      flex: 1 1 0%;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
@@ -1253,11 +1265,19 @@ function HomeLineChart({
   };
 
   return (
-    <div style={{ width: "100%", flex: 1, minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-      <div style={{ width: "100%", flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+    <div style={{ width: "100%", flex: "1 1 0%", minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+      <div style={{ position: "relative", width: "100%", flex: "1 1 0%", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <svg
           viewBox={`0 0 ${width} ${height}`}
-          style={{ width: "100%", height: "100%", maxHeight: "440px", display: "block" }}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            maxHeight: "440px",
+            margin: "auto",
+            display: "block"
+          }}
         >
         <defs>
           <linearGradient id="v2RevGrad" x1="0" y1="0" x2="0" y2="1">

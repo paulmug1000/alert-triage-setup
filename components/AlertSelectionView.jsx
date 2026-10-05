@@ -873,7 +873,7 @@ export default function AlertSelectionView({
               if (!info?.clientSheetId && !info?.masterSheetId) {
                 info = allClientsMap[selectedClient.clientName] || selectedClient;
               }
-              if (!info?.clientSheetId && !info?.masterSheetId) return null;
+              if (!isAdmin || (!info?.clientSheetId && !info?.masterSheetId)) return null;
               return (
                 <button className="triage-btn" onClick={() => {
                   if (info.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${info.clientSheetId}/edit`, "_blank");
@@ -1189,7 +1189,7 @@ export default function AlertSelectionView({
                                   )}
                                 </div>
                                 <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
-                                  {selectedClient?.clientSheetId && (
+                                  {isAdmin && selectedClient?.clientSheetId && (
                                     <button className="triage-btn"
                                       onClick={() => {
                                         if (selectedClient.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${selectedClient.clientSheetId}/edit`, "_blank");
@@ -1422,7 +1422,7 @@ export default function AlertSelectionView({
                                 </div>
                                 {!isResolved && (
                                   <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                                    {clientInfo && (clientInfo.clientSheetId || clientInfo.masterSheetId) && (
+                                    {isAdmin && clientInfo && (clientInfo.clientSheetId || clientInfo.masterSheetId) && (
                                       <button className="triage-btn" onClick={() => {
                                         if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
                                         if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");
@@ -1901,7 +1901,7 @@ export default function AlertSelectionView({
                                   const clientInfo = (clientsWithFlags || []).find(c => c.clientName === selectedClient.clientName) || allClientsMap[selectedClient.clientName] || selectedClient;
                                   return (
                                     <>
-                                      {(clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
+                                      {isAdmin && (clientInfo?.clientSheetId || clientInfo?.masterSheetId) && (
                                         <button className="triage-btn" onClick={() => {
                                           if (clientInfo.clientSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.clientSheetId}/edit`, "_blank");
                                           if (clientInfo.masterSheetId) window.open(`https://docs.google.com/spreadsheets/d/${clientInfo.masterSheetId}/edit`, "_blank");

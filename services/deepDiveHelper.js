@@ -23,34 +23,67 @@ export function getThousandsSeparator(customSeparator) {
   return ",";
 }
 
-export function parseMoney(val) {
-  if (typeof val === "number") return val;
+export function parseMoney(val, customThousandsSep) {
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
   if (!val && val !== 0) return 0;
   const rawStr = String(val).trim();
-  if (!rawStr) return 0;
+  if (!rawStr || rawStr === "—" || rawStr === "–" || rawStr === "-") return 0;
 
   const isNeg = rawStr.includes("-") || (rawStr.startsWith("(") && rawStr.endsWith(")"));
   let str = rawStr.replace(/[^0-9.,]/g, ""); // Keep only digits and potential separators
   if (!str) return 0;
 
-  // Smart detection of decimal vs thousands separator regardless of incoming locale
-  let lastComma = str.lastIndexOf(",");
-  let lastDot = str.lastIndexOf(".");
-  let lastSeparator = Math.max(lastComma, lastDot);
+  const thousandsSep = customThousandsSep || getThousandsSeparator();
+  const lastComma = str.lastIndexOf(",");
+  const lastDot = str.lastIndexOf(".");
 
   let result = 0;
-  if (lastSeparator !== -1) {
-    let charsAfter = str.length - 1 - lastSeparator;
-    if (charsAfter === 1 || charsAfter === 2) {
-      // It's a decimal separator (e.g., 1,234.56 or 1.234,56)
-      let wholePart = str.substring(0, lastSeparator).replace(/[.,]/g, "");
-      let decPart = str.substring(lastSeparator + 1);
+
+  // Case 1: Both comma and dot exist -> the last one is always the decimal separator
+  if (lastComma !== -1 && lastDot !== -1) {
+    if (lastDot > lastComma) {
+      // UK/US standard: 1,234.56 or 10,970.83333 -> comma is thousands, dot is decimal
+      const wholePart = str.substring(0, lastDot).replace(/,/g, "");
+      const decPart = str.substring(lastDot + 1);
       result = parseFloat(wholePart + "." + decPart) || 0;
     } else {
-      // It's a thousands separator (e.g., 1,000 or 1.000)
-      result = parseFloat(str.replace(/[.,]/g, "")) || 0;
+      // European standard: 1.234,56 -> dot is thousands, comma is decimal
+      const wholePart = str.substring(0, lastComma).replace(/\./g, "");
+      const decPart = str.substring(lastComma + 1);
+      result = parseFloat(wholePart + "." + decPart) || 0;
+    }
+  } else if (lastDot !== -1) {
+    // Case 2: Only dot exists
+    const dotCount = (str.match(/\./g) || []).length;
+    if (dotCount > 1) {
+      // Multiple dots: e.g. 1.000.000 -> thousands separator
+      result = parseFloat(str.replace(/\./g, "")) || 0;
+    } else {
+      const charsAfter = str.length - 1 - lastDot;
+      // Single dot: e.g. 10970.83333 -> decimal point unless explicitly European '.' separator with exactly 3 digits
+      if (thousandsSep === "." && charsAfter === 3) {
+        result = parseFloat(str.replace(/\./g, "")) || 0;
+      } else {
+        result = parseFloat(str) || 0;
+      }
+    }
+  } else if (lastComma !== -1) {
+    // Case 3: Only comma exists
+    const commaCount = (str.match(/,/g) || []).length;
+    if (commaCount > 1) {
+      result = parseFloat(str.replace(/,/g, "")) || 0;
+    } else {
+      const charsAfter = str.length - 1 - lastComma;
+      if (thousandsSep === "." || charsAfter === 1 || charsAfter === 2) {
+        const wholePart = str.substring(0, lastComma);
+        const decPart = str.substring(lastComma + 1);
+        result = parseFloat(wholePart + "." + decPart) || 0;
+      } else {
+        result = parseFloat(str.replace(/,/g, "")) || 0;
+      }
     }
   } else {
+    // Case 4: No separators
     result = parseFloat(str) || 0;
   }
 
@@ -61,7 +94,7 @@ export function formatMoney(val, decimals = 0, customSymbol, customSeparator) {
   const sym = getCurrencySymbol(customSymbol);
   const sep = getThousandsSeparator(customSeparator);
   if (val === null || val === undefined || val === "" || val === "—") return `${sym}0`;
-  const num = typeof val === "number" ? val : parseMoney(val);
+  const num = typeof val === "number" ? val : parseMoney(val, sep);
   if (isNaN(num)) return `${sym}0`;
 
   const sign = num < 0 ? "-" : "";
@@ -85,7 +118,7 @@ export function formatCurrencyString(val, decimals = null, customSymbol, customS
   const str = String(val).trim();
   if (!str || str === "—") return str;
   if (/^-?[£$€¥]/.test(str) || /^[£$€¥]/.test(str) || /^\(?[£$€¥]/.test(str)) {
-    const parsed = parseMoney(str);
+    const parsed = parseMoney(str, customSeparator);
     const hasDecimals = decimals !== null ? decimals > 0 : Math.abs(parsed % 1) > 0;
     return formatMoney(parsed, hasDecimals ? 2 : 0, customSymbol, customSeparator);
   }

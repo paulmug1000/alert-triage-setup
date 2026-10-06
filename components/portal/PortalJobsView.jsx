@@ -878,37 +878,37 @@ export default function PortalJobsView({
             className="portal-data-table"
             style={{
               width: "100%",
-              minWidth: "820px",
+              minWidth: "880px",
               borderCollapse: "separate",
               borderSpacing: 0,
               fontSize: "13.8px",
               tableLayout: "fixed",
             }}
           >
-            <thead>
+            <thead style={{ background: "#0047AB" }}>
               <tr style={{ background: "#0047AB", color: "#ffffff" }}>
-                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "11%", fontSize: "13.5px" }}>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "10%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   Status
                 </th>
-                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "30%", fontSize: "13.5px" }}>
+                <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, width: "27%", fontSize: "13.5px", background: "#0047AB" }}>
                   Client & Job Name
                 </th>
-                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "8%", fontSize: "13.5px" }}>
+                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "7%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   Type
                 </th>
-                <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "13%", fontSize: "13.5px" }}>
+                <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "13%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   Revenue
                 </th>
-                <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "11%", fontSize: "13.5px" }}>
+                <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "11%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   Direct Costs
                 </th>
-                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px" }}>
+                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   Start Date
                 </th>
-                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px" }}>
+                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   End Date
                 </th>
-                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "7%", fontSize: "13.5px" }}>
+                <th style={{ padding: "10px 10px", textAlign: "center", fontWeight: 700, width: "12%", fontSize: "13.5px", background: "#0047AB", whiteSpace: "nowrap" }}>
                   Likelihood
                 </th>
               </tr>

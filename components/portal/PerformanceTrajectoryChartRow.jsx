@@ -195,6 +195,9 @@ export default function PerformanceTrajectoryChartRow({
         marginTop: "38px",
         background: "transparent",
         border: "none",
+        borderLeft: "1px solid transparent",
+        borderRight: "1px solid transparent",
+        boxSizing: "border-box",
         boxShadow: "none",
         overflowX: "auto",
       }}
@@ -210,6 +213,32 @@ export default function PerformanceTrajectoryChartRow({
           background: "transparent",
         }}
       >
+        <colgroup>
+          <col
+            style={{
+              ...(layout === "fy"
+                ? { width: "19%", minWidth: "19%" }
+                : { width: "240px", minWidth: "240px", maxWidth: "240px" }),
+            }}
+          />
+          {months.map((_, idx) => (
+            <col
+              key={idx}
+              style={{
+                ...(layout === "fy"
+                  ? { width: "6.1%", minWidth: "6.1%" }
+                  : { width: "96px", minWidth: "96px", maxWidth: "96px" }),
+              }}
+            />
+          ))}
+          <col
+            style={{
+              ...(layout === "fy"
+                ? { width: "7.8%", minWidth: "7.8%" }
+                : { width: "110px", minWidth: "110px", maxWidth: "110px" }),
+            }}
+          />
+        </colgroup>
         <tbody>
           <tr>
             {/* Left Column: Y-Axis Ticks (width: 19% on FY, 240px on YTD), clean without box border */}
@@ -272,6 +301,8 @@ export default function PerformanceTrajectoryChartRow({
                 verticalAlign: "top",
                 border: "none",
                 background: "transparent",
+                width: layout === "fy" ? "73.2%" : `${months.length * 96}px`,
+                minWidth: layout === "fy" ? "73.2%" : `${months.length * 96}px`,
               }}
             >
               <div
@@ -755,8 +786,8 @@ export default function PerformanceTrajectoryChartRow({
                 border: "none",
                 background: "transparent",
                 ...(layout === "fy"
-                  ? { width: "7.8%" }
-                  : { width: "110px", minWidth: "110px" }),
+                  ? { width: "7.8%", minWidth: "7.8%" }
+                  : { width: "110px", minWidth: "110px", maxWidth: "110px" }),
               }}
             />
           </tr>

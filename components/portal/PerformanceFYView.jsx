@@ -478,6 +478,13 @@ export default function PerformanceFYView({
               background: "#ffffff",
             }}
           >
+            <colgroup>
+              <col style={{ width: "19%", minWidth: "19%" }} />
+              {activeYear.headerMonths?.map((_, idx) => (
+                <col key={idx} style={{ width: "6.1%", minWidth: "6.1%" }} />
+              ))}
+              <col style={{ width: "7.8%", minWidth: "7.8%" }} />
+            </colgroup>
             <thead>
               {/* Row 1: Month Names & FY Total Header (Signature Cobalt Blue #0047AB) */}
               <tr style={{ background: "#0047AB", color: "#ffffff" }}>

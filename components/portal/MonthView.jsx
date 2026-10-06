@@ -381,6 +381,7 @@ export default function MonthView({
               }}
             >
               <div
+                className="home-exec-title"
                 style={{
                   fontSize: "12px",
                   fontWeight: 700,
@@ -394,6 +395,7 @@ export default function MonthView({
                 Executive Summary
               </div>
               <div
+                className="home-exec-body"
                 style={{
                   color: "#0f294a",
                   fontSize: "19.25px",
@@ -1010,28 +1012,29 @@ export default function MonthView({
         display: contents;
       }
       .home-executive-summary-box {
-        order: 1;
+        order: 1 !important;
         width: 100% !important;
         max-width: 100% !important;
       }
-      .home-glance-card {
-        order: 2;
-      }
-      .home-chart-card {
-        order: 3;
-        flex: none !important;
-        height: auto !important;
-      }
-      .home-chart-svg-wrap {
-        height: 280px !important;
-        min-height: 260px !important;
-      }
       .home-table-container {
-        order: 4;
+        order: 2 !important;
         width: 100% !important;
         display: flex !important;
         justify-content: center !important;
         margin: 0 auto !important;
+      }
+      .home-glance-card {
+        order: 3 !important;
+      }
+      .home-chart-card {
+        order: 4 !important;
+        flex: none !important;
+        height: auto !important;
+        min-height: 340px !important;
+      }
+      :global(.home-chart-svg-wrap) {
+        height: 260px !important;
+        min-height: 240px !important;
       }
       .month-table-wrapper {
         width: auto !important;
@@ -1042,6 +1045,12 @@ export default function MonthView({
     }
 
     @media (max-width: 640px) {
+      .home-exec-title {
+        font-size: 10.8px !important;
+      }
+      .home-exec-body {
+        font-size: 17.3px !important;
+      }
       .glance-grid {
         grid-template-columns: 1fr 1fr !important;
         gap: 16px !important;
@@ -1310,8 +1319,8 @@ function HomeLineChart({
   };
 
   return (
-    <div style={{ width: "100%", flex: "1 1 0%", minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-      <div className="home-chart-svg-wrap" style={{ position: "relative", width: "100%", flex: "1 1 0%", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+    <div style={{ width: "100%", flex: "1 1 auto", minHeight: "260px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+      <div className="home-chart-svg-wrap" style={{ position: "relative", width: "100%", flex: "1 1 auto", minHeight: "240px", height: "260px", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <svg
           viewBox={`0 0 ${width} ${height}`}
           style={{

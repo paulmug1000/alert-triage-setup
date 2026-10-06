@@ -562,12 +562,20 @@ export default function PerformanceYTDView({
           className="fy-main-table"
           style={{
             width: "max-content",
+            tableLayout: "fixed",
             borderCollapse: "separate",
             borderSpacing: 0,
             fontSize: "12px",
             fontFamily: "'Kumbh Sans', sans-serif",
           }}
         >
+          <colgroup>
+            <col style={{ width: "240px", minWidth: "240px", maxWidth: "240px" }} />
+            {displayedMonths.map((_, idx) => (
+              <col key={idx} style={{ width: "96px", minWidth: "96px", maxWidth: "96px" }} />
+            ))}
+            <col style={{ width: "110px", minWidth: "110px", maxWidth: "110px" }} />
+          </colgroup>
           <thead>
             {/* Header Row: Line item, displayed months, YTD Total */}
             <tr style={{ background: "#0047AB", color: "#ffffff" }}>

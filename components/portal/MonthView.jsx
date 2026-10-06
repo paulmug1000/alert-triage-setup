@@ -757,7 +757,7 @@ export default function MonthView({
 
         <div className="glance-grid">
           {/* Column 1: Income / Revenue */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div className="glance-col-revenue" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div>
               <h4 style={{ margin: "0 0 4px 0", color: "#0047AB", fontSize: "16px", fontWeight: 700, fontFamily: "'Kumbh Sans', sans-serif" }}>
                 {primaryLabel}
@@ -788,7 +788,7 @@ export default function MonthView({
           </div>
 
           {/* Column 2: Gross profit */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div className="glance-col-gp" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div>
               <h4 style={{ margin: "0 0 4px 0", color: "#0047AB", fontSize: "16px", fontWeight: 700, fontFamily: "'Kumbh Sans', sans-serif" }}>
                 Gross profit
@@ -845,7 +845,7 @@ export default function MonthView({
           </div>
 
           {/* Column 3: Operating profit */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div className="glance-col-op" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div>
               <h4 style={{ margin: "0 0 4px 0", color: "#0047AB", fontSize: "16px", fontWeight: 700, fontFamily: "'Kumbh Sans', sans-serif" }}>
                 Operating profit
@@ -1017,22 +1017,46 @@ export default function MonthView({
       .home-glance-card {
         order: 2;
       }
-      .home-table-container {
-        order: 3;
-        width: 100% !important;
-        justify-content: center !important;
-      }
       .home-chart-card {
-        order: 4;
+        order: 3;
         flex: none !important;
         height: auto !important;
+      }
+      .home-chart-svg-wrap {
+        height: 280px !important;
+        min-height: 260px !important;
+      }
+      .home-table-container {
+        order: 4;
+        width: 100% !important;
+        display: flex !important;
+        justify-content: center !important;
+        margin: 0 auto !important;
+      }
+      .month-table-wrapper {
+        width: auto !important;
+        margin: 0 auto !important;
+        display: flex !important;
+        justify-content: center !important;
       }
     }
 
     @media (max-width: 640px) {
       .glance-grid {
-        grid-template-columns: 1fr;
-        gap: 24px;
+        grid-template-columns: 1fr 1fr !important;
+        gap: 16px !important;
+      }
+      .glance-col-revenue {
+        grid-column: 1 / -1 !important;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #f1f5f9;
+      }
+      .home-table-container {
+        justify-content: center !important;
+      }
+      .month-table-wrapper {
+        width: auto !important;
+        margin: 0 auto !important;
       }
     }
 
@@ -1287,7 +1311,7 @@ function HomeLineChart({
 
   return (
     <div style={{ width: "100%", flex: "1 1 0%", minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-      <div style={{ position: "relative", width: "100%", flex: "1 1 0%", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div className="home-chart-svg-wrap" style={{ position: "relative", width: "100%", flex: "1 1 0%", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <svg
           viewBox={`0 0 ${width} ${height}`}
           style={{

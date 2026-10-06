@@ -902,14 +902,14 @@ export default function PortalJobsView({
                 <th style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, width: "11%", fontSize: "13.5px" }}>
                   Direct Costs
                 </th>
-                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "7%", fontSize: "13.5px" }}>
-                  Likelihood
-                </th>
                 <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px" }}>
                   Start Date
                 </th>
                 <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "10%", fontSize: "13.5px" }}>
                   End Date
+                </th>
+                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, width: "7%", fontSize: "13.5px" }}>
+                  Likelihood
                 </th>
               </tr>
             </thead>
@@ -1009,6 +1009,16 @@ export default function PortalJobsView({
                         {formatGBP(job.directCosts)}
                       </td>
 
+                      {/* Start Date */}
+                      <td style={{ padding: "10px 12px", textAlign: "center", color: "#64748b", fontSize: "12.5px", whiteSpace: "nowrap" }}>
+                        {formatDateDdMmmYy(job.startDate)}
+                      </td>
+
+                      {/* End Date */}
+                      <td style={{ padding: "10px 12px", textAlign: "center", color: "#64748b", fontSize: "12.5px", whiteSpace: "nowrap" }}>
+                        {formatDateDdMmmYy(job.endDate)}
+                      </td>
+
                       {/* Likelihood */}
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         <span
@@ -1023,16 +1033,6 @@ export default function PortalJobsView({
                         >
                           {job.likelihood || (isConfirmed ? "100%" : "50%")}
                         </span>
-                      </td>
-
-                      {/* Start Date */}
-                      <td style={{ padding: "10px 12px", textAlign: "center", color: "#64748b", fontSize: "12.5px", whiteSpace: "nowrap" }}>
-                        {formatDateDdMmmYy(job.startDate)}
-                      </td>
-
-                      {/* End Date */}
-                      <td style={{ padding: "10px 12px", textAlign: "center", color: "#64748b", fontSize: "12.5px", whiteSpace: "nowrap" }}>
-                        {formatDateDdMmmYy(job.endDate)}
                       </td>
                     </tr>
                   );

@@ -663,7 +663,7 @@ export default function CashflowView({
                     <td
                       style={{
                         ...stickyColStyle,
-                        background: "rgba(0, 71, 171, 0.04)",
+                        background: "#f5f8fc",
                         fontWeight: 800,
                         color: "#0047AB",
                         fontSize: "13.5px",
@@ -836,7 +836,7 @@ export default function CashflowView({
                     <td
                       style={{
                         ...stickyColStyle,
-                        background: "rgba(0, 71, 171, 0.04)",
+                        background: "#f5f8fc",
                         fontWeight: 800,
                         color: "#0047AB",
                         fontSize: "13.5px",

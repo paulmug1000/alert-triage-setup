@@ -495,8 +495,10 @@ export default function BudgetView({
         >
           <div style={{ overflowX: "auto", width: "100%" }}>
             <table
+              className="fy-main-table"
               style={{
                 width: "100%",
+                minWidth: "980px",
                 tableLayout: "fixed",
                 borderCollapse: "separate",
                 borderSpacing: 0,

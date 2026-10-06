@@ -580,6 +580,7 @@ export default function ScenariosView({
         >
           <div style={{ overflowX: "auto", width: "100%" }}>
             <table
+              className="scenarios-main-table"
               style={{
                 width: "100%",
                 minWidth: "1180px",
@@ -593,6 +594,7 @@ export default function ScenariosView({
                 {/* Row 1: Header Titles with NO 'Line Item' in top-left cell */}
                 <tr style={{ background: "#0047AB", color: "#ffffff" }}>
                   <th
+                    className="scenario-col-first"
                     style={{
                       padding: "6px 8px",
                       textAlign: "left",
@@ -640,6 +642,7 @@ export default function ScenariosView({
                 {/* Row 2: Status row (Actual vs Forecast) with NO column header */}
                 <tr style={{ background: "#ffffff", borderBottom: "1px solid #cbd5e1", fontSize: "10.5px" }}>
                   <td
+                    className="scenario-col-first"
                     style={{
                       padding: "3px 8px",
                       position: "sticky",
@@ -718,6 +721,7 @@ export default function ScenariosView({
                     return (
                       <tr key={rIdx} style={{ height: `${spacerHeight}px`, lineHeight: 0 }}>
                         <td
+                          className="scenario-col-first"
                           style={{
                             padding: 0,
                             background: "#ffffff",
@@ -776,6 +780,7 @@ export default function ScenariosView({
                     >
                       {/* Sticky Line Item */}
                       <td
+                        className="scenario-col-first"
                         style={{
                           padding: rowStyle.isHeader ? "5px 10px" : isMarginRow ? "2px 10px" : "4.5px 10px",
                           color: rowStyle.isMajor ? "#ffffff" : rowStyle.color,
@@ -1013,6 +1018,7 @@ export default function ScenariosView({
                 {/* Synchronized Financial Adjustments Section Divider Row */}
                 <tr style={{ background: "#f8fafc", borderTop: "2px solid #cbd5e1", borderBottom: "1px solid #cbd5e1" }}>
                   <td
+                    className="scenario-col-first"
                     style={{
                       padding: "8px 12px",
                       background: "#f8fafc",
@@ -1052,7 +1058,7 @@ export default function ScenariosView({
 
                 {/* Include NB to Find Checkboxes */}
                 <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td style={{ padding: "6px 10px", fontWeight: 600, color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                  <td className="scenario-col-first" style={{ padding: "6px 10px", fontWeight: 600, color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <input
                         type="checkbox"
@@ -1085,7 +1091,7 @@ export default function ScenariosView({
 
                 {/* Additional Revenue Inputs */}
                 <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
                     Addl. revenue
                   </td>
                   {headerMonths.map((_, mIdx) => {
@@ -1110,7 +1116,7 @@ export default function ScenariosView({
 
                 {/* Additional delivery staff costs */}
                 <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
                     Addl. delivery staff costs
                   </td>
                   {headerMonths.map((_, mIdx) => {
@@ -1135,7 +1141,7 @@ export default function ScenariosView({
 
                 {/* Additional delivery expenses */}
                 <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
                     Addl. delivery expenses
                   </td>
                   {headerMonths.map((_, mIdx) => {
@@ -1160,7 +1166,7 @@ export default function ScenariosView({
 
                 {/* Additional non-delivery staff costs */}
                 <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
                     Addl. non-delivery staff costs
                   </td>
                   {headerMonths.map((_, mIdx) => {
@@ -1185,7 +1191,7 @@ export default function ScenariosView({
 
                 {/* Additional non-delivery expenses */}
                 <tr style={{ background: "#ffffff" }}>
-                  <td style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
                     Addl. non-delivery expenses
                   </td>
                   {headerMonths.map((_, mIdx) => {
@@ -1508,6 +1514,16 @@ export default function ScenariosView({
       </div>
 
       <style jsx>{`
+        @media (max-width: 1024px) {
+          .scenario-col-first {
+            width: 175px !important;
+            min-width: 175px !important;
+            max-width: 175px !important;
+          }
+          .scenarios-main-table {
+            min-width: 1115px !important;
+          }
+        }
         @media (orientation: landscape) and (max-width: 1024px) {
           .fy-table-scroll-wrapper {
             margin: 0 !important;

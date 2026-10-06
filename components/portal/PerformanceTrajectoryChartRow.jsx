@@ -218,10 +218,13 @@ export default function PerformanceTrajectoryChartRow({
                 padding: 0,
                 verticalAlign: "top",
                 border: "none",
-                background: "transparent",
+                position: "sticky",
+                left: 0,
+                zIndex: 3,
+                background: "#ffffff",
                 ...(layout === "fy"
-                  ? { width: "19%" }
-                  : { width: "240px", minWidth: "240px" }),
+                  ? { width: "19%", minWidth: "19%" }
+                  : { width: "240px", minWidth: "240px", maxWidth: "240px" }),
               }}
             >
               <div
@@ -282,7 +285,7 @@ export default function PerformanceTrajectoryChartRow({
               >
                 <svg
                   viewBox={`0 0 ${svgW} ${svgH}`}
-                  preserveAspectRatio={layout === "fy" ? "none" : "xMidYMid meet"}
+                  preserveAspectRatio="none"
                   style={{
                     width: layout === "fy" ? "100%" : `${svgW}px`,
                     height: `${svgH}px`,

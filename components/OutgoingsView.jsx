@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
 import OutgoingsEditModal from "./OutgoingsEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
@@ -18,7 +18,7 @@ export default function OutgoingsView({
     automationCommanderSheetId, assignedAppIds, assignedByClient,
     setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId
   } = useAppGlobals();
-  const { clientsWithFlags } = useTriage();
+  const { clientsWithFlags, setClientsWithFlags } = useTriage();
   const {
     outgoingsData, setOutgoingsData,
     outgoingsLoading, setOutgoingsLoading,
@@ -38,7 +38,49 @@ export default function OutgoingsView({
     loadOutgoings, loadDirectCostsJobs
   } = useOutgoings(assignedAppIds, assignedByClient, setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, automationCommanderSheetId);
 
+  const [clearedClients, setClearedClients] = useState(new Set());
+  const [selectedInboxAppIds, setSelectedInboxAppIds] = useState(new Set());
   const [outgoingsReplacePrompt, setOutgoingsReplacePrompt] = useState(null); // { exp, contractor, colLetter, realBlocks, manualTotal, blocksToKeep }
+
+  const markClientCleared = useCallback((clientName) => {
+    if (!clientName) return;
+    setClearedClients(prev => new Set([...prev, clientName]));
+    setClientsWithFlags?.(prev => prev.map(f => {
+      if (f.clientName !== clientName) return f;
+      return {
+        ...f,
+        flags: { ...f.flags, expenseDashboardDiscr: false, dirCompMismatch: false },
+        alertCounts: { ...f.alertCounts, expenseDashboardDiscr: 0, dirCompMismatch: 0 }
+      };
+    }));
+  }, [setClientsWithFlags]);
+
+  useEffect(() => {
+    if (outgoingsClient && !outgoingsLoading && outgoingsInbox.length === 0) {
+      markClientCleared(outgoingsClient.clientName);
+    }
+  }, [outgoingsInbox.length, outgoingsClient, outgoingsLoading, markClientCleared]);
+
+  const toggleInboxSelection = (exp) => {
+    setSelectedInboxAppIds(prev => {
+      const next = new Set(prev);
+      if (next.has(exp.appId)) next.delete(exp.appId);
+      else next.add(exp.appId);
+      setOutgoingsPlacing(next.size > 0 ? exp : null);
+      return next;
+    });
+  };
+
+  const selectAllInbox = () => {
+    const allIds = new Set(outgoingsInbox.map(e => e.appId));
+    setSelectedInboxAppIds(allIds);
+    if (outgoingsInbox.length > 0) setOutgoingsPlacing(outgoingsInbox[0]);
+  };
+
+  const clearInboxSelection = () => {
+    setSelectedInboxAppIds(new Set());
+    setOutgoingsPlacing(null);
+  };
 
   const updateCell = async (contractor, colLetter, newBlocks) => {
     setOutgoingsData(prev => {
@@ -230,18 +272,36 @@ export default function OutgoingsView({
         );
       })()}
 
-      {outgoingsPlacing && (
-        <div style={{ background: "#1a56db", color: "#fff", padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px" }}>
-          <span>Placing: <strong>{outgoingsPlacing.description || outgoingsPlacing.accountName}</strong> - £{(outgoingsPlacing.amount || 0).toLocaleString()} · Click a contractor cell to place it</span>
-          <button onClick={() => setOutgoingsPlacing(null)}
-            style={{ background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", borderRadius: "4px", padding: "4px 12px", cursor: "pointer", fontSize: "12px" }}>Cancel</button>
-        </div>
-      )}
+      {(selectedInboxAppIds.size > 0 || outgoingsPlacing) && (() => {
+        const selectedList = selectedInboxAppIds.size > 0
+          ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))
+          : (outgoingsPlacing ? [outgoingsPlacing] : []);
+        const totalAmt = selectedList.reduce((s, e) => s + (e.amount || 0), 0);
+        return (
+          <div style={{ background: "#1a56db", color: "#fff", padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "13px", borderRadius: "8px", margin: "0 20px 16px", boxShadow: "0 4px 14px rgba(26,86,219,0.25)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              <span style={{ fontWeight: "700", background: "rgba(255,255,255,0.2)", padding: "2px 8px", borderRadius: "10px" }}>
+                {selectedList.length} {selectedList.length === 1 ? "expense" : "expenses"} selected
+              </span>
+              <span>Total: <strong>£{totalAmt.toLocaleString("en-GB", { minimumFractionDigits: 2 })}</strong></span>
+              <span style={{ opacity: 0.9 }}>
+                {vendorsSubTab === "contractors"
+                  ? "· Click a contractor cell to place all selected items into that single slot"
+                  : "· Click an expense slot to place each item sequentially starting from that slot"}
+              </span>
+            </div>
+            <button onClick={clearInboxSelection}
+              style={{ background: "rgba(255,255,255,0.2)", border: "none", color: "#fff", borderRadius: "4px", padding: "5px 14px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+              Cancel
+            </button>
+          </div>
+        );
+      })()}
 
       <div style={{ padding: "20px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
           {outgoingsClient && (
-            <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); setOutgoingsInbox([]); setOutgoingsPlacing(null); }}
+            <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); setOutgoingsInbox([]); clearInboxSelection(); }}
               style={{ background: "none", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer", padding: "4px 10px", fontSize: "16px", color: "#555", lineHeight: 1 }}
               title="Back to client list">&#8592;</button>
           )}
@@ -267,30 +327,47 @@ export default function OutgoingsView({
               <>
                 <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to assign vendor expenses:</p>
                 {(() => {
-                  const clientsWithInbox = allClients.filter(c =>
-                    clientsWithFlags?.some(f => f.clientName === c.clientName &&
-                      (f.flags?.expenseDashboardDiscr || f.flags?.dirCompMismatch))
-                  );
+                  const getClientRemainingCount = (c) => {
+                    if (clearedClients.has(c.clientName)) return 0;
+                    const f = clientsWithFlags?.find(item => item.clientName === c.clientName);
+                    if (!f) return 0;
+                    const hasFlag = !!(f.flags?.expenseDashboardDiscr || f.flags?.dirCompMismatch);
+                    if (!hasFlag) return 0;
+                    const assignedSet = assignedByClient[c.clientName] || new Set();
+                    const expenseIds = f.activeExpenseIds || [];
+                    const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+                    const rawCount = (f.alertCounts?.expenseDashboardDiscr || 0) + (f.alertCounts?.dirCompMismatch || 0);
+                    return Math.max(0, (rawCount > 0 ? rawCount : 1) - validAssignedExp);
+                  };
+
+                  const clientsWithInbox = allClients.filter(c => getClientRemainingCount(c) > 0);
                   const clientsNoInbox = allClients.filter(c => !clientsWithInbox.includes(c));
-                  const renderClientBtn = (c) => (
-                    <button key={c.clientName} className="triage-btn" onClick={() => loadOutgoings(c)}
-                      style={{
-                        ...styles.buttonSecondary,
-                        textAlign: "left",
-                        padding: "12px 16px",
-                        fontSize: "14px",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        ...(c.inboxCount > 0 ? {
-                          background: "#fff7ed",
-                          borderColor: "#fed7aa"
-                        } : {})
-                      }}>
-                      <span>{c.clientName}</span>
-                      {c.inboxCount > 0 && <span style={{ fontSize: "11px", background: "#f97316", color: "#fff", borderRadius: "10px", padding: "1px 7px", fontWeight: "600" }}>{c.inboxCount} to assign</span>}
-                    </button>
-                  );
+                  const renderClientBtn = (c) => {
+                    const remainingCount = getClientRemainingCount(c);
+                    return (
+                      <button key={c.clientName} className="triage-btn" onClick={() => loadOutgoings(c)}
+                        style={{
+                          ...styles.buttonSecondary,
+                          textAlign: "left",
+                          padding: "12px 16px",
+                          fontSize: "14px",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          ...(remainingCount > 0 ? {
+                            background: "#fff7ed",
+                            borderColor: "#fed7aa"
+                          } : {})
+                        }}>
+                        <span>{c.clientName}</span>
+                        {remainingCount > 0 && (
+                          <span style={{ fontSize: "11px", background: "#f97316", color: "#fff", borderRadius: "10px", padding: "1px 7px", fontWeight: "600" }}>
+                            {remainingCount} to assign
+                          </span>
+                        )}
+                      </button>
+                    );
+                  };
                   return (
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                       {clientsWithInbox.length > 0 && clientsNoInbox.length > 0 && (
@@ -312,26 +389,76 @@ export default function OutgoingsView({
 
         {!noClient && (
           <div style={{ background: "#fff", border: `1px solid ${outgoingsInbox.length > 0 ? "#ffc107" : "#e0e0e0"}`, borderRadius: "10px", padding: "14px 16px", marginBottom: "16px" }}>
-            <div style={{ fontSize: "13px", fontWeight: "700", color: outgoingsInbox.length > 0 ? "#e65100" : "#888", marginBottom: outgoingsInbox.length > 0 ? "6px" : "0" }}>
-              {outgoingsInbox.length > 0
-                ? `Unmatched expenses (${outgoingsInbox.length}) - click to select, then click a cell to place`
-                : "No unmatched expenses - inbox is clear ✓"}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: outgoingsInbox.length > 0 ? "10px" : "0" }}>
+              <div style={{ fontSize: "13px", fontWeight: "700", color: outgoingsInbox.length > 0 ? "#e65100" : "#888" }}>
+                {outgoingsInbox.length > 0
+                  ? `Unmatched expenses (${outgoingsInbox.length}) - select one or more items to place`
+                  : "No unmatched expenses - inbox is clear ✓"}
+              </div>
+              {outgoingsInbox.length > 0 && (
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <button onClick={selectAllInbox}
+                    style={{ fontSize: "11px", padding: "4px 10px", background: "#f0f4ff", border: "1px solid #bfdbfe", borderRadius: "5px", cursor: "pointer", color: "#1d4ed8", fontWeight: "600" }}>
+                    Select all ({outgoingsInbox.length})
+                  </button>
+                  {selectedInboxAppIds.size > 0 && (
+                    <button onClick={clearInboxSelection}
+                      style={{ fontSize: "11px", padding: "4px 10px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "5px", cursor: "pointer", color: "#64748b" }}>
+                      Clear selection
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
             {outgoingsInbox.length > 0 && (
               <>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
                   {outgoingsInbox.map((exp, i) => {
-                    const isPlacing = outgoingsPlacing?.appId === exp.appId;
+                    const isSelected = selectedInboxAppIds.has(exp.appId);
                     return (
-                      <div key={i} style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
+                      <div key={exp.appId || i} style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
                       <div
-                        onClick={() => {
-                          setOutgoingsPlacing(outgoingsPlacingRef.current?.appId === exp.appId ? null : exp);
-                        }}
-                        style={{ background: isPlacing ? "#1a56db" : "#fff8e1", border: `1.5px solid ${isPlacing ? "#1a56db" : "#ffc107"}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", cursor: "pointer", textAlign: "left", color: isPlacing ? "#fff" : "#333", transition: "background 0.1s, border-color 0.1s", display: "flex", flexDirection: "column", gap: "2px", userSelect: "none" }}>
-                        <div style={{ fontWeight: "700" }}>{exp.description || exp.accountName}</div>
-                        <div style={{ opacity: 0.8 }}>£{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })} · {exp.date}</div>
-                        <div style={{ fontSize: "10px", opacity: 0.7 }}>{isPlacing ? "Click a cell below to place" : "Click to select"}</div>
+                        onClick={() => toggleInboxSelection(exp)}
+                        style={{
+                          background: isSelected ? "#eff6ff" : "#fff",
+                          border: `2px solid ${isSelected ? "#1a56db" : "#ffc107"}`,
+                          borderRadius: "8px", padding: "10px 12px", fontSize: "12px",
+                          cursor: "pointer", textAlign: "left", color: "#1e293b",
+                          transition: "background 0.1s, border-color 0.1s",
+                          display: "flex", flexDirection: "column", gap: "4px",
+                          userSelect: "none", width: "240px", boxSizing: "border-box"
+                        }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "6px" }}>
+                          <div style={{ fontWeight: "700", fontSize: "13px", color: isSelected ? "#1a56db" : "#111827", lineHeight: "1.2" }}>
+                            {exp.contactName || exp.description || exp.accountName}
+                          </div>
+                          <input type="checkbox" checked={isSelected} readOnly
+                            style={{ cursor: "pointer", accentColor: "#1a56db", margin: 0 }} />
+                        </div>
+
+                        {/* Prominent line item description */}
+                        {exp.description && (
+                          <div style={{ fontSize: "11px", color: "#334155", background: isSelected ? "#dbeafe" : "#fef3c7", padding: "3px 6px", borderRadius: "4px", lineHeight: "1.3" }}>
+                            {exp.description}
+                          </div>
+                        )}
+
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "2px", fontSize: "11px", color: "#4b5563" }}>
+                          <span style={{ fontWeight: "700", color: "#111827", fontSize: "12px" }}>
+                            £{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })}
+                          </span>
+                          <span>{exp.date}</span>
+                        </div>
+
+                        {exp.reference && (
+                          <div style={{ fontSize: "10px", color: "#6b7280" }}>
+                            Ref: {exp.reference}
+                          </div>
+                        )}
+
+                        <div style={{ fontSize: "10px", color: isSelected ? "#1a56db" : "#9ca3af", fontWeight: isSelected ? "700" : "400", marginTop: "2px" }}>
+                          {isSelected ? "✓ Selected to place" : "Click to select"}
+                        </div>
                       </div>
                       {vendorsSubTab === "contractors" && (
                         <button onClick={e => { e.stopPropagation(); setOutgoingsNewVendor({ exp }); }}
@@ -434,21 +561,29 @@ export default function OutgoingsView({
                         const realBlocks = (cell.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"));
                         const total = realBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
                         const isEmpty = realBlocks.length === 0;
-                        const isTarget = !!outgoingsPlacing;
+                        const isTarget = selectedInboxAppIds.size > 0 || !!outgoingsPlacing;
                         const isCurr = isCurrentMonth(m.isoMonth || m.label);
 
                         const handleCellClick = async () => {
-                          if (outgoingsPlacingRef.current) {
-                            const exp = outgoingsPlacingRef.current;
-                            const expDesc = (exp.description || exp.accountName || "").toLowerCase();
+                          const toPlace = selectedInboxAppIds.size > 0
+                            ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))
+                            : (outgoingsPlacingRef.current ? [outgoingsPlacingRef.current] : []);
+
+                          if (toPlace.length > 0) {
                             const contrWords = contractor.name.toLowerCase().replace(/[()]/g, " ").split(/\s+/).filter(w => w.length > 3);
-                            const nameMatch = contrWords.some(w => expDesc.includes(w));
-                            if (!nameMatch) {
-                              const ok = window.confirm("Vendor mismatch?\n\nExpense: \"" + (exp.description || exp.accountName) + "\"\nContractor: \"" + contractor.name + "\"\n\nPlace anyway?");
+                            const anyMismatch = toPlace.some(exp => {
+                              const expDesc = ((exp.contactName || "") + " " + (exp.description || "") + " " + (exp.accountName || "")).toLowerCase();
+                              return !contrWords.some(w => expDesc.includes(w));
+                            });
+                            if (anyMismatch) {
+                              const ok = window.confirm(
+                                `Vendor mismatch?\n\nContractor: "${contractor.name}"\nPlacing ${toPlace.length} expense${toPlace.length > 1 ? "s" : ""}.\n\nPlace anyway?`
+                              );
                               if (!ok) return;
                             }
                             const manualBlocks = realBlocks.filter(b => b.appId && isPlaceholderExpense(b.appId));
-                            if (manualBlocks.length > 0) {
+                            if (manualBlocks.length > 0 && toPlace.length === 1) {
+                              const exp = toPlace[0];
                               const totalManual = manualBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
                               setOutgoingsReplacePrompt({
                                 exp, contractor, colLetter: m.colLetter, realBlocks, totalManual,
@@ -456,11 +591,28 @@ export default function OutgoingsView({
                               });
                               return;
                             }
-                            const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
-                            await updateCell(contractor, m.colLetter, [...realBlocks, newBlock]);
-                            setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
-                            addAssignedAppId(exp.appId, outgoingsClient?.clientName);
-                            setOutgoingsPlacing(null);
+                            const newBlocks = toPlace.map(exp => ({
+                              appId: exp.appId,
+                              amount: exp.amount,
+                              status: exp.status || "",
+                              recDate: exp.date || "",
+                              payDate: exp.datePaid || "",
+                              description: exp.description || exp.contactName || exp.accountName || ""
+                            }));
+                            await updateCell(contractor, m.colLetter, [...realBlocks, ...newBlocks]);
+
+                            const placedIds = new Set(toPlace.map(e => e.appId));
+                            setOutgoingsInbox(prev => {
+                              const remaining = prev.filter(e => !placedIds.has(e.appId));
+                              if (remaining.length === 0 && outgoingsClient) {
+                                markClientCleared(outgoingsClient.clientName);
+                              }
+                              return remaining;
+                            });
+                            toPlace.forEach(exp => {
+                              addAssignedAppId(exp.appId, outgoingsClient?.clientName);
+                            });
+                            clearInboxSelection();
                           } else {
                             setOutgoingsEditCell({ contractor, colLetter: m.colLetter, monthLabel: m.label });
                           }
@@ -576,54 +728,92 @@ export default function OutgoingsView({
                             const isManualEntry = isPlaceholderExpense(s.transactionId);
                             const isGenuinelyBlank = !s.description && !s.amount;
                             const isEmpty = isGenuinelyBlank || isManualEntry;
-                            const isPlacing = !!outgoingsPlacing;
+                            const isPlacing = selectedInboxAppIds.size > 0 || !!outgoingsPlacing;
                             const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
                             const isSaving = directCostsSavingCell === cellSavingKey;
                             return (
                               <td key={s.slotNum}
                                 onClick={async () => {
                                   if (isSaving) return;
-                                  if (isPlacing && isEmpty) {
-                                    const exp = outgoingsPlacingRef.current;
-                                    if (!exp) return;
-                                    setOutgoingsPlacing(null);
+                                  const toPlace = selectedInboxAppIds.size > 0
+                                    ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))
+                                    : (outgoingsPlacingRef.current ? [outgoingsPlacingRef.current] : []);
+
+                                  if (toPlace.length > 0 && isEmpty) {
                                     setDirectCostsSavingCell(cellSavingKey);
-                                    addAssignedAppId(exp.appId, outgoingsClient?.clientName);
-                                    setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
+                                    const placedIds = new Set(toPlace.map(e => e.appId));
+                                    toPlace.forEach(exp => addAssignedAppId(exp.appId, outgoingsClient?.clientName));
+                                    setOutgoingsInbox(prev => {
+                                      const remaining = prev.filter(e => !placedIds.has(e.appId));
+                                      if (remaining.length === 0 && outgoingsClient) {
+                                        markClientCleared(outgoingsClient.clientName);
+                                      }
+                                      return remaining;
+                                    });
+                                    clearInboxSelection();
+
                                     try {
-                                      await fetch("/api/triage", {
+                                      const res = await fetch("/api/triage", {
                                         method: "POST", headers: { "Content-Type": "application/json" },
                                         body: JSON.stringify({
                                           action: "assign_expense_to_job",
                                           clientSheetId: outgoingsClient?.clientSheetId,
                                           clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
                                           masterSheetId: outgoingsClient?.masterSheetId || "",
-                                          rowNum: jr.rowNum, slotNum: s.slotNum, expense: exp,
+                                          rowNum: jr.rowNum, slotNum: s.slotNum,
+                                          expenses: toPlace,
                                           jobClient: job.client,
                                           jobName: job.jobName,
+                                          jobLastRow,
+                                          jobRows: job.rows
                                         }),
                                       });
+                                      const data = await res.json();
                                       if (outgoingsClient?.masterSheetId) {
                                         outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
                                       }
-                                      setDirectCostsJobs(prev => prev && prev.map(j => ({
-                                        ...j,
-                                        rows: j.rows.map(r => r.rowNum !== jr.rowNum ? r : {
-                                          ...r,
-                                          expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== s.slotNum ? sl : {
-                                            ...sl,
-                                            description: exp.description || exp.accountName || "",
-                                            amount: exp.amount || 0,
-                                            date: exp.date || "",
-                                            status: exp.status || "",
-                                            transactionId: exp.appId || "",
-                                          }),
-                                        }),
-                                      })));
+                                      if (data.newRowsCreated) {
+                                        await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+                                      } else if (data.placed && Array.isArray(data.placed)) {
+                                        setDirectCostsJobs(prev => prev && prev.map(j => {
+                                          if (j.client !== job.client || j.jobName !== job.jobName) return j;
+                                          return {
+                                            ...j,
+                                            rows: j.rows.map(r => {
+                                              const placedForThisRow = data.placed.filter(p => p.rowNum === r.rowNum);
+                                              if (placedForThisRow.length === 0) return r;
+                                              return {
+                                                ...r,
+                                                expenseSlots: r.expenseSlots.map(sl => {
+                                                  const match = placedForThisRow.find(p => p.slotNum === sl.slotNum);
+                                                  if (!match) return sl;
+                                                  return {
+                                                    ...sl,
+                                                    description: match.description,
+                                                    amount: match.amount,
+                                                    vat: match.vat,
+                                                    date: match.date,
+                                                    status: match.status,
+                                                    transactionId: match.transactionId
+                                                  };
+                                                })
+                                              };
+                                            })
+                                          };
+                                        }));
+                                      } else {
+                                        await loadDirectCostsJobs(outgoingsClient, directCostsShowAll);
+                                      }
                                     } catch(e) { console.error("assign_expense_to_job error:", e); }
                                     finally { setDirectCostsSavingCell(null); }
-                                  } else if (!isPlacing && !isGenuinelyBlank) {
-                                    setDirectCostsEditSlot({ rowNum: jr.rowNum, slotNum: s.slotNum, slot: s });
+                                  } else if (toPlace.length === 0 && !isGenuinelyBlank) {
+                                    setDirectCostsEditSlot({
+                                      rowNum: jr.rowNum,
+                                      slotNum: s.slotNum,
+                                      slot: s,
+                                      jobName: job.jobName,
+                                      jobClient: job.client
+                                    });
                                   }
                                 }}
                                 style={{ padding: "7px 10px", borderBottom: "1px solid #eee",
@@ -638,7 +828,7 @@ export default function OutgoingsView({
                                   isPlacing ? <span style={{ color: "#1a56db", fontWeight: "700" }}>Click to place</span> : <span style={{ color: "#ccc" }}>-</span>
                                 ) : (
                                   <div>
-                                    <div style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit" }}>
+                                    <div title={s.description} style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit", wordBreak: "break-word" }}>
                                       {isManualEntry && "(placeholder) "}{s.description}
                                     </div>
                                     <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.date}{s.status ? ` · ${s.status}` : ""}</div>
@@ -658,17 +848,26 @@ export default function OutgoingsView({
                               <div style={{ height: "100%", minHeight: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <Spinner size={12} color="#1a56db" />
                               </div>
-                            ) : isLastRowOfJob && !jobHasEmptySlot && !!outgoingsPlacing && (
+                            ) : isLastRowOfJob && !jobHasEmptySlot && (selectedInboxAppIds.size > 0 || !!outgoingsPlacing) && (
                               <div
                                 title="No spare expense slot - click to add a new row for this job"
                                 onClick={async () => {
-                                  const exp = outgoingsPlacingRef.current;
-                                  if (!exp) return;
-                                  setOutgoingsPlacing(null);
+                                  const toPlace = selectedInboxAppIds.size > 0
+                                    ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))
+                                    : (outgoingsPlacingRef.current ? [outgoingsPlacingRef.current] : []);
+                                  if (toPlace.length === 0) return;
                                   const savingKey = `newrow-${job.client}|||${job.jobName}`;
                                   setDirectCostsSavingCell(savingKey);
-                                  addAssignedAppId(exp.appId, outgoingsClient?.clientName);
-                                  setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
+                                  const placedIds = new Set(toPlace.map(e => e.appId));
+                                  toPlace.forEach(exp => addAssignedAppId(exp.appId, outgoingsClient?.clientName));
+                                  setOutgoingsInbox(prev => {
+                                    const remaining = prev.filter(e => !placedIds.has(e.appId));
+                                    if (remaining.length === 0 && outgoingsClient) {
+                                      markClientCleared(outgoingsClient.clientName);
+                                    }
+                                    return remaining;
+                                  });
+                                  clearInboxSelection();
                                   try {
                                     await fetch("/api/triage", {
                                       method: "POST", headers: { "Content-Type": "application/json" },
@@ -679,7 +878,8 @@ export default function OutgoingsView({
                                         masterSheetId: outgoingsClient?.masterSheetId || "",
                                         createNewRow: true,
                                         jobLastRow, jobClient: job.client, jobName: job.jobName,
-                                        expense: exp,
+                                        expenses: toPlace,
+                                        jobRows: job.rows
                                       }),
                                     });
                                     if (outgoingsClient?.masterSheetId) {

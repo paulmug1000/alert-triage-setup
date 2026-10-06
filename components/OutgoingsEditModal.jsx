@@ -109,29 +109,48 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
           const isManual = isPlaceholderExpense(b.appId);
           return (
             <div key={i} style={{ border: `1px solid ${sc.border}`, background: sc.bg, borderRadius: "8px", padding: "14px", marginBottom: "14px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
-                <div style={{ fontSize: "13px", color: "#888", fontFamily: "monospace", wordBreak: "break-all", flex: 1, marginRight: "8px" }}>{b.appId}</div>
-                <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px" }}>Remove</button>
-                {!isPlaceholderExpense(b.appId) && (
-                  <button onClick={async () => {
-                    // Remove block from cell, write immediately, return to inbox, close modal
-                    const newBlocks = blocksRef.current.filter((_, idx) => idx !== i);
-                    blocksRef.current = newBlocks;
-                    dirtyRef.current = false;
-                    // Update grid and write to Sheets
-                    await updateCell(contractor, colLetter, newBlocks);
-                    // Return to inbox
-                    onReturnToInbox({
-                      appId: b.appId, amount: b.amount,
-                      date: b.recDate || "", datePaid: b.payDate || "",
-                      description: b.description || "", accountName: b.description || "",
-                      status: b.status || "",
-                    });
-                    // Close modal
-                    onClose();
-                  }} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "12px" }}>↩ Return to inbox</button>
-                )}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
+                <div style={{ flex: 1, marginRight: "8px" }}>
+                  <div style={{ fontSize: "14px", fontWeight: "700", color: "#1e293b", marginBottom: "2px" }}>
+                    {b.description || (isManual ? "Manual Estimate" : b.appId)}
+                  </div>
+                  <div style={{ fontSize: "11px", color: "#64748b", fontFamily: "monospace" }}>{b.appId}</div>
+                </div>
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  {!isPlaceholderExpense(b.appId) && (
+                    <button onClick={async () => {
+                      const newBlocks = blocksRef.current.filter((_, idx) => idx !== i);
+                      blocksRef.current = newBlocks;
+                      dirtyRef.current = false;
+                      await updateCell(contractor, colLetter, newBlocks);
+                      onReturnToInbox({
+                        appId: b.appId, amount: b.amount,
+                        date: b.recDate || "", datePaid: b.payDate || "",
+                        description: b.description || "", accountName: b.description || "",
+                        status: b.status || "",
+                      });
+                      onClose();
+                    }} style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "12px", fontWeight: "500" }}>↩ Return to inbox</button>
+                  )}
+                  <button onClick={() => removeBlock(i)} style={{ background: "none", border: "none", color: "#e53935", cursor: "pointer", fontSize: "12px", fontWeight: "500" }}>Remove</button>
+                </div>
               </div>
+
+              {/* Prominent Description View/Edit */}
+              {isManual ? (
+                <div style={{ marginBottom: "12px" }}>
+                  <label style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: "3px" }}>Description</label>
+                  <input type="text" value={b.description || ""} placeholder="e.g. Freelance design services"
+                    onChange={e => updateBlock(i, "description", e.target.value)}
+                    style={{ width: "100%", padding: "7px 10px", border: "1px solid #cbd5e1", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
+                </div>
+              ) : (
+                <div style={{ marginBottom: "12px", padding: "8px 12px", background: "rgba(255,255,255,0.85)", borderRadius: "6px", border: "1px solid rgba(0,0,0,0.08)" }}>
+                  <div style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "2px" }}>Item Description</div>
+                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>{b.description || "(No description provided)"}</div>
+                </div>
+              )}
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                 <div>
                   <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Amount</label>
@@ -159,10 +178,6 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
                       style={{ width: "100%", padding: "7px 9px", border: "1px solid #ddd", borderRadius: "5px", fontSize: "13px", boxSizing: "border-box" }} />
                   ) : <div style={{ padding: "7px 9px", fontSize: "13px" }}>{b.payDate || "-"}</div>}
                 </div>
-              </div>
-              <div style={{ marginTop: "10px" }}>
-                <label style={{ fontSize: "11px", color: "#666", display: "block", marginBottom: "3px" }}>Description</label>
-                <div style={{ padding: "7px 9px", fontSize: "12px", color: "#333", background: "rgba(255,255,255,0.7)", borderRadius: "4px", border: "1px solid rgba(0,0,0,0.06)" }}>{b.description || "-"}</div>
               </div>
               <div style={{ marginTop: "10px", borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: "10px" }}>
                 <div style={{ fontSize: "11px", color: "#888", marginBottom: "6px" }}>Split portion to another month:</div>

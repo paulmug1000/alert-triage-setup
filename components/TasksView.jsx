@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import Spinner from "./Spinner";
 import TruncatedCode from "./TruncatedCode";
 import { useTasks } from "../contexts/TaskContext";
@@ -39,6 +39,17 @@ export default function TasksView({
     otherActiveTaskCount, otherSnoozedTaskCount, resolvedTaskCount,
     tasksLoadedAt, loadTasks, refreshTaskCount
   } = useTasks();
+
+  const [isBulkMode, setIsBulkMode] = useState(false);
+  const [selectedTaskHashes, setSelectedTaskHashes] = useState(new Set());
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
+  const [showBulkSnoozeModal, setShowBulkSnoozeModal] = useState(false);
+  const [bulkSnoozeDate, setBulkSnoozeDate] = useState("");
+  const [bulkSnoozeTime, setBulkSnoozeTime] = useState("07:00");
+
+  useEffect(() => {
+    setSelectedTaskHashes(new Set());
+  }, [tasksFilter]);
 
   useEffect(() => {
     if (!isAdmin && (tasksFilter === "other_active" || tasksFilter === "other_snoozed")) {
@@ -246,6 +257,141 @@ export default function TasksView({
     finally { setIsAccepting(false); }
   };
 
+  const toggleSelectAll = () => {
+    if (selectedTaskHashes.size === tasks.length) {
+      setSelectedTaskHashes(new Set());
+    } else {
+      setSelectedTaskHashes(new Set(tasks.map(t => t.fingerprintHash)));
+    }
+  };
+
+  const toggleSelectTask = (hash) => {
+    setSelectedTaskHashes(prev => {
+      const next = new Set(prev);
+      if (next.has(hash)) next.delete(hash);
+      else next.add(hash);
+      return next;
+    });
+  };
+
+  const setSnoozePreset = (daysFromNow, setToMonday = false) => {
+    const d = new Date();
+    if (setToMonday) {
+      const day = d.getDay();
+      const diff = ((8 - day) % 7) || 7;
+      d.setDate(d.getDate() + diff);
+    } else {
+      d.setDate(d.getDate() + daysFromNow);
+    }
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    setBulkSnoozeDate(`${yyyy}-${mm}-${dd}`);
+    setBulkSnoozeTime("07:00");
+  };
+
+  const openBulkSnoozeModal = () => {
+    if (selectedTaskHashes.size === 0) return;
+    if (!bulkSnoozeDate) {
+      setSnoozePreset(1);
+    }
+    setShowBulkSnoozeModal(true);
+  };
+
+  const handleBulkResolve = async () => {
+    if (selectedTaskHashes.size === 0) return;
+    const count = selectedTaskHashes.size;
+    if (!confirm(`Are you sure you want to mark ${count} task${count > 1 ? "s" : ""} as complete?`)) return;
+    try {
+      setBulkActionLoading(true);
+      setTaskActionError("");
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "resolve_task",
+          fingerprintHashes: Array.from(selectedTaskHashes),
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSelectedTaskHashes(new Set());
+        await loadTasks(tasksFilter, true);
+        refreshTaskCount?.(true);
+      } else {
+        setTaskActionError(data.error || "Failed to resolve tasks");
+      }
+    } catch (e) {
+      setTaskActionError(e.message);
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
+
+  const handleBulkSnooze = async () => {
+    if (selectedTaskHashes.size === 0 || !bulkSnoozeDate) return;
+    const localDt = new Date(`${bulkSnoozeDate}T${bulkSnoozeTime || "07:00"}:00`);
+    const snoozedUntil = localDt.toISOString();
+    try {
+      setBulkActionLoading(true);
+      setTaskActionError("");
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "snooze_task",
+          fingerprintHashes: Array.from(selectedTaskHashes),
+          snoozedUntil,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setShowBulkSnoozeModal(false);
+        setSelectedTaskHashes(new Set());
+        await loadTasks(tasksFilter, true);
+        refreshTaskCount?.(true);
+      } else {
+        setTaskActionError(data.error || "Failed to snooze tasks");
+      }
+    } catch (e) {
+      setTaskActionError(e.message);
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
+
+  const handleBulkUnsnooze = async () => {
+    if (selectedTaskHashes.size === 0) return;
+    try {
+      setBulkActionLoading(true);
+      setTaskActionError("");
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "snooze_task",
+          fingerprintHashes: Array.from(selectedTaskHashes),
+          unsnooze: true,
+          automationCommanderSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSelectedTaskHashes(new Set());
+        await loadTasks(tasksFilter, true);
+        refreshTaskCount?.(true);
+      } else {
+        setTaskActionError(data.error || "Failed to unsnooze tasks");
+      }
+    } catch (e) {
+      setTaskActionError(e.message);
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
+
   if (!selectedTask) {
     const filterTabs = isAdmin
       ? [
@@ -261,6 +407,9 @@ export default function TasksView({
           { key: "resolved", label: "Completed" },
         ];
 
+    const isSnoozedTab = tasksFilter === "snoozed" || tasksFilter === "other_snoozed";
+    const isResolvedTab = tasksFilter === "resolved";
+
     return (
       <div style={styles.container}>
         <div style={styles.header}>
@@ -270,7 +419,7 @@ export default function TasksView({
 
         {taskActionError && <div style={styles.errorBanner}>{taskActionError}</div>}
 
-        <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e0e0e0", marginBottom: "20px", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e0e0e0", marginBottom: "20px", flexWrap: "wrap", alignItems: "center" }}>
           {filterTabs.map(tab => (
             <button key={tab.key} className="triage-btn pulse-nav-item"
               onClick={() => { setTasksFilter(tab.key); loadTasks(tab.key); }}
@@ -293,11 +442,132 @@ export default function TasksView({
               )}
             </button>
           ))}
-          <button className="triage-btn" onClick={() => loadTasks(tasksFilter, true)}
-            style={{ ...styles.buttonSecondary, marginLeft: "auto", fontSize: "12px", padding: "6px 14px", alignSelf: "center" }}>
-            ↻ Refresh
-          </button>
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px", paddingBottom: "4px" }}>
+            <button className="triage-btn"
+              onClick={() => {
+                setIsBulkMode(!isBulkMode);
+                setSelectedTaskHashes(new Set());
+              }}
+              style={{
+                ...styles.buttonSecondary,
+                fontSize: "12px",
+                padding: "6px 14px",
+                alignSelf: "center",
+                background: isBulkMode ? "#4f46e5" : "#fff",
+                color: isBulkMode ? "#fff" : "#4f46e5",
+                borderColor: "#4f46e5",
+                fontWeight: "600",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px",
+              }}>
+              <span>{isBulkMode ? "✕ Exit Bulk Mode" : "☑ Bulk Actions"}</span>
+            </button>
+            <button className="triage-btn" onClick={() => loadTasks(tasksFilter, true)}
+              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "6px 14px", alignSelf: "center" }}>
+              ↻ Refresh
+            </button>
+          </div>
         </div>
+
+        {/* Bulk Action Toolbar */}
+        {isBulkMode && (
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            background: "#f8fafc",
+            border: "1px solid #cbd5e1",
+            borderRadius: "8px",
+            padding: "10px 16px",
+            marginBottom: "16px",
+            flexWrap: "wrap",
+            gap: "10px",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#334155" }}>
+                <input
+                  type="checkbox"
+                  checked={tasks.length > 0 && selectedTaskHashes.size === tasks.length}
+                  onChange={toggleSelectAll}
+                  style={{ width: "16px", height: "16px", cursor: "pointer", accentColor: "#4f46e5" }}
+                />
+                <span>{selectedTaskHashes.size === tasks.length && tasks.length > 0 ? "Deselect all" : "Select all"}</span>
+              </label>
+              <span style={{ fontSize: "13px", color: "#64748b" }}>
+                ({selectedTaskHashes.size} of {tasks.length} selected)
+              </span>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              {!isResolvedTab && (
+                <button
+                  className="triage-btn"
+                  disabled={selectedTaskHashes.size === 0 || bulkActionLoading}
+                  onClick={handleBulkResolve}
+                  style={{
+                    ...styles.buttonSecondary,
+                    fontSize: "12px",
+                    padding: "6px 14px",
+                    background: selectedTaskHashes.size > 0 ? "#16a34a" : "#f1f5f9",
+                    color: selectedTaskHashes.size > 0 ? "#fff" : "#94a3b8",
+                    borderColor: selectedTaskHashes.size > 0 ? "#15803d" : "#e2e8f0",
+                    cursor: selectedTaskHashes.size > 0 ? "pointer" : "not-allowed",
+                    fontWeight: "600",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}>
+                  {bulkActionLoading ? <Spinner size={12} color="#fff" /> : `✓ Mark complete (${selectedTaskHashes.size})`}
+                </button>
+              )}
+
+              {!isResolvedTab && (
+                <button
+                  className="triage-btn"
+                  disabled={selectedTaskHashes.size === 0 || bulkActionLoading}
+                  onClick={openBulkSnoozeModal}
+                  style={{
+                    ...styles.buttonSecondary,
+                    fontSize: "12px",
+                    padding: "6px 14px",
+                    background: selectedTaskHashes.size > 0 ? "#d97706" : "#f1f5f9",
+                    color: selectedTaskHashes.size > 0 ? "#fff" : "#94a3b8",
+                    borderColor: selectedTaskHashes.size > 0 ? "#b45309" : "#e2e8f0",
+                    cursor: selectedTaskHashes.size > 0 ? "pointer" : "not-allowed",
+                    fontWeight: "600",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}>
+                  <span>⏰ Snooze ({selectedTaskHashes.size})</span>
+                </button>
+              )}
+
+              {isSnoozedTab && (
+                <button
+                  className="triage-btn"
+                  disabled={selectedTaskHashes.size === 0 || bulkActionLoading}
+                  onClick={handleBulkUnsnooze}
+                  style={{
+                    ...styles.buttonSecondary,
+                    fontSize: "12px",
+                    padding: "6px 14px",
+                    background: selectedTaskHashes.size > 0 ? "#4338ca" : "#f1f5f9",
+                    color: selectedTaskHashes.size > 0 ? "#fff" : "#94a3b8",
+                    borderColor: selectedTaskHashes.size > 0 ? "#3730a3" : "#e2e8f0",
+                    cursor: selectedTaskHashes.size > 0 ? "pointer" : "not-allowed",
+                    fontWeight: "600",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}>
+                  <span>🔔 Unsnooze ({selectedTaskHashes.size})</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {tasksLoading ? (
           <div style={{ textAlign: "center", padding: "40px", color: "#888" }}><Spinner size={20} color="#0066cc" /> Loading tasks...</div>
@@ -315,70 +585,237 @@ export default function TasksView({
           </div>
         ) : (
           <div>
-            {tasks.map(task => (
-              <div key={task.fingerprintHash}
-                className="triage-client-card"
-                onClick={() => openTask(task)}
-                style={{ ...styles.card, cursor: "pointer", marginBottom: "12px", padding: "16px 20px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: "13px", fontWeight: "700", color: "#1a1a1a" }}>{task.clientName}</span>
-                      <span style={{ fontSize: "11px", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>
-                        {formatAlertType(task.alertType)}
-                      </span>
-                      {task.isAdminOnly && clientHasManager(task.clientName) && (
-                        <span style={{
-                          fontSize: "10px",
-                          fontWeight: "700",
-                          background: "#f1f5f9",
-                          border: "1px solid #cbd5e1",
-                          color: "#64748b",
-                          borderRadius: "10px",
-                          padding: "1px 6px",
-                          letterSpacing: "0.2px"
-                        }} title="Created from an Admin-only alert">
-                          Admin
+            {tasks.map(task => {
+              const isSelected = selectedTaskHashes.has(task.fingerprintHash);
+              return (
+                <div key={task.fingerprintHash}
+                  className="triage-client-card"
+                  onClick={() => {
+                    if (isBulkMode) {
+                      toggleSelectTask(task.fingerprintHash);
+                    } else {
+                      openTask(task);
+                    }
+                  }}
+                  style={{
+                    ...styles.card,
+                    cursor: "pointer",
+                    marginBottom: "12px",
+                    padding: "16px 20px",
+                    borderWidth: isSelected ? "2px" : "1px",
+                    borderColor: isSelected ? "#6366f1" : undefined,
+                    backgroundColor: isSelected ? "#f8f9ff" : undefined,
+                    transition: "border-color 0.15s, background-color 0.15s",
+                  }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+                    {isBulkMode && (
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelectTask(task.fingerprintHash);
+                        }}
+                        style={{ paddingTop: "2px", marginRight: "6px", display: "flex", alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectTask(task.fingerprintHash)}
+                          style={{ width: "18px", height: "18px", cursor: "pointer", accentColor: "#4f46e5" }}
+                        />
+                      </div>
+                    )}
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+                        <span style={{ fontSize: "13px", fontWeight: "700", color: "#1a1a1a" }}>{task.clientName}</span>
+                        <span style={{ fontSize: "11px", background: "#f0f4ff", color: "#0066cc", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>
+                          {formatAlertType(task.alertType)}
                         </span>
-                      )}
-                      {task.isProactive && (
-                        <span style={{ fontSize: "11px", background: "#fff3e0", color: "#e65100", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>Proactive</span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: "13px", color: "#555", marginBottom: "6px" }}>{task.alertSummary}</div>
-                    
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569", marginBottom: "4px" }}>
-                      <span style={{ fontSize: "12px" }}>👤</span>
-                      <span>Created by: <strong style={{ color: "#334155" }}>{task.createdByName || task.createdByEmail || "System / Unassigned"}</strong></span>
-                    </div>
+                        {task.isAdminOnly && clientHasManager(task.clientName) && (
+                          <span style={{
+                            fontSize: "10px",
+                            fontWeight: "700",
+                            background: "#f1f5f9",
+                            border: "1px solid #cbd5e1",
+                            color: "#64748b",
+                            borderRadius: "10px",
+                            padding: "1px 6px",
+                            letterSpacing: "0.2px"
+                          }} title="Created from an Admin-only alert">
+                            Admin
+                          </span>
+                        )}
+                        {task.isProactive && (
+                          <span style={{ fontSize: "11px", background: "#fff3e0", color: "#e65100", padding: "2px 8px", borderRadius: "10px", fontWeight: "600" }}>Proactive</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: "13px", color: "#555", marginBottom: "6px" }}>{task.alertSummary}</div>
+                      
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569", marginBottom: "4px" }}>
+                        <span style={{ fontSize: "12px" }}>👤</span>
+                        <span>Created by: <strong style={{ color: "#334155" }}>{task.createdByName || task.createdByEmail || "System / Unassigned"}</strong></span>
+                      </div>
 
-                    {task.taskNote && (
-                      <div style={{ fontSize: "12px", color: "#7c3aed", fontStyle: "italic", marginBottom: "2px" }}>📋 {task.taskNote}</div>
-                    )}
-                    {task.furtherNotes?.length > 0 && (
-                      <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>
-                        {task.furtherNotes.length} note{task.furtherNotes.length > 1 ? "s" : ""} · Last: {new Date(task.furtherNotes[task.furtherNotes.length - 1].timestamp).toLocaleDateString("en-GB")}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontSize: "11px", color: "#aaa" }}>
-                      {task.taskCreatedAt ? new Date(task.taskCreatedAt).toLocaleDateString("en-GB") : "-"}
+                      {task.taskNote && (
+                        <div style={{ fontSize: "12px", color: "#7c3aed", fontStyle: "italic", marginBottom: "2px" }}>📋 {task.taskNote}</div>
+                      )}
+                      {task.furtherNotes?.length > 0 && (
+                        <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>
+                          {task.furtherNotes.length} note{task.furtherNotes.length > 1 ? "s" : ""} · Last: {new Date(task.furtherNotes[task.furtherNotes.length - 1].timestamp).toLocaleDateString("en-GB")}
+                        </div>
+                      )}
                     </div>
-                    {task.isSnoozed && (
-                      <div style={{ fontSize: "11px", color: "#d97706", marginTop: "2px" }}>
-                        Snoozed → {new Date(task.snoozedUntil).toLocaleDateString("en-GB")}
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontSize: "11px", color: "#aaa" }}>
+                        {task.taskCreatedAt ? new Date(task.taskCreatedAt).toLocaleDateString("en-GB") : "-"}
                       </div>
-                    )}
-                    {task.isResolved && task.resolvedAt && (
-                      <div style={{ fontSize: "11px", color: "#2e7d32", marginTop: "2px" }}>
-                        Resolved {new Date(task.resolvedAt).toLocaleDateString("en-GB")}
-                      </div>
-                    )}
+                      {task.isSnoozed && (
+                        <div style={{ fontSize: "11px", color: "#d97706", marginTop: "2px" }}>
+                          Snoozed → {new Date(task.snoozedUntil).toLocaleDateString("en-GB")}
+                        </div>
+                      )}
+                      {task.isResolved && task.resolvedAt && (
+                        <div style={{ fontSize: "11px", color: "#2e7d32", marginTop: "2px" }}>
+                          Resolved {new Date(task.resolvedAt).toLocaleDateString("en-GB")}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Bulk Snooze Modal */}
+        {showBulkSnoozeModal && (
+          <div style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,0,0,0.5)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}>
+            <div style={{
+              background: "#fff",
+              borderRadius: "10px",
+              boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)",
+              maxWidth: "460px",
+              width: "100%",
+              padding: "24px",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
+                  ⏰ Snooze Tasks
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowBulkSnoozeModal(false)}
+                  style={{ background: "none", border: "none", fontSize: "18px", cursor: "pointer", color: "#94a3b8" }}>
+                  ✕
+                </button>
               </div>
-            ))}
+
+              <p style={{ fontSize: "13px", color: "#64748b", margin: "0 0 16px 0" }}>
+                Snoozing <strong>{selectedTaskHashes.size}</strong> selected task{selectedTaskHashes.size > 1 ? "s" : ""}. They will reappear in active tasks when the snooze expires.
+              </p>
+
+              {/* Quick presets */}
+              <div style={{ marginBottom: "16px" }}>
+                <div style={{ fontSize: "12px", fontWeight: "600", color: "#475569", marginBottom: "8px" }}>Quick presets:</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => setSnoozePreset(1)}
+                    style={{ fontSize: "11px", padding: "5px 10px", borderRadius: "6px", background: "#f1f5f9", border: "1px solid #cbd5e1", cursor: "pointer" }}>
+                    Tomorrow 07:00
+                  </button>
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => setSnoozePreset(2)}
+                    style={{ fontSize: "11px", padding: "5px 10px", borderRadius: "6px", background: "#f1f5f9", border: "1px solid #cbd5e1", cursor: "pointer" }}>
+                    In 2 days
+                  </button>
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => setSnoozePreset(7)}
+                    style={{ fontSize: "11px", padding: "5px 10px", borderRadius: "6px", background: "#f1f5f9", border: "1px solid #cbd5e1", cursor: "pointer" }}>
+                    In 1 week
+                  </button>
+                  <button
+                    type="button"
+                    className="triage-btn"
+                    onClick={() => setSnoozePreset(0, true)}
+                    style={{ fontSize: "11px", padding: "5px 10px", borderRadius: "6px", background: "#f1f5f9", border: "1px solid #cbd5e1", cursor: "pointer" }}>
+                    Next Monday 07:00
+                  </button>
+                </div>
+              </div>
+
+              {/* Date & Time picker */}
+              <div style={{ display: "flex", gap: "12px", marginBottom: "20px" }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "#475569", marginBottom: "4px" }}>
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    value={bulkSnoozeDate}
+                    min={new Date().toISOString().split("T")[0]}
+                    onChange={e => setBulkSnoozeDate(e.target.value)}
+                    style={{ width: "100%", padding: "8px 10px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "13px" }}
+                  />
+                </div>
+                <div style={{ width: "110px" }}>
+                  <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "#475569", marginBottom: "4px" }}>
+                    Time
+                  </label>
+                  <input
+                    type="time"
+                    value={bulkSnoozeTime}
+                    onChange={e => setBulkSnoozeTime(e.target.value)}
+                    style={{ width: "100%", padding: "8px 10px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "13px" }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                <button
+                  type="button"
+                  className="triage-btn"
+                  onClick={() => setShowBulkSnoozeModal(false)}
+                  style={{ ...styles.buttonSecondary, fontSize: "13px", padding: "8px 16px" }}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="triage-btn"
+                  disabled={!bulkSnoozeDate || bulkActionLoading}
+                  onClick={handleBulkSnooze}
+                  style={{
+                    fontSize: "13px",
+                    padding: "8px 18px",
+                    borderRadius: "6px",
+                    fontWeight: "600",
+                    background: bulkSnoozeDate ? "#d97706" : "#cbd5e1",
+                    color: "#fff",
+                    border: `1px solid ${bulkSnoozeDate ? "#b45309" : "#cbd5e1"}`,
+                    cursor: bulkSnoozeDate && !bulkActionLoading ? "pointer" : "not-allowed",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}>
+                  {bulkActionLoading ? <Spinner size={14} color="#fff" /> : `Snooze (${selectedTaskHashes.size})`}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

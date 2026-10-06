@@ -368,6 +368,39 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
   }));
 }
 
+export async function updateAlertMemoryRowsBatch(sheets, automationCommanderSheetId, updateItems) {
+  if (!updateItems || updateItems.length === 0) return;
+  const now = new Date().toISOString().split("T")[0];
+  const data = updateItems.map(({ rowIndex, updates }) => {
+    const compressedOptions = compressOptionsJSON_(updates.cachedOptionsJSON);
+    const values = [
+      updates.fingerprintHash,
+      updates.alertType,
+      updates.clientName,
+      updates.alertSummary,
+      compressedOptions,
+      updates.status,
+      updates.ignoreReason || "",
+      updates.firstSeen,
+      now,
+      updates.lastRechecked || now,
+      updates.dataSnapshot || "",
+    ];
+    return {
+      range: `${ALERT_MEMORY_TAB}!A${rowIndex}:K${rowIndex}`,
+      values: [values],
+    };
+  });
+
+  await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: automationCommanderSheetId,
+    requestBody: {
+      valueInputOption: "RAW",
+      data,
+    },
+  }));
+}
+
 export async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, rowIndices) {
   if (rowIndices.length === 0) return;
 

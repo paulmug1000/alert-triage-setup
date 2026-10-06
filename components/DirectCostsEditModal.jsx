@@ -9,7 +9,7 @@ export default function DirectCostsEditModal({
   onMarkPullPending,
   onUpdateJobs
 }) {
-  const { rowNum, slotNum, slot } = editSlot;
+  const { rowNum, slotNum, slot, jobName, jobClient } = editSlot;
   const [description, setDescription] = useState(slot.description || "");
   const [amount, setAmount] = useState(stripCurrency(slot.amount));
   const [vat, setVat] = useState(/^[£$€]?\d/.test(String(slot.vat||"")) ? "" : (slot.vat || "No"));
@@ -76,15 +76,22 @@ export default function DirectCostsEditModal({
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit expense - Row {rowNum}, Slot {slotNum}</h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
+              {jobName ? `${jobName} · Slot ${slotNum}` : `Edit expense - Row ${rowNum}, Slot ${slotNum}`}
+            </h3>
+            {jobClient && <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>Client: <strong>{jobClient}</strong> · Row {rowNum}</div>}
+          </div>
           <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
 
         <div style={{ display: "grid", gap: "12px" }}>
-          <div>
-            <label style={labelStyle}>Description</label>
-            <input style={inputStyle} value={description} onChange={e => setDescription(e.target.value)} />
+          <div style={{ padding: "10px 12px", background: "#f8fafc", borderRadius: "8px", border: "1.5px solid #cbd5e1" }}>
+            <label style={{ ...labelStyle, color: "#1e293b", fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px" }}>Item Description</label>
+            <input style={{ ...inputStyle, fontSize: "14px", fontWeight: "600", color: "#0f172a", border: "1px solid #94a3b8" }}
+              placeholder="e.g. Photography & Studio hire"
+              value={description} onChange={e => setDescription(e.target.value)} />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <div>

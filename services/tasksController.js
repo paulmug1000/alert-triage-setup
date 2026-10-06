@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { redisClient } from "./redisClient";
 import {
   buildAlertFingerprint, ensureAlertMemoryTab, readAlertMemory,
-  findMemoryRow, updateAlertMemoryRow, appendAlertMemoryRow
+  findMemoryRow, updateAlertMemoryRow, updateAlertMemoryRowsBatch, appendAlertMemoryRow
 } from "./alertMemory";
 import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
@@ -394,52 +394,84 @@ export async function handleAddTaskNote(req, res, sheets) {
 }
 
 export async function handleSnoozeTask(req, res, sheets) {
-  const { fingerprintHash, snoozedUntil, automationCommanderSheetId: acId, unsnooze, updateCachedOptions, newCachedOptionsJSON, alertData } = req.body;
-  if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const { fingerprintHash, fingerprintHashes, snoozedUntil, automationCommanderSheetId: acId, unsnooze, updateCachedOptions, newCachedOptionsJSON, alertData } = req.body;
+  const hashes = Array.isArray(fingerprintHashes) && fingerprintHashes.length > 0
+    ? fingerprintHashes
+    : (fingerprintHash ? [fingerprintHash] : []);
+  if (hashes.length === 0 || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
-    const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
-    if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
-
     const sessionUser = getSessionUser(req);
     if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
-    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
-      return res.status(403).json({ success: false, error: "Access denied to this client's tasks" });
+
+    const batchUpdates = [];
+    const snoozedTasks = [];
+
+    for (const hash of hashes) {
+      const memoryRow = findMemoryRow(memoryRows, hash);
+      if (!memoryRow) continue;
+
+      if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
+        continue;
+      }
+
+      let taskMeta = {};
+      try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+      const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
+      if (!sessionUser.isAdmin && isAdminOnly) {
+        continue;
+      }
+      if (unsnooze) { taskMeta.snoozedUntil = ""; } else { taskMeta.snoozedUntil = snoozedUntil || ""; }
+
+      if (updateCachedOptions && newCachedOptionsJSON) {
+        taskMeta.furtherNotes = [...(taskMeta.furtherNotes || []), { text: `Alert data changed - analysis updated${unsnooze ? " and task unsnoozed" : ""}`, timestamp: new Date().toISOString(), system: true }];
+        if (alertData) taskMeta.alertData = alertData;
+      }
+
+      batchUpdates.push({
+        rowIndex: memoryRow.rowIndex,
+        updates: {
+          ...memoryRow,
+          cachedOptionsJSON: updateCachedOptions && newCachedOptionsJSON ? newCachedOptionsJSON : memoryRow.cachedOptionsJSON,
+          dataSnapshot: JSON.stringify(taskMeta),
+        }
+      });
+      snoozedTasks.push(memoryRow);
     }
 
-    let taskMeta = {};
-    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
-    const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
-    if (!sessionUser.isAdmin && isAdminOnly) {
-      return res.status(403).json({ success: false, error: "Access denied: task belongs to an Admin-only alert" });
-    }
-    if (unsnooze) { taskMeta.snoozedUntil = ""; } else { taskMeta.snoozedUntil = snoozedUntil || ""; }
-    
-    if (updateCachedOptions && newCachedOptionsJSON) {
-      taskMeta.furtherNotes = [...(taskMeta.furtherNotes || []), { text: `Alert data changed - analysis updated${unsnooze ? " and task unsnoozed" : ""}`, timestamp: new Date().toISOString(), system: true }];
-      if (alertData) taskMeta.alertData = alertData;
+    if (batchUpdates.length === 0) {
+      return res.status(404).json({ success: false, error: "No eligible tasks found to snooze" });
     }
 
-    await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, {
-      ...memoryRow,
-      cachedOptionsJSON: updateCachedOptions && newCachedOptionsJSON ? newCachedOptionsJSON : memoryRow.cachedOptionsJSON,
-      dataSnapshot: JSON.stringify(taskMeta),
-    });
+    await updateAlertMemoryRowsBatch(sheets, acId, batchUpdates);
     await redisClient.del("triage_tasks_cache").catch(() => {});
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: acId,
-      clientName: memoryRow.clientName || "",
-      category: "TRIAGE",
-      action: unsnooze ? "Task Unsnoozed" : "Task Snoozed",
-      summary: unsnooze
-        ? `Unsnoozed task for ${memoryRow.clientName || "Client"}: ${memoryRow.alertSummary || "Task"}`
-        : `Snoozed task for ${memoryRow.clientName || "Client"} until ${snoozedUntil}: ${memoryRow.alertSummary || "Task"}`,
-      details: { fingerprintHash, snoozedUntil, unsnooze: !!unsnooze, clientName: memoryRow.clientName }
-    });
+    if (snoozedTasks.length === 1) {
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: snoozedTasks[0].clientName || "",
+        category: "TRIAGE",
+        action: unsnooze ? "Task Unsnoozed" : "Task Snoozed",
+        summary: unsnooze
+          ? `Unsnoozed task for ${snoozedTasks[0].clientName || "Client"}: ${snoozedTasks[0].alertSummary || "Task"}`
+          : `Snoozed task for ${snoozedTasks[0].clientName || "Client"} until ${snoozedUntil}: ${snoozedTasks[0].alertSummary || "Task"}`,
+        details: { fingerprintHash: snoozedTasks[0].fingerprintHash, snoozedUntil, unsnooze: !!unsnooze, clientName: snoozedTasks[0].clientName }
+      });
+    } else {
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: "Multiple Clients",
+        category: "TRIAGE",
+        action: unsnooze ? "Tasks Unsnoozed (Bulk)" : "Tasks Snoozed (Bulk)",
+        summary: unsnooze
+          ? `Unsnoozed ${snoozedTasks.length} tasks in bulk`
+          : `Snoozed ${snoozedTasks.length} tasks in bulk until ${snoozedUntil}`,
+        details: { count: snoozedTasks.length, snoozedUntil, hashes: snoozedTasks.map(t => t.fingerprintHash) }
+      });
+    }
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, count: snoozedTasks.length });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -475,41 +507,71 @@ export async function handleRevertTaskToAlert(req, res, sheets) {
 }
 
 export async function handleResolveTask(req, res, sheets) {
-  const { fingerprintHash, automationCommanderSheetId: acId } = req.body;
-  if (!fingerprintHash || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const { fingerprintHash, fingerprintHashes, automationCommanderSheetId: acId } = req.body;
+  const hashes = Array.isArray(fingerprintHashes) && fingerprintHashes.length > 0
+    ? fingerprintHashes
+    : (fingerprintHash ? [fingerprintHash] : []);
+  if (hashes.length === 0 || !acId) return res.status(400).json({ success: false, error: "Missing required fields" });
   try {
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
-    const memoryRow = findMemoryRow(memoryRows, fingerprintHash);
-    if (!memoryRow) return res.status(404).json({ success: false, error: "Task not found" });
-
     const sessionUser = getSessionUser(req);
     if (!sessionUser) return res.status(401).json({ success: false, error: "Unauthorized" });
-    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
-      return res.status(403).json({ success: false, error: "Access denied to this client's tasks" });
+
+    const batchUpdates = [];
+    const resolvedTasks = [];
+
+    for (const hash of hashes) {
+      const memoryRow = findMemoryRow(memoryRows, hash);
+      if (!memoryRow) continue;
+
+      if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, memoryRow.clientName)) {
+        continue;
+      }
+
+      let taskMeta = {};
+      try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
+      const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
+      if (!sessionUser.isAdmin && isAdminOnly) {
+        continue;
+      }
+      taskMeta.resolvedAt = new Date().toISOString();
+
+      batchUpdates.push({
+        rowIndex: memoryRow.rowIndex,
+        updates: { ...memoryRow, status: "task_resolved", dataSnapshot: JSON.stringify(taskMeta) }
+      });
+      resolvedTasks.push(memoryRow);
     }
 
-    let taskMeta = {};
-    try { taskMeta = JSON.parse(memoryRow.dataSnapshot || "{}"); } catch (e) {}
-    const isAdminOnly = !!taskMeta.isAdminOnly || ADMIN_ONLY_ALERT_TYPES.has(memoryRow.alertType);
-    if (!sessionUser.isAdmin && isAdminOnly) {
-      return res.status(403).json({ success: false, error: "Access denied: task belongs to an Admin-only alert" });
+    if (batchUpdates.length === 0) {
+      return res.status(404).json({ success: false, error: "No eligible tasks found to resolve" });
     }
-    taskMeta.resolvedAt = new Date().toISOString();
 
-    await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, status: "task_resolved", dataSnapshot: JSON.stringify(taskMeta) });
+    await updateAlertMemoryRowsBatch(sheets, acId, batchUpdates);
     await redisClient.del("triage_tasks_cache").catch(() => {});
 
-    logPmaActivity(sheets, {
-      automationCommanderSheetId: acId,
-      clientName: memoryRow.clientName || "",
-      category: "TRIAGE",
-      action: "Task Resolved",
-      summary: `Resolved task for ${memoryRow.clientName || "Client"}: ${memoryRow.alertSummary || "Task"}`,
-      details: { fingerprintHash, clientName: memoryRow.clientName }
-    });
+    if (resolvedTasks.length === 1) {
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: resolvedTasks[0].clientName || "",
+        category: "TRIAGE",
+        action: "Task Resolved",
+        summary: `Resolved task for ${resolvedTasks[0].clientName || "Client"}: ${resolvedTasks[0].alertSummary || "Task"}`,
+        details: { fingerprintHash: resolvedTasks[0].fingerprintHash, clientName: resolvedTasks[0].clientName }
+      });
+    } else {
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: "Multiple Clients",
+        category: "TRIAGE",
+        action: "Tasks Resolved (Bulk)",
+        summary: `Resolved ${resolvedTasks.length} tasks in bulk across ${new Set(resolvedTasks.map(t => t.clientName)).size} client(s)`,
+        details: { count: resolvedTasks.length, hashes: resolvedTasks.map(t => t.fingerprintHash) }
+      });
+    }
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, count: resolvedTasks.length });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }

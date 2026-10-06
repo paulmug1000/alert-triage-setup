@@ -206,9 +206,10 @@ export async function handleGetOutgoingsInbox(req, res, sheets) {
       const appId       = String(row[6] || "").trim();
       const datePaid    = String(row[7] || "").trim();
       const vatAmount   = parseFloat(String(row[8] || "0").replace(/[£$€,]/g, "")) || 0;
+      const contactName = String(row[11] || "").trim();
 
       if (!appId) { skippedNoAppId++; continue; }
-      inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid, vatAmount });
+      inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid, vatAmount, contactName });
     }
 
     return res.status(200).json({ success: true, inbox });
@@ -878,9 +879,122 @@ export async function handleUpdateJobField(req, res, sheets) {
   }
 }
 
+async function insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobClient, jobName) {
+  const metaResp = await sheets.spreadsheets.get({
+    spreadsheetId: sheetIdClean,
+    fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
+  });
+  const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+  if (!confirmedSheet) throw new Error("Confirmed tab not found");
+  const gridSheetId = confirmedSheet.properties.sheetId;
+  const currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
+  const existingRowGroups = confirmedSheet.rowGroups || [];
+
+  const fullResp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetIdClean,
+    range: "Confirmed!A1:CR" + currentMaxRows,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const allRows = fullResp.data.values || [];
+  let trueLastRow = 0;
+  for (let r = allRows.length - 1; r >= 0; r--) {
+    const row = allRows[r] || [];
+    const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+    const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
+    const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+    const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
+    if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+  }
+
+  const jobVAT = allRows[jobLastRow - 1]?.[34] ?? "";
+
+  if (currentMaxRows - (trueLastRow + 1) < 1) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: sheetIdClean,
+      requestBody: {
+        requests: [{
+          insertDimension: {
+            range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + 5 },
+            inheritFromBefore: true,
+          },
+        }],
+      },
+    });
+  }
+
+  const sourceRowIndex0 = trueLastRow; 
+  const destRowIndex0 = jobLastRow;    
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: sheetIdClean,
+    requestBody: {
+      requests: [{
+        moveDimension: {
+          source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: sourceRowIndex0, endIndex: sourceRowIndex0 + 1 },
+          destinationIndex: destRowIndex0,
+        },
+      }],
+    },
+  });
+
+  const targetRowNum = jobLastRow + 1; 
+
+  try {
+    const destRowIndex1based0 = jobLastRow; 
+    const coveringGroup = existingRowGroups.find(g =>
+      g.range?.startIndex <= destRowIndex1based0 - 1 && g.range?.endIndex >= destRowIndex1based0
+    );
+    if (coveringGroup) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          requests: [
+            { deleteDimensionGroup: { range: {
+                sheetId: gridSheetId, dimension: "ROWS",
+                startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex,
+              } } },
+            { addDimensionGroup: { range: {
+                sheetId: gridSheetId, dimension: "ROWS",
+                startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex + 1,
+              } } },
+          ],
+        },
+      });
+    } else {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
+          requests: [{
+            addDimensionGroup: {
+              range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: destRowIndex1based0, endIndex: destRowIndex1based0 + 1 },
+            },
+          }],
+        },
+      });
+    }
+  } catch (groupErr) {
+    console.log(`  ⚠ Row grouping for new child row failed (non-fatal): ${groupErr.message}`);
+  }
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: sheetIdClean,
+    requestBody: {
+      valueInputOption: "RAW",
+      data: [
+        { range: `Confirmed!A${targetRowNum}`, values: [[jobClient || ""]] },
+        { range: `Confirmed!B${targetRowNum}`, values: [[jobName || ""]] },
+        { range: `Confirmed!AI${targetRowNum}`, values: [[jobVAT]] },
+      ],
+    },
+  });
+
+  return targetRowNum;
+}
+
 export async function handleAssignExpenseToJob(req, res, sheets) {
-  const { clientSheetId, masterSheetId, rowNum, slotNum, expense, createNewRow, jobLastRow, jobClient, jobName } = req.body;
-  if (!clientSheetId || !expense) {
+  const { clientSheetId, masterSheetId, rowNum, slotNum, expense, expenses, createNewRow, jobLastRow, jobClient, jobName, jobRows } = req.body;
+  const expenseList = Array.isArray(expenses) && expenses.length > 0 ? expenses : (expense ? [expense] : []);
+  if (!clientSheetId || expenseList.length === 0) {
     return res.status(400).json({ success: false, error: "Missing clientSheetId or expense" });
   }
   if (!createNewRow && (!rowNum || !slotNum)) {
@@ -895,163 +1009,122 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
       3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
     };
 
-    const vatAmountRaw = parseFloat(String(expense.vatAmount || "0").replace(/[£$€,]/g, "")) || 0;
-    const vatYesNo = vatAmountRaw > 0 ? "Yes" : "No";
+    const parseExpenseDate = (dateStr) => {
+      if (!dateStr) return null;
+      const m = String(dateStr).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+      if (!m) return null;
+      const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+      const mIdx = months[m[2].toLowerCase()];
+      if (mIdx === undefined) return null;
+      const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+      return new Date(yr, mIdx, parseInt(m[1]));
+    };
+    const fmtDate = (d) => {
+      const ms = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      return d.getDate() + "-" + ms[d.getMonth()] + "-" + d.getFullYear();
+    };
 
-    let targetRowNum = rowNum;
-    let targetSlotNum = slotNum;
+    const getExpenseDescription = (exp) => {
+      if (exp.contactName && exp.description && !exp.description.toLowerCase().includes(exp.contactName.toLowerCase())) {
+        return `${exp.contactName} - ${exp.description}`;
+      }
+      return exp.description || exp.contactName || exp.accountName || "";
+    };
+
+    let currRowNum = rowNum;
+    let currSlotNum = slotNum;
+    let dynamicJobLastRow = jobLastRow || rowNum;
+
+    // Track known rows for this job so multi-item sequential placement can spill across rows
+    let knownJobRows = Array.isArray(jobRows) ? jobRows.map(r => typeof r === "object" ? r.rowNum : r) : [rowNum].filter(Boolean);
 
     if (createNewRow) {
       if (!jobLastRow) return res.status(400).json({ success: false, error: "Missing jobLastRow for createNewRow" });
+      const newRowNum = await insertChildJobRow_(sheets, sheetIdClean, jobLastRow, jobClient, jobName);
+      currRowNum = newRowNum;
+      currSlotNum = 1;
+      dynamicJobLastRow = newRowNum;
+      knownJobRows.push(newRowNum);
+    }
 
-      const metaResp = await sheets.spreadsheets.get({
-        spreadsheetId: sheetIdClean,
-        fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
-      });
-      const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
-      if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
-      const gridSheetId = confirmedSheet.properties.sheetId;
-      const currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
-      const existingRowGroups = confirmedSheet.rowGroups || [];
+    const valueUpdates = [];
+    const dateUpdates = [];
+    const placed = [];
 
-      const fullResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetIdClean,
-        range: "Confirmed!A1:CR" + currentMaxRows,
-        valueRenderOption: "UNFORMATTED_VALUE",
-      });
-      const allRows = fullResp.data.values || [];
-      let trueLastRow = 0;
-      for (let r = allRows.length - 1; r >= 0; r--) {
-        const row = allRows[r] || [];
-        const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
-        const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
-        const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
-        const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
-        if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+    for (const exp of expenseList) {
+      // If current slot exceeds 3, spill over to the next row of this job or create a new child row
+      if (currSlotNum > 3) {
+        const nextKnownRow = knownJobRows.find(r => r > currRowNum);
+        if (nextKnownRow) {
+          currRowNum = nextKnownRow;
+          currSlotNum = 1;
+        } else {
+          // No more rows for this job - create a new child row
+          const newRowNum = await insertChildJobRow_(sheets, sheetIdClean, dynamicJobLastRow, jobClient, jobName);
+          currRowNum = newRowNum;
+          currSlotNum = 1;
+          dynamicJobLastRow = newRowNum;
+          knownJobRows.push(newRowNum);
+        }
       }
 
-      const jobVAT = allRows[jobLastRow - 1]?.[34] ?? "";
+      const slotColsForSlot = slotCols[currSlotNum];
+      if (!slotColsForSlot) break;
 
-      if (currentMaxRows - (trueLastRow + 1) < 1) {
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId: sheetIdClean,
-          requestBody: {
-            requests: [{
-              insertDimension: {
-                range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + 5 },
-                inheritFromBefore: true,
-              },
-            }],
-          },
+      const vatAmountRaw = parseFloat(String(exp.vatAmount || "0").replace(/[£$€,]/g, "")) || 0;
+      const vatYesNo = vatAmountRaw > 0 ? "Yes" : "No";
+      const descToSave = getExpenseDescription(exp);
+
+      valueUpdates.push(
+        { range: `Confirmed!${slotColsForSlot.d}${currRowNum}`,  values: [[descToSave]] },
+        { range: `Confirmed!${slotColsForSlot.a}${currRowNum}`,  values: [[exp.amount || 0]] },
+        { range: `Confirmed!${slotColsForSlot.v}${currRowNum}`,  values: [[vatYesNo]] },
+        { range: `Confirmed!${slotColsForSlot.dp}${currRowNum}`, values: [[30]] },
+        { range: `Confirmed!${slotColsForSlot.st}${currRowNum}`, values: [[exp.status || ""]] },
+        { range: `Confirmed!${slotColsForSlot.id}${currRowNum}`, values: [[exp.appId || ""]] }
+      );
+
+      const parsedExpenseDate = parseExpenseDate(exp.date);
+      if (parsedExpenseDate) {
+        dateUpdates.push({
+          range: `Confirmed!${slotColsForSlot.dt}${currRowNum}`,
+          values: [[fmtDate(parsedExpenseDate)]]
         });
       }
 
-      const sourceRowIndex0 = trueLastRow; 
-      const destRowIndex0 = jobLastRow;    
-
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: sheetIdClean,
-        requestBody: {
-          requests: [{
-            moveDimension: {
-              source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: sourceRowIndex0, endIndex: sourceRowIndex0 + 1 },
-              destinationIndex: destRowIndex0,
-            },
-          }],
-        },
+      placed.push({
+        rowNum: currRowNum,
+        slotNum: currSlotNum,
+        description: descToSave,
+        amount: exp.amount || 0,
+        vat: vatYesNo,
+        date: parsedExpenseDate ? fmtDate(parsedExpenseDate) : (exp.date || ""),
+        status: exp.status || "",
+        transactionId: exp.appId || "",
+        appId: exp.appId || ""
       });
 
-      targetRowNum = jobLastRow + 1; 
-      targetSlotNum = 1; 
+      currSlotNum++;
+    }
 
-      try {
-        const destRowIndex1based0 = jobLastRow; 
-        const coveringGroup = existingRowGroups.find(g =>
-          g.range?.startIndex <= destRowIndex1based0 - 1 && g.range?.endIndex >= destRowIndex1based0
-        );
-        if (coveringGroup) {
-          await sheets.spreadsheets.batchUpdate({
-            spreadsheetId: sheetIdClean,
-            requestBody: {
-              requests: [
-                { deleteDimensionGroup: { range: {
-                    sheetId: gridSheetId, dimension: "ROWS",
-                    startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex,
-                  } } },
-                { addDimensionGroup: { range: {
-                    sheetId: gridSheetId, dimension: "ROWS",
-                    startIndex: coveringGroup.range.startIndex, endIndex: coveringGroup.range.endIndex + 1,
-                  } } },
-              ],
-            },
-          });
-        } else {
-          await sheets.spreadsheets.batchUpdate({
-            spreadsheetId: sheetIdClean,
-            requestBody: {
-              requests: [{
-                addDimensionGroup: {
-                  range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: destRowIndex1based0, endIndex: destRowIndex1based0 + 1 },
-                },
-              }],
-            },
-          });
-        }
-      } catch (groupErr) {
-        console.log(`  ⚠ Row grouping for new child row failed (non-fatal): ${groupErr.message}`);
-      }
-
+    if (valueUpdates.length > 0) {
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
         requestBody: {
           valueInputOption: "RAW",
-          data: [
-            { range: `Confirmed!A${targetRowNum}`, values: [[jobClient || ""]] },
-            { range: `Confirmed!B${targetRowNum}`, values: [[jobName || ""]] },
-            { range: `Confirmed!AI${targetRowNum}`, values: [[jobVAT]] },
-          ],
+          data: valueUpdates,
         },
       });
     }
 
-    const slotColsForSlot = slotCols[targetSlotNum];
-    if (!slotColsForSlot) return res.status(400).json({ success: false, error: "Invalid slotNum" });
-
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetIdClean,
-      requestBody: {
-        valueInputOption: "RAW",
-        data: [
-          { range: `Confirmed!${slotColsForSlot.d}${targetRowNum}`,  values: [[expense.description || expense.accountName || ""]] },
-          { range: `Confirmed!${slotColsForSlot.a}${targetRowNum}`,  values: [[expense.amount || 0]] },
-          { range: `Confirmed!${slotColsForSlot.v}${targetRowNum}`,  values: [[vatYesNo]] },
-          { range: `Confirmed!${slotColsForSlot.dp}${targetRowNum}`, values: [[30]] },
-          { range: `Confirmed!${slotColsForSlot.st}${targetRowNum}`, values: [[expense.status || ""]] },
-          { range: `Confirmed!${slotColsForSlot.id}${targetRowNum}`, values: [[expense.appId || ""]] },
-        ],
-      },
-    });
-
-    if (expense.date) {
-      const parsedExpenseDate = (() => {
-        if (!expense.date) return null;
-        const m = String(expense.date).match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-        if (!m) return null;
-        const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
-        const mIdx = months[m[2].toLowerCase()];
-        if (mIdx === undefined) return null;
-        const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
-        return new Date(yr, mIdx, parseInt(m[1]));
-      })();
-      if (parsedExpenseDate) {
-        const fmt = (d) => { const ms = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return d.getDate() + "-" + ms[d.getMonth()] + "-" + d.getFullYear(); };
-        await sheets.spreadsheets.values.update({
-          spreadsheetId: sheetIdClean,
-          range: `Confirmed!${slotColsForSlot.dt}${targetRowNum}`,
+    if (dateUpdates.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: {
           valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[fmt(parsedExpenseDate)]] },
-        });
-      }
+          data: dateUpdates,
+        },
+      });
     }
 
     let tenantClient = req.body.clientName || "";
@@ -1060,25 +1133,31 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
     }
     const jobIdentifier = (jobClient && jobName) ? `"${jobClient} - ${jobName}"` : `"${jobName || jobClient || "Job"}"`;
 
+    const summaryStr = placed.length === 1
+      ? `Placed expense '${placed[0].description}' (£${placed[0].amount}) into ${jobIdentifier} (Row ${placed[0].rowNum}, Slot ${placed[0].slotNum})`
+      : `Placed ${placed.length} expenses into ${jobIdentifier} sequentially starting at Row ${placed[0].rowNum}, Slot ${placed[0].slotNum}`;
+
     logPmaActivity(sheets, {
       automationCommanderSheetId: req.body.automationCommanderSheetId,
       clientName: tenantClient,
       category: "EXPENSES",
-      action: createNewRow ? "Expense Placed (New Row)" : "Expense Placed",
-      summary: `Placed expense '${expense.description || expense.accountName || "Expense"}' (£${expense.amount || 0}) into ${jobIdentifier} (Row ${targetRowNum}, Slot ${targetSlotNum})`,
+      action: createNewRow ? "Expense Placed (New Row)" : (placed.length > 1 ? "Expenses Placed (Sequential)" : "Expense Placed"),
+      summary: summaryStr,
       details: {
-        vendor: expense.description || expense.accountName,
-        amount: expense.amount,
+        count: placed.length,
         endClient: jobClient,
         jobName,
         clientName: tenantClient,
-        slot: targetSlotNum,
-        row: targetRowNum,
-        isNewRow: !!createNewRow
+        placed
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true, newRowNum: createNewRow ? targetRowNum : undefined });
+    return res.status(200).json({
+      success: true,
+      placed,
+      newRowNum: createNewRow ? currRowNum : undefined,
+      newRowsCreated: knownJobRows.length > (Array.isArray(jobRows) ? jobRows.length : 1)
+    });
   } catch (err) {
     console.error("❌ assign_expense_to_job error:", err);
     return res.status(500).json({ success: false, error: err.message });

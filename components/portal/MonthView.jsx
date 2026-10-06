@@ -993,6 +993,12 @@ export default function MonthView({
       grid-template-columns: repeat(3, 1fr);
       gap: 20px;
     }
+    :global(.home-chart-axis-label) {
+      font-size: 15.3px;
+    }
+    :global(.home-chart-legend) {
+      font-size: 11.4px;
+    }
 
     @media (max-width: 1080px) {
       :global(.home-view-container) {
@@ -1041,6 +1047,18 @@ export default function MonthView({
         margin: 0 auto !important;
         display: flex !important;
         justify-content: center !important;
+      }
+    }
+
+    @media (max-width: 768px) {
+      :global(.home-chart-legend) {
+        font-size: 9.5px !important;
+      }
+    }
+
+    @media (max-width: 768px) and (orientation: portrait) {
+      :global(.home-chart-axis-label) {
+        font-size: 21.6px !important;
       }
     }
 
@@ -1362,10 +1380,11 @@ function HomeLineChart({
                 strokeWidth={tick === 0 ? "1.5" : "1"}
               />
               <text
+                className="home-chart-axis-label"
                 x={padding.left - 8}
                 y={y + 6}
                 textAnchor="end"
-                fontSize="18"
+                fontSize="15.3"
                 fill="#64748b"
                 fontFamily="'Kumbh Sans', sans-serif"
               >
@@ -1387,10 +1406,11 @@ function HomeLineChart({
           return (
             <text
               key={i}
+              className="home-chart-axis-label"
               x={x}
               y={height - 10}
               textAnchor="middle"
-              fontSize="18"
+              fontSize="15.3"
               fill="#64748b"
               fontFamily="'Kumbh Sans', sans-serif"
             >
@@ -1498,13 +1518,13 @@ function HomeLineChart({
 
       {/* Chart Legend */}
       <div
+        className="home-chart-legend"
         style={{
           display: "flex",
           justifyContent: "center",
           alignItems: "center",
           gap: "16px",
           marginTop: "6px",
-          fontSize: "9.5px",
           fontFamily: "'Kumbh Sans', sans-serif",
           flexWrap: "wrap"
         }}
@@ -1528,6 +1548,25 @@ function HomeLineChart({
           </div>
         )}
       </div>
+
+      <style jsx>{`
+        :global(.home-chart-axis-label) {
+          font-size: 15.3px;
+        }
+        :global(.home-chart-legend) {
+          font-size: 11.4px;
+        }
+        @media (max-width: 768px) {
+          :global(.home-chart-legend) {
+            font-size: 9.5px !important;
+          }
+        }
+        @media (max-width: 768px) and (orientation: portrait) {
+          :global(.home-chart-axis-label) {
+            font-size: 21.6px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

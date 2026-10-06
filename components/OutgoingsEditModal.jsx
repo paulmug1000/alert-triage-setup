@@ -147,7 +147,16 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
               ) : (
                 <div style={{ marginBottom: "12px", padding: "8px 12px", background: "rgba(255,255,255,0.85)", borderRadius: "6px", border: "1px solid rgba(0,0,0,0.08)" }}>
                   <div style={{ fontSize: "11px", fontWeight: "600", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "2px" }}>Item Description</div>
-                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>{b.description || "(No description provided)"}</div>
+                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
+                    {(() => {
+                      if (!b.description) return "(No description provided)";
+                      const bracketMatch = b.description.match(/^([^(]+?)\s*[\(\[]([^)\]]+)[\)\]]$/);
+                      if (bracketMatch) {
+                        return `${bracketMatch[2].trim()} (${bracketMatch[1].trim()})`;
+                      }
+                      return b.description;
+                    })()}
+                  </div>
                 </div>
               )}
 

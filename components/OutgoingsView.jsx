@@ -9,6 +9,51 @@ import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTriage } from "../contexts/TriageContext";
 import { isPlaceholderExpense } from "../utils/helpers";
 
+function parseVendorAndDescription(exp) {
+  let rawVendor = String(exp?.contactName || "").trim();
+  let rawDesc = String(exp?.description || "").trim();
+  const rawAccount = String(exp?.accountName || "").trim();
+
+  // Pattern: "Vendor Name (Item Description)" or "Vendor Name [Item Description]"
+  const bracketRegex = /^([^(]+?)\s*[\(\[]([^)\]]+)[\)\]]$/;
+
+  let vendor = "";
+  let description = "";
+
+  if (rawVendor) {
+    const vMatch = rawVendor.match(bracketRegex);
+    if (vMatch) {
+      vendor = vMatch[1].trim();
+      description = vMatch[2].trim();
+    } else {
+      vendor = rawVendor;
+    }
+  }
+
+  if (rawDesc) {
+    const dMatch = rawDesc.match(bracketRegex);
+    if (dMatch) {
+      if (!vendor) vendor = dMatch[1].trim();
+      if (!description || description === rawDesc) description = dMatch[2].trim();
+    } else if (!description) {
+      if (!vendor || rawDesc.toLowerCase() !== vendor.toLowerCase()) {
+        description = rawDesc;
+      }
+    }
+  }
+
+  if (!vendor) {
+    vendor = rawDesc || rawAccount || "Expense";
+    if (vendor === description) description = "";
+  }
+
+  if (description && vendor && description.toLowerCase() === vendor.toLowerCase()) {
+    description = "";
+  }
+
+  return { vendor, description };
+}
+
 export default function OutgoingsView({
   allOutgoingsClients,
   styles,
@@ -203,48 +248,91 @@ export default function OutgoingsView({
         />
       )}
       {outgoingsReplacePrompt && (() => {
-        const { exp, contractor, colLetter, realBlocks, totalManual, blocksWithoutManual } = outgoingsReplacePrompt;
-        const expenseAmount = parseFloat(exp.amount) || 0;
-        const canUseUp = expenseAmount <= totalManual + 0.001;
+        const { expenses, exp, contractor, colLetter, allBlocks, realBlocks, totalManual, blocksWithoutManual, placeholderBlocks } = outgoingsReplacePrompt;
+        const expenseList = expenses || (exp ? [exp] : []);
+        const currentAllBlocks = allBlocks || realBlocks || [];
+        const currentPlaceholderBlocks = placeholderBlocks || currentAllBlocks.filter(b => b.appId && isPlaceholderExpense(b.appId));
+        const currentBlocksWithoutManual = blocksWithoutManual || currentAllBlocks.filter(b => !b.appId || !isPlaceholderExpense(b.appId));
+        const totalExpenseAmount = expenseList.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0);
+        const canUseUp = totalExpenseAmount <= totalManual + 0.001;
+
         const doPlace = async (keepManual) => {
           setOutgoingsReplacePrompt(null);
-          const base = keepManual ? realBlocks : blocksWithoutManual;
-          const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
-          await updateCell(contractor, colLetter, [...base, newBlock]);
-          setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
-          addAssignedAppId(exp.appId, outgoingsClient?.clientName);
-          setOutgoingsPlacing(null);
+          const base = keepManual ? currentAllBlocks : currentBlocksWithoutManual;
+          const newBlocks = expenseList.map(item => {
+            const { vendor, description } = parseVendorAndDescription(item);
+            const descToStore = description ? `${vendor} - ${description}` : (vendor || item.accountName || "");
+            return {
+              appId: item.appId,
+              amount: item.amount,
+              status: item.status || "",
+              recDate: item.date || "",
+              payDate: item.datePaid || "",
+              description: descToStore || item.description || item.contactName || item.accountName || ""
+            };
+          });
+          await updateCell(contractor, colLetter, [...base, ...newBlocks]);
+          const placedIds = new Set(expenseList.map(e => e.appId));
+          setOutgoingsInbox(prev => {
+            const remaining = prev.filter(e => !placedIds.has(e.appId));
+            if (remaining.length === 0 && outgoingsClient) {
+              markClientCleared(outgoingsClient.clientName);
+            }
+            return remaining;
+          });
+          expenseList.forEach(item => {
+            addAssignedAppId(item.appId, outgoingsClient?.clientName);
+          });
+          clearInboxSelection();
         };
+
         const doUseUp = async () => {
           setOutgoingsReplacePrompt(null);
-          const manualBlocksList = realBlocks.filter(b => b.appId && isPlaceholderExpense(b.appId));
-          const exactIdx = manualBlocksList.findIndex(mb => Math.abs((parseFloat(mb.amount) || 0) - expenseAmount) < 0.01);
-          let reducedManualBlocks;
-          if (exactIdx !== -1) {
-            reducedManualBlocks = manualBlocksList.filter((_, i) => i !== exactIdx);
-          } else {
-            let remaining = expenseAmount;
-            reducedManualBlocks = [];
-            for (const mb of manualBlocksList) {
-              const mbAmount = parseFloat(mb.amount) || 0;
-              const used = Math.min(remaining, mbAmount);
-              const newAmount = mbAmount - used;
-              remaining -= used;
-              if (newAmount > 0.004) reducedManualBlocks.push({ ...mb, amount: newAmount });
+          let remaining = totalExpenseAmount;
+          const reducedPlaceholderBlocks = [];
+          for (const pb of currentPlaceholderBlocks) {
+            const pbAmount = parseFloat(pb.amount) || 0;
+            const used = Math.min(remaining, pbAmount);
+            const newAmount = pbAmount - used;
+            remaining -= used;
+            if (newAmount > 0.004) {
+              reducedPlaceholderBlocks.push({ ...pb, amount: newAmount });
             }
           }
-          const newBlock = { appId: exp.appId, amount: exp.amount, status: exp.status || "", recDate: exp.date || "", payDate: exp.datePaid || "", description: exp.description || exp.accountName || "" };
-          await updateCell(contractor, colLetter, [...blocksWithoutManual, ...reducedManualBlocks, newBlock]);
-          setOutgoingsInbox(prev => prev.filter(e => e.appId !== exp.appId));
-          addAssignedAppId(exp.appId, outgoingsClient?.clientName);
-          setOutgoingsPlacing(null);
+          const newBlocks = expenseList.map(item => {
+            const { vendor, description } = parseVendorAndDescription(item);
+            const descToStore = description ? `${vendor} - ${description}` : (vendor || item.accountName || "");
+            return {
+              appId: item.appId,
+              amount: item.amount,
+              status: item.status || "",
+              recDate: item.date || "",
+              payDate: item.datePaid || "",
+              description: descToStore || item.description || item.contactName || item.accountName || ""
+            };
+          });
+          await updateCell(contractor, colLetter, [...currentBlocksWithoutManual, ...reducedPlaceholderBlocks, ...newBlocks]);
+          const placedIds = new Set(expenseList.map(e => e.appId));
+          setOutgoingsInbox(prev => {
+            const remaining = prev.filter(e => !placedIds.has(e.appId));
+            if (remaining.length === 0 && outgoingsClient) {
+              markClientCleared(outgoingsClient.clientName);
+            }
+            return remaining;
+          });
+          expenseList.forEach(item => {
+            addAssignedAppId(item.appId, outgoingsClient?.clientName);
+          });
+          clearInboxSelection();
         };
+
         return (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 460px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-              <h3 style={{ margin: "0 0 12px", fontSize: "15px", fontWeight: "700" }}>Manual entry exists</h3>
+            <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+              <h3 style={{ margin: "0 0 12px", fontSize: "15px", fontWeight: "700" }}>Placeholder / Unrecon gap exists</h3>
               <p style={{ margin: "0 0 16px", fontSize: "13px", color: "#555" }}>
-                This cell already contains a manual entry of <strong>£{totalManual.toFixed(2)}</strong>.<br/>
+                This cell already contains a placeholder / gap of <strong>£{totalManual.toFixed(2)}</strong>.<br/>
+                You are placing <strong>{expenseList.length}</strong> expense{expenseList.length > 1 ? "s" : ""} totaling <strong>£{totalExpenseAmount.toFixed(2)}</strong>.<br/><br/>
                 Would you like to replace it, keep both, or use up part of the estimate?
               </p>
               <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", flexWrap: "wrap" }}>
@@ -412,58 +500,61 @@ export default function OutgoingsView({
             </div>
             {outgoingsInbox.length > 0 && (
               <>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                   {outgoingsInbox.map((exp, i) => {
                     const isSelected = selectedInboxAppIds.has(exp.appId);
+                    const { vendor, description } = parseVendorAndDescription(exp);
                     return (
-                      <div key={exp.appId || i} style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-start" }}>
+                      <div key={exp.appId || i} style={{ display: "flex", flexDirection: "column", gap: "3px", alignItems: "flex-start" }}>
                       <div
                         onClick={() => toggleInboxSelection(exp)}
                         style={{
                           background: isSelected ? "#eff6ff" : "#fff",
                           border: `2px solid ${isSelected ? "#1a56db" : "#ffc107"}`,
-                          borderRadius: "8px", padding: "10px 12px", fontSize: "12px",
+                          borderRadius: "7px", padding: "7px 10px", fontSize: "11px",
                           cursor: "pointer", textAlign: "left", color: "#1e293b",
                           transition: "background 0.1s, border-color 0.1s",
-                          display: "flex", flexDirection: "column", gap: "4px",
-                          userSelect: "none", width: "240px", boxSizing: "border-box"
+                          display: "flex", flexDirection: "column", gap: "3px",
+                          userSelect: "none", width: "195px", boxSizing: "border-box"
                         }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "6px" }}>
-                          <div style={{ fontWeight: "700", fontSize: "13px", color: isSelected ? "#1a56db" : "#111827", lineHeight: "1.2" }}>
-                            {exp.contactName || exp.description || exp.accountName}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "4px" }}>
+                          <div style={{ fontWeight: "700", fontSize: "12px", color: isSelected ? "#1a56db" : "#111827", lineHeight: "1.2", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                            title={vendor}>
+                            {vendor}
                           </div>
                           <input type="checkbox" checked={isSelected} readOnly
-                            style={{ cursor: "pointer", accentColor: "#1a56db", margin: 0 }} />
+                            style={{ cursor: "pointer", accentColor: "#1a56db", margin: 0, width: "14px", height: "14px", flexShrink: 0 }} />
                         </div>
 
-                        {/* Prominent line item description */}
-                        {exp.description && (
-                          <div style={{ fontSize: "11px", color: "#334155", background: isSelected ? "#dbeafe" : "#fef3c7", padding: "3px 6px", borderRadius: "4px", lineHeight: "1.3" }}>
-                            {exp.description}
+                        {/* Item description tag if available and distinct */}
+                        {description && (
+                          <div style={{ fontSize: "10.5px", color: "#334155", background: isSelected ? "#dbeafe" : "#fef3c7", padding: "2px 5px", borderRadius: "3px", lineHeight: "1.25", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                            title={description}>
+                            {description}
                           </div>
                         )}
 
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "2px", fontSize: "11px", color: "#4b5563" }}>
-                          <span style={{ fontWeight: "700", color: "#111827", fontSize: "12px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1px", fontSize: "10.5px", color: "#4b5563" }}>
+                          <span style={{ fontWeight: "700", color: "#111827", fontSize: "11.5px" }}>
                             £{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })}
                           </span>
                           <span>{exp.date}</span>
                         </div>
 
                         {exp.reference && (
-                          <div style={{ fontSize: "10px", color: "#6b7280" }}>
+                          <div style={{ fontSize: "9.5px", color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             Ref: {exp.reference}
                           </div>
                         )}
 
-                        <div style={{ fontSize: "10px", color: isSelected ? "#1a56db" : "#9ca3af", fontWeight: isSelected ? "700" : "400", marginTop: "2px" }}>
+                        <div style={{ fontSize: "9.5px", color: isSelected ? "#1a56db" : "#9ca3af", fontWeight: isSelected ? "700" : "400" }}>
                           {isSelected ? "✓ Selected to place" : "Click to select"}
                         </div>
                       </div>
                       {vendorsSubTab === "contractors" && (
                         <button onClick={e => { e.stopPropagation(); setOutgoingsNewVendor({ exp }); }}
                           title="Create new vendor row for this expense"
-                          style={{ fontSize: "10px", padding: "2px 8px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", color: "#555", whiteSpace: "nowrap" }}>
+                          style={{ fontSize: "9.5px", padding: "1px 6px", background: "#f0f0f0", border: "1px solid #ccc", borderRadius: "3px", cursor: "pointer", color: "#555", whiteSpace: "nowrap" }}>
                           + New vendor
                         </button>
                       )}
@@ -581,24 +672,33 @@ export default function OutgoingsView({
                               );
                               if (!ok) return;
                             }
-                            const manualBlocks = realBlocks.filter(b => b.appId && isPlaceholderExpense(b.appId));
-                            if (manualBlocks.length > 0 && toPlace.length === 1) {
-                              const exp = toPlace[0];
-                              const totalManual = manualBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
+                            const allBlocks = cell.blocks || [];
+                            const placeholderBlocks = allBlocks.filter(b => b.appId && isPlaceholderExpense(b.appId));
+                            if (placeholderBlocks.length > 0) {
+                              const totalManual = placeholderBlocks.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0);
                               setOutgoingsReplacePrompt({
-                                exp, contractor, colLetter: m.colLetter, realBlocks, totalManual,
-                                blocksWithoutManual: realBlocks.filter(b => !b.appId || !isPlaceholderExpense(b.appId)),
+                                expenses: toPlace,
+                                contractor,
+                                colLetter: m.colLetter,
+                                allBlocks,
+                                totalManual,
+                                blocksWithoutManual: allBlocks.filter(b => !b.appId || !isPlaceholderExpense(b.appId)),
+                                placeholderBlocks,
                               });
                               return;
                             }
-                            const newBlocks = toPlace.map(exp => ({
-                              appId: exp.appId,
-                              amount: exp.amount,
-                              status: exp.status || "",
-                              recDate: exp.date || "",
-                              payDate: exp.datePaid || "",
-                              description: exp.description || exp.contactName || exp.accountName || ""
-                            }));
+                            const newBlocks = toPlace.map(item => {
+                              const { vendor, description } = parseVendorAndDescription(item);
+                              const descToStore = description ? `${vendor} - ${description}` : (vendor || item.accountName || "");
+                              return {
+                                appId: item.appId,
+                                amount: item.amount,
+                                status: item.status || "",
+                                recDate: item.date || "",
+                                payDate: item.datePaid || "",
+                                description: descToStore || item.description || item.contactName || item.accountName || ""
+                              };
+                            });
                             await updateCell(contractor, m.colLetter, [...realBlocks, ...newBlocks]);
 
                             const placedIds = new Set(toPlace.map(e => e.appId));

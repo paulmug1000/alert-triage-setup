@@ -1025,10 +1025,47 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
     };
 
     const getExpenseDescription = (exp) => {
-      if (exp.contactName && exp.description && !exp.description.toLowerCase().includes(exp.contactName.toLowerCase())) {
-        return `${exp.contactName} - ${exp.description}`;
+      let rawVendor = String(exp?.contactName || "").trim();
+      let rawDesc = String(exp?.description || "").trim();
+      const rawAccount = String(exp?.accountName || "").trim();
+      const bracketRegex = /^([^(]+?)\s*[\(\[]([^)\]]+)[\)\]]$/;
+
+      let vendor = "";
+      let description = "";
+
+      if (rawVendor) {
+        const vMatch = rawVendor.match(bracketRegex);
+        if (vMatch) {
+          vendor = vMatch[1].trim();
+          description = vMatch[2].trim();
+        } else {
+          vendor = rawVendor;
+        }
       }
-      return exp.description || exp.contactName || exp.accountName || "";
+
+      if (rawDesc) {
+        const dMatch = rawDesc.match(bracketRegex);
+        if (dMatch) {
+          if (!vendor) vendor = dMatch[1].trim();
+          if (!description || description === rawDesc) description = dMatch[2].trim();
+        } else if (!description) {
+          if (!vendor || rawDesc.toLowerCase() !== vendor.toLowerCase()) {
+            description = rawDesc;
+          }
+        }
+      }
+
+      if (!vendor) {
+        vendor = rawDesc || rawAccount || "Expense";
+        if (vendor === description) description = "";
+      }
+
+      if (description && vendor && description.toLowerCase() === vendor.toLowerCase()) {
+        description = "";
+      }
+
+      if (vendor && description) return `${vendor} - ${description}`;
+      return vendor || description || exp?.accountName || "";
     };
 
     let currRowNum = rowNum;

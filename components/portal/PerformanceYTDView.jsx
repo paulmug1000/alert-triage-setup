@@ -268,17 +268,38 @@ export default function PerformanceYTDView({
     };
   });
 
-  // Precise row finder matching exact label or prefix
-  const findYtdRow = (pArr) =>
+  // Precise row finder matching exact label or prefix in priority order
+  const findYtdRow = (pArr) => {
+    for (const prefix of pArr) {
+      const target = prefix.toLowerCase().trim();
+      const exact = ytdRows.find((r) => String(r.label || "").toLowerCase().trim() === target);
+      if (exact) return exact;
+      const starts = ytdRows.find((r) => {
+        const l = String(r.label || "").toLowerCase().trim();
+        if (target === "income" || target === "revenue" || target === "turnover") {
+          if (l.includes("confirmed") || l.includes("pipeline")) return false;
+        }
+        return l.startsWith(target);
+      });
+      if (starts) return starts;
+    }
+    return null;
+  };
+
+  const ytdRevRow =
     ytdRows.find((r) => {
       const l = String(r.label || "").toLowerCase().trim();
-      return pArr.some((p) => {
-        const target = p.toLowerCase().trim();
-        return l === target || l.startsWith(target);
-      });
-    });
-
-  const ytdRevRow = findYtdRow(["total income", "total revenue", "total turnover", "revenue", "income"]);
+      return l === "total income" || l === "total revenue" || l === "total turnover";
+    }) ||
+    ytdRows.find((r) => {
+      const l = String(r.label || "").toLowerCase().trim();
+      return l.startsWith("total income") || l.startsWith("total revenue") || l.startsWith("total turnover");
+    }) ||
+    ytdRows.find((r) => {
+      const l = String(r.label || "").toLowerCase().trim();
+      return (l === "revenue" || l === "income" || l === "turnover") && !l.includes("confirmed") && !l.includes("pipeline");
+    }) ||
+    findYtdRow(["total income", "total revenue", "total turnover", "revenue", "income"]);
   const ytdGpRow = findYtdRow(["gross profit"]);
   const ytdOverheadsRow = findYtdRow(["total overheads", "overheads"]);
   const ytdOpRow = findYtdRow(["operating profit"]);

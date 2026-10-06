@@ -113,11 +113,45 @@ export default function PerformanceFYView({
 
   // Extract key summary KPI metrics from the active year's rows
   const findRow = (prefixArr) => {
-    return activeYear.rows?.find((r) => {
-      if (!r.label || !r.totalVal) return false;
-      const lbl = r.label.toLowerCase();
-      return prefixArr.some((p) => lbl.includes(p.toLowerCase()));
-    });
+    // 1. Exact match in priority order
+    for (const prefix of prefixArr) {
+      const p = prefix.toLowerCase().trim();
+      const exact = activeYear.rows?.find((r) => {
+        if (!r.label || !r.totalVal) return false;
+        return String(r.label).toLowerCase().trim() === p;
+      });
+      if (exact) return exact;
+    }
+
+    // 2. StartsWith match in priority order
+    for (const prefix of prefixArr) {
+      const p = prefix.toLowerCase().trim();
+      const starts = activeYear.rows?.find((r) => {
+        if (!r.label || !r.totalVal) return false;
+        const lbl = String(r.label).toLowerCase().trim();
+        if (p === "income" || p === "revenue" || p === "turnover") {
+          if (lbl.includes("confirmed") || lbl.includes("pipeline")) return false;
+        }
+        return lbl.startsWith(p);
+      });
+      if (starts) return starts;
+    }
+
+    // 3. Substring match in priority order
+    for (const prefix of prefixArr) {
+      const p = prefix.toLowerCase().trim();
+      const includesMatch = activeYear.rows?.find((r) => {
+        if (!r.label || !r.totalVal) return false;
+        const lbl = String(r.label).toLowerCase().trim();
+        if (p === "income" || p === "revenue" || p === "turnover") {
+          if (lbl.includes("confirmed") || lbl.includes("pipeline")) return false;
+        }
+        return lbl.includes(p);
+      });
+      if (includesMatch) return includesMatch;
+    }
+
+    return null;
   };
 
   const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
@@ -128,7 +162,22 @@ export default function PerformanceFYView({
     return parseMoney(val);
   };
 
-  const totalRevRow = findRow(["total income", "total revenue", "income"]);
+  // Strictly target Total Income / Total Revenue, never Confirmed or Pipeline
+  const totalRevRow =
+    activeYear.rows?.find((r) => {
+      const l = String(r.label || "").toLowerCase().trim();
+      return l === "total income" || l === "total revenue" || l === "total turnover";
+    }) ||
+    activeYear.rows?.find((r) => {
+      const l = String(r.label || "").toLowerCase().trim();
+      return l.startsWith("total income") || l.startsWith("total revenue") || l.startsWith("total turnover");
+    }) ||
+    activeYear.rows?.find((r) => {
+      const l = String(r.label || "").toLowerCase().trim();
+      return (l === "income" || l === "revenue" || l === "turnover") && !l.includes("confirmed") && !l.includes("pipeline");
+    }) ||
+    findRow(["total income", "total revenue", "total turnover", "income", "revenue"]);
+
   const grossProfitRow = activeYear.rows?.find((r) => {
     const l = String(r.label || "").toLowerCase().trim();
     return l === "gross profit";
@@ -143,9 +192,18 @@ export default function PerformanceFYView({
   const opMarginRow = findRow(["operating profit %"]);
 
   // Trajectory chart values
-  const chartRevVals = (totalRevRow?.monthlyValues || []).map(parseNum);
-  const chartGpVals = (grossProfitRow?.monthlyValues || []).map(parseNum);
-  const chartOpVals = (opProfitRow?.monthlyValues || []).map(parseNum);
+  const chartRevVals =
+    (totalRevRow?.monthlyMath || []).length > 0 && totalRevRow.monthlyMath.some((v) => typeof v === "number")
+      ? totalRevRow.monthlyMath.map((m, idx) => (typeof m === "number" && !isNaN(m) ? m : parseNum(totalRevRow?.monthlyValues?.[idx])))
+      : (totalRevRow?.monthlyValues || []).map(parseNum);
+  const chartGpVals =
+    (grossProfitRow?.monthlyMath || []).length > 0 && grossProfitRow.monthlyMath.some((v) => typeof v === "number")
+      ? grossProfitRow.monthlyMath.map((m, idx) => (typeof m === "number" && !isNaN(m) ? m : parseNum(grossProfitRow?.monthlyValues?.[idx])))
+      : (grossProfitRow?.monthlyValues || []).map(parseNum);
+  const chartOpVals =
+    (opProfitRow?.monthlyMath || []).length > 0 && opProfitRow.monthlyMath.some((v) => typeof v === "number")
+      ? opProfitRow.monthlyMath.map((m, idx) => (typeof m === "number" && !isNaN(m) ? m : parseNum(opProfitRow?.monthlyValues?.[idx])))
+      : (opProfitRow?.monthlyValues || []).map(parseNum);
 
   const isIncomeMode =
     String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||

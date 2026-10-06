@@ -1202,7 +1202,7 @@ function HomeLineChart({
 }) {
   const width = 850;
   const height = 380;
-  const padding = { top: 20, right: 30, bottom: 25, left: 65 };
+  const padding = { top: 20, right: 30, bottom: 35, left: 75 };
 
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
@@ -1362,10 +1362,10 @@ function HomeLineChart({
                 strokeWidth={tick === 0 ? "1.5" : "1"}
               />
               <text
-                x={padding.left - 6}
-                y={y + 3}
+                x={padding.left - 8}
+                y={y + 6}
                 textAnchor="end"
-                fontSize="9"
+                fontSize="18"
                 fill="#64748b"
                 fontFamily="'Kumbh Sans', sans-serif"
               >
@@ -1388,9 +1388,9 @@ function HomeLineChart({
             <text
               key={i}
               x={x}
-              y={height - 8}
+              y={height - 10}
               textAnchor="middle"
-              fontSize="9"
+              fontSize="18"
               fill="#64748b"
               fontFamily="'Kumbh Sans', sans-serif"
             >

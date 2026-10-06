@@ -1,11 +1,14 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
+import { formatMoney as universalFormatMoney, parseMoney as universalParseMoney } from "../../services/deepDiveHelper";
 
 export default function BudgetVarianceView({
   clientName,
   data,
   allFYData,
   keyData,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   error,
   onRefresh,
@@ -88,25 +91,24 @@ export default function BudgetVarianceView({
     return !allLabels.some((l) => l.includes("confirmed income") || l.includes("total income"));
   }, [keyData, years]);
 
+  const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
+
   const parseMoney = (val) => {
     if (typeof val === "number") return isNaN(val) ? 0 : val;
     if (!val || val === "—" || val === "–" || val === "-") return 0;
-    let s = String(val).replace(/[£,\s]/g, "").trim();
-    const isParenNeg = s.startsWith("(") && s.endsWith(")");
-    if (isParenNeg) s = s.slice(1, -1);
+    const s = String(val).trim();
     if (s.includes("%")) {
-      const p = parseFloat(s.replace(/%/g, ""));
+      const isParenNeg = s.startsWith("(") && s.endsWith(")");
+      const clean = s.replace(/[()%]/g, "").trim();
+      const p = parseFloat(clean);
       return isNaN(p) ? 0 : (p / 100) * (isParenNeg ? -1 : 1);
     }
-    const n = parseFloat(s);
-    if (isNaN(n)) return 0;
-    return isParenNeg ? -Math.abs(n) : n;
+    return universalParseMoney(val);
   };
 
   const formatMoney = (val) => {
-    const rounded = Math.round(val || 0);
-    const sign = rounded < 0 ? "-" : "";
-    return `${sign}£${Math.abs(rounded).toLocaleString("en-GB")}`;
+    return universalFormatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
   const formatPct = (val) => `${Math.round((val || 0) * 100)}%`;
@@ -126,7 +128,7 @@ export default function BudgetVarianceView({
     for (let m = 0; m < 12; m++) {
       let val = parseFloat(mathVals?.[rawRowIdx]?.[blkStart + m]);
       if (isNaN(val)) {
-        val = parseFloat(String(targetRow?.[blkStart + m] || "").replace(/[£$,%]/g, "")) || 0;
+        val = universalParseMoney(targetRow?.[blkStart + m]);
       }
       row.push(val);
     }
@@ -483,9 +485,9 @@ export default function BudgetVarianceView({
     exportRows.push([`Budget variance analysis: ${viewMode.toUpperCase()} - ${activeFyLabel}`]);
     exportRows.push([]);
     if (viewMode === "month") {
-      exportRows.push(["Metric", "Actual", "", "Budget", "", "Variance (£)", "Variance (%)"]);
+      exportRows.push(["Metric", "Actual", "", "Budget", "", `Variance (${currencySymbol})`, "Variance (%)"]);
     } else {
-      exportRows.push(["Metric", ...displayedMonths.map((m) => `${m} (Act)`), "Act Total", "", "Budget Total", "", "Var (£)", "Var (%)"]);
+      exportRows.push(["Metric", ...displayedMonths.map((m) => `${m} (Act)`), "Act Total", "", "Budget Total", "", `Var (${currencySymbol})`, "Var (%)"]);
     }
     tableRows.forEach((r) => {
       if (r.type === "section") {
@@ -720,7 +722,7 @@ export default function BudgetVarianceView({
                       </th>
                       <th style={{ width: colPercents.gap2, background: "#0047AB", padding: 0 }} />
                       <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.varAmt, background: "#0047AB" }}>
-                        Var (£)
+                        Var ({currencySymbol})
                       </th>
                       <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: "13px", fontStyle: "italic", width: colPercents.varPct, background: "#0047AB" }}>
                         Var %
@@ -754,7 +756,7 @@ export default function BudgetVarianceView({
                       </th>
                       <th style={{ width: colPercents.gap, background: "#0047AB", padding: 0 }} />
                       <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.varAmt, background: "#0047AB", whiteSpace: "nowrap" }}>
-                        Var (£)
+                        Var ({currencySymbol})
                       </th>
                       <th style={{ padding: viewMode === "fy" ? "6px 3px" : "6px 6px", textAlign: "right", fontWeight: 700, fontSize: viewMode === "fy" ? "11px" : "12px", fontStyle: "italic", width: colPercents.varPct, background: "#0047AB", whiteSpace: "nowrap" }}>
                         Var %

@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
+import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 
 export default function PortalNBToFindView({
   clientName,
   clientSheetId,
   data,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   error,
   onRefresh,
@@ -47,10 +50,13 @@ export default function PortalNBToFindView({
     return optimisticTarget[selectedYear] || nbData?.allocations?.[selectedYear] || nbData?.monthlyAllocations || [];
   }, [nbData, selectedYear, optimisticTarget]);
 
+  const currencySymbol = propCurrencySymbol || data?.currencySymbol || data?.clientInfo?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || data?.thousandsSeparator || data?.clientInfo?.thousandsSeparator || ",";
+
   const currentAllocations = isEditing ? editValues : monthlyAllocations;
 
   const numAllocations = useMemo(() => {
-    return currentAllocations.map((v) => parseFloat(String(v).replace(/[£,]/g, "")) || 0);
+    return currentAllocations.map((v) => parseMoney(v));
   }, [currentAllocations]);
 
   const totalTarget = useMemo(() => {
@@ -58,12 +64,7 @@ export default function PortalNBToFindView({
   }, [numAllocations]);
 
   const formatGBP = (val) => {
-    if (val === null || val === undefined || val === "") return "£0";
-    if (typeof val === "number") {
-      return (val < 0 ? "-" : "") + "£" + Math.abs(Math.round(val)).toLocaleString("en-GB");
-    }
-    const num = parseFloat(String(val).replace(/[£,]/g, ""));
-    return isNaN(num) ? String(val) : (num < 0 ? "-" : "") + "£" + Math.abs(Math.round(num)).toLocaleString("en-GB");
+    return formatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
   const handleStartEdit = () => {
@@ -144,7 +145,7 @@ export default function PortalNBToFindView({
     const header = ["Metric / Target", ...(monthHeaders || []), "Total Target"];
     const row = [
       "New Business to Find",
-      ...monthHeaders.map((_, mIdx) => currentAllocations[mIdx] || "£0"),
+      ...monthHeaders.map((_, mIdx) => currentAllocations[mIdx] || `${currencySymbol}0`),
       formatGBP(totalTarget),
     ];
 
@@ -496,7 +497,7 @@ export default function PortalNBToFindView({
                   </td>
 
                   {monthHeaders.map((_, mIdx) => {
-                    const val = currentAllocations[mIdx] || "£0";
+                    const val = currentAllocations[mIdx] || `${currencySymbol}0`;
 
                     return (
                       <td

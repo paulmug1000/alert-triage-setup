@@ -3,6 +3,7 @@ import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../serv
 import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
+import { parseMoney } from "../../../services/deepDiveHelper.js";
 
 const KEYDATA_CACHE_TTL_SECS = 60; // 60s cache
 
@@ -150,6 +151,7 @@ export default async function handler(req, res) {
     batchRanges.push("KeyInfo!B20");     // Contractor source
     batchRanges.push("KeyInfo!D15:D16"); // Split method (D15) & split enabled (D16)
     batchRanges.push("KeyInfo!D1");      // Master Sheet URL
+    batchRanges.push("KeyInfo!C4:D5");   // Currency and thousands separator
 
     const batchResp = await withRetry(() =>
       sheets.spreadsheets.values.batchGet({
@@ -176,6 +178,10 @@ export default async function handler(req, res) {
     const contractorSourceRows = valueRanges[rangeIdx++]?.values || [];
     const splitInfoRows = valueRanges[rangeIdx++]?.values || [];
     const masterUrlRows = valueRanges[rangeIdx++]?.values || [];
+    const currencyRows = valueRanges[rangeIdx++]?.values || [];
+
+    const currencySymbol = String(currencyRows?.[0]?.[1] || (currencyRows?.[0]?.[0] && currencyRows?.[0]?.[0] !== "Tracker currency" ? currencyRows?.[0]?.[0] : "") || "£").trim() || "£";
+    const thousandsSeparator = String(currencyRows?.[1]?.[1] || (currencyRows?.[1]?.[0] && currencyRows?.[1]?.[0] !== "Thous. separator" ? currencyRows?.[1]?.[0] : "") || ",").trim() || ",";
 
     const leadSources = leadSourcesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
     const productLines = productLinesRows.flat().map((v) => String(v || "").trim()).filter(Boolean);
@@ -297,7 +303,8 @@ export default async function handler(req, res) {
           }
         }
 
-        const isParent = (revenue && revenue !== "" && revenue !== "£0") || (directCosts && directCosts !== "" && directCosts !== "£0");
+        const isParent = (revenue && String(revenue).trim() !== "" && Math.abs(parseMoney(revenue)) > 0.001) ||
+                         (directCosts && String(directCosts).trim() !== "" && Math.abs(parseMoney(directCosts)) > 0.001);
 
         if (isParent) {
           const projectRetainer = getValueByHeader(row, colMap, ["project / retainer", "proj / ret"]) || "Project";
@@ -316,8 +323,8 @@ export default async function handler(req, res) {
             if (
               nextClient === client &&
               nextJobName === jobName &&
-              (!nextRev || nextRev === "" || nextRev === "£0") &&
-              (!nextDC || nextDC === "" || nextDC === "£0")
+              (!nextRev || String(nextRev).trim() === "" || Math.abs(parseMoney(nextRev)) < 0.001) &&
+              (!nextDC || String(nextDC).trim() === "" || Math.abs(parseMoney(nextDC)) < 0.001)
             ) {
               childRows.push({ row: nextRow, rowNum: j + 1 });
               j++;
@@ -438,8 +445,8 @@ export default async function handler(req, res) {
           const endDateRaw = getValueByHeader(row, colMap, ["end date", "end month"]);
           const likelihoodRaw = getValueByHeader(row, colMap, ["% likel.", "% likelihood", "% likely", "likelihood"]);
           const likelihood = likelihoodRaw || (jobType === "Confirmed" ? "100%" : "50%");
-          const revNum = parseFloat(String(revenue).replace(/[£,]/g, "")) || 0;
-          const dcNum = parseFloat(String(directCosts).replace(/[£,]/g, "")) || 0;
+          const revNum = parseMoney(revenue);
+          const dcNum = parseMoney(directCosts);
           const parsedLikel = parseFloat(String(likelihood).replace("%", ""));
           const likelihoodNum = !isNaN(parsedLikel)
             ? (String(likelihood).includes("%") || parsedLikel >= 1 ? parsedLikel / 100 : parsedLikel)
@@ -924,6 +931,12 @@ export default async function handler(req, res) {
       },
       splitEnabled,
       splitMethod,
+      currencySymbol,
+      thousandsSeparator,
+      clientInfo: {
+        currencySymbol,
+        thousandsSeparator,
+      },
     };
 
     // Cache in L1 memory and Redis

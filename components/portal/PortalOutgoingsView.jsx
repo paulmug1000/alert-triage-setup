@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
+import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 
 export default function PortalOutgoingsView({
   clientName,
   clientSheetId,
   category = "contractors", // 'contractors' | 'expenses' | 'dividends'
   data,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   error,
   onRefresh,
@@ -69,13 +72,11 @@ export default function PortalOutgoingsView({
 
   const pageTitle = getPageTitle();
 
+  const currencySymbol = propCurrencySymbol || data?.currencySymbol || data?.clientInfo?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || data?.thousandsSeparator || data?.clientInfo?.thousandsSeparator || ",";
+
   const formatGBP = (val) => {
-    if (val === null || val === undefined || val === "") return "£0";
-    if (typeof val === "number") {
-      return (val < 0 ? "-" : "") + "£" + Math.abs(Math.round(val)).toLocaleString("en-GB");
-    }
-    const num = parseFloat(String(val).replace(/[£,]/g, ""));
-    return isNaN(num) ? String(val) : (num < 0 ? "-" : "") + "£" + Math.abs(Math.round(num)).toLocaleString("en-GB");
+    return formatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
   const handleStartEdit = () => {
@@ -100,7 +101,7 @@ export default function PortalOutgoingsView({
   const handleCellChange = (rowNumber, mIdx, val) => {
     if (isReadOnly) return;
     setEditValues((prev) => {
-      const current = prev[rowNumber] ? [...prev[rowNumber]] : new Array(12).fill("£0");
+      const current = prev[rowNumber] ? [...prev[rowNumber]] : new Array(12).fill(`${currencySymbol}0`);
       current[mIdx] = val;
       return {
         ...prev,
@@ -181,12 +182,12 @@ export default function PortalOutgoingsView({
       const origAllocs = item.allocations?.[selectedYear] || item.monthlyAllocations || [];
       const currentAllocs = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
       const liveTotal = currentAllocs.reduce((sum, v) => {
-        const n = parseFloat(String(v).replace(/[£,]/g, "")) || 0;
+        const n = parseMoney(v);
         return sum + n;
       }, 0);
       return [
         item.name || "",
-        ...monthHeaders.map((_, mIdx) => currentAllocs[mIdx] || "£0"),
+        ...monthHeaders.map((_, mIdx) => currentAllocs[mIdx] || `${currencySymbol}0`),
         formatGBP(liveTotal),
       ];
     });
@@ -538,7 +539,7 @@ export default function PortalOutgoingsView({
                   const currentAllocs = isEditing ? editValues[item.rowNumber] || origAllocs : origAllocs;
 
                   const liveTotal = currentAllocs.reduce((sum, v) => {
-                    const n = parseFloat(String(v).replace(/[£,]/g, "")) || 0;
+                    const n = parseMoney(v);
                     return sum + n;
                   }, 0);
 
@@ -571,7 +572,7 @@ export default function PortalOutgoingsView({
 
                       {/* 12 monthly columns */}
                       {monthHeaders.map((_, mIdx) => {
-                        const val = currentAllocs[mIdx] || "£0";
+                        const val = currentAllocs[mIdx] || `${currencySymbol}0`;
 
                         return (
                           <td

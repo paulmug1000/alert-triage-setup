@@ -1,13 +1,15 @@
 import React, { useState, useRef } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, parseMoney, formatMoney as universalFormatMoney, formatCurrencyString } from "../../services/deepDiveHelper";
 import PerformanceTrajectoryChartRow from "./PerformanceTrajectoryChartRow";
 
 export default function PerformanceFYView({
   clientName,
   data,
   keyData,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   error,
   onRefresh,
@@ -118,22 +120,12 @@ export default function PerformanceFYView({
     });
   };
 
+  const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
+
   // Parse numerical money string (e.g. "£45,270" -> 45270, "(£12,000)" -> -12000)
   const parseNum = (val) => {
-    if (typeof val === "number") return isNaN(val) ? 0 : val;
-    if (!val) return 0;
-    let clean = String(val).replace(/[£,\s]/g, "").trim();
-    let isNegative = false;
-    if (clean.startsWith("(") && clean.endsWith(")")) {
-      isNegative = true;
-      clean = clean.slice(1, -1);
-    } else if (clean.startsWith("-")) {
-      isNegative = true;
-      clean = clean.slice(1);
-    }
-    const n = parseFloat(clean);
-    if (isNaN(n)) return 0;
-    return isNegative ? -n : n;
+    return parseMoney(val);
   };
 
   const totalRevRow = findRow(["total income", "total revenue", "income"]);
@@ -242,7 +234,7 @@ export default function PerformanceFYView({
 
   const handleCellClick = (e, rowLabel, val, mIdx, periodLabel) => {
     const ddType = getDeepDiveType(rowLabel);
-    if (!ddType || !val || val === "£0" || val === "—" || val === "") return;
+    if (!ddType || !val || val === "—" || val === "" || Math.abs(parseMoney(val)) < 0.001) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const isFYTotal = mIdx === -1;
@@ -338,6 +330,8 @@ export default function PerformanceFYView({
         total={activePopover?.total}
         items={activePopover?.items || []}
         sections={activePopover?.sections}
+        currencySymbol={currencySymbol}
+        thousandsSeparator={thousandsSeparator}
         onClose={() => setActivePopover(null)}
       />
 
@@ -701,9 +695,9 @@ export default function PerformanceFYView({
                     {row.monthlyValues?.map((val, mIdx) => {
                       const mBadge = isPercentageRow ? getMarginBadgeStyle(label, val) : null;
                       const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                      const isClickable = Boolean(ddType && val && val !== "£0" && val !== "—" && val !== "");
+                      const isClickable = Boolean(ddType && val && val !== "—" && val !== "" && Math.abs(parseMoney(val)) >= 0.001);
                       const monthLabel = activeYear.headerMonths?.[mIdx] || `Month ${mIdx + 1}`;
-                      const displayVal = val === "—" ? "" : val || "";
+                      const displayVal = val === "—" ? "" : formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
                       const st = String((activeYear.statusValues || activeYear.monthStatuses || [])[mIdx] || "").trim().toLowerCase();
                       const isAct = st === "actual";
                       const colBg = isAct ? "#f4f7fa" : "#ffffff";
@@ -801,8 +795,8 @@ export default function PerformanceFYView({
                     {/* FY Total Column (Continuous unbroken Total column shading) */}
                     {(() => {
                       const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                      const isClickable = Boolean(ddType && totalVal && totalVal !== "£0" && totalVal !== "—" && totalVal !== "");
-                      const displayTotal = totalVal === "—" ? "" : totalVal || "";
+                      const isClickable = Boolean(ddType && totalVal && totalVal !== "—" && totalVal !== "" && Math.abs(parseMoney(totalVal)) >= 0.001);
+                      const displayTotal = totalVal === "—" ? "" : formatCurrencyString(totalVal, null, currencySymbol, thousandsSeparator);
                       const totalColBg = "rgba(0, 71, 171, 0.04)";
 
                       if (rowStyle.isMajor) {
@@ -943,6 +937,8 @@ export default function PerformanceFYView({
         revenue={chartRevVals}
         grossProfit={chartGpVals}
         operatingProfit={chartOpVals}
+        currencySymbol={currencySymbol}
+        thousandsSeparator={thousandsSeparator}
         layout="fy"
         scrollRef={chartScrollRef}
         onScroll={handleChartScroll}

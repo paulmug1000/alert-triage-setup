@@ -574,6 +574,20 @@ export default function PortalPage() {
   const hasBudget = payload ? Boolean(payload.clientInfo?.hasBudget ?? payload.hasBudget) : false;
   const hasCash = payload ? Boolean(payload.clientInfo?.hasCash ?? payload.hasCash) : false;
 
+  const currencySymbol = payload?.clientInfo?.currencySymbol || payload?.currencySymbol || keyData?.currencySymbol || performanceData?.currencySymbol || "£";
+  const thousandsSeparator = payload?.clientInfo?.thousandsSeparator || payload?.thousandsSeparator || keyData?.thousandsSeparator || performanceData?.thousandsSeparator || ",";
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.currencySymbol = currencySymbol;
+      window.thousandsSeparator = thousandsSeparator;
+      try {
+        localStorage.setItem("pulse_currency_symbol", currencySymbol);
+        localStorage.setItem("pulse_thousands_separator", thousandsSeparator);
+      } catch {}
+    }
+  }, [currencySymbol, thousandsSeparator]);
+
   const isSeniorRestricted = Boolean(
     user?.isSenior ||
     user?.role === "Senior (Restricted)" ||
@@ -714,6 +728,8 @@ export default function PortalPage() {
                 payload={payload}
                 keyData={keyData}
                 performanceData={performanceData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingPayload}
                 error={payloadError}
                 onRefresh={handleRefreshPayload}
@@ -726,6 +742,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 data={performanceData}
                 keyData={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingPerformance}
                 error={perfError}
                 onRefresh={handleRefreshPerformance}
@@ -738,6 +756,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 data={performanceData}
                 keyData={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingPerformance}
                 error={perfError}
                 onRefresh={handleRefreshPerformance}
@@ -750,6 +770,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 data={performanceData}
                 keyData={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingPerformance || (loadingKeyData && !keyData)}
                 error={perfError || keyDataError}
                 onRefresh={() => {
@@ -765,6 +787,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 data={cashflowData}
                 keyData={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingCashflow}
                 error={cashError}
                 onRefresh={handleRefreshCashflow}
@@ -777,6 +801,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 data={cashflowData}
                 keyData={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingCashflow || (loadingKeyData && !keyData)}
                 error={cashError || keyDataError}
                 onRefresh={() => {
@@ -792,6 +818,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 clientSheetId={selectedClient?.clientSheetId}
                 data={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
@@ -805,6 +833,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 clientSheetId={selectedClient?.clientSheetId}
                 data={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
@@ -818,6 +848,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 clientSheetId={selectedClient?.clientSheetId}
                 data={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
@@ -831,6 +863,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 clientSheetId={selectedClient?.clientSheetId}
                 data={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
@@ -843,6 +877,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 clientSheetId={selectedClient?.clientSheetId}
                 data={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
@@ -854,6 +890,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 clientSheetId={selectedClient?.clientSheetId}
                 data={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingKeyData}
                 error={keyDataError}
                 onRefresh={handleRefreshKeyData}
@@ -867,6 +905,8 @@ export default function PortalPage() {
                 data={budgetData}
                 allFYData={performanceData}
                 keyData={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingBudget || loadingPerformance}
                 error={budgetError || perfError}
                 onRefresh={handleRefreshBudget}
@@ -879,6 +919,8 @@ export default function PortalPage() {
                 data={budgetData}
                 allFYData={performanceData}
                 keyData={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingBudget || loadingPerformance}
                 error={budgetError || perfError}
                 onRefresh={handleRefreshBudget}
@@ -890,6 +932,8 @@ export default function PortalPage() {
                 clientName={selectedClient?.clientName || "Client"}
                 performanceData={performanceData}
                 keyData={keyData}
+                currencySymbol={currencySymbol}
+                thousandsSeparator={thousandsSeparator}
                 isLoading={loadingPerformance || loadingKeyData}
                 error={perfError || keyDataError}
                 onRefresh={() => {

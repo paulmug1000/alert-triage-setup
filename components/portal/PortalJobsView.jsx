@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
+import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 
 export default function PortalJobsView({
   clientName,
   clientSheetId,
   data,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   error,
   onRefresh,
@@ -193,10 +196,10 @@ export default function PortalJobsView({
       if (sortBy === "revDesc") {
         const revA = typeof a.revNum === "number" && !isNaN(a.revNum)
           ? a.revNum
-          : (parseFloat(String(a.revenue || "").replace(/[£,]/g, "")) || 0);
+          : parseMoney(a.revenue);
         const revB = typeof b.revNum === "number" && !isNaN(b.revNum)
           ? b.revNum
-          : (parseFloat(String(b.revenue || "").replace(/[£,]/g, "")) || 0);
+          : parseMoney(b.revenue);
         if (revB !== revA) return revB - revA;
         const timeA = parseDate(a.startDate)?.getTime() || 0;
         const timeB = parseDate(b.startDate)?.getTime() || 0;
@@ -205,10 +208,10 @@ export default function PortalJobsView({
       if (sortBy === "revAsc") {
         const revA = typeof a.revNum === "number" && !isNaN(a.revNum)
           ? a.revNum
-          : (parseFloat(String(a.revenue || "").replace(/[£,]/g, "")) || 0);
+          : parseMoney(a.revenue);
         const revB = typeof b.revNum === "number" && !isNaN(b.revNum)
           ? b.revNum
-          : (parseFloat(String(b.revenue || "").replace(/[£,]/g, "")) || 0);
+          : parseMoney(b.revenue);
         if (revA !== revB) return revA - revB;
         const timeA = parseDate(a.startDate)?.getTime() || 0;
         const timeB = parseDate(b.startDate)?.getTime() || 0;
@@ -223,6 +226,9 @@ export default function PortalJobsView({
     return list;
   }, [jobsData, filterType, searchTerm, sortBy, optimisticJobs]);
 
+  const currencySymbol = propCurrencySymbol || data?.currencySymbol || data?.clientInfo?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || data?.thousandsSeparator || data?.clientInfo?.thousandsSeparator || ",";
+
   const totalPages = Math.ceil(filteredJobs.length / pageSize) || 1;
   const paginatedJobs = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
@@ -230,12 +236,7 @@ export default function PortalJobsView({
   }, [filteredJobs, currentPage, pageSize]);
 
   const formatGBP = (val) => {
-    if (val === null || val === undefined || val === "") return "£0";
-    if (typeof val === "number") {
-      return (val < 0 ? "-" : "") + "£" + Math.abs(Math.round(val)).toLocaleString("en-GB");
-    }
-    const n = parseFloat(String(val).replace(/[£,]/g, ""));
-    return isNaN(n) ? String(val) : (n < 0 ? "-" : "") + "£" + Math.abs(Math.round(n)).toLocaleString("en-GB");
+    return formatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
   const handleOpenAddJob = () => {
@@ -251,8 +252,8 @@ export default function PortalJobsView({
       jobName: "",
       projectRetainer: "Project",
       likelihood: "50%",
-      revenue: "£0",
-      directCosts: "£0",
+      revenue: `${currencySymbol}0`,
+      directCosts: `${currencySymbol}0`,
       startDate: new Date().toISOString().split("T")[0],
       endDate: "",
       productLine: "",
@@ -302,7 +303,6 @@ export default function PortalJobsView({
   };
 
   // Uneven Revenue Split calculations
-  const currencySymbol = data?.currencySymbol || data?.clientInfo?.currencySymbol || "£";
   const isProject = String(editingJob?.projectRetainer || "Project").toLowerCase() === "project";
   const clientSplitEnabled = data?.formOptions?.splitEnabled !== undefined
     ? data.formOptions.splitEnabled
@@ -544,8 +544,8 @@ export default function PortalJobsView({
 
       // Optimistically update local job state immediately so new value is visible with zero delay
       const savedJob = { ...jobToSave };
-      const parsedRev = parseFloat(String(savedJob.revenue || "").replace(/[£$€,\s]/g, ""));
-      const parsedDc = parseFloat(String(savedJob.directCosts || "").replace(/[£$€,\s]/g, ""));
+      const parsedRev = parseMoney(savedJob.revenue);
+      const parsedDc = parseMoney(savedJob.directCosts);
       savedJob.revNum = isNaN(parsedRev) ? 0 : parsedRev;
       savedJob.dcNum = isNaN(parsedDc) ? 0 : parsedDc;
       if (resData.rowNumber) savedJob.rowNumber = resData.rowNumber;

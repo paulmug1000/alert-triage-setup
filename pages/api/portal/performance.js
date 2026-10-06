@@ -3,6 +3,7 @@ import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
+import { formatCurrencyString } from "../../../services/deepDiveHelper.js";
 
 const PERF_CACHE_TTL_SECS = 60; // 60 seconds cache
 
@@ -89,7 +90,7 @@ export default async function handler(req, res) {
       withRetry(() =>
         sheets.spreadsheets.values.batchGet({
           spreadsheetId: clientSheetId,
-          ranges: ["AppData!A1:CR35", "AppData!Z42:Z59", "AppData!W40:W44"],
+          ranges: ["AppData!A1:CR35", "AppData!Z42:Z59", "AppData!W40:W44", "KeyInfo!C4:D5"],
           valueRenderOption: "FORMATTED_VALUE",
         })
       ),
@@ -105,7 +106,11 @@ export default async function handler(req, res) {
     const appDataDisp = formattedResp.data.valueRanges?.[0]?.values || [];
     const thresholdsRaw = (formattedResp.data.valueRanges?.[1]?.values || []).map((r) => r[0] || "");
     const toggles = formattedResp.data.valueRanges?.[2]?.values || [];
+    const keyInfoRows = formattedResp.data.valueRanges?.[3]?.values || [];
     const appDataMath = mathResp.data?.values || [];
+
+    const currencySymbol = String(keyInfoRows[0]?.[1] || (keyInfoRows[0]?.[0] && keyInfoRows[0]?.[0] !== "Tracker currency" ? keyInfoRows[0]?.[0] : "") || "£").trim() || "£";
+    const thousandsSeparator = String(keyInfoRows[1]?.[1] || (keyInfoRows[1]?.[0] && keyInfoRows[1]?.[0] !== "Thous. separator" ? keyInfoRows[1]?.[0] : "") || ",").trim() || ",";
 
     const version = toggles[0]?.[0] || ""; // W40
     const showExtraRows = toggles[2]?.[0] === "Yes"; // W42
@@ -192,11 +197,12 @@ export default async function handler(req, res) {
           const colIdx = blk.start + j;
           const valDisp = appDataDisp[i]?.[colIdx] !== undefined ? String(appDataDisp[i][colIdx]).trim() : "";
           const valMath = typeof appDataMath[i]?.[colIdx] === "number" ? appDataMath[i][colIdx] : null;
-          monthlyValues.push(valDisp);
+          monthlyValues.push(formatCurrencyString(valDisp, null, currencySymbol, thousandsSeparator));
           monthlyMath.push(valMath);
         }
 
-        const totalVal = appDataDisp[i]?.[blk.start + 13] !== undefined ? String(appDataDisp[i][blk.start + 13]).trim() : "";
+        const rawTotalVal = appDataDisp[i]?.[blk.start + 13] !== undefined ? String(appDataDisp[i][blk.start + 13]).trim() : "";
+        const totalVal = formatCurrencyString(rawTotalVal, null, currencySymbol, thousandsSeparator);
         const totalMath = typeof appDataMath[i]?.[blk.start + 13] === "number" ? appDataMath[i][blk.start + 13] : null;
 
         rows.push({
@@ -231,6 +237,8 @@ export default async function handler(req, res) {
 
     const performanceData = {
       _cachedAt: new Date().toISOString(),
+      currencySymbol,
+      thousandsSeparator,
       version,
       showExtraRows,
       numRows,

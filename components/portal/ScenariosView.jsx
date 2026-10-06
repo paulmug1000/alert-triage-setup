@@ -1,12 +1,14 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
-import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData } from "../../services/deepDiveHelper";
+import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString } from "../../services/deepDiveHelper";
 
 export default function ScenariosView({
   clientName,
   performanceData,
   keyData,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   error,
   onRefresh,
@@ -102,7 +104,7 @@ export default function ScenariosView({
   };
 
   const handleAdjMonthChange = (category, mIdx, val) => {
-    const num = parseFloat(String(val).replace(/[£,]/g, "")) || 0;
+    const num = parseMoney(val);
     setAdjs((prev) => {
       const copy = [...prev[category]];
       copy[mIdx] = num;
@@ -143,7 +145,7 @@ export default function ScenariosView({
 
   const handleCellClick = (e, rowLabel, val, mIdx, periodLabel) => {
     const ddType = getDeepDiveType(rowLabel);
-    if (!ddType || !val || val === "£0" || val === "—" || val === "") return;
+    if (!ddType || !val || val === "—" || val === "" || Math.abs(parseMoney(val)) < 0.001) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const isFY = mIdx === -1;
@@ -188,19 +190,19 @@ export default function ScenariosView({
     });
   };
 
+  const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
+
   const parseNum = (val) => {
     if (typeof val === "number") return val;
     if (!val) return 0;
-    const clean = String(val).replace(/[£,]/g, "").trim();
-    if (clean.includes("%")) return parseFloat(clean) / 100;
-    const n = parseFloat(clean);
-    return isNaN(n) ? 0 : n;
+    const str = String(val).trim();
+    if (str.includes("%")) return (parseFloat(str.replace("%", "").trim()) || 0) / 100;
+    return parseMoney(val);
   };
 
   const formatMoney = (val) => {
-    const rounded = Math.round(val || 0);
-    const sign = rounded < 0 ? "-" : "";
-    return `${sign}£${Math.abs(rounded).toLocaleString()}`;
+    return universalFormatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
   const formatPct = (val) => `${Math.round((val || 0) * 100)}%`;
@@ -447,6 +449,8 @@ export default function ScenariosView({
         total={activePopover?.total}
         items={activePopover?.items || []}
         sections={activePopover?.sections}
+        currencySymbol={currencySymbol}
+        thousandsSeparator={thousandsSeparator}
         onClose={() => setActivePopover(null)}
       />
 
@@ -806,9 +810,9 @@ export default function ScenariosView({
                       {row.monthlyValues?.map((val, mIdx) => {
                         const mBadge = isPercentageRow ? getMarginBadgeStyle(label, val) : null;
                         const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                        const isClickable = Boolean(ddType && val && val !== "£0" && val !== "—" && val !== "");
+                        const isClickable = Boolean(ddType && val && val !== "—" && val !== "" && Math.abs(parseMoney(val)) >= 0.001);
                         const monthLabel = headerMonths[mIdx] || `Month ${mIdx + 1}`;
-                        const displayVal = val === "—" ? "" : val || "";
+                        const displayVal = val === "—" ? "" : formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
                         const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
                         const isAct = st === "actual";
                         const colBg = isAct ? "#f4f7fa" : "#ffffff";
@@ -906,8 +910,8 @@ export default function ScenariosView({
                       {/* Total Column (Continuous unbroken Total column shading) */}
                       {(() => {
                         const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                        const isClickable = Boolean(ddType && totalVal && totalVal !== "£0" && totalVal !== "—" && totalVal !== "");
-                        const displayTotal = totalVal === "—" ? "" : totalVal || "";
+                        const isClickable = Boolean(ddType && totalVal && totalVal !== "—" && totalVal !== "" && Math.abs(parseMoney(totalVal)) >= 0.001);
+                        const displayTotal = totalVal === "—" ? "" : formatCurrencyString(totalVal, null, currencySymbol, thousandsSeparator);
                         const totalColBg = "rgba(0, 71, 171, 0.04)";
 
                         if (rowStyle.isMajor) {
@@ -1487,12 +1491,12 @@ export default function ScenariosView({
 
                       {/* Revenue */}
                       <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "#0f172a" }}>
-                        {job.revenue || formatMoney(job.revNum)}
+                        {formatMoney(job.revenue || job.revNum, 0, currencySymbol, thousandsSeparator)}
                       </td>
 
                       {/* Direct Costs */}
                       <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "#0f172a" }}>
-                        {job.directCosts || formatMoney(job.dcNum)}
+                        {formatMoney(job.directCosts || job.dcNum, 0, currencySymbol, thousandsSeparator)}
                       </td>
                     </tr>
                   );

@@ -1,11 +1,14 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
+import { formatMoney as universalFormatMoney, parseMoney } from "../../services/deepDiveHelper";
 
 export default function BudgetView({
   clientName,
   data,
   allFYData,
   keyData,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   error,
   onRefresh,
@@ -59,7 +62,7 @@ export default function BudgetView({
     for (let m = 0; m < 12; m++) {
       let val = parseFloat(mathVals?.[rawRowIdx]?.[blkStart + m]);
       if (isNaN(val)) {
-        val = parseFloat(String(rawVals?.[rawRowIdx]?.[blkStart + m] || "").replace(/[£$,%]/g, "")) || 0;
+        val = parseMoney(rawVals?.[rawRowIdx]?.[blkStart + m]);
       }
       row.push(val);
       total += val;
@@ -68,10 +71,11 @@ export default function BudgetView({
     return row;
   };
 
+  const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
+
   const formatMoney = (val) => {
-    const rounded = Math.round(val || 0);
-    const sign = rounded < 0 ? "-" : "";
-    return `${sign}£${Math.abs(rounded).toLocaleString("en-GB")}`;
+    return universalFormatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
   const formatPct = (val) => `${Math.round((val || 0) * 100)}%`;

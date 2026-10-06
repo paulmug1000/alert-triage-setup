@@ -1,4 +1,5 @@
 import React, { useState, useId } from "react";
+import { formatMoney, getCurrencySymbol, getThousandsSeparator } from "../../services/deepDiveHelper";
 
 /**
  * PerformanceTrajectoryChartRow
@@ -23,6 +24,8 @@ export default function PerformanceTrajectoryChartRow({
   revenue = [],
   grossProfit = [],
   operatingProfit = [],
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   layout = "fy", // "fy" (percentage widths) or "ytd" (fixed pixel widths)
   scrollRef = null,
   onScroll = null,
@@ -88,19 +91,20 @@ export default function PerformanceTrajectoryChartRow({
   const getX = (i) => (i + 0.5) * colSvgW;
   const getY = (val) => paddingTop + chartH - ((val - chartMin) / range) * chartH;
 
+  const currencySymbol = getCurrencySymbol(propCurrencySymbol);
+  const thousandsSeparator = getThousandsSeparator(propThousandsSeparator);
+
   // Formatters
   const formatShortMoney = (n) => {
-    if (n === 0) return "£0";
+    if (n === 0) return `${currencySymbol}0`;
     const abs = Math.abs(n);
-    if (abs >= 1000000) return `${n < 0 ? "-" : ""}£${(abs / 1000000).toFixed(1)}m`;
-    if (abs >= 1000) return `${n < 0 ? "-" : ""}£${Math.round(abs / 1000)}k`;
-    return `${n < 0 ? "-" : ""}£${Math.round(abs)}`;
+    if (abs >= 1000000) return `${n < 0 ? "-" : ""}${currencySymbol}${(abs / 1000000).toFixed(1)}m`;
+    if (abs >= 1000) return `${n < 0 ? "-" : ""}${currencySymbol}${Math.round(abs / 1000)}k`;
+    return `${n < 0 ? "-" : ""}${currencySymbol}${Math.round(abs)}`;
   };
 
   const formatFullMoney = (n) => {
-    const rounded = Math.round(n || 0);
-    const sign = rounded < 0 ? "-" : "";
-    return `${sign}£${Math.abs(rounded).toLocaleString()}`;
+    return formatMoney(n, 0, currencySymbol, thousandsSeparator);
   };
 
   // Build Bézier path string

@@ -6,6 +6,8 @@ export default function CashflowBreakdownView({
   clientName,
   data,
   keyData,
+  currencySymbol = "£",
+  thousandsSeparator = ",",
   isLoading,
   error,
   onRefresh,

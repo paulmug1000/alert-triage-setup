@@ -6,6 +6,8 @@ export default function PerformanceBreakdownView({
   clientName,
   data,
   keyData,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   error,
   onRefresh,
@@ -111,10 +113,13 @@ export default function PerformanceBreakdownView({
     }
   }, [isIncomeMode, breakdownType]);
 
+  const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
+
   // Build deep dive data based on active period and breakdownType using shared buildDeepDiveData
   const ddData = useMemo(() => {
     if (!activePeriod || !keyData) {
-      return { items: [], sections: null, total: "£0" };
+      return { items: [], sections: null, total: `${currencySymbol}0` };
     }
 
     const isFY = activePeriod.isFY;
@@ -143,11 +148,11 @@ export default function PerformanceBreakdownView({
       return false;
     });
 
-    let cellValue = "£0";
+    let cellValue = `${currencySymbol}0`;
     if (targetRow) {
       cellValue = isFY
-        ? (targetRow.totalVal || "£0")
-        : (targetRow.monthlyValues?.[activePeriod.monthIdx] || "£0");
+        ? (targetRow.totalVal || `${currencySymbol}0`)
+        : (targetRow.monthlyValues?.[activePeriod.monthIdx] || `${currencySymbol}0`);
     }
 
     return buildDeepDiveData({
@@ -162,7 +167,7 @@ export default function PerformanceBreakdownView({
       isIncomeMode,
       isRestricted: isSenior,
     });
-  }, [activePeriod, breakdownType, keyData, isIncomeMode, years, isSenior]);
+  }, [activePeriod, breakdownType, keyData, isIncomeMode, years, isSenior, currencySymbol]);
 
   const hasSections = Array.isArray(ddData?.sections) && ddData.sections.length > 0;
   const sections = ddData?.sections || [];

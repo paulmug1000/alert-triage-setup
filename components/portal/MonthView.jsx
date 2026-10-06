@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney, formatCurrencyString } from "../../services/deepDiveHelper";
 
 function escapeHtml(str) {
   if (!str) return "";
@@ -18,11 +18,15 @@ export default function MonthView({
   payload,
   keyData,
   performanceData,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   onRefresh,
   error,
   isSenior = false,
 }) {
+  const currencySymbol = propCurrencySymbol || payload?.clientInfo?.currencySymbol || payload?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || payload?.clientInfo?.thousandsSeparator || payload?.thousandsSeparator || ",";
   const [activePopover, setActivePopover] = useState(null);
   const [activePeriod, setActivePeriod] = useState("curr"); // 'curr' | 'prev' | 'next'
 
@@ -107,7 +111,7 @@ export default function MonthView({
     const l = String(rowLabel || "").toLowerCase();
     if (l.includes("total overheads") || l.includes("overheads as %") || l.includes("overheads %")) return;
     const ddType = getDeepDiveType(rowLabel);
-    if (!ddType || !val || val === "£0" || val === "—") return;
+    if (!ddType || !val || val === "£0" || val === `${currencySymbol}0` || val === "0" || val === "—") return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const mIdx = getMonthIndexFromPeriod(monthPeriod);
@@ -144,7 +148,7 @@ export default function MonthView({
     if (!currMonth?.tableRows) return;
     const cleanRows = currMonth.tableRows
       .filter((r) => r.label && r.label.toLowerCase() !== "hide")
-      .map((r) => [r.label, r.value]);
+      .map((r) => [r.label, formatCurrencyString(r.value, null, currencySymbol, thousandsSeparator)]);
     const csvContent =
       "data:text/csv;charset=utf-8," +
       ["Line Item,Amount (" + monthPeriod + ")", ...cleanRows.map((e) => `"${e[0]}","${e[1]}"`)].join("\n");
@@ -226,6 +230,8 @@ export default function MonthView({
     chartData,
     activeMonthData,
     monthPeriod,
+    currencySymbol,
+    thousandsSeparator,
   });
 
   const glanceMonthHeading = (() => {
@@ -260,6 +266,8 @@ export default function MonthView({
         total={activePopover?.total}
         items={activePopover?.items || []}
         sections={activePopover?.sections}
+        currencySymbol={currencySymbol}
+        thousandsSeparator={thousandsSeparator}
         onClose={() => setActivePopover(null)}
       />
 
@@ -590,12 +598,14 @@ export default function MonthView({
                   normLabel.includes("overheads as %") ||
                   normLabel.includes("overheads %");
                 const ddType = !isSpacer && !isHide && !isBlockedRow && !isSectionHeader ? getDeepDiveType(label) : null;
-                const isClickable = Boolean(ddType && value && value !== "£0" && value !== "—" && value !== "");
+                const isClickable = Boolean(ddType && value && value !== "£0" && value !== `${currencySymbol}0` && value !== "0" && value !== "—" && value !== "");
 
                 let displayVal = value;
                 if (i === 1 && typeof value === "string") {
                   if (value.toUpperCase() === "ACTUAL") displayVal = "Actual";
                   else if (value.toUpperCase() === "FORECAST") displayVal = "Forecast";
+                } else if (!isSectionHeader) {
+                  displayVal = formatCurrencyString(value, null, currencySymbol, thousandsSeparator);
                 }
 
                 return (
@@ -934,6 +944,8 @@ export default function MonthView({
             label1={chartData.label1 || primaryLabel}
             label2={chartData.label2 || "Gross profit"}
             label3={chartData.label3 || "Operating profit"}
+            currencySymbol={currencySymbol}
+            thousandsSeparator={thousandsSeparator}
           />
         </div>
       )}
@@ -1151,7 +1163,9 @@ function HomeLineChart({
   showTrendlines = false,
   label1 = "Revenue",
   label2 = "Gross profit",
-  label3 = "Operating profit"
+  label3 = "Operating profit",
+  currencySymbol = "£",
+  thousandsSeparator = ",",
 }) {
   const width = 850;
   const height = 380;
@@ -1257,11 +1271,18 @@ function HomeLineChart({
   const opArea = buildAreaPath(opPath, 0, months.length - 1);
 
   const formatShortMoney = (n) => {
-    if (n === 0) return "£0";
+    if (n === 0) return `${currencySymbol}0`;
     const abs = Math.abs(n);
-    if (abs >= 1000000) return `${n < 0 ? "-" : ""}£${(abs / 1000000).toFixed(1)}m`;
-    if (abs >= 1000) return `${n < 0 ? "-" : ""}£${Math.round(abs / 1000)}k`;
-    return `${n < 0 ? "-" : ""}£${Math.round(abs)}`;
+    const sign = n < 0 ? "-" : "";
+    if (abs >= 1000000) {
+      const formattedM = (abs / 1000000).toFixed(1).replace(".", thousandsSeparator === "." ? "," : ".");
+      return `${sign}${currencySymbol}${formattedM}m`;
+    }
+    if (abs >= 1000) {
+      const kVal = Math.round(abs / 1000).toString().replace(/\B(?=(\d{3})+(?!\d))/g, thousandsSeparator);
+      return `${sign}${currencySymbol}${kVal}k`;
+    }
+    return `${sign}${currencySymbol}${Math.round(abs)}`;
   };
 
   return (
@@ -1426,17 +1447,17 @@ function HomeLineChart({
         {/* Dots on points */}
         {revenue.map((val, i) => (
           <circle key={`r-${i}`} cx={getX(i)} cy={getY(val)} r="3" fill="#9900ff" stroke="#ffffff" strokeWidth="1.5">
-            <title>{`${months[i] ? months[i] + ': ' : ''}${label1} ${formatShortMoney(val)}`}</title>
+            <title>{`${months[i] ? months[i] + ': ' : ''}${label1} ${formatMoney(val, 0, currencySymbol, thousandsSeparator)}`}</title>
           </circle>
         ))}
         {grossProfit.map((val, i) => (
           <circle key={`gp-${i}`} cx={getX(i)} cy={getY(val)} r="3" fill="#e69138" stroke="#ffffff" strokeWidth="1.5">
-            <title>{`${months[i] ? months[i] + ': ' : ''}${label2} ${formatShortMoney(val)}`}</title>
+            <title>{`${months[i] ? months[i] + ': ' : ''}${label2} ${formatMoney(val, 0, currencySymbol, thousandsSeparator)}`}</title>
           </circle>
         ))}
         {operatingProfit.map((val, i) => (
           <circle key={`op-${i}`} cx={getX(i)} cy={getY(val)} r="3" fill="#1155cc" stroke="#ffffff" strokeWidth="1.5">
-            <title>{`${months[i] ? months[i] + ': ' : ''}${label3} ${formatShortMoney(val)}`}</title>
+            <title>{`${months[i] ? months[i] + ': ' : ''}${label3} ${formatMoney(val, 0, currencySymbol, thousandsSeparator)}`}</title>
           </circle>
         ))}
         </svg>
@@ -1479,7 +1500,14 @@ function HomeLineChart({
 }
 
 // Compute At A Glance metrics + multi-year sparklines
-function computeGlanceMetrics({ performanceData, chartData, activeMonthData, monthPeriod }) {
+function computeGlanceMetrics({
+  performanceData,
+  chartData,
+  activeMonthData,
+  monthPeriod,
+  currencySymbol = "£",
+  thousandsSeparator = ",",
+}) {
   const parseNum = (val) => {
     if (typeof val === "number" && !isNaN(val)) return val;
     if (!val) return 0;
@@ -1622,22 +1650,32 @@ function computeGlanceMetrics({ performanceData, chartData, activeMonthData, mon
     return found ? String(found.value || "").trim() : "";
   };
 
-  const revDisplay =
-    findRow((l) => l === "total revenue" || l === "total income") ||
-    findRow((l) => l.startsWith("revenue") || l.startsWith("income")) ||
-    formatMoney(currentPoint.rev);
+  const formatGlanceVal = (val, fallbackNum) => {
+    if (val && String(val).trim()) {
+      return formatCurrencyString(val, 0, currencySymbol, thousandsSeparator);
+    }
+    return formatMoney(fallbackNum, 0, currencySymbol, thousandsSeparator);
+  };
 
-  const gpDisplay =
-    findRow((l) => l === "gross profit") ||
-    formatMoney(currentPoint.gp);
+  const revDisplay = formatGlanceVal(
+    findRow((l) => l === "total revenue" || l === "total income") ||
+    findRow((l) => l.startsWith("revenue") || l.startsWith("income")),
+    currentPoint.rev
+  );
+
+  const gpDisplay = formatGlanceVal(
+    findRow((l) => l === "gross profit"),
+    currentPoint.gp
+  );
 
   const gpMarginDisplay =
     findRow((l) => l.includes("gross profit margin") || l.includes("gross profit %")) ||
     `${Math.round(currentPoint.gpMargin * 100)}%`;
 
-  const opDisplay =
-    findRow((l) => l === "operating profit") ||
-    formatMoney(currentPoint.op);
+  const opDisplay = formatGlanceVal(
+    findRow((l) => l === "operating profit"),
+    currentPoint.op
+  );
 
   const opMarginDisplay =
     findRow((l) => l.includes("operating profit %") || l.includes("operating profit margin")) ||

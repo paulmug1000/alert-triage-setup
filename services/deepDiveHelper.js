@@ -3,18 +3,93 @@
  * Universal Math Engine & Deep Dive Aggregation matching client-GAS-scripts/WebApp.html
  */
 
-export function parseMoney(val) {
-  if (typeof val === "number") return val;
-  if (!val) return 0;
-  const clean = String(val).replace(/[£,]/g, "").trim();
-  const n = parseFloat(clean);
-  return isNaN(n) ? 0 : n;
+export function getCurrencySymbol(customSymbol) {
+  if (customSymbol && typeof customSymbol === "string" && customSymbol.trim()) return customSymbol.trim();
+  if (typeof window !== "undefined") {
+    return window.currencySymbol || (function () {
+      try { return localStorage.getItem("pulse_currency_symbol"); } catch {} return null;
+    })() || "£";
+  }
+  return "£";
 }
 
-export function formatMoney(val) {
-  const rounded = Math.round(val || 0);
-  const sign = rounded < 0 ? "-" : "";
-  return `${sign}£${Math.abs(rounded).toLocaleString()}`;
+export function getThousandsSeparator(customSeparator) {
+  if (customSeparator && typeof customSeparator === "string" && customSeparator.trim()) return customSeparator.trim();
+  if (typeof window !== "undefined") {
+    return window.thousandsSeparator || (function () {
+      try { return localStorage.getItem("pulse_thousands_separator"); } catch {} return null;
+    })() || ",";
+  }
+  return ",";
+}
+
+export function parseMoney(val) {
+  if (typeof val === "number") return val;
+  if (!val && val !== 0) return 0;
+  const rawStr = String(val).trim();
+  if (!rawStr) return 0;
+
+  const isNeg = rawStr.includes("-") || (rawStr.startsWith("(") && rawStr.endsWith(")"));
+  let str = rawStr.replace(/[^0-9.,]/g, ""); // Keep only digits and potential separators
+  if (!str) return 0;
+
+  // Smart detection of decimal vs thousands separator regardless of incoming locale
+  let lastComma = str.lastIndexOf(",");
+  let lastDot = str.lastIndexOf(".");
+  let lastSeparator = Math.max(lastComma, lastDot);
+
+  let result = 0;
+  if (lastSeparator !== -1) {
+    let charsAfter = str.length - 1 - lastSeparator;
+    if (charsAfter === 1 || charsAfter === 2) {
+      // It's a decimal separator (e.g., 1,234.56 or 1.234,56)
+      let wholePart = str.substring(0, lastSeparator).replace(/[.,]/g, "");
+      let decPart = str.substring(lastSeparator + 1);
+      result = parseFloat(wholePart + "." + decPart) || 0;
+    } else {
+      // It's a thousands separator (e.g., 1,000 or 1.000)
+      result = parseFloat(str.replace(/[.,]/g, "")) || 0;
+    }
+  } else {
+    result = parseFloat(str) || 0;
+  }
+
+  return isNeg ? -Math.abs(result) : result;
+}
+
+export function formatMoney(val, decimals = 0, customSymbol, customSeparator) {
+  const sym = getCurrencySymbol(customSymbol);
+  const sep = getThousandsSeparator(customSeparator);
+  if (val === null || val === undefined || val === "" || val === "—") return `${sym}0`;
+  const num = typeof val === "number" ? val : parseMoney(val);
+  if (isNaN(num)) return `${sym}0`;
+
+  const sign = num < 0 ? "-" : "";
+  const absNum = Math.abs(num);
+  const decimalSep = sep === "." ? "," : ".";
+  const parts = (decimals > 0 ? absNum.toFixed(decimals) : Math.round(absNum).toString()).split(".");
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+  return `${sign}${sym}${parts.join(decimalSep)}`;
+}
+
+/**
+ * Universal Currency Interceptor matching client-GAS-scripts/WebApp.html (lines 10181, 12450, 15082)
+ * If the spreadsheet sends a raw currency string (e.g. "£49,257", "£48,500.00", "-£1,000", "(£2,500)"),
+ * intercepts and converts it to the tenant's chosen currency symbol and thousands separator.
+ */
+export function formatCurrencyString(val, decimals = null, customSymbol, customSeparator) {
+  if (val === null || val === undefined) return "";
+  if (typeof val === "number") {
+    return formatMoney(val, decimals !== null ? decimals : (Math.abs(val % 1) > 0 ? 2 : 0), customSymbol, customSeparator);
+  }
+  const str = String(val).trim();
+  if (!str || str === "—") return str;
+  if (/^-?[£$€¥]/.test(str) || /^[£$€¥]/.test(str) || /^\(?[£$€¥]/.test(str)) {
+    const parsed = parseMoney(str);
+    const hasDecimals = decimals !== null ? decimals > 0 : Math.abs(parsed % 1) > 0;
+    return formatMoney(parsed, hasDecimals ? 2 : 0, customSymbol, customSeparator);
+  }
+  return str;
 }
 
 export function parseLikelihood(likelihoodVal, fallback = 0.5) {
@@ -240,9 +315,9 @@ export const DeepDiveEngine = {
 
         let detail = "";
         if (isRetainer) {
-          detail = `Retainer | £${Math.round(monthlyAmount).toLocaleString()} per month${datesStr}`;
+          detail = `Retainer | ${formatMoney(monthlyAmount)} per month${datesStr}`;
         } else {
-          detail = `Project | £${Math.round(rawAmount).toLocaleString()}${datesStr}`;
+          detail = `Project | ${formatMoney(rawAmount)}${datesStr}`;
         }
 
         results.push({
@@ -1914,7 +1989,7 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
   const rows = yearData.rows;
   const headerMonths = yearData.headerMonths || [];
 
-  const formatCurrency = (num) => (num === 0 ? "£0" : formatMoney(num));
+  const formatCurrency = (num) => (num === 0 ? `${getCurrencySymbol()}0` : formatMoney(num));
   const formatPercent = (num) => Math.round(num * 100) + "%";
 
   const monthDates = [];

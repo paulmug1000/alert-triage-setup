@@ -1,12 +1,14 @@
 import React, { useState } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
-import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine } from "../../services/deepDiveHelper";
+import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney as universalParseMoney } from "../../services/deepDiveHelper";
 
 export default function CashflowView({
   clientName,
   data,
   keyData,
+  currencySymbol: propCurrencySymbol,
+  thousandsSeparator: propThousandsSeparator,
   isLoading,
   error,
   onRefresh,
@@ -86,18 +88,15 @@ export default function CashflowView({
   const exclRows = data.excludingPipeline || [];
   const inclRows = data.includingPipeline || [];
 
+  const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
+  const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
+
   const parseMoney = (val) => {
-    if (typeof val === "number") return val;
-    if (!val) return 0;
-    const clean = String(val).replace(/[£,]/g, "").trim();
-    const n = parseFloat(clean);
-    return isNaN(n) ? 0 : n;
+    return universalParseMoney(val);
   };
 
   const formatMoney = (val) => {
-    const rounded = Math.round(val || 0);
-    const sign = rounded < 0 ? "-" : "";
-    return `${sign}£${Math.abs(rounded).toLocaleString()}`;
+    return universalFormatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
   // Helper to extract or sum values across matching rows
@@ -123,7 +122,7 @@ export default function CashflowView({
       });
     }
 
-    if (matching.length === 0) return Array(rollingMonths.length).fill("£0");
+    if (matching.length === 0) return Array(rollingMonths.length).fill(`${currencySymbol}0`);
 
     return rollingMonths.map((_, mIdx) => {
       let sum = 0;
@@ -136,7 +135,7 @@ export default function CashflowView({
 
   // Deep dive cell click
   const handleCellClick = (e, rowLabel, val, mIdx, ddType) => {
-    if (!ddType || !val || val === "£0" || val === "—") return;
+    if (!ddType || !val || val === "—" || Math.abs(parseMoney(val)) < 0.001) return;
 
     const monthLabel = rollingMonths[mIdx] || `Month ${mIdx + 1}`;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -223,7 +222,7 @@ export default function CashflowView({
   const applyActualClosing = (closingVals) => {
     if (!actualClosingRow?.rollingValues || closingVals.length === 0) return closingVals;
     const actual0 = actualClosingRow.rollingValues[0];
-    if (actual0 && actual0 !== "£0" && actual0 !== "—" && Math.abs(parseMoney(actual0)) > 0.01) {
+    if (actual0 && actual0 !== "—" && Math.abs(parseMoney(actual0)) > 0.01) {
       const updated = [...closingVals];
       updated[0] = formatMoney(parseMoney(actual0));
       return updated;
@@ -357,11 +356,11 @@ export default function CashflowView({
   const inclArea = buildAreaPath(inclPath, rollingMonths.length);
 
   const formatShortMoney = (n) => {
-    if (n === 0) return "£0";
+    if (n === 0) return `${currencySymbol}0`;
     const abs = Math.abs(n);
-    if (abs >= 1000000) return `${n < 0 ? "-" : ""}£${(abs / 1000000).toFixed(1)}m`;
-    if (abs >= 1000) return `${n < 0 ? "-" : ""}£${Math.round(abs / 1000)}k`;
-    return `${n < 0 ? "-" : ""}£${Math.round(abs)}`;
+    if (abs >= 1000000) return `${n < 0 ? "-" : ""}${currencySymbol}${(abs / 1000000).toFixed(1)}m`;
+    if (abs >= 1000) return `${n < 0 ? "-" : ""}${currencySymbol}${Math.round(abs / 1000)}k`;
+    return `${n < 0 ? "-" : ""}${currencySymbol}${Math.round(abs)}`;
   };
 
   return (
@@ -375,6 +374,8 @@ export default function CashflowView({
         total={activePopover?.total}
         items={activePopover?.items || []}
         sections={activePopover?.sections}
+        currencySymbol={currencySymbol}
+        thousandsSeparator={thousandsSeparator}
         onClose={() => setActivePopover(null)}
       />
 
@@ -633,7 +634,7 @@ export default function CashflowView({
                             {detail.label}
                           </td>
                           {detail.values.map((val, mIdx) => {
-                            const isClickable = Boolean(detail.ddType && val && val !== "£0" && val !== "—");
+                            const isClickable = Boolean(detail.ddType && val && val !== "—" && Math.abs(parseMoney(val)) >= 0.001);
 
                             return (
                               <td
@@ -806,7 +807,7 @@ export default function CashflowView({
                             {detail.label}
                           </td>
                           {detail.values.map((val, mIdx) => {
-                            const isClickable = Boolean(detail.ddType && val && val !== "£0" && val !== "—");
+                            const isClickable = Boolean(detail.ddType && val && val !== "—" && Math.abs(parseMoney(val)) >= 0.001);
 
                             return (
                               <td

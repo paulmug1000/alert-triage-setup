@@ -3,6 +3,7 @@ import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet } from "../../../services/userPermissions.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { memoryCache } from "../../../services/cacheService.js";
+import { formatCurrencyString } from "../../../services/deepDiveHelper.js";
 
 const PAYLOAD_CACHE_TTL_SECS = 60; // 60 seconds cache
 
@@ -95,8 +96,8 @@ export default async function handler(req, res) {
 
     // --- 1. Client Info (from KeyInfo & AppData) ---
     const sheetClientName = keyInfoData[0]?.[1] || clientName || "";
-    const currencySymbol = keyInfoData[3]?.[3] || "£";
-    const thousandsSeparator = keyInfoData[4]?.[3] || ",";
+    const currencySymbol = String(keyInfoData[3]?.[3] || (keyInfoData[3]?.[2] && keyInfoData[3]?.[2] !== "Tracker currency" ? keyInfoData[3]?.[2] : "") || "£").trim() || "£";
+    const thousandsSeparator = String(keyInfoData[4]?.[3] || (keyInfoData[4]?.[2] && keyInfoData[4]?.[2] !== "Thous. separator" ? keyInfoData[4]?.[2] : "") || ",").trim() || ",";
     const vatRate = parseFloat(keyInfoData[8]?.[1]) || 0.2;
     const splitMethod = keyInfoData[14]?.[3] || "Even By Month";
     const splitEnabled = keyInfoData[15]?.[3] === "Yes";
@@ -113,7 +114,10 @@ export default async function handler(req, res) {
       const rows = [];
       for (let i = 0; i < numRows; i++) {
         const label = appDataDisp[i]?.[labelCol] !== undefined ? String(appDataDisp[i][labelCol]) : "";
-        const val = appDataDisp[i]?.[valCol] !== undefined ? String(appDataDisp[i][valCol]) : "";
+        let val = appDataDisp[i]?.[valCol] !== undefined ? String(appDataDisp[i][valCol]) : "";
+        if (i > 1 && val && !val.includes("%")) {
+          val = formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
+        }
         rows.push({
           rowIndex: i + 1,
           label,
@@ -159,19 +163,20 @@ export default async function handler(req, res) {
 
     const monthPeriod = tableRows[0]?.value || ""; // Oct 26
     const monthStatus = tableRows[1]?.value || "Forecast"; // Forecast or Actual
-    const revenueFormatted = findRowVal(["Total revenue", "Total income", "Revenue", "Income"]) || "£0";
-    const confirmedFormatted = findRowVal(["Confirmed revenue", "Confirmed income", "Confirmed"]) || "£0";
-    const pipelineFormatted = findRowVal(["Pipeline revenue", "Pipeline income", "Pipeline"]) || "£0";
-    const newBizFormatted = findRowVal(["New business to find", "New business", "New biz"]) || "£0";
-    const costOfSalesFormatted = findRowVal(["Total costs of sale", "Total cost of sales", "Cost of sales", "Costs of sale"]) || "£0";
-    const grossProfitFormatted = findRowVal(["Gross profit"]) || "£0";
+    const zeroCcy = `${currencySymbol}0`;
+    const revenueFormatted = findRowVal(["Total revenue", "Total income", "Revenue", "Income"]) || zeroCcy;
+    const confirmedFormatted = findRowVal(["Confirmed revenue", "Confirmed income", "Confirmed"]) || zeroCcy;
+    const pipelineFormatted = findRowVal(["Pipeline revenue", "Pipeline income", "Pipeline"]) || zeroCcy;
+    const newBizFormatted = findRowVal(["New business to find", "New business", "New biz"]) || zeroCcy;
+    const costOfSalesFormatted = findRowVal(["Total costs of sale", "Total cost of sales", "Cost of sales", "Costs of sale"]) || zeroCcy;
+    const grossProfitFormatted = findRowVal(["Gross profit"]) || zeroCcy;
     const grossMarginPercent = findRowVal(["Gross profit margin", "Gross margin"]) || "0%";
-    const overheadsFormatted = findRowVal(["Total overheads", "Overheads"]) || "£0";
+    const overheadsFormatted = findRowVal(["Total overheads", "Overheads"]) || zeroCcy;
     const overheadsPercent = findRowVal(["Overheads as %", "Overheads %"]) || "0%";
-    const operatingProfitFormatted = findRowVal(["Operating profit"]) || "£0";
+    const operatingProfitFormatted = findRowVal(["Operating profit"]) || zeroCcy;
     const operatingMarginPercent = findRowVal(["Operating profit %", "Operating margin"]) || "0%";
-    const staffCostsDelivery = findRowVal(["Staff costs - delivery", "Staff costs delivery"]) || "£0";
-    const staffCostsNonDelivery = findRowVal(["Staff costs - non-delivery", "Staff costs non-delivery"]) || "£0";
+    const staffCostsDelivery = findRowVal(["Staff costs - delivery", "Staff costs delivery"]) || zeroCcy;
+    const staffCostsNonDelivery = findRowVal(["Staff costs - non-delivery", "Staff costs non-delivery"]) || zeroCcy;
     const staffRatio = findRowVal(["Staff costs to income", "Staff costs to revenue", "Staff ratio"]) || "0%";
 
     // --- 3. Chart Data (Rows 71-90) ---
@@ -222,6 +227,8 @@ export default async function handler(req, res) {
       _cachedAt: new Date().toISOString(),
       hasBudget,
       hasCash,
+      currencySymbol,
+      thousandsSeparator,
       clientInfo: {
         name: sheetClientName,
         version,

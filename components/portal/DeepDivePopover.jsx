@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
+import { formatMoney } from "../../services/deepDiveHelper";
 
 export default function DeepDivePopover({
   isOpen,
@@ -9,6 +10,8 @@ export default function DeepDivePopover({
   total,
   items = [],
   sections = null,
+  currencySymbol,
+  thousandsSeparator,
   onClose,
 }) {
   const popoverRef = useRef(null);
@@ -103,22 +106,7 @@ export default function DeepDivePopover({
   if (!mounted || !isOpen || !targetRect) return null;
 
   const formatGBP = (val) => {
-    if (val === null || val === undefined || val === "") return "£0";
-    if (typeof val === "number") {
-      return (
-        (val < 0 ? "-" : "") +
-        "£" +
-        Math.abs(Math.round(val)).toLocaleString("en-GB")
-      );
-    }
-    const cleanStr = String(val).replace(/[£,]/g, "").trim();
-    const num = parseFloat(cleanStr);
-    if (isNaN(num)) return String(val);
-    return (
-      (num < 0 ? "-" : "") +
-      "£" +
-      Math.abs(Math.round(num)).toLocaleString("en-GB")
-    );
+    return formatMoney(val, 0, currencySymbol, thousandsSeparator);
   };
 
   const hasSections = Array.isArray(sections) && sections.length > 0;

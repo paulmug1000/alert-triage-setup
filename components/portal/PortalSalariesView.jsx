@@ -1,10 +1,13 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
+import { formatMoney } from "../../services/deepDiveHelper";
 
 export default function PortalSalariesView({
   clientName,
   clientSheetId,
   data,
+  currencySymbol = "£",
+  thousandsSeparator = ",",
   isLoading,
   error,
   onRefresh,
@@ -49,7 +52,9 @@ export default function PortalSalariesView({
       return salariesData.staff.map((s) => [
         s.name,
         s.role,
-        s.fteSalary,
+        typeof s.fteSalary === "number"
+          ? formatMoney(s.fteSalary, 0, currencySymbol, thousandsSeparator)
+          : s.fteSalary,
         s.fte,
         s.startDate,
         s.endDate,
@@ -60,14 +65,16 @@ export default function PortalSalariesView({
     }
 
     return [];
-  }, [salariesData]);
+  }, [salariesData, currencySymbol, thousandsSeparator]);
 
   const handleDownloadCSV = () => {
     if (!rows || rows.length === 0) return;
     const dateStr = new Date().toISOString().split("T")[0];
 
     const header = headers || [];
-    const rowsData = rows.map((r) => r.map((c) => String(c || "")));
+    const rowsData = rows.map((r) =>
+      r.map((c, cIdx) => (cIdx === 2 ? formatMoney(c, 0, currencySymbol, thousandsSeparator) : String(c || "")))
+    );
 
     const csvContent =
       "data:text/csv;charset=utf-8," +
@@ -273,7 +280,10 @@ export default function PortalSalariesView({
                       }}
                     >
                       {headers.map((_, cIdx) => {
-                        const cellVal = row[cIdx] !== undefined ? String(row[cIdx]) : "";
+                        const rawCell = row[cIdx] !== undefined ? row[cIdx] : "";
+                        const cellVal = cIdx === 2
+                          ? formatMoney(rawCell, 0, currencySymbol, thousandsSeparator)
+                          : String(rawCell || "");
                         const isFirstCol = cIdx === 0;
                         const isRight = cIdx === 2 || cIdx === 3 || cIdx === 6 || cIdx === 7;
 

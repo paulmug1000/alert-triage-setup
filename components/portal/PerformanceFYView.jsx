@@ -147,6 +147,12 @@ export default function PerformanceFYView({
   const chartGpVals = (grossProfitRow?.monthlyValues || []).map(parseNum);
   const chartOpVals = (opProfitRow?.monthlyValues || []).map(parseNum);
 
+  const isIncomeMode =
+    String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
+    Boolean(totalRevRow?.label && String(totalRevRow.label).toLowerCase().includes("income")) ||
+    Boolean(activeYear?.rows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
+  const revenueLabel = isIncomeMode ? "Income" : "Revenue";
+
   // Threshold margin styling
   const getMarginBadgeStyle = (label, valStr) => {
     if (!valStr || !String(valStr).includes("%")) return null;
@@ -944,6 +950,7 @@ export default function PerformanceFYView({
         revenue={chartRevVals}
         grossProfit={chartGpVals}
         operatingProfit={chartOpVals}
+        revenueLabel={revenueLabel}
         currencySymbol={currencySymbol}
         thousandsSeparator={thousandsSeparator}
         layout="fy"

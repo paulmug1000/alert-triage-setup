@@ -30,7 +30,13 @@ export default function PortalPage() {
   const [clientsLoaded, setClientsLoaded] = useState(false);
   const clientsFetchedRef = useRef(false);
   const lastLoggedClientRef = useRef(null);
+  const activeClientSheetIdRef = useRef(null);
   const [activeView, setActiveView] = useState("month");
+
+  // Keep activeClientSheetIdRef in sync with selectedClient
+  useEffect(() => {
+    activeClientSheetIdRef.current = selectedClient?.clientSheetId || null;
+  }, [selectedClient]);
 
   // View state from URL query with alias normalization
   useEffect(() => {
@@ -87,6 +93,7 @@ export default function PortalPage() {
 
   const fetchPayload = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
+    if (client.clientSheetId !== activeClientSheetIdRef.current) return;
     if (!isSilent) {
       setLoadingPayload(true);
       setPayloadError(null);
@@ -95,18 +102,20 @@ export default function PortalPage() {
       const url = `/api/portal/payload?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.payload) {
         setPayload(data.payload);
       } else if (!isSilent) {
         throw new Error(data.error || "Failed to load client data");
       }
     } catch (err) {
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Payload fetch error:", err);
       if (!isSilent) {
         setPayloadError(err.message || "Failed to connect to client sheet");
       }
     } finally {
-      if (!isSilent) {
+      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
         setLoadingPayload(false);
       }
     }
@@ -127,6 +136,7 @@ export default function PortalPage() {
 
   const fetchPerformance = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
+    if (client.clientSheetId !== activeClientSheetIdRef.current) return;
     if (!isSilent) {
       setLoadingPerformance(true);
       setPerfError(null);
@@ -135,26 +145,28 @@ export default function PortalPage() {
       const url = `/api/portal/performance?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.data) {
-        setPerformanceData(data.data);
+        setPerformanceData({ ...data.data, clientSheetId: client.clientSheetId });
       } else if (!isSilent) {
         throw new Error(data.error || "Failed to load performance data");
       }
     } catch (err) {
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Performance fetch error:", err);
       if (!isSilent) {
         setPerfError(err.message || "Failed to connect to client sheet");
       }
     } finally {
-      if (!isSilent) {
+      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
         setLoadingPerformance(false);
       }
     }
   }, []);
 
-  // Fetch performance data when switching to a performance view or budget view (for actuals)
+  // Fetch performance data when switching to a performance view or budget view (for actuals), or home view (for at-a-glance sparklines)
   useEffect(() => {
-    if (["dashboard", "ytd", "perfBreakdown", "scenarios", "viewBudget", "budgetVariance"].includes(activeView) && selectedClient?.clientSheetId) {
+    if (["month", "dashboard", "ytd", "perfBreakdown", "scenarios", "viewBudget", "budgetVariance"].includes(activeView) && selectedClient?.clientSheetId) {
       if (!performanceData) {
         fetchPerformance(selectedClient, false);
       }
@@ -174,6 +186,7 @@ export default function PortalPage() {
 
   const fetchCashflow = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
+    if (client.clientSheetId !== activeClientSheetIdRef.current) return;
     if (!isSilent) {
       setLoadingCashflow(true);
       setCashError(null);
@@ -182,18 +195,20 @@ export default function PortalPage() {
       const url = `/api/portal/cash?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.data) {
         setCashflowData(data.data);
       } else if (!isSilent) {
         throw new Error(data.error || "Failed to load cashflow data");
       }
     } catch (err) {
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Cashflow fetch error:", err);
       if (!isSilent) {
         setCashError(err.message || "Failed to connect to client sheet");
       }
     } finally {
-      if (!isSilent) {
+      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
         setLoadingCashflow(false);
       }
     }
@@ -221,6 +236,7 @@ export default function PortalPage() {
 
   const fetchKeyData = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
+    if (client.clientSheetId !== activeClientSheetIdRef.current) return;
     if (!isSilent) {
       setLoadingKeyData(true);
       setKeyDataError(null);
@@ -229,18 +245,20 @@ export default function PortalPage() {
       const url = `/api/portal/key-data?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.data) {
         setKeyData(data.data);
       } else if (!isSilent) {
         throw new Error(data.error || "Failed to load key data");
       }
     } catch (err) {
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Key data fetch error:", err);
       if (!isSilent) {
         setKeyDataError(err.message || "Failed to connect to client sheet");
       }
     } finally {
-      if (!isSilent) {
+      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
         setLoadingKeyData(false);
       }
     }
@@ -271,6 +289,7 @@ export default function PortalPage() {
 
   const fetchBudget = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
+    if (client.clientSheetId !== activeClientSheetIdRef.current) return;
     if (!isSilent) {
       setLoadingBudget(true);
       setBudgetError(null);
@@ -279,18 +298,20 @@ export default function PortalPage() {
       const url = `/api/portal/budget?clientSheetId=${encodeURIComponent(client.clientSheetId)}&clientName=${encodeURIComponent(client.clientName || "")}${bypassCache ? "&bypassCache=true" : ""}`;
       const res = await fetch(url);
       const data = await res.json();
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       if (data.success && data.data) {
         setBudgetData(data.data);
       } else if (!isSilent) {
         throw new Error(data.error || "Failed to load budget data");
       }
     } catch (err) {
+      if (client.clientSheetId !== activeClientSheetIdRef.current) return;
       console.error("Budget fetch error:", err);
       if (!isSilent) {
         setBudgetError(err.message || "Failed to connect to client sheet");
       }
     } finally {
-      if (!isSilent) {
+      if (client.clientSheetId === activeClientSheetIdRef.current && !isSilent) {
         setLoadingBudget(false);
       }
     }
@@ -534,11 +555,26 @@ export default function PortalPage() {
   }, [router, router.query.client, router.query.choose]);
 
   const handleLogout = async () => {
+    activeClientSheetIdRef.current = null;
     clientsFetchedRef.current = false;
     lastLoggedClientRef.current = null;
     setClientsLoaded(false);
     setSelectedClient(null);
     setPayload(null);
+    setLoadingPayload(false);
+    setPayloadError(null);
+    setPerformanceData(null);
+    setLoadingPerformance(false);
+    setPerfError(null);
+    setCashflowData(null);
+    setLoadingCashflow(false);
+    setCashError(null);
+    setKeyData(null);
+    setLoadingKeyData(false);
+    setKeyDataError(null);
+    setBudgetData(null);
+    setLoadingBudget(false);
+    setBudgetError(null);
     setClients([]);
     if (typeof window !== "undefined") {
       localStorage.removeItem("pulse_portal_client");
@@ -548,7 +584,33 @@ export default function PortalPage() {
   };
 
   const handleSelectClient = (client) => {
+    if (client?.clientSheetId && client.clientSheetId === selectedClient?.clientSheetId) {
+      return;
+    }
+    activeClientSheetIdRef.current = client?.clientSheetId || null;
     setSelectedClient(client);
+
+    // Synchronously clear previous client's data to eliminate any stale charts/sparklines flashing
+    setPayload(null);
+    setLoadingPayload(Boolean(client?.clientSheetId));
+    setPayloadError(null);
+
+    setPerformanceData(null);
+    setLoadingPerformance(Boolean(client?.clientSheetId));
+    setPerfError(null);
+
+    setCashflowData(null);
+    setLoadingCashflow(false);
+    setCashError(null);
+
+    setKeyData(null);
+    setLoadingKeyData(false);
+    setKeyDataError(null);
+
+    setBudgetData(null);
+    setLoadingBudget(false);
+    setBudgetError(null);
+
     if (client) {
       if (typeof window !== "undefined") {
         localStorage.setItem("pulse_portal_client", client.clientName);
@@ -722,6 +784,7 @@ export default function PortalPage() {
           <>
             {activeView === "month" && (
               <MonthView
+                key={selectedClient?.clientSheetId || "month"}
                 clientName={selectedClient?.clientName || "Client"}
                 clientSheetId={selectedClient?.clientSheetId}
                 masterSheetId={selectedClient?.masterSheetId}
@@ -731,7 +794,9 @@ export default function PortalPage() {
                 currencySymbol={currencySymbol}
                 thousandsSeparator={thousandsSeparator}
                 isLoading={loadingPayload}
+                isLoadingPerformance={loadingPerformance}
                 error={payloadError}
+                perfError={perfError}
                 onRefresh={handleRefreshPayload}
                 isSenior={isSeniorRestricted}
               />
@@ -739,6 +804,7 @@ export default function PortalPage() {
 
             {activeView === "dashboard" && (
               <PerformanceFYView
+                key={selectedClient?.clientSheetId || "dashboard"}
                 clientName={selectedClient?.clientName || "Client"}
                 data={performanceData}
                 keyData={keyData}
@@ -753,6 +819,7 @@ export default function PortalPage() {
 
             {activeView === "ytd" && (
               <PerformanceYTDView
+                key={selectedClient?.clientSheetId || "ytd"}
                 clientName={selectedClient?.clientName || "Client"}
                 data={performanceData}
                 keyData={keyData}

@@ -296,6 +296,12 @@ export default function PerformanceYTDView({
   const chartGpVals = (ytdGpRow?.monthVals || []).map(parseNum);
   const chartOpVals = (ytdOpRow?.monthVals || []).map(parseNum);
 
+  const isIncomeMode =
+    String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
+    Boolean(ytdRevRow?.label && String(ytdRevRow.label).toLowerCase().includes("income")) ||
+    Boolean(activeYear?.rows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
+  const revenueLabel = isIncomeMode ? "Income" : "Revenue";
+
   const ytdGpMarginPct = ytdRevTotal > 0 ? ytdGpTotal / ytdRevTotal : 0;
   const ytdOverheadsPct = ytdRevTotal > 0 ? ytdOverheadsTotal / ytdRevTotal : 0;
   const ytdOpMarginPct = ytdRevTotal > 0 ? ytdOpTotal / ytdRevTotal : 0;
@@ -1042,6 +1048,7 @@ export default function PerformanceYTDView({
         revenue={chartRevVals}
         grossProfit={chartGpVals}
         operatingProfit={chartOpVals}
+        revenueLabel={revenueLabel}
         currencySymbol={currencySymbol}
         thousandsSeparator={thousandsSeparator}
         layout="ytd"

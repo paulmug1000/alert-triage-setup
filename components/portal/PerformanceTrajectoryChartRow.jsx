@@ -24,6 +24,7 @@ export default function PerformanceTrajectoryChartRow({
   revenue = [],
   grossProfit = [],
   operatingProfit = [],
+  revenueLabel = "Revenue",
   currencySymbol: propCurrencySymbol,
   thousandsSeparator: propThousandsSeparator,
   layout = "fy", // "fy" (percentage widths) or "ytd" (fixed pixel widths)
@@ -531,7 +532,7 @@ export default function PerformanceTrajectoryChartRow({
                           strokeWidth={isAct ? "2" : "2"}
                           vectorEffect="non-scaling-stroke"
                         >
-                          <title>{`${months[i]}: Revenue ${formatShortMoney(pt.val)}`}</title>
+                          <title>{`${months[i]}: ${revenueLabel} ${formatShortMoney(pt.val)}`}</title>
                         </circle>
                       </g>
                     );
@@ -672,7 +673,7 @@ export default function PerformanceTrajectoryChartRow({
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
                           <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#9900ff" }} />
-                          <span style={{ color: "#475569" }}>Revenue:</span>
+                          <span style={{ color: "#475569" }}>{revenueLabel}:</span>
                         </div>
                         <span style={{ fontWeight: 700, color: "#9900ff", fontVariantNumeric: "tabular-nums" }}>
                           {formatFullMoney(hoveredRev)}
@@ -726,7 +727,7 @@ export default function PerformanceTrajectoryChartRow({
                       display: "inline-block",
                     }}
                   />
-                  <span style={{ color: "#334155", fontWeight: 600 }}>Revenue / Income</span>
+                  <span style={{ color: "#334155", fontWeight: 600 }}>{revenueLabel}</span>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                   <span

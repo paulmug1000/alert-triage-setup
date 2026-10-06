@@ -15,14 +15,17 @@ function escapeHtml(str) {
 
 export default function MonthView({
   clientName,
+  clientSheetId,
   payload,
   keyData,
   performanceData,
   currencySymbol: propCurrencySymbol,
   thousandsSeparator: propThousandsSeparator,
   isLoading,
+  isLoadingPerformance = false,
   onRefresh,
   error,
+  perfError = null,
   isSenior = false,
 }) {
   const currencySymbol = propCurrencySymbol || payload?.clientInfo?.currencySymbol || payload?.currencySymbol || "£";
@@ -30,7 +33,13 @@ export default function MonthView({
   const [activePopover, setActivePopover] = useState(null);
   const [activePeriod, setActivePeriod] = useState("curr"); // 'curr' | 'prev' | 'next'
 
-  if (!payload) {
+  // Coordinate loading: wait until both payload and performanceData are ready so the At A Glance charts
+  // and Previous Year comparison rows render completely on the first paint without jumping.
+  // If performanceData fails with an error or is not loading, we fall back gracefully to chartData.
+  const isWaitingForPerformance = !performanceData && !perfError && isLoadingPerformance;
+  const isReady = payload && !isWaitingForPerformance;
+
+  if (!isReady) {
     if (error) {
       return (
         <div
@@ -225,8 +234,13 @@ export default function MonthView({
   const primaryLabel = isRevMode ? "Revenue" : "Income";
 
   // Build timeline and compute At A Glance metrics + sparklines
+  const validPerformanceData =
+    performanceData?.clientSheetId && clientSheetId
+      ? (performanceData.clientSheetId === clientSheetId ? performanceData : null)
+      : performanceData;
+
   const glanceMetrics = computeGlanceMetrics({
-    performanceData,
+    performanceData: validPerformanceData,
     chartData,
     activeMonthData,
     monthPeriod,
@@ -769,7 +783,7 @@ export default function MonthView({
               </div>
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
               {glanceMetrics.revMoM !== null && (
                 <DeltaRow
                   isPositive={glanceMetrics.revMoM >= 0}
@@ -800,7 +814,7 @@ export default function MonthView({
               </div>
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
               {glanceMetrics.gpMoM !== null && (
                 <DeltaRow
                   isPositive={glanceMetrics.gpMoM >= 0}
@@ -825,7 +839,7 @@ export default function MonthView({
                 {glanceMetrics.gpMarginDisplay}
               </div>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
                 {glanceMetrics.prevMonthPoint && (
                   <DeltaRow
                     isPositive={glanceMetrics.currentPoint.gpMargin >= glanceMetrics.prevMonthPoint.gpMargin}
@@ -857,7 +871,7 @@ export default function MonthView({
               </div>
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
               {glanceMetrics.opMoM !== null && (
                 <DeltaRow
                   isPositive={glanceMetrics.opMoM >= 0}
@@ -882,7 +896,7 @@ export default function MonthView({
                 {glanceMetrics.opMarginDisplay}
               </div>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "3px", minHeight: "38px", justifyContent: "flex-start" }}>
                 {glanceMetrics.prevMonthPoint && (
                   <DeltaRow
                     isPositive={glanceMetrics.currentPoint.opMargin >= glanceMetrics.prevMonthPoint.opMargin}
@@ -1226,6 +1240,8 @@ function HomeLineChart({
   const grossProfit = rawGrossProfit.slice(startIdx);
   const operatingProfit = rawOperatingProfit.slice(startIdx);
 
+  const [hoveredPoint, setHoveredPoint] = useState(null);
+
   const width = 850;
   const height = 380;
   const padding = { top: 20, right: 30, bottom: 35, left: 75 };
@@ -1346,9 +1362,23 @@ function HomeLineChart({
 
   return (
     <div style={{ width: "100%", flex: "1 1 auto", minHeight: "260px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-      <div className="home-chart-svg-wrap" style={{ position: "relative", width: "100%", flex: "1 1 auto", minHeight: "240px", height: "260px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div
+        className="home-chart-svg-wrap"
+        style={{
+          position: "relative",
+          width: "100%",
+          flex: "1 1 auto",
+          minHeight: "240px",
+          height: "260px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center"
+        }}
+        onMouseLeave={() => setHoveredPoint(null)}
+      >
         <svg
           viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
           style={{
             position: "absolute",
             inset: 0,
@@ -1505,23 +1535,164 @@ function HomeLineChart({
           strokeLinecap="round"
         />
 
-        {/* Dots on points */}
-        {revenue.map((val, i) => (
-          <circle key={`r-${i}`} cx={getX(i)} cy={getY(val)} r="3" fill="#9900ff" stroke="#ffffff" strokeWidth="1.5">
-            <title>{`${months[i] ? months[i] + ': ' : ''}${label1} ${formatMoney(val, 0, currencySymbol, thousandsSeparator)}`}</title>
-          </circle>
-        ))}
-        {grossProfit.map((val, i) => (
-          <circle key={`gp-${i}`} cx={getX(i)} cy={getY(val)} r="3" fill="#e69138" stroke="#ffffff" strokeWidth="1.5">
-            <title>{`${months[i] ? months[i] + ': ' : ''}${label2} ${formatMoney(val, 0, currencySymbol, thousandsSeparator)}`}</title>
-          </circle>
-        ))}
-        {operatingProfit.map((val, i) => (
-          <circle key={`op-${i}`} cx={getX(i)} cy={getY(val)} r="3" fill="#1155cc" stroke="#ffffff" strokeWidth="1.5">
-            <title>{`${months[i] ? months[i] + ': ' : ''}${label3} ${formatMoney(val, 0, currencySymbol, thousandsSeparator)}`}</title>
-          </circle>
-        ))}
+        {/* Vertical guide line on hover */}
+        {hoveredPoint && (
+          <line
+            x1={hoveredPoint.cx}
+            y1={padding.top}
+            x2={hoveredPoint.cx}
+            y2={padding.top + chartH}
+            stroke="#94a3b8"
+            strokeWidth="1"
+            strokeDasharray="3 3"
+            strokeOpacity="0.6"
+            pointerEvents="none"
+          />
+        )}
+
+        {/* Interactive Data Points and Column Hover Zones */}
+        {months.map((m, i) => {
+          const revVal = revenue[i] !== undefined ? revenue[i] : 0;
+          const gpVal = grossProfit[i] !== undefined ? grossProfit[i] : 0;
+          const opVal = operatingProfit[i] !== undefined ? operatingProfit[i] : 0;
+          const cx = getX(i);
+          const cyRev = getY(revVal);
+          const cyGp = getY(gpVal);
+          const cyOp = getY(opVal);
+          const isHovered = hoveredPoint?.idx === i;
+          const colW = chartW / Math.max(months.length - 1, 1);
+          const gpMargin = revVal ? Math.round((gpVal / revVal) * 100) : null;
+          const opMargin = revVal ? Math.round((opVal / revVal) * 100) : null;
+
+          const triggerHover = (activeCy) => {
+            setHoveredPoint({
+              idx: i,
+              month: m,
+              revVal,
+              gpVal,
+              opVal,
+              gpMargin,
+              opMargin,
+              cx,
+              cy: activeCy !== undefined ? activeCy : Math.min(cyRev, cyGp, cyOp),
+            });
+          };
+
+          return (
+            <g key={i}>
+              {/* Invisible full-height hit area for effortless hovering across the month */}
+              <rect
+                x={cx - colW / 2}
+                y={padding.top}
+                width={colW}
+                height={chartH}
+                fill="transparent"
+                style={{ cursor: "pointer" }}
+                onMouseEnter={() => triggerHover(Math.min(cyRev, cyGp, cyOp))}
+                onMouseMove={() => triggerHover(Math.min(cyRev, cyGp, cyOp))}
+                onClick={() => triggerHover(Math.min(cyRev, cyGp, cyOp))}
+              />
+
+              {/* Revenue circle */}
+              <circle
+                cx={cx}
+                cy={cyRev}
+                r={isHovered ? "5" : "3"}
+                fill="#9900ff"
+                stroke="#ffffff"
+                strokeWidth={isHovered ? "2" : "1.5"}
+                style={{ cursor: "pointer", transition: "r 0.15s ease" }}
+                onMouseEnter={() => triggerHover(cyRev)}
+              />
+
+              {/* Gross profit circle */}
+              <circle
+                cx={cx}
+                cy={cyGp}
+                r={isHovered ? "5" : "3"}
+                fill="#e69138"
+                stroke="#ffffff"
+                strokeWidth={isHovered ? "2" : "1.5"}
+                style={{ cursor: "pointer", transition: "r 0.15s ease" }}
+                onMouseEnter={() => triggerHover(cyGp)}
+              />
+
+              {/* Operating profit circle */}
+              <circle
+                cx={cx}
+                cy={cyOp}
+                r={isHovered ? "5" : "3"}
+                fill="#1155cc"
+                stroke="#ffffff"
+                strokeWidth={isHovered ? "2" : "1.5"}
+                style={{ cursor: "pointer", transition: "r 0.15s ease" }}
+                onMouseEnter={() => triggerHover(cyOp)}
+              />
+            </g>
+          );
+        })}
         </svg>
+
+        {/* Interactive Popup Breakdown Tooltip */}
+        {hoveredPoint && (
+          <div
+            style={{
+              position: "absolute",
+              left: `${(hoveredPoint.cx / width) * 100}%`,
+              top: `${(hoveredPoint.cy / height) * 100}%`,
+              transform:
+                hoveredPoint.idx === 0
+                  ? (hoveredPoint.cy < 90 ? "translate(-15%, 12px)" : "translate(-15%, -115%)")
+                  : hoveredPoint.idx === months.length - 1
+                  ? (hoveredPoint.cy < 90 ? "translate(-85%, 12px)" : "translate(-85%, -115%)")
+                  : (hoveredPoint.cy < 90 ? "translate(-50%, 12px)" : "translate(-50%, -115%)"),
+              background: "#0f172a",
+              color: "#ffffff",
+              padding: "8px 12px",
+              borderRadius: "6px",
+              fontSize: "11px",
+              pointerEvents: "none",
+              boxShadow: "0 4px 16px rgba(0, 0, 0, 0.25)",
+              border: "1px solid rgba(255, 255, 255, 0.12)",
+              zIndex: 20,
+              whiteSpace: "nowrap",
+              display: "flex",
+              flexDirection: "column",
+              gap: "4px",
+              fontFamily: "'Kumbh Sans', sans-serif",
+            }}
+          >
+            <div
+              style={{
+                fontWeight: 700,
+                color: "#e2e8f0",
+                borderBottom: "1px solid rgba(255, 255, 255, 0.15)",
+                paddingBottom: "3px",
+                marginBottom: "2px",
+              }}
+            >
+              {hoveredPoint.month}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#d8b4fe" }}>
+              <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#9900ff", display: "inline-block" }} />
+              <span>{label1}: <strong>{formatMoney(hoveredPoint.revVal, 0, currencySymbol, thousandsSeparator)}</strong></span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#fde68a" }}>
+              <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#e69138", display: "inline-block" }} />
+              <span>
+                {label2}: <strong>{formatMoney(hoveredPoint.gpVal, 0, currencySymbol, thousandsSeparator)}</strong>
+                {hoveredPoint.gpMargin !== null && !isNaN(hoveredPoint.gpMargin) ? ` (${hoveredPoint.gpMargin}%)` : ""}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#93c5fd" }}>
+              <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#1155cc", display: "inline-block" }} />
+              <span>
+                {label3}: <strong>{formatMoney(hoveredPoint.opVal, 0, currencySymbol, thousandsSeparator)}</strong>
+                {hoveredPoint.opMargin !== null && !isNaN(hoveredPoint.opMargin) ? ` (${hoveredPoint.opMargin}%)` : ""}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Chart Legend */}

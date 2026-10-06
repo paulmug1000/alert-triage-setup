@@ -44,7 +44,7 @@ export async function ensureUsersTab(sheets, automationCommanderSheetId = DEFAUL
       // Write headers and initial Admin row
       await sheets.spreadsheets.values.update({
         spreadsheetId: acId,
-        range: `${USERS_TAB}!A1:G2`,
+        range: `${USERS_TAB}!A1:H2`,
         valueInputOption: "RAW",
         requestBody: {
           values: [
@@ -217,37 +217,15 @@ export async function updateUserDailyAlertsEmail(email, dailyAlertsEmail, sheets
 
 /**
  * Match assigned client identifier against an actual client name.
- * Handles:
- * - Exact equality ("Eleven" === "Eleven")
- * - Case and whitespace tolerance (" eleven " === "eleven")
- * - Alphanumeric stripped tolerance ("ayefourdesign" === "ayefour design")
- * - Prefix / Substring tolerance ("Orinoco" matches "Orinoco Communications", "Ayefour" matches "Ayefour Design")
+ * Strictly requires an exact match (case-insensitive and trimmed of whitespace).
+ * Wildcard "*" grants access to all clients.
  */
 export function matchesClientName(assignedIdentifier, actualClientName) {
   if (!assignedIdentifier || !actualClientName) return false;
   const sa = String(assignedIdentifier).trim().toLowerCase();
   const sb = String(actualClientName).trim().toLowerCase();
-  if (sa === sb) return true;
-
-  const clean = n => String(n || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  const ca = clean(sa);
-  const cb = clean(sb);
-  if (ca && cb && ca === cb) return true;
-
-  // Prefix match with word boundary (e.g. "Orinoco" matches "Orinoco Communications")
-  if (sb.startsWith(sa + " ") || sa.startsWith(sb + " ")) return true;
-  if (cb.startsWith(ca) && ca.length >= 4) return true;
-  if (ca.startsWith(cb) && cb.length >= 4) return true;
-
-  // Token set overlap (e.g. "Ayefour Design" matches "Ayefour")
-  const tokensA = sa.split(/[\s\-_]+/).filter(t => t.length > 2 && t !== "the" && t !== "ltd" && t !== "limited");
-  const tokensB = sb.split(/[\s\-_]+/).filter(t => t.length > 2 && t !== "the" && t !== "ltd" && t !== "limited");
-  if (tokensA.length > 0 && tokensB.length > 0) {
-    const hasSharedSignificantToken = tokensA.some(t => tokensB.includes(t) && t.length >= 4);
-    if (hasSharedSignificantToken) return true;
-  }
-
-  return false;
+  if (sa === "*") return true;
+  return sa === sb;
 }
 
 const clientSheetIdToNameCache = new Map();

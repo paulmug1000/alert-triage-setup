@@ -67,7 +67,7 @@ export default async function handler(req, res) {
     // Only Admin can see ALL clients.
     // ClientManager and ClientUser only see their assigned clients.
     let authorizedClients = allClients;
-    if (!sessionUser.isAdmin) {
+    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       authorizedClients = allClients.filter((c) =>
         assignedList.some((assigned) => matchesClientName(assigned, c.clientName))

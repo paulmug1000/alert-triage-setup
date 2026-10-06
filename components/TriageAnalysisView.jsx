@@ -29,7 +29,14 @@ export default function TriageAnalysisView({
   const alert = clientAlerts[currentClientAlertIndex];
   const progress = currentClientAlertIndex + 1;
 
-  const otherDuplicateAlerts = (alert && (alert.type === "invoice" || alert.flagType === "invoiceDashboardDiscr") && alert.summary?.invoiceNo)
+  const alertFlags = alert?.data?.flags || [];
+  const isExpenseType = alert?.type === "expense" || alert?.flagType === "expenseDashboardDiscr" || alert?.sheetName === "DirComp";
+  const isInvoiceType = alert?.type === "invoice" || alert?.flagType === "invoiceDashboardDiscr" || alert?.sheetName === "InvComp";
+  const isMissingFlag = String(alertFlags[0] || "").trim() === "1";
+  const isMissingCost = isExpenseType && isMissingFlag;
+  const isMissingInvoice = isInvoiceType && isMissingFlag;
+
+  const otherDuplicateAlerts = (isInvoiceType && alert?.summary?.invoiceNo)
     ? clientAlerts.filter(a => {
         const thisId = alert.fingerprintHash || `${alert.sheetName}-${alert.rowNumber}`;
         const otherId = a.fingerprintHash || `${a.sheetName}-${a.rowNumber}`;
@@ -39,19 +46,13 @@ export default function TriageAnalysisView({
       })
     : [];
 
-  const isDuplicateInvoice = Boolean(
+  const isDuplicateInvoice = isInvoiceType && Boolean(
     alert?.isDuplicateInvoice ||
-    String(alert?.data?.flags?.[4] || "").trim() === "1" ||
+    (alert?.sheetName === "InvComp" && String(alert?.data?.flags?.[4] || "").trim() === "1") ||
     (alert?.spreadsheetItems && alert.spreadsheetItems.length > 1) ||
     otherDuplicateAlerts.length > 0
   );
-  const spreadsheetItems = alert?.spreadsheetItems || [];
-  const alertFlags = alert?.data?.flags || [];
-  const isMissingFlag = String(alertFlags[0] || "").trim() === "1";
-  const isExpenseType = alert?.type === "expense" || alert?.flagType === "expenseDashboardDiscr";
-  const isInvoiceType = alert?.type === "invoice" || alert?.flagType === "invoiceDashboardDiscr";
-  const isMissingCost = isExpenseType && isMissingFlag;
-  const isMissingInvoice = isInvoiceType && isMissingFlag;
+  const spreadsheetItems = isInvoiceType ? (alert?.spreadsheetItems || []) : [];
 
   return (
     <div style={styles.container}>
@@ -261,7 +262,7 @@ export default function TriageAnalysisView({
           </div>
         )}
 
-        {alert.summary && alert.type !== "locked" && (
+        {(isInvoiceType || isExpenseType) && alert.summary && alert.type !== "locked" && (
           <div style={{ ...styles.alertSummary, marginBottom: "20px",
             backgroundColor: alert.type === "expense" ? "#f0fdf4" : "#eff6ff",
             borderLeft: `4px solid ${alert.type === "expense" ? "#16a34a" : "#2563eb"}` }}>

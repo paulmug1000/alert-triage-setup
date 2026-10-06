@@ -954,7 +954,7 @@ export default function PerformanceFYView({
       <style jsx>{`
         @media (orientation: landscape) and (max-width: 1024px) {
           .fy-table-scroll-wrapper,
-          .fy-chart-scroll-wrapper {
+          :global(.fy-chart-scroll-wrapper) {
             margin: 0 !important;
             width: 100% !important;
           }
@@ -977,7 +977,7 @@ export default function PerformanceFYView({
             font-size: 2.2rem !important;
           }
           .fy-table-scroll-wrapper,
-          .fy-chart-scroll-wrapper {
+          :global(.fy-chart-scroll-wrapper) {
             margin: 0 24px !important;
             width: calc(100% - 48px) !important;
           }

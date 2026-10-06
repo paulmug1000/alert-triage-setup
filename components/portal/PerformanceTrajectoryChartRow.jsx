@@ -793,6 +793,22 @@ export default function PerformanceTrajectoryChartRow({
           </tr>
         </tbody>
       </table>
+      <style jsx>{`
+        @media (orientation: landscape) and (max-width: 1024px) {
+          .fy-chart-scroll-wrapper {
+            margin: 38px 0 0 0 !important;
+            width: ${layout === "fy" ? "100%" : "fit-content"} !important;
+            max-width: 100% !important;
+          }
+        }
+        @media (max-width: 768px) and (orientation: portrait) {
+          .fy-chart-scroll-wrapper {
+            margin: 38px 24px 0 24px !important;
+            width: calc(100% - 48px) !important;
+            max-width: calc(100% - 48px) !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

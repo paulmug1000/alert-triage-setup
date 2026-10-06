@@ -1207,10 +1207,10 @@ function DeltaRow({ isPositive, valueText, periodText }) {
 
 // Clean, smooth SVG Line Chart mirroring Chart.js
 function HomeLineChart({
-  months = [],
-  revenue = [],
-  grossProfit = [],
-  operatingProfit = [],
+  months: rawMonths = [],
+  revenue: rawRevenue = [],
+  grossProfit: rawGrossProfit = [],
+  operatingProfit: rawOperatingProfit = [],
   showTrendlines = false,
   label1 = "Revenue",
   label2 = "Gross profit",
@@ -1218,6 +1218,14 @@ function HomeLineChart({
   currencySymbol = "£",
   thousandsSeparator = ",",
 }) {
+  // Trim leading months where revenue is zero so chart starts at first active revenue month
+  const firstNonZeroRevIdx = rawRevenue.findIndex((v) => Math.abs(Number(v) || 0) > 0);
+  const startIdx = firstNonZeroRevIdx > 0 ? firstNonZeroRevIdx : 0;
+  const months = rawMonths.slice(startIdx);
+  const revenue = rawRevenue.slice(startIdx);
+  const grossProfit = rawGrossProfit.slice(startIdx);
+  const operatingProfit = rawOperatingProfit.slice(startIdx);
+
   const width = 850;
   const height = 380;
   const padding = { top: 20, right: 30, bottom: 35, left: 75 };
@@ -1707,8 +1715,16 @@ function computeGlanceMetrics({
   const prevMonthPoint = targetIdx > 0 ? timeline[targetIdx - 1] : null;
   const prevYearPoint = targetIdx >= 12 ? timeline[targetIdx - 12] : null;
 
-  // Multi-year sparkline series from beginning of Year 0 up to current viewed month
-  const sparklineSlice = timeline.slice(0, targetIdx + 1);
+  // Multi-year sparkline series up to current viewed month
+  // Trim leading months where revenue is zero so ALL charts start at the first month with non-zero revenue
+  const fullSlice = timeline.slice(0, targetIdx + 1);
+  const firstNonZeroRevIdx = fullSlice.findIndex((p) => {
+    const rev = typeof p.rev === "number" ? p.rev : parseFloat(String(p.rev || 0).replace(/[£$€,\s]/g, "")) || 0;
+    return Math.abs(rev) > 0;
+  });
+  const startIdx = firstNonZeroRevIdx !== -1 ? firstNonZeroRevIdx : 0;
+  const sparklineSlice = fullSlice.slice(startIdx);
+
   const revSeries = sparklineSlice.map((p) => p.rev);
   const gpSeries = sparklineSlice.map((p) => p.gp);
   const opSeries = sparklineSlice.map((p) => p.op);

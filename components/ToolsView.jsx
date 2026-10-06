@@ -720,14 +720,25 @@ export default function ToolsView({
         (eomStatusOverrides || []).forEach(s => { overrideByKey[`${s.clientName}|||${s.taskId}`] = s.status; });
         const byClient = {};
         (eomAllTasks || []).filter(t => t.active).forEach(t => {
-          let status;
-          if (t.linkedFunction === "alert_check") {
-            status = eomAlertDataReady ? (computeAlertCheckCount(t.clientName, t.alertCategories) === 0 ? "done" : "pending") : "pending";
-          } else {
-            status = overrideByKey[`${t.clientName}|||${t.taskId}`] || "pending";
+          if (!byClient[t.clientName]) {
+            byClient[t.clientName] = { total: 0, done: 0, pendingAlertChecks: [] };
           }
+          if (t.linkedFunction === "alert_check") {
+            const count = computeAlertCheckCount(t.clientName, t.alertCategories);
+            if (eomAlertDataReady && count > 0) {
+              byClient[t.clientName].pendingAlertChecks.push({
+                taskId: t.taskId,
+                name: t.name,
+                count,
+                categories: t.alertCategories
+              });
+            }
+            // Alert check tasks are NOT counted in the overview total or done counts
+            return;
+          }
+
+          const status = overrideByKey[`${t.clientName}|||${t.taskId}`] || "pending";
           if (status === "not_applicable") return;
-          if (!byClient[t.clientName]) byClient[t.clientName] = { total: 0, done: 0 };
           byClient[t.clientName].total++;
           if (status === "done") byClient[t.clientName].done++;
         });
@@ -737,11 +748,12 @@ export default function ToolsView({
         const clientRows = (allOutgoingsClients || [])
           .filter(c => !settingsByClient[c.clientName]?.excluded)
           .map(c => {
-            const counts = byClient[c.clientName] || { total: 0, done: 0 };
+            const counts = byClient[c.clientName] || { total: 0, done: 0, pendingAlertChecks: [] };
+            const pendingAlertChecks = counts.pendingAlertChecks || [];
             const pct = counts.total > 0 ? counts.done / counts.total : null;
             const explicitOrder = settingsByClient[c.clientName]?.sortOrder;
             const sortOrder = explicitOrder != null ? explicitOrder : 1000000 + alphabeticalNames.indexOf(c.clientName);
-            return { clientName: c.clientName, ...counts, pct, sortOrder };
+            return { clientName: c.clientName, ...counts, pendingAlertChecks, pct, sortOrder };
           }).sort((a, b) => a.sortOrder - b.sortOrder);
 
         return (
@@ -761,7 +773,22 @@ export default function ToolsView({
                   style={{ display: "flex", alignItems: "center", gap: "14px", padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none", cursor: "pointer" }}>
                   <div style={{ flex: "0 0 200px", fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{c.clientName}</div>
                   {c.total === 0 ? (
-                    <div style={{ fontSize: "12px", color: "#aaa" }}>No tasks assigned yet</div>
+                    <div style={{ fontSize: "12px", color: "#aaa", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span>No tasks assigned yet</span>
+                      {c.pendingAlertChecks && c.pendingAlertChecks.length > 0 && (
+                        <span
+                          title={c.pendingAlertChecks.map(t => `${t.name || "Alert check"}: ${t.count} active alert${t.count !== 1 ? "s" : ""}`).join("\n")}
+                          style={{
+                            color: "#d97706",
+                            fontWeight: "700",
+                            fontSize: "15px",
+                            lineHeight: 1,
+                            cursor: "help"
+                          }}>
+                          *
+                        </span>
+                      )}
+                    </div>
                   ) : (
                     <>
                       <div style={{ flex: 1, height: "8px", background: "#f0f0f0", borderRadius: "4px", overflow: "hidden" }}>
@@ -770,7 +797,27 @@ export default function ToolsView({
                           background: c.pct === 1 ? "#16a34a" : c.pct === 0 ? "#dc2626" : "#f59e0b"
                         }} />
                       </div>
-                      <div style={{ flex: "0 0 70px", fontSize: "12px", color: "#666", textAlign: "right" }}>{c.done} of {c.total}</div>
+                      <div style={{
+                        flex: "0 0 85px", fontSize: "12px", color: "#666", textAlign: "right",
+                        display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px"
+                      }}>
+                        <span>{c.done} of {c.total}</span>
+                        {c.pendingAlertChecks && c.pendingAlertChecks.length > 0 && (
+                          <span
+                            title={c.pendingAlertChecks.map(t => `${t.name || "Alert check"}: ${t.count} active alert${t.count !== 1 ? "s" : ""}`).join("\n")}
+                            style={{
+                              color: "#d97706",
+                              fontWeight: "700",
+                              fontSize: "15px",
+                              lineHeight: 1,
+                              cursor: "help",
+                              display: "inline-block",
+                              marginLeft: "1px"
+                            }}>
+                            *
+                          </span>
+                        )}
+                      </div>
                     </>
                   )}
                 </div>

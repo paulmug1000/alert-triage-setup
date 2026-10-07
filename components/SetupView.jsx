@@ -118,7 +118,7 @@ export default function SetupView({ allOutgoingsClients = [], user }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
         <div>
           <h1 style={{ margin: "0 0 6px 0", fontSize: "24px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "10px" }}>
-            <span>🛠 Setup & Client Connections</span>
+            <span>Setup & client connections</span>
           </h1>
           <p style={{ margin: 0, color: "#64748B", fontSize: "14px" }}>
             Control client setup mode, configure tool integrations, and request third-party connections from client users.
@@ -182,7 +182,7 @@ export default function SetupView({ allOutgoingsClients = [], user }) {
       ) : (
         <form onSubmit={handleSave}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "20px" }}>
-            
+
             {/* 1. SETUP MODE STATUS CARD */}
             <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "20px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
@@ -204,7 +204,7 @@ export default function SetupView({ allOutgoingsClients = [], user }) {
                   color: setupMode ? "#B45309" : "#15803D",
                   border: `1px solid ${setupMode ? "#FCD34D" : "#86EFAC"}`
                 }}>
-                  {setupMode ? "🛠 SETUP MODE ACTIVE" : "● LIVE DASHBOARDS ACTIVE"}
+                  {setupMode ? "SETUP MODE ACTIVE" : "● LIVE DASHBOARDS ACTIVE"}
                 </div>
               </div>
 
@@ -266,17 +266,17 @@ export default function SetupView({ allOutgoingsClients = [], user }) {
                   2. Integrated Tools (Master Sheet KeyInfo Sync)
                 </h2>
                 <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-                  Select which platforms this client uses. These selections are permanently saved into KeyInfo cells Q4, Q8, and Q9.
+                  Select which platforms this client uses.
                 </p>
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "18px" }}>
-                
+
                 {/* Accounting Tool */}
                 <div style={{ padding: "16px", borderRadius: "10px", border: "1px solid #E2E8F0", background: "#F8FAFC" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                     <label htmlFor="accounting-tool" style={{ fontWeight: "700", fontSize: "13px", color: "#1E293B" }}>
-                      Accounting Tool (KeyInfo!Q4)
+                      Accounting tool
                     </label>
                     {isAccountingOAuth && (
                       <span style={{
@@ -310,7 +310,7 @@ export default function SetupView({ allOutgoingsClients = [], user }) {
                 <div style={{ padding: "16px", borderRadius: "10px", border: "1px solid #E2E8F0", background: "#F8FAFC" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                     <label htmlFor="crm-tool" style={{ fontWeight: "700", fontSize: "13px", color: "#1E293B" }}>
-                      CRM Tool (KeyInfo!Q8)
+                      CRM tool
                     </label>
                     {isCrmOAuth ? (
                       <span style={{
@@ -353,7 +353,7 @@ export default function SetupView({ allOutgoingsClients = [], user }) {
                 {/* CRM Driver */}
                 <div style={{ padding: "16px", borderRadius: "10px", border: "1px solid #E2E8F0", background: "#F8FAFC" }}>
                   <label htmlFor="crm-drives" style={{ display: "block", fontWeight: "700", fontSize: "13px", color: "#1E293B", marginBottom: "8px" }}>
-                    CRM Integration Drives (KeyInfo!Q9)
+                    CRM integration type
                   </label>
                   <select
                     id="crm-drives"

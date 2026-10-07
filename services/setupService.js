@@ -220,70 +220,109 @@ export async function saveClientSetupConfig({
  * Safe and fast; returns false for any client without setup mode enabled.
  */
 export async function getClientSetupStatusForPortal({ clientName, masterSheetId }) {
-  if (!clientName) return { setupMode: false };
+  if (!clientName) return { setupMode: false, configuredTools: [], hasDisconnectedTools: false };
 
   const redisKey = getSetupRedisKey(clientName);
+  let config = null;
+
   try {
     const raw = await redisClient.get(redisKey);
-    if (!raw) {
-      // Default: setup mode is inactive for all existing clients
-      return { setupMode: false };
+    if (raw) {
+      config = JSON.parse(raw);
     }
-
-    const config = JSON.parse(raw);
-    if (!config.setupMode) {
-      return { setupMode: false };
-    }
-
-    // Client is in setup mode: evaluate required connections
-    const accountingTool = config.accountingTool || "None";
-    const crmTool = config.crmTool || "None";
-    const requestConnections = Boolean(config.requestConnections);
-
-    const requiredTools = [];
-    if (isOAuthTool(accountingTool)) {
-      const status = await getIntegrationStatus({
-        clientKey: clientName,
-        masterSheetId,
-        tool: accountingTool
-      });
-      requiredTools.push({
-        tool: accountingTool.toLowerCase(),
-        name: accountingTool,
-        type: "accounting",
-        connected: Boolean(status.connected)
-      });
-    }
-
-    if (isOAuthTool(crmTool)) {
-      const status = await getIntegrationStatus({
-        clientKey: clientName,
-        masterSheetId,
-        tool: crmTool
-      });
-      requiredTools.push({
-        tool: crmTool.toLowerCase(),
-        name: crmTool,
-        type: "crm",
-        connected: Boolean(status.connected)
-      });
-    }
-
-    const unconnectedTools = requiredTools.filter(t => !t.connected);
-    const connectedTools = requiredTools.filter(t => t.connected);
-    const allToolsConnected = requiredTools.length === 0 || unconnectedTools.length === 0;
-
-    return {
-      setupMode: true,
-      requestConnections,
-      requiredTools,
-      unconnectedTools,
-      connectedTools,
-      allToolsConnected
-    };
   } catch (err) {
-    console.error(`Error querying portal setup status for ${clientName}:`, err);
-    // On error, fail-safe to normal portal view so live operations are not disrupted
-    return { setupMode: false };
+    console.error(`Error querying Redis setup config for ${clientName}:`, err);
   }
+
+  // If no Redis config or missing tool selections, attempt reading KeyInfo!Q4:Q9
+  let accountingTool = config?.accountingTool || "None";
+  let crmTool = config?.crmTool || "None";
+
+  if ((accountingTool === "None" || crmTool === "None") && masterSheetId) {
+    try {
+      const sheets = await getSheetsClient();
+      const res = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: masterSheetId,
+          range: "KeyInfo!Q4:Q9"
+        })
+      );
+      const rows = res.data.values || [];
+      const sheetQ4 = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "None";
+      const sheetQ8 = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "None";
+      if (accountingTool === "None" && sheetQ4 !== "None") accountingTool = sheetQ4;
+      if (crmTool === "None" && sheetQ8 !== "None") crmTool = sheetQ8;
+
+      // Cache back to Redis so we don't hit Google Sheets API repeatedly
+      if (!config) {
+        config = {
+          clientName,
+          masterSheetId,
+          setupMode: false,
+          requestConnections: false,
+          accountingTool,
+          crmTool,
+          crmDrives: (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "NA",
+          updatedAt: new Date().toISOString()
+        };
+        await redisClient.set(redisKey, JSON.stringify(config)).catch(() => {});
+      }
+    } catch (sheetErr) {
+      // Non-fatal sheet read note
+    }
+  }
+
+  const setupMode = config?.setupMode === true;
+  const requestConnections = config?.requestConnections === true;
+
+  // Evaluate configured tools and connection health
+  const configuredTools = [];
+
+  const checkTool = async (toolName, type) => {
+    if (!isOAuthTool(toolName)) return;
+    const cleanTool = toolName.toLowerCase();
+    const status = await getIntegrationStatus({
+      clientKey: clientName,
+      masterSheetId,
+      tool: cleanTool
+    });
+
+    const isConnected = Boolean(status.connected);
+    const needsReconnect = !isConnected || status.status === "reconnect_required" || Boolean(status.reconnectRequired);
+
+    configuredTools.push({
+      tool: cleanTool,
+      name: toolName,
+      type,
+      connected: isConnected,
+      needsReconnect,
+      status: status.status || (isConnected ? "connected" : "disconnected"),
+      tenantName: status.tenantName || status.companyName || ""
+    });
+  };
+
+  try {
+    await Promise.all([
+      checkTool(accountingTool, "accounting"),
+      checkTool(crmTool, "crm")
+    ]);
+  } catch (evalErr) {
+    console.error(`Error checking tool health for ${clientName}:`, evalErr);
+  }
+
+  const unconnectedTools = configuredTools.filter(t => !t.connected);
+  const connectedTools = configuredTools.filter(t => t.connected);
+  const allToolsConnected = configuredTools.length === 0 || unconnectedTools.length === 0;
+  const hasDisconnectedTools = configuredTools.some(t => !t.connected || t.needsReconnect);
+
+  return {
+    setupMode,
+    requestConnections,
+    requiredTools: configuredTools,
+    unconnectedTools,
+    connectedTools,
+    allToolsConnected,
+    configuredTools,
+    hasDisconnectedTools
+  };
 }

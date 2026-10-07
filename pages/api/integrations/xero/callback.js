@@ -10,8 +10,14 @@
  */
 
 import { exchangeCodeForTokens, getXeroConnections } from "../../../../services/xeroService.js";
-import { saveIntegrationTokens } from "../../../../services/vaultService.js";
+import {
+  saveIntegrationTokens,
+  saveSharedXeroGrant,
+  linkClientToSharedXero,
+  matchTenantToClient
+} from "../../../../services/vaultService.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
+import { DEFAULT_AC_SHEET_ID } from "../../../../services/pmaLogger.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -90,52 +96,93 @@ export default async function handler(req, res) {
     const clientName = statePayload.clientName || clientKey;
     const masterSheetId = statePayload.masterSheetId;
 
-    // Smart Tenant Selection:
-    // 1. Try name matching against clientName
-    const cleanClientName = String(clientName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    let matchedTenant = null;
-    if (cleanClientName && cleanClientName !== "apptest" && cleanClientName !== "client") {
-      matchedTenant = tenants.find(t => {
-        const cleanTenantName = String(t.tenantName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-        return cleanTenantName && (cleanTenantName.includes(cleanClientName) || cleanClientName.includes(cleanTenantName));
-      });
-    }
+    // 3. Store tokens in the Central Shared Advisor Xero Grant
+    // Because the advisor user connects with access to multiple client organisations,
+    // this single grant powers all authorized organisations without token rotation conflicts.
+    await saveSharedXeroGrant({
+      tokens,
+      availableTenants: tenants,
+      connectedBy: clientName
+    });
 
-    // 2. If no name match, pick the most recently authorized organisation (newest createdDateUtc)
+    // Smart Tenant Selection for the initiating client:
+    let matchedTenant = matchTenantToClient(clientName, tenants);
     if (!matchedTenant) {
       const sortedByDate = [...tenants].sort((a, b) => {
         const timeA = a.createdDateUtc ? new Date(a.createdDateUtc).getTime() : 0;
         const timeB = b.createdDateUtc ? new Date(b.createdDateUtc).getTime() : 0;
         return timeB - timeA;
       });
-      matchedTenant = sortedByDate[0];
+      matchedTenant = sortedByDate[0] || tenants[0];
     }
 
-    const primaryTenant = matchedTenant || tenants[0];
+    const primaryTenant = matchedTenant;
     const tenantId = primaryTenant.tenantId;
     const tenantName = primaryTenant.tenantName;
 
-    // 3. Encrypt and store tokens in Central Vault (Redis)
-    await saveIntegrationTokens({
+    // Link the initiating client
+    await linkClientToSharedXero({
       clientKey,
       clientName,
       masterSheetId,
-      tool: "xero",
-      tokens,
-      metadata: {
-        tenantId,
-        tenantName,
-        availableTenants: tenants.map(t => ({
-          tenantId: t.tenantId,
-          tenantName: t.tenantName,
-          createdDateUtc: t.createdDateUtc || ""
-        })),
-        tenantCount: tenants.length,
-        scope: tokens.scope
-      }
+      tenantId,
+      tenantName,
+      availableTenants: tenants
     });
 
-    // 4. Update KeyInfo!X2 in Master Sheet if masterSheetId is known
+    // 4. Auto-link ALL other ecosystem clients matching the authorized Xero organisations
+    try {
+      const sheets = await getSheetsClient();
+      const acRes = await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: DEFAULT_AC_SHEET_ID,
+          range: "AutoUpdates!A2:N100"
+        })
+      );
+      const rows = acRes.data.values || [];
+      for (const r of rows) {
+        const cName = String(r[0] || "").trim();
+        const mUrl = String(r[12] || "").trim();
+        if (!cName || cName.toLowerCase() === "client" || cName.toLowerCase() === "client name" || !mUrl) continue;
+        const match = mUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+        const mSheetId = match ? match[1] : "";
+
+        // Check if this ecosystem client matches one of the authorized tenants
+        const clientTenant = matchTenantToClient(cName, tenants);
+        if (clientTenant) {
+          console.log(`🔗 Auto-linking client "${cName}" to Xero Org "${clientTenant.tenantName}" (${clientTenant.tenantId})...`);
+          await linkClientToSharedXero({
+            clientKey: cName,
+            clientName: cName,
+            masterSheetId: mSheetId,
+            tenantId: clientTenant.tenantId,
+            tenantName: clientTenant.tenantName,
+            availableTenants: tenants
+          });
+
+          // Ensure KeyInfo!X2 is set to this tenant ID in the Master Sheet
+          if (mSheetId) {
+            try {
+              await withRetry(() =>
+                sheets.spreadsheets.values.update({
+                  spreadsheetId: mSheetId,
+                  range: "KeyInfo!X2",
+                  valueInputOption: "USER_ENTERED",
+                  requestBody: { values: [[clientTenant.tenantId]] }
+                })
+              );
+              console.log(`✅ Updated KeyInfo!X2 for "${cName}" to ${clientTenant.tenantId}.`);
+            } catch (errX2) {
+              console.warn(`Note updating KeyInfo!X2 for ${cName}:`, errX2.message);
+            }
+          }
+        }
+      }
+    } catch (autoLinkErr) {
+      console.warn("⚠️ Auto-linking ecosystem clients notice:", autoLinkErr.message);
+    }
+
+    // 5. Update KeyInfo!X2 and AutoLog for initiating client if needed
     if (masterSheetId) {
       try {
         const sheets = await getSheetsClient();
@@ -147,9 +194,7 @@ export default async function handler(req, res) {
             requestBody: { values: [[tenantId]] }
           })
         );
-        console.log(`✅ Updated KeyInfo!X2 with Tenant ID (${tenantId}) in Master Sheet (${masterSheetId}).`);
 
-        // Log to AutoLog if present
         try {
           const nowStr = new Date().toISOString().replace("T", " ").substring(0, 19);
           await withRetry(() =>
@@ -159,21 +204,19 @@ export default async function handler(req, res) {
               valueInputOption: "USER_ENTERED",
               insertDataOption: "INSERT_ROWS",
               requestBody: {
-                values: [[nowStr, "CLIENT_AUTH", "Xero Connected", `Xero authorized via Pulse App. Org: ${tenantName}`]]
+                values: [[nowStr, "CLIENT_AUTH", "Xero Connected", `Xero authorized via Pulse App (Central Shared Grant). Org: ${tenantName}`]]
               }
             })
           );
-        } catch (logErr) {
-          console.log("AutoLog append note:", logErr.message);
-        }
+        } catch (_) {}
       } catch (sheetErr) {
-        console.warn("⚠️ Failed to update KeyInfo!X2 via Sheets API:", sheetErr.message);
+        console.warn("⚠️ Failed to update initiating Master Sheet:", sheetErr.message);
       }
     }
 
     const returnUrl = statePayload.redirectBack || "/portal";
     const separator = returnUrl.includes("?") ? "&" : "?";
-    return res.redirect(`${returnUrl}${separator}integration=xero&status=success&tenant=${encodeURIComponent(tenantName)}`);
+    return res.redirect(`${returnUrl}${separator}integration=xero&status=success&tenant=${encodeURIComponent(tenantName)}&shared=true&linkedCount=${tenants.length}`);
 
   } catch (err) {
     console.error("Xero OAuth callback processing error:", err);

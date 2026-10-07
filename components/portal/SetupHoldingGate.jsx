@@ -245,13 +245,41 @@ export default function SetupHoldingGate({
                 {(user?.name || user?.email || "U")[0].toUpperCase()}
               </button>
 
+              {/* Exclamation badge if any configured connection needs renewing */}
+              {setupStatus?.hasDisconnectedTools && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: "-2px",
+                    right: "-2px",
+                    width: "15px",
+                    height: "15px",
+                    borderRadius: "50%",
+                    background: "#ef4444",
+                    color: "#ffffff",
+                    fontSize: "10.5px",
+                    fontWeight: 800,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: "2px solid #0047AB",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+                    lineHeight: 1,
+                    pointerEvents: "none"
+                  }}
+                  title="One or more tool connections need renewing"
+                >
+                  !
+                </span>
+              )}
+
               {profileDropdownOpen && (
                 <div
                   style={{
                     ...dropdownMenuStyle,
                     right: 0,
                     left: "auto",
-                    minWidth: "220px",
+                    minWidth: "240px",
                     padding: "0.5rem 0"
                   }}
                 >
@@ -279,6 +307,69 @@ export default function SetupHoldingGate({
                       </div>
                     )}
                   </div>
+
+                  {/* Connected Tools Status Section */}
+                  {setupStatus?.configuredTools && setupStatus.configuredTools.length > 0 && (
+                    <div style={{ padding: "0.6rem 1rem", borderBottom: "1px solid #e2e8f0", background: "#f8fafc" }}>
+                      <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
+                        Tool connections
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                        {setupStatus.configuredTools.map((t) => (
+                          <div key={t.tool} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+                              <span
+                                style={{
+                                  width: "8px",
+                                  height: "8px",
+                                  borderRadius: "50%",
+                                  background: t.connected && !t.needsReconnect ? "#10b981" : "#ef4444",
+                                  boxShadow: t.connected && !t.needsReconnect ? "0 0 0 2px rgba(16, 185, 129, 0.2)" : "0 0 0 2px rgba(239, 68, 68, 0.2)",
+                                  display: "inline-block",
+                                  flexShrink: 0
+                                }}
+                              />
+                              <span style={{ fontSize: "13px", fontWeight: 600, color: "#1e293b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {t.name}
+                              </span>
+                              {t.connected && !t.needsReconnect && (
+                                <span style={{ fontSize: "11px", color: "#10b981", fontWeight: 500 }}>
+                                  (Connected)
+                                </span>
+                              )}
+                            </div>
+
+                            {(!t.connected || t.needsReconnect) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const connectUrl = `/api/integrations/${encodeURIComponent(t.tool)}/connect?clientName=${encodeURIComponent(clientName)}&redirectBack=${encodeURIComponent("/pulse")}`;
+                                  window.location.href = connectUrl;
+                                }}
+                                style={{
+                                  background: "#fee2e2",
+                                  color: "#b91c1c",
+                                  border: "1px solid #fca5a5",
+                                  borderRadius: "4px",
+                                  padding: "2px 8px",
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  cursor: "pointer",
+                                  whiteSpace: "nowrap",
+                                  transition: "all 0.15s ease"
+                                }}
+                                onMouseEnter={(e) => { e.currentTarget.style.background = "#ef4444"; e.currentTarget.style.color = "#ffffff"; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.color = "#b91c1c"; }}
+                                title={`Re-connect ${t.name}`}
+                              >
+                                Re-connect
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* If user is Admin or ClientManager, offer direct link back to Management Area (PMA) */}
                   {(user?.isAdmin || user?.role === "ClientManager") && (

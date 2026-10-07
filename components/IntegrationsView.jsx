@@ -42,6 +42,8 @@ export default function IntegrationsView({
   const [hubspotBrokerTestResult, setHubspotBrokerTestResult] = useState(null);
   const [hubspotBrokerTesting, setHubspotBrokerTesting] = useState(false);
 
+  const [sharedXero, setSharedXero] = useState(null);
+
   // Initialize selected client to first client in list if available
   useEffect(() => {
     if (allOutgoingsClients.length > 0 && !selectedClientName) {
@@ -266,12 +268,15 @@ export default function IntegrationsView({
       const data = await res.json();
       if (data.success) {
         setClientStatus(data.integrations || {});
+        setSharedXero(data.sharedXero || null);
       } else {
         setClientStatus({});
+        setSharedXero(null);
       }
     } catch (err) {
       console.error("Failed to load integrations status:", err);
       setClientStatus({});
+      setSharedXero(null);
     } finally {
       setStatusLoading(false);
     }
@@ -280,6 +285,16 @@ export default function IntegrationsView({
   useEffect(() => {
     fetchStatus();
   }, [fetchStatus]);
+
+  // Connect Central Advisor Xero Account
+  const handleConnectAdvisorXero = () => {
+    const params = new URLSearchParams({
+      clientKey: "advisor",
+      clientName: "Advisor Account",
+      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(selectedClientName || "")}`
+    });
+    window.location.href = `/api/integrations/xero/connect?${params.toString()}`;
+  };
 
   // Initiate OAuth flow
   const handleConnectXero = () => {
@@ -297,9 +312,13 @@ export default function IntegrationsView({
     window.location.href = `/api/integrations/xero/connect?${params.toString()}`;
   };
 
-  // Disconnect & revoke
+  // Disconnect & revoke / Unlink
   const handleDisconnectXero = async () => {
-    if (!confirm(`Are you sure you want to disconnect Xero for ${selectedClientName}? Tokens will be revoked with Xero and purged from the Vault.`)) {
+    const isShared = Boolean(xero.isSharedGrant);
+    const confirmMsg = isShared
+      ? `Are you sure you want to unlink ${selectedClientName} from the Central Advisor Account? This will NOT affect your central advisor account or other connected clients.`
+      : `Are you sure you want to disconnect Xero for ${selectedClientName}? Tokens will be revoked with Xero and purged from the Vault.`;
+    if (!confirm(confirmMsg)) {
       return;
     }
     setActionLoading(true);
@@ -314,7 +333,12 @@ export default function IntegrationsView({
       });
       const data = await res.json();
       if (data.success) {
-        setFeedback({ type: "info", message: `Xero disconnected and revoked for ${selectedClientName}.` });
+        setFeedback({
+          type: "info",
+          message: isShared
+            ? `${selectedClientName} unlinked from Central Advisor Account.`
+            : `Xero disconnected and revoked for ${selectedClientName}.`
+        });
         await fetchStatus();
       } else {
         setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
@@ -733,11 +757,13 @@ export default function IntegrationsView({
     }
   }, [xero?.tenantId]);
 
-  // Handle switching active Xero tenant/organisation
-  const handleSwitchTenant = async () => {
-    if (!selectedTenantId || !selectedClient) return;
-    const target = (xero.availableTenants || []).find(t => t.tenantId === selectedTenantId);
-    const targetName = target ? target.tenantName : selectedTenantId;
+  // Handle switching active Xero tenant/organisation or linking existing tenant
+  const handleSwitchTenant = async (targetIdOverride) => {
+    const tid = targetIdOverride || selectedTenantId;
+    if (!tid || !selectedClient) return;
+    const allTenants = [...(xero.availableTenants || []), ...(sharedXero?.availableTenants || [])];
+    const target = allTenants.find(t => t.tenantId === tid);
+    const targetName = target ? target.tenantName : tid;
     setSwitchingTenant(true);
     try {
       const res = await fetch("/api/integrations/set-tenant", {
@@ -747,13 +773,13 @@ export default function IntegrationsView({
           clientKey: selectedClient.clientName,
           masterSheetId: selectedClient.masterSheetId,
           tool: "xero",
-          tenantId: selectedTenantId,
+          tenantId: tid,
           tenantName: targetName
         })
       });
       const data = await res.json();
       if (data.success) {
-        setFeedback({ type: "success", message: `Active organisation switched to "${targetName}".` });
+        setFeedback({ type: "success", message: `Active organisation linked to "${targetName}".` });
         fetchStatus();
       } else {
         setFeedback({ type: "error", message: data.error || "Failed to switch organisation." });
@@ -901,6 +927,115 @@ export default function IntegrationsView({
         </div>
       )}
 
+      {/* Central Advisor Xero Banner */}
+      <div
+        style={{
+          background: sharedXero?.connected ? "linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%)" : "linear-gradient(135deg, #f8fafc 0%, #ffffff 100%)",
+          borderRadius: "14px",
+          border: `1px solid ${sharedXero?.connected ? "#bbf7d0" : "#e2e8f0"}`,
+          padding: "16px 20px",
+          marginBottom: "24px",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: "14px"
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "14px", maxWidth: "800px" }}>
+          <div
+            style={{
+              width: "44px",
+              height: "44px",
+              borderRadius: "10px",
+              background: "rgba(0, 180, 216, 0.12)",
+              color: "#00b4d8",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: "22px",
+              fontWeight: "800",
+              flexShrink: 0
+            }}
+          >
+            X
+          </div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "4px" }}>
+              <h2 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#0f172a" }}>
+                Central Advisor Xero Account
+              </h2>
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "2px 9px",
+                  borderRadius: "20px",
+                  background: sharedXero?.reconnectRequired ? "#fee2e2" : sharedXero?.connected ? "#dcfce7" : "#f1f5f9",
+                  color: sharedXero?.reconnectRequired ? "#dc2626" : sharedXero?.connected ? "#15803d" : "#64748b"
+                }}
+              >
+                {sharedXero?.reconnectRequired ? "Re-auth Required" : sharedXero?.connected ? "Active & Auto-refreshing" : "Not Connected"}
+              </span>
+            </div>
+            <p style={{ margin: 0, fontSize: "12px", color: "#64748b", lineHeight: "1.4" }}>
+              Your advisor account powers all client organisations in Pulse through a single consolidated OAuth grant, ensuring tokens refresh smoothly without cross-client session conflicts.
+            </p>
+            <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "#0284c7" }}>
+              💡 <strong>Note:</strong> Xero authorizes one organisation at a time from their consent dropdown. As you add each client organisation, Pulse accumulates them under this central account without replacing previous ones.
+            </p>
+            {sharedXero?.connected && sharedXero?.availableTenants && sharedXero.availableTenants.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "8px" }}>
+                <span style={{ fontSize: "11px", fontWeight: "600", color: "#475569" }}>
+                  Linked Organisations ({sharedXero.availableTenants.length}):
+                </span>
+                {sharedXero.availableTenants.map((t) => (
+                  <span
+                    key={t.tenantId}
+                    style={{
+                      fontSize: "11px",
+                      padding: "2px 8px",
+                      borderRadius: "6px",
+                      background: "#e0f2fe",
+                      color: "#0369a1",
+                      fontWeight: "500"
+                    }}
+                  >
+                    {t.tenantName}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <button
+            onClick={handleConnectAdvisorXero}
+            disabled={actionLoading}
+            style={{
+              padding: "9px 16px",
+              borderRadius: "8px",
+              border: "none",
+              background: "#00b4d8",
+              color: "#ffffff",
+              fontSize: "13px",
+              fontWeight: "600",
+              cursor: "pointer",
+              boxShadow: "0 1px 2px rgba(0, 180, 216, 0.2)",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              whiteSpace: "nowrap"
+            }}
+          >
+            <span>🔗</span>
+            <span>{sharedXero?.connected ? "Re-authorise Advisor Xero" : "Connect Advisor Xero"}</span>
+          </button>
+        </div>
+      </div>
+
       {/* Main Integration Cards Grid */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "20px", marginBottom: "28px" }}>
         {/* 1. XERO CARD */}
@@ -933,11 +1068,19 @@ export default function IntegrationsView({
                   fontWeight: "700",
                   padding: "3px 10px",
                   borderRadius: "20px",
-                  background: isXeroConnected ? "#dcfce7" : "#f1f5f9",
-                  color: isXeroConnected ? "#15803d" : "#64748b"
+                  background: xero.reconnectRequired ? "#fee2e2" : isXeroConnected ? "#dcfce7" : "#f1f5f9",
+                  color: xero.reconnectRequired ? "#dc2626" : isXeroConnected ? "#15803d" : "#64748b"
                 }}
               >
-                {statusLoading ? "Checking..." : isXeroConnected ? "Connected" : "Not Connected"}
+                {statusLoading
+                  ? "Checking..."
+                  : xero.reconnectRequired
+                  ? "Re-auth Needed"
+                  : isXeroConnected
+                  ? (xero.isSharedGrant ? "Connected (Advisor)" : "Connected")
+                  : sharedXero?.connected
+                  ? "Not in Advisor Grant"
+                  : "Not Connected"}
               </span>
             </div>
 
@@ -945,9 +1088,56 @@ export default function IntegrationsView({
               Connects this client&apos;s Xero account via OAuth 2.0 with PKCE. Tokens are stored encrypted (AES-256-GCM) in the Redis Vault.
             </p>
 
+            {/* If Client Not Yet in Central Advisor Grant */}
+            {!isXeroConnected && sharedXero?.connected && (
+              <div style={{ background: "#f0f9ff", borderRadius: "10px", padding: "12px 14px", border: "1px solid #bae6fd", marginBottom: "16px", fontSize: "12px" }}>
+                <div style={{ fontWeight: "700", color: "#0369a1", marginBottom: "4px", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span>ℹ️</span> Central Advisor Account Active
+                </div>
+                <p style={{ margin: "0 0 8px 0", color: "#0c4a6e", lineHeight: "1.4" }}>
+                  To link <strong>{selectedClientName}</strong>, click below to authorize this organisation in Xero. It will be added into your Central Advisor grant alongside existing organisations.
+                </p>
+                {sharedXero?.availableTenants && sharedXero.availableTenants.length > 0 && (
+                  <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px dashed #bae6fd" }}>
+                    <span style={{ fontSize: "11px", fontWeight: "600", color: "#0369a1", display: "block", marginBottom: "4px" }}>
+                      Already authorized in Xero? Link organisation:
+                    </span>
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      <select
+                        defaultValue=""
+                        onChange={(e) => {
+                          if (e.target.value) handleSwitchTenant(e.target.value);
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: "5px 8px",
+                          borderRadius: "6px",
+                          border: "1px solid #7dd3fc",
+                          fontSize: "12px",
+                          background: "#fff",
+                          color: "#0f172a"
+                        }}
+                      >
+                        <option value="" disabled>Select from {sharedXero.availableTenants.length} authorized org(s)...</option>
+                        {sharedXero.availableTenants.map((t) => (
+                          <option key={t.tenantId} value={t.tenantId}>{t.tenantName}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Connection Details if Connected */}
             {isXeroConnected && (
               <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px 14px", border: "1px solid #e2e8f0", marginBottom: "16px", fontSize: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Connection Mode:</span>
+                  <span style={{ fontWeight: "600", color: xero.isSharedGrant ? "#0284c7" : "#0f172a" }}>
+                    {xero.isSharedGrant ? "Central Advisor Account" : "Dedicated Client Account"}
+                  </span>
+                </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
                   <span style={{ color: "#64748b" }}>Organisation:</span>
                   <span style={{ fontWeight: "600", color: "#0f172a" }}>{xero.tenantName || "N/A"}</span>
@@ -958,8 +1148,8 @@ export default function IntegrationsView({
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
                   <span style={{ color: "#64748b" }}>Token Status:</span>
-                  <span style={{ fontWeight: "600", color: xero.isExpired ? "#b91c1c" : "#15803d" }}>
-                    {xero.isExpired ? "Expired (Auto-refreshes on query)" : "Active"}
+                  <span style={{ fontWeight: "600", color: xero.reconnectRequired ? "#dc2626" : "#15803d" }}>
+                    {xero.reconnectRequired ? "Re-authorization Required" : "Connected (Auto-refreshes)"}
                   </span>
                 </div>
                 {xero.lastRefreshedAt && (
@@ -996,7 +1186,7 @@ export default function IntegrationsView({
                         ))}
                       </select>
                       <button
-                        onClick={handleSwitchTenant}
+                        onClick={() => handleSwitchTenant()}
                         disabled={switchingTenant || selectedTenantId === xero.tenantId}
                         style={{
                           padding: "6px 12px",
@@ -1021,7 +1211,7 @@ export default function IntegrationsView({
           {/* Action Buttons */}
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
-              {isXeroConnected ? (
+              {isXeroConnected && !xero.reconnectRequired ? (
                 <>
                   <button
                     onClick={handleDisconnectXero}
@@ -1038,7 +1228,7 @@ export default function IntegrationsView({
                       cursor: "pointer"
                     }}
                   >
-                    {actionLoading ? "Disconnecting..." : "Disconnect & Revoke"}
+                    {actionLoading ? "Processing..." : (xero.isSharedGrant ? "Unlink Organisation" : "Disconnect & Revoke")}
                   </button>
                   <button
                     onClick={handleTestTokenBroker}
@@ -1066,7 +1256,7 @@ export default function IntegrationsView({
                     padding: "10px 16px",
                     borderRadius: "8px",
                     border: "none",
-                    background: "#023f98",
+                    background: xero.reconnectRequired ? "#dc2626" : sharedXero?.connected ? "#0284c7" : "#023f98",
                     color: "#ffffff",
                     fontSize: "13px",
                     fontWeight: "600",
@@ -1074,7 +1264,11 @@ export default function IntegrationsView({
                     boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
                   }}
                 >
-                  Connect Xero for {selectedClientName || "Client"}
+                  {xero.reconnectRequired
+                    ? `Re-connect Xero for ${selectedClientName || "Client"}`
+                    : sharedXero?.connected
+                    ? `🔗 Add ${selectedClientName || "Client"} to Central Advisor Account`
+                    : `Connect Xero for ${selectedClientName || "Client"}`}
                 </button>
               )}
             </div>
@@ -1132,11 +1326,11 @@ export default function IntegrationsView({
                   fontWeight: "700",
                   padding: "3px 10px",
                   borderRadius: "20px",
-                  background: isQBConnected ? "#dcfce7" : "#f1f5f9",
-                  color: isQBConnected ? "#15803d" : "#64748b"
+                  background: qb.reconnectRequired ? "#fee2e2" : isQBConnected ? "#dcfce7" : "#f1f5f9",
+                  color: qb.reconnectRequired ? "#dc2626" : isQBConnected ? "#15803d" : "#64748b"
                 }}
               >
-                {statusLoading ? "Checking..." : isQBConnected ? "Connected" : "Not Connected"}
+                {statusLoading ? "Checking..." : qb.reconnectRequired ? "Re-auth Needed" : isQBConnected ? "Connected" : "Not Connected"}
               </span>
             </div>
 
@@ -1157,8 +1351,8 @@ export default function IntegrationsView({
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
                   <span style={{ color: "#64748b" }}>Token Status:</span>
-                  <span style={{ fontWeight: "600", color: qb.isExpired ? "#b91c1c" : "#15803d" }}>
-                    {qb.isExpired ? "Expired (Auto-refreshes on query)" : "Active"}
+                  <span style={{ fontWeight: "600", color: qb.reconnectRequired ? "#dc2626" : "#15803d" }}>
+                    {qb.reconnectRequired ? "Re-authorization Required" : "Connected (Auto-refreshes)"}
                   </span>
                 </div>
                 {qb.lastRefreshedAt && (
@@ -1174,7 +1368,7 @@ export default function IntegrationsView({
           {/* Action Buttons */}
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
-              {isQBConnected ? (
+              {isQBConnected && !qb.reconnectRequired ? (
                 <>
                   <button
                     onClick={handleDisconnectQB}
@@ -1219,7 +1413,7 @@ export default function IntegrationsView({
                     padding: "10px 16px",
                     borderRadius: "8px",
                     border: "none",
-                    background: "#2ca01c",
+                    background: qb.reconnectRequired ? "#dc2626" : "#2ca01c",
                     color: "#ffffff",
                     fontSize: "13px",
                     fontWeight: "600",
@@ -1227,7 +1421,7 @@ export default function IntegrationsView({
                     boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
                   }}
                 >
-                  Connect QuickBooks for {selectedClientName || "Client"}
+                  {qb.reconnectRequired ? `Re-connect QuickBooks for ${selectedClientName || "Client"}` : `Connect QuickBooks for ${selectedClientName || "Client"}`}
                 </button>
               )}
             </div>

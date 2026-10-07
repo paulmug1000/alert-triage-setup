@@ -7,7 +7,7 @@
  * Safe to be consumed by client portal and PMA UI views.
  */
 
-import { getIntegrationStatus } from "../../../services/vaultService.js";
+import { getIntegrationStatus, getSharedXeroGrant } from "../../../services/vaultService.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET") {
@@ -33,9 +33,22 @@ export default async function handler(req, res) {
       statuses[tool] = status;
     }
 
+    const sharedXeroRaw = await getSharedXeroGrant();
+    const sharedXero = sharedXeroRaw ? {
+      connected: sharedXeroRaw.status === "connected",
+      status: sharedXeroRaw.status,
+      reconnectRequired: sharedXeroRaw.status === "reconnect_required",
+      expiresAt: sharedXeroRaw.expiresAt,
+      availableTenants: sharedXeroRaw.availableTenants || [],
+      tenantCount: (sharedXeroRaw.availableTenants || []).length,
+      lastRefreshedAt: sharedXeroRaw.lastRefreshedAt,
+      updatedAt: sharedXeroRaw.updatedAt
+    } : null;
+
     return res.status(200).json({
       success: true,
-      integrations: statuses
+      integrations: statuses,
+      sharedXero
     });
   } catch (err) {
     console.error("Integrations status query error:", err);

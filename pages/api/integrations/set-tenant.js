@@ -8,7 +8,7 @@
  * Updates both the Vault metadata in Redis and KeyInfo!X2 in the Master Sheet.
  */
 
-import { getIntegrationTokens, saveIntegrationTokens } from "../../../services/vaultService.js";
+import { getIntegrationTokens, saveIntegrationTokens, getSharedXeroGrant, linkClientToSharedXero } from "../../../services/vaultService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { getSessionUser } from "../../../services/authService.js";
 
@@ -44,7 +44,51 @@ export default async function handler(req, res) {
 
   try {
     // 2. Load existing token record from Vault
-    const record = await getIntegrationTokens({ clientKey, masterSheetId, tool });
+    let record = await getIntegrationTokens({ clientKey, masterSheetId, tool });
+
+    // If no existing record, check if this is Xero and we have a Central Shared Grant
+    if ((!record || !record.tokens) && tool === "xero") {
+      const sharedGrant = await getSharedXeroGrant();
+      if (sharedGrant && sharedGrant.status === "connected") {
+        const linked = await linkClientToSharedXero({
+          clientKey,
+          clientName: clientKey,
+          masterSheetId,
+          tenantId,
+          tenantName,
+          availableTenants: sharedGrant.availableTenants || []
+        });
+
+        // Update KeyInfo!X2 in Master Sheet
+        if (masterSheetId) {
+          try {
+            const sheets = await getSheetsClient();
+            await withRetry(() =>
+              sheets.spreadsheets.values.update({
+                spreadsheetId: masterSheetId,
+                range: "KeyInfo!X2",
+                valueInputOption: "USER_ENTERED",
+                requestBody: { values: [[tenantId]] }
+              })
+            );
+            console.log(`✅ set-tenant: Updated KeyInfo!X2 in Master Sheet [${masterSheetId}] to "${tenantId}" (${tenantName || ''})`);
+          } catch (sheetErr) {
+            console.warn("⚠️ set-tenant: Note updating KeyInfo!X2:", sheetErr.message);
+          }
+        }
+
+        return res.status(200).json({
+          success: true,
+          clientKey,
+          tool,
+          tenantId,
+          tenantName: tenantName || tenantId,
+          isSharedGrant: true,
+          message: `Successfully linked ${clientKey} to shared organisation "${tenantName || tenantId}".`
+        });
+      }
+    }
+
     if (!record || !record.tokens) {
       return res.status(404).json({ success: false, error: `No active ${tool} connection found for this client.` });
     }

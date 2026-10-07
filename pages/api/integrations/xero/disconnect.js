@@ -33,7 +33,9 @@ export default async function handler(req, res) {
 
     if (record && record.tokens) {
       const tokenToRevoke = record.tokens.refreshToken || record.tokens.accessToken;
-      if (tokenToRevoke) {
+      // CRITICAL: Only revoke at Xero if this was a dedicated standalone client token.
+      // Never revoke a shared advisor token when unlinking a single client!
+      if (tokenToRevoke && !record.isSharedGrant) {
         await revokeXeroToken(tokenToRevoke);
       }
     }

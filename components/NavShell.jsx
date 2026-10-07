@@ -219,8 +219,8 @@ export default function NavShell({
     { key: "activity", label: "Activity", handler: onActivity || onAppLog },
     { key: "views", label: "Views", handler: onViews },
     { key: "tools", label: "EoM", handler: onTools },
-    { key: "integrations", label: "🔌 Integrations", handler: onIntegrations },
-    { key: "setup", label: "🛠 Setup", handler: onSetup },
+    { key: "integrations", label: "Integrations", handler: onIntegrations },
+    { key: "setup", label: "Setup", handler: onSetup },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
 

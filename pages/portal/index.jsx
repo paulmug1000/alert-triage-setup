@@ -18,6 +18,7 @@ import BudgetView from "../../components/portal/BudgetView";
 import BudgetVarianceView from "../../components/portal/BudgetVarianceView";
 import ScenariosView from "../../components/portal/ScenariosView";
 import CompanyChooser from "../../components/portal/CompanyChooser";
+import SetupHoldingGate from "../../components/portal/SetupHoldingGate";
 import Spinner from "../../components/Spinner";
 
 export default function PortalPage() {
@@ -32,6 +33,34 @@ export default function PortalPage() {
   const lastLoggedClientRef = useRef(null);
   const activeClientSheetIdRef = useRef(null);
   const [activeView, setActiveView] = useState("month");
+
+  // Setup Mode & Tool Connection State
+  const [setupStatus, setSetupStatus] = useState(null);
+  const [loadingSetupStatus, setLoadingSetupStatus] = useState(false);
+  const [isPreviewSetup, setIsPreviewSetup] = useState(false);
+  const [oauthFeedback, setOauthFeedback] = useState(null);
+
+  // Monitor URL for ?preview=setup or OAuth return params (?integration=...&status=...)
+  useEffect(() => {
+    if (router.query.preview === "setup") {
+      setIsPreviewSetup(true);
+    }
+    if (router.query.integration) {
+      const tool = router.query.integration;
+      const status = router.query.status;
+      if (status === "success") {
+        setOauthFeedback({
+          type: "success",
+          message: `${String(tool).toUpperCase()} was connected successfully!`
+        });
+      } else if (status === "denied" || status === "error" || router.query.error) {
+        setOauthFeedback({
+          type: "error",
+          message: `Connection to ${String(tool).toUpperCase()} was not completed. You can try again when you're ready.`
+        });
+      }
+    }
+  }, [router.query]);
 
   // Keep activeClientSheetIdRef in sync with selectedClient
   useEffect(() => {
@@ -624,7 +653,7 @@ export default function PortalPage() {
         localStorage.removeItem("pulse_portal_active_client_obj");
       }
     }
-    // Clean URL: Keep URL as clean /pulse
+    // Clean URL: Keep URL as clean /pulse (preserving preview or status if set)
     if (router.query.client || router.query.choose) {
       const nextQuery = { ...router.query };
       delete nextQuery.client;
@@ -632,6 +661,30 @@ export default function PortalPage() {
       router.replace({ pathname: "/pulse", query: nextQuery }, undefined, { shallow: true });
     }
   };
+
+  // Fetch setup status for selected client
+  useEffect(() => {
+    if (!selectedClient?.clientName) {
+      setSetupStatus(null);
+      return;
+    }
+
+    let isMounted = true;
+    setLoadingSetupStatus(true);
+    fetch(`/api/setup/status?clientName=${encodeURIComponent(selectedClient.clientName)}&masterSheetId=${encodeURIComponent(selectedClient.masterSheetId || "")}`)
+      .then(r => r.json())
+      .then(d => {
+        if (isMounted && d.success && d.status) {
+          setSetupStatus(d.status);
+        }
+      })
+      .catch(e => console.error("Setup status check note:", e))
+      .finally(() => {
+        if (isMounted) setLoadingSetupStatus(false);
+      });
+
+    return () => { isMounted = false; };
+  }, [selectedClient?.clientName, selectedClient?.masterSheetId]);
 
   const hasBudget = payload ? Boolean(payload.clientInfo?.hasBudget ?? payload.hasBudget) : false;
   const hasCash = payload ? Boolean(payload.clientInfo?.hasCash ?? payload.hasCash) : false;
@@ -656,6 +709,10 @@ export default function PortalPage() {
     String(user?.role || "").toLowerCase().includes("senior")
   );
   const isReadOnly = Boolean(user?.isReadOnly);
+  const isAdminOrManager = Boolean(
+    !isReadOnly && (user?.isAdmin || user?.role === "Admin" || user?.role === "ClientManager")
+  );
+  const isClientUser = !isAdminOrManager;
 
   // Guard budget views when client does not have budget enabled
   useEffect(() => {
@@ -726,8 +783,8 @@ export default function PortalPage() {
   }
 
   // Steady initial loading state: show 'Please wait - loading' until clients are determined,
-  // and if a client is selected, until their initial payload arrives (or errors)
-  if (!clientsLoaded || (selectedClient && !payload && !payloadError)) {
+  // and if a client is selected, until their initial payload arrives (or errors) UNLESS client user is in setup mode
+  if (!clientsLoaded || (selectedClient && !payload && !payloadError && !(isClientUser && setupStatus?.setupMode))) {
     return (
       <div
         style={{
@@ -764,6 +821,36 @@ export default function PortalPage() {
     );
   }
 
+  // ── CLIENT USER SETUP MODE GATE ─────────────────────────────────────
+  // If this client is in Setup Mode and the logged-in user is a ClientUser:
+  if (selectedClient && isClientUser && setupStatus?.setupMode === true) {
+    return (
+      <SetupHoldingGate
+        clientName={selectedClient.clientName}
+        user={user}
+        setupStatus={setupStatus}
+        onLogout={handleLogout}
+        oauthFeedback={oauthFeedback}
+      />
+    );
+  }
+
+  // ── ADMIN / MANAGER SETUP PREVIEW ───────────────────────────────────
+  // If an Admin or ClientManager requested to preview the client setup view:
+  if (selectedClient && isAdminOrManager && isPreviewSetup && setupStatus) {
+    return (
+      <SetupHoldingGate
+        clientName={selectedClient.clientName}
+        user={user}
+        setupStatus={setupStatus}
+        onLogout={handleLogout}
+        isPreview={true}
+        onExitPreview={() => setIsPreviewSetup(false)}
+        oauthFeedback={oauthFeedback}
+      />
+    );
+  }
+
   return (
     <>
       <Head>
@@ -780,6 +867,8 @@ export default function PortalPage() {
         onLogout={handleLogout}
         hasBudget={hasBudget}
         hasCash={hasCash}
+        setupStatus={setupStatus}
+        onPreviewSetup={() => setIsPreviewSetup(true)}
         masterSheetId={selectedClient?.masterSheetId}
         clientSheetId={selectedClient?.clientSheetId}
       >

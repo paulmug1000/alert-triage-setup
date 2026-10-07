@@ -107,7 +107,7 @@ if (typeof document !== "undefined") {
 // Persistent top bar - rendered around every screen
 export default function NavShell({
   activeNav, onHome, onOverview, onTasks, onActivity, onAppLog,
-  onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onIntegrations, onSettings,
+  onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onIntegrations, onSetup, onSettings,
   homeAlertCount, taskCount, user, onLogout, clients = [], children
 }) {
   const router = useRouter();
@@ -220,6 +220,7 @@ export default function NavShell({
     { key: "views", label: "Views", handler: onViews },
     { key: "tools", label: "EoM", handler: onTools },
     { key: "integrations", label: "🔌 Integrations", handler: onIntegrations },
+    { key: "setup", label: "🛠 Setup", handler: onSetup },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
 

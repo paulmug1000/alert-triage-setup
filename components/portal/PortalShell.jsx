@@ -12,6 +12,8 @@ export default function PortalShell({
   onLogout,
   hasBudget = true,
   hasCash = false,
+  setupStatus = null,
+  onPreviewSetup = null,
   children
 }) {
   const [openDropdown, setOpenDropdown] = useState(null); // 'perf' | 'cash' | 'keyData' | 'analysis' | 'user' | 'client' | null
@@ -67,6 +69,66 @@ export default function PortalShell({
         flexDirection: "column"
       }}
     >
+      {/* Setup Mode Alert Banner for Internal Staff (Admin/ClientManager) */}
+      {setupStatus?.setupMode && (
+        <div
+          style={{
+            background: "#FFFBEB",
+            borderBottom: "1px solid #FCD34D",
+            color: "#92400E",
+            padding: "8px 24px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            fontSize: "13px",
+            zIndex: 1001,
+            flexWrap: "wrap",
+            gap: "8px"
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "600" }}>
+            <span style={{ fontSize: "16px" }}>🛠️</span>
+            <span>This client is currently in setup mode (financial data within Pulse is NOT visible to the client)</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            {onPreviewSetup && (
+              <button
+                type="button"
+                onClick={onPreviewSetup}
+                style={{
+                  background: "#FEF3C7",
+                  border: "1px solid #F59E0B",
+                  color: "#92400E",
+                  padding: "4px 10px",
+                  borderRadius: "6px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  cursor: "pointer"
+                }}
+              >
+                👁 Preview client setup screen
+              </button>
+            )}
+            <Link
+              href={`/triage?nav=setup&client=${encodeURIComponent(clientName || "")}`}
+              style={{
+                background: "#023f98",
+                border: "none",
+                color: "#FFFFFF",
+                padding: "4px 12px",
+                borderRadius: "6px",
+                fontSize: "12px",
+                fontWeight: 600,
+                textDecoration: "none",
+                display: "inline-block"
+              }}
+            >
+              Manage in PMA Setup →
+            </Link>
+          </div>
+        </div>
+      )}
+
       {/* Top Header Bar */}
       <header
         style={{

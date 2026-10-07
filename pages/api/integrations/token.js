@@ -16,21 +16,27 @@
 
 import { getIntegrationTokens, updateRefreshedTokens } from "../../../services/vaultService.js";
 import { refreshXeroTokens } from "../../../services/xeroService.js";
+import { getSessionUser } from "../../../services/authService.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
-  // 1. Verify Internal Authentication
+  // 1. Verify Authentication: Ecosystem Secret (for GAS) OR Admin Session (for PMA)
   const authHeader = req.headers.authorization || "";
   const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
   const providedSecret = tokenMatch ? tokenMatch[1].trim() : (req.query.secret || req.body?.secret || "");
 
   const expectedSecret = process.env.PULSE_INTERNAL_SECRET;
-  if (!expectedSecret || providedSecret !== expectedSecret) {
+  const isSecretValid = Boolean(expectedSecret && providedSecret && providedSecret === expectedSecret);
+
+  const sessionUser = getSessionUser(req);
+  const isAdmin = Boolean(sessionUser?.isAdmin);
+
+  if (!isSecretValid && !isAdmin) {
     console.warn("🚨 Token Broker: Unauthorized attempt to request integration token.");
-    return res.status(401).json({ success: false, error: "Unauthorized: Invalid internal ecosystem secret." });
+    return res.status(401).json({ success: false, error: "Unauthorized: Invalid internal secret or admin session required." });
   }
 
   // 2. Parse Target Integration & Client Identifier

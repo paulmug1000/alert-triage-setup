@@ -147,7 +147,7 @@ export default function IntegrationsView({
     setBrokerTesting(true);
     setBrokerTestResult(null);
     try {
-      const res = await fetch(`/api/integrations/token?tool=xero&spreadsheetId=${encodeURIComponent(selectedClient.masterSheetId)}&secret=pulse-sec-032d6792db1f16fc4a69b8f9fa5b75702126aabd3c8b862c`);
+      const res = await fetch(`/api/integrations/token?tool=xero&spreadsheetId=${encodeURIComponent(selectedClient.masterSheetId)}`);
       const data = await res.json();
       setBrokerTestResult(data);
     } catch (err) {

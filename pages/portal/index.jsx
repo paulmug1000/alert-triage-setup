@@ -780,6 +780,8 @@ export default function PortalPage() {
         onLogout={handleLogout}
         hasBudget={hasBudget}
         hasCash={hasCash}
+        masterSheetId={selectedClient?.masterSheetId}
+        clientSheetId={selectedClient?.clientSheetId}
       >
           <>
             {activeView === "month" && (

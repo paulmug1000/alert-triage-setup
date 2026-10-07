@@ -13,6 +13,7 @@ import OutgoingsView from "../components/OutgoingsView";
 import RetainersView from "../components/RetainersView";
 import ToolsView from "../components/ToolsView";
 import SettingsView from "../components/SettingsView";
+import IntegrationsView from "../components/IntegrationsView";
 import ClientSelectionView from "../components/ClientSelectionView";
 import AlertSelectionView from "../components/AlertSelectionView";
 import TriageAnalysisView from "../components/TriageAnalysisView";
@@ -200,12 +201,23 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const handleNavActivity = () => { fireOutgoingsPullIfPending(); setActiveNav("activity"); loadClients(); };
   const handleNavAppLog = handleNavActivity;
   const handleNavSettings = () => { fireOutgoingsPullIfPending(); setActiveNav("settings"); loadClients(); };
+  const handleNavIntegrations = () => { fireOutgoingsPullIfPending(); setActiveNav("integrations"); loadClients(); };
   const handleNavTools = () => { setActiveNav("tools"); loadClients(); };
   const handleNavOutgoings = () => { setActiveNav("outgoings"); loadClients(); };
   const handleNavInvoices = () => { setActiveNav("invoices"); loadClients(); };
   const handleNavJobs = () => { setActiveNav("jobs"); loadClients(); };
   const handleNavRetainers = () => { setActiveNav("retainers"); loadClients(); };
   const handleNavViews = () => { setActiveNav("views"); loadClients(); };
+
+  // Check URL query parameters on mount to deep-link to integrations tab
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get("nav") === "integrations" || p.get("integration") === "xero") {
+        setActiveNav("integrations");
+      }
+    }
+  }, []);
 
   // Page title and favicon are handled globally by Next.js <Head> in index.js
   useEffect(() => {
@@ -351,6 +363,16 @@ function TriageSystemContent({ onBack, appGlobals }) {
       );
     }
 
+    // ── INTEGRATIONS SCREEN ─────────────────────────────────────────────────
+    if (activeNav === "integrations") {
+      return (
+        <IntegrationsView
+          allOutgoingsClients={allOutgoingsClients}
+          user={user}
+        />
+      );
+    }
+
     // ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
     if (activeNav === "settings") {
       return (
@@ -489,6 +511,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
         onJobs={handleNavJobs}
         onViews={handleNavViews}
         onTools={handleNavTools}
+        onIntegrations={handleNavIntegrations}
         onSettings={handleNavSettings}
         homeAlertCount={liveAlertCount + proactiveAlerts.length}
         taskCount={navTaskCount}

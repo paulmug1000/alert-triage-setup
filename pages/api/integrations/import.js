@@ -18,6 +18,8 @@
 import { saveIntegrationTokens } from "../../../services/vaultService.js";
 import { refreshXeroTokens, getXeroConnections } from "../../../services/xeroService.js";
 import { refreshQBTokens, getQBCompanyInfo } from "../../../services/quickbooksService.js";
+import { refreshMondayTokens, getMondayAccountInfo } from "../../../services/mondayService.js";
+import { refreshPipedriveTokens, getPipedriveAccountInfo } from "../../../services/pipedriveService.js";
 import { getSessionUser } from "../../../services/authService.js";
 
 export default async function handler(req, res) {
@@ -165,6 +167,112 @@ export default async function handler(req, res) {
         accessToken: refreshed.accessToken,
         expiresIn: refreshed.expiresIn,
         message: `Successfully imported QuickBooks connection into Pulse Central Vault.`
+      });
+    }
+
+    if (cleanTool === "monday") {
+      console.log(`📥 Integration Import: Importing existing Monday.com tokens for sheet: ${spreadsheetId}...`);
+
+      const { accessToken: rawAccessToken = "", token = "", apiKey = "", clientId = "", clientSecret = "" } = req.body;
+      let activeAccessToken = rawAccessToken || token || apiKey || "";
+      let activeRefreshToken = refreshToken || "";
+
+      if (!activeAccessToken && activeRefreshToken) {
+        const refreshed = await refreshMondayTokens(activeRefreshToken, clientId, clientSecret);
+        activeAccessToken = refreshed.accessToken;
+        activeRefreshToken = refreshed.refreshToken;
+      }
+
+      let accountInfo = null;
+      if (activeAccessToken) {
+        accountInfo = await getMondayAccountInfo(activeAccessToken);
+      }
+
+      const effectiveClientKey = clientName || accountInfo?.accountName || spreadsheetId;
+      const effectiveClientName = clientName || accountInfo?.accountName || effectiveClientKey;
+
+      await saveIntegrationTokens({
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        masterSheetId: spreadsheetId,
+        tool: "monday",
+        tokens: {
+          accessToken: activeAccessToken,
+          refreshToken: activeRefreshToken,
+          expiresIn: 2592000
+        },
+        metadata: {
+          accountId: accountInfo?.accountId || "",
+          accountName: accountInfo?.accountName || effectiveClientName,
+          userName: accountInfo?.userName || "",
+          userEmail: accountInfo?.userEmail || "",
+          importedAt: new Date().toISOString()
+        }
+      });
+
+      console.log(`✅ Integration Import: Successfully migrated Monday.com for "${effectiveClientName}" [${spreadsheetId}].`);
+
+      return res.status(200).json({
+        success: true,
+        tool: "monday",
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        accountName: accountInfo?.accountName || effectiveClientName,
+        accessToken: activeAccessToken,
+        message: `Successfully imported Monday.com connection into Pulse Central Vault.`
+      });
+    }
+
+    if (cleanTool === "pipedrive") {
+      console.log(`📥 Integration Import: Importing existing Pipedrive tokens for sheet: ${spreadsheetId}...`);
+
+      const { accessToken: rawAccessToken = "", token = "", apiToken = "", clientId = "", clientSecret = "" } = req.body;
+      let activeAccessToken = rawAccessToken || token || apiToken || "";
+      let activeRefreshToken = refreshToken || "";
+
+      if (!activeAccessToken && activeRefreshToken) {
+        const refreshed = await refreshPipedriveTokens(activeRefreshToken, clientId, clientSecret);
+        activeAccessToken = refreshed.accessToken;
+        activeRefreshToken = refreshed.refreshToken;
+      }
+
+      let accountInfo = null;
+      if (activeAccessToken) {
+        accountInfo = await getPipedriveAccountInfo(activeAccessToken);
+      }
+
+      const effectiveClientKey = clientName || accountInfo?.companyName || spreadsheetId;
+      const effectiveClientName = clientName || accountInfo?.companyName || effectiveClientKey;
+
+      await saveIntegrationTokens({
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        masterSheetId: spreadsheetId,
+        tool: "pipedrive",
+        tokens: {
+          accessToken: activeAccessToken,
+          refreshToken: activeRefreshToken,
+          expiresIn: 3600
+        },
+        metadata: {
+          companyId: accountInfo?.companyId || "",
+          companyName: accountInfo?.companyName || effectiveClientName,
+          userName: accountInfo?.userName || "",
+          userEmail: accountInfo?.userEmail || "",
+          importedAt: new Date().toISOString()
+        }
+      });
+
+      console.log(`✅ Integration Import: Successfully migrated Pipedrive for "${effectiveClientName}" [${spreadsheetId}].`);
+
+      return res.status(200).json({
+        success: true,
+        tool: "pipedrive",
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        companyName: accountInfo?.companyName || effectiveClientName,
+        accessToken: activeAccessToken,
+        message: `Successfully imported Pipedrive connection into Pulse Central Vault.`
       });
     }
 

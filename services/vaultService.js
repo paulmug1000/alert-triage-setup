@@ -356,7 +356,8 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
       expiresAt: record.expiresAt,
       lastRefreshedAt: record.lastRefreshedAt,
       updatedAt: record.updatedAt,
-      availableTenants: record.metadata?.availableTenants || []
+      availableTenants: record.metadata?.availableTenants || [],
+      metadata: record.metadata || {}
     };
   } catch (err) {
     return { connected: false, tool: cleanTool, error: err.message };

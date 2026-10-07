@@ -17,6 +17,8 @@
 import { getIntegrationTokens, updateRefreshedTokens } from "../../../services/vaultService.js";
 import { refreshXeroTokens } from "../../../services/xeroService.js";
 import { refreshQBTokens } from "../../../services/quickbooksService.js";
+import { refreshMondayTokens } from "../../../services/mondayService.js";
+import { refreshPipedriveTokens } from "../../../services/pipedriveService.js";
 import { getSessionUser } from "../../../services/authService.js";
 
 export default async function handler(req, res) {
@@ -130,6 +132,38 @@ export default async function handler(req, res) {
           error: `Failed to refresh QuickBooks connection (${refreshErr.message}). Re-authorization required.`,
           reconnectRequired: true
         });
+      }
+    } else if (isExpiringSoon && tool === "pipedrive") {
+      if (record.tokens.refreshToken) {
+        try {
+          const refreshed = await refreshPipedriveTokens(record.tokens.refreshToken);
+          await updateRefreshedTokens({
+            clientKey: record.clientKey,
+            tool: "pipedrive",
+            tokens: refreshed
+          });
+          accessToken = refreshed.accessToken;
+          expiresIn = refreshed.expiresIn;
+          console.log(`✅ Token Broker: Successfully refreshed Pipedrive token for ${record.clientKey}.`);
+        } catch (refreshErr) {
+          console.error(`🚨 Token Broker: Pipedrive refresh failed for ${record.clientKey}:`, refreshErr.message);
+        }
+      }
+    } else if (isExpiringSoon && tool === "monday") {
+      if (record.tokens.refreshToken) {
+        try {
+          const refreshed = await refreshMondayTokens(record.tokens.refreshToken);
+          await updateRefreshedTokens({
+            clientKey: record.clientKey,
+            tool: "monday",
+            tokens: refreshed
+          });
+          accessToken = refreshed.accessToken;
+          expiresIn = refreshed.expiresIn;
+          console.log(`✅ Token Broker: Successfully refreshed Monday.com token for ${record.clientKey}.`);
+        } catch (refreshErr) {
+          console.error(`🚨 Token Broker: Monday refresh failed for ${record.clientKey}:`, refreshErr.message);
+        }
       }
     }
 

@@ -18,6 +18,14 @@ export default function IntegrationsView({
   const [qbBrokerTestResult, setQbBrokerTestResult] = useState(null);
   const [qbBrokerTesting, setQbBrokerTesting] = useState(false);
 
+  const [mondayActionLoading, setMondayActionLoading] = useState(false);
+  const [mondayBrokerTestResult, setMondayBrokerTestResult] = useState(null);
+  const [mondayBrokerTesting, setMondayBrokerTesting] = useState(false);
+
+  const [pipedriveActionLoading, setPipedriveActionLoading] = useState(false);
+  const [pipedriveBrokerTestResult, setPipedriveBrokerTestResult] = useState(null);
+  const [pipedriveBrokerTesting, setPipedriveBrokerTesting] = useState(false);
+
   // Initialize selected client to first client in list if available
   useEffect(() => {
     if (allOutgoingsClients.length > 0 && !selectedClientName) {
@@ -35,6 +43,7 @@ export default function IntegrationsView({
       const status = urlParams.get("status");
       const tenant = urlParams.get("tenant");
       const company = urlParams.get("company");
+      const account = urlParams.get("account");
       const errorMsg = urlParams.get("message") || urlParams.get("error");
       const clientParam = urlParams.get("client");
 
@@ -85,6 +94,48 @@ export default function IntegrationsView({
         const newSearch = urlParams.toString();
         const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
         window.history.replaceState({}, "", newUrl);
+      } else if (integration === "monday") {
+        if (status === "success") {
+          setFeedback({
+            type: "success",
+            message: `Successfully connected Monday.com for ${clientParam || "client"}${account ? ` (${account})` : ""}!`
+          });
+        } else if (status === "error" || status === "denied") {
+          setFeedback({
+            type: "error",
+            message: errorMsg ? `Monday.com connection failed: ${errorMsg}` : "Monday.com connection was cancelled or denied."
+          });
+        }
+        urlParams.delete("integration");
+        urlParams.delete("status");
+        urlParams.delete("account");
+        urlParams.delete("message");
+        urlParams.delete("error");
+        urlParams.delete("client");
+        const newSearch = urlParams.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
+        window.history.replaceState({}, "", newUrl);
+      } else if (integration === "pipedrive") {
+        if (status === "success") {
+          setFeedback({
+            type: "success",
+            message: `Successfully connected Pipedrive for ${clientParam || "client"}${company ? ` (${company})` : ""}!`
+          });
+        } else if (status === "error" || status === "denied") {
+          setFeedback({
+            type: "error",
+            message: errorMsg ? `Pipedrive connection failed: ${errorMsg}` : "Pipedrive connection was cancelled or denied."
+          });
+        }
+        urlParams.delete("integration");
+        urlParams.delete("status");
+        urlParams.delete("company");
+        urlParams.delete("message");
+        urlParams.delete("error");
+        urlParams.delete("client");
+        const newSearch = urlParams.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
+        window.history.replaceState({}, "", newUrl);
       }
     }
   }, []);
@@ -97,6 +148,8 @@ export default function IntegrationsView({
     setStatusLoading(true);
     setBrokerTestResult(null);
     setQbBrokerTestResult(null);
+    setMondayBrokerTestResult(null);
+    setPipedriveBrokerTestResult(null);
     try {
       const q = new URLSearchParams();
       if (selectedClientName) q.set("clientKey", selectedClientName);
@@ -249,10 +302,142 @@ export default function IntegrationsView({
     }
   };
 
+  // Initiate Monday.com OAuth flow
+  const handleConnectMonday = () => {
+    if (!selectedClientName) {
+      alert("Please select a client first.");
+      return;
+    }
+    const params = new URLSearchParams({
+      clientKey: selectedClientName,
+      clientName: selectedClientName,
+      masterSheetId: selectedClient?.masterSheetId || "",
+      clientSheetId: selectedClient?.clientSheetId || "",
+      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(selectedClientName)}`
+    });
+    window.location.href = `/api/integrations/monday/connect?${params.toString()}`;
+  };
+
+  // Disconnect & revoke Monday.com
+  const handleDisconnectMonday = async () => {
+    if (!confirm(`Are you sure you want to disconnect Monday.com for ${selectedClientName}? Tokens will be purged from the Vault.`)) {
+      return;
+    }
+    setMondayActionLoading(true);
+    try {
+      const res = await fetch("/api/integrations/monday/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientKey: selectedClientName,
+          masterSheetId: selectedClient?.masterSheetId
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedback({ type: "info", message: `Monday.com disconnected for ${selectedClientName}.` });
+        await fetchStatus();
+      } else {
+        setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+      }
+    } catch (err) {
+      setFeedback({ type: "error", message: err.message });
+    } finally {
+      setMondayActionLoading(false);
+    }
+  };
+
+  // Test live Monday.com token broker
+  const handleTestMondayTokenBroker = async () => {
+    if (!selectedClient?.masterSheetId) {
+      alert("No Master Sheet ID found for this client.");
+      return;
+    }
+    setMondayBrokerTesting(true);
+    setMondayBrokerTestResult(null);
+    try {
+      const res = await fetch(`/api/integrations/token?tool=monday&spreadsheetId=${encodeURIComponent(selectedClient.masterSheetId)}`);
+      const data = await res.json();
+      setMondayBrokerTestResult(data);
+    } catch (err) {
+      setMondayBrokerTestResult({ success: false, error: err.message });
+    } finally {
+      setMondayBrokerTesting(false);
+    }
+  };
+
+  // Initiate Pipedrive OAuth flow
+  const handleConnectPipedrive = () => {
+    if (!selectedClientName) {
+      alert("Please select a client first.");
+      return;
+    }
+    const params = new URLSearchParams({
+      clientKey: selectedClientName,
+      clientName: selectedClientName,
+      masterSheetId: selectedClient?.masterSheetId || "",
+      clientSheetId: selectedClient?.clientSheetId || "",
+      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(selectedClientName)}`
+    });
+    window.location.href = `/api/integrations/pipedrive/connect?${params.toString()}`;
+  };
+
+  // Disconnect & revoke Pipedrive
+  const handleDisconnectPipedrive = async () => {
+    if (!confirm(`Are you sure you want to disconnect Pipedrive for ${selectedClientName}? Tokens will be revoked with Pipedrive and purged from the Vault.`)) {
+      return;
+    }
+    setPipedriveActionLoading(true);
+    try {
+      const res = await fetch("/api/integrations/pipedrive/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientKey: selectedClientName,
+          masterSheetId: selectedClient?.masterSheetId
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedback({ type: "info", message: `Pipedrive disconnected and revoked for ${selectedClientName}.` });
+        await fetchStatus();
+      } else {
+        setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+      }
+    } catch (err) {
+      setFeedback({ type: "error", message: err.message });
+    } finally {
+      setPipedriveActionLoading(false);
+    }
+  };
+
+  // Test live Pipedrive token broker
+  const handleTestPipedriveTokenBroker = async () => {
+    if (!selectedClient?.masterSheetId) {
+      alert("No Master Sheet ID found for this client.");
+      return;
+    }
+    setPipedriveBrokerTesting(true);
+    setPipedriveBrokerTestResult(null);
+    try {
+      const res = await fetch(`/api/integrations/token?tool=pipedrive&spreadsheetId=${encodeURIComponent(selectedClient.masterSheetId)}`);
+      const data = await res.json();
+      setPipedriveBrokerTestResult(data);
+    } catch (err) {
+      setPipedriveBrokerTestResult({ success: false, error: err.message });
+    } finally {
+      setPipedriveBrokerTesting(false);
+    }
+  };
+
   const xero = clientStatus?.xero || {};
   const isXeroConnected = Boolean(xero.connected);
   const qb = clientStatus?.quickbooks || {};
   const isQBConnected = Boolean(qb.connected);
+  const monday = clientStatus?.monday || {};
+  const isMondayConnected = Boolean(monday.connected);
+  const pipedrive = clientStatus?.pipedrive || {};
+  const isPipedriveConnected = Boolean(pipedrive.connected);
 
   // Sync selectedTenantId when clientStatus updates
   useEffect(() => {
@@ -783,7 +968,329 @@ export default function IntegrationsView({
           </div>
         </div>
 
-        {/* 3. CLICKUP CARD (Placeholder) */}
+        {/* 3. MONDAY.COM CARD */}
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "16px",
+            border: "1px solid #e2e8f0",
+            padding: "22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between"
+          }}
+        >
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <div style={{ width: "42px", height: "42px", borderRadius: "10px", background: "rgba(97, 97, 255, 0.12)", color: "#6161ff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px", fontWeight: "700" }}>
+                  M
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>Monday.com</h3>
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>Work Management & Boards Sync</span>
+                </div>
+              </div>
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "3px 10px",
+                  borderRadius: "20px",
+                  background: isMondayConnected ? "#dcfce7" : "#f1f5f9",
+                  color: isMondayConnected ? "#15803d" : "#64748b"
+                }}
+              >
+                {statusLoading ? "Checking..." : isMondayConnected ? "Connected" : "Not Connected"}
+              </span>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.5", margin: "0 0 16px 0" }}>
+              Connects Monday.com accounts via OAuth 2.0. Ingests board data and CRM pipelines directly into DataFromCRM.
+            </p>
+
+            {/* Connection Details if Connected */}
+            {isMondayConnected && (
+              <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px 14px", border: "1px solid #e2e8f0", marginBottom: "16px", fontSize: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Account / Workspace:</span>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{monday.metadata?.accountName || monday.accountName || monday.tenantName || "N/A"}</span>
+                </div>
+                {monday.metadata?.accountId && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Account ID:</span>
+                    <span style={{ fontFamily: "monospace", color: "#334155" }}>{monday.metadata.accountId}</span>
+                  </div>
+                )}
+                {monday.metadata?.userName && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Authorized By:</span>
+                    <span style={{ color: "#334155" }}>{monday.metadata.userName}{monday.metadata.userEmail ? ` (${monday.metadata.userEmail})` : ""}</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Token Status:</span>
+                  <span style={{ fontWeight: "600", color: monday.isExpired ? "#b91c1c" : "#15803d" }}>
+                    {monday.isExpired ? "Expired (Auto-refreshes on query)" : "Active"}
+                  </span>
+                </div>
+                {monday.lastRefreshedAt && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#64748b" }}>Last Refreshed:</span>
+                    <span style={{ color: "#334155" }}>{new Date(monday.lastRefreshedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
+              {isMondayConnected ? (
+                <>
+                  <button
+                    onClick={handleDisconnectMonday}
+                    disabled={mondayActionLoading}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "1px solid #fecaca",
+                      background: "#fff",
+                      color: "#dc2626",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {mondayActionLoading ? "Disconnecting..." : "Disconnect & Revoke"}
+                  </button>
+                  <button
+                    onClick={handleTestMondayTokenBroker}
+                    disabled={mondayBrokerTesting}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: "#0f172a",
+                      color: "#fff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {mondayBrokerTesting ? "Testing..." : "⚡ Test Token Broker"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectMonday}
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "#6161ff",
+                    color: "#ffffff",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
+                  }}
+                >
+                  Connect Monday.com for {selectedClientName || "Client"}
+                </button>
+              )}
+            </div>
+
+            {/* Token Broker Live Test Output */}
+            {mondayBrokerTestResult && (
+              <div
+                style={{
+                  marginTop: "14px",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  background: mondayBrokerTestResult.success ? "#f0fdf4" : "#fef2f2",
+                  border: `1px solid ${mondayBrokerTestResult.success ? "#bbf7d0" : "#fecaca"}`,
+                  color: mondayBrokerTestResult.success ? "#166534" : "#991b1b"
+                }}
+              >
+                <div style={{ fontWeight: "700", marginBottom: "4px" }}>
+                  {mondayBrokerTestResult.success ? "✓ Token Broker Response (200 OK):" : "✕ Token Broker Error:"}
+                </div>
+                <div>{JSON.stringify(mondayBrokerTestResult, null, 2)}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 4. PIPEDRIVE CARD */}
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "16px",
+            border: "1px solid #e2e8f0",
+            padding: "22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between"
+          }}
+        >
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <div style={{ width: "42px", height: "42px", borderRadius: "10px", background: "rgba(0, 194, 97, 0.12)", color: "#00c261", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px", fontWeight: "700" }}>
+                  P
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>Pipedrive CRM</h3>
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>Deals, Pipelines & Opportunities</span>
+                </div>
+              </div>
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "3px 10px",
+                  borderRadius: "20px",
+                  background: isPipedriveConnected ? "#dcfce7" : "#f1f5f9",
+                  color: isPipedriveConnected ? "#15803d" : "#64748b"
+                }}
+              >
+                {statusLoading ? "Checking..." : isPipedriveConnected ? "Connected" : "Not Connected"}
+              </span>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.5", margin: "0 0 16px 0" }}>
+              Connects Pipedrive CRM via OAuth 2.0. Synchronizes deal values, custom fields, and pipelines into DataFromCRM.
+            </p>
+
+            {/* Connection Details if Connected */}
+            {isPipedriveConnected && (
+              <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px 14px", border: "1px solid #e2e8f0", marginBottom: "16px", fontSize: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Company:</span>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{pipedrive.metadata?.companyName || pipedrive.companyName || pipedrive.tenantName || "N/A"}</span>
+                </div>
+                {pipedrive.metadata?.companyId && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Company ID:</span>
+                    <span style={{ fontFamily: "monospace", color: "#334155" }}>{pipedrive.metadata.companyId}</span>
+                  </div>
+                )}
+                {pipedrive.metadata?.userName && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Authorized By:</span>
+                    <span style={{ color: "#334155" }}>{pipedrive.metadata.userName}{pipedrive.metadata.userEmail ? ` (${pipedrive.metadata.userEmail})` : ""}</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Token Status:</span>
+                  <span style={{ fontWeight: "600", color: pipedrive.isExpired ? "#b91c1c" : "#15803d" }}>
+                    {pipedrive.isExpired ? "Expired (Auto-refreshes on query)" : "Active"}
+                  </span>
+                </div>
+                {pipedrive.lastRefreshedAt && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#64748b" }}>Last Refreshed:</span>
+                    <span style={{ color: "#334155" }}>{new Date(pipedrive.lastRefreshedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
+              {isPipedriveConnected ? (
+                <>
+                  <button
+                    onClick={handleDisconnectPipedrive}
+                    disabled={pipedriveActionLoading}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "1px solid #fecaca",
+                      background: "#fff",
+                      color: "#dc2626",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {pipedriveActionLoading ? "Disconnecting..." : "Disconnect & Revoke"}
+                  </button>
+                  <button
+                    onClick={handleTestPipedriveTokenBroker}
+                    disabled={pipedriveBrokerTesting}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: "#0f172a",
+                      color: "#fff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {pipedriveBrokerTesting ? "Testing..." : "⚡ Test Token Broker"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectPipedrive}
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "#00c261",
+                    color: "#ffffff",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
+                  }}
+                >
+                  Connect Pipedrive for {selectedClientName || "Client"}
+                </button>
+              )}
+            </div>
+
+            {/* Token Broker Live Test Output */}
+            {pipedriveBrokerTestResult && (
+              <div
+                style={{
+                  marginTop: "14px",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  background: pipedriveBrokerTestResult.success ? "#f0fdf4" : "#fef2f2",
+                  border: `1px solid ${pipedriveBrokerTestResult.success ? "#bbf7d0" : "#fecaca"}`,
+                  color: pipedriveBrokerTestResult.success ? "#166534" : "#991b1b"
+                }}
+              >
+                <div style={{ fontWeight: "700", marginBottom: "4px" }}>
+                  {pipedriveBrokerTestResult.success ? "✓ Token Broker Response (200 OK):" : "✕ Token Broker Error:"}
+                </div>
+                <div>{JSON.stringify(pipedriveBrokerTestResult, null, 2)}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 5. CLICKUP CARD (Placeholder) */}
         <div
           style={{
             background: "#ffffff",

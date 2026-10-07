@@ -12,6 +12,8 @@ export default function IntegrationsView({
   const [feedback, setFeedback] = useState(null);
   const [brokerTestResult, setBrokerTestResult] = useState(null);
   const [brokerTesting, setBrokerTesting] = useState(false);
+  const [selectedTenantId, setSelectedTenantId] = useState("");
+  const [switchingTenant, setSwitchingTenant] = useState(false);
 
   // Initialize selected client to first client in list if available
   useEffect(() => {
@@ -159,6 +161,45 @@ export default function IntegrationsView({
 
   const xero = clientStatus?.xero || {};
   const isXeroConnected = Boolean(xero.connected);
+
+  // Sync selectedTenantId when clientStatus updates
+  useEffect(() => {
+    if (xero?.tenantId) {
+      setSelectedTenantId(xero.tenantId);
+    }
+  }, [xero?.tenantId]);
+
+  // Handle switching active Xero tenant/organisation
+  const handleSwitchTenant = async () => {
+    if (!selectedTenantId || !selectedClient) return;
+    const target = (xero.availableTenants || []).find(t => t.tenantId === selectedTenantId);
+    const targetName = target ? target.tenantName : selectedTenantId;
+    setSwitchingTenant(true);
+    try {
+      const res = await fetch("/api/integrations/set-tenant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientKey: selectedClient.clientName,
+          masterSheetId: selectedClient.masterSheetId,
+          tool: "xero",
+          tenantId: selectedTenantId,
+          tenantName: targetName
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedback({ type: "success", message: `Active organisation switched to "${targetName}".` });
+        fetchStatus();
+      } else {
+        setFeedback({ type: "error", message: data.error || "Failed to switch organisation." });
+      }
+    } catch (err) {
+      setFeedback({ type: "error", message: err.message });
+    } finally {
+      setSwitchingTenant(false);
+    }
+  };
 
   return (
     <div style={{ padding: "20px 24px", maxWidth: "1200px", margin: "0 auto" }}>
@@ -361,6 +402,52 @@ export default function IntegrationsView({
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span style={{ color: "#64748b" }}>Last Refreshed:</span>
                     <span style={{ color: "#334155" }}>{new Date(xero.lastRefreshedAt).toLocaleString()}</span>
+                  </div>
+                )}
+
+                {/* Multi-organisation switcher if user manages multiple Xero orgs */}
+                {xero.availableTenants && xero.availableTenants.length > 1 && (
+                  <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px dashed #cbd5e1" }}>
+                    <label style={{ display: "block", fontSize: "11px", color: "#475569", fontWeight: "700", marginBottom: "5px" }}>
+                      Linked Organisation ({xero.availableTenants.length} available):
+                    </label>
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      <select
+                        value={selectedTenantId || xero.tenantId}
+                        onChange={(e) => setSelectedTenantId(e.target.value)}
+                        style={{
+                          flex: 1,
+                          padding: "6px 8px",
+                          borderRadius: "6px",
+                          border: "1px solid #cbd5e1",
+                          fontSize: "12px",
+                          background: "#fff",
+                          color: "#0f172a"
+                        }}
+                      >
+                        {xero.availableTenants.map((t) => (
+                          <option key={t.tenantId} value={t.tenantId}>
+                            {t.tenantName}{t.tenantId === xero.tenantId ? " (Active)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={handleSwitchTenant}
+                        disabled={switchingTenant || selectedTenantId === xero.tenantId}
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: "6px",
+                          border: "none",
+                          background: selectedTenantId === xero.tenantId ? "#94a3b8" : "#2563eb",
+                          color: "#fff",
+                          fontSize: "12px",
+                          fontWeight: "600",
+                          cursor: selectedTenantId === xero.tenantId ? "default" : "pointer"
+                        }}
+                      >
+                        {switchingTenant ? "Saving..." : "Switch"}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

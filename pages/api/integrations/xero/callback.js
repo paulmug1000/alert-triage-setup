@@ -86,14 +86,34 @@ export default async function handler(req, res) {
       throw new Error("No Xero organisations found for this account.");
     }
 
-    // Default to the first authorized organization
-    const primaryTenant = tenants[0];
-    const tenantId = primaryTenant.tenantId;
-    const tenantName = primaryTenant.tenantName;
-
     const clientKey = statePayload.clientKey || statePayload.clientName;
     const clientName = statePayload.clientName || clientKey;
     const masterSheetId = statePayload.masterSheetId;
+
+    // Smart Tenant Selection:
+    // 1. Try name matching against clientName
+    const cleanClientName = String(clientName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    let matchedTenant = null;
+    if (cleanClientName && cleanClientName !== "apptest" && cleanClientName !== "client") {
+      matchedTenant = tenants.find(t => {
+        const cleanTenantName = String(t.tenantName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        return cleanTenantName && (cleanTenantName.includes(cleanClientName) || cleanClientName.includes(cleanTenantName));
+      });
+    }
+
+    // 2. If no name match, pick the most recently authorized organisation (newest createdDateUtc)
+    if (!matchedTenant) {
+      const sortedByDate = [...tenants].sort((a, b) => {
+        const timeA = a.createdDateUtc ? new Date(a.createdDateUtc).getTime() : 0;
+        const timeB = b.createdDateUtc ? new Date(b.createdDateUtc).getTime() : 0;
+        return timeB - timeA;
+      });
+      matchedTenant = sortedByDate[0];
+    }
+
+    const primaryTenant = matchedTenant || tenants[0];
+    const tenantId = primaryTenant.tenantId;
+    const tenantName = primaryTenant.tenantName;
 
     // 3. Encrypt and store tokens in Central Vault (Redis)
     await saveIntegrationTokens({
@@ -105,6 +125,11 @@ export default async function handler(req, res) {
       metadata: {
         tenantId,
         tenantName,
+        availableTenants: tenants.map(t => ({
+          tenantId: t.tenantId,
+          tenantName: t.tenantName,
+          createdDateUtc: t.createdDateUtc || ""
+        })),
         tenantCount: tenants.length,
         scope: tokens.scope
       }

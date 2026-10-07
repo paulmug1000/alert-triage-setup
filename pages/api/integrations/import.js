@@ -53,14 +53,13 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "Missing required spreadsheetId parameter." });
   }
 
-  if (!refreshToken) {
-    return res.status(400).json({ success: false, error: "Missing required refreshToken parameter." });
-  }
-
   try {
     const cleanTool = String(tool).trim().toLowerCase();
 
     if (cleanTool === "xero") {
+      if (!refreshToken) {
+        return res.status(400).json({ success: false, error: "Missing required refreshToken parameter for Xero." });
+      }
       console.log(`📥 Integration Import: Importing existing Xero tokens for sheet: ${spreadsheetId}...`);
 
       // 2. Validate token directly with Xero
@@ -120,6 +119,9 @@ export default async function handler(req, res) {
     }
 
     if (cleanTool === "quickbooks" || cleanTool === "qb") {
+      if (!refreshToken) {
+        return res.status(400).json({ success: false, error: "Missing required refreshToken parameter for QuickBooks." });
+      }
       console.log(`📥 Integration Import: Importing existing QuickBooks tokens for sheet: ${spreadsheetId}...`);
 
       const { realmId = "", qbCompanyId = "", clientId = "", clientSecret = "" } = req.body;

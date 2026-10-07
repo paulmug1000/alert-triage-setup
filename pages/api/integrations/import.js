@@ -17,6 +17,7 @@
 
 import { saveIntegrationTokens } from "../../../services/vaultService.js";
 import { refreshXeroTokens, getXeroConnections } from "../../../services/xeroService.js";
+import { refreshQBTokens, getQBCompanyInfo } from "../../../services/quickbooksService.js";
 import { getSessionUser } from "../../../services/authService.js";
 
 export default async function handler(req, res) {
@@ -109,6 +110,61 @@ export default async function handler(req, res) {
         accessToken: refreshed.accessToken,
         expiresIn: refreshed.expiresIn,
         message: `Successfully imported Xero connection into Pulse Central Vault.`
+      });
+    }
+
+    if (cleanTool === "quickbooks" || cleanTool === "qb") {
+      console.log(`📥 Integration Import: Importing existing QuickBooks tokens for sheet: ${spreadsheetId}...`);
+
+      const { realmId = "", qbCompanyId = "", clientId = "", clientSecret = "" } = req.body;
+      const activeRealmId = String(realmId || qbCompanyId || "").trim();
+
+      // Validate and refresh token with Intuit
+      const refreshed = await refreshQBTokens(refreshToken, clientId, clientSecret);
+
+      // Resolve Company Name via QuickBooks API
+      let companyName = "";
+      try {
+        const info = await getQBCompanyInfo(refreshed.accessToken, activeRealmId);
+        if (info?.companyName) {
+          companyName = info.companyName;
+        }
+      } catch (infoErr) {
+        console.warn("⚠️ Note resolving QB company info during import:", infoErr.message);
+      }
+
+      const effectiveClientKey = clientName || companyName || spreadsheetId;
+      const effectiveClientName = clientName || companyName || effectiveClientKey;
+
+      await saveIntegrationTokens({
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        masterSheetId: spreadsheetId,
+        tool: "quickbooks",
+        tokens: {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          expiresIn: refreshed.expiresIn
+        },
+        metadata: {
+          realmId: activeRealmId,
+          companyName: companyName || effectiveClientName,
+          importedAt: new Date().toISOString()
+        }
+      });
+
+      console.log(`✅ Integration Import: Successfully migrated QuickBooks for "${effectiveClientName}" [${spreadsheetId}]. Company: "${companyName || activeRealmId}".`);
+
+      return res.status(200).json({
+        success: true,
+        tool: "quickbooks",
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        realmId: activeRealmId,
+        companyName: companyName || activeRealmId,
+        accessToken: refreshed.accessToken,
+        expiresIn: refreshed.expiresIn,
+        message: `Successfully imported QuickBooks connection into Pulse Central Vault.`
       });
     }
 

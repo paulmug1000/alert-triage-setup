@@ -16,6 +16,7 @@
 
 import { getIntegrationTokens, updateRefreshedTokens } from "../../../services/vaultService.js";
 import { refreshXeroTokens } from "../../../services/xeroService.js";
+import { refreshQBTokens } from "../../../services/quickbooksService.js";
 import { getSessionUser } from "../../../services/authService.js";
 
 export default async function handler(req, res) {
@@ -100,6 +101,36 @@ export default async function handler(req, res) {
           reconnectRequired: true
         });
       }
+    } else if (isExpiringSoon && (tool === "quickbooks" || tool === "qb")) {
+      console.log(`🔄 Token Broker: QuickBooks token for ${record.clientKey} is expiring in ${expiresIn}s. Triggering automatic refresh...`);
+
+      if (!record.tokens.refreshToken) {
+        return res.status(401).json({
+          success: false,
+          error: "No refresh token available to refresh QuickBooks connection. Please re-authorize in Pulse.",
+          reconnectRequired: true
+        });
+      }
+
+      try {
+        const refreshed = await refreshQBTokens(record.tokens.refreshToken);
+        await updateRefreshedTokens({
+          clientKey: record.clientKey,
+          tool: "quickbooks",
+          tokens: refreshed
+        });
+
+        accessToken = refreshed.accessToken;
+        expiresIn = refreshed.expiresIn;
+        console.log(`✅ Token Broker: Successfully refreshed QuickBooks token for ${record.clientKey}. Fresh for ${Math.round(expiresIn / 60)}m.`);
+      } catch (refreshErr) {
+        console.error(`🚨 Token Broker: QuickBooks refresh failed for ${record.clientKey}:`, refreshErr.message);
+        return res.status(401).json({
+          success: false,
+          error: `Failed to refresh QuickBooks connection (${refreshErr.message}). Re-authorization required.`,
+          reconnectRequired: true
+        });
+      }
     }
 
     // 5. Return short-lived access credentials
@@ -109,8 +140,10 @@ export default async function handler(req, res) {
       clientKey: record.clientKey,
       clientName: record.clientName,
       accessToken,
-      tenantId: record.tenantId || "",
-      tenantName: record.tenantName || "",
+      tenantId: record.tenantId || record.realmId || "",
+      tenantName: record.tenantName || record.companyName || "",
+      realmId: record.realmId || record.tenantId || "",
+      companyName: record.companyName || record.tenantName || "",
       expiresIn
     });
 

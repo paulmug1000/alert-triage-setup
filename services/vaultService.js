@@ -164,18 +164,26 @@ export async function saveIntegrationTokens({
 
   const encryptedTokens = encryptPayload(sensitiveBundle, aad);
 
+  const tenantId = metadata.tenantId || metadata.realmId || "";
+  const tenantName = metadata.tenantName || metadata.companyName || "";
+  const realmId = metadata.realmId || metadata.tenantId || "";
+  const companyName = metadata.companyName || metadata.tenantName || "";
+
   // Store non-sensitive metadata alongside ciphertext
   const record = {
     tool: cleanTool,
     clientKey: cleanClient,
     clientName: clientName || cleanClient,
     masterSheetId: masterSheetId || "",
-    tenantId: metadata.tenantId || "",
-    tenantName: metadata.tenantName || "",
+    tenantId,
+    tenantName,
+    realmId,
+    companyName,
     status: "connected",
     scope: tokens.scope || metadata.scope || "",
     expiresAt,
     encryptedTokens,
+    metadata,
     createdAt: metadata.createdAt || new Date(now).toISOString(),
     updatedAt: new Date(now).toISOString(),
     lastRefreshedAt: new Date(now).toISOString(),
@@ -191,7 +199,7 @@ export async function saveIntegrationTokens({
     await redisClient.set(sheetKey, redisKey);
   }
 
-  console.log(`🔒 Vault: Successfully stored encrypted tokens for ${cleanClient} [${cleanTool}]. Tenant: ${metadata.tenantName || metadata.tenantId || "N/A"}`);
+  console.log(`🔒 Vault: Successfully stored encrypted tokens for ${cleanClient} [${cleanTool}]. Tenant/Company: ${companyName || tenantName || realmId || tenantId || "N/A"}`);
 
   return {
     success: true,
@@ -200,6 +208,8 @@ export async function saveIntegrationTokens({
     clientName: record.clientName,
     tenantId: record.tenantId,
     tenantName: record.tenantName,
+    realmId: record.realmId,
+    companyName: record.companyName,
     status: record.status,
     expiresAt: record.expiresAt
   };
@@ -241,11 +251,14 @@ export async function getIntegrationTokens({ clientKey, masterSheetId, tool }) {
       clientKey: record.clientKey,
       clientName: record.clientName,
       masterSheetId: record.masterSheetId,
-      tenantId: record.tenantId,
-      tenantName: record.tenantName,
+      tenantId: record.tenantId || record.realmId || "",
+      tenantName: record.tenantName || record.companyName || "",
+      realmId: record.realmId || record.tenantId || "",
+      companyName: record.companyName || record.tenantName || "",
       status: record.status,
       expiresAt: record.expiresAt,
       tokens: decryptedBundle,
+      metadata: record.metadata || {},
       updatedAt: record.updatedAt,
       lastRefreshedAt: record.lastRefreshedAt
     };
@@ -334,8 +347,10 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
       tool: record.tool,
       clientKey: record.clientKey,
       clientName: record.clientName,
-      tenantId: record.tenantId,
-      tenantName: record.tenantName,
+      tenantId: record.tenantId || record.realmId || "",
+      tenantName: record.tenantName || record.companyName || "",
+      realmId: record.realmId || record.tenantId || "",
+      companyName: record.companyName || record.tenantName || "",
       status: record.status,
       isExpired,
       expiresAt: record.expiresAt,

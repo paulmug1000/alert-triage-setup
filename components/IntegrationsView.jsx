@@ -14,6 +14,9 @@ export default function IntegrationsView({
   const [brokerTesting, setBrokerTesting] = useState(false);
   const [selectedTenantId, setSelectedTenantId] = useState("");
   const [switchingTenant, setSwitchingTenant] = useState(false);
+  const [qbActionLoading, setQbActionLoading] = useState(false);
+  const [qbBrokerTestResult, setQbBrokerTestResult] = useState(null);
+  const [qbBrokerTesting, setQbBrokerTesting] = useState(false);
 
   // Initialize selected client to first client in list if available
   useEffect(() => {
@@ -31,6 +34,7 @@ export default function IntegrationsView({
       const integration = urlParams.get("integration");
       const status = urlParams.get("status");
       const tenant = urlParams.get("tenant");
+      const company = urlParams.get("company");
       const errorMsg = urlParams.get("message") || urlParams.get("error");
       const clientParam = urlParams.get("client");
 
@@ -60,6 +64,27 @@ export default function IntegrationsView({
         const newSearch = urlParams.toString();
         const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
         window.history.replaceState({}, "", newUrl);
+      } else if (integration === "quickbooks") {
+        if (status === "success") {
+          setFeedback({
+            type: "success",
+            message: `Successfully connected QuickBooks for ${clientParam || "client"}${company ? ` (${company})` : ""}!`
+          });
+        } else if (status === "error" || status === "denied") {
+          setFeedback({
+            type: "error",
+            message: errorMsg ? `QuickBooks connection failed: ${errorMsg}` : "QuickBooks connection was cancelled or denied."
+          });
+        }
+        urlParams.delete("integration");
+        urlParams.delete("status");
+        urlParams.delete("company");
+        urlParams.delete("message");
+        urlParams.delete("error");
+        urlParams.delete("client");
+        const newSearch = urlParams.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
+        window.history.replaceState({}, "", newUrl);
       }
     }
   }, []);
@@ -71,6 +96,7 @@ export default function IntegrationsView({
     if (!selectedClientName && !selectedClient?.masterSheetId) return;
     setStatusLoading(true);
     setBrokerTestResult(null);
+    setQbBrokerTestResult(null);
     try {
       const q = new URLSearchParams();
       if (selectedClientName) q.set("clientKey", selectedClientName);
@@ -159,8 +185,74 @@ export default function IntegrationsView({
     }
   };
 
+  // Initiate QuickBooks OAuth flow
+  const handleConnectQB = () => {
+    if (!selectedClientName) {
+      alert("Please select a client first.");
+      return;
+    }
+    const params = new URLSearchParams({
+      clientKey: selectedClientName,
+      clientName: selectedClientName,
+      masterSheetId: selectedClient?.masterSheetId || "",
+      clientSheetId: selectedClient?.clientSheetId || "",
+      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(selectedClientName)}`
+    });
+    window.location.href = `/api/integrations/quickbooks/connect?${params.toString()}`;
+  };
+
+  // Disconnect & revoke QuickBooks
+  const handleDisconnectQB = async () => {
+    if (!confirm(`Are you sure you want to disconnect QuickBooks for ${selectedClientName}? Tokens will be revoked with Intuit and purged from the Vault.`)) {
+      return;
+    }
+    setQbActionLoading(true);
+    try {
+      const res = await fetch("/api/integrations/quickbooks/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientKey: selectedClientName,
+          masterSheetId: selectedClient?.masterSheetId
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedback({ type: "info", message: `QuickBooks disconnected and revoked for ${selectedClientName}.` });
+        await fetchStatus();
+      } else {
+        setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+      }
+    } catch (err) {
+      setFeedback({ type: "error", message: err.message });
+    } finally {
+      setQbActionLoading(false);
+    }
+  };
+
+  // Test live QuickBooks token broker
+  const handleTestQBTokenBroker = async () => {
+    if (!selectedClient?.masterSheetId) {
+      alert("No Master Sheet ID found for this client.");
+      return;
+    }
+    setQbBrokerTesting(true);
+    setQbBrokerTestResult(null);
+    try {
+      const res = await fetch(`/api/integrations/token?tool=quickbooks&spreadsheetId=${encodeURIComponent(selectedClient.masterSheetId)}`);
+      const data = await res.json();
+      setQbBrokerTestResult(data);
+    } catch (err) {
+      setQbBrokerTestResult({ success: false, error: err.message });
+    } finally {
+      setQbBrokerTesting(false);
+    }
+  };
+
   const xero = clientStatus?.xero || {};
   const isXeroConnected = Boolean(xero.connected);
+  const qb = clientStatus?.quickbooks || {};
+  const isQBConnected = Boolean(qb.connected);
 
   // Sync selectedTenantId when clientStatus updates
   useEffect(() => {
@@ -538,14 +630,13 @@ export default function IntegrationsView({
           </div>
         </div>
 
-        {/* 2. QUICKBOOKS ONLINE CARD (Placeholder) */}
+        {/* 2. QUICKBOOKS ONLINE CARD */}
         <div
           style={{
             background: "#ffffff",
             borderRadius: "16px",
             border: "1px solid #e2e8f0",
             padding: "22px",
-            opacity: 0.75,
             boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
             display: "flex",
             flexDirection: "column",
@@ -563,13 +654,132 @@ export default function IntegrationsView({
                   <span style={{ fontSize: "12px", color: "#64748b" }}>Invoices, Outgoings & Expenses</span>
                 </div>
               </div>
-              <span style={{ fontSize: "11px", fontWeight: "700", padding: "3px 10px", borderRadius: "20px", background: "#f1f5f9", color: "#64748b" }}>
-                Phase 2
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "3px 10px",
+                  borderRadius: "20px",
+                  background: isQBConnected ? "#dcfce7" : "#f1f5f9",
+                  color: isQBConnected ? "#15803d" : "#64748b"
+                }}
+              >
+                {statusLoading ? "Checking..." : isQBConnected ? "Connected" : "Not Connected"}
               </span>
             </div>
-            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.5", margin: 0 }}>
-              Will use the same AES-256-GCM Vault and Token Broker pattern once Xero pilot validation is complete.
+
+            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.5", margin: "0 0 16px 0" }}>
+              Connects this client&apos;s QuickBooks account via OAuth 2.0 with PKCE. Tokens are stored encrypted (AES-256-GCM) in the Redis Vault.
             </p>
+
+            {/* Connection Details if Connected */}
+            {isQBConnected && (
+              <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px 14px", border: "1px solid #e2e8f0", marginBottom: "16px", fontSize: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Company Name:</span>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{qb.companyName || qb.tenantName || "N/A"}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Realm ID:</span>
+                  <span style={{ fontFamily: "monospace", color: "#334155" }}>{qb.realmId || qb.tenantId || "N/A"}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Token Status:</span>
+                  <span style={{ fontWeight: "600", color: qb.isExpired ? "#b91c1c" : "#15803d" }}>
+                    {qb.isExpired ? "Expired (Auto-refreshes on query)" : "Active"}
+                  </span>
+                </div>
+                {qb.lastRefreshedAt && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#64748b" }}>Last Refreshed:</span>
+                    <span style={{ color: "#334155" }}>{new Date(qb.lastRefreshedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
+              {isQBConnected ? (
+                <>
+                  <button
+                    onClick={handleDisconnectQB}
+                    disabled={qbActionLoading}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "1px solid #fecaca",
+                      background: "#fff",
+                      color: "#dc2626",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {qbActionLoading ? "Disconnecting..." : "Disconnect & Revoke"}
+                  </button>
+                  <button
+                    onClick={handleTestQBTokenBroker}
+                    disabled={qbBrokerTesting}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: "#0f172a",
+                      color: "#fff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {qbBrokerTesting ? "Testing..." : "⚡ Test Token Broker"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectQB}
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "#2ca01c",
+                    color: "#ffffff",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
+                  }}
+                >
+                  Connect QuickBooks for {selectedClientName || "Client"}
+                </button>
+              )}
+            </div>
+
+            {/* Token Broker Live Test Output */}
+            {qbBrokerTestResult && (
+              <div
+                style={{
+                  marginTop: "14px",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  background: qbBrokerTestResult.success ? "#f0fdf4" : "#fef2f2",
+                  border: `1px solid ${qbBrokerTestResult.success ? "#bbf7d0" : "#fecaca"}`,
+                  color: qbBrokerTestResult.success ? "#166534" : "#991b1b"
+                }}
+              >
+                <div style={{ fontWeight: "700", marginBottom: "4px" }}>
+                  {qbBrokerTestResult.success ? "✓ Token Broker Response (200 OK):" : "✕ Token Broker Error:"}
+                </div>
+                <div>{JSON.stringify(qbBrokerTestResult, null, 2)}</div>
+              </div>
+            )}
           </div>
         </div>
 

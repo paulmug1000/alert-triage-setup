@@ -297,7 +297,8 @@ export default function IntegrationsView({
   };
 
   // Initiate OAuth flow
-  const handleConnectXero = () => {
+  // Initiate OAuth flow (advisor or dedicated)
+  const handleConnectXero = (mode = "advisor") => {
     if (!selectedClientName) {
       alert("Please select a client first.");
       return;
@@ -307,6 +308,7 @@ export default function IntegrationsView({
       clientName: selectedClientName,
       masterSheetId: selectedClient?.masterSheetId || "",
       clientSheetId: selectedClient?.clientSheetId || "",
+      mode,
       redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(selectedClientName)}`
     });
     window.location.href = `/api/integrations/xero/connect?${params.toString()}`;
@@ -797,10 +799,10 @@ export default function IntegrationsView({
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
         <div>
           <h1 style={{ fontSize: "22px", fontWeight: "700", color: "#0f172a", margin: "0 0 4px 0", display: "flex", alignItems: "center", gap: "8px" }}>
-            <span>🔌</span> Third-Party Integrations Hub
+            Third-party integrations
           </h1>
           <p style={{ fontSize: "13px", color: "#64748b", margin: 0 }}>
-            Central OAuth Vault & Token Broker Management. Test connections and authorise external accounting & CRM platforms.
+            Central OAuth vault & token broker management. Test connections and authorise external accounting & CRM platforms.
           </p>
         </div>
 
@@ -980,7 +982,7 @@ export default function IntegrationsView({
               </span>
             </div>
             <p style={{ margin: 0, fontSize: "12px", color: "#64748b", lineHeight: "1.4" }}>
-              Your advisor account powers all client organisations in Pulse through a single consolidated OAuth grant, ensuring tokens refresh smoothly without cross-client session conflicts.
+              Your advisor account powers multiple client organisations in Pulse through a single consolidated OAuth grant, ensuring tokens refresh smoothly without cross-client session conflicts.
             </p>
             <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "#0284c7" }}>
               💡 <strong>Note:</strong> Xero authorizes one organisation at a time from their consent dropdown. As you add each client organisation, Pulse accumulates them under this central account without replacing previous ones.
@@ -1075,12 +1077,12 @@ export default function IntegrationsView({
                 {statusLoading
                   ? "Checking..."
                   : xero.reconnectRequired
-                  ? "Re-auth Needed"
-                  : isXeroConnected
-                  ? (xero.isSharedGrant ? "Connected (Advisor)" : "Connected")
-                  : sharedXero?.connected
-                  ? "Not in Advisor Grant"
-                  : "Not Connected"}
+                    ? "Re-auth Needed"
+                    : isXeroConnected
+                      ? (xero.isSharedGrant ? "Connected (Advisor)" : "Connected")
+                      : sharedXero?.connected
+                        ? "Not in Advisor Grant"
+                        : "Not Connected"}
               </span>
             </div>
 
@@ -1249,27 +1251,48 @@ export default function IntegrationsView({
                   </button>
                 </>
               ) : (
-                <button
-                  onClick={handleConnectXero}
-                  style={{
-                    width: "100%",
-                    padding: "10px 16px",
-                    borderRadius: "8px",
-                    border: "none",
-                    background: xero.reconnectRequired ? "#dc2626" : sharedXero?.connected ? "#0284c7" : "#023f98",
-                    color: "#ffffff",
-                    fontSize: "13px",
-                    fontWeight: "600",
-                    cursor: "pointer",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
-                  }}
-                >
-                  {xero.reconnectRequired
-                    ? `Re-connect Xero for ${selectedClientName || "Client"}`
-                    : sharedXero?.connected
-                    ? `🔗 Add ${selectedClientName || "Client"} to Central Advisor Account`
-                    : `Connect Xero for ${selectedClientName || "Client"}`}
-                </button>
+                <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <button
+                    onClick={() => handleConnectXero("advisor")}
+                    style={{
+                      width: "100%",
+                      padding: "10px 16px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: xero.reconnectRequired ? "#dc2626" : sharedXero?.connected ? "#0284c7" : "#023f98",
+                      color: "#ffffff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
+                    }}
+                  >
+                    {xero.reconnectRequired
+                      ? `Re-connect Xero for ${selectedClientName || "Client"}`
+                      : sharedXero?.connected
+                        ? `🔗 Add ${selectedClientName || "Client"} to Central Advisor Account`
+                        : `Connect Xero for ${selectedClientName || "Client"}`}
+                  </button>
+
+                  {sharedXero?.connected && !xero.reconnectRequired && (
+                    <button
+                      onClick={() => handleConnectXero("dedicated")}
+                      type="button"
+                      style={{
+                        background: "none",
+                        border: "none",
+                        padding: "4px 8px",
+                        fontSize: "11px",
+                        color: "#64748b",
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                        textAlign: "center"
+                      }}
+                    >
+                      Or connect using client&apos;s own dedicated Xero account
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 

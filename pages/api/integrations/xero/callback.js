@@ -95,15 +95,7 @@ export default async function handler(req, res) {
     const clientKey = statePayload.clientKey || statePayload.clientName;
     const clientName = statePayload.clientName || clientKey;
     const masterSheetId = statePayload.masterSheetId;
-
-    // 3. Store tokens in the Central Shared Advisor Xero Grant
-    // Because the advisor user connects with access to multiple client organisations,
-    // this single grant powers all authorized organisations without token rotation conflicts.
-    await saveSharedXeroGrant({
-      tokens,
-      availableTenants: tenants,
-      connectedBy: clientName
-    });
+    const isDedicated = statePayload.mode === "dedicated" || (!statePayload.mode && (statePayload.redirectBack?.startsWith("/pulse") || statePayload.redirectBack?.startsWith("/portal")));
 
     // Smart Tenant Selection for the initiating client:
     let matchedTenant = matchTenantToClient(clientName, tenants);
@@ -120,66 +112,101 @@ export default async function handler(req, res) {
     const tenantId = primaryTenant.tenantId;
     const tenantName = primaryTenant.tenantName;
 
-    // Link the initiating client
-    await linkClientToSharedXero({
-      clientKey,
-      clientName,
-      masterSheetId,
-      tenantId,
-      tenantName,
-      availableTenants: tenants
-    });
+    if (isDedicated) {
+      // =========================================================================
+      // DEDICATED CLIENT CONNECTION FLOW
+      // =========================================================================
+      // The client user connected directly via the client setup gate, or an admin
+      // explicitly configured a dedicated account. Store credentials strictly in
+      // this client's isolated Vault record without touching the shared grant.
+      await saveIntegrationTokens({
+        clientKey,
+        clientName,
+        masterSheetId,
+        tool: "xero",
+        tokens,
+        metadata: {
+          isSharedGrant: false,
+          tenantId,
+          tenantName,
+          availableTenants: tenants
+        }
+      });
+      console.log(`🔒 Vault: Successfully stored DEDICATED Xero connection for client "${clientName}" (Org: ${tenantName}).`);
 
-    // 4. Auto-link ALL other ecosystem clients matching the authorized Xero organisations
-    try {
-      const sheets = await getSheetsClient();
-      const acRes = await withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: DEFAULT_AC_SHEET_ID,
-          range: "AutoUpdates!A2:N100"
-        })
-      );
-      const rows = acRes.data.values || [];
-      for (const r of rows) {
-        const cName = String(r[0] || "").trim();
-        const mUrl = String(r[12] || "").trim();
-        if (!cName || cName.toLowerCase() === "client" || cName.toLowerCase() === "client name" || !mUrl) continue;
-        const match = mUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
-        const mSheetId = match ? match[1] : "";
+    } else {
+      // =========================================================================
+      // CENTRAL ADVISOR SHARED CONNECTION FLOW
+      // =========================================================================
+      // The advisor connected via PMA. Store tokens in the Central Shared Grant
+      // and link the initiating client and other matching ecosystem clients.
+      await saveSharedXeroGrant({
+        tokens,
+        availableTenants: tenants,
+        connectedBy: clientName
+      });
 
-        // Check if this ecosystem client matches one of the authorized tenants
-        const clientTenant = matchTenantToClient(cName, tenants);
-        if (clientTenant) {
-          console.log(`🔗 Auto-linking client "${cName}" to Xero Org "${clientTenant.tenantName}" (${clientTenant.tenantId})...`);
-          await linkClientToSharedXero({
-            clientKey: cName,
-            clientName: cName,
-            masterSheetId: mSheetId,
-            tenantId: clientTenant.tenantId,
-            tenantName: clientTenant.tenantName,
-            availableTenants: tenants
-          });
+      // Link the initiating client
+      await linkClientToSharedXero({
+        clientKey,
+        clientName,
+        masterSheetId,
+        tenantId,
+        tenantName,
+        availableTenants: tenants
+      });
 
-          // Ensure KeyInfo!X2 is set to this tenant ID in the Master Sheet
-          if (mSheetId) {
-            try {
-              await withRetry(() =>
-                sheets.spreadsheets.values.update({
-                  spreadsheetId: mSheetId,
-                  range: "KeyInfo!X2",
-                  valueInputOption: "USER_ENTERED",
-                  requestBody: { values: [[clientTenant.tenantId]] }
-                })
-              );
-              console.log(`✅ Updated KeyInfo!X2 for "${cName}" to ${clientTenant.tenantId}.`);
-            } catch (errX2) {
-              console.warn(`Note updating KeyInfo!X2 for ${cName}:`, errX2.message);
+      // Auto-link ALL other ecosystem clients matching the authorized Xero organisations
+      try {
+        const sheets = await getSheetsClient();
+        const acRes = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: DEFAULT_AC_SHEET_ID,
+            range: "AutoUpdates!A2:N100"
+          })
+        );
+        const rows = acRes.data.values || [];
+        for (const r of rows) {
+          const cName = String(r[0] || "").trim();
+          const mUrl = String(r[12] || "").trim();
+          if (!cName || cName.toLowerCase() === "client" || cName.toLowerCase() === "client name" || !mUrl) continue;
+          const match = mUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+          const mSheetId = match ? match[1] : "";
+
+          // Check if this ecosystem client matches one of the authorized tenants
+          const clientTenant = matchTenantToClient(cName, tenants);
+          if (clientTenant) {
+            console.log(`🔗 Auto-linking client "${cName}" to Xero Org "${clientTenant.tenantName}" (${clientTenant.tenantId})...`);
+            await linkClientToSharedXero({
+              clientKey: cName,
+              clientName: cName,
+              masterSheetId: mSheetId,
+              tenantId: clientTenant.tenantId,
+              tenantName: clientTenant.tenantName,
+              availableTenants: tenants
+            });
+
+            // Ensure KeyInfo!X2 is set to this tenant ID in the Master Sheet
+            if (mSheetId) {
+              try {
+                await withRetry(() =>
+                  sheets.spreadsheets.values.update({
+                    spreadsheetId: mSheetId,
+                    range: "KeyInfo!X2",
+                    valueInputOption: "USER_ENTERED",
+                    requestBody: { values: [[clientTenant.tenantId]] }
+                  })
+                );
+                console.log(`✅ Updated KeyInfo!X2 for "${cName}" to ${clientTenant.tenantId}.`);
+              } catch (errX2) {
+                console.warn(`Note updating KeyInfo!X2 for ${cName}:`, errX2.message);
+              }
             }
           }
         }
+      } catch (autoLinkErr) {
+        console.warn("⚠️ Auto-linking ecosystem clients notice:", autoLinkErr.message);
       }
-    } catch (autoLinkErr) {
-      console.warn("⚠️ Auto-linking ecosystem clients notice:", autoLinkErr.message);
     }
 
     // 5. Update KeyInfo!X2 and AutoLog for initiating client if needed
@@ -216,7 +243,18 @@ export default async function handler(req, res) {
 
     const returnUrl = statePayload.redirectBack || "/portal";
     const separator = returnUrl.includes("?") ? "&" : "?";
-    return res.redirect(`${returnUrl}${separator}integration=xero&status=success&tenant=${encodeURIComponent(tenantName)}&shared=true&linkedCount=${tenants.length}`);
+    const redirectParams = new URLSearchParams({
+      integration: "xero",
+      status: "success",
+      tenant: tenantName || ""
+    });
+    if (isDedicated) {
+      redirectParams.set("mode", "dedicated");
+    } else {
+      redirectParams.set("shared", "true");
+      redirectParams.set("linkedCount", String(tenants.length));
+    }
+    return res.redirect(`${returnUrl}${separator}${redirectParams.toString()}`);
 
   } catch (err) {
     console.error("Xero OAuth callback processing error:", err);

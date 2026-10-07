@@ -77,7 +77,7 @@ export default function SetupHoldingGate({
 
   const handleConnect = (tool) => {
     const provider = String(tool).toLowerCase();
-    const connectUrl = `/api/integrations/${encodeURIComponent(provider)}/connect?clientName=${encodeURIComponent(clientName)}&redirectBack=${encodeURIComponent("/pulse")}`;
+    const connectUrl = `/api/integrations/${encodeURIComponent(provider)}/connect?clientName=${encodeURIComponent(clientName)}&clientKey=${encodeURIComponent(clientName)}&mode=dedicated&redirectBack=${encodeURIComponent("/pulse")}`;
     window.location.href = connectUrl;
   };
 

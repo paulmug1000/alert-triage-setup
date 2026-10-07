@@ -16,11 +16,18 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { clientKey, clientName, masterSheetId, clientSheetId, redirectBack } = req.method === "POST" ? req.body : req.query;
+  const { clientKey, clientName, masterSheetId, clientSheetId, redirectBack, mode } = req.method === "POST" ? req.body : req.query;
 
   if (!clientKey && !masterSheetId && !clientName) {
     return res.status(400).json({ error: "Missing required clientKey, clientName, or masterSheetId parameter." });
   }
+
+  // Determine connection mode:
+  // - "advisor": powers Central Advisor Shared Grant (accumulates orgs)
+  // - "dedicated": isolated per-client dedicated grant (e.g. client self-service in setup)
+  const isExplicitAdvisor = mode === "advisor" || clientKey === "advisor";
+  const isClientPortal = !mode && (redirectBack?.startsWith("/pulse") || redirectBack?.startsWith("/portal"));
+  const effectiveMode = isExplicitAdvisor ? "advisor" : (isClientPortal ? "dedicated" : (mode || "advisor"));
 
   try {
     // Dynamic Host Resolution
@@ -43,7 +50,8 @@ export default async function handler(req, res) {
       clientName: clientName || clientKey,
       masterSheetId: masterSheetId || "",
       clientSheetId: clientSheetId || "",
-      redirectBack: redirectBack || "/portal"
+      redirectBack: redirectBack || "/portal",
+      mode: effectiveMode
     };
 
     const stateToken = Buffer.from(JSON.stringify(statePayload)).toString("base64url");

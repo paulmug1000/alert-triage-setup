@@ -19,6 +19,9 @@ import { refreshXeroTokens } from "../../../services/xeroService.js";
 import { refreshQBTokens } from "../../../services/quickbooksService.js";
 import { refreshMondayTokens } from "../../../services/mondayService.js";
 import { refreshPipedriveTokens } from "../../../services/pipedriveService.js";
+import { refreshCapsuleTokens } from "../../../services/capsuleService.js";
+import { refreshCloseTokens } from "../../../services/closeService.js";
+import { refreshHubSpotTokens } from "../../../services/hubspotService.js";
 import { getSessionUser } from "../../../services/authService.js";
 
 export default async function handler(req, res) {
@@ -163,6 +166,54 @@ export default async function handler(req, res) {
           console.log(`✅ Token Broker: Successfully refreshed Monday.com token for ${record.clientKey}.`);
         } catch (refreshErr) {
           console.error(`🚨 Token Broker: Monday refresh failed for ${record.clientKey}:`, refreshErr.message);
+        }
+      }
+    } else if (isExpiringSoon && tool === "capsule") {
+      if (record.tokens.refreshToken) {
+        try {
+          const refreshed = await refreshCapsuleTokens(record.tokens.refreshToken);
+          await updateRefreshedTokens({
+            clientKey: record.clientKey,
+            tool: "capsule",
+            tokens: refreshed
+          });
+          accessToken = refreshed.accessToken;
+          expiresIn = refreshed.expiresIn;
+          console.log(`✅ Token Broker: Successfully refreshed Capsule CRM token for ${record.clientKey}.`);
+        } catch (refreshErr) {
+          console.error(`🚨 Token Broker: Capsule refresh failed for ${record.clientKey}:`, refreshErr.message);
+        }
+      }
+    } else if (isExpiringSoon && tool === "close") {
+      if (record.tokens.refreshToken) {
+        try {
+          const refreshed = await refreshCloseTokens(record.tokens.refreshToken);
+          await updateRefreshedTokens({
+            clientKey: record.clientKey,
+            tool: "close",
+            tokens: refreshed
+          });
+          accessToken = refreshed.accessToken;
+          expiresIn = refreshed.expiresIn;
+          console.log(`✅ Token Broker: Successfully refreshed Close CRM token for ${record.clientKey}.`);
+        } catch (refreshErr) {
+          console.error(`🚨 Token Broker: Close refresh failed for ${record.clientKey}:`, refreshErr.message);
+        }
+      }
+    } else if (isExpiringSoon && tool === "hubspot") {
+      if (record.tokens.refreshToken) {
+        try {
+          const refreshed = await refreshHubSpotTokens(record.tokens.refreshToken);
+          await updateRefreshedTokens({
+            clientKey: record.clientKey,
+            tool: "hubspot",
+            tokens: refreshed
+          });
+          accessToken = refreshed.accessToken;
+          expiresIn = refreshed.expiresIn;
+          console.log(`✅ Token Broker: Successfully refreshed HubSpot token for ${record.clientKey}.`);
+        } catch (refreshErr) {
+          console.error(`🚨 Token Broker: HubSpot refresh failed for ${record.clientKey}:`, refreshErr.message);
         }
       }
     }

@@ -26,6 +26,22 @@ export default function IntegrationsView({
   const [pipedriveBrokerTestResult, setPipedriveBrokerTestResult] = useState(null);
   const [pipedriveBrokerTesting, setPipedriveBrokerTesting] = useState(false);
 
+  const [clickupActionLoading, setClickupActionLoading] = useState(false);
+  const [clickupBrokerTestResult, setClickupBrokerTestResult] = useState(null);
+  const [clickupBrokerTesting, setClickupBrokerTesting] = useState(false);
+
+  const [capsuleActionLoading, setCapsuleActionLoading] = useState(false);
+  const [capsuleBrokerTestResult, setCapsuleBrokerTestResult] = useState(null);
+  const [capsuleBrokerTesting, setCapsuleBrokerTesting] = useState(false);
+
+  const [closeActionLoading, setCloseActionLoading] = useState(false);
+  const [closeBrokerTestResult, setCloseBrokerTestResult] = useState(null);
+  const [closeBrokerTesting, setCloseBrokerTesting] = useState(false);
+
+  const [hubspotActionLoading, setHubspotActionLoading] = useState(false);
+  const [hubspotBrokerTestResult, setHubspotBrokerTestResult] = useState(null);
+  const [hubspotBrokerTesting, setHubspotBrokerTesting] = useState(false);
+
   // Initialize selected client to first client in list if available
   useEffect(() => {
     if (allOutgoingsClients.length > 0 && !selectedClientName) {
@@ -44,6 +60,10 @@ export default function IntegrationsView({
       const tenant = urlParams.get("tenant");
       const company = urlParams.get("company");
       const account = urlParams.get("account");
+      const workspace = urlParams.get("workspace");
+      const site = urlParams.get("site");
+      const org = urlParams.get("org");
+      const portal = urlParams.get("portal");
       const errorMsg = urlParams.get("message") || urlParams.get("error");
       const clientParam = urlParams.get("client");
 
@@ -63,7 +83,6 @@ export default function IntegrationsView({
             message: errorMsg ? `Xero connection failed: ${errorMsg}` : "Xero connection was cancelled or denied."
           });
         }
-        // Clean URL params cleanly
         urlParams.delete("integration");
         urlParams.delete("status");
         urlParams.delete("tenant");
@@ -136,6 +155,90 @@ export default function IntegrationsView({
         const newSearch = urlParams.toString();
         const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
         window.history.replaceState({}, "", newUrl);
+      } else if (integration === "clickup") {
+        if (status === "success") {
+          setFeedback({
+            type: "success",
+            message: `Successfully connected ClickUp for ${clientParam || "client"}${workspace ? ` (${workspace})` : ""}!`
+          });
+        } else if (status === "error" || status === "denied") {
+          setFeedback({
+            type: "error",
+            message: errorMsg ? `ClickUp connection failed: ${errorMsg}` : "ClickUp connection was cancelled or denied."
+          });
+        }
+        urlParams.delete("integration");
+        urlParams.delete("status");
+        urlParams.delete("workspace");
+        urlParams.delete("message");
+        urlParams.delete("error");
+        urlParams.delete("client");
+        const newSearch = urlParams.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
+        window.history.replaceState({}, "", newUrl);
+      } else if (integration === "capsule") {
+        if (status === "success") {
+          setFeedback({
+            type: "success",
+            message: `Successfully connected Capsule CRM for ${clientParam || "client"}${site ? ` (${site})` : ""}!`
+          });
+        } else if (status === "error" || status === "denied") {
+          setFeedback({
+            type: "error",
+            message: errorMsg ? `Capsule connection failed: ${errorMsg}` : "Capsule connection was cancelled or denied."
+          });
+        }
+        urlParams.delete("integration");
+        urlParams.delete("status");
+        urlParams.delete("site");
+        urlParams.delete("message");
+        urlParams.delete("error");
+        urlParams.delete("client");
+        const newSearch = urlParams.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
+        window.history.replaceState({}, "", newUrl);
+      } else if (integration === "close") {
+        if (status === "success") {
+          setFeedback({
+            type: "success",
+            message: `Successfully connected Close CRM for ${clientParam || "client"}${org ? ` (${org})` : ""}!`
+          });
+        } else if (status === "error" || status === "denied") {
+          setFeedback({
+            type: "error",
+            message: errorMsg ? `Close connection failed: ${errorMsg}` : "Close connection was cancelled or denied."
+          });
+        }
+        urlParams.delete("integration");
+        urlParams.delete("status");
+        urlParams.delete("org");
+        urlParams.delete("message");
+        urlParams.delete("error");
+        urlParams.delete("client");
+        const newSearch = urlParams.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
+        window.history.replaceState({}, "", newUrl);
+      } else if (integration === "hubspot") {
+        if (status === "success") {
+          setFeedback({
+            type: "success",
+            message: `Successfully connected HubSpot for ${clientParam || "client"}${portal ? ` (${portal})` : ""}!`
+          });
+        } else if (status === "error" || status === "denied") {
+          setFeedback({
+            type: "error",
+            message: errorMsg ? `HubSpot connection failed: ${errorMsg}` : "HubSpot connection was cancelled or denied."
+          });
+        }
+        urlParams.delete("integration");
+        urlParams.delete("status");
+        urlParams.delete("portal");
+        urlParams.delete("message");
+        urlParams.delete("error");
+        urlParams.delete("client");
+        const newSearch = urlParams.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "");
+        window.history.replaceState({}, "", newUrl);
       }
     }
   }, []);
@@ -150,6 +253,10 @@ export default function IntegrationsView({
     setQbBrokerTestResult(null);
     setMondayBrokerTestResult(null);
     setPipedriveBrokerTestResult(null);
+    setClickupBrokerTestResult(null);
+    setCapsuleBrokerTestResult(null);
+    setCloseBrokerTestResult(null);
+    setHubspotBrokerTestResult(null);
     try {
       const q = new URLSearchParams();
       if (selectedClientName) q.set("clientKey", selectedClientName);
@@ -430,6 +537,178 @@ export default function IntegrationsView({
     }
   };
 
+  // ClickUp
+  const handleConnectClickUp = () => {
+    if (!selectedClientName) return alert("Please select a client first.");
+    const params = new URLSearchParams({
+      clientKey: selectedClientName,
+      clientName: selectedClientName,
+      masterSheetId: selectedClient?.masterSheetId || "",
+      clientSheetId: selectedClient?.clientSheetId || "",
+      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(selectedClientName)}`
+    });
+    window.location.href = `/api/integrations/clickup/connect?${params.toString()}`;
+  };
+
+  const handleDisconnectClickUp = async () => {
+    if (!confirm(`Are you sure you want to disconnect ClickUp for ${selectedClientName}? Tokens will be purged from the Vault.`)) return;
+    setClickupActionLoading(true);
+    try {
+      const res = await fetch("/api/integrations/clickup/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientKey: selectedClientName, masterSheetId: selectedClient?.masterSheetId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedback({ type: "info", message: `ClickUp disconnected for ${selectedClientName}.` });
+        await fetchStatus();
+      } else setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+    } catch (err) { setFeedback({ type: "error", message: err.message }); }
+    finally { setClickupActionLoading(false); }
+  };
+
+  const handleTestClickUpTokenBroker = async () => {
+    if (!selectedClient?.masterSheetId) return alert("No Master Sheet ID found for this client.");
+    setClickupBrokerTesting(true);
+    setClickupBrokerTestResult(null);
+    try {
+      const res = await fetch(`/api/integrations/token?tool=clickup&spreadsheetId=${encodeURIComponent(selectedClient.masterSheetId)}`);
+      const data = await res.json();
+      setClickupBrokerTestResult(data);
+    } catch (err) { setClickupBrokerTestResult({ success: false, error: err.message }); }
+    finally { setClickupBrokerTesting(false); }
+  };
+
+  // Capsule CRM
+  const handleConnectCapsule = () => {
+    if (!selectedClientName) return alert("Please select a client first.");
+    const params = new URLSearchParams({
+      clientKey: selectedClientName,
+      clientName: selectedClientName,
+      masterSheetId: selectedClient?.masterSheetId || "",
+      clientSheetId: selectedClient?.clientSheetId || "",
+      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(selectedClientName)}`
+    });
+    window.location.href = `/api/integrations/capsule/connect?${params.toString()}`;
+  };
+
+  const handleDisconnectCapsule = async () => {
+    if (!confirm(`Are you sure you want to disconnect Capsule CRM for ${selectedClientName}? Tokens will be purged from the Vault.`)) return;
+    setCapsuleActionLoading(true);
+    try {
+      const res = await fetch("/api/integrations/capsule/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientKey: selectedClientName, masterSheetId: selectedClient?.masterSheetId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedback({ type: "info", message: `Capsule CRM disconnected for ${selectedClientName}.` });
+        await fetchStatus();
+      } else setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+    } catch (err) { setFeedback({ type: "error", message: err.message }); }
+    finally { setCapsuleActionLoading(false); }
+  };
+
+  const handleTestCapsuleTokenBroker = async () => {
+    if (!selectedClient?.masterSheetId) return alert("No Master Sheet ID found for this client.");
+    setCapsuleBrokerTesting(true);
+    setCapsuleBrokerTestResult(null);
+    try {
+      const res = await fetch(`/api/integrations/token?tool=capsule&spreadsheetId=${encodeURIComponent(selectedClient.masterSheetId)}`);
+      const data = await res.json();
+      setCapsuleBrokerTestResult(data);
+    } catch (err) { setCapsuleBrokerTestResult({ success: false, error: err.message }); }
+    finally { setCapsuleBrokerTesting(false); }
+  };
+
+  // Close CRM
+  const handleConnectClose = () => {
+    if (!selectedClientName) return alert("Please select a client first.");
+    const params = new URLSearchParams({
+      clientKey: selectedClientName,
+      clientName: selectedClientName,
+      masterSheetId: selectedClient?.masterSheetId || "",
+      clientSheetId: selectedClient?.clientSheetId || "",
+      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(selectedClientName)}`
+    });
+    window.location.href = `/api/integrations/close/connect?${params.toString()}`;
+  };
+
+  const handleDisconnectClose = async () => {
+    if (!confirm(`Are you sure you want to disconnect Close CRM for ${selectedClientName}? Tokens will be purged from the Vault.`)) return;
+    setCloseActionLoading(true);
+    try {
+      const res = await fetch("/api/integrations/close/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientKey: selectedClientName, masterSheetId: selectedClient?.masterSheetId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedback({ type: "info", message: `Close CRM disconnected for ${selectedClientName}.` });
+        await fetchStatus();
+      } else setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+    } catch (err) { setFeedback({ type: "error", message: err.message }); }
+    finally { setCloseActionLoading(false); }
+  };
+
+  const handleTestCloseTokenBroker = async () => {
+    if (!selectedClient?.masterSheetId) return alert("No Master Sheet ID found for this client.");
+    setCloseBrokerTesting(true);
+    setCloseBrokerTestResult(null);
+    try {
+      const res = await fetch(`/api/integrations/token?tool=close&spreadsheetId=${encodeURIComponent(selectedClient.masterSheetId)}`);
+      const data = await res.json();
+      setCloseBrokerTestResult(data);
+    } catch (err) { setCloseBrokerTestResult({ success: false, error: err.message }); }
+    finally { setCloseBrokerTesting(false); }
+  };
+
+  // HubSpot CRM
+  const handleConnectHubSpot = () => {
+    if (!selectedClientName) return alert("Please select a client first.");
+    const params = new URLSearchParams({
+      clientKey: selectedClientName,
+      clientName: selectedClientName,
+      masterSheetId: selectedClient?.masterSheetId || "",
+      clientSheetId: selectedClient?.clientSheetId || "",
+      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(selectedClientName)}`
+    });
+    window.location.href = `/api/integrations/hubspot/connect?${params.toString()}`;
+  };
+
+  const handleDisconnectHubSpot = async () => {
+    if (!confirm(`Are you sure you want to disconnect HubSpot for ${selectedClientName}? Tokens will be purged from the Vault.`)) return;
+    setHubspotActionLoading(true);
+    try {
+      const res = await fetch("/api/integrations/hubspot/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientKey: selectedClientName, masterSheetId: selectedClient?.masterSheetId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedback({ type: "info", message: `HubSpot disconnected for ${selectedClientName}.` });
+        await fetchStatus();
+      } else setFeedback({ type: "error", message: data.error || "Failed to disconnect." });
+    } catch (err) { setFeedback({ type: "error", message: err.message }); }
+    finally { setHubspotActionLoading(false); }
+  };
+
+  const handleTestHubSpotTokenBroker = async () => {
+    if (!selectedClient?.masterSheetId) return alert("No Master Sheet ID found for this client.");
+    setHubspotBrokerTesting(true);
+    setHubspotBrokerTestResult(null);
+    try {
+      const res = await fetch(`/api/integrations/token?tool=hubspot&spreadsheetId=${encodeURIComponent(selectedClient.masterSheetId)}`);
+      const data = await res.json();
+      setHubspotBrokerTestResult(data);
+    } catch (err) { setHubspotBrokerTestResult({ success: false, error: err.message }); }
+    finally { setHubspotBrokerTesting(false); }
+  };
+
   const xero = clientStatus?.xero || {};
   const isXeroConnected = Boolean(xero.connected);
   const qb = clientStatus?.quickbooks || {};
@@ -438,6 +717,14 @@ export default function IntegrationsView({
   const isMondayConnected = Boolean(monday.connected);
   const pipedrive = clientStatus?.pipedrive || {};
   const isPipedriveConnected = Boolean(pipedrive.connected);
+  const clickup = clientStatus?.clickup || {};
+  const isClickUpConnected = Boolean(clickup.connected);
+  const capsule = clientStatus?.capsule || {};
+  const isCapsuleConnected = Boolean(capsule.connected);
+  const close = clientStatus?.close || {};
+  const isCloseConnected = Boolean(close.connected);
+  const hubspot = clientStatus?.hubspot || {};
+  const isHubSpotConnected = Boolean(hubspot.connected);
 
   // Sync selectedTenantId when clientStatus updates
   useEffect(() => {
@@ -1290,14 +1577,13 @@ export default function IntegrationsView({
           </div>
         </div>
 
-        {/* 5. CLICKUP CARD (Placeholder) */}
+        {/* 5. CLICKUP CARD */}
         <div
           style={{
             background: "#ffffff",
             borderRadius: "16px",
             border: "1px solid #e2e8f0",
             padding: "22px",
-            opacity: 0.75,
             boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
             display: "flex",
             flexDirection: "column",
@@ -1312,16 +1598,624 @@ export default function IntegrationsView({
                 </div>
                 <div>
                   <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>ClickUp</h3>
-                  <span style={{ fontSize: "12px", color: "#64748b" }}>CRM & Pipeline Sync</span>
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>Workspaces, Lists & Task Pipeline</span>
                 </div>
               </div>
-              <span style={{ fontSize: "11px", fontWeight: "700", padding: "3px 10px", borderRadius: "20px", background: "#f1f5f9", color: "#64748b" }}>
-                Phase 2
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "3px 10px",
+                  borderRadius: "20px",
+                  background: isClickUpConnected ? "#dcfce7" : "#f1f5f9",
+                  color: isClickUpConnected ? "#15803d" : "#64748b"
+                }}
+              >
+                {statusLoading ? "Checking..." : isClickUpConnected ? "Connected" : "Not Connected"}
               </span>
             </div>
-            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.5", margin: 0 }}>
-              Connect ClickUp workspaces to pull sales pipeline and job opportunities directly into the Master Sheet.
+
+            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.5", margin: "0 0 16px 0" }}>
+              Connects ClickUp workspaces via OAuth 2.0 or personal token. Synchronizes tasks, custom fields, and pipelines into DataFromCRM.
             </p>
+
+            {/* Connection Details if Connected */}
+            {isClickUpConnected && (
+              <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px 14px", border: "1px solid #e2e8f0", marginBottom: "16px", fontSize: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Workspace / Team:</span>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{clickup.metadata?.teamName || clickup.teamName || clickup.companyName || "N/A"}</span>
+                </div>
+                {clickup.metadata?.teamId && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Team ID:</span>
+                    <span style={{ fontFamily: "monospace", color: "#334155" }}>{clickup.metadata.teamId}</span>
+                  </div>
+                )}
+                {clickup.metadata?.userName && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Authorized By:</span>
+                    <span style={{ color: "#334155" }}>{clickup.metadata.userName}{clickup.metadata.userEmail ? ` (${clickup.metadata.userEmail})` : ""}</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Token Status:</span>
+                  <span style={{ fontWeight: "600", color: "#15803d" }}>Active</span>
+                </div>
+                {clickup.lastRefreshedAt && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#64748b" }}>Last Refreshed:</span>
+                    <span style={{ color: "#334155" }}>{new Date(clickup.lastRefreshedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
+              {isClickUpConnected ? (
+                <>
+                  <button
+                    onClick={handleDisconnectClickUp}
+                    disabled={clickupActionLoading}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "1px solid #fecaca",
+                      background: "#fff",
+                      color: "#dc2626",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {clickupActionLoading ? "Disconnecting..." : "Disconnect & Revoke"}
+                  </button>
+                  <button
+                    onClick={handleTestClickUpTokenBroker}
+                    disabled={clickupBrokerTesting}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: "#0f172a",
+                      color: "#fff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {clickupBrokerTesting ? "Testing..." : "⚡ Test Token Broker"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectClickUp}
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "#7b68ee",
+                    color: "#ffffff",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
+                  }}
+                >
+                  Connect ClickUp for {selectedClientName || "Client"}
+                </button>
+              )}
+            </div>
+
+            {/* Token Broker Live Test Output */}
+            {clickupBrokerTestResult && (
+              <div
+                style={{
+                  marginTop: "14px",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  background: clickupBrokerTestResult.success ? "#f0fdf4" : "#fef2f2",
+                  border: `1px solid ${clickupBrokerTestResult.success ? "#bbf7d0" : "#fecaca"}`,
+                  color: clickupBrokerTestResult.success ? "#166534" : "#991b1b"
+                }}
+              >
+                <div style={{ fontWeight: "700", marginBottom: "4px" }}>
+                  {clickupBrokerTestResult.success ? "✓ Token Broker Response (200 OK):" : "✕ Token Broker Error:"}
+                </div>
+                <div>{JSON.stringify(clickupBrokerTestResult, null, 2)}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 6. CAPSULE CRM CARD */}
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "16px",
+            border: "1px solid #e2e8f0",
+            padding: "22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between"
+          }}
+        >
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <div style={{ width: "42px", height: "42px", borderRadius: "10px", background: "rgba(26, 76, 110, 0.12)", color: "#1a4c6e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px", fontWeight: "700" }}>
+                  C
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>Capsule CRM</h3>
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>Contacts, Parties & Opportunities</span>
+                </div>
+              </div>
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "3px 10px",
+                  borderRadius: "20px",
+                  background: isCapsuleConnected ? "#dcfce7" : "#f1f5f9",
+                  color: isCapsuleConnected ? "#15803d" : "#64748b"
+                }}
+              >
+                {statusLoading ? "Checking..." : isCapsuleConnected ? "Connected" : "Not Connected"}
+              </span>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.5", margin: "0 0 16px 0" }}>
+              Connects Capsule CRM via OAuth 2.0. Ingests opportunities, milestones, and expected values into DataFromCRM.
+            </p>
+
+            {/* Connection Details if Connected */}
+            {isCapsuleConnected && (
+              <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px 14px", border: "1px solid #e2e8f0", marginBottom: "16px", fontSize: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Site Name:</span>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{capsule.metadata?.siteName || capsule.siteName || capsule.tenantName || "N/A"}</span>
+                </div>
+                {capsule.metadata?.siteUrl && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Site URL:</span>
+                    <span style={{ fontFamily: "monospace", color: "#334155" }}>{capsule.metadata.siteUrl}</span>
+                  </div>
+                )}
+                {capsule.metadata?.userName && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Authorized By:</span>
+                    <span style={{ color: "#334155" }}>{capsule.metadata.userName}{capsule.metadata.userEmail ? ` (${capsule.metadata.userEmail})` : ""}</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Token Status:</span>
+                  <span style={{ fontWeight: "600", color: capsule.isExpired ? "#b91c1c" : "#15803d" }}>
+                    {capsule.isExpired ? "Expired (Auto-refreshes on query)" : "Active"}
+                  </span>
+                </div>
+                {capsule.lastRefreshedAt && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#64748b" }}>Last Refreshed:</span>
+                    <span style={{ color: "#334155" }}>{new Date(capsule.lastRefreshedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
+              {isCapsuleConnected ? (
+                <>
+                  <button
+                    onClick={handleDisconnectCapsule}
+                    disabled={capsuleActionLoading}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "1px solid #fecaca",
+                      background: "#fff",
+                      color: "#dc2626",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {capsuleActionLoading ? "Disconnecting..." : "Disconnect & Revoke"}
+                  </button>
+                  <button
+                    onClick={handleTestCapsuleTokenBroker}
+                    disabled={capsuleBrokerTesting}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: "#0f172a",
+                      color: "#fff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {capsuleBrokerTesting ? "Testing..." : "⚡ Test Token Broker"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectCapsule}
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "#1a4c6e",
+                    color: "#ffffff",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
+                  }}
+                >
+                  Connect Capsule CRM for {selectedClientName || "Client"}
+                </button>
+              )}
+            </div>
+
+            {/* Token Broker Live Test Output */}
+            {capsuleBrokerTestResult && (
+              <div
+                style={{
+                  marginTop: "14px",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  background: capsuleBrokerTestResult.success ? "#f0fdf4" : "#fef2f2",
+                  border: `1px solid ${capsuleBrokerTestResult.success ? "#bbf7d0" : "#fecaca"}`,
+                  color: capsuleBrokerTestResult.success ? "#166534" : "#991b1b"
+                }}
+              >
+                <div style={{ fontWeight: "700", marginBottom: "4px" }}>
+                  {capsuleBrokerTestResult.success ? "✓ Token Broker Response (200 OK):" : "✕ Token Broker Error:"}
+                </div>
+                <div>{JSON.stringify(capsuleBrokerTestResult, null, 2)}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 7. CLOSE CRM CARD */}
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "16px",
+            border: "1px solid #e2e8f0",
+            padding: "22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between"
+          }}
+        >
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <div style={{ width: "42px", height: "42px", borderRadius: "10px", background: "rgba(37, 99, 235, 0.12)", color: "#2563eb", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px", fontWeight: "700" }}>
+                  C
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>Close CRM</h3>
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>Deals, Leads & Sales Pipelines</span>
+                </div>
+              </div>
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "3px 10px",
+                  borderRadius: "20px",
+                  background: isCloseConnected ? "#dcfce7" : "#f1f5f9",
+                  color: isCloseConnected ? "#15803d" : "#64748b"
+                }}
+              >
+                {statusLoading ? "Checking..." : isCloseConnected ? "Connected" : "Not Connected"}
+              </span>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.5", margin: "0 0 16px 0" }}>
+              Connects Close CRM via OAuth 2.0 or API key. Pulls active opportunities, deal stages, and values into DataFromCRM.
+            </p>
+
+            {/* Connection Details if Connected */}
+            {isCloseConnected && (
+              <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px 14px", border: "1px solid #e2e8f0", marginBottom: "16px", fontSize: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Organization:</span>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{close.metadata?.organizationName || close.organizationName || close.tenantName || "N/A"}</span>
+                </div>
+                {close.metadata?.organizationId && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Org ID:</span>
+                    <span style={{ fontFamily: "monospace", color: "#334155" }}>{close.metadata.organizationId}</span>
+                  </div>
+                )}
+                {close.metadata?.userName && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Authorized By:</span>
+                    <span style={{ color: "#334155" }}>{close.metadata.userName}{close.metadata.userEmail ? ` (${close.metadata.userEmail})` : ""}</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Token Status:</span>
+                  <span style={{ fontWeight: "600", color: close.isExpired ? "#b91c1c" : "#15803d" }}>
+                    {close.isExpired ? "Expired (Auto-refreshes on query)" : "Active"}
+                  </span>
+                </div>
+                {close.lastRefreshedAt && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#64748b" }}>Last Refreshed:</span>
+                    <span style={{ color: "#334155" }}>{new Date(close.lastRefreshedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
+              {isCloseConnected ? (
+                <>
+                  <button
+                    onClick={handleDisconnectClose}
+                    disabled={closeActionLoading}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "1px solid #fecaca",
+                      background: "#fff",
+                      color: "#dc2626",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {closeActionLoading ? "Disconnecting..." : "Disconnect & Revoke"}
+                  </button>
+                  <button
+                    onClick={handleTestCloseTokenBroker}
+                    disabled={closeBrokerTesting}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: "#0f172a",
+                      color: "#fff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {closeBrokerTesting ? "Testing..." : "⚡ Test Token Broker"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectClose}
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "#2563eb",
+                    color: "#ffffff",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
+                  }}
+                >
+                  Connect Close CRM for {selectedClientName || "Client"}
+                </button>
+              )}
+            </div>
+
+            {/* Token Broker Live Test Output */}
+            {closeBrokerTestResult && (
+              <div
+                style={{
+                  marginTop: "14px",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  background: closeBrokerTestResult.success ? "#f0fdf4" : "#fef2f2",
+                  border: `1px solid ${closeBrokerTestResult.success ? "#bbf7d0" : "#fecaca"}`,
+                  color: closeBrokerTestResult.success ? "#166534" : "#991b1b"
+                }}
+              >
+                <div style={{ fontWeight: "700", marginBottom: "4px" }}>
+                  {closeBrokerTestResult.success ? "✓ Token Broker Response (200 OK):" : "✕ Token Broker Error:"}
+                </div>
+                <div>{JSON.stringify(closeBrokerTestResult, null, 2)}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 8. HUBSPOT CRM CARD */}
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "16px",
+            border: "1px solid #e2e8f0",
+            padding: "22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between"
+          }}
+        >
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <div style={{ width: "42px", height: "42px", borderRadius: "10px", background: "rgba(255, 122, 89, 0.12)", color: "#ff7a59", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px", fontWeight: "700" }}>
+                  H
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>HubSpot CRM</h3>
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>Deals, Pipelines & CRM Data</span>
+                </div>
+              </div>
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "3px 10px",
+                  borderRadius: "20px",
+                  background: isHubSpotConnected ? "#dcfce7" : "#f1f5f9",
+                  color: isHubSpotConnected ? "#15803d" : "#64748b"
+                }}
+              >
+                {statusLoading ? "Checking..." : isHubSpotConnected ? "Connected" : "Not Connected"}
+              </span>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "#475569", lineHeight: "1.5", margin: "0 0 16px 0" }}>
+              Connects HubSpot CRM via OAuth 2.0 or Private App token. Ingests deal amounts, pipelines, and stages into DataFromCRM.
+            </p>
+
+            {/* Connection Details if Connected */}
+            {isHubSpotConnected && (
+              <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "12px 14px", border: "1px solid #e2e8f0", marginBottom: "16px", fontSize: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Portal / Account:</span>
+                  <span style={{ fontWeight: "600", color: "#0f172a" }}>{hubspot.metadata?.accountName || hubspot.accountName || hubspot.tenantName || "N/A"}</span>
+                </div>
+                {hubspot.metadata?.portalId && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Portal ID:</span>
+                    <span style={{ fontFamily: "monospace", color: "#334155" }}>{hubspot.metadata.portalId}</span>
+                  </div>
+                )}
+                {hubspot.metadata?.userEmail && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <span style={{ color: "#64748b" }}>Authorized By:</span>
+                    <span style={{ color: "#334155" }}>{hubspot.metadata.userEmail}</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Token Status:</span>
+                  <span style={{ fontWeight: "600", color: hubspot.isExpired ? "#b91c1c" : "#15803d" }}>
+                    {hubspot.isExpired ? "Expired (Auto-refreshes on query)" : "Active"}
+                  </span>
+                </div>
+                {hubspot.lastRefreshedAt && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#64748b" }}>Last Refreshed:</span>
+                    <span style={{ color: "#334155" }}>{new Date(hubspot.lastRefreshedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
+              {isHubSpotConnected ? (
+                <>
+                  <button
+                    onClick={handleDisconnectHubSpot}
+                    disabled={hubspotActionLoading}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "1px solid #fecaca",
+                      background: "#fff",
+                      color: "#dc2626",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {hubspotActionLoading ? "Disconnecting..." : "Disconnect & Revoke"}
+                  </button>
+                  <button
+                    onClick={handleTestHubSpotTokenBroker}
+                    disabled={hubspotBrokerTesting}
+                    style={{
+                      flex: 1,
+                      padding: "8px 14px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: "#0f172a",
+                      color: "#fff",
+                      fontSize: "13px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {hubspotBrokerTesting ? "Testing..." : "⚡ Test Token Broker"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectHubSpot}
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "#ff7a59",
+                    color: "#ffffff",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.1)"
+                  }}
+                >
+                  Connect HubSpot for {selectedClientName || "Client"}
+                </button>
+              )}
+            </div>
+
+            {/* Token Broker Live Test Output */}
+            {hubspotBrokerTestResult && (
+              <div
+                style={{
+                  marginTop: "14px",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  background: hubspotBrokerTestResult.success ? "#f0fdf4" : "#fef2f2",
+                  border: `1px solid ${hubspotBrokerTestResult.success ? "#bbf7d0" : "#fecaca"}`,
+                  color: hubspotBrokerTestResult.success ? "#166534" : "#991b1b"
+                }}
+              >
+                <div style={{ fontWeight: "700", marginBottom: "4px" }}>
+                  {hubspotBrokerTestResult.success ? "✓ Token Broker Response (200 OK):" : "✕ Token Broker Error:"}
+                </div>
+                <div>{JSON.stringify(hubspotBrokerTestResult, null, 2)}</div>
+              </div>
+            )}
           </div>
         </div>
       </div>

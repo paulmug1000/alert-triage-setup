@@ -20,6 +20,10 @@ import { refreshXeroTokens, getXeroConnections } from "../../../services/xeroSer
 import { refreshQBTokens, getQBCompanyInfo } from "../../../services/quickbooksService.js";
 import { refreshMondayTokens, getMondayAccountInfo } from "../../../services/mondayService.js";
 import { refreshPipedriveTokens, getPipedriveAccountInfo } from "../../../services/pipedriveService.js";
+import { getClickUpWorkspaceInfo } from "../../../services/clickupService.js";
+import { refreshCapsuleTokens, getCapsuleAccountInfo } from "../../../services/capsuleService.js";
+import { refreshCloseTokens, getCloseAccountInfo } from "../../../services/closeService.js";
+import { refreshHubSpotTokens, getHubSpotAccountInfo } from "../../../services/hubspotService.js";
 import { getSessionUser } from "../../../services/authService.js";
 
 export default async function handler(req, res) {
@@ -273,6 +277,212 @@ export default async function handler(req, res) {
         companyName: accountInfo?.companyName || effectiveClientName,
         accessToken: activeAccessToken,
         message: `Successfully imported Pipedrive connection into Pulse Central Vault.`
+      });
+    }
+
+    if (cleanTool === "clickup") {
+      console.log(`📥 Integration Import: Importing existing ClickUp tokens for sheet: ${spreadsheetId}...`);
+
+      const { accessToken: rawAccessToken = "", token = "", apiKey = "" } = req.body;
+      const activeAccessToken = rawAccessToken || token || apiKey || "";
+
+      let workspaceInfo = null;
+      if (activeAccessToken) {
+        workspaceInfo = await getClickUpWorkspaceInfo(activeAccessToken);
+      }
+
+      const effectiveClientKey = clientName || workspaceInfo?.workspaceName || spreadsheetId;
+      const effectiveClientName = clientName || workspaceInfo?.workspaceName || effectiveClientKey;
+
+      await saveIntegrationTokens({
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        masterSheetId: spreadsheetId,
+        tool: "clickup",
+        tokens: {
+          accessToken: activeAccessToken,
+          refreshToken: "",
+          expiresIn: 315360000
+        },
+        metadata: {
+          teamId: workspaceInfo?.teamId || "",
+          teamName: workspaceInfo?.workspaceName || effectiveClientName,
+          userName: workspaceInfo?.userName || "",
+          userEmail: workspaceInfo?.userEmail || "",
+          importedAt: new Date().toISOString()
+        }
+      });
+
+      console.log(`✅ Integration Import: Successfully migrated ClickUp for "${effectiveClientName}" [${spreadsheetId}].`);
+
+      return res.status(200).json({
+        success: true,
+        tool: "clickup",
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        teamName: workspaceInfo?.workspaceName || effectiveClientName,
+        accessToken: activeAccessToken,
+        message: `Successfully imported ClickUp connection into Pulse Central Vault.`
+      });
+    }
+
+    if (cleanTool === "capsule") {
+      console.log(`📥 Integration Import: Importing existing Capsule CRM tokens for sheet: ${spreadsheetId}...`);
+
+      const { accessToken: rawAccessToken = "", token = "", apiKey = "", clientId = "", clientSecret = "" } = req.body;
+      let activeAccessToken = rawAccessToken || token || apiKey || "";
+      let activeRefreshToken = refreshToken || "";
+
+      if (!activeAccessToken && activeRefreshToken) {
+        const refreshed = await refreshCapsuleTokens(activeRefreshToken, clientId, clientSecret);
+        activeAccessToken = refreshed.accessToken;
+        activeRefreshToken = refreshed.refreshToken;
+      }
+
+      let accountInfo = null;
+      if (activeAccessToken) {
+        accountInfo = await getCapsuleAccountInfo(activeAccessToken);
+      }
+
+      const effectiveClientKey = clientName || accountInfo?.siteName || spreadsheetId;
+      const effectiveClientName = clientName || accountInfo?.siteName || effectiveClientKey;
+
+      await saveIntegrationTokens({
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        masterSheetId: spreadsheetId,
+        tool: "capsule",
+        tokens: {
+          accessToken: activeAccessToken,
+          refreshToken: activeRefreshToken,
+          expiresIn: 7200
+        },
+        metadata: {
+          siteName: accountInfo?.siteName || effectiveClientName,
+          siteUrl: accountInfo?.siteUrl || "",
+          userName: accountInfo?.userName || "",
+          userEmail: accountInfo?.userEmail || "",
+          importedAt: new Date().toISOString()
+        }
+      });
+
+      console.log(`✅ Integration Import: Successfully migrated Capsule CRM for "${effectiveClientName}" [${spreadsheetId}].`);
+
+      return res.status(200).json({
+        success: true,
+        tool: "capsule",
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        siteName: accountInfo?.siteName || effectiveClientName,
+        accessToken: activeAccessToken,
+        message: `Successfully imported Capsule CRM connection into Pulse Central Vault.`
+      });
+    }
+
+    if (cleanTool === "close") {
+      console.log(`📥 Integration Import: Importing existing Close CRM tokens for sheet: ${spreadsheetId}...`);
+
+      const { accessToken: rawAccessToken = "", token = "", apiKey = "", clientId = "", clientSecret = "" } = req.body;
+      let activeAccessToken = rawAccessToken || token || apiKey || "";
+      let activeRefreshToken = refreshToken || "";
+
+      if (!activeAccessToken && activeRefreshToken) {
+        const refreshed = await refreshCloseTokens(activeRefreshToken, clientId, clientSecret);
+        activeAccessToken = refreshed.accessToken;
+        activeRefreshToken = refreshed.refreshToken;
+      }
+
+      let accountInfo = null;
+      if (activeAccessToken) {
+        accountInfo = await getCloseAccountInfo(activeAccessToken);
+      }
+
+      const effectiveClientKey = clientName || accountInfo?.organizationName || spreadsheetId;
+      const effectiveClientName = clientName || accountInfo?.organizationName || effectiveClientKey;
+
+      await saveIntegrationTokens({
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        masterSheetId: spreadsheetId,
+        tool: "close",
+        tokens: {
+          accessToken: activeAccessToken,
+          refreshToken: activeRefreshToken,
+          expiresIn: 2592000
+        },
+        metadata: {
+          organizationId: accountInfo?.organizationId || "",
+          organizationName: accountInfo?.organizationName || effectiveClientName,
+          userName: accountInfo?.userName || "",
+          userEmail: accountInfo?.userEmail || "",
+          importedAt: new Date().toISOString()
+        }
+      });
+
+      console.log(`✅ Integration Import: Successfully migrated Close CRM for "${effectiveClientName}" [${spreadsheetId}].`);
+
+      return res.status(200).json({
+        success: true,
+        tool: "close",
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        organizationName: accountInfo?.organizationName || effectiveClientName,
+        accessToken: activeAccessToken,
+        message: `Successfully imported Close CRM connection into Pulse Central Vault.`
+      });
+    }
+
+    if (cleanTool === "hubspot") {
+      console.log(`📥 Integration Import: Importing existing HubSpot tokens for sheet: ${spreadsheetId}...`);
+
+      const { accessToken: rawAccessToken = "", token = "", apiKey = "", clientId = "", clientSecret = "" } = req.body;
+      let activeAccessToken = rawAccessToken || token || apiKey || "";
+      let activeRefreshToken = refreshToken || "";
+
+      if (!activeAccessToken && activeRefreshToken) {
+        const refreshed = await refreshHubSpotTokens(activeRefreshToken, clientId, clientSecret);
+        activeAccessToken = refreshed.accessToken;
+        activeRefreshToken = refreshed.refreshToken;
+      }
+
+      let accountInfo = null;
+      if (activeAccessToken) {
+        accountInfo = await getHubSpotAccountInfo(activeAccessToken);
+      }
+
+      const effectiveClientKey = clientName || accountInfo?.accountName || spreadsheetId;
+      const effectiveClientName = clientName || accountInfo?.accountName || effectiveClientKey;
+
+      await saveIntegrationTokens({
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        masterSheetId: spreadsheetId,
+        tool: "hubspot",
+        tokens: {
+          accessToken: activeAccessToken,
+          refreshToken: activeRefreshToken,
+          expiresIn: 1800
+        },
+        metadata: {
+          portalId: accountInfo?.portalId || "",
+          hubId: accountInfo?.hubId || "",
+          accountName: accountInfo?.accountName || effectiveClientName,
+          userEmail: accountInfo?.userEmail || "",
+          accountType: accountInfo?.accountType || "",
+          importedAt: new Date().toISOString()
+        }
+      });
+
+      console.log(`✅ Integration Import: Successfully migrated HubSpot for "${effectiveClientName}" [${spreadsheetId}].`);
+
+      return res.status(200).json({
+        success: true,
+        tool: "hubspot",
+        clientKey: effectiveClientKey,
+        clientName: effectiveClientName,
+        accountName: accountInfo?.accountName || effectiveClientName,
+        accessToken: activeAccessToken,
+        message: `Successfully imported HubSpot connection into Pulse Central Vault.`
       });
     }
 

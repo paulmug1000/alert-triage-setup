@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const tools = ["xero", "quickbooks", "monday", "pipedrive", "clickup"];
+    const tools = ["xero", "quickbooks", "monday", "pipedrive", "clickup", "capsule", "close", "hubspot"];
     const statuses = {};
 
     for (const tool of tools) {

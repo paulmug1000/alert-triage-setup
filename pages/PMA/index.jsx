@@ -5,7 +5,7 @@ export default function PMAPage() {
   return (
     <>
       <Head>
-        <title>Pulse Management Area (PMA)</title>
+        <title>PMA - Pulse Management Area</title>
       </Head>
       <TriageSystem onBack={() => {}} />
     </>

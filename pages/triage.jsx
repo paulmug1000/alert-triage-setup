@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import Head from "next/head";
 import Spinner from "../components/Spinner";
 import TruncatedCode from "../components/TruncatedCode";
 import NavShell from "../components/NavShell";
@@ -48,9 +49,14 @@ export default function TriageSystem({ onBack }) {
 function TriageSystemWithGlobals({ onBack }) {
   const appGlobals = useAppGlobals();
   return (
-    <TaskProvider automationCommanderSheetId={appGlobals.automationCommanderSheetId}>
-      <TriageSystemContent onBack={onBack} appGlobals={appGlobals} />
-    </TaskProvider>
+    <>
+      <Head>
+        <title>PMA - Pulse Management Area</title>
+      </Head>
+      <TaskProvider automationCommanderSheetId={appGlobals.automationCommanderSheetId}>
+        <TriageSystemContent onBack={onBack} appGlobals={appGlobals} />
+      </TaskProvider>
+    </>
   );
 }
 

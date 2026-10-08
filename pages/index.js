@@ -5,10 +5,10 @@ export default function Index() {
   return (
     <>
       <Head>
-        <title>Pulse</title>
+        <title>PMA - Pulse Management Area</title>
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        <meta name="apple-mobile-web-app-title" content="Pulse" />
+        <meta name="apple-mobile-web-app-title" content="Pulse Management Area" />
       </Head>
       <TriageSystem onBack={() => { }} />
     </>

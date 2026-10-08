@@ -5,6 +5,8 @@ import { SYSTEM_VERSION, getSystemCopyright } from "../../config/version";
 
 export default function SetupHoldingGate({
   clientName,
+  clients = [],
+  onSelectClient = null,
   user,
   setupStatus,
   onLogout,
@@ -13,17 +15,20 @@ export default function SetupHoldingGate({
   oauthFeedback = null
 }) {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const [clientDropdownOpen, setClientDropdownOpen] = useState(false);
 
-  // Close profile dropdown when clicking outside or pressing Escape
+  // Close dropdowns when clicking outside or pressing Escape
   useEffect(() => {
     function handleClickOutside(e) {
       if (!e.target.closest(".portal-nav-dropdown")) {
         setProfileDropdownOpen(false);
+        setClientDropdownOpen(false);
       }
     }
     function handleKeyDown(e) {
       if (e.key === "Escape") {
         setProfileDropdownOpen(false);
+        setClientDropdownOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -203,18 +208,133 @@ export default function SetupHoldingGate({
               </div>
 
               {clientName && (
-                <span
-                  style={{
-                    color: "#ffffff",
-                    fontSize: "0.85rem",
-                    fontWeight: 400,
-                    letterSpacing: "0.2px",
-                    lineHeight: "1.1",
-                    paddingLeft: "2px"
-                  }}
-                >
-                  {clientName}
-                </span>
+                clients && clients.length > 1 && onSelectClient ? (
+                  <div className="portal-nav-dropdown" style={{ position: "relative" }}>
+                    <button
+                      type="button"
+                      onClick={() => setClientDropdownOpen((prev) => !prev)}
+                      style={{
+                        background: clientDropdownOpen ? "rgba(255, 255, 255, 0.1)" : "transparent",
+                        border: "1px solid rgba(255, 255, 255, 0.28)",
+                        borderRadius: "4px",
+                        padding: "1px 5px",
+                        color: "#ffffff",
+                        fontSize: "0.85rem",
+                        fontWeight: 400,
+                        letterSpacing: "0.2px",
+                        lineHeight: "1.1",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "4px",
+                        fontFamily: "inherit",
+                        transition: "background 0.15s, border-color 0.15s"
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = "rgba(255, 255, 255, 0.12)";
+                        e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.45)";
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!clientDropdownOpen) {
+                          e.currentTarget.style.background = "transparent";
+                          e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.28)";
+                        }
+                      }}
+                      title="Switch client"
+                    >
+                      <span
+                        className="portal-client-title"
+                        style={{
+                          color: "#ffffff",
+                          fontSize: "0.85rem",
+                          fontWeight: 400,
+                          letterSpacing: "0.2px",
+                          lineHeight: "1.1"
+                        }}
+                      >
+                        {clientName}
+                      </span>
+                      <span style={{ fontSize: "9px", opacity: 0.75, lineHeight: 1, userSelect: "none" }}>▾</span>
+                    </button>
+
+                    {clientDropdownOpen && (
+                      <div
+                        style={{
+                          ...dropdownMenuStyle,
+                          left: 0,
+                          right: "auto",
+                          top: "calc(100% + 4px)",
+                          maxHeight: "360px",
+                          overflowY: "auto",
+                          minWidth: "200px",
+                          zIndex: 1100
+                        }}
+                      >
+                        <div
+                          style={{
+                            padding: "0.5rem 0.85rem",
+                            fontSize: "11px",
+                            fontWeight: 700,
+                            color: "#64748b",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.5px",
+                            borderBottom: "1px solid #e2e8f0"
+                          }}
+                        >
+                          Switch Client
+                        </div>
+                        {clients.map((c) => {
+                          const isCurrent = c.clientName === clientName;
+                          return (
+                            <button
+                              key={c.clientName}
+                              type="button"
+                              onClick={() => {
+                                onSelectClient(c);
+                                setClientDropdownOpen(false);
+                              }}
+                              style={{
+                                width: "100%",
+                                textAlign: "left",
+                                padding: "0.65rem 1rem",
+                                border: "none",
+                                background: isCurrent ? "#0047AB" : "transparent",
+                                color: isCurrent ? "#ffffff" : "#0047AB",
+                                fontSize: "14px",
+                                fontWeight: isCurrent ? 700 : 500,
+                                cursor: "pointer",
+                                transition: "background 0.15s ease",
+                                fontFamily: "inherit",
+                                whiteSpace: "nowrap"
+                              }}
+                              onMouseEnter={(e) => {
+                                if (!isCurrent) e.currentTarget.style.background = "#f1f5f9";
+                              }}
+                              onMouseLeave={(e) => {
+                                if (!isCurrent) e.currentTarget.style.background = "transparent";
+                              }}
+                            >
+                              {c.clientName}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <span
+                    style={{
+                      color: "#ffffff",
+                      fontSize: "0.85rem",
+                      fontWeight: 400,
+                      letterSpacing: "0.2px",
+                      lineHeight: "1.1",
+                      paddingLeft: "2px"
+                    }}
+                  >
+                    {clientName}
+                  </span>
+                )
               )}
             </div>
 
@@ -244,34 +364,6 @@ export default function SetupHoldingGate({
               >
                 {(user?.name || user?.email || "U")[0].toUpperCase()}
               </button>
-
-              {/* Exclamation badge if any configured connection needs renewing */}
-              {setupStatus?.hasDisconnectedTools && (
-                <span
-                  style={{
-                    position: "absolute",
-                    top: "-2px",
-                    right: "-2px",
-                    width: "15px",
-                    height: "15px",
-                    borderRadius: "50%",
-                    background: "#ef4444",
-                    color: "#ffffff",
-                    fontSize: "10.5px",
-                    fontWeight: 800,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    border: "2px solid #0047AB",
-                    boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
-                    lineHeight: 1,
-                    pointerEvents: "none"
-                  }}
-                  title="One or more tool connections need renewing"
-                >
-                  !
-                </span>
-              )}
 
               {profileDropdownOpen && (
                 <div
@@ -308,68 +400,7 @@ export default function SetupHoldingGate({
                     )}
                   </div>
 
-                  {/* Connected Tools Status Section */}
-                  {setupStatus?.configuredTools && setupStatus.configuredTools.length > 0 && (
-                    <div style={{ padding: "0.6rem 1rem", borderBottom: "1px solid #e2e8f0", background: "#f8fafc" }}>
-                      <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
-                        Tool connections
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                        {setupStatus.configuredTools.map((t) => (
-                          <div key={t.tool} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
-                              <span
-                                style={{
-                                  width: "8px",
-                                  height: "8px",
-                                  borderRadius: "50%",
-                                  background: t.connected && !t.needsReconnect ? "#10b981" : "#ef4444",
-                                  boxShadow: t.connected && !t.needsReconnect ? "0 0 0 2px rgba(16, 185, 129, 0.2)" : "0 0 0 2px rgba(239, 68, 68, 0.2)",
-                                  display: "inline-block",
-                                  flexShrink: 0
-                                }}
-                              />
-                              <span style={{ fontSize: "13px", fontWeight: 600, color: "#1e293b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                {t.name}
-                              </span>
-                              {t.connected && !t.needsReconnect && (
-                                <span style={{ fontSize: "11px", color: "#10b981", fontWeight: 500 }}>
-                                  (Connected)
-                                </span>
-                              )}
-                            </div>
 
-                            {(!t.connected || t.needsReconnect) && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const connectUrl = `/api/integrations/${encodeURIComponent(t.tool)}/connect?clientName=${encodeURIComponent(clientName)}&redirectBack=${encodeURIComponent("/pulse")}`;
-                                  window.location.href = connectUrl;
-                                }}
-                                style={{
-                                  background: "#fee2e2",
-                                  color: "#b91c1c",
-                                  border: "1px solid #fca5a5",
-                                  borderRadius: "4px",
-                                  padding: "2px 8px",
-                                  fontSize: "11px",
-                                  fontWeight: 700,
-                                  cursor: "pointer",
-                                  whiteSpace: "nowrap",
-                                  transition: "all 0.15s ease"
-                                }}
-                                onMouseEnter={(e) => { e.currentTarget.style.background = "#ef4444"; e.currentTarget.style.color = "#ffffff"; }}
-                                onMouseLeave={(e) => { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.color = "#b91c1c"; }}
-                                title={`Re-connect ${t.name}`}
-                              >
-                                Re-connect
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
 
                   {/* If user is Admin or ClientManager, offer direct link back to Management Area (PMA) */}
                   {(user?.isAdmin || user?.role === "ClientManager") && (
@@ -557,7 +588,9 @@ export default function SetupHoldingGate({
                     margin: "0 0 10px 0"
                   }}
                 >
-                  Please connect your tools
+                  {unconnectedTools.length === 1
+                    ? `Please connect ${getToolDisplayName(unconnectedTools[0]?.tool)}`
+                    : "Please connect your tools"}
                 </h1>
                 <p
                   style={{
@@ -567,7 +600,9 @@ export default function SetupHoldingGate({
                     margin: "0 0 28px 0"
                   }}
                 >
-                  To complete your Pulse setup, please authorise the connections to the tools your business uses below.
+                  {unconnectedTools.length === 1
+                    ? `To complete your Pulse setup, please authorise the connection to ${getToolDisplayName(unconnectedTools[0]?.tool)} below.`
+                    : "To complete your Pulse setup, please authorise the connections to the tools your business uses below."}
                 </p>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: "14px", marginBottom: "28px" }}>

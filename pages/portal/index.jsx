@@ -42,12 +42,13 @@ export default function PortalPage() {
 
   // Monitor URL for ?preview=setup or OAuth return params (?integration=...&status=...)
   useEffect(() => {
-    if (router.query.preview === "setup") {
+    const isPreview = router.query.preview === "setup" || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("preview") === "setup");
+    if (isPreview) {
       setIsPreviewSetup(true);
     }
-    if (router.query.integration) {
-      const tool = router.query.integration;
-      const status = router.query.status;
+    const tool = router.query.integration || (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("integration") : null);
+    if (tool) {
+      const status = router.query.status || (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("status") : null);
       if (status === "success") {
         setOauthFeedback({
           type: "success",
@@ -443,6 +444,11 @@ export default function PortalPage() {
     if (typeof window === "undefined" || !isAuthenticated) return;
     try {
       if (router.query.choose === "true") return;
+      const urlParams = new URLSearchParams(window.location.search);
+      // If an explicit client or choose is specified in the URL, do NOT restore older cached client
+      if (router.query.client || urlParams.get("client") || urlParams.get("choose") === "true") {
+        return;
+      }
       const savedObj = localStorage.getItem("pulse_portal_active_client_obj");
       if (savedObj) {
         const parsed = JSON.parse(savedObj);
@@ -456,7 +462,7 @@ export default function PortalPage() {
         }
       }
     } catch (e) {}
-  }, [isAuthenticated, router.query.choose]);
+  }, [isAuthenticated, router.query.choose, router.query.client]);
 
   const logWorkspaceAccess = useCallback((client) => {
     if (!client || !client.clientName) return;
@@ -497,16 +503,14 @@ export default function PortalPage() {
           clientsFetchedRef.current = true;
 
           // Check if client specified in legacy URL query or localStorage
-          const queryClient = router.query.client;
+          let queryClient = router.query.client;
+          if (!queryClient && typeof window !== "undefined") {
+            const urlParams = new URLSearchParams(window.location.search);
+            queryClient = urlParams.get("client");
+          }
           let initial = null;
 
-          if (queryClient) {
-            initial = data.clients.find(
-              (c) => c.clientName.toLowerCase() === String(queryClient).toLowerCase()
-            );
-          }
-
-          const isChooseRequested = router.query.choose === "true";
+          const isChooseRequested = router.query.choose === "true" || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("choose") === "true");
           const isPulseOnly = Boolean(
             user && (user.role === "ClientUser" || user.role === "Senior (Restricted)" || user.isSenior) && !user.isAdmin
           );
@@ -518,16 +522,16 @@ export default function PortalPage() {
             if (isChooseRequested) {
               initial = null;
             } else {
-              // Priority 1: Match currently selected client (e.g. from fast restore)
-              if (selectedClient?.clientSheetId) {
-                initial = data.clients.find(
-                  (c) => c.clientSheetId === selectedClient.clientSheetId || c.clientName?.toLowerCase() === selectedClient.clientName?.toLowerCase()
-                );
-              }
-              // Priority 2: Check query client
-              if (!initial && queryClient) {
+              // Priority 1: Check query client FIRST! An explicit URL parameter takes precedence over previous cached selection
+              if (queryClient) {
                 initial = data.clients.find(
                   (c) => c.clientName.toLowerCase() === String(queryClient).toLowerCase()
+                );
+              }
+              // Priority 2: Match currently selected client (e.g. from fast restore)
+              if (!initial && selectedClient?.clientSheetId) {
+                initial = data.clients.find(
+                  (c) => c.clientSheetId === selectedClient.clientSheetId || c.clientName?.toLowerCase() === selectedClient.clientName?.toLowerCase()
                 );
               }
               // Priority 3: Check localStorage
@@ -573,46 +577,7 @@ export default function PortalPage() {
     };
   }, [isAuthenticated, router.query.client, router.query.choose, user, selectedClient, logWorkspaceAccess]);
 
-  // Clean URL: Strip any legacy ?client=... or ?choose=... so the address bar stays clean (/pulse)
-  useEffect(() => {
-    if (router.query.client || router.query.choose) {
-      const nextQuery = { ...router.query };
-      delete nextQuery.client;
-      delete nextQuery.choose;
-      router.replace({ pathname: "/pulse", query: nextQuery }, undefined, { shallow: true });
-    }
-  }, [router, router.query.client, router.query.choose]);
-
-  const handleLogout = async () => {
-    activeClientSheetIdRef.current = null;
-    clientsFetchedRef.current = false;
-    lastLoggedClientRef.current = null;
-    setClientsLoaded(false);
-    setSelectedClient(null);
-    setPayload(null);
-    setLoadingPayload(false);
-    setPayloadError(null);
-    setPerformanceData(null);
-    setLoadingPerformance(false);
-    setPerfError(null);
-    setCashflowData(null);
-    setLoadingCashflow(false);
-    setCashError(null);
-    setKeyData(null);
-    setLoadingKeyData(false);
-    setKeyDataError(null);
-    setBudgetData(null);
-    setLoadingBudget(false);
-    setBudgetError(null);
-    setClients([]);
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("pulse_portal_client");
-      localStorage.removeItem("pulse_portal_active_client_obj");
-    }
-    await logout();
-  };
-
-  const handleSelectClient = (client) => {
+  const handleSelectClient = useCallback((client) => {
     if (client?.clientSheetId && client.clientSheetId === selectedClient?.clientSheetId) {
       return;
     }
@@ -660,6 +625,58 @@ export default function PortalPage() {
       delete nextQuery.choose;
       router.replace({ pathname: "/pulse", query: nextQuery }, undefined, { shallow: true });
     }
+  }, [selectedClient, logWorkspaceAccess, router]);
+
+  // Clean URL: Strip any legacy ?client=... or ?choose=... so the address bar stays clean (/pulse)
+  useEffect(() => {
+    // Only clean URL once clients have actually finished loading and selection is settled!
+    if (!clientsLoaded) return;
+    if (router.query.client || router.query.choose) {
+      const nextQuery = { ...router.query };
+      delete nextQuery.client;
+      delete nextQuery.choose;
+      router.replace({ pathname: "/pulse", query: nextQuery }, undefined, { shallow: true });
+    }
+  }, [clientsLoaded, router, router.query.client, router.query.choose]);
+
+  // Handle in-page client parameter updates (e.g. shallow router changes or preview links)
+  useEffect(() => {
+    if (!clientsLoaded || !router.query.client || clients.length === 0) return;
+    const target = clients.find(
+      (c) => c.clientName.toLowerCase() === String(router.query.client).toLowerCase()
+    );
+    if (target && target.clientSheetId !== selectedClient?.clientSheetId) {
+      handleSelectClient(target);
+    }
+  }, [clientsLoaded, router.query.client, clients, selectedClient, handleSelectClient]);
+
+  const handleLogout = async () => {
+    activeClientSheetIdRef.current = null;
+    clientsFetchedRef.current = false;
+    lastLoggedClientRef.current = null;
+    setClientsLoaded(false);
+    setSelectedClient(null);
+    setPayload(null);
+    setLoadingPayload(false);
+    setPayloadError(null);
+    setPerformanceData(null);
+    setLoadingPerformance(false);
+    setPerfError(null);
+    setCashflowData(null);
+    setLoadingCashflow(false);
+    setCashError(null);
+    setKeyData(null);
+    setLoadingKeyData(false);
+    setKeyDataError(null);
+    setBudgetData(null);
+    setLoadingBudget(false);
+    setBudgetError(null);
+    setClients([]);
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("pulse_portal_client");
+      localStorage.removeItem("pulse_portal_active_client_obj");
+    }
+    await logout();
   };
 
   // Fetch setup status for selected client
@@ -784,7 +801,9 @@ export default function PortalPage() {
 
   // Steady initial loading state: show 'Please wait - loading' until clients are determined,
   // and if a client is selected, until their initial payload arrives (or errors) UNLESS client user is in setup mode
-  if (!clientsLoaded || (selectedClient && !payload && !payloadError && !(isClientUser && setupStatus?.setupMode))) {
+  // or staff is previewing setup mode
+  const isBypassingPayloadForSetup = (isClientUser && setupStatus?.setupMode) || (isAdminOrManager && isPreviewSetup);
+  if (!clientsLoaded || (selectedClient && !payload && !payloadError && !isBypassingPayloadForSetup)) {
     return (
       <div
         style={{
@@ -827,6 +846,8 @@ export default function PortalPage() {
     return (
       <SetupHoldingGate
         clientName={selectedClient.clientName}
+        clients={clients}
+        onSelectClient={handleSelectClient}
         user={user}
         setupStatus={setupStatus}
         onLogout={handleLogout}
@@ -841,6 +862,8 @@ export default function PortalPage() {
     return (
       <SetupHoldingGate
         clientName={selectedClient.clientName}
+        clients={clients}
+        onSelectClient={handleSelectClient}
         user={user}
         setupStatus={setupStatus}
         onLogout={handleLogout}

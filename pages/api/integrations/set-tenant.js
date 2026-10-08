@@ -11,6 +11,7 @@
 import { getIntegrationTokens, saveIntegrationTokens, getSharedXeroGrant, linkClientToSharedXero } from "../../../services/vaultService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { getSessionUser } from "../../../services/authService.js";
+import { notifyStaffOnClientConnection } from "../../../services/connectionNotifier.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -86,6 +87,14 @@ export default async function handler(req, res) {
           isSharedGrant: true,
           message: `Successfully linked ${clientKey} to shared organisation "${tenantName || tenantId}".`
         });
+        notifyStaffOnClientConnection({
+          clientName: clientKey,
+          tool: "xero",
+          tenantName: tenantName || tenantId,
+          masterSheetId,
+          mode: "shared"
+        }).catch(() => {});
+        return result;
       }
     }
 
@@ -131,6 +140,13 @@ export default async function handler(req, res) {
         console.warn("⚠️ set-tenant: Note updating KeyInfo!X2:", sheetErr.message);
       }
     }
+
+    notifyStaffOnClientConnection({
+      clientName: effectiveClientName,
+      tool,
+      tenantName: tenantName || record.tenantName || "",
+      masterSheetId: effectiveMasterSheetId
+    }).catch(() => {});
 
     return res.status(200).json({
       success: true,

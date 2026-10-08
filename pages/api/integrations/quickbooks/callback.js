@@ -12,6 +12,7 @@
 import { exchangeQBCodeForTokens, getQBCompanyInfo } from "../../../../services/quickbooksService.js";
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
+import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -149,6 +150,14 @@ export default async function handler(req, res) {
         console.warn("⚠️ Failed to update KeyInfo!X3 via Sheets API:", sheetErr.message);
       }
     }
+
+    // Notify all Admins and assigned Client Manager
+    notifyStaffOnClientConnection({
+      clientName,
+      tool: "quickbooks",
+      tenantName: effectiveCompanyName || activeRealmId || "",
+      masterSheetId
+    }).catch(err => console.error("Notification email error:", err.message));
 
     const returnUrl = statePayload.redirectBack || "/portal";
     const separator = returnUrl.includes("?") ? "&" : "?";

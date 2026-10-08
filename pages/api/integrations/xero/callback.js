@@ -18,6 +18,7 @@ import {
 } from "../../../../services/vaultService.js";
 import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID } from "../../../../services/pmaLogger.js";
+import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -240,6 +241,15 @@ export default async function handler(req, res) {
         console.warn("⚠️ Failed to update initiating Master Sheet:", sheetErr.message);
       }
     }
+
+    // Notify all Admins and assigned Client Manager
+    notifyStaffOnClientConnection({
+      clientName,
+      tool: "xero",
+      tenantName: tenantName || "",
+      masterSheetId,
+      mode: isDedicated ? "dedicated" : "shared"
+    }).catch(err => console.error("Notification email error:", err.message));
 
     const returnUrl = statePayload.redirectBack || "/portal";
     const separator = returnUrl.includes("?") ? "&" : "?";

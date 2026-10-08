@@ -158,12 +158,6 @@ export default function PortalPage() {
     }
   }, [selectedClient, fetchPayload]);
 
-  const handleRefreshPayload = () => {
-    if (selectedClient) {
-      fetchPayload(selectedClient, true);
-    }
-  };
-
   const fetchPerformance = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
     if (client.clientSheetId !== activeClientSheetIdRef.current) return;
@@ -208,12 +202,6 @@ export default function PortalPage() {
     setPerformanceData(null);
   }, [selectedClient]);
 
-  const handleRefreshPerformance = () => {
-    if (selectedClient) {
-      fetchPerformance(selectedClient, true);
-    }
-  };
-
   const fetchCashflow = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
     if (client.clientSheetId !== activeClientSheetIdRef.current) return;
@@ -257,12 +245,6 @@ export default function PortalPage() {
   useEffect(() => {
     setCashflowData(null);
   }, [selectedClient]);
-
-  const handleRefreshCashflow = () => {
-    if (selectedClient) {
-      fetchCashflow(selectedClient, true);
-    }
-  };
 
   const fetchKeyData = useCallback(async (client, bypassCache = false, isSilent = false) => {
     if (!client || !client.clientSheetId) return;
@@ -310,6 +292,29 @@ export default function PortalPage() {
   useEffect(() => {
     setKeyData(null);
   }, [selectedClient]);
+
+  const handleRefreshPayload = () => {
+    if (selectedClient) {
+      fetchPayload(selectedClient, true);
+      fetchPerformance(selectedClient, true);
+      fetchCashflow(selectedClient, true);
+      fetchKeyData(selectedClient, true);
+    }
+  };
+
+  const handleRefreshPerformance = () => {
+    if (selectedClient) {
+      fetchPerformance(selectedClient, true);
+      fetchKeyData(selectedClient, true);
+    }
+  };
+
+  const handleRefreshCashflow = () => {
+    if (selectedClient) {
+      fetchCashflow(selectedClient, true);
+      fetchKeyData(selectedClient, true);
+    }
+  };
 
   const handleRefreshKeyData = () => {
     if (selectedClient) {
@@ -422,13 +427,13 @@ export default function PortalPage() {
       // so latest numbers from sheets/integrations are kept up to date
       fetchPayload(selectedClient, true, true);
 
-      if (["dashboard", "ytd", "perfBreakdown", "scenarios"].includes(activeView)) {
+      if (["month", "dashboard", "ytd", "perfBreakdown", "scenarios"].includes(activeView)) {
         fetchPerformance(selectedClient, true, true);
       }
       if (["cash", "cashBreakdown"].includes(activeView)) {
         fetchCashflow(selectedClient, true, true);
       }
-      if (["jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "cashBreakdown", "scenarios", "perfBreakdown"].includes(activeView)) {
+      if (["month", "dashboard", "ytd", "cash", "jobs", "contractors", "expenses", "salaries", "dividends", "nbtofind", "cashBreakdown", "scenarios", "perfBreakdown"].includes(activeView)) {
         fetchKeyData(selectedClient, true, true);
       }
       if (["viewBudget", "budgetVariance"].includes(activeView)) {

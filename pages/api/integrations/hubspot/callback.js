@@ -6,6 +6,7 @@
 
 import { exchangeHubSpotCodeForTokens, getHubSpotAccountInfo } from "../../../../services/hubspotService.js";
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
+import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -88,6 +89,14 @@ export default async function handler(req, res) {
         accountType: accountInfo?.accountType || ""
       }
     });
+
+    // Notify all Admins and assigned Client Manager
+    notifyStaffOnClientConnection({
+      clientName,
+      tool: "hubspot",
+      tenantName: portalName || "",
+      masterSheetId
+    }).catch(err => console.error("Notification email error:", err.message));
 
     const returnUrl = statePayload.redirectBack || "/portal";
     const separator = returnUrl.includes("?") ? "&" : "?";

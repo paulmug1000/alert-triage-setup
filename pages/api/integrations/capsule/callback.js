@@ -6,6 +6,7 @@
 
 import { exchangeCapsuleCodeForTokens, getCapsuleAccountInfo } from "../../../../services/capsuleService.js";
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
+import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 
 function parseCookies(cookieHeader) {
   if (!cookieHeader) return {};
@@ -87,6 +88,14 @@ export default async function handler(req, res) {
         userEmail: accountInfo?.userEmail || ""
       }
     });
+
+    // Notify all Admins and assigned Client Manager
+    notifyStaffOnClientConnection({
+      clientName,
+      tool: "capsule",
+      tenantName: siteName || "",
+      masterSheetId
+    }).catch(err => console.error("Notification email error:", err.message));
 
     const returnUrl = statePayload.redirectBack || "/portal";
     const separator = returnUrl.includes("?") ? "&" : "?";

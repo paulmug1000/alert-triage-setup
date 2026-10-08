@@ -20,12 +20,12 @@ export function useTools({
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
       done();
     };
-    pdfScript.onerror = reject;
+    pdfScript.onerror = () => reject(new Error("Failed to load PDF library (pdf.js). Please check network or Content-Security-Policy settings."));
     document.head.appendChild(pdfScript);
     const xlsxScript = document.createElement("script");
     xlsxScript.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
     xlsxScript.onload = done;
-    xlsxScript.onerror = reject;
+    xlsxScript.onerror = () => reject(new Error("Failed to load Excel library (xlsx). Please check network or Content-Security-Policy settings."));
     document.head.appendChild(xlsxScript);
   }), []);
 
@@ -79,9 +79,18 @@ export function useTools({
   const convertOneToolsFile = useCallback(async (id, file, toolType) => {
     updateToolsFile(id, { convertStatus: "converting", convertMsg: "Preparing file..." });
     try {
-      if (!toolsScriptsLoaded) await loadToolsScripts();
+      const lowerName = (file.name || "").toLowerCase();
 
-      if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.name.endsWith(".csv")) {
+      // CSV files are plain text - read directly without external library dependencies
+      if (lowerName.endsWith(".csv")) {
+        const text = await file.text();
+        const cleanText = text.replace(/^\uFEFF/, "");
+        await uploadAndDetect(id, { data: cleanText, type: "text", fileName: file.name }, file.name, toolType);
+        return;
+      }
+
+      if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
+        if (!toolsScriptsLoaded) await loadToolsScripts();
         const buf = await file.arrayBuffer();
         const workbook = window.XLSX.read(new Uint8Array(buf), { type: "array" });
         let excelText = "";
@@ -93,7 +102,8 @@ export function useTools({
         return;
       }
 
-      if (file.type === "application/pdf") {
+      if (file.type === "application/pdf" || lowerName.endsWith(".pdf")) {
+        if (!toolsScriptsLoaded) await loadToolsScripts();
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await window.pdfjsLib.getDocument(arrayBuffer).promise;
         const scale = 2;
@@ -142,7 +152,8 @@ export function useTools({
       img.onerror = () => updateToolsFile(id, { convertStatus: "error", convertMsg: "Failed to read image file." });
       img.src = URL.createObjectURL(file);
     } catch (err) {
-      updateToolsFile(id, { convertStatus: "error", convertMsg: "Error reading file: " + err.message });
+      const errorMsg = err?.message || (typeof err === "string" ? err : "Unknown error reading file");
+      updateToolsFile(id, { convertStatus: "error", convertMsg: "Error reading file: " + errorMsg });
     }
   }, [loadToolsScripts, toolsScriptsLoaded, updateToolsFile, uploadAndDetect]);
 

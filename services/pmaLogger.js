@@ -1,6 +1,6 @@
 import { withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
-import { parseLogDate, formatRelativeTime, isWithin30Days } from "./activityService.js";
+import { parseLogDate, formatRelativeTime, isWithin30Days, appendLiveActivityToCache } from "./activityService.js";
 
 export const DEFAULT_AC_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 export const PMA_ACTIVITY_LOG_TAB = "PmaActivityLog";
@@ -85,22 +85,30 @@ export async function logPmaActivity(sheets, {
 
     console.log(`📝 [PMA Log] ${cleanCategory} (${cleanClient || "All"}): ${cleanAction} - ${cleanSummary}`);
 
-    // 2. Invalidate Redis activity cache so fresh event is visible immediately
+    // 2. Non-destructively prepend new event to Redis cache so fresh event is visible immediately
+    // without wiping out the 30-second Google Sheets AutoLog scrape!
     try {
-      const keysToDelete = [
-        `${REDIS_ACTIVITY_PREFIX}all:normal`,
-        `${REDIS_ACTIVITY_PREFIX}all:with_routine`
-      ];
-      if (cleanClient) {
-        keysToDelete.push(
-          `${REDIS_ACTIVITY_PREFIX}client:${cleanClient}:normal`,
-          `${REDIS_ACTIVITY_PREFIX}client:${cleanClient}:with_routine`
-        );
-      }
-      await Promise.all(keysToDelete.map(k => redisClient.del(k)));
-      console.log(`⚡ [PMA Log] Invalidated Redis activity cache for ${cleanClient || "ALL"}`);
+      const date = new Date(nowISO);
+      const liveEvent = {
+        id: `pma_${date.getTime()}_${cleanClient.replace(/\s+/g, "_") || "All"}_${Date.now()}`,
+        timestamp: nowISO,
+        timestampMs: date.getTime(),
+        relativeTime: formatRelativeTime(date),
+        clientName: cleanClient,
+        category: cleanCategory,
+        source: "PMA",
+        action: cleanAction,
+        summary: cleanSummary,
+        structuredDetails: typeof details === "object" ? details : { raw: detailsStr },
+        userEmail: cleanUser,
+        author: cleanUser,
+        isRoutine: false,
+        rawDetails: detailsStr ? `${cleanSummary}\n\nDetails: ${detailsStr}` : cleanSummary
+      };
+      await appendLiveActivityToCache(liveEvent, cleanClient);
+      console.log(`⚡ [PMA Log] Prepended live event to Redis activity cache for ${cleanClient || "ALL"}`);
     } catch (cacheErr) {
-      console.warn("⚠️ Could not bust Redis cache in logPmaActivity:", cacheErr.message);
+      console.warn("⚠️ Could not update live Redis cache in logPmaActivity:", cacheErr.message);
     }
   } catch (err) {
     console.error("❌ logPmaActivity error:", err.message);

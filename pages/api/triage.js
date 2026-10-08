@@ -230,9 +230,12 @@ export default async function handler(req, res) {
         action === "analyze_alert" ||
         action === "analyze_noaction_flag" ||
         action === "store_precomputed" ||
-        action === "send_daily_alerts_summary"
+        action === "send_daily_alerts_summary" ||
+        action === "get_activity"
       )) ||
       (isAgentAuthorized && action === "agent_progress");
+
+    req.isSystemAuthorized = Boolean(isSystemAuthorized);
 
     // Enforce authentication gateway across all protected actions
     if (!PUBLIC_ACTIONS.has(action) && !isSystemAuthorized) {

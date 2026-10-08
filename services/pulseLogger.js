@@ -1,6 +1,6 @@
 import { withRetry } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
-import { parseLogDate, formatRelativeTime, isWithin30Days } from "./activityService.js";
+import { parseLogDate, formatRelativeTime, isWithin30Days, appendLiveActivityToCache } from "./activityService.js";
 
 export const DEFAULT_AC_SHEET_ID = "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
 export const PULSE_ACTIVITY_LOG_TAB = "PulseActivityLog";
@@ -92,21 +92,30 @@ export async function logPulseActivity(sheets, {
 
     console.log(`📝 [Pulse Log] ${cleanCategory} (${cleanClient}): ${cleanAction} - ${cleanSummary}`);
 
-    // 2. Invalidate Redis activity cache so fresh event is visible immediately
+    // 2. Non-destructively prepend new event to Redis cache so fresh event is visible immediately
+    // without wiping out the 30-second Google Sheets AutoLog scrape!
     try {
-      const keysToDelete = [
-        `${REDIS_ACTIVITY_PREFIX}all:normal`,
-        `${REDIS_ACTIVITY_PREFIX}all:with_routine`
-      ];
-      if (cleanClient && cleanClient !== "System" && cleanClient !== "Multi-Client" && cleanClient !== "Unregistered") {
-        keysToDelete.push(
-          `${REDIS_ACTIVITY_PREFIX}client:${cleanClient}:normal`,
-          `${REDIS_ACTIVITY_PREFIX}client:${cleanClient}:with_routine`
-        );
-      }
-      await Promise.all(keysToDelete.map(k => redisClient.del(k)));
+      const date = new Date(nowISO);
+      const liveEvent = {
+        id: `pulse_${date.getTime()}_${cleanClient.replace(/\s+/g, "_") || "System"}_${Date.now()}`,
+        timestamp: nowISO,
+        timestampMs: date.getTime(),
+        relativeTime: formatRelativeTime(date),
+        clientName: cleanClient,
+        category: cleanCategory,
+        source: "user",
+        action: cleanAction,
+        summary: cleanSummary,
+        structuredDetails: typeof details === "object" ? details : { raw: detailsStr },
+        userEmail: cleanUser,
+        author: cleanUser,
+        isRoutine: false,
+        rawDetails: detailsStr ? `${cleanSummary}\n\nDetails: ${detailsStr}` : cleanSummary
+      };
+      await appendLiveActivityToCache(liveEvent, cleanClient);
+      console.log(`⚡ [Pulse Log] Prepended live event to Redis activity cache for ${cleanClient || "System"}`);
     } catch (cacheErr) {
-      console.warn("⚠️ Could not bust Redis cache in logPulseActivity:", cacheErr.message);
+      console.warn("⚠️ Could not update live Redis cache in logPulseActivity:", cacheErr.message);
     }
 
     // 3. Optional periodic pruning: check row count and trim oldest if > MAX_ROWS

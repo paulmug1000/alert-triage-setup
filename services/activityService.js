@@ -1133,25 +1133,49 @@ export async function fetchClientActivity(sheets, client, includeRoutine = false
 
   // 1. Read Master Sheet AutoLog (Expanded bounded range A2:D250 to capture full 30 days)
   if (masterSheetId) {
-    try {
-      const resp = await withRetry(() =>
-        sheets.spreadsheets.values.get({
-          spreadsheetId: masterSheetId,
-          range: "AutoLog!A2:D250",
-          valueRenderOption: "FORMATTED_VALUE"
-        })
-      );
-      const rows = resp.data.values || [];
-      rows.forEach((row, idx) => {
-        const ev = parseAutoLogRow(row, clientName, idx);
-        if (ev) {
-          if (includeRoutine || !ev.isRoutine) {
-            events.push(ev);
-          }
+    const autologCacheKey = `${REDIS_ACTIVITY_PREFIX}autolog:${clientName}:${includeRoutine ? "with_routine" : "normal"}`;
+    let autoLogEvents = null;
+    if (!forceRefresh) {
+      try {
+        const cachedAuto = await redisClient.get(autologCacheKey);
+        if (cachedAuto) {
+          autoLogEvents = JSON.parse(cachedAuto);
         }
-      });
-    } catch (err) {
-      console.warn(`⚠️ Could not read AutoLog for ${clientName}:`, err.message);
+      } catch (e) {
+        // Redis fallback
+      }
+    }
+
+    if (!autoLogEvents) {
+      try {
+        const resp = await withRetry(() =>
+          sheets.spreadsheets.values.get({
+            spreadsheetId: masterSheetId,
+            range: "AutoLog!A2:D250",
+            valueRenderOption: "FORMATTED_VALUE"
+          })
+        );
+        const rows = resp.data.values || [];
+        autoLogEvents = [];
+        rows.forEach((row, idx) => {
+          const ev = parseAutoLogRow(row, clientName, idx);
+          if (ev) {
+            if (includeRoutine || !ev.isRoutine) {
+              autoLogEvents.push(ev);
+            }
+          }
+        });
+        try {
+          await redisClient.set(autologCacheKey, JSON.stringify(autoLogEvents), { EX: CACHE_TTL_SECONDS });
+        } catch (e) {}
+      } catch (err) {
+        console.warn(`⚠️ Could not read AutoLog for ${clientName}:`, err.message);
+        autoLogEvents = [];
+      }
+    }
+
+    if (Array.isArray(autoLogEvents)) {
+      events.push(...autoLogEvents);
     }
   }
 
@@ -1357,7 +1381,8 @@ export async function handleGetActivity(req, res, sheets) {
       }
     }
 
-    const sessionUser = getSessionUser(req);
+    const isCronOrSystem = Boolean(req.isSystemAuthorized);
+    const sessionUser = getSessionUser(req) || (isCronOrSystem ? { email: "system@cron", isAdmin: true, assignedClients: "*" } : null);
     if (!sessionUser) {
       return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
     }
@@ -1422,5 +1447,61 @@ export async function handleGetActivity(req, res, sheets) {
   } catch (err) {
     console.error("❌ handleGetActivity error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Non-destructive live update to Redis activity cache:
+ * Instead of busting (deleting) the 30-second AutoLog scrape,
+ * this prepends the new live event into the existing cached payload in Redis.
+ */
+export async function appendLiveActivityToCache(newEvent, clientName = null) {
+  if (!newEvent || !redisClient.isOpen) return;
+  try {
+    const keys = [
+      `${REDIS_ACTIVITY_PREFIX}all:normal`,
+      `${REDIS_ACTIVITY_PREFIX}all:with_routine`
+    ];
+    const cleanClient = String(clientName || newEvent.clientName || "").trim();
+    if (cleanClient && cleanClient.toLowerCase() !== "system") {
+      keys.push(
+        `${REDIS_ACTIVITY_PREFIX}client:${cleanClient}:normal`,
+        `${REDIS_ACTIVITY_PREFIX}client:${cleanClient}:with_routine`
+      );
+    }
+
+    for (const key of keys) {
+      const cached = await redisClient.get(key);
+      if (!cached) continue;
+      const parsed = JSON.parse(cached);
+
+      // 1. All-clients cache structure ({ clients: {}, allEvents: [] })
+      if (parsed.allEvents) {
+        const existingAll = parsed.allEvents || [];
+        parsed.allEvents = deduplicateEvents([newEvent, ...existingAll]);
+        
+        if (cleanClient && cleanClient.toLowerCase() !== "system") {
+          if (!parsed.clients) parsed.clients = {};
+          if (!parsed.clients[cleanClient]) {
+            parsed.clients[cleanClient] = { events: [], totalEvents: 0 };
+          }
+          const clientEvents = parsed.clients[cleanClient].events || [];
+          parsed.clients[cleanClient].events = deduplicateEvents([newEvent, ...clientEvents]);
+          parsed.clients[cleanClient].totalEvents = parsed.clients[cleanClient].events.length;
+        }
+        parsed.cachedAt = new Date().toISOString();
+        await redisClient.set(key, JSON.stringify(parsed), { EX: CACHE_TTL_SECONDS });
+      } 
+      // 2. Single client cache structure ({ clientName, events: [], totalEvents })
+      else if (parsed.events) {
+        const existingClientEvents = parsed.events || [];
+        parsed.events = deduplicateEvents([newEvent, ...existingClientEvents]);
+        parsed.totalEvents = parsed.events.length;
+        parsed.cachedAt = new Date().toISOString();
+        await redisClient.set(key, JSON.stringify(parsed), { EX: CACHE_TTL_SECONDS });
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ Could not prepend live event to Redis activity cache:", err.message);
   }
 }

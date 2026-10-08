@@ -2,6 +2,82 @@ import { useState, useCallback, useEffect, useRef } from "react";
 
 const STORAGE_KEY_PREFIX = "pulse_activity_swr_v1:";
 
+function prepareCompactActivitySnapshot(data, targetClient) {
+  if (!data) return null;
+  // If targetClient is not ALL, data is single client
+  if (targetClient && targetClient !== "ALL") {
+    const events = (data.events || []).slice(0, 50).map(e => ({
+      id: e.id,
+      timestamp: e.timestamp,
+      timestampMs: e.timestampMs,
+      relativeTime: e.relativeTime,
+      clientName: e.clientName,
+      category: e.category,
+      source: e.source,
+      action: e.action,
+      summary: e.summary,
+      isRoutine: e.isRoutine,
+      userEmail: e.userEmail,
+      author: e.author,
+      structuredDetails: e.structuredDetails ? {
+        type: e.structuredDetails.type,
+        pmaAction: e.structuredDetails.pmaAction,
+        pulseAction: e.structuredDetails.pulseAction
+      } : undefined
+    }));
+    return {
+      clientName: targetClient,
+      totalEvents: data.totalEvents || events.length,
+      events,
+      cachedAt: data.cachedAt
+    };
+  }
+
+  // ALL clients: compact each client's latest events for instant card rendering
+  const compactClients = {};
+  for (const [cName, cInfo] of Object.entries(data.clients || {})) {
+    compactClients[cName] = {
+      totalEvents: cInfo.totalEvents || (cInfo.events || []).length,
+      events: (cInfo.events || []).slice(0, 20).map(e => ({
+        id: e.id,
+        timestamp: e.timestamp,
+        timestampMs: e.timestampMs,
+        relativeTime: e.relativeTime,
+        clientName: e.clientName,
+        category: e.category,
+        source: e.source,
+        action: e.action,
+        summary: e.summary,
+        isRoutine: e.isRoutine,
+        userEmail: e.userEmail,
+        author: e.author,
+        structuredDetails: e.structuredDetails ? {
+          type: e.structuredDetails.type,
+          pmaAction: e.structuredDetails.pmaAction,
+          pulseAction: e.structuredDetails.pulseAction
+        } : undefined
+      }))
+    };
+  }
+
+  return {
+    clients: compactClients,
+    allEvents: (data.allEvents || []).slice(0, 50).map(e => ({
+      id: e.id,
+      timestamp: e.timestamp,
+      timestampMs: e.timestampMs,
+      relativeTime: e.relativeTime,
+      clientName: e.clientName,
+      category: e.category,
+      source: e.source,
+      action: e.action,
+      summary: e.summary,
+      isRoutine: e.isRoutine
+    })),
+    cachedAt: data.cachedAt
+  };
+}
+
 export function useActivity(automationCommanderSheetId, allOutgoingsClients) {
   // 1. Synchronous 0ms load from localStorage on very first mount
   const [activityData, setActivityData] = useState(() => {
@@ -137,11 +213,13 @@ export function useActivity(automationCommanderSheetId, allOutgoingsClients) {
           setActivityData(updatedData);
         }
 
-        // Save to persistent localStorage for 0ms load next time
+
+        // Save compact snapshot to persistent localStorage for 0ms load next time
         try {
           if (updatedData) {
             const storageKey = `${STORAGE_KEY_PREFIX}${targetClient}:${targetRoutine ? "routine" : "normal"}`;
-            localStorage.setItem(storageKey, JSON.stringify(updatedData));
+            const compactSnapshot = prepareCompactActivitySnapshot(updatedData, targetClient);
+            localStorage.setItem(storageKey, JSON.stringify(compactSnapshot));
           }
         } catch {
           // Local storage quota or unavailable fallback

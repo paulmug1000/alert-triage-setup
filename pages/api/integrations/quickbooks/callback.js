@@ -11,7 +11,8 @@
 
 import { exchangeQBCodeForTokens, getQBCompanyInfo } from "../../../../services/quickbooksService.js";
 import { saveIntegrationTokens } from "../../../../services/vaultService.js";
-import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/userPermissions.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 
 function parseCookies(cookieHeader) {
@@ -83,8 +84,27 @@ export default async function handler(req, res) {
 
     const clientKey = statePayload.clientKey || statePayload.clientName;
     const clientName = statePayload.clientName || clientKey;
-    const masterSheetId = statePayload.masterSheetId;
+    let masterSheetId = statePayload.masterSheetId;
     const activeRealmId = String(realmId || "").trim();
+
+    // Fallback: If masterSheetId wasn't passed in statePayload, resolve it from AutoUpdates
+    if (!masterSheetId && clientName) {
+      try {
+        const sheets = await getSheetsClient();
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: DEFAULT_AC_SHEET_ID,
+          range: "AutoUpdates!A2:N500"
+        });
+        const rows = resp.data.values || [];
+        const match = rows.find(r => matchesClientName(r[0], clientName));
+        if (match && match[12]) {
+          masterSheetId = extractSheetIdFromUrl(match[12]) || String(match[12]).trim();
+          console.log(`🔗 QB Callback: Auto-resolved masterSheetId for "${clientName}" -> ${masterSheetId}`);
+        }
+      } catch (lookupErr) {
+        console.warn("⚠️ QB Callback: Note resolving masterSheetId:", lookupErr.message);
+      }
+    }
 
     // 2. Fetch company metadata from QuickBooks API
     let companyName = "";

@@ -851,6 +851,8 @@ export default function PortalPage() {
     return (
       <SetupHoldingGate
         clientName={selectedClient.clientName}
+        masterSheetId={selectedClient.masterSheetId}
+        clientSheetId={selectedClient.clientSheetId}
         clients={clients}
         onSelectClient={handleSelectClient}
         user={user}
@@ -867,6 +869,8 @@ export default function PortalPage() {
     return (
       <SetupHoldingGate
         clientName={selectedClient.clientName}
+        masterSheetId={selectedClient.masterSheetId}
+        clientSheetId={selectedClient.clientSheetId}
         clients={clients}
         onSelectClient={handleSelectClient}
         user={user}

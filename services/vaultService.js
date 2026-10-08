@@ -16,6 +16,8 @@
 
 import crypto from "crypto";
 import { redisClient } from "./redisClient.js";
+import { getSheetsClient } from "./sheetsClient.js";
+import { resolveClientNameBySheetId } from "./userPermissions.js";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12; // 96 bits recommended for GCM
@@ -180,24 +182,9 @@ export async function saveSharedXeroGrant({ tokens, availableTenants = [], conne
     throw new Error("Missing valid tokens for saveSharedXeroGrant");
   }
 
-  // Load existing grant to accumulate availableTenants across multiple authorizations
-  let existingTenants = [];
-  try {
-    const rawExisting = await redisClient.get(SHARED_XERO_KEY);
-    if (rawExisting) {
-      const parsed = JSON.parse(rawExisting);
-      existingTenants = parsed.availableTenants || [];
-    }
-  } catch {}
-
-  const tenantMap = new Map();
-  for (const t of existingTenants) {
-    if (t && t.tenantId) tenantMap.set(t.tenantId, t);
-  }
-  for (const t of availableTenants) {
-    if (t && t.tenantId) tenantMap.set(t.tenantId, t);
-  }
-  const mergedTenants = Array.from(tenantMap.values());
+  // Only store organisations verified directly from getXeroConnections on this token grant.
+  // Historical unverified tenants must not be merged in, as this token lacks access to them.
+  const verifiedTenants = (availableTenants || []).filter(t => t && t.tenantId);
 
   const aad = "shared:xero";
   const now = Date.now();
@@ -221,7 +208,7 @@ export async function saveSharedXeroGrant({ tokens, availableTenants = [], conne
     scope: tokens.scope || "",
     expiresAt,
     encryptedTokens,
-    availableTenants: mergedTenants.map(t => ({
+    availableTenants: verifiedTenants.map(t => ({
       tenantId: t.tenantId,
       tenantName: t.tenantName,
       createdDateUtc: t.createdDateUtc || ""
@@ -232,7 +219,7 @@ export async function saveSharedXeroGrant({ tokens, availableTenants = [], conne
   };
 
   await redisClient.set(SHARED_XERO_KEY, JSON.stringify(record));
-  console.log(`🔒 Vault: Successfully stored central shared Xero grant with ${mergedTenants.length} organisations.`);
+  console.log(`🔒 Vault: Successfully stored central shared Xero grant with ${verifiedTenants.length} organisations.`);
   return record;
 }
 
@@ -463,6 +450,25 @@ export async function getIntegrationTokens({ clientKey, masterSheetId, tool }) {
   } else if (masterSheetId) {
     const sheetIndexKey = getSheetIndexRedisKey(masterSheetId, cleanTool);
     redisKey = await redisClient.get(sheetIndexKey);
+
+    // Fallback: If sheet index is missing in Redis, resolve clientName from AutoUpdates
+    if (!redisKey) {
+      try {
+        const sheets = await getSheetsClient();
+        const resolvedName = await resolveClientNameBySheetId(sheets, masterSheetId);
+        if (resolvedName) {
+          const fallbackKey = getVaultRedisKey(resolvedName, cleanTool);
+          const rawCheck = await redisClient.get(fallbackKey);
+          if (rawCheck) {
+            redisKey = fallbackKey;
+            await redisClient.set(sheetIndexKey, fallbackKey);
+            console.log(`🔗 Vault: Auto-healed sheet index for "${resolvedName}" [${cleanTool}] -> ${masterSheetId}`);
+          }
+        }
+      } catch (fallbackErr) {
+        console.warn("⚠️ Vault sheet fallback resolution note:", fallbackErr.message);
+      }
+    }
   }
 
   let record = null;
@@ -646,6 +652,25 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
   } else if (masterSheetId) {
     const sheetIndexKey = getSheetIndexRedisKey(masterSheetId, cleanTool);
     redisKey = await redisClient.get(sheetIndexKey);
+
+    // Fallback: If sheet index is missing in Redis, resolve clientName from AutoUpdates
+    if (!redisKey) {
+      try {
+        const sheets = await getSheetsClient();
+        const resolvedName = await resolveClientNameBySheetId(sheets, masterSheetId);
+        if (resolvedName) {
+          const fallbackKey = getVaultRedisKey(resolvedName, cleanTool);
+          const rawCheck = await redisClient.get(fallbackKey);
+          if (rawCheck) {
+            redisKey = fallbackKey;
+            await redisClient.set(sheetIndexKey, fallbackKey);
+            console.log(`🔗 Vault: Auto-healed status index for "${resolvedName}" [${cleanTool}] -> ${masterSheetId}`);
+          }
+        }
+      } catch (fallbackErr) {
+        console.warn("⚠️ Vault status sheet fallback resolution note:", fallbackErr.message);
+      }
+    }
   }
 
   let record = null;

@@ -13,7 +13,7 @@
 import { getIntegrationStatus, getSharedXeroGrant } from "../../../services/vaultService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../services/userPermissions.js";
-import { getClientSetupConfig } from "../../../services/setupService.js";
+import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
 import { getSessionUser } from "../../../services/authService.js";
 
 export default async function handler(req, res) {
@@ -21,7 +21,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { all, clientKey, clientName, masterSheetId } = req.query;
+  const { all, clientKey, clientName, masterSheetId, refresh, force } = req.query;
+  const forceRefresh = refresh === "true" || force === "true";
 
   // Mode 1: All Clients Status (for the new Multi-Client Integrations page)
   if (all === "true" || all === "1") {
@@ -59,7 +60,7 @@ export default async function handler(req, res) {
         clients.map(async (c) => {
           try {
             const [cfg, ...toolStatuses] = await Promise.all([
-              getClientSetupConfig(c),
+              getClientSetupConfig({ clientName: c.clientName, masterSheetId: c.masterSheetId, forceSheetSync: forceRefresh }),
               ...ALL_TOOLS.map(tool => getIntegrationStatus({
                 clientKey: c.clientName,
                 masterSheetId: c.masterSheetId,
@@ -126,6 +127,11 @@ export default async function handler(req, res) {
         lastRefreshedAt: sharedXeroRaw.lastRefreshedAt,
         updatedAt: sharedXeroRaw.updatedAt
       } : null;
+
+      // Trigger non-blocking background revalidation for stale caches
+      if (!forceRefresh) {
+        revalidateClientsSetupInBackground(clients);
+      }
 
       return res.status(200).json({
         success: true,

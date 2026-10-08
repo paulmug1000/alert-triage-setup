@@ -46,7 +46,7 @@ export function isOAuthTool(tool) {
 /**
  * Returns full setup configuration for a client (for PMA Setup view).
  */
-export async function getClientSetupConfig({ clientName, masterSheetId }) {
+export async function getClientSetupConfig({ clientName, masterSheetId, forceSheetSync = false }) {
   if (!clientName) throw new Error("Missing clientName parameter.");
 
   const redisKey = getSetupRedisKey(clientName);
@@ -61,12 +61,17 @@ export async function getClientSetupConfig({ clientName, masterSheetId }) {
     console.error(`Failed to read Redis setup config for ${clientName}:`, err);
   }
 
-  // If not cached in Redis or missing sheet fields, read Master Sheet KeyInfo!Q4:Q9
-  let sheetQ4 = "None";
-  let sheetQ8 = "None";
-  let sheetQ9 = "NA";
+  // Fast path: Only query Google Sheets API if:
+  // 1) forceSheetSync is true, OR
+  // 2) Redis does not have accountingTool and crmTool cached yet
+  const hasCachedTools = config && typeof config.accountingTool === "string" && typeof config.crmTool === "string";
+  const needsSheetSync = forceSheetSync || !hasCachedTools;
 
-  if (masterSheetId) {
+  let sheetQ4 = config?.accountingTool || "None";
+  let sheetQ8 = config?.crmTool || "None";
+  let sheetQ9 = config?.crmDrives || "NA";
+
+  if (needsSheetSync && masterSheetId) {
     try {
       const sheets = await getSheetsClient();
       const res = await withRetry(() =>
@@ -79,6 +84,22 @@ export async function getClientSetupConfig({ clientName, masterSheetId }) {
       sheetQ4 = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "None";
       sheetQ8 = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "None";
       sheetQ9 = (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "NA";
+
+      // Persist to Redis so future visits load instantly from memory
+      const updatedRecord = {
+        ...(config || {}),
+        clientName,
+        masterSheetId: masterSheetId || config?.masterSheetId || "",
+        setupMode: config?.setupMode === true,
+        requestConnections: config?.requestConnections === true,
+        accountingTool: sheetQ4,
+        crmTool: sheetQ8,
+        crmDrives: sheetQ9,
+        sheetSyncedAt: new Date().toISOString(),
+        updatedAt: config?.updatedAt || new Date().toISOString()
+      };
+      await redisClient.set(redisKey, JSON.stringify(updatedRecord));
+      config = updatedRecord;
     } catch (sheetErr) {
       console.log(`Note reading KeyInfo!Q4:Q9 for ${clientName}:`, sheetErr.message);
     }
@@ -326,3 +347,72 @@ export async function getClientSetupStatusForPortal({ clientName, masterSheetId 
     hasDisconnectedTools
   };
 }
+
+/**
+ * Asynchronously revalidates client setup configs from Google Sheets in the background.
+ * Checks clients that haven't been synced from the sheet recently (or whose cache is stale)
+ * and updates Redis without blocking the API response.
+ */
+export function revalidateClientsSetupInBackground(clients = []) {
+  if (!Array.isArray(clients) || clients.length === 0) return;
+
+  // Run asynchronously in background without blocking response
+  Promise.resolve().then(async () => {
+    try {
+      const ONE_HOUR = 60 * 60 * 1000;
+      const now = Date.now();
+
+      for (const c of clients) {
+        if (!c.clientName || !c.masterSheetId) continue;
+        const redisKey = getSetupRedisKey(c.clientName);
+        let config = null;
+        try {
+          const raw = await redisClient.get(redisKey);
+          if (raw) config = JSON.parse(raw);
+        } catch {}
+
+        const lastSynced = config?.sheetSyncedAt ? new Date(config.sheetSyncedAt).getTime() : 0;
+        const isStale = (now - lastSynced) > ONE_HOUR;
+
+        if (isStale) {
+          try {
+            const sheets = await getSheetsClient();
+            const res = await withRetry(() =>
+              sheets.spreadsheets.values.get({
+                spreadsheetId: c.masterSheetId,
+                range: "KeyInfo!Q4:Q9"
+              })
+            );
+            const rows = res.data.values || [];
+            const sheetQ4 = (rows[0] && rows[0][0]) ? String(rows[0][0]).trim() : "None";
+            const sheetQ8 = (rows[4] && rows[4][0]) ? String(rows[4][0]).trim() : "None";
+            const sheetQ9 = (rows[5] && rows[5][0]) ? String(rows[5][0]).trim() : "NA";
+
+            if (sheetQ4 !== config?.accountingTool || sheetQ8 !== config?.crmTool || sheetQ9 !== config?.crmDrives) {
+              console.log(`🔄 Setup Background Sync: Updated tools for "${c.clientName}" in Redis: Acc=${sheetQ4}, CRM=${sheetQ8}`);
+            }
+
+            const updatedRecord = {
+              ...(config || {}),
+              clientName: c.clientName,
+              masterSheetId: c.masterSheetId,
+              setupMode: config?.setupMode === true,
+              requestConnections: config?.requestConnections === true,
+              accountingTool: sheetQ4,
+              crmTool: sheetQ8,
+              crmDrives: sheetQ9,
+              sheetSyncedAt: new Date().toISOString(),
+              updatedAt: config?.updatedAt || new Date().toISOString()
+            };
+            await redisClient.set(redisKey, JSON.stringify(updatedRecord));
+          } catch (syncErr) {
+            // Ignore background revalidation errors for individual clients
+          }
+        }
+      }
+    } catch (bgErr) {
+      console.warn("Background setup revalidation notice:", bgErr.message);
+    }
+  });
+}
+

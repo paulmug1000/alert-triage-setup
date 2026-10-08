@@ -16,8 +16,8 @@ import {
   linkClientToSharedXero,
   matchTenantToClient
 } from "../../../../services/vaultService.js";
-import { getSheetsClient, withRetry } from "../../../../services/sheetsClient.js";
-import { DEFAULT_AC_SHEET_ID } from "../../../../services/pmaLogger.js";
+import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/userPermissions.js";
 import { notifyStaffOnClientConnection } from "../../../../services/connectionNotifier.js";
 
 function parseCookies(cookieHeader) {
@@ -95,8 +95,32 @@ export default async function handler(req, res) {
 
     const clientKey = statePayload.clientKey || statePayload.clientName;
     const clientName = statePayload.clientName || clientKey;
-    const masterSheetId = statePayload.masterSheetId;
-    const isDedicated = statePayload.mode === "dedicated" || (!statePayload.mode && (statePayload.redirectBack?.startsWith("/pulse") || statePayload.redirectBack?.startsWith("/portal")));
+    let masterSheetId = statePayload.masterSheetId;
+
+    // Fallback: If masterSheetId wasn't passed in statePayload, resolve it from AutoUpdates
+    if (!masterSheetId && clientName) {
+      try {
+        const sheets = await getSheetsClient();
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: DEFAULT_AC_SHEET_ID,
+          range: "AutoUpdates!A2:N500"
+        });
+        const rows = resp.data.values || [];
+        const match = rows.find(r => matchesClientName(r[0], clientName));
+        if (match && match[12]) {
+          masterSheetId = extractSheetIdFromUrl(match[12]) || String(match[12]).trim();
+          console.log(`🔗 Xero Callback: Auto-resolved masterSheetId for "${clientName}" -> ${masterSheetId}`);
+        }
+      } catch (lookupErr) {
+        console.warn("⚠️ Xero Callback: Note resolving masterSheetId:", lookupErr.message);
+      }
+    }
+
+    // CRITICAL: The Central Advisor Shared Grant should ONLY ever be updated when the connection
+    // was initiated explicitly for the central advisor account (clientKey === "advisor" or mode === "advisor" with no specific client).
+    // Any per-client connection MUST ALWAYS be stored as an isolated dedicated connection to prevent corrupting practice tokens.
+    const isAdvisorConnection = (statePayload.clientKey === "advisor" || statePayload.clientName === "Advisor Account") && statePayload.mode === "advisor";
+    const isDedicated = !isAdvisorConnection;
 
     // Smart Tenant Selection for the initiating client:
     let matchedTenant = matchTenantToClient(clientName, tenants);

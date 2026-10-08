@@ -135,10 +135,11 @@ export default function IntegrationsView({
   const highlightedRef = useRef(null);
 
   // Fetch all clients integration statuses in AutoUpdates order
-  const fetchAllStatus = useCallback(async (isSilent = false) => {
+  const fetchAllStatus = useCallback(async (isSilent = false, forceRefresh = false) => {
     if (!isSilent) setLoading(true);
     try {
-      const res = await fetch("/api/integrations/status?all=true");
+      const url = `/api/integrations/status?all=true${forceRefresh ? "&refresh=true" : ""}`;
+      const res = await fetch(url);
       const data = await res.json();
       if (data.success) {
         setClientsData(data.allClients || []);
@@ -503,8 +504,8 @@ export default function IntegrationsView({
         {/* Global Action & Refresh */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <button
-            onClick={() => fetchAllStatus(false)}
-            title="Refresh all client integrations"
+            onClick={() => fetchAllStatus(false, true)}
+            title="Refresh all client integrations (force live sync from Google Sheets)"
             disabled={loading}
             style={{
               display: "flex",
@@ -763,7 +764,7 @@ export default function IntegrationsView({
             <option value="" disabled>Select client ({clientsData.length})...</option>
             {clientsData.map((c) => (
               <option key={c.clientName} value={c.clientName}>
-                {c.rowNumber ? `#${c.rowNumber} ` : ""}{c.clientName} {c.isSetupMode ? "🛠️" : ""}
+                {c.clientName} {c.isSetupMode ? "🛠️" : ""}
               </option>
             ))}
           </select>
@@ -799,90 +800,92 @@ export default function IntegrationsView({
                   borderRadius: "16px",
                   border: isHighlighted ? "2px solid #0284c7" : "1px solid #e2e8f0",
                   boxShadow: isHighlighted ? "0 0 0 4px rgba(2, 132, 199, 0.15), 0 2px 6px rgba(0,0,0,0.06)" : "0 1px 3px rgba(0,0,0,0.04)",
-                  padding: "20px 24px",
-                  transition: "all 0.3s ease"
+                  padding: "22px 24px",
+                  display: "flex",
+                  flexDirection: "row",
+                  alignItems: "stretch",
+                  gap: "24px",
+                  transition: "all 0.3s ease",
+                  flexWrap: "wrap"
                 }}
               >
-                {/* ── CLIENT SECTION HEADER ───────────────────────────────────── */}
+                {/* ── LEFT COLUMN: CLIENT IDENTITY & SETUP CONTROLS (~25% width) ── */}
                 <div
                   style={{
+                    width: "24%",
+                    minWidth: "220px",
+                    maxWidth: "280px",
                     display: "flex",
-                    alignItems: "center",
+                    flexDirection: "column",
                     justifyContent: "space-between",
-                    flexWrap: "wrap",
-                    gap: "12px",
-                    paddingBottom: "16px",
-                    marginBottom: "18px",
-                    borderBottom: "1px solid #f1f5f9"
+                    paddingRight: "16px",
+                    borderRight: "1px solid #f1f5f9"
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span
-                        style={{
-                          fontSize: "11px",
-                          fontWeight: "800",
-                          padding: "3px 8px",
-                          borderRadius: "6px",
-                          background: "#0f172a",
-                          color: "#ffffff"
-                        }}
-                      >
-                        {client.rowNumber ? `Row #${client.rowNumber}` : "Client"}
-                      </span>
-                      <h2 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#0f172a" }}>
-                        {client.clientName}
-                      </h2>
+                  <div>
+                    <h2
+                      style={{
+                        margin: "0 0 10px 0",
+                        fontSize: "20px",
+                        fontWeight: "800",
+                        color: "#0f172a",
+                        lineHeight: "1.25",
+                        wordBreak: "break-word"
+                      }}
+                    >
+                      {client.clientName}
+                    </h2>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
+                      {client.isSetupMode ? (
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            padding: "3px 9px",
+                            borderRadius: "12px",
+                            background: "#fef3c7",
+                            color: "#b45309",
+                            border: "1px solid #fde68a"
+                          }}
+                        >
+                          🛠️ Setup Mode
+                        </span>
+                      ) : (
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: "600",
+                            padding: "3px 9px",
+                            borderRadius: "12px",
+                            background: "#f1f5f9",
+                            color: "#475569"
+                          }}
+                        >
+                          Active Client
+                        </span>
+                      )}
+
+                      {client.masterSheetId && (
+                        <span
+                          title={`Master Sheet ID: ${client.masterSheetId}`}
+                          style={{
+                            fontSize: "10.5px",
+                            fontFamily: "monospace",
+                            color: "#64748b",
+                            background: "#f8fafc",
+                            padding: "2px 7px",
+                            borderRadius: "4px",
+                            border: "1px solid #e2e8f0"
+                          }}
+                        >
+                          {client.masterSheetId.slice(0, 5)}...{client.masterSheetId.slice(-4)}
+                        </span>
+                      )}
                     </div>
-
-                    {client.isSetupMode ? (
-                      <span
-                        style={{
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          padding: "3px 9px",
-                          borderRadius: "12px",
-                          background: "#fef3c7",
-                          color: "#b45309",
-                          border: "1px solid #fde68a"
-                        }}
-                      >
-                        🛠️ Setup Mode
-                      </span>
-                    ) : (
-                      <span
-                        style={{
-                          fontSize: "11px",
-                          fontWeight: "600",
-                          padding: "3px 9px",
-                          borderRadius: "12px",
-                          background: "#f1f5f9",
-                          color: "#475569"
-                        }}
-                      >
-                        Active Client
-                      </span>
-                    )}
-
-                    {client.masterSheetId && (
-                      <span
-                        title={`Master Sheet ID: ${client.masterSheetId}`}
-                        style={{
-                          fontSize: "11px",
-                          fontFamily: "monospace",
-                          color: "#64748b",
-                          background: "#f8fafc",
-                          padding: "2px 7px",
-                          borderRadius: "4px",
-                          border: "1px solid #e2e8f0"
-                        }}
-                      >
-                        Master: {client.masterSheetId.slice(0, 6)}...{client.masterSheetId.slice(-4)}
-                      </span>
-                    )}
                   </div>
 
-                  <div>
+                  <div style={{ marginTop: "16px" }}>
                     <Link
                       href="/PMA?nav=setup"
                       title="Adjust configured tools in PMA Setup"
@@ -891,13 +894,13 @@ export default function IntegrationsView({
                         fontWeight: "600",
                         color: "#0369a1",
                         textDecoration: "none",
-                        padding: "5px 10px",
-                        borderRadius: "6px",
+                        padding: "6px 12px",
+                        borderRadius: "7px",
                         background: "#f0f9ff",
                         border: "1px solid #bae6fd",
                         display: "inline-flex",
                         alignItems: "center",
-                        gap: "5px"
+                        gap: "6px"
                       }}
                     >
                       <span>⚙️</span>
@@ -906,11 +909,13 @@ export default function IntegrationsView({
                   </div>
                 </div>
 
-                {/* ── 2-COLUMN GRID: ACCOUNTING TOOL & CRM TOOL ───────────────── */}
+                {/* ── RIGHT AREA: ACCOUNTING & CRM TOOL BOXES (~75% width) ── */}
                 <div
                   style={{
+                    flex: 1,
+                    minWidth: "320px",
                     display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
                     gap: "20px"
                   }}
                 >
@@ -1021,18 +1026,21 @@ function XeroCard({
 }) {
   const xero = client.integrations?.xero || {};
   const isConnected = Boolean(xero.connected);
+  const isHealthy = isConnected && !xero.reconnectRequired;
+  const cardBg = isHealthy ? "#f0fdf4" : "#fef2f2";
+  const cardBorder = isHealthy ? "1px solid #bbf7d0" : "1px solid #fecaca";
 
   return (
     <div
       style={{
-        background: "#ffffff",
+        background: cardBg,
         borderRadius: "14px",
-        border: "1px solid #e2e8f0",
+        border: cardBorder,
         padding: "18px",
         display: "flex",
         flexDirection: "column",
         justifyContent: "space-between",
-        height: "calc(100% - 24px)",
+        height: "100%",
         boxSizing: "border-box"
       }}
     >
@@ -1217,16 +1225,18 @@ function XeroCard({
               <button
                 onClick={onTestToken}
                 disabled={brokerTesting}
+                title="Test Token Broker retrieval for this client"
                 style={{
                   flex: 1,
                   padding: "7px 12px",
                   borderRadius: "7px",
-                  border: "none",
-                  background: "#0f172a",
-                  color: "#fff",
+                  border: "1px solid #cbd5e1",
+                  background: "#f1f5f9",
+                  color: "#475569",
                   fontSize: "12px",
                   fontWeight: "600",
-                  cursor: "pointer"
+                  cursor: "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                 }}
               >
                 {brokerTesting ? "Testing..." : "⚡ Test Broker"}
@@ -1235,13 +1245,13 @@ function XeroCard({
           ) : (
             <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "6px" }}>
               <button
-                onClick={() => onConnect("advisor")}
+                onClick={() => onConnect("dedicated")}
                 style={{
                   width: "100%",
                   padding: "9px 14px",
                   borderRadius: "7px",
                   border: "none",
-                  background: xero.reconnectRequired ? "#dc2626" : sharedXero?.connected ? "#0284c7" : "#023f98",
+                  background: xero.reconnectRequired ? "#dc2626" : "#0284c7",
                   color: "#ffffff",
                   fontSize: "12.5px",
                   fontWeight: "600",
@@ -1251,29 +1261,8 @@ function XeroCard({
               >
                 {xero.reconnectRequired
                   ? `Re-connect Xero for ${client.clientName}`
-                  : sharedXero?.connected
-                    ? `🔗 Add ${client.clientName} to Central Advisor Account`
-                    : `Connect Xero for ${client.clientName}`}
+                  : `Connect Dedicated Xero for ${client.clientName}`}
               </button>
-
-              {sharedXero?.connected && !xero.reconnectRequired && (
-                <button
-                  onClick={() => onConnect("dedicated")}
-                  type="button"
-                  style={{
-                    background: "none",
-                    border: "none",
-                    padding: "3px",
-                    fontSize: "11px",
-                    color: "#64748b",
-                    cursor: "pointer",
-                    textDecoration: "underline",
-                    textAlign: "center"
-                  }}
-                >
-                  Or connect using client&apos;s own dedicated Xero account
-                </button>
-              )}
             </div>
           )}
         </div>
@@ -1319,18 +1308,21 @@ function QuickBooksCard({
 }) {
   const qb = client.integrations?.quickbooks || {};
   const isConnected = Boolean(qb.connected);
+  const isHealthy = isConnected && !qb.reconnectRequired;
+  const cardBg = isHealthy ? "#f0fdf4" : "#fef2f2";
+  const cardBorder = isHealthy ? "1px solid #bbf7d0" : "1px solid #fecaca";
 
   return (
     <div
       style={{
-        background: "#ffffff",
+        background: cardBg,
         borderRadius: "14px",
-        border: "1px solid #e2e8f0",
+        border: cardBorder,
         padding: "18px",
         display: "flex",
         flexDirection: "column",
         justifyContent: "space-between",
-        height: "calc(100% - 24px)",
+        height: "100%",
         boxSizing: "border-box"
       }}
     >
@@ -1416,16 +1408,18 @@ function QuickBooksCard({
               <button
                 onClick={onTestToken}
                 disabled={brokerTesting}
+                title="Test Token Broker retrieval for this client"
                 style={{
                   flex: 1,
                   padding: "7px 12px",
                   borderRadius: "7px",
-                  border: "none",
-                  background: "#0f172a",
-                  color: "#fff",
+                  border: "1px solid #cbd5e1",
+                  background: "#f1f5f9",
+                  color: "#475569",
                   fontSize: "12px",
                   fontWeight: "600",
-                  cursor: "pointer"
+                  cursor: "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                 }}
               >
                 {brokerTesting ? "Testing..." : "⚡ Test Broker"}
@@ -1501,17 +1495,21 @@ function CrmCard({
   const idValue = config.getIdValue ? config.getIdValue(metadata) : null;
   const authorizedBy = metadata?.userName || metadata?.userEmail;
 
+  const isHealthy = isConnected && !toolData.reconnectRequired;
+  const cardBg = isHealthy ? "#f0fdf4" : "#fef2f2";
+  const cardBorder = isHealthy ? "1px solid #bbf7d0" : "1px solid #fecaca";
+
   return (
     <div
       style={{
-        background: "#ffffff",
+        background: cardBg,
         borderRadius: "14px",
-        border: "1px solid #e2e8f0",
+        border: cardBorder,
         padding: "18px",
         display: "flex",
         flexDirection: "column",
         justifyContent: "space-between",
-        height: "calc(100% - 24px)",
+        height: "100%",
         boxSizing: "border-box"
       }}
     >
@@ -1607,16 +1605,18 @@ function CrmCard({
               <button
                 onClick={onTestToken}
                 disabled={brokerTesting}
+                title="Test Token Broker retrieval for this client"
                 style={{
                   flex: 1,
                   padding: "7px 12px",
                   borderRadius: "7px",
-                  border: "none",
-                  background: "#0f172a",
-                  color: "#fff",
+                  border: "1px solid #cbd5e1",
+                  background: "#f1f5f9",
+                  color: "#475569",
                   fontSize: "12px",
                   fontWeight: "600",
-                  cursor: "pointer"
+                  cursor: "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
                 }}
               >
                 {brokerTesting ? "Testing..." : "⚡ Test Broker"}

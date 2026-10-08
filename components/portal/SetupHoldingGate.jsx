@@ -5,6 +5,8 @@ import { SYSTEM_VERSION, getSystemCopyright } from "../../config/version";
 
 export default function SetupHoldingGate({
   clientName,
+  masterSheetId,
+  clientSheetId,
   clients = [],
   onSelectClient = null,
   user,
@@ -82,8 +84,15 @@ export default function SetupHoldingGate({
 
   const handleConnect = (tool) => {
     const provider = String(tool).toLowerCase();
-    const connectUrl = `/api/integrations/${encodeURIComponent(provider)}/connect?clientName=${encodeURIComponent(clientName)}&clientKey=${encodeURIComponent(clientName)}&mode=dedicated&redirectBack=${encodeURIComponent("/pulse")}`;
-    window.location.href = connectUrl;
+    const q = new URLSearchParams({
+      clientName: clientName || "",
+      clientKey: clientName || "",
+      mode: "dedicated",
+      redirectBack: "/pulse"
+    });
+    if (masterSheetId) q.set("masterSheetId", masterSheetId);
+    if (clientSheetId) q.set("clientSheetId", clientSheetId);
+    window.location.href = `/api/integrations/${encodeURIComponent(provider)}/connect?${q.toString()}`;
   };
 
   const dropdownMenuStyle = {

@@ -10,6 +10,8 @@
 
 import crypto from "crypto";
 import { buildXeroAuthUrl } from "../../../../services/xeroService.js";
+import { getSheetsClient, extractSheetIdFromUrl } from "../../../../services/sheetsClient.js";
+import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../../services/userPermissions.js";
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
@@ -30,6 +32,32 @@ export default async function handler(req, res) {
   const effectiveMode = isExplicitAdvisor ? "advisor" : (isClientPortal ? "dedicated" : (mode || "advisor"));
 
   try {
+    let resolvedMasterSheetId = masterSheetId || "";
+    let resolvedClientSheetId = clientSheetId || "";
+    const targetName = clientName || clientKey;
+
+    if ((!resolvedMasterSheetId || !resolvedClientSheetId) && targetName && targetName !== "advisor") {
+      try {
+        const sheets = await getSheetsClient();
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: DEFAULT_AC_SHEET_ID,
+          range: "AutoUpdates!A2:N500"
+        });
+        const rows = resp.data.values || [];
+        const match = rows.find(r => matchesClientName(r[0], targetName));
+        if (match) {
+          if (!resolvedClientSheetId && match[11]) {
+            resolvedClientSheetId = extractSheetIdFromUrl(match[11]) || String(match[11]).trim();
+          }
+          if (!resolvedMasterSheetId && match[12]) {
+            resolvedMasterSheetId = extractSheetIdFromUrl(match[12]) || String(match[12]).trim();
+          }
+        }
+      } catch (lookupErr) {
+        console.warn("⚠️ Xero Connect: Note resolving sheet IDs:", lookupErr.message);
+      }
+    }
+
     // Dynamic Host Resolution
     const reqHost = req.headers["x-forwarded-host"] || req.headers.host;
     const isPulseHost = reqHost && (reqHost === "pulsedashboard.co.uk" || reqHost.endsWith(".pulsedashboard.co.uk"));
@@ -48,8 +76,8 @@ export default async function handler(req, res) {
       nonce,
       clientKey: clientKey || clientName,
       clientName: clientName || clientKey,
-      masterSheetId: masterSheetId || "",
-      clientSheetId: clientSheetId || "",
+      masterSheetId: resolvedMasterSheetId,
+      clientSheetId: resolvedClientSheetId,
       redirectBack: redirectBack || "/portal",
       mode: effectiveMode
     };

@@ -386,10 +386,11 @@ export const DeepDiveEngine = {
         const datesStr = startStr && endStr ? ` | ${startStr} to ${endStr}` : "";
 
         let detail = "";
+        const formattedJobAmount = Math.abs(rawAmount % 1) > 0.001 ? formatMoney(rawAmount, 2) : formatMoney(rawAmount, 0);
         if (isRetainer) {
-          detail = `Retainer | ${formatMoney(monthlyAmount)} per month${datesStr}`;
+          detail = `Retainer | ${formattedJobAmount} per month${datesStr}`;
         } else {
-          detail = `Project | ${formatMoney(rawAmount)}${datesStr}`;
+          detail = `Project | ${formattedJobAmount}${datesStr}`;
         }
 
         results.push({

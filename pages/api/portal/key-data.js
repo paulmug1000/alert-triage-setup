@@ -238,6 +238,28 @@ export default async function handler(req, res) {
       return str;
     };
 
+    // Helper: Safely parse date or month-year strings (e.g. "Jul 2026", "01/07/2026", 46296) to YYYY-MM-DD
+    const parseDateToYMD = (val, isEnd = false) => {
+      if (!val && val !== 0) return "";
+      const str = String(val).trim();
+      const myMatch = str.match(/^(?:(\d{1,2})[\/\-\s])?([a-zA-Z]{3,})[\/\-\s](\d{2,4})$/);
+      if (myMatch) {
+        const months = { jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12" };
+        const mi = months[myMatch[2].toLowerCase().substring(0, 3)];
+        let yr = parseInt(myMatch[3], 10);
+        if (yr < 100) yr += 2000;
+        if (mi !== undefined) {
+          let day = myMatch[1] ? String(myMatch[1]).padStart(2, "0") : (isEnd ? "28" : "01");
+          if (isEnd && !myMatch[1]) {
+            const lastDay = new Date(yr, parseInt(mi, 10), 0).getDate();
+            day = String(lastDay).padStart(2, "0");
+          }
+          return `${yr}-${mi}-${day}`;
+        }
+      }
+      return formatDateVal(val);
+    };
+
     // Helper: Lookup by header in row
     const getValueByHeader = (row, colMap, headerNames) => {
       const names = Array.isArray(headerNames) ? headerNames : [headerNames];
@@ -384,11 +406,40 @@ export default async function handler(req, res) {
             }
           }
 
-          // Child invoices
+          // Child invoices & Retainer child recognition periods
+          const childRetainers = [];
           childRows.forEach((cr) => {
             if (isRetainer) {
               const inv = extractInv(cr.row, 1);
               if (inv) invoices.push({ ...inv, isChild: true, childRowNum: cr.rowNum });
+
+              const invAmtRaw = getValueByHeader(cr.row, colMap, ["project invoice 1 / monthly retainer (excl vat)", "project invoice 1", "inv 1 amount"]) || cr.row[41];
+              const invAmt = parseMoney(invAmtRaw);
+              const startRaw = cr.row[146] !== undefined && String(cr.row[146]).trim() !== "" ? cr.row[146] : getValueByHeader(cr.row, colMap, ["start month"]);
+              const endRaw = cr.row[147] !== undefined && String(cr.row[147]).trim() !== "" ? cr.row[147] : getValueByHeader(cr.row, colMap, ["end month"]);
+              const monthsRaw = cr.row[148] !== undefined && String(cr.row[148]).trim() !== "" ? cr.row[148] : getValueByHeader(cr.row, colMap, ["months"]);
+              const revPmRaw = cr.row[149] !== undefined && String(cr.row[149]).trim() !== "" ? cr.row[149] : getValueByHeader(cr.row, colMap, ["revenue pm"]);
+              const incPmRaw = cr.row[150] !== undefined && String(cr.row[150]).trim() !== "" ? cr.row[150] : getValueByHeader(cr.row, colMap, ["income pm"]);
+              const dcPmRaw = cr.row[152] !== undefined && String(cr.row[152]).trim() !== "" ? cr.row[152] : getValueByHeader(cr.row, colMap, ["3p costs pm"]);
+
+              const startMonth = parseDateToYMD(startRaw, false);
+              const endMonth = parseDateToYMD(endRaw, true);
+              const months = parseInt(monthsRaw, 10) || 1;
+              const revPm = parseMoney(revPmRaw) || (months > 0 ? invAmt / months : invAmt);
+              const incPm = parseMoney(incPmRaw) || revPm;
+              const dcPm = parseMoney(dcPmRaw) || 0;
+
+              if (invAmt > 0 && startMonth && endMonth) {
+                childRetainers.push({
+                  amount: invAmt,
+                  startMonth,
+                  endMonth,
+                  months,
+                  revPm,
+                  incPm,
+                  dcPm,
+                });
+              }
             } else {
               for (let s = 1; s <= 3; s++) {
                 const inv = extractInv(cr.row, s);
@@ -455,27 +506,6 @@ export default async function handler(req, res) {
           const startDate = formatDateVal(startDateRaw);
           const endDate = formatDateVal(endDateRaw);
 
-          const parseDateToYMD = (val, isEnd = false) => {
-            if (!val && val !== 0) return "";
-            const str = String(val).trim();
-            const myMatch = str.match(/^(?:(\d{1,2})[\/\-\s])?([a-zA-Z]{3,})[\/\-\s](\d{2,4})$/);
-            if (myMatch) {
-              const months = { jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12" };
-              const mi = months[myMatch[2].toLowerCase().substring(0, 3)];
-              let yr = parseInt(myMatch[3], 10);
-              if (yr < 100) yr += 2000;
-              if (mi !== undefined) {
-                let day = myMatch[1] ? String(myMatch[1]).padStart(2, "0") : (isEnd ? "28" : "01");
-                if (isEnd && !myMatch[1]) {
-                  const lastDay = new Date(yr, parseInt(mi, 10), 0).getDate();
-                  day = String(lastDay).padStart(2, "0");
-                }
-                return `${yr}-${mi}-${day}`;
-              }
-            }
-            return formatDateVal(val);
-          };
-
           const rawEqStart = row[146] !== undefined && String(row[146]).trim() !== "" ? row[146] : (getValueByHeader(row, colMap, ["start month"]) || startDateRaw);
           const rawErEnd = row[147] !== undefined && String(row[147]).trim() !== "" ? row[147] : (getValueByHeader(row, colMap, ["end month"]) || endDateRaw);
 
@@ -522,6 +552,7 @@ export default async function handler(req, res) {
             hasSplit: getValueByHeader(row, colMap, ["has split"]) || (row[253] !== undefined ? String(row[253]) : ""),
             origBaseRev: getValueByHeader(row, colMap, ["orig base rev"]) || (row[258] !== undefined ? String(row[258]) : ""),
             origBaseIncome: getValueByHeader(row, colMap, ["orig base income"]) || (row[259] !== undefined ? String(row[259]) : ""),
+            childRetainers: childRetainers.length > 0 ? childRetainers : undefined,
           };
 
           // Flatten invoices directly onto jobObj (inv1Amount, inv1SendDate, etc.)

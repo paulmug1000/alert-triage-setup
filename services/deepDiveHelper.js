@@ -151,14 +151,17 @@ export const PulseMath = {
     const tStart = new Date(targetYear, targetMonth, 1);
     const tEnd = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59);
 
-    // Strict boundary enforcement exactly matching Google Sheets ER >= B2 and EQ <= C2
-    if (eqEnd < tStart || eqStart > tEnd) return 0;
-
     const isRetainer =
       String(job.projectRetainer || "").toLowerCase().includes("retainer") ||
       String(job.type || "").toLowerCase().includes("retainer");
     const isPipeline = String(job.type || "").toLowerCase() === "pipeline";
     const hasSplit = String(job.hasSplit || "").toLowerCase() === "true";
+
+    const hasChildRetainers = isRetainer && Array.isArray(job.childRetainers) && job.childRetainers.length > 0;
+    const withinParentDates = (eqEnd >= tStart && eqStart <= tEnd);
+
+    // Strict boundary enforcement: must be within parent dates OR covered by child retainers
+    if (!withinParentDates && !hasChildRetainers) return 0;
 
     // --- RESTORED SPLIT LOGIC ---
     if (hasSplit && !isRetainer && job.splitStr) {
@@ -189,14 +192,50 @@ export const PulseMath = {
       return valToReturn;
     }
 
-    // --- RETAINER LOGIC (Matches Calcs!K2 ret_sum) ---
+    // --- RETAINER LOGIC (Matches Calcs!K2 & Calcs!L2 ret_sum) ---
     if (isRetainer) {
-      const rev = parseMoney(job.revenue || job.revNum);
-      const dc = parseMoney(job.directCosts || job.dcNum);
       let prob = 1;
       if (isPipeline) {
         prob = parseLikelihood(job.likelihoodNum !== undefined ? job.likelihoodNum : job.likelihood, 0.5);
       }
+
+      // Check if any child invoice covers targetDate (New formula recognition)
+      let activeChildSum = 0;
+      let hasActiveChild = false;
+
+      if (hasChildRetainers) {
+        const tY = targetDate.getFullYear();
+        const tM = targetDate.getMonth();
+        const targetMonthIdx = tY * 12 + tM;
+
+        for (const cr of job.childRetainers) {
+          const cStart = cr.startMonth ? new Date(cr.startMonth) : null;
+          const cEnd = cr.endMonth ? new Date(cr.endMonth) : null;
+          if (cStart && cEnd && !isNaN(cStart.getTime()) && !isNaN(cEnd.getTime())) {
+            const cStartIdx = cStart.getFullYear() * 12 + cStart.getMonth();
+            const cEndIdx = cEnd.getFullYear() * 12 + cEnd.getMonth();
+            if (targetMonthIdx >= cStartIdx && targetMonthIdx <= cEndIdx) {
+              hasActiveChild = true;
+              if (valueType === "directCosts") {
+                activeChildSum += (cr.dcPm || 0) * prob;
+              } else if (valueType === "revenue") {
+                const val = isIncomeMode ? (cr.incPm || (cr.revPm - (cr.dcPm || 0))) : cr.revPm;
+                activeChildSum += val * prob;
+              }
+            }
+          }
+        }
+      }
+
+      if (hasActiveChild) {
+        return activeChildSum;
+      }
+
+      // Fallback: If no active child invoice for this month, use parent planned retainer fee if within parent contract dates
+      if (!withinParentDates) return 0;
+
+      const rev = parseMoney(job.revenue || job.revNum);
+      const dc = parseMoney(job.directCosts || job.dcNum);
       const retRev = rev * prob;
       const retDC = dc * prob;
       const retIncome = retRev - retDC;

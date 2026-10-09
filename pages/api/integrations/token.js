@@ -280,6 +280,113 @@ export default async function handler(req, res) {
       }
     }
 
+    const shouldVerify = req.query.verify === "true" || req.query.test === "true" || req.body?.verify === true;
+    if (shouldVerify) {
+      if (tool === "xero") {
+        const tenantId = record.tenantId || "";
+        if (!tenantId) {
+          return res.status(400).json({
+            success: false,
+            error: `Configuration Error: Client "${record.clientName}" does not have a Xero tenant ID configured.`,
+            reconnectRequired: true
+          });
+        }
+        try {
+          const testRes = await fetch("https://api.xero.com/api.xro/2.0/Organisation", {
+            headers: {
+              "Authorization": `Bearer ${accessToken}`,
+              "xero-tenant-id": tenantId,
+              "Accept": "application/json"
+            }
+          });
+          if (!testRes.ok) {
+            const errBody = await testRes.text();
+            let parsedErr = errBody;
+            try { parsedErr = JSON.parse(errBody); } catch {}
+            console.error(`🚨 Token Broker: Provider test failed for ${record.clientName} (Xero HTTP ${testRes.status}):`, errBody);
+            return res.status(testRes.status === 403 || testRes.status === 401 ? 403 : 502).json({
+              success: false,
+              verified: false,
+              status: testRes.status,
+              error: `Xero API Error: HTTP ${testRes.status} (${testRes.statusText}). This token does not have access to organisation "${record.tenantName || tenantId}". Re-authorization required.`,
+              providerDetails: parsedErr,
+              reconnectRequired: true
+            });
+          }
+          const orgData = await testRes.json();
+          const orgName = orgData?.Organisations?.[0]?.Name || record.tenantName;
+          return res.status(200).json({
+            success: true,
+            verified: true,
+            tool,
+            clientKey: record.clientKey,
+            clientName: record.clientName,
+            accessToken,
+            tenantId,
+            tenantName: orgName,
+            expiresIn,
+            message: `Verified successfully with Xero API for "${orgName}"!`
+          });
+        } catch (callErr) {
+          return res.status(502).json({
+            success: false,
+            verified: false,
+            error: `Failed to contact Xero API: ${callErr.message}`,
+            reconnectRequired: false
+          });
+        }
+      } else if (tool === "quickbooks" || tool === "qb") {
+        const realmId = record.realmId || record.tenantId || "";
+        if (!realmId) {
+          return res.status(400).json({
+            success: false,
+            error: `Configuration Error: Client "${record.clientName}" does not have a QuickBooks company ID (realmId) configured.`,
+            reconnectRequired: true
+          });
+        }
+        try {
+          const testRes = await fetch(`https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}`, {
+            headers: {
+              "Authorization": `Bearer ${accessToken}`,
+              "Accept": "application/json"
+            }
+          });
+          if (!testRes.ok) {
+            const errBody = await testRes.text();
+            return res.status(testRes.status === 403 || testRes.status === 401 ? 403 : 502).json({
+              success: false,
+              verified: false,
+              status: testRes.status,
+              error: `QuickBooks API Error: HTTP ${testRes.status} (${testRes.statusText}). Re-authorization required.`,
+              providerDetails: errBody,
+              reconnectRequired: true
+            });
+          }
+          const qbData = await testRes.json();
+          const compName = qbData?.CompanyInfo?.CompanyName || record.companyName;
+          return res.status(200).json({
+            success: true,
+            verified: true,
+            tool,
+            clientKey: record.clientKey,
+            clientName: record.clientName,
+            accessToken,
+            realmId,
+            companyName: compName,
+            expiresIn,
+            message: `Verified successfully with QuickBooks API for "${compName}"!`
+          });
+        } catch (callErr) {
+          return res.status(502).json({
+            success: false,
+            verified: false,
+            error: `Failed to contact QuickBooks API: ${callErr.message}`,
+            reconnectRequired: false
+          });
+        }
+      }
+    }
+
     // 5. Return short-lived access credentials
     return res.status(200).json({
       success: true,

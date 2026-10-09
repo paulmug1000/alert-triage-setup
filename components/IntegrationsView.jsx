@@ -431,7 +431,8 @@ export default function IntegrationsView({
     try {
       const q = new URLSearchParams({
         tool: toolKey,
-        clientKey: client.clientName
+        clientKey: client.clientName,
+        verify: "true"
       });
       if (client.masterSheetId) {
         q.set("spreadsheetId", client.masterSheetId);

@@ -708,7 +708,25 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
     }
 
     const sharedGrant = await getSharedXeroGrant();
-    if (sharedGrant && sharedGrant.status === "connected") {
+    const isSharedClient = Boolean(record?.isSharedGrant);
+
+    if (isSharedClient || (!record && sharedGrant)) {
+      if (!sharedGrant || sharedGrant.status !== "connected" || sharedGrant.reconnectRequired) {
+        return {
+          connected: false,
+          tool: "xero",
+          clientKey: record?.clientKey || clientKey || "",
+          clientName: record?.clientName || clientKey || "",
+          tenantId: record?.tenantId || "",
+          tenantName: record?.tenantName || "",
+          status: "reconnect_required",
+          reconnectRequired: true,
+          isSharedGrant: true,
+          error: "Central Advisor Xero Account requires re-authorisation."
+        };
+      }
+
+      // Shared grant is active: check if THIS client's organisation is in availableTenants
       let matchedTenant = null;
       if (record && record.tenantId) {
         matchedTenant = matchTenantToClient(record.tenantId, sharedGrant.availableTenants);
@@ -745,7 +763,7 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
           }
         };
       } else {
-        // Shared grant is active, but THIS client is not yet authorized in Xero!
+        // Shared grant is active, but THIS client's organisation is NOT authorized in Xero!
         return {
           connected: false,
           tool: "xero",
@@ -754,9 +772,10 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
           tenantId: record?.tenantId || "",
           tenantName: record?.tenantName || "",
           status: "not_connected",
-          reconnectRequired: false,
-          isSharedGrant: false,
+          reconnectRequired: true,
+          isSharedGrant: true,
           notInAdvisorGrant: true,
+          error: `Organisation "${record?.tenantName || record?.tenantId || clientKey}" is not authorized under the Central Advisor Account.`,
           availableTenants: sharedGrant.availableTenants || []
         };
       }

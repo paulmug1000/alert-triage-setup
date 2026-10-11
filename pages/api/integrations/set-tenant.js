@@ -78,6 +78,14 @@ export default async function handler(req, res) {
           }
         }
 
+        notifyStaffOnClientConnection({
+          clientName: clientKey,
+          tool: "xero",
+          tenantName: tenantName || tenantId,
+          masterSheetId,
+          mode: "shared"
+        }).catch(() => {});
+
         return res.status(200).json({
           success: true,
           clientKey,
@@ -87,14 +95,6 @@ export default async function handler(req, res) {
           isSharedGrant: true,
           message: `Successfully linked ${clientKey} to shared organisation "${tenantName || tenantId}".`
         });
-        notifyStaffOnClientConnection({
-          clientName: clientKey,
-          tool: "xero",
-          tenantName: tenantName || tenantId,
-          masterSheetId,
-          mode: "shared"
-        }).catch(() => {});
-        return result;
       }
     }
 

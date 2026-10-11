@@ -154,10 +154,11 @@ export default async function handler(req, res) {
       );
 
       const sharedXeroRaw = await getSharedXeroGrant();
+      const sharedXeroIsHealthy = Boolean(sharedXeroRaw && sharedXeroRaw.status === "connected" && !sharedXeroRaw.reconnectRequired);
       const sharedXero = sharedXeroRaw ? {
-        connected: sharedXeroRaw.status === "connected",
-        status: sharedXeroRaw.status,
-        reconnectRequired: sharedXeroRaw.status === "reconnect_required",
+        connected: sharedXeroIsHealthy,
+        status: sharedXeroIsHealthy ? "connected" : "reconnect_required",
+        reconnectRequired: !sharedXeroIsHealthy,
         expiresAt: sharedXeroRaw.expiresAt,
         availableTenants: sharedXeroRaw.availableTenants || [],
         tenantCount: (sharedXeroRaw.availableTenants || []).length,
@@ -172,7 +173,8 @@ export default async function handler(req, res) {
 
       if (redisClient?.isOpen) {
         try {
-          await redisClient.set(cacheKey, JSON.stringify({ allClients: clientConfigs, sharedXero }), { EX: 300 });
+          const hasIssues = !sharedXeroIsHealthy || clientConfigs.some(c => c.integrations?.xero?.reconnectRequired || c.integrations?.quickbooks?.reconnectRequired);
+          await redisClient.set(cacheKey, JSON.stringify({ allClients: clientConfigs, sharedXero }), { EX: hasIssues ? 15 : 300 });
         } catch (e) {}
       }
       _allIntegrationsStatusCache = { allClients: clientConfigs, sharedXero };

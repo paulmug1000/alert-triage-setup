@@ -589,23 +589,26 @@ export async function getIntegrationTokens({ clientKey, masterSheetId, tool }) {
 export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenantId = null }) {
   const cleanClient = normalizeKey(clientKey);
   const cleanTool = normalizeKey(tool);
-
-  // If tool is Xero and shared grant exists:
-  const sharedGrant = await getSharedXeroGrant();
-  if (cleanTool === "xero" && sharedGrant) {
-    await updateSharedXeroGrantTokens(tokens);
-  }
-
   const redisKey = getVaultRedisKey(cleanClient, cleanTool);
   const rawJson = await redisClient.get(redisKey);
+
+  // If no client-specific record exists:
   if (!rawJson) {
-    if (cleanTool === "xero" && sharedGrant) {
-      return sharedGrant;
+    if (cleanTool === "xero" && (cleanClient === "advisor" || cleanClient === "shared")) {
+      return await updateSharedXeroGrantTokens(tokens);
     }
     throw new Error(`Cannot update tokens: No existing integration record found for ${cleanClient}:${cleanTool}`);
   }
 
   const record = JSON.parse(rawJson);
+
+  // CRITICAL ISOLATION RULE:
+  // ONLY update the Central Shared Advisor Grant if this specific client record is EXPLICITLY marked as isSharedGrant!
+  // Dedicated client connections (e.g. The Anteroom) MUST NEVER touch, overwrite, or synchronize with the Shared Grant.
+  if (cleanTool === "xero" && record.isSharedGrant) {
+    await updateSharedXeroGrantTokens(tokens);
+  }
+
   const now = Date.now();
   const expiresInMs = (tokens.expiresIn || 1800) * 1000;
   record.expiresAt = tokens.expiresAt || (now + expiresInMs);
@@ -635,7 +638,7 @@ export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenant
   }
 
   await redisClient.set(redisKey, JSON.stringify(record));
-  console.log(`🔄 Vault: Refreshed tokens persisted for ${cleanClient} [${cleanTool}]. Expires in ${Math.round(expiresInMs / 60000)}m.`);
+  console.log(`🔄 Vault: Refreshed tokens persisted for ${cleanClient} [${cleanTool}]. Dedicated: ${!record.isSharedGrant}, Expires in ${Math.round(expiresInMs / 60000)}m.`);
   return record;
 }
 
@@ -683,25 +686,29 @@ export async function getIntegrationStatus({ clientKey, masterSheetId, tool }) {
     }
   }
 
-  // 1. For Xero: Check if shared grant is active
+  // 1. For Xero: Handle dedicated client grants vs Central Shared Advisor Grant
   if (cleanTool === "xero") {
-    // If dedicated non-shared record exists and is connected
-    if (record && !record.isSharedGrant && record.status === "connected" && !record.reconnectRequired) {
+    // If dedicated non-shared record exists:
+    if (record && !record.isSharedGrant) {
+      const isReconnectRequired = record.status === "reconnect_required" || Boolean(record.reconnectRequired);
+      const isConnected = record.status === "connected" && !isReconnectRequired;
       const isExpired = record.expiresAt && Date.now() > record.expiresAt;
+
       return {
-        connected: true,
+        connected: isConnected,
         tool: "xero",
         clientKey: record.clientKey,
         clientName: record.clientName,
         tenantId: record.tenantId || "",
         tenantName: record.tenantName || "",
-        status: record.status,
-        reconnectRequired: false,
+        status: isReconnectRequired ? "reconnect_required" : record.status,
+        reconnectRequired: isReconnectRequired,
         isExpired,
         expiresAt: record.expiresAt,
         isSharedGrant: false,
         lastRefreshedAt: record.lastRefreshedAt,
         updatedAt: record.updatedAt,
+        lastError: record.lastError || null,
         availableTenants: record.metadata?.availableTenants || [],
         metadata: record.metadata || {}
       };

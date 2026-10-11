@@ -30,6 +30,27 @@ import { refreshCloseTokens } from "../../../services/closeService.js";
 import { refreshHubSpotTokens } from "../../../services/hubspotService.js";
 import { getSessionUser } from "../../../services/authService.js";
 
+// Module-level in-flight refresh mutex to prevent concurrent refresh token collisions
+const inFlightRefreshes = new Map();
+
+async function refreshWithConcurrencyLock(lockKey, refreshFn) {
+  if (inFlightRefreshes.has(lockKey)) {
+    console.log(`⏳ Token Broker: Refresh already in-flight for "${lockKey}". Awaiting active refresh...`);
+    return await inFlightRefreshes.get(lockKey);
+  }
+
+  const promise = (async () => {
+    try {
+      return await refreshFn();
+    } finally {
+      inFlightRefreshes.delete(lockKey);
+    }
+  })();
+
+  inFlightRefreshes.set(lockKey, promise);
+  return await promise;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
@@ -83,83 +104,87 @@ export default async function handler(req, res) {
     const isExpiringSoon = expiresIn < 300;
 
     if (isExpiringSoon && tool === "xero") {
-      if (record.isSharedGrant) {
-        console.log(`🔄 Token Broker: Shared Xero token expiring (${expiresIn}s). Checking latest shared grant...`);
-        const latestShared = await getSharedXeroGrant();
-        const latestExpiresIn = Math.max(0, Math.round(((latestShared?.expiresAt || 0) - Date.now()) / 1000));
+      const lockKey = record.isSharedGrant ? "xero:shared" : `xero:${record.clientKey}`;
 
-        if (latestExpiresIn >= 300) {
-          accessToken = latestShared.tokens.accessToken;
-          expiresIn = latestExpiresIn;
-          console.log(`✅ Token Broker: Using already-refreshed shared Xero token (${Math.round(expiresIn / 60)}m left).`);
-        } else {
-          const refreshToken = latestShared?.tokens?.refreshToken || record.tokens.refreshToken;
-          if (!refreshToken) {
-            return res.status(401).json({
-              success: false,
-              error: "No refresh token available on Central Shared Xero Grant. Please re-authorize in Pulse.",
-              reconnectRequired: true
-            });
-          }
-          try {
+      try {
+        const refreshResult = await refreshWithConcurrencyLock(lockKey, async () => {
+          if (record.isSharedGrant) {
+            console.log(`🔄 Token Broker: Shared Xero token expiring (${expiresIn}s). Checking latest shared grant...`);
+            const latestShared = await getSharedXeroGrant();
+            const latestExpiresIn = Math.max(0, Math.round(((latestShared?.expiresAt || 0) - Date.now()) / 1000));
+
+            if (latestExpiresIn >= 300) {
+              console.log(`✅ Token Broker: Using already-refreshed shared Xero token (${Math.round(latestExpiresIn / 60)}m left).`);
+              return {
+                accessToken: latestShared.tokens.accessToken,
+                expiresIn: latestExpiresIn
+              };
+            }
+
+            const refreshToken = latestShared?.tokens?.refreshToken;
+            if (!refreshToken) {
+              throw new Error("No refresh token available on Central Shared Xero Grant. Please re-authorize in Pulse.");
+            }
+
             const refreshed = await refreshXeroTokens(refreshToken);
             await updateSharedXeroGrantTokens(refreshed);
-            accessToken = refreshed.accessToken;
-            expiresIn = refreshed.expiresIn;
-            console.log(`✅ Token Broker: Successfully refreshed Central Shared Xero Grant. Fresh for ${Math.round(expiresIn / 60)}m.`);
-          } catch (refreshErr) {
-            console.error("🚨 Token Broker: Central Shared Xero refresh failed:", refreshErr.message);
-            try {
-              await markIntegrationReconnectRequired({
-                clientKey: record.clientKey,
-                tool: "xero",
-                error: refreshErr.message
-              });
-            } catch (_) {}
-            return res.status(401).json({
-              success: false,
-              error: `Failed to refresh Central Shared Xero connection (${refreshErr.message}). Re-authorization required.`,
-              reconnectRequired: true
+            console.log(`✅ Token Broker: Successfully refreshed Central Shared Xero Grant. Fresh for ${Math.round(refreshed.expiresIn / 60)}m.`);
+            return {
+              accessToken: refreshed.accessToken,
+              expiresIn: refreshed.expiresIn
+            };
+          } else {
+            console.log(`🔄 Token Broker: Dedicated Xero token for ${record.clientKey} expiring (${expiresIn}s). Checking freshness...`);
+            const latestDedicated = await getIntegrationTokens({ clientKey: record.clientKey, tool: "xero" });
+            const latestExpiresIn = Math.max(0, Math.round(((latestDedicated?.expiresAt || 0) - Date.now()) / 1000));
+
+            if (latestExpiresIn >= 300) {
+              console.log(`✅ Token Broker: Using already-refreshed dedicated Xero token for ${record.clientKey} (${Math.round(latestExpiresIn / 60)}m left).`);
+              return {
+                accessToken: latestDedicated.tokens.accessToken,
+                expiresIn: latestExpiresIn
+              };
+            }
+
+            if (!latestDedicated?.tokens?.refreshToken) {
+              throw new Error("No refresh token available for dedicated connection. Please re-authorize in Pulse.");
+            }
+
+            const refreshed = await refreshXeroTokens(latestDedicated.tokens.refreshToken);
+            await updateRefreshedTokens({
+              clientKey: record.clientKey,
+              tool: "xero",
+              tokens: refreshed
             });
+            console.log(`✅ Token Broker: Successfully refreshed dedicated Xero token for ${record.clientKey}. Fresh for ${Math.round(refreshed.expiresIn / 60)}m.`);
+            return {
+              accessToken: refreshed.accessToken,
+              expiresIn: refreshed.expiresIn
+            };
           }
-        }
-      } else {
-        console.log(`🔄 Token Broker: Dedicated Xero token for ${record.clientKey} is expiring in ${expiresIn}s. Triggering automatic refresh...`);
+        });
 
-        if (!record.tokens.refreshToken) {
-          return res.status(401).json({
-            success: false,
-            error: "No refresh token available to refresh connection. Please re-authorize in Pulse.",
-            reconnectRequired: true
-          });
-        }
-
-        try {
-          const refreshed = await refreshXeroTokens(record.tokens.refreshToken);
-          await updateRefreshedTokens({
-            clientKey: record.clientKey,
-            tool: "xero",
-            tokens: refreshed
-          });
-
-          accessToken = refreshed.accessToken;
-          expiresIn = refreshed.expiresIn;
-          console.log(`✅ Token Broker: Successfully refreshed Xero token for ${record.clientKey}. Fresh for ${Math.round(expiresIn / 60)}m.`);
-        } catch (refreshErr) {
-          console.error(`🚨 Token Broker: Refresh failed for ${record.clientKey}:`, refreshErr.message);
+        accessToken = refreshResult.accessToken;
+        expiresIn = refreshResult.expiresIn;
+      } catch (refreshErr) {
+        console.error(`🚨 Token Broker: Refresh failed for [${lockKey}]:`, refreshErr.message);
+        const errMsg = String(refreshErr.message || "").toLowerCase();
+        const isAuthFailure = errMsg.includes("invalid_grant") || errMsg.includes("consumed") || errMsg.includes("unauthorized") || errMsg.includes("re-authorize");
+        if (isAuthFailure) {
           try {
             await markIntegrationReconnectRequired({
               clientKey: record.clientKey,
               tool: "xero",
-              error: refreshErr.message
+              error: refreshErr.message,
+              isSharedGrant: Boolean(record.isSharedGrant)
             });
           } catch (_) {}
-          return res.status(401).json({
-            success: false,
-            error: `Failed to refresh Xero connection (${refreshErr.message}). Re-authorization required.`,
-            reconnectRequired: true
-          });
         }
+        return res.status(401).json({
+          success: false,
+          error: `Failed to refresh Xero connection (${refreshErr.message}). Re-authorization required.`,
+          reconnectRequired: isAuthFailure
+        });
       }
     } else if (isExpiringSoon && (tool === "quickbooks" || tool === "qb")) {
       console.log(`🔄 Token Broker: QuickBooks token for ${record.clientKey} is expiring in ${expiresIn}s. Triggering automatic refresh...`);

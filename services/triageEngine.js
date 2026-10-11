@@ -1644,17 +1644,19 @@ export async function handleRunFlagSweep(req, res, sheets) {
             const matchedAlerts = [];
             for (const entry of logEntries) {
               const lines = (entry.details || "").split(/\n+/);
+              const ts = entry.timestamp ? (entry.timestamp instanceof Date ? entry.timestamp.toISOString() : String(entry.timestamp).trim()) : "";
               for (const line of lines) {
                 if (!patterns.some(p => line.includes(p))) continue;
                 if (autoLogType === "expenseUnreconGaps") {
                   const isActive = await isExpensePlaceholderStillActive_(line, client.clientSheetId, null, sheets);
                   if (!isActive) continue; // Skip: underlying expense already resolved in sheet
                 }
-                const fingerprintInput = `${client.clientName}|${autoLogType}|${line}`;
+                const fingerprintInput = `${client.clientName}|${autoLogType}|${ts}|${line}`;
                 matchedAlerts.push({
                   clientName: client.clientName,
                   alertType: autoLogType,
                   summary: line,
+                  timestamp: ts,
                   _fingerprint: createHash("sha256").update(fingerprintInput).digest("hex").substring(0, 16),
                 });
               }

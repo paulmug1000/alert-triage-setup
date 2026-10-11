@@ -466,10 +466,13 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
           const jobName0    = String(row[1] || "").trim();
           const projectCode0 = String(row[2] || "").trim();
           alerts.push({
-            alertType: "revenue_mismatch", alertKey: `revenue_mismatch|${clientName}|${jobClient0}|${jobName0}${projectCode0 ? `|${projectCode0}` : ""}`,
+            alertType: "revenue_mismatch",
+            alertKey: `revenue_mismatch|${clientName}|${jobClient0}|${jobName0}${projectCode0 ? `|${projectCode0}` : ""}|rev:0.00|inv:${totalInvoiced0.toFixed(2)}`,
+            legacyAlertKey: `revenue_mismatch|${clientName}|${jobClient0}|${jobName0}${projectCode0 ? `|${projectCode0}` : ""}`,
             heading: "Revenue / total invoiced mismatch",
             detail: `${jobClient0} | ${jobName0} (Row ${r + 1})${projectCode0 ? ` [${projectCode0}]` : ""}: revenue = £0.00 but total invoiced (incl. placeholders) = £${totalInvoiced0.toFixed(2)} - job revenue appears to be missing or not yet set.`,
             jobName: jobName0, endClientName: jobClient0, projectCode: projectCode0, confirmedRow: r + 1, isRetainer: jobType.includes("retainer"),
+            revenue: "0.00", totalInvoiced: totalInvoiced0.toFixed(2), diff: totalInvoiced0.toFixed(2),
           });
         }
         r += jobRows0.length;
@@ -487,7 +490,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
       const isRetainer = jobType.includes("retainer");
       const jobRows    = collectJobRows_(data, r);
 
-      let mismatch = false, detail = "";
+      let mismatch = false, detail = "", mismatchTotalInvoiced = 0;
 
       if (!isRetainer) {
         let totalInvoiced = 0;
@@ -497,6 +500,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
         const diff = Math.abs(totalInvoiced - revenueAmt);
         if (diff > TOLERANCE) {
           mismatch = true;
+          mismatchTotalInvoiced = totalInvoiced;
           detail = `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: revenue = £${revenueAmt.toFixed(2)}, total invoiced (incl. placeholders) = £${totalInvoiced.toFixed(2)} - difference of £${diff.toFixed(2)}`;
         }
       }
@@ -507,8 +511,11 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
 
       if (mismatch) {
         alerts.push({
-          alertType: "revenue_mismatch", alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}`,
+          alertType: "revenue_mismatch",
+          alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}|rev:${revenueAmt.toFixed(2)}|inv:${mismatchTotalInvoiced.toFixed(2)}`,
+          legacyAlertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}`,
           heading: "Revenue / total invoiced mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,
+          revenue: revenueAmt.toFixed(2), totalInvoiced: mismatchTotalInvoiced.toFixed(2), diff: Math.abs(mismatchTotalInvoiced - revenueAmt).toFixed(2),
         });
       }
       r += jobRows.length;
@@ -564,7 +571,7 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
         const jobRows    = collectJobRows_(data, r);
         const sheetRow   = startRow + r;
 
-        let mismatch = false, detail = "";
+        let mismatch = false, detail = "", mismatchExpTotal = 0;
 
         if (!isRetainer) {
           let totalExpenses = 0;
@@ -574,6 +581,7 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
           const diff = Math.abs(totalExpenses - directCostsAmt);
           if (diff > TOLERANCE) {
             mismatch = true;
+            mismatchExpTotal = totalExpenses;
             detail = `${jobClient} | ${jobName} (Row ${sheetRow})${projectCode ? ` [${projectCode}]` : ""} [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses (incl. placeholders) = £${totalExpenses.toFixed(2)} - difference of £${diff.toFixed(2)}`;
           }
         } else {
@@ -584,6 +592,7 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
             const diffA = Math.abs(parentExp - directCostsAmt);
             if (diffA > TOLERANCE) {
               mismatch = true;
+              mismatchExpTotal = parentExp;
               detail = `${jobClient} | ${jobName} (Row ${sheetRow}) [retainer, single-row] [${tabName} tab]: direct cost budget = £${directCostsAmt.toFixed(2)}, total expenses on parent = £${parentExp.toFixed(2)} - difference of £${diffA.toFixed(2)}`;
             }
           } else {
@@ -602,10 +611,12 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
                 
                 alerts.push({
                   alertType: "direct_costs_mismatch", 
-                  alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}|${suffix}${projectCode ? `|${projectCode}` : ""}`,
+                  alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}|${suffix}${projectCode ? `|${projectCode}` : ""}|exp:${childExp.toFixed(2)}|expected:${expectedForRow.toFixed(2)}`,
+                  legacyAlertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}|${suffix}${projectCode ? `|${projectCode}` : ""}`,
                   heading: "Direct costs / total expenses mismatch", 
                   detail: `${jobClient} | ${jobName} (Row ${childSheetRow}) [retainer, multi-row] [${tabName} tab]: £${childExp.toFixed(2)} expenses, expected £${expectedForRow.toFixed(2)} (${mult}× monthly budget of £${directCostsAmt.toFixed(2)}) - diff £${diffC.toFixed(2)}`, 
                   jobName, endClientName: jobClient, projectCode, confirmedRow: childSheetRow, isRetainer, tab: tabName,
+                  childExp: childExp.toFixed(2), expectedForRow: expectedForRow.toFixed(2), directCosts: directCostsAmt.toFixed(2),
                 });
               }
             }
@@ -614,8 +625,11 @@ export async function checkDirectCostsMismatch_(clientName, clientSheetId, share
 
         if (mismatch) {
           alerts.push({
-            alertType: "direct_costs_mismatch", alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}${projectCode ? `|${projectCode}` : ""}`,
+            alertType: "direct_costs_mismatch",
+            alertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}${projectCode ? `|${projectCode}` : ""}|budget:${directCostsAmt.toFixed(2)}|exp:${mismatchExpTotal.toFixed(2)}`,
+            legacyAlertKey: `direct_costs_mismatch|${clientName}|${jobClient}|${jobName}|${tabName}${projectCode ? `|${projectCode}` : ""}`,
             heading: "Direct costs / total expenses mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: sheetRow, isRetainer, tab: tabName,
+            directCosts: directCostsAmt.toFixed(2), totalExpenses: mismatchExpTotal.toFixed(2),
           });
         }
         r += jobRows.length;
@@ -672,7 +686,9 @@ export async function checkPipelineConfirmedOverlap_(clientName, clientSheetId, 
       const detail = `Job found in both Confirmed and Pipeline tabs but Pipeline row is not closed out.\nConfirmed: row ${r + 1}, client: ${confClient}, job: ${confJob}${confCode ? `, project code: ${confCode}` : ""}${confJobType ? `, type: ${confJobType}` : ""}${confRevenueAmt > 0 ? `, revenue: £${confRevenueAmt.toFixed(2)}` : ""}.\nPipeline: row ${pipeMatch.sheetRow}, likelihood: ${pipeMatch.likelihood || "(blank)"}, "Copied to confirmed?": ${pipeMatch.copiedToConf || "(blank)"}.\nExpected fix: set Pipeline likelihood to 0% OR mark "Copied to confirmed?" as Yes.`;
 
       alerts.push({
-        alertType: "pipeline_confirmed_overlap", alertKey: `pipeline_confirmed_overlap|${clientName}|${confClient}|${confCode || confJob}`,
+        alertType: "pipeline_confirmed_overlap",
+        alertKey: `pipeline_confirmed_overlap|${clientName}|${confClient}|${confCode || confJob}|cRow:${r + 1}|pRow:${pipeMatch.sheetRow}|pLike:${pipeMatch.likelihood || ""}|pCopied:${pipeMatch.copiedToConf || ""}`,
+        legacyAlertKey: `pipeline_confirmed_overlap|${clientName}|${confClient}|${confCode || confJob}`,
         heading: "Job in both Pipeline and Confirmed - Pipeline not closed out", detail, jobName: confJob, endClientName: confClient,
         projectCode: confCode, confirmedRow: r + 1, pipelineRow: pipeMatch.sheetRow, likelihood: pipeMatch.likelihood, copiedToConf: pipeMatch.copiedToConf, jobType: confJobType,
       });
@@ -710,7 +726,9 @@ export async function checkRetainerShrinkBlocked_(clientName, masterSheetId, sha
       const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
 
       alerts.push({
-        alertType: "retainer_shrink_blocked", alertKey: `retainer_shrink_blocked|${clientName}|${endClientStr || "unknown"}|${jobName || clientJobStr}|row${childRowNum}`,
+        alertType: "retainer_shrink_blocked",
+        alertKey: `retainer_shrink_blocked|${clientName}|${endClientStr || "unknown"}|${jobName || clientJobStr}|row${childRowNum}${tsStr ? `|${tsStr}` : ""}`,
+        legacyAlertKey: `retainer_shrink_blocked|${clientName}|${endClientStr || "unknown"}|${jobName || clientJobStr}|row${childRowNum}`,
         heading: "Retainer child row blocked from trimming - manual review needed",
         detail: `Retainer contract shrunk but the system was unable to automatically trim child row ${childRowNum} because the row contains actuals (expenses or invoices already recorded).\nJob: ${clientJobStr || clientName}.\nChild row ${childRowNum} is now an excess row that falls outside the new contract period but cannot be removed automatically.\nAction required: manually review row ${childRowNum} in the Confirmed tab and decide whether to keep, adjust, or remove it.\nFirst detected: ${tsStr ? tsStr.slice(0, 10) : "(unknown date)"}.`,
         jobName, endClientName: endClientStr, childRowNum, clientJobStr, timestamp: tsStr, confirmedRow: childRowNum,
@@ -770,8 +788,8 @@ export async function checkUninvoicedNewJobs_(clientName, clientSheetId, sharedD
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
         alerts.push({
           alertType: "uninvoiced_new_job",
-          alertKey: `uninvoiced_new_job|${clientName}|${jobClient || ""}|${stableKey}`,
-          legacyAlertKey: `uninvoiced_new_job|${stableKey}`,
+          alertKey: `uninvoiced_new_job|${clientName}|${jobClient || ""}|${stableKey}|rev:${revenueAmt.toFixed(2)}`,
+          legacyAlertKey: `uninvoiced_new_job|${clientName}|${jobClient || ""}|${stableKey}`,
           stableJobKey: stableKey,
           heading: "Job started over a month ago with no invoices sent",
           detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job started ${fmtDate(startDate)} (over a month ago) but no real invoices have been recorded yet. All invoice slots are empty or contain manual placeholders.`,
@@ -832,8 +850,8 @@ export async function checkUninvoicedRevenue_(clientName, clientSheetId, sharedD
         const draftNote = draftCount > 0 ? ` Note: ${draftCount} invoice(s) totalling £${draftTotal.toFixed(2)} have a reference but are still Draft (not yet sent) - these are not counted as invoiced.` : "";
         alerts.push({
           alertType: "uninvoiced_revenue",
-          alertKey: `uninvoiced_revenue|${clientName}|${jobClient || ""}|${stableKey}`,
-          legacyAlertKey: `uninvoiced_revenue|${stableKey}`,
+          alertKey: `uninvoiced_revenue|${clientName}|${jobClient || ""}|${stableKey}|uninv:${uninvoiced.toFixed(2)}|rev:${revenueAmt.toFixed(2)}|drafts:${draftCount}`,
+          legacyAlertKey: `uninvoiced_revenue|${clientName}|${jobClient || ""}|${stableKey}`,
           stableJobKey: stableKey,
           heading: "Completed job has uninvoiced revenue",
           detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, revenue = £${revenueAmt.toFixed(2)}, real sent/paid invoiced (excl. placeholders and drafts) = £${totalRealInvoiced.toFixed(2)} - £${uninvoiced.toFixed(2)} uninvoiced.${draftNote}`,
@@ -1108,8 +1126,8 @@ export async function checkUnreceivedExpenses_(clientName, clientSheetId, shared
         const stableKey = buildStableJobKey_(jobClient, jobName, projectCode, startVal, endVal);
         alerts.push({
           alertType: "unreceived_expenses",
-          alertKey: `unreceived_expenses|${clientName}|${jobClient || ""}|${stableKey}`,
-          legacyAlertKey: `unreceived_expenses|${stableKey}`,
+          alertKey: `unreceived_expenses|${clientName}|${jobClient || ""}|${stableKey}|unrec:${unreceived.toFixed(2)}|budget:${directCostsAmt.toFixed(2)}|ph:${placeholderCount}`,
+          legacyAlertKey: `unreceived_expenses|${clientName}|${jobClient || ""}|${stableKey}`,
           stableJobKey: stableKey,
           heading: "Completed job has unreceived expenses",
           detail: `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: job ended ${fmtDate(endDate)}, direct cost budget = £${directCostsAmt.toFixed(2)}, real received expenses (excl. estimates/gaps) = £${totalRealReceived.toFixed(2)} - £${unreceived.toFixed(2)} unreceived.${placeholderNote}`,
@@ -1252,7 +1270,8 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
       const countNote = info.count > 1 ? ` (occurred ${info.count} times in last 100 logs)` : "";
       alerts.push({
         alertType: "autolog_error",
-        alertKey: `autolog_error|${clientName}|${signature}`,
+        alertKey: `autolog_error|${clientName}|${signature}|${info.latestTs || ""}|count:${info.count}`,
+        legacyAlertKey: `autolog_error|${clientName}|${signature}`,
         heading: `Automation error${info.category ? ` in ${info.category}` : ""}`,
         detail: `Error in AutoLog: "${info.errorText}"${countNote}. Latest: ${info.latestTs || "recently"}.`,
         clientName,
@@ -1409,7 +1428,8 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
 
       alerts.push({
         alertType: "infinite_loop",
-        alertKey: `infinite_loop|${clientName}|${key}`,
+        alertKey: `infinite_loop|${clientName}|${key}|${t2.tsStr || ""}|count:${completedOscillations.length}`,
+        legacyAlertKey: `infinite_loop|${clientName}|${key}`,
         heading: `Automation conflict: ${t2.displayEntity}`,
         detail: `The automation is fighting itself on ${t2.displayEntity} (${t2.rawField}). ${transition1} was reversed by ${transition2} (${countNote}).${hint}`,
         clientName,

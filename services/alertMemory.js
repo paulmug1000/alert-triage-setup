@@ -30,6 +30,9 @@ export function normaliseArrayForFingerprint(arr) {
 }
 
 export function buildAlertFingerprint(alert) {
+  if (alert.alertKey) {
+    return createHash("sha256").update(alert.alertKey).digest("hex").substring(0, 16);
+  }
   const parts = [];
   parts.push(alert.clientName || "");
   parts.push(alert.type || "");
@@ -48,6 +51,9 @@ export function buildAlertFingerprint(alert) {
 }
 
 export function buildAlertFingerprintLegacy(alert) {
+  if (alert.legacyAlertKey) {
+    return createHash("sha256").update(alert.legacyAlertKey).digest("hex").substring(0, 16);
+  }
   const parts = [];
   parts.push(alert.type || "");
   parts.push(alert.flagType || alert.alertType || "");

@@ -375,7 +375,7 @@ export async function handleBulkIgnoreAlerts(req, res, sheets) {
 }
 
 export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
-  const { alertKey, clientName, sessionId, automationCommanderSheetId: acId } = req.body;
+  const { alertKey, clientName, sessionId, automationCommanderSheetId: acId, alertData } = req.body;
   if (!alertKey || !acId) return res.status(400).json({ success: false, error: "Missing alertKey or automationCommanderSheetId" });
   try {
     const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
@@ -386,9 +386,10 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
     if (row) {
       await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted", clientName: clientName || row.clientName || "" });
     } else {
+      const snapStr = alertData ? JSON.stringify(alertData) : "";
       await appendAlertMemoryRow(sheets, acId, {
         fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",
-        cachedOptionsJSON: "", status: "accepted", ignoreReason: ""
+        cachedOptionsJSON: "", status: "accepted", ignoreReason: "", dataSnapshot: snapStr
       });
     }
 

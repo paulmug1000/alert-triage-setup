@@ -1773,7 +1773,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
           const staleRows = memoryRows.filter(r => 
             r.clientName === item.clientName && 
             r.alertType === item.alertType && 
-            (r.status === "cached" || r.status === "pending_automation" || r.status === "ignored" || (item.category === "proactive" && r.status === "task")) && 
+            (r.status === "cached" || r.status === "pending_automation" || r.status === "ignored" || (item.category === "proactive" && (r.status === "task" || r.status === "accepted"))) && 
             !freshHashes.has(r.fingerprintHash)
           );
 
@@ -1938,6 +1938,33 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
               // Case 3: Previously ignored or accepted
               if (exRow.status === "ignored" || exRow.status === "accepted") {
+                // For autolog_error: if the error has a newer timestamp or more occurrences than the acknowledged snapshot, revive it!
+                if (exRow.status === "accepted" && item.alertType === "autolog_error") {
+                  let oldSnap = {};
+                  try { oldSnap = JSON.parse(exRow.dataSnapshot || "{}"); } catch(e) {}
+                  const hasNewTimestamp = alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp;
+                  const hasMoreOccurrences = alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount);
+                  
+                  if (hasNewTimestamp || hasMoreOccurrences) {
+                    const clientMeta = clientMetaMap.get(item.clientName);
+                    const newStatus = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, new Date(detectedAtIso).getTime(), null);
+                    await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
+                      ...exRow,
+                      fingerprintHash: alert._fingerprint,
+                      status: newStatus,
+                      alertSummary: summary,
+                      lastRechecked: detectedAtIso,
+                      dataSnapshot: JSON.stringify(alertForSnapshot)
+                    });
+                    exRow.status = newStatus;
+                    exRow.fingerprintHash = alert._fingerprint;
+                    flagsRaised++;
+                    raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "revived" });
+                    console.log(`  🔄 REVIVED accepted autolog_error for ${item.clientName} (new occurrences detected: ${alert.timestamp}): ${alert._fingerprint} -> ${newStatus}`);
+                    continue;
+                  }
+                }
+
                 if (exRow.fingerprintHash !== alert._fingerprint) {
                   await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
                     ...exRow,

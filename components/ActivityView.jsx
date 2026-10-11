@@ -62,7 +62,9 @@ export default function ActivityView({
   allOutgoingsClients = [],
   styles,
   isAdmin = false,
-  user
+  user,
+  managedClient,
+  onClearManagedClient
 }) {
   const effectiveIsAdmin = !!(isAdmin || user?.isAdmin || user?.role === "Admin");
   const {
@@ -79,16 +81,24 @@ export default function ActivityView({
     loadActivity
   } = useActivity(automationCommanderSheetId, allOutgoingsClients);
 
+  // Auto-filter by managedClient when in manage mode
+  useEffect(() => {
+    if (managedClient?.clientName) {
+      setSelectedClient(managedClient.clientName);
+      loadActivity({ clientName: managedClient.clientName, includeRoutine });
+    }
+  }, [managedClient]);
+
   // Instant load: On mount, load from Redis cache (forceRefresh: false).
   // The frontend relies on the automated background runs.
   // The user can click "Refresh" anytime to force a live Google Sheets scrape.
   const revalidatedRef = useRef(false);
   useEffect(() => {
-    if (!revalidatedRef.current) {
+    if (!revalidatedRef.current && !managedClient?.clientName) {
       revalidatedRef.current = true;
       loadActivity({ forceRefresh: false });
     }
-  }, [loadActivity]);
+  }, [loadActivity, managedClient?.clientName]);
 
   // Handle client change
   const handleClientChange = (e) => {

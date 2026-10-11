@@ -67,8 +67,18 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     assignedByClient, setAssignedByClient, addAssignedAppId,
     outgoingsPullPendingRef, allClientsMap, setAllClientsMap,
     showDebugPanel, setShowDebugPanel, debugClientName, setDebugClientName,
-    debugResult, setDebugResult, debugLoading, setDebugLoading, runDebug
+    debugResult, setDebugResult, debugLoading, setDebugLoading, runDebug,
+    managedClient, setManagedClient
   } = appGlobals;
+
+  const handleClearManagedClient = () => {
+    setManagedClient(null);
+    setSetupClientName("");
+    if (activeNav === "alerts") {
+      triageEngine.setSelectedClient(null);
+      setScreen("clientSelection");
+    }
+  };
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -254,7 +264,26 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   }, [isAuthenticated, user?.email, loadClients]);
 
   const handleNavHome = () => { fireOutgoingsPullIfPending(); setActiveNav("home"); };
-  const handleNavAlerts = () => { fireOutgoingsPullIfPending(); setActiveNav("alerts"); setScreen("clientSelection"); };
+  const handleNavAlerts = () => {
+    fireOutgoingsPullIfPending();
+    setActiveNav("alerts");
+    if (!managedClient) {
+      setScreen("clientSelection");
+    }
+  };
+
+  // Automatically select managed client alerts when activeNav is alerts
+  useEffect(() => {
+    if (activeNav === "alerts" && managedClient) {
+      if (triageEngine.selectedClient?.clientName?.toLowerCase() !== managedClient.clientName?.toLowerCase()) {
+        const match =
+          (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) ||
+          (triageEngine.clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) ||
+          managedClient;
+        triageEngine.selectClient(match);
+      }
+    }
+  }, [activeNav, managedClient, allOutgoingsClients, triageEngine.clientsWithFlags]);
   const handleNavOverview = () => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
   const handleNavActivity = () => { fireOutgoingsPullIfPending(); setActiveNav("activity"); loadClients(); };
@@ -426,6 +455,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
             if (match) triageEngine.selectClient(match);
           }}
           isLoadingAlerts={isLoading}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -482,6 +513,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
             setActiveNav={setActiveNav}
             isAdmin={isAdmin}
             user={user}
+            managedClient={managedClient}
+            onClearManagedClient={handleClearManagedClient}
           />
         );
       }
@@ -527,6 +560,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           styles={styles}
           withModal={withModal}
           isAdmin={isAdmin}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -538,6 +573,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           allOutgoingsClients={allOutgoingsClients}
           styles={styles}
           isAdmin={isAdmin}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -550,6 +587,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           styles={styles}
           withModal={withModal}
           isAdmin={isAdmin}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -563,6 +602,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           allClientsLoaded={allClientsLoaded}
           styles={styles}
           withModal={withModal}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -573,6 +614,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         <JobsView
           allOutgoingsClients={allOutgoingsClients}
           styles={styles}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -584,6 +627,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           allOutgoingsClients={allOutgoingsClients}
           user={user}
           isAdmin={isAdmin}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -593,9 +638,11 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       return (
         <SetupView
           allOutgoingsClients={allOutgoingsClients}
-          initialClientName={setupClientName}
+          initialClientName={managedClient ? managedClient.clientName : setupClientName}
           onSelectClient={setSetupClientName}
           user={user}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -621,6 +668,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           allClients={allOutgoingsClients}
           styles={styles}
           isAdmin={isAdmin}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -634,6 +683,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           styles={styles}
           isAdmin={isAdmin}
           user={user}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -650,6 +701,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           refreshTriage={refreshTriage}
           isAdmin={isAdmin}
           user={user}
+          managedClient={managedClient}
+          onClearManagedClient={handleClearManagedClient}
         />
       );
     }
@@ -698,6 +751,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         user={user}
         onLogout={logout}
         clients={allOutgoingsClients}
+        managedClient={managedClient}
+        onSelectManagedClient={setManagedClient}
+        onClearManagedClient={handleClearManagedClient}
       >
         {renderActiveView()}
       </NavShell>

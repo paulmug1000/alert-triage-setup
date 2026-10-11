@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
 import InvoicesEditModal from "./InvoicesEditModal";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
@@ -35,7 +35,9 @@ const rowHasInvoice = (r) => r.invoiceSlots && r.invoiceSlots.some(s => {
 export default function InvoicesView({
   allOutgoingsClients,
   styles,
-  isAdmin: propIsAdmin
+  isAdmin: propIsAdmin,
+  managedClient,
+  onClearManagedClient
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
@@ -54,6 +56,21 @@ export default function InvoicesView({
     invoicesSavingCell, setInvoicesSavingCell,
     loadInvoicesInbox, loadInvoicesJobs
   } = useInvoices(assignedAppIds);
+
+  // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
+  useEffect(() => {
+    if (managedClient) {
+      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
+      setInvoicesClient(clientObj);
+      loadInvoicesInbox(clientObj);
+      loadInvoicesJobs(clientObj, false);
+      setInvoicesShowAll(false);
+    } else {
+      setInvoicesClient(null);
+      setInvoicesInbox([]);
+      setInvoicesJobs(null);
+    }
+  }, [managedClient, allOutgoingsClients]);
 
   const [viewMode, setViewMode] = useState("modern");
   const [expandedRetainerKeys, setExpandedRetainerKeys] = useState(() => new Set());
@@ -316,7 +333,15 @@ export default function InvoicesView({
               title="Refresh jobs and invoices from live sheets">
                 ↻ Refresh
               </button>
-              <button className="triage-btn" onClick={() => { setInvoicesClient(null); setInvoicesInbox([]); setInvoicesJobs(null); }}
+              <button className="triage-btn" onClick={() => {
+                if (managedClient && onClearManagedClient) {
+                  onClearManagedClient();
+                } else {
+                  setInvoicesClient(null);
+                  setInvoicesInbox([]);
+                  setInvoicesJobs(null);
+                }
+              }}
                 style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
                 ← Back to Clients
               </button>

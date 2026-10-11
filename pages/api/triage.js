@@ -398,11 +398,11 @@ export default async function handler(req, res) {
       return await handleGetActivity(req, res, sheets);
     } else if (action === "get_client_view_data") {
       try {
-        const { clientSheetId, masterSheetId, tab, clientName } = req.body;
+        const { clientSheetId, masterSheetId, tab, clientName, bypassCache } = req.body;
         if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
-        const data = await getClientViewData({ clientSheetId, masterSheetId, tab });
+        const data = await getClientViewData({ clientSheetId, masterSheetId, tab, bypassCache });
         return res.status(200).json(data);
       } catch (err) {
         console.error("❌ get_client_view_data error:", err);

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Spinner from "./Spinner";
 import RetainersEditModal from "./RetainersEditModal";
 import CreateRetainerModal from "./CreateRetainerModal";
@@ -8,7 +8,9 @@ import { useAuth } from "../hooks/useAuth";
 export default function RetainersView({
   allOutgoingsClients,
   styles,
-  isAdmin: propIsAdmin
+  isAdmin: propIsAdmin,
+  managedClient,
+  onClearManagedClient
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
@@ -26,6 +28,18 @@ export default function RetainersView({
   const [showCreateRetainerModal, setShowCreateRetainerModal] = useState(false);
   const [retainersEditJob, setRetainersEditJob] = useState(null);
   const [expandedRetainerJobs, setExpandedRetainerJobs] = useState(new Set());
+
+  // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
+  useEffect(() => {
+    if (managedClient) {
+      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
+      setRetainersClient(clientObj);
+      loadRetainersJobs(clientObj);
+    } else {
+      setRetainersClient(null);
+      setRetainersJobs(null);
+    }
+  }, [managedClient, allOutgoingsClients]);
 
   const noRetClient = !retainersClient;
 
@@ -111,7 +125,14 @@ export default function RetainersView({
             </button>
           )}
           {retainersClient && (
-            <button className="triage-btn" onClick={() => { setRetainersClient(null); setRetainersJobs(null); }}
+            <button className="triage-btn" onClick={() => {
+              if (managedClient && onClearManagedClient) {
+                onClearManagedClient();
+              } else {
+                setRetainersClient(null);
+                setRetainersJobs(null);
+              }
+            }}
               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
               ← Back to Clients
             </button>

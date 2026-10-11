@@ -14,6 +14,8 @@ export default function TasksView({
   refreshTriage,
   isAdmin: propIsAdmin,
   user: propUser,
+  managedClient,
+  onClearManagedClient
 }) {
   const auth = useAuth?.() || {};
   const currentUser = propUser || auth.user;
@@ -571,21 +573,30 @@ export default function TasksView({
 
         {tasksLoading ? (
           <div style={{ textAlign: "center", padding: "40px", color: "#888" }}><Spinner size={20} color="#0066cc" /> Loading tasks...</div>
-        ) : tasks.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "40px", color: "#888", fontSize: "14px" }}>
-            {tasksFilter === "active"
-              ? (isAdmin ? "No active tasks created by you" : "No active tasks")
-              : tasksFilter === "snoozed"
-              ? (isAdmin ? "No snoozed tasks created by you" : "No snoozed tasks")
-              : tasksFilter === "other_active"
-              ? "No other active tasks from team members"
-              : tasksFilter === "other_snoozed"
-              ? "No other snoozed tasks from team members"
-              : "No completed tasks"}
-          </div>
-        ) : (
-          <div>
-            {tasks.map(task => {
+        ) : (() => {
+          const visibleTasks = managedClient?.clientName
+            ? tasks.filter(t => (t.clientName || "").toLowerCase() === managedClient.clientName.toLowerCase())
+            : tasks;
+          if (visibleTasks.length === 0) {
+            return (
+              <div style={{ textAlign: "center", padding: "40px", color: "#888", fontSize: "14px" }}>
+                {managedClient
+                  ? `No ${tasksFilter} tasks for ${managedClient.clientName}`
+                  : tasksFilter === "active"
+                  ? (isAdmin ? "No active tasks created by you" : "No active tasks")
+                  : tasksFilter === "snoozed"
+                  ? (isAdmin ? "No snoozed tasks created by you" : "No snoozed tasks")
+                  : tasksFilter === "other_active"
+                  ? "No other active tasks from team members"
+                  : tasksFilter === "other_snoozed"
+                  ? "No other snoozed tasks from team members"
+                  : "No completed tasks"}
+              </div>
+            );
+          }
+          return (
+            <div>
+              {visibleTasks.map(task => {
               const isSelected = selectedTaskHashes.has(task.fingerprintHash);
               return (
                 <div key={task.fingerprintHash}
@@ -683,7 +694,8 @@ export default function TasksView({
               );
             })}
           </div>
-        )}
+        );
+      })()}
 
         {/* Bulk Snooze Modal */}
         {showBulkSnoozeModal && (

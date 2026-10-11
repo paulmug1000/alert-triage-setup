@@ -8,7 +8,45 @@ export function AppGlobalsProvider({ children }) {
   
   const outgoingsPullPendingRef = useRef(null);
   const [allClientsMap, setAllClientsMap] = useState({});
-  
+
+  const [managedClient, setManagedClientState] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pma_managed_client");
+        return stored ? JSON.parse(stored) : null;
+      } catch { return null; }
+    }
+    return null;
+  });
+
+  const setManagedClient = (clientOrName) => {
+    if (!clientOrName) {
+      setManagedClientState(null);
+      if (typeof window !== "undefined") {
+        try { localStorage.removeItem("pma_managed_client"); } catch {}
+      }
+      return;
+    }
+    let clientObj = typeof clientOrName === "string" ? { clientName: clientOrName } : { ...clientOrName };
+    if (allClientsMap && clientObj.clientName && allClientsMap[clientObj.clientName]) {
+      clientObj = { ...allClientsMap[clientObj.clientName], ...clientObj };
+    }
+    setManagedClientState(clientObj);
+    if (typeof window !== "undefined") {
+      try { localStorage.setItem("pma_managed_client", JSON.stringify(clientObj)); } catch {}
+    }
+  };
+
+  // Keep managedClient sheet IDs in sync with allClientsMap
+  useEffect(() => {
+    if (managedClient?.clientName && allClientsMap && allClientsMap[managedClient.clientName]) {
+      const match = allClientsMap[managedClient.clientName];
+      if (match.clientSheetId !== managedClient.clientSheetId || match.masterSheetId !== managedClient.masterSheetId) {
+        setManagedClientState(prev => prev ? ({ ...prev, ...match }) : null);
+      }
+    }
+  }, [allClientsMap, managedClient?.clientName]);
+
   const [assignedAppIds, setAssignedAppIds] = useState(() => {
     try {
       const stored = localStorage.getItem("pulse_assignedAppIds");
@@ -87,7 +125,8 @@ export function AppGlobalsProvider({ children }) {
     debugClientName, setDebugClientName,
     debugResult, setDebugResult,
     debugLoading, setDebugLoading,
-    runDebug
+    runDebug,
+    managedClient, setManagedClient
   };
 
   return (

@@ -108,16 +108,19 @@ if (typeof document !== "undefined") {
 export default function NavShell({
   activeNav, onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
   onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onIntegrations, onSetup, onSettings,
-  homeAlertCount, taskCount, user, onLogout, clients = [], children
+  homeAlertCount, taskCount, user, onLogout, clients = [],
+  managedClient, onSelectManagedClient, onClearManagedClient, children
 }) {
   const router = useRouter();
   const [showMore, setShowMore] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [manageDropdownOpen, setManageDropdownOpen] = useState(false);
   const [pulseDropdownOpen, setPulseDropdownOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [portalClients, setPortalClients] = useState(clients || []);
   const [clientsLoading, setClientsLoading] = useState(false);
   const [clientSearch, setClientSearch] = useState("");
+  const [manageClientSearch, setManageClientSearch] = useState("");
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth <= 840);
@@ -147,10 +150,13 @@ export default function NavShell({
 
   // Close dropdowns when clicking outside
   useEffect(() => {
-    if (!showMore && !pulseDropdownOpen && !profileDropdownOpen) return;
+    if (!showMore && !manageDropdownOpen && !pulseDropdownOpen && !profileDropdownOpen) return;
     const close = (e) => {
       if (showMore && !e.target.closest(".nav-more-dropdown") && !e.target.closest(".nav-more-btn")) {
         setShowMore(false);
+      }
+      if (manageDropdownOpen && !e.target.closest(".pma-manage-dropdown") && !e.target.closest(".pma-manage-btn")) {
+        setManageDropdownOpen(false);
       }
       if (pulseDropdownOpen && !e.target.closest(".pma-pulse-dropdown") && !e.target.closest(".pma-pulse-btn")) {
         setPulseDropdownOpen(false);
@@ -162,6 +168,7 @@ export default function NavShell({
     const handleKey = (e) => {
       if (e.key === "Escape") {
         setShowMore(false);
+        setManageDropdownOpen(false);
         setPulseDropdownOpen(false);
         setProfileDropdownOpen(false);
       }
@@ -172,7 +179,7 @@ export default function NavShell({
       document.removeEventListener("mousedown", close);
       document.removeEventListener("keydown", handleKey);
     };
-  }, [showMore, pulseDropdownOpen, profileDropdownOpen]);
+  }, [showMore, manageDropdownOpen, pulseDropdownOpen, profileDropdownOpen]);
 
   const handleSelectPulseClient = (client) => {
     if (typeof window !== "undefined") {
@@ -185,6 +192,10 @@ export default function NavShell({
 
   const filteredClients = portalClients.filter((c) =>
     c.clientName?.toLowerCase().includes(clientSearch.toLowerCase().trim())
+  );
+
+  const filteredManageClients = portalClients.filter((c) =>
+    c.clientName?.toLowerCase().includes(manageClientSearch.toLowerCase().trim())
   );
 
   const Badge = ({ count }) => count > 0 ? (
@@ -246,6 +257,194 @@ export default function NavShell({
         </div>
         {user && (
           <div className="pma-topbar-user-area" style={{ position: "relative" }}>
+            {/* Manage Client Dropdown */}
+            <div style={{ position: "relative" }}>
+              <button
+                type="button"
+                className="pma-manage-btn triage-btn"
+                onClick={() => {
+                  setManageDropdownOpen((v) => !v);
+                  setPulseDropdownOpen(false);
+                  setProfileDropdownOpen(false);
+                }}
+                style={{
+                  background: managedClient ? "#0047AB" : "rgba(255, 255, 255, 0.12)",
+                  border: managedClient ? "1px solid #3b82f6" : "1px solid rgba(255, 255, 255, 0.25)",
+                  borderRadius: "6px",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  padding: "5px 12px",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  transition: "all 0.15s ease",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                  maxWidth: isMobile ? "130px" : "210px"
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = managedClient ? "#003b8e" : "rgba(255, 255, 255, 0.22)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = managedClient ? "#0047AB" : "rgba(255, 255, 255, 0.12)"; }}
+                title={managedClient ? `Managing: ${managedClient.clientName} across PMA (Click to switch or clear)` : "Select client to manage across PMA"}
+              >
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  Manage:{managedClient ? ` ${managedClient.clientName}` : ""}
+                </span>
+                <span style={{ fontSize: "10px", opacity: 0.85, lineHeight: 1 }}>{manageDropdownOpen ? "▲" : "▼"}</span>
+              </button>
+
+              {manageDropdownOpen && (
+                <div
+                  className="pma-manage-dropdown"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 8px)",
+                    right: 0,
+                    background: "#ffffff",
+                    borderRadius: "8px",
+                    boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.15)",
+                    border: "1px solid #cbd5e1",
+                    zIndex: 1000,
+                    minWidth: "220px",
+                    maxWidth: "280px",
+                    overflow: "hidden"
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: "0.55rem 0.85rem",
+                      fontSize: "11px",
+                      fontWeight: 700,
+                      color: "#64748b",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.5px",
+                      borderBottom: "1px solid #e2e8f0",
+                      background: "#f8fafc",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center"
+                    }}
+                  >
+                    <span>Manage Client</span>
+                    {managedClient && (
+                      <span style={{ fontSize: "10px", color: "#0047AB", textTransform: "none", fontWeight: 600 }}>Active</span>
+                    )}
+                  </div>
+
+                  {managedClient && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setManageDropdownOpen(false);
+                        onClearManagedClient?.();
+                      }}
+                      style={{
+                        width: "100%",
+                        padding: "8px 14px",
+                        textAlign: "left",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        color: "#dc2626",
+                        background: "#fef2f2",
+                        border: "none",
+                        borderBottom: "1px solid #fee2e2",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px"
+                      }}
+                    >
+                      <span>✕</span>
+                      <span>Cancel & return to all clients</span>
+                    </button>
+                  )}
+
+                  {portalClients.length > 5 && (
+                    <div style={{ padding: "6px 8px", borderBottom: "1px solid #e2e8f0", background: "#ffffff" }}>
+                      <input
+                        type="text"
+                        placeholder="Search client to manage..."
+                        value={manageClientSearch}
+                        onChange={(e) => setManageClientSearch(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          width: "100%",
+                          padding: "5px 8px",
+                          fontSize: "12px",
+                          borderRadius: "4px",
+                          border: "1px solid #cbd5e1",
+                          outline: "none",
+                          boxSizing: "border-box",
+                          fontFamily: "inherit"
+                        }}
+                        autoFocus
+                      />
+                    </div>
+                  )}
+
+                  <div style={{ maxHeight: "280px", overflowY: "auto" }}>
+                    {clientsLoading ? (
+                      <div style={{ padding: "14px", fontSize: "13px", color: "#64748b", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+                        <Spinner size={14} color="#0047AB" /> Loading clients...
+                      </div>
+                    ) : filteredManageClients.length === 0 ? (
+                      <div style={{ padding: "14px", fontSize: "13px", color: "#94a3b8", textAlign: "center" }}>
+                        No clients found
+                      </div>
+                    ) : (
+                      filteredManageClients.map((c) => {
+                        const isSelected = managedClient?.clientName === c.clientName;
+                        return (
+                          <button
+                            key={c.clientName}
+                            type="button"
+                            onClick={() => {
+                              setManageDropdownOpen(false);
+                              onSelectManagedClient?.(c);
+                            }}
+                            style={{
+                              width: "100%",
+                              padding: "8px 14px",
+                              textAlign: "left",
+                              fontSize: "13px",
+                              fontWeight: isSelected ? 700 : 500,
+                              color: isSelected ? "#0047AB" : "#1e293b",
+                              background: isSelected ? "#eff6ff" : "transparent",
+                              border: "none",
+                              borderBottom: "1px solid #f1f5f9",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              transition: "background 0.12s, color 0.12s"
+                            }}
+                            onMouseEnter={(e) => {
+                              if (!isSelected) {
+                                e.currentTarget.style.background = "#f0f7ff";
+                                e.currentTarget.style.color = "#0047AB";
+                              }
+                            }}
+                            onMouseLeave={(e) => {
+                              if (!isSelected) {
+                                e.currentTarget.style.background = "transparent";
+                                e.currentTarget.style.color = "#1e293b";
+                              }
+                            }}
+                          >
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{c.clientName}</span>
+                            {isSelected && <span style={{ color: "#0047AB", fontSize: "12px" }}>✓</span>}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Pulse Button with Client Chooser Dropdown */}
             <div style={{ position: "relative" }}>
               <button
@@ -565,6 +764,50 @@ export default function NavShell({
           </>
         )}
       </div>
+      {managedClient && (
+        <div
+          className="pma-managed-banner"
+          style={{
+            background: "#0047AB",
+            color: "#ffffff",
+            padding: "8px 16px",
+            fontSize: "13px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "4px",
+            boxShadow: "0 2px 4px rgba(0, 71, 171, 0.18)",
+            borderBottom: "1px solid rgba(255, 255, 255, 0.15)",
+            letterSpacing: "0.2px",
+            textAlign: "center"
+          }}
+        >
+          <span>PMA managing <strong>{managedClient.clientName}</strong> - click{" "}</span>
+          <button
+            type="button"
+            onClick={onClearManagedClient}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#ffffff",
+              textDecoration: "underline",
+              fontWeight: 700,
+              cursor: "pointer",
+              padding: "0 2px",
+              fontFamily: "inherit",
+              fontSize: "inherit",
+              lineHeight: 1
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "#dbeafe"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "#ffffff"; }}
+            title="Cancel manage mode and return to all clients"
+          >
+            here
+          </button>
+          <span>{" "}to cancel</span>
+        </div>
+      )}
       <div>{children}</div>
     </div>
   );

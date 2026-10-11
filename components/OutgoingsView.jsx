@@ -83,7 +83,9 @@ function parseVendorAndDescription(exp) {
 export default function OutgoingsView({
   allOutgoingsClients,
   styles,
-  isAdmin: propIsAdmin = false
+  isAdmin: propIsAdmin = false,
+  managedClient,
+  onClearManagedClient
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin || (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
@@ -111,6 +113,19 @@ export default function OutgoingsView({
     directCostsSavingCell, setDirectCostsSavingCell,
     loadOutgoings, loadDirectCostsJobs
   } = useOutgoings(assignedAppIds, assignedByClient, setAssignedByClient, setAssignedAppIds, outgoingsPullPendingRef, automationCommanderSheetId);
+
+  // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
+  useEffect(() => {
+    if (managedClient) {
+      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
+      loadOutgoings(clientObj);
+    } else {
+      setOutgoingsData(null);
+      setOutgoingsClient(null);
+      setOutgoingsInbox([]);
+      if (typeof clearInboxSelection === "function") clearInboxSelection();
+    }
+  }, [managedClient, allOutgoingsClients]);
 
   const [viewMode, setViewMode] = useState("modern");
   const [expandedRetainerKeys, setExpandedRetainerKeys] = useState(() => new Set());
@@ -430,7 +445,16 @@ export default function OutgoingsView({
       <div style={{ padding: "20px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
           {outgoingsClient && (
-            <button onClick={() => { setOutgoingsData(null); setOutgoingsClient(null); setOutgoingsInbox([]); clearInboxSelection(); }}
+            <button onClick={() => {
+              if (managedClient && onClearManagedClient) {
+                onClearManagedClient();
+              } else {
+                setOutgoingsData(null);
+                setOutgoingsClient(null);
+                setOutgoingsInbox([]);
+                clearInboxSelection();
+              }
+            }}
               style={{ background: "none", border: "1px solid #ccc", borderRadius: "6px", cursor: "pointer", padding: "4px 10px", fontSize: "16px", color: "#555", lineHeight: 1 }}
               title="Back to client list">&#8592;</button>
           )}

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "./Spinner";
 import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
@@ -96,7 +96,9 @@ export const parseLikelihoodValue = (val) => {
 
 export default function JobsView({
   allOutgoingsClients,
-  styles = {}
+  styles = {},
+  managedClient,
+  onClearManagedClient
 }) {
   const { outgoingsPullPendingRef } = useAppGlobals();
 
@@ -113,6 +115,19 @@ export default function JobsView({
     existingClients,
     loadJobsData
   } = useJobs();
+
+  // Auto-select managedClient when in manage mode, or clear when manage mode cancelled
+  useEffect(() => {
+    if (managedClient) {
+      const clientObj = (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) || managedClient;
+      setJobsClient(clientObj);
+      loadJobsData(clientObj, "All");
+    } else {
+      setJobsClient(null);
+      setJobsData(null);
+      setDraftEdits({});
+    }
+  }, [managedClient, allOutgoingsClients]);
 
   // Mode: "modern" (default, user-friendly combined view) or "legacy" (spreadsheet view for admins)
   const [viewMode, setViewMode] = useState("modern");
@@ -1320,9 +1335,13 @@ export default function JobsView({
               <button
                 type="button"
                 onClick={() => {
-                  setJobsClient(null);
-                  setJobsData(null);
-                  setDraftEdits({});
+                  if (managedClient && onClearManagedClient) {
+                    onClearManagedClient();
+                  } else {
+                    setJobsClient(null);
+                    setJobsData(null);
+                    setDraftEdits({});
+                  }
                 }}
                 style={{
                   padding: "7px 12px",

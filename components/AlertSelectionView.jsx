@@ -50,7 +50,8 @@ function AdminBadge({ style = {}, show = true }) {
 export default function AlertSelectionView({
   styles, setScreen, getFlagName, getAlertSummary,
   PROACTIVE_TYPE_LABELS, openCreateTaskModal, setActiveNav,
-  isAdmin: propIsAdmin, user
+  isAdmin: propIsAdmin, user,
+  managedClient, onClearManagedClient
 }) {
   const auth = useAuth();
   const currentUser = user || auth.user;
@@ -849,7 +850,13 @@ export default function AlertSelectionView({
 
       <div style={styles.card}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <button className="triage-btn" onClick={() => { setAcceptError(""); setScreen("clientSelection"); }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
+          <button className="triage-btn" onClick={() => {
+            if (managedClient && onClearManagedClient) {
+              onClearManagedClient();
+            }
+            setAcceptError("");
+            setScreen("clientSelection");
+          }} style={{ ...styles.buttonSecondary, fontSize: "13px" }}>
             ← Back to Clients
           </button>
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>

@@ -3,6 +3,8 @@ import { resolveClientNameBySheetId } from "./workspaces";
 import { logPmaActivity } from "./pmaLogger";
 import { getSessionUser } from "./authService";
 import { isUserAuthorizedForClient, sanitizeFormulaInput } from "./userPermissions";
+import { memoryCache } from "./cacheService";
+import { redisClient } from "./redisClient";
 
 
 const MONTH_NAMES = {
@@ -114,10 +116,42 @@ export function isBudgetCellEditable(sheetRow, colIdx) {
   return false;
 }
 
-export async function getClientViewData({ clientSheetId, masterSheetId, tab }) {
+export async function getClientViewData({ clientSheetId, masterSheetId, tab, bypassCache = false }) {
   if (!clientSheetId && !masterSheetId) {
     throw new Error("Missing clientSheetId or masterSheetId");
   }
+
+  const cleanClientId = extractSheetIdFromUrl(clientSheetId) || clientSheetId || "";
+  const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId || "";
+  const targetId = tab === "budget" ? (cleanMasterId || cleanClientId) : cleanClientId;
+  const cacheKey = `pulse:view_data:${targetId}:${tab}`;
+
+  if (!bypassCache) {
+    const memCached = memoryCache.get(cacheKey);
+    if (memCached && memCached.success) {
+      return memCached;
+    }
+    if (redisClient?.isOpen) {
+      try {
+        const redisCached = await redisClient.get(cacheKey);
+        if (redisCached) {
+          const parsed = JSON.parse(redisCached);
+          if (parsed && parsed.success) {
+            memoryCache.set(cacheKey, parsed, 120);
+            return parsed;
+          }
+        }
+      } catch (e) {}
+    }
+  }
+
+  const saveAndReturn = (result) => {
+    memoryCache.set(cacheKey, result, 120);
+    if (redisClient?.isOpen) {
+      redisClient.set(cacheKey, JSON.stringify(result), { EX: 120 }).catch(() => {});
+    }
+    return result;
+  };
 
   const sheets = await getSheetsClient();
   const now = new Date();
@@ -126,7 +160,7 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab }) {
 
   if (tab === "dashboard") {
     const res = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId: clientSheetId,
+      spreadsheetId: cleanClientId,
       ranges: ["Dashboard!A1:AX54"],
       fields: FIELDS,
     }));
@@ -153,18 +187,18 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab }) {
       });
     });
 
-    return {
+    return saveAndReturn({
       success: true,
       tab: "dashboard",
       fyConfigs,
       defaultFyIndex,
       matrix, // row 0: month headers, row 1: status headers, row 2..53: data
-    };
+    });
   }
 
   if (tab === "cash") {
     const res = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId: clientSheetId,
+      spreadsheetId: cleanClientId,
       ranges: ["Cash!A1:AK76"],
       fields: FIELDS,
     }));
@@ -193,18 +227,18 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab }) {
       }
     }
 
-    return {
+    return saveAndReturn({
       success: true,
       tab: "cash",
       monthCols,
       prevMonthColIdx,
       matrix, // row 0: headers, row 1..75: cash data
-    };
+    });
   }
 
   if (tab === "contractors" || tab === "outgoings") {
     const res = await withRetry(() => sheets.spreadsheets.get({
-      spreadsheetId: clientSheetId,
+      spreadsheetId: cleanClientId,
       ranges: ["Outgoings!A1:AX238"],
       fields: FIELDS,
     }));
@@ -232,7 +266,7 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab }) {
     });
 
     if (tab === "contractors") {
-      return {
+      return saveAndReturn({
         success: true,
         tab: "contractors",
         fyConfigs,
@@ -243,9 +277,9 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab }) {
         mainRows: matrix.slice(12, 114), // rows 13 to 114 (kept for backwards compatibility)
         section1Rows: matrix.slice(117, 123), // rows 118 to 123
         section2Rows: matrix.slice(230, 237), // rows 231 to 237
-      };
+      });
     } else {
-      return {
+      return saveAndReturn({
         success: true,
         tab: "outgoings",
         fyConfigs,
@@ -254,16 +288,16 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab }) {
         outgoingRows: matrix.slice(125, 225), // rows 126 to 225 (editable)
         totalRows: matrix.slice(225, 228), // rows 226 to 228 (summary/totals, non-editable)
         mainRows: matrix.slice(125, 228), // rows 126 to 228 (kept for backwards compatibility)
-      };
+      });
     }
   }
 
   if (tab === "budget") {
-    let targetMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
-    if (!targetMasterId && clientSheetId) {
+    let targetMasterId = cleanMasterId;
+    if (!targetMasterId && cleanClientId) {
       try {
         const d1Res = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: extractSheetIdFromUrl(clientSheetId) || clientSheetId,
+          spreadsheetId: cleanClientId,
           range: "KeyInfo!D1",
         }));
         const d1Val = d1Res.data.values?.[0]?.[0];
@@ -314,14 +348,14 @@ export async function getClientViewData({ clientSheetId, masterSheetId, tab }) {
     const rawMode = String(keyInfoRes.data?.values?.[0]?.[0] || "").trim();
     const isIncomeMode = rawMode.toLowerCase() === "income";
 
-    return {
+    return saveAndReturn({
       success: true,
       tab: "budget",
       fyConfigs,
       defaultFyIndex,
       isIncomeMode,
       matrix, // rows 0 to 252 (Budget rows 1 to 253)
-    };
+    });
   }
 
   throw new Error(`Unsupported tab: ${tab}`);
@@ -592,6 +626,14 @@ export async function handleUpdateViewCell(req, res, sheets) {
         clientName: resolvedClient
       }
     }).catch(e => console.error("PMA log failed:", e));
+
+    // Invalidate cached view data
+    const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
+    memoryCache.del(`pulse:view_data:${cleanId}:*`);
+    memoryCache.del(`pulse:view_data:${cleanId}:${screenTab}`);
+    if (redisClient?.isOpen) {
+      redisClient.del(`pulse:view_data:${cleanId}:${screenTab}`).catch(() => {});
+    }
 
     return res.status(200).json({
       success: true,

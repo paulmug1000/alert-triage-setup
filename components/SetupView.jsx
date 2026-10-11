@@ -1,13 +1,18 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
+import EditableSheetEditor from "./EditableSheetEditor";
 
 export default function SetupView({
   allOutgoingsClients = [],
   initialClientName = "",
   onSelectClient,
-  user
+  user,
+  managedClient,
+  onClearManagedClient
 }) {
+  const [activeSheetEditor, setActiveSheetEditor] = useState(null); // 'budget' | 'contractors' | 'outgoings' | null
   const [selectedClientName, setSelectedClientName] = useState(() => {
+    if (managedClient?.clientName) return managedClient.clientName;
     if (initialClientName) return initialClientName;
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
@@ -16,6 +21,12 @@ export default function SetupView({
     }
     return "";
   });
+
+  useEffect(() => {
+    if (managedClient?.clientName) {
+      setSelectedClientName(managedClient.clientName);
+    }
+  }, [managedClient]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -445,6 +456,92 @@ export default function SetupView({
               </div>
             </div>
 
+            {/* 4. SPREADSHEET EDITORS */}
+            <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "20px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+              <div style={{ marginBottom: "14px" }}>
+                <h2 style={{ margin: "0 0 4px 0", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
+                  4. Data editors
+                </h2>
+                <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
+                  Direct spreadsheet table editing for client budgets, contractors, and outgoings.
+                </p>
+              </div>
+
+              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => setActiveSheetEditor("budget")}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "9px 16px",
+                    borderRadius: "8px",
+                    background: "#F8FAFC",
+                    color: "#0F172A",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    border: "1px solid #CBD5E1",
+                    cursor: "pointer",
+                    transition: "all 0.15s ease",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#F1F5F9"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "#F8FAFC"; }}
+                >
+                  <span>📊</span>
+                  <span>Edit budget</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveSheetEditor("contractors")}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "9px 16px",
+                    borderRadius: "8px",
+                    background: "#F8FAFC",
+                    color: "#0F172A",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    border: "1px solid #CBD5E1",
+                    cursor: "pointer",
+                    transition: "all 0.15s ease",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#F1F5F9"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "#F8FAFC"; }}
+                >
+                  <span>👷</span>
+                  <span>Edit contractors</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveSheetEditor("outgoings")}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "9px 16px",
+                    borderRadius: "8px",
+                    background: "#F8FAFC",
+                    color: "#0F172A",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    border: "1px solid #CBD5E1",
+                    cursor: "pointer",
+                    transition: "all 0.15s ease",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#F1F5F9"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "#F8FAFC"; }}
+                >
+                  <span>💳</span>
+                  <span>Edit outgoings</span>
+                </button>
+              </div>
+            </div>
+
             {/* Bottom Actions */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px", paddingTop: "8px" }}>
               <div style={{ display: "flex", gap: "10px" }}>
@@ -515,6 +612,15 @@ export default function SetupView({
 
           </div>
         </form>
+      )}
+
+      {activeSheetEditor && selectedClient && (
+        <EditableSheetEditor
+          client={selectedClient}
+          initialTab={activeSheetEditor}
+          onClose={() => setActiveSheetEditor(null)}
+          isAdmin={user?.isAdmin || user?.role === "Admin"}
+        />
       )}
     </div>
   );

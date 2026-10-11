@@ -11,14 +11,23 @@ import CashflowReconTab from "./CashflowReconTab";
 export default function ToolsView({
   allOutgoingsClients,
   allClientsLoaded,
-  styles
+  styles,
+  managedClient,
+  onClearManagedClient
 }) {
   const { automationCommanderSheetId } = useAppGlobals();
   const { sessionId, computeAlertCheckCount, isLoading, startTriage } = useTriage();
 
   const [eomSubView, setEomSubView] = useState("overview"); // "overview" | "payroll" | "time" | "cash" | "cashflow_recon" | "push_outgoings"
-  const [eomPushOutgoingsClient, setEomPushOutgoingsClient] = useState("");
-  const [eomCashflowReconClient, setEomCashflowReconClient] = useState("");
+  const [eomPushOutgoingsClient, setEomPushOutgoingsClient] = useState(managedClient?.clientName || "");
+  const [eomCashflowReconClient, setEomCashflowReconClient] = useState(managedClient?.clientName || "");
+
+  useEffect(() => {
+    if (managedClient?.clientName) {
+      setEomPushOutgoingsClient(managedClient.clientName);
+      setEomCashflowReconClient(managedClient.clientName);
+    }
+  }, [managedClient]);
 
   const {
     eomMonthKey, setEomMonthKey, eomAllTasks, setEomAllTasks, eomStatusOverrides, setEomStatusOverrides,

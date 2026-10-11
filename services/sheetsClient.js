@@ -34,9 +34,21 @@ export async function withRetry(operation, maxRetries = 5) {
     try {
       return await operation();
     } catch (error) {
-      if (error.code === 429 && i < maxRetries - 1) {
-        const delay = Math.pow(2, i) * 2000 + Math.random() * 1000;
-        console.log(`  ⏳ 429 Quota Exceeded. Retrying in ${Math.round(delay/1000)}s...`);
+      const isQuotaError =
+        error.code === 429 ||
+        error.code === "429" ||
+        error.status === 429 ||
+        error.response?.status === 429 ||
+        (typeof error.message === "string" && (
+          error.message.includes("429") ||
+          error.message.includes("Quota exceeded") ||
+          error.message.includes("RESOURCE_EXHAUSTED") ||
+          error.message.includes("rateLimitExceeded")
+        ));
+
+      if (isQuotaError && i < maxRetries - 1) {
+        const delay = Math.min(Math.pow(2, i) * 2000 + Math.random() * 1000, 15000);
+        console.log(`  ⏳ 429 Quota Exceeded. Retrying in ${Math.round(delay/1000)}s... (attempt ${i + 1}/${maxRetries})`);
         await new Promise(r => setTimeout(r, delay));
       } else {
         throw error;

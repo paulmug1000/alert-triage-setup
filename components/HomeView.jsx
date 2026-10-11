@@ -27,6 +27,8 @@ export default function HomeView({
   onGoToIntegrations,
   onSelectClientAlerts,
   isLoadingAlerts = false,
+  managedClient,
+  onClearManagedClient
 }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [integrationsData, setIntegrationsData] = useState([]);
@@ -45,8 +47,12 @@ export default function HomeView({
 
   // Filter clients to those the current user has access to
   const authorizedClients = useMemo(() => {
-    return (clients || []).filter((c) => isUserAuthorizedForClient(user, c.clientName));
-  }, [clients, user]);
+    let list = (clients || []).filter((c) => isUserAuthorizedForClient(user, c.clientName));
+    if (managedClient?.clientName) {
+      list = list.filter((c) => c.clientName?.toLowerCase() === managedClient.clientName.toLowerCase());
+    }
+    return list;
+  }, [clients, user, managedClient]);
 
   // Fetch integration and setup statuses for all clients
   useEffect(() => {

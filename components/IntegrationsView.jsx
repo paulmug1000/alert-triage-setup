@@ -115,7 +115,9 @@ function getCrmToolType(toolStr, clientIntegrations) {
 export default function IntegrationsView({
   allOutgoingsClients = [],
   user,
-  isAdmin: propIsAdmin
+  isAdmin: propIsAdmin,
+  managedClient,
+  onClearManagedClient
 }) {
   const isAdmin = propIsAdmin !== undefined
     ? Boolean(propIsAdmin)
@@ -455,16 +457,20 @@ export default function IntegrationsView({
   // FILTERING & METRICS
   // --------------------------------------------------------------------------
   const filteredClients = useMemo(() => {
-    if (!searchTerm.trim()) return clientsData;
+    let list = clientsData;
+    if (managedClient?.clientName) {
+      list = list.filter((c) => c.clientName?.toLowerCase() === managedClient.clientName.toLowerCase());
+    }
+    if (!searchTerm.trim()) return list;
     const term = searchTerm.toLowerCase().trim();
-    return clientsData.filter((c) => {
+    return list.filter((c) => {
       const matchName = c.clientName?.toLowerCase().includes(term);
       const matchAcc = c.accountingTool?.toLowerCase().includes(term);
       const matchCrm = c.crmTool?.toLowerCase().includes(term);
       const matchSheet = c.masterSheetId?.toLowerCase().includes(term);
       return matchName || matchAcc || matchCrm || matchSheet;
     });
-  }, [clientsData, searchTerm]);
+  }, [clientsData, searchTerm, managedClient]);
 
   const metrics = useMemo(() => {
     const total = clientsData.length;

@@ -469,7 +469,7 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
             alertType: "revenue_mismatch", alertKey: `revenue_mismatch|${clientName}|${jobClient0}|${jobName0}${projectCode0 ? `|${projectCode0}` : ""}`,
             heading: "Revenue / total invoiced mismatch",
             detail: `${jobClient0} | ${jobName0} (Row ${r + 1})${projectCode0 ? ` [${projectCode0}]` : ""}: revenue = £0.00 but total invoiced (incl. placeholders) = £${totalInvoiced0.toFixed(2)} - job revenue appears to be missing or not yet set.`,
-            jobName: jobName0, endClientName: jobClient0, projectCode: projectCode0, confirmedRow: r + 1, isRetainer: false,
+            jobName: jobName0, endClientName: jobClient0, projectCode: projectCode0, confirmedRow: r + 1, isRetainer: jobType.includes("retainer"),
           });
         }
         r += jobRows0.length;
@@ -499,48 +499,19 @@ export async function checkRevenueMismatch_(clientName, clientSheetId, sharedDat
           mismatch = true;
           detail = `${jobClient} | ${jobName} (Row ${r + 1})${projectCode ? ` [${projectCode}]` : ""}: revenue = £${revenueAmt.toFixed(2)}, total invoiced (incl. placeholders) = £${totalInvoiced.toFixed(2)} - difference of £${diff.toFixed(2)}`;
         }
-      } else {
-          const childRows = jobRows.filter(jr => !jr.isParent);
-          if (childRows.length === 0) {
-            const parentTotal = sumInvSlotAmounts_(row);
-            if (parentTotal === 0) { r += jobRows.length; continue; }
-            const diffA = Math.abs(parentTotal - revenueAmt);
-            if (diffA > TOLERANCE) {
-              mismatch = true;
-              detail = `${jobClient} | ${jobName} (Row ${r + 1}) [retainer, single-row]: monthly revenue = £${revenueAmt.toFixed(2)}, total invoiced on parent = £${parentTotal.toFixed(2)} - difference of £${diffA.toFixed(2)}`;
-            }
-          } else {
-            for (let ci = 0; ci < childRows.length; ci++) {
-              const cr = childRows[ci];
-              const childTotal = sumInvSlotAmounts_(cr.row);
-              if (childTotal === 0) continue;
-              const mult = detectPeriodMultiplier_(cr.row, revenueAmt);
-              const expectedForRow = revenueAmt * mult;
-              const diffC = Math.abs(childTotal - expectedForRow);
-              if (diffC > TOLERANCE) {
-                const ref = String(cr.row[42] || "").trim();
-                const sentDate = String(cr.row[43] || "").trim();
-                const suffix = ref || sentDate || `child-${ci}`;
-                
-                alerts.push({
-                  alertType: "revenue_mismatch", 
-                  alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}|${suffix}${projectCode ? `|${projectCode}` : ""}`,
-                  heading: "Revenue / total invoiced mismatch", 
-                  detail: `${jobClient} | ${jobName} (Row ${cr.sheetRow}) [retainer, multi-row]: £${childTotal.toFixed(2)} invoiced, expected £${expectedForRow.toFixed(2)} (${mult}× monthly revenue of £${revenueAmt.toFixed(2)}) - diff £${diffC.toFixed(2)}`, 
-                  jobName, endClientName: jobClient, projectCode, confirmedRow: cr.sheetRow, isRetainer,
-                });
-              }
-            }
-          }
-        }
+      }
+      // Note: Retainers recognise revenue according to their monthly job revenue amount (Col AG),
+      // even if actual monthly invoices vary due to FX / currency conversions or billing adjustments.
+      // Therefore, differences between monthly invoice amounts and the monthly revenue rate
+      // are normal and do not raise revenue_mismatch alerts.
 
-        if (mismatch) {
-          alerts.push({
-            alertType: "revenue_mismatch", alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}`,
-            heading: "Revenue / total invoiced mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,
-          });
-        }
-        r += jobRows.length;
+      if (mismatch) {
+        alerts.push({
+          alertType: "revenue_mismatch", alertKey: `revenue_mismatch|${clientName}|${jobClient}|${jobName}${projectCode ? `|${projectCode}` : ""}`,
+          heading: "Revenue / total invoiced mismatch", detail, jobName, endClientName: jobClient, projectCode, confirmedRow: r + 1, isRetainer,
+        });
+      }
+      r += jobRows.length;
     }
   } catch(e) {}
   return alerts;

@@ -7,22 +7,24 @@ export function stripCurrency(v) {
   return isNaN(Number(clean)) || clean === "" ? "" : clean;
 }
 
-export function isPlaceholderInvoice(ref) {
-  if (!ref) return false;
-  const s = String(ref).trim().toUpperCase();
-  return s.startsWith("PLACE-INV") || s.startsWith("MANUAL-INV");
+export function isPlaceholderInvoice(ref, status) {
+  if (!ref && !status) return false;
+  const s = String(typeof ref === "object" ? (ref?.ref || "") : ref || "").trim().toUpperCase();
+  const st = String(typeof ref === "object" ? (ref?.status || "") : status || "").trim().toUpperCase();
+  return (
+    s.includes("PLACE-INV") ||
+    s.includes("MANUAL-INV") ||
+    st.includes("PLACEHOLDER")
+  );
 }
 
-export function isPlaceholderExpense(appId) {
-  if (!appId) return false;
-  const s = String(appId).trim().toUpperCase();
-  return (
-    s.startsWith("PLACE-EXP") ||
-    s.startsWith("MANUAL-ENTRY") ||
-    s.startsWith("PLACE-GAP") ||
-    s.startsWith("MANUAL-GAP") ||
-    s.startsWith("UNRECON-GAP")
-  );
+export function isPlaceholderExpense(appId, description, status) {
+  if (!appId && !description && !status) return false;
+  const id = String(typeof appId === "object" ? (appId?.transactionId || appId?.id || appId?.appId || "") : appId || "").trim().toUpperCase();
+  const desc = String(typeof appId === "object" ? (appId?.description || "") : description || "").trim().toUpperCase();
+  const st = String(typeof appId === "object" ? (appId?.status || "") : status || "").trim().toUpperCase();
+  const tags = ["PLACE-EXP", "MANUAL-ENTRY", "UNRECON-GAP", "PLACE-GAP", "MANUAL-GAP", "PLACEHOLDER"];
+  return tags.some((t) => id.includes(t) || desc.includes(t) || st.includes(t));
 }
 
 export function getAlertSummary(alert) {

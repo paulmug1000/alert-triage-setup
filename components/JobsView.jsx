@@ -12,14 +12,23 @@ export const parseSheetDate = (dStr) => {
   if (!dStr) return null;
   if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
   const s = String(dStr).trim();
+  const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
   const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
   if (m) {
-    const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
     const mIdx = months[m[2].toLowerCase()];
     if (mIdx !== undefined) {
       let yr = parseInt(m[3], 10);
       if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
       return new Date(yr, mIdx, parseInt(m[1], 10));
+    }
+  }
+  const myMatch = s.match(/^([A-Za-z]{3})[-/\s](\d{2,4})$/);
+  if (myMatch) {
+    const mIdx = months[myMatch[1].toLowerCase()];
+    if (mIdx !== undefined) {
+      let yr = parseInt(myMatch[2], 10);
+      if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
+      return new Date(yr, mIdx, 1);
     }
   }
   const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
@@ -30,6 +39,16 @@ export const parseSheetDate = (dStr) => {
   }
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;
+};
+
+export const addMonths = (baseDate, n) => {
+  if (!baseDate) return null;
+  const targetMonth = baseDate.getMonth() + n;
+  const targetYear = baseDate.getFullYear() + Math.floor(targetMonth / 12);
+  const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+  const day = baseDate.getDate();
+  const maxDays = new Date(targetYear, normalizedMonth + 1, 0).getDate();
+  return new Date(targetYear, normalizedMonth, Math.min(day, maxDays));
 };
 
 export const toInputDateFormat = (dStr) => {
@@ -561,6 +580,163 @@ export default function JobsView({
     }
 
     return items;
+  };
+
+  // Helper to calculate job financial metrics excluding gap sweep placeholders
+  const getJobFinancialMetrics = (job, isRetainer, isConfirmed, currentRevVal, currentCostVal) => {
+    if (!job || !job.rows || job.rows.length === 0) {
+      return {
+        revenue: 0,
+        realInvoiced: 0,
+        placeholderInvoiced: 0,
+        leftToInvoice: 0,
+        priorMonthsUninvoicedCount: 0,
+        directCosts: 0,
+        realCostsReceived: 0,
+        placeholderCosts: 0,
+        costsLeftToReceive: 0,
+        priorMonthsUnreceivedCount: 0,
+        isRetainer: false,
+        isConfirmed: false
+      };
+    }
+
+    const parentRow = job.rows[0];
+    const tabName = job.tabName || parentRow.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed");
+    const confirmed = isConfirmed !== undefined ? Boolean(isConfirmed) : (String(tabName).toLowerCase() === "confirmed");
+
+    const rawRev = parseFloat(String(currentRevVal !== undefined ? currentRevVal : (parentRow.revenue || "0")).replace(/[£$€,\s]/g, "")) || 0;
+    const rawCost = parseFloat(String(currentCostVal !== undefined ? currentCostVal : (parentRow.directCosts || "0")).replace(/[£$€,\s]/g, "")) || 0;
+
+    // Sum Real vs Placeholder Invoiced across all rows
+    let realInvoiced = 0;
+    let placeholderInvoiced = 0;
+    job.rows.forEach((r) => {
+      (r.invoiceSlots || []).forEach((slot) => {
+        const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+        if (amt > 0) {
+          const ref = String(slot.ref || "").trim();
+          if (isPlaceholderInvoice(ref, slot.status) || !ref) {
+            placeholderInvoiced += amt;
+          } else {
+            realInvoiced += amt;
+          }
+        }
+      });
+    });
+
+    // Sum Real vs Placeholder Direct Costs across all rows
+    let realCostsReceived = 0;
+    let placeholderCosts = 0;
+    job.rows.forEach((r) => {
+      (r.expenseSlots || []).forEach((slot) => {
+        const amt = parseFloat(String(slot.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
+        if (amt > 0) {
+          if (isPlaceholderExpense(slot)) {
+            placeholderCosts += amt;
+          } else {
+            realCostsReceived += amt;
+          }
+        }
+      });
+    });
+
+    let totalRevenue = rawRev;
+    let totalDirectCosts = rawCost;
+    let leftToInvoice = 0;
+    let costsLeftToReceive = 0;
+    let priorMonthsUninvoicedCount = 0;
+    let priorMonthsUnreceivedCount = 0;
+
+    if (!confirmed) {
+      // Pipeline jobs: do not track remaining billing obligations
+      leftToInvoice = 0;
+      costsLeftToReceive = 0;
+    } else if (isRetainer) {
+      // Confirmed Retainer jobs:
+      // Only include pills if a prior monthly period remains uninvoiced / unreceived
+      const now = new Date();
+
+      // Determine retainer start date to derive period cycles (period 0 = month 1, period 1 = month 2, etc.)
+      let baseStartDate = parseSheetDate(parentRow.startDate);
+      if (!baseStartDate && parentRow.invoiceSlots?.[0]?.sentDate) {
+        baseStartDate = parseSheetDate(parentRow.invoiceSlots[0].sentDate);
+      }
+      if (!baseStartDate && parentRow.dateConf) {
+        baseStartDate = parseSheetDate(parentRow.dateConf);
+      }
+      if (!baseStartDate) {
+        for (let i = 0; i < job.rows.length; i++) {
+          const d = parseSheetDate(job.rows[i].invoiceSlots?.[0]?.sentDate);
+          if (d) {
+            baseStartDate = new Date(d.getFullYear(), d.getMonth() - i, d.getDate());
+            break;
+          }
+        }
+      }
+
+      const sDate = baseStartDate || parseSheetDate(parentRow.startDate);
+      const eDate = parseSheetDate(parentRow.endDate);
+      let monthsCount = job.rows.length;
+      if (sDate && eDate && eDate > sDate) {
+        const diffDays = (eDate.getTime() - sDate.getTime()) / (24 * 60 * 60 * 1000);
+        const diffMonths = Math.round(diffDays / 30.4375);
+        monthsCount = Math.max(job.rows.length, diffMonths);
+      }
+      totalRevenue = rawRev * monthsCount;
+      totalDirectCosts = rawCost * monthsCount;
+
+      if (sDate) {
+        // Calculate how much revenue & direct costs were expected for all prior periods completed before today
+        let expectedPriorRevenue = 0;
+        let expectedPriorCosts = 0;
+        let priorPeriodsCount = 0;
+
+        for (let p = 0; p < monthsCount; p++) {
+          const nextPStart = addMonths(sDate, p + 1);
+          const pEnd = new Date(nextPStart.getFullYear(), nextPStart.getMonth(), nextPStart.getDate() - 1, 23, 59, 59, 999);
+
+          // Only periods that have ended before now are considered prior/completed periods
+          if (pEnd < now) {
+            priorPeriodsCount++;
+            const periodRev = job.rows[p]?.revenue ? (parseFloat(String(job.rows[p].revenue).replace(/[£$€,\s]/g, "")) || rawRev) : rawRev;
+            expectedPriorRevenue += periodRev;
+
+            const periodCost = job.rows[p]?.directCosts ? (parseFloat(String(job.rows[p].directCosts).replace(/[£$€,\s]/g, "")) || rawCost) : rawCost;
+            expectedPriorCosts += periodCost;
+          }
+        }
+
+        // Compare expected prior amounts against all real invoices / costs received across the retainer
+        leftToInvoice = Math.max(0, expectedPriorRevenue - realInvoiced);
+        priorMonthsUninvoicedCount = rawRev > 0 ? Math.ceil(leftToInvoice / rawRev) : (leftToInvoice > 0 ? 1 : 0);
+
+        costsLeftToReceive = Math.max(0, expectedPriorCosts - realCostsReceived);
+        priorMonthsUnreceivedCount = rawCost > 0 ? Math.ceil(costsLeftToReceive / rawCost) : (costsLeftToReceive > 0 ? 1 : 0);
+      } else {
+        leftToInvoice = 0;
+        costsLeftToReceive = 0;
+      }
+    } else {
+      // Confirmed Project jobs: compare total contract revenue / costs against real invoices / costs
+      leftToInvoice = totalRevenue > 0 ? Math.max(0, totalRevenue - realInvoiced) : 0;
+      costsLeftToReceive = totalDirectCosts > 0 ? Math.max(0, totalDirectCosts - realCostsReceived) : 0;
+    }
+
+    return {
+      revenue: totalRevenue,
+      realInvoiced,
+      placeholderInvoiced,
+      leftToInvoice,
+      priorMonthsUninvoicedCount,
+      directCosts: totalDirectCosts,
+      realCostsReceived,
+      placeholderCosts,
+      costsLeftToReceive,
+      priorMonthsUnreceivedCount,
+      isRetainer,
+      isConfirmed: confirmed
+    };
   };
 
   // ============================================================================
@@ -1167,6 +1343,9 @@ export default function JobsView({
                           const leftToInvoiceVal = parentRow.leftToInvoice || "";
                           const costsOutstandingVal = parentRow.costsOutstanding || "";
 
+                          // Calculate real revenue and direct cost metrics strictly excluding gap sweep placeholders
+                          const metrics = getJobFinancialMetrics(job, isRetainer, isConfirmed, revVal, directCostsVal);
+
                           // Distinct product line and lead source options including current value
                           const plOptions = Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort();
                           const lsOptions = Array.from(new Set([...(leadSources || []), leadSrcVal].filter(Boolean))).sort();
@@ -1343,6 +1522,53 @@ export default function JobsView({
                                       }}
                                     />
                                   </div>
+                                  {isConfirmed && metrics.revenue > 0 && (
+                                    metrics.leftToInvoice > 0 ? (
+                                      <div style={{ marginTop: "3px" }}>
+                                        <span
+                                          style={{
+                                            fontSize: "10px",
+                                            padding: "1px 6px",
+                                            borderRadius: "6px",
+                                            fontWeight: "600",
+                                            background: "#fef3c7",
+                                            color: "#92400e",
+                                            border: "1px solid #fde68a",
+                                            display: "inline-block",
+                                            whiteSpace: "nowrap"
+                                          }}
+                                          title={
+                                            isRetainer
+                                              ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real Invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
+                                              : `Total Revenue: ${formatCurrency(metrics.revenue)} · Real Invoiced: ${formatCurrency(metrics.realInvoiced)} · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders`
+                                          }
+                                        >
+                                          Left to inv: {formatCurrency(metrics.leftToInvoice)}
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      !isRetainer && (
+                                        <div style={{ marginTop: "3px" }}>
+                                          <span
+                                            style={{
+                                              fontSize: "10px",
+                                              padding: "1px 6px",
+                                              borderRadius: "6px",
+                                              fontWeight: "600",
+                                              background: "#dcfce7",
+                                              color: "#166534",
+                                              border: "1px solid #bbf7d0",
+                                              display: "inline-block",
+                                              whiteSpace: "nowrap"
+                                            }}
+                                            title={`Total Revenue: ${formatCurrency(metrics.revenue)} · Real Invoiced: ${formatCurrency(metrics.realInvoiced)}`}
+                                          >
+                                            ✓ Invoiced
+                                          </span>
+                                        </div>
+                                      )
+                                    )
+                                  )}
                                 </td>
 
                                 {/* Direct Costs */}
@@ -1372,6 +1598,53 @@ export default function JobsView({
                                       e.target.style.borderColor = isDirty && draftEdits[jobKey]?.directCosts !== undefined ? "#f59e0b" : "transparent";
                                     }}
                                   />
+                                  {isConfirmed && metrics.directCosts > 0 && (
+                                    metrics.costsLeftToReceive > 0 ? (
+                                      <div style={{ marginTop: "3px" }}>
+                                        <span
+                                          style={{
+                                            fontSize: "10px",
+                                            padding: "1px 6px",
+                                            borderRadius: "6px",
+                                            fontWeight: "600",
+                                            background: "#fef3c7",
+                                            color: "#92400e",
+                                            border: "1px solid #fde68a",
+                                            display: "inline-block",
+                                            whiteSpace: "nowrap"
+                                          }}
+                                          title={
+                                            isRetainer
+                                              ? `Prior month unreceived costs: ${formatCurrency(metrics.costsLeftToReceive)} (${metrics.priorMonthsUnreceivedCount} prior month${metrics.priorMonthsUnreceivedCount === 1 ? "" : "s"} unreceived) · Real Costs to date: ${formatCurrency(metrics.realCostsReceived)}`
+                                              : `Budget: ${formatCurrency(metrics.directCosts)} · Real Received: ${formatCurrency(metrics.realCostsReceived)} · Excludes ${formatCurrency(metrics.placeholderCosts)} in gap placeholders`
+                                          }
+                                        >
+                                          Left to rec: {formatCurrency(metrics.costsLeftToReceive)}
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      !isRetainer && (
+                                        <div style={{ marginTop: "3px" }}>
+                                          <span
+                                            style={{
+                                              fontSize: "10px",
+                                              padding: "1px 6px",
+                                              borderRadius: "6px",
+                                              fontWeight: "600",
+                                              background: "#dcfce7",
+                                              color: "#166534",
+                                              border: "1px solid #bbf7d0",
+                                              display: "inline-block",
+                                              whiteSpace: "nowrap"
+                                            }}
+                                            title={`Budget: ${formatCurrency(metrics.directCosts)} · 100% Received`}
+                                          >
+                                            ✓ Received
+                                          </span>
+                                        </div>
+                                      )
+                                    )
+                                  )}
                                 </td>
 
                                 {/* Start Date */}
@@ -1744,19 +2017,50 @@ export default function JobsView({
                                                 <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                                                   Invoices ({invoiceItems.length})
                                                 </div>
-                                                {leftToInvoiceVal && (
-                                                  <span
-                                                    style={{
-                                                      fontSize: "11px",
-                                                      padding: "2px 7px",
-                                                      borderRadius: "10px",
-                                                      fontWeight: "600",
-                                                      background: parseFloat(String(leftToInvoiceVal).replace(/[£$€,\s]/g, "")) !== 0 ? "#fef3c7" : "#f1f5f9",
-                                                      color: parseFloat(String(leftToInvoiceVal).replace(/[£$€,\s]/g, "")) !== 0 ? "#92400e" : "#64748b"
-                                                    }}
-                                                  >
-                                                    Left to inv: {formatCurrency(leftToInvoiceVal)}
-                                                  </span>
+                                                {isConfirmed && metrics.revenue > 0 && (
+                                                  metrics.leftToInvoice > 0 ? (
+                                                    <span
+                                                      style={{
+                                                        fontSize: "11px",
+                                                        padding: "3px 9px",
+                                                        borderRadius: "12px",
+                                                        fontWeight: "600",
+                                                        background: "#fef3c7",
+                                                        color: "#92400e",
+                                                        border: "1px solid #fde68a",
+                                                        display: "inline-flex",
+                                                        alignItems: "center",
+                                                        gap: "4px"
+                                                      }}
+                                                      title={
+                                                        isRetainer
+                                                          ? `Prior month unbilled revenue: ${formatCurrency(metrics.leftToInvoice)} (${metrics.priorMonthsUninvoicedCount} prior month${metrics.priorMonthsUninvoicedCount === 1 ? "" : "s"} uninvoiced) · Real Invoiced to date: ${formatCurrency(metrics.realInvoiced)}`
+                                                          : `Total Revenue: ${formatCurrency(metrics.revenue)} · Real Invoiced: ${formatCurrency(metrics.realInvoiced)} · Excludes ${formatCurrency(metrics.placeholderInvoiced)} in gap placeholders`
+                                                      }
+                                                    >
+                                                      <span>⚠️</span> Left to invoice: {formatCurrency(metrics.leftToInvoice)}
+                                                    </span>
+                                                  ) : (
+                                                    !isRetainer && (
+                                                      <span
+                                                        style={{
+                                                          fontSize: "11px",
+                                                          padding: "3px 9px",
+                                                          borderRadius: "12px",
+                                                          fontWeight: "600",
+                                                          background: "#dcfce7",
+                                                          color: "#166534",
+                                                          border: "1px solid #bbf7d0",
+                                                          display: "inline-flex",
+                                                          alignItems: "center",
+                                                          gap: "4px"
+                                                        }}
+                                                        title={`Total Revenue: ${formatCurrency(metrics.revenue)} · 100% Invoiced (${formatCurrency(metrics.realInvoiced)})`}
+                                                      >
+                                                        <span>✓</span> Fully invoiced
+                                                      </span>
+                                                    )
+                                                  )
                                                 )}
                                               </div>
 
@@ -1769,6 +2073,7 @@ export default function JobsView({
                                                   invoiceItems.map((item) => {
                                                     const slot = item.slot;
                                                     const hasData = Boolean((slot.ref && String(slot.ref).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
+                                                    const isPlaceholder = isPlaceholderInvoice(slot.ref, slot.status);
                                                     const pillStyle = getStatusPill(slot.status);
                                                     return (
                                                       <div
@@ -1811,9 +2116,16 @@ export default function JobsView({
                                                         </div>
                                                         {hasData ? (
                                                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
-                                                            <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholderInvoice(slot.ref) ? "#9333ea" : "#0f172a" }}>
-                                                              {slot.ref || "No Ref"}
-                                                            </span>
+                                                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                              <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a" }}>
+                                                                {slot.ref || "No Ref"}
+                                                              </span>
+                                                              {isPlaceholder && (
+                                                                <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600" }}>
+                                                                  Placeholder
+                                                                </span>
+                                                              )}
+                                                            </div>
                                                             <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
                                                               {formatCurrency(slot.amount)}
                                                             </span>
@@ -1856,19 +2168,50 @@ export default function JobsView({
                                                 <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
                                                   Direct Costs ({expenseItems.length})
                                                 </div>
-                                                {costsOutstandingVal && (
-                                                  <span
-                                                    style={{
-                                                      fontSize: "11px",
-                                                      padding: "2px 7px",
-                                                      borderRadius: "10px",
-                                                      fontWeight: "600",
-                                                      background: parseFloat(String(costsOutstandingVal).replace(/[£$€,\s]/g, "")) !== 0 ? "#fef3c7" : "#f1f5f9",
-                                                      color: parseFloat(String(costsOutstandingVal).replace(/[£$€,\s]/g, "")) !== 0 ? "#92400e" : "#64748b"
-                                                    }}
-                                                  >
-                                                    Costs outst: {formatCurrency(costsOutstandingVal)}
-                                                  </span>
+                                                {isConfirmed && metrics.directCosts > 0 && (
+                                                  metrics.costsLeftToReceive > 0 ? (
+                                                    <span
+                                                      style={{
+                                                        fontSize: "11px",
+                                                        padding: "3px 9px",
+                                                        borderRadius: "12px",
+                                                        fontWeight: "600",
+                                                        background: "#fef3c7",
+                                                        color: "#92400e",
+                                                        border: "1px solid #fde68a",
+                                                        display: "inline-flex",
+                                                        alignItems: "center",
+                                                        gap: "4px"
+                                                      }}
+                                                      title={
+                                                        isRetainer
+                                                          ? `Prior month unreceived costs: ${formatCurrency(metrics.costsLeftToReceive)} (${metrics.priorMonthsUnreceivedCount} prior month${metrics.priorMonthsUnreceivedCount === 1 ? "" : "s"} unreceived) · Real Costs to date: ${formatCurrency(metrics.realCostsReceived)}`
+                                                          : `Costs Budget: ${formatCurrency(metrics.directCosts)} · Real Received: ${formatCurrency(metrics.realCostsReceived)} · Excludes ${formatCurrency(metrics.placeholderCosts)} in gap placeholders`
+                                                      }
+                                                    >
+                                                      <span>⚠️</span> Left to receive: {formatCurrency(metrics.costsLeftToReceive)}
+                                                    </span>
+                                                  ) : (
+                                                    !isRetainer && (
+                                                      <span
+                                                        style={{
+                                                          fontSize: "11px",
+                                                          padding: "3px 9px",
+                                                          borderRadius: "12px",
+                                                          fontWeight: "600",
+                                                          background: "#dcfce7",
+                                                          color: "#166534",
+                                                          border: "1px solid #bbf7d0",
+                                                          display: "inline-flex",
+                                                          alignItems: "center",
+                                                          gap: "4px"
+                                                        }}
+                                                        title={`Costs Budget: ${formatCurrency(metrics.directCosts)} · 100% Received (${formatCurrency(metrics.realCostsReceived)})`}
+                                                      >
+                                                        <span>✓</span> Fully received
+                                                      </span>
+                                                    )
+                                                  )
                                                 )}
                                               </div>
 
@@ -1881,6 +2224,7 @@ export default function JobsView({
                                                   expenseItems.map((item) => {
                                                     const slot = item.slot;
                                                     const hasData = Boolean((slot.description && String(slot.description).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
+                                                    const isPlaceholder = isPlaceholderExpense(slot);
                                                     const pillStyle = getStatusPill(slot.status);
                                                     return (
                                                       <div
@@ -1923,9 +2267,16 @@ export default function JobsView({
                                                         </div>
                                                         {hasData ? (
                                                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
-                                                            <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholderExpense(slot.transactionId) ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
-                                                              {slot.description || slot.transactionId || "Expense"}
-                                                            </span>
+                                                            <div style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden" }}>
+                                                              <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholder ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
+                                                                {slot.description || slot.transactionId || "Expense"}
+                                                              </span>
+                                                              {isPlaceholder && (
+                                                                <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "6px", background: "#f3e8ff", color: "#7e22ce", fontWeight: "600", flexShrink: 0 }}>
+                                                                  Placeholder
+                                                                </span>
+                                                              )}
+                                                            </div>
                                                             <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
                                                               {formatCurrency(slot.amount)}
                                                             </span>

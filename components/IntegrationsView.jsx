@@ -545,7 +545,7 @@ export default function IntegrationsView({
       </div>
 
       {/* ── METRICS SUMMARY PILLS ───────────────────────────────────────────── */}
-      {!loading && (
+      {!loading && !managedClient && (
         <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", marginBottom: "20px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#f8fafc", border: "1px solid #e2e8f0", fontSize: "12px" }}>
             <span style={{ color: "#64748b", fontWeight: "600" }}>Total Clients:</span>
@@ -602,7 +602,7 @@ export default function IntegrationsView({
       )}
 
       {/* ── CENTRAL ADVISOR XERO ACCOUNT BANNER ─────────────────────────────── */}
-      {isAdmin && (
+      {isAdmin && !managedClient && (
         <div
           style={{
             background: sharedXero?.connected ? "linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%)" : "linear-gradient(135deg, #f8fafc 0%, #ffffff 100%)",
@@ -709,55 +709,55 @@ export default function IntegrationsView({
       )}
 
       {/* ── SEARCH & JUMP NAVIGATION BAR ─────────────────────────────────────── */}
-      <div
-        style={{
-          background: "#ffffff",
-          borderRadius: "12px",
-          padding: "12px 18px",
-          border: "1px solid #e2e8f0",
-          marginBottom: "24px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: "12px",
-          boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: "260px" }}>
-          <span style={{ fontSize: "15px" }}>🔍</span>
-          <input
-            type="text"
-            placeholder="Search clients by name, accounting tool, CRM, or sheet ID..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "7px 12px",
-              borderRadius: "8px",
-              border: "1px solid #cbd5e1",
-              fontSize: "13px",
-              outline: "none"
-            }}
-          />
-          {searchTerm && (
-            <button
-              onClick={() => setSearchTerm("")}
+      {!managedClient && (
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: "12px",
+            padding: "12px 18px",
+            border: "1px solid #e2e8f0",
+            marginBottom: "24px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "12px",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: "260px" }}>
+            <span style={{ fontSize: "15px" }}>🔍</span>
+            <input
+              type="text"
+              placeholder="Search clients by name, accounting tool, CRM, or sheet ID..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
               style={{
-                background: "none",
-                border: "none",
-                fontSize: "12px",
-                color: "#64748b",
-                cursor: "pointer",
-                padding: "4px 8px"
+                width: "100%",
+                padding: "7px 12px",
+                borderRadius: "8px",
+                border: "1px solid #cbd5e1",
+                fontSize: "13px",
+                outline: "none"
               }}
-            >
-              Clear
-            </button>
-          )}
-        </div>
+            />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm("")}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontSize: "12px",
+                  color: "#64748b",
+                  cursor: "pointer",
+                  padding: "4px 8px"
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
 
-        {!managedClient && (
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <label htmlFor="jump-to-client" style={{ fontSize: "12.5px", fontWeight: "600", color: "#475569", whiteSpace: "nowrap" }}>
               Jump to Client:
@@ -790,8 +790,8 @@ export default function IntegrationsView({
               ))}
             </select>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* ── CLIENTS STREAM (ORDERED DOWN THE PAGE) ───────────────────────────── */}
       {filteredClients.length === 0 ? (

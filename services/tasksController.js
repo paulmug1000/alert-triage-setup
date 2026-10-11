@@ -215,7 +215,7 @@ export async function handleCreateTask(req, res, sheets) {
 }
 
 export async function handleGetTasks(req, res, sheets) {
-  const { automationCommanderSheetId: acId, filter, bypassCache } = req.body;
+  const { automationCommanderSheetId: acId, filter, bypassCache, clientName } = req.body;
   if (!acId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
 
   const sessionUser = getSessionUser(req);

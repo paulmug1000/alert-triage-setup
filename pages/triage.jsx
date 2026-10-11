@@ -306,10 +306,21 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   }, [isAuthenticated, user?.email, loadClients]);
 
   const handleNavHome = () => { fireOutgoingsPullIfPending(); setActiveNav("home"); };
+  const lastManagedAlertSelectionRef = useRef("");
   const handleNavAlerts = () => {
     fireOutgoingsPullIfPending();
     setActiveNav("alerts");
-    if (!managedClient) {
+    if (managedClient) {
+      const targetName = managedClient.clientName?.toLowerCase() || "";
+      const match =
+        (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === targetName) ||
+        (triageEngine.clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === targetName) ||
+        managedClient;
+      if (triageEngine.sessionId) {
+        lastManagedAlertSelectionRef.current = `${targetName}-${triageEngine.sessionId}`;
+        triageEngine.selectClient(match);
+      }
+    } else {
       setScreen("clientSelection");
     }
   };
@@ -317,15 +328,20 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   // Automatically select managed client alerts when activeNav is alerts
   useEffect(() => {
     if (activeNav === "alerts" && managedClient) {
-      if (triageEngine.selectedClient?.clientName?.toLowerCase() !== managedClient.clientName?.toLowerCase()) {
+      const targetName = managedClient.clientName?.toLowerCase() || "";
+      const sessionKey = `${targetName}-${triageEngine.sessionId || "nosession"}`;
+      if (lastManagedAlertSelectionRef.current !== sessionKey) {
+        lastManagedAlertSelectionRef.current = sessionKey;
         const match =
-          (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) ||
-          (triageEngine.clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === managedClient.clientName?.toLowerCase()) ||
+          (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === targetName) ||
+          (triageEngine.clientsWithFlags || []).find(c => c.clientName?.toLowerCase() === targetName) ||
           managedClient;
         triageEngine.selectClient(match);
       }
+    } else if (!managedClient) {
+      lastManagedAlertSelectionRef.current = "";
     }
-  }, [activeNav, managedClient, allOutgoingsClients, triageEngine.clientsWithFlags]);
+  }, [activeNav, managedClient, triageEngine.sessionId, allOutgoingsClients, triageEngine.clientsWithFlags]);
   const handleNavOverview = () => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
   const handleNavActivity = () => { fireOutgoingsPullIfPending(); setActiveNav("activity"); loadClients(); };
@@ -573,6 +589,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
             setScreen={setScreen}
             loadIgnoredAlerts={loadIgnoredAlerts}
             user={user}
+            managedClient={managedClient}
+            onClearManagedClient={handleClearManagedClient}
           />
         );
       }

@@ -13,7 +13,9 @@ export default function ClientSelectionView({
   PROACTIVE_TYPE_LABELS,
   setScreen,
   loadIgnoredAlerts,
-  user
+  user,
+  managedClient,
+  onClearManagedClient
 }) {
   const auth = useAuth();
   const currentUser = user || auth.user;
@@ -28,12 +30,24 @@ export default function ClientSelectionView({
     selectClient, reloadFromCache, refreshTriage
   } = useTriage();
 
-  const authorizedClientsWithFlags = (clientsWithFlags || []).filter(c =>
+  let authorizedClientsWithFlags = (clientsWithFlags || []).filter(c =>
     isUserAuthorizedForClient(currentUser, c.clientName)
   );
-  const authorizedProactiveAlerts = (proactiveAlerts || []).filter(a =>
+  if (managedClient?.clientName) {
+    authorizedClientsWithFlags = authorizedClientsWithFlags.filter(c =>
+      c.clientName?.toLowerCase() === managedClient.clientName.toLowerCase()
+    );
+  }
+
+  let authorizedProactiveAlerts = (proactiveAlerts || []).filter(a =>
     isUserAuthorizedForClient(currentUser, a.clientName) && isProactiveVisible(a.alertType)
   );
+  if (managedClient?.clientName) {
+    authorizedProactiveAlerts = authorizedProactiveAlerts.filter(a =>
+      a.clientName?.toLowerCase() === managedClient.clientName.toLowerCase()
+    );
+  }
+
   const authorizedProactiveCountsByClient = Object.fromEntries(
     Object.entries(
       (authorizedProactiveAlerts || []).reduce((acc, a) => {
@@ -79,11 +93,15 @@ export default function ClientSelectionView({
     return (
       <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.title}>Alerts</h1>
-          <p style={styles.subtitle}>All alerts have been resolved</p>
+          <h1 style={styles.title}>Alerts{managedClient ? ` — ${managedClient.clientName}` : ""}</h1>
+          <p style={styles.subtitle}>
+            {managedClient ? `All alerts for ${managedClient.clientName} have been resolved` : "All alerts have been resolved"}
+          </p>
         </div>
         <div style={styles.card}>
-          <div style={styles.successBanner}>✓ No outstanding alerts</div>
+          <div style={styles.successBanner}>
+            ✓ {managedClient ? `No outstanding alerts for ${managedClient.clientName}` : "No outstanding alerts"}
+          </div>
           <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
             <button className="triage-btn" onClick={reloadFromCache} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
               ⚡ Reload
@@ -91,6 +109,11 @@ export default function ClientSelectionView({
             {isAdmin && (
               <button className="triage-btn" onClick={() => refreshTriage(true)} disabled={isLoading} style={{ ...styles.buttonSecondary, opacity: isLoading ? 0.5 : 1 }}>
                 {isLoading ? <><Spinner />{refreshStatus || "Refreshing..."}</> : "↻ Refresh"}
+              </button>
+            )}
+            {managedClient && onClearManagedClient && (
+              <button className="triage-btn" onClick={onClearManagedClient} style={{ ...styles.buttonSecondary }}>
+                ← View all clients
               </button>
             )}
           </div>
@@ -105,7 +128,9 @@ export default function ClientSelectionView({
       <div style={styles.container}>
         <div style={{ textAlign: "center", padding: "60px 20px", color: "#888" }}>
           <Spinner size={28} color="#0066cc" />
-          <div style={{ marginTop: "12px", fontSize: "14px" }}>Checking for alerts...</div>
+          <div style={{ marginTop: "12px", fontSize: "14px" }}>
+            {managedClient ? `Checking alerts for ${managedClient.clientName}...` : "Checking for alerts..."}
+          </div>
         </div>
       </div>
     );
@@ -115,9 +140,11 @@ export default function ClientSelectionView({
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h1 style={styles.title}>Alerts</h1>
+        <h1 style={styles.title}>Alerts{managedClient ? ` — ${managedClient.clientName}` : ""}</h1>
         <p style={styles.subtitle}>
-          Select a client to review alert details ({totalAlertsCount} total)
+          {managedClient
+            ? `${totalAlertsCount} alert${totalAlertsCount !== 1 ? "s" : ""} requiring attention for ${managedClient.clientName}`
+            : `Select a client to review alert details (${totalAlertsCount} total)`}
         </p>
       </div>
 

@@ -82,6 +82,18 @@ export const formatCurrency = (val) => {
   return symbol + num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
+export const parseLikelihoodValue = (val) => {
+  if (val === null || val === undefined) return null;
+  const s = String(val).trim().replace(/[%,\s]/g, "");
+  if (!s) return null;
+  const num = parseFloat(s);
+  if (isNaN(num)) return null;
+  if (num > 0 && num <= 1 && String(val).includes(".")) {
+    return num * 100;
+  }
+  return num;
+};
+
 export default function JobsView({
   allOutgoingsClients,
   styles = {}
@@ -108,6 +120,7 @@ export default function JobsView({
   // Modern view filter: 'all' | 'confirmed' | 'pipeline'
   const [filterType, setFilterType] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [showZeroPercentJobs, setShowZeroPercentJobs] = useState(false);
 
   // Set of expanded job IDs in modern view
   const [expandedJobIds, setExpandedJobIds] = useState(() => new Set());
@@ -117,6 +130,7 @@ export default function JobsView({
 
   // Loading / saving states
   const [savingJobKeys, setSavingJobKeys] = useState(() => new Set());
+  const [confirmingJobKeys, setConfirmingJobKeys] = useState(() => new Set());
   const [recentlySavedKeys, setRecentlySavedKeys] = useState(() => new Set());
   const [actionError, setActionError] = useState(null);
 
@@ -146,6 +160,34 @@ export default function JobsView({
   // Check if a specific job has unsaved changes
   const isJobDirty = (jobKey) => {
     return Boolean(draftEdits[jobKey] && Object.keys(draftEdits[jobKey]).length > 0);
+  };
+
+  // Helper to check if a job belongs to Pipeline
+  const isPipelineJob = (job) => {
+    if (!job) return false;
+    const tab = String(job.tabName || job.status || job.rows?.[0]?.tabName || "").toLowerCase();
+    return tab === "pipeline" || tab.includes("pipe");
+  };
+
+  // Helper to check if a pipeline job was copied to Confirmed tab (Column DD == "Yes")
+  const isJobCopiedToConfirmed = (job) => {
+    if (!job || !isPipelineJob(job)) return false;
+    const parentRow = job.rows?.[0] || {};
+    const copiedVal = String(job.copiedToConf || parentRow.copiedToConf || "").trim().toLowerCase();
+    return copiedVal === "yes" || copiedVal === "y";
+  };
+
+  // Helper to check if a pipeline job has 0% likelihood
+  const isJobZeroPercent = (job) => {
+    if (!job || !isPipelineJob(job)) return false;
+    const jobKey = getJobKey(job);
+    // If the user has an active draft edit on this job, keep it visible while editing so they can save
+    const hasDraft = draftEdits[jobKey]?.likelihood !== undefined;
+    if (hasDraft) return false;
+
+    const parentRow = job.rows?.[0] || {};
+    const lVal = parseLikelihoodValue(parentRow.likelihood ?? job.likelihood);
+    return lVal !== null && lVal === 0;
   };
 
   // Get field value (from draft if edited, otherwise from sheet data)
@@ -180,7 +222,228 @@ export default function JobsView({
     });
   };
 
-  // Save changes for a single job
+  // KeyDown handler to exit edit mode on Escape (undoing draft change) or Enter (blurring)
+  const handleFieldKeyDown = (e, job, fieldKey) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      const jobKey = getJobKey(job);
+      setDraftEdits((prev) => {
+        if (!prev[jobKey] || prev[jobKey][fieldKey] === undefined) return prev;
+        const jobDraft = { ...prev[jobKey] };
+        delete jobDraft[fieldKey];
+        const next = { ...prev };
+        if (Object.keys(jobDraft).length === 0) {
+          delete next[jobKey];
+        } else {
+          next[jobKey] = jobDraft;
+        }
+        return next;
+      });
+      if (e.target && typeof e.target.blur === "function") {
+        e.target.blur();
+      }
+    } else if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") {
+      e.target.blur();
+    }
+  };
+
+  // Helper to persist non-excluded draft fields to the current tab row before moving tabs
+  const saveJobFieldsDirect = async (job, fieldsToExclude = []) => {
+    const jobKey = getJobKey(job);
+    const parentRow = job?.rows?.[0];
+    if (!parentRow || !isJobDirty(jobKey)) return;
+
+    const currentDraft = draftEdits[jobKey] || {};
+    const tabName = job.tabName || parentRow.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed");
+    const parentRowNum = parentRow.rowNum;
+
+    const FIELD_MAP = {
+      client: { colLetter: "A", fieldName: "Client" },
+      jobName: { colLetter: "B", fieldName: "Job Name" },
+      projectCode: { colLetter: "C", fieldName: "Project Code" },
+      dateConf: { colLetter: "D", fieldName: tabName === "Pipeline" ? "Date Added" : "Date Confirmed", isDate: true },
+      leadSrc: { colLetter: "E", fieldName: "Lead Source" },
+      revenue: { colLetter: "AG", fieldName: "Revenue" },
+      directCosts: { colLetter: "AH", fieldName: "Direct Costs" },
+      vat: { colLetter: "AI", fieldName: "VAT" },
+      projectRetainer: { colLetter: "AJ", fieldName: "Type" },
+      prodLine: { colLetter: "AK", fieldName: "Product Line" },
+      startDate: { colLetter: "AL", fieldName: "Start Date", isDate: true },
+      endDate: { colLetter: "AM", fieldName: "End Date", isDate: true },
+      likelihood: { colLetter: "AN", fieldName: "Likelihood" }
+    };
+
+    const updates = [];
+    Object.keys(currentDraft).forEach((fieldKey) => {
+      if (fieldsToExclude.includes(fieldKey)) return;
+      const meta = FIELD_MAP[fieldKey];
+      if (!meta) return;
+      let val = currentDraft[fieldKey];
+      if (meta.isDate && val) {
+        val = toSheetDateFormat(val);
+      }
+      updates.push({
+        colLetter: meta.colLetter,
+        rowNum: parentRowNum,
+        cellRef: `${meta.colLetter}${parentRowNum}`,
+        fieldName: meta.fieldName,
+        value: val
+      });
+
+      if ((fieldKey === "client" || fieldKey === "jobName") && job.rows && job.rows.length > 1) {
+        job.rows.slice(1).forEach((childRow) => {
+          updates.push({
+            colLetter: meta.colLetter,
+            rowNum: childRow.rowNum,
+            cellRef: `${meta.colLetter}${childRow.rowNum}`,
+            fieldName: meta.fieldName,
+            value: val
+          });
+        });
+      }
+    });
+
+    if (updates.length > 0) {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_job_fields",
+          clientSheetId: jobsClient?.clientSheetId,
+          clientName: jobsClient?.clientName || jobsClient?.name || "",
+          tabName,
+          rowNum: parentRowNum,
+          endClientName: currentDraft.client || parentRow.client || job.client,
+          jobName: currentDraft.jobName || parentRow.jobName || job.jobName,
+          updates
+        })
+      });
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || "Failed to update job fields");
+      }
+    }
+  };
+
+  // Confirm a Pipeline job (moves to Confirmed tab)
+  const handleConfirmJob = async (job) => {
+    const jobKey = getJobKey(job);
+    const parentRow = job?.rows?.[0];
+    if (!parentRow || !jobsClient?.clientSheetId) return;
+
+    const pipelineRowNum = parentRow.rowNum;
+    if (!pipelineRowNum || pipelineRowNum < 2) return;
+
+    setConfirmingJobKeys((prev) => new Set(prev).add(jobKey));
+    setActionError(null);
+
+    try {
+      // 1. If non-likelihood fields are modified, save them first to Pipeline
+      if (isJobDirty(jobKey)) {
+        await saveJobFieldsDirect(job, ["likelihood"]);
+      }
+
+      // 2. Call confirm endpoint
+      const res = await fetch("/api/portal/confirm-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientSheetId: jobsClient.clientSheetId,
+          clientName: jobsClient.clientName || jobsClient.name || "",
+          pipelineRow: pipelineRowNum
+        })
+      });
+
+      const resData = await res.json();
+      if (!resData.success) {
+        throw new Error(resData.error || "Failed to confirm job");
+      }
+
+      // 3. Clear draft for this job
+      setDraftEdits((prev) => {
+        const next = { ...prev };
+        delete next[jobKey];
+        return next;
+      });
+
+      // 4. Reload jobs data
+      await loadJobsData(jobsClient, "All");
+    } catch (err) {
+      console.error("Confirm job error:", err);
+      setActionError(`Failed to confirm ${job.jobName || "job"}: ${err.message}`);
+    } finally {
+      setConfirmingJobKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(jobKey);
+        return next;
+      });
+    }
+  };
+
+  // Unconfirm a Confirmed job (moves to Pipeline tab)
+  const handleUnconfirmJob = async (job, optionalLikelihood) => {
+    const jobKey = getJobKey(job);
+    const parentRow = job?.rows?.[0];
+    if (!parentRow || !jobsClient?.clientSheetId) return;
+
+    const confirmedRowNum = parentRow.rowNum;
+    if (!confirmedRowNum || confirmedRowNum < 2) return;
+
+    setConfirmingJobKeys((prev) => new Set(prev).add(jobKey));
+    setActionError(null);
+
+    try {
+      // 1. If non-likelihood fields are modified, save them first to Confirmed
+      if (isJobDirty(jobKey)) {
+        await saveJobFieldsDirect(job, ["likelihood"]);
+      }
+
+      const currentDraft = draftEdits[jobKey] || {};
+      const targetLikelihood = optionalLikelihood || currentDraft.likelihood;
+
+      const payload = {
+        clientSheetId: jobsClient.clientSheetId,
+        clientName: jobsClient.clientName || jobsClient.name || "",
+        confirmedRow: confirmedRowNum
+      };
+      if (targetLikelihood) {
+        payload.likelihood = targetLikelihood;
+      }
+
+      const res = await fetch("/api/portal/unconfirm-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      const resData = await res.json();
+      if (!resData.success) {
+        throw new Error(resData.error || "Failed to unconfirm job");
+      }
+
+      // Clear draft for this job
+      setDraftEdits((prev) => {
+        const next = { ...prev };
+        delete next[jobKey];
+        return next;
+      });
+
+      // Reload jobs data
+      await loadJobsData(jobsClient, "All");
+    } catch (err) {
+      console.error("Unconfirm job error:", err);
+      setActionError(`Failed to unconfirm ${job.jobName || "job"}: ${err.message}`);
+    } finally {
+      setConfirmingJobKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(jobKey);
+        return next;
+      });
+    }
+  };
+
+  // Save changes for a single job (with automatic confirm/unconfirm triggers when likelihood is edited)
   const handleSaveJob = async (job) => {
     const jobKey = getJobKey(job);
     const parentRow = job?.rows?.[0];
@@ -188,6 +451,21 @@ export default function JobsView({
 
     const currentDraft = draftEdits[jobKey] || {};
     const tabName = job.tabName || parentRow.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed");
+    const isConfirmed = tabName.toLowerCase() === "confirmed";
+
+    // Auto-trigger confirm/unconfirm if likelihood changed across the 100% threshold
+    if (currentDraft.likelihood !== undefined) {
+      const parsedL = parseLikelihoodValue(currentDraft.likelihood);
+      if (!isConfirmed && parsedL !== null && parsedL >= 100) {
+        // Pipeline job changed to 100% -> Confirm Job!
+        return await handleConfirmJob(job);
+      }
+      if (isConfirmed && parsedL !== null && parsedL < 100) {
+        // Confirmed job changed to < 100% -> Unconfirm Job!
+        return await handleUnconfirmJob(job, currentDraft.likelihood);
+      }
+    }
+
     const parentRowNum = parentRow.rowNum;
 
     const FIELD_MAP = {
@@ -321,6 +599,14 @@ export default function JobsView({
     if (!jobsData || !Array.isArray(jobsData)) return [];
     let list = [...jobsData];
 
+    // Exclude pipeline jobs that have been copied to confirmed tab (Column DD == "Yes")
+    list = list.filter((j) => !isJobCopiedToConfirmed(j));
+
+    // Exclude 0% likelihood pipeline jobs unless showZeroPercentJobs is true
+    if (!showZeroPercentJobs) {
+      list = list.filter((j) => !isJobZeroPercent(j));
+    }
+
     // 1. Filter by Confirmed / Pipeline in modern view
     if (viewMode === "modern") {
       if (filterType === "confirmed") {
@@ -422,7 +708,7 @@ export default function JobsView({
         }
       }
     });
-  }, [jobsData, viewMode, filterType, jobsTab, searchQuery, jobsSortBy]);
+  }, [jobsData, viewMode, filterType, jobsTab, searchQuery, jobsSortBy, showZeroPercentJobs, draftEdits]);
 
   // Counts for filter pills
   const counts = useMemo(() => {
@@ -430,12 +716,21 @@ export default function JobsView({
     let conf = 0;
     let pipe = 0;
     jobsData.forEach((j) => {
-      const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "").toLowerCase();
-      if (tab === "pipeline" || tab.includes("pipe")) pipe++;
+      // Exclude pipeline jobs copied to confirmed tab
+      if (isJobCopiedToConfirmed(j)) return;
+
+      const isPipe = isPipelineJob(j);
+
+      // Exclude 0% likelihood pipeline jobs unless showZeroPercentJobs is true
+      if (isPipe && !showZeroPercentJobs && isJobZeroPercent(j)) {
+        return;
+      }
+
+      if (isPipe) pipe++;
       else conf++;
     });
-    return { all: jobsData.length, confirmed: conf, pipeline: pipe };
-  }, [jobsData]);
+    return { all: conf + pipe, confirmed: conf, pipeline: pipe };
+  }, [jobsData, showZeroPercentJobs, draftEdits]);
 
   // Number of unsaved dirty jobs
   const dirtyCount = Object.keys(draftEdits).length;
@@ -746,18 +1041,27 @@ export default function JobsView({
     const [isEditing, setIsEditing] = React.useState(false);
     const [val, setVal] = React.useState(value || "");
     const inputRef = React.useRef(null);
+    const isCancelledRef = React.useRef(false);
 
     React.useEffect(() => { setVal(value || ""); }, [value]);
     React.useEffect(() => { if (isEditing && inputRef.current) inputRef.current.focus(); }, [isEditing]);
 
     const handleBlur = () => {
+      if (isCancelledRef.current) {
+        isCancelledRef.current = false;
+        return;
+      }
       setIsEditing(false);
       if (val !== (value || "")) onSave(colLetter, rowNum, val);
     };
 
     const handleKeyDown = (e) => {
       if (e.key === "Enter") handleBlur();
-      if (e.key === "Escape") { setIsEditing(false); setVal(value || ""); }
+      if (e.key === "Escape") {
+        isCancelledRef.current = true;
+        setVal(value || "");
+        setIsEditing(false);
+      }
     };
 
     if (isEditing) {
@@ -1163,6 +1467,41 @@ export default function JobsView({
 
                   {/* Search and Sort controls */}
                   <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                    {/* Show 0% jobs toggle checkbox */}
+                    <label
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        fontSize: "13px",
+                        fontWeight: "500",
+                        color: showZeroPercentJobs ? "#1d4ed8" : "#475569",
+                        cursor: "pointer",
+                        userSelect: "none",
+                        padding: "5px 10px",
+                        borderRadius: "6px",
+                        background: showZeroPercentJobs ? "#eff6ff" : "#ffffff",
+                        border: `1px solid ${showZeroPercentJobs ? "#93c5fd" : "#cbd5e1"}`,
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+                        transition: "all 0.15s ease"
+                      }}
+                      title="Toggle visibility of pipeline jobs with 0% likelihood"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={showZeroPercentJobs}
+                        onChange={(e) => setShowZeroPercentJobs(e.target.checked)}
+                        style={{
+                          cursor: "pointer",
+                          accentColor: "#2563eb",
+                          width: "14px",
+                          height: "14px",
+                          margin: 0
+                        }}
+                      />
+                      <span>Show 0% jobs</span>
+                    </label>
+
                     {/* Search Input */}
                     <div style={{ position: "relative" }}>
                       <input
@@ -1253,6 +1592,37 @@ export default function JobsView({
                   </div>
                 </div>
 
+                {/* Action Error Banner */}
+                {actionError && (
+                  <div
+                    style={{
+                      background: "#fef2f2",
+                      border: "1px solid #fecaca",
+                      borderRadius: "8px",
+                      padding: "9px 14px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      color: "#991b1b",
+                      fontSize: "13px",
+                      fontWeight: "500",
+                      marginBottom: "12px"
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span>❌</span>
+                      <span>{actionError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActionError(null)}
+                      style={{ background: "none", border: "none", color: "#991b1b", cursor: "pointer", fontWeight: "700", fontSize: "14px" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
                 {/* Unsaved Changes Banner */}
                 {dirtyCount > 0 && (
                   <div
@@ -1316,6 +1686,7 @@ export default function JobsView({
                           const isExpanded = expandedJobIds.has(jobKey);
                           const isDirty = isJobDirty(jobKey);
                           const isSaving = savingJobKeys.has(jobKey);
+                          const isConfirming = confirmingJobKeys.has(jobKey);
                           const recentlySaved = recentlySavedKeys.has(jobKey);
 
                           const parentRow = job.rows?.[0] || {};
@@ -1416,6 +1787,7 @@ export default function JobsView({
                                     type="text"
                                     value={clientVal}
                                     onChange={(e) => handleDraftFieldChange(job, "client", e.target.value)}
+                                    onKeyDown={(e) => handleFieldKeyDown(e, job, "client")}
                                     placeholder="Client Name"
                                     style={{
                                       width: "100%",
@@ -1446,6 +1818,7 @@ export default function JobsView({
                                     type="text"
                                     value={jobNameVal}
                                     onChange={(e) => handleDraftFieldChange(job, "jobName", e.target.value)}
+                                    onKeyDown={(e) => handleFieldKeyDown(e, job, "jobName")}
                                     placeholder="Job Name"
                                     style={{
                                       width: "100%",
@@ -1475,6 +1848,7 @@ export default function JobsView({
                                   <select
                                     value={isRetainer ? "Retainer" : "Project"}
                                     onChange={(e) => handleDraftFieldChange(job, "projectRetainer", e.target.value)}
+                                    onKeyDown={(e) => handleFieldKeyDown(e, job, "projectRetainer")}
                                     style={{
                                       padding: "3px 6px",
                                       borderRadius: "5px",
@@ -1499,6 +1873,7 @@ export default function JobsView({
                                       type="text"
                                       value={revVal}
                                       onChange={(e) => handleDraftFieldChange(job, "revenue", e.target.value)}
+                                      onKeyDown={(e) => handleFieldKeyDown(e, job, "revenue")}
                                       placeholder="0.00"
                                       style={{
                                         width: "100%",
@@ -1577,6 +1952,7 @@ export default function JobsView({
                                     type="text"
                                     value={directCostsVal}
                                     onChange={(e) => handleDraftFieldChange(job, "directCosts", e.target.value)}
+                                    onKeyDown={(e) => handleFieldKeyDown(e, job, "directCosts")}
                                     placeholder="0.00"
                                     style={{
                                       width: "100%",
@@ -1653,6 +2029,7 @@ export default function JobsView({
                                     type="date"
                                     value={toInputDateFormat(startDateVal)}
                                     onChange={(e) => handleDraftFieldChange(job, "startDate", e.target.value)}
+                                    onKeyDown={(e) => handleFieldKeyDown(e, job, "startDate")}
                                     style={{
                                       padding: "3px 4px",
                                       borderRadius: "5px",
@@ -1679,6 +2056,7 @@ export default function JobsView({
                                     type="date"
                                     value={toInputDateFormat(endDateVal)}
                                     onChange={(e) => handleDraftFieldChange(job, "endDate", e.target.value)}
+                                    onKeyDown={(e) => handleFieldKeyDown(e, job, "endDate")}
                                     style={{
                                       padding: "3px 4px",
                                       borderRadius: "5px",
@@ -1701,37 +2079,33 @@ export default function JobsView({
 
                                 {/* Likelihood (%) */}
                                 <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
-                                  {isConfirmed ? (
-                                    <span style={{ fontSize: "12px", fontWeight: "600", color: "#15803d", padding: "2px 6px", background: "#f0fdf4", borderRadius: "4px" }}>
-                                      100%
-                                    </span>
-                                  ) : (
-                                    <input
-                                      type="text"
-                                      value={likelihoodVal || ""}
-                                      onChange={(e) => handleDraftFieldChange(job, "likelihood", e.target.value)}
-                                      placeholder="50%"
-                                      style={{
-                                        width: "60px",
-                                        padding: "3px 5px",
-                                        borderRadius: "5px",
-                                        border: isDirty && draftEdits[jobKey]?.likelihood !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
-                                        background: "transparent",
-                                        fontSize: "12px",
-                                        fontWeight: "600",
-                                        color: "#0369a1",
-                                        outline: "none"
-                                      }}
-                                      onFocus={(e) => {
-                                        e.target.style.background = "#ffffff";
-                                        e.target.style.borderColor = "#3b82f6";
-                                      }}
-                                      onBlur={(e) => {
-                                        e.target.style.background = "transparent";
-                                        e.target.style.borderColor = isDirty && draftEdits[jobKey]?.likelihood !== undefined ? "#f59e0b" : "transparent";
-                                      }}
-                                    />
-                                  )}
+                                  <input
+                                    type="text"
+                                    value={likelihoodVal !== undefined && likelihoodVal !== "" ? likelihoodVal : (isConfirmed ? "100%" : "")}
+                                    onChange={(e) => handleDraftFieldChange(job, "likelihood", e.target.value)}
+                                    onKeyDown={(e) => handleFieldKeyDown(e, job, "likelihood")}
+                                    placeholder={isConfirmed ? "100%" : "50%"}
+                                    title={isConfirmed ? "Confirmed (100%). Change to <100% and save to unconfirm." : "Pipeline likelihood. Change to 100% and save to confirm."}
+                                    style={{
+                                      width: "60px",
+                                      padding: "3px 5px",
+                                      borderRadius: "5px",
+                                      border: isDirty && draftEdits[jobKey]?.likelihood !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
+                                      background: isConfirmed && (draftEdits[jobKey]?.likelihood === undefined || draftEdits[jobKey]?.likelihood === "100%") ? "#f0fdf4" : "transparent",
+                                      fontSize: "12px",
+                                      fontWeight: "600",
+                                      color: isConfirmed && (draftEdits[jobKey]?.likelihood === undefined || draftEdits[jobKey]?.likelihood === "100%") ? "#15803d" : "#0369a1",
+                                      outline: "none"
+                                    }}
+                                    onFocus={(e) => {
+                                      e.target.style.background = "#ffffff";
+                                      e.target.style.borderColor = "#3b82f6";
+                                    }}
+                                    onBlur={(e) => {
+                                      e.target.style.background = isConfirmed && (draftEdits[jobKey]?.likelihood === undefined || draftEdits[jobKey]?.likelihood === "100%") ? "#f0fdf4" : "transparent";
+                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.likelihood !== undefined ? "#f59e0b" : "transparent";
+                                    }}
+                                  />
                                 </td>
 
                                 {/* Row Actions (Save / Cancel or Saved check) */}
@@ -1745,7 +2119,7 @@ export default function JobsView({
                                             e.stopPropagation();
                                             handleSaveJob(job);
                                           }}
-                                          disabled={isSaving}
+                                          disabled={isSaving || isConfirming}
                                           style={{
                                             padding: "4px 10px",
                                             borderRadius: "5px",
@@ -1754,14 +2128,15 @@ export default function JobsView({
                                             color: "#ffffff",
                                             fontSize: "12px",
                                             fontWeight: "600",
-                                            cursor: isSaving ? "not-allowed" : "pointer",
+                                            cursor: isSaving || isConfirming ? "not-allowed" : "pointer",
                                             display: "inline-flex",
                                             alignItems: "center",
                                             gap: "4px",
-                                            boxShadow: "0 1px 2px rgba(22,163,74,0.2)"
+                                            boxShadow: "0 1px 2px rgba(22,163,74,0.2)",
+                                            opacity: isSaving || isConfirming ? 0.7 : 1
                                           }}
                                         >
-                                          {isSaving ? <Spinner size={10} /> : "💾"} Save
+                                          {isSaving || isConfirming ? <Spinner size={10} color="#ffffff" /> : "💾"} Save
                                         </button>
                                         <button
                                           type="button"
@@ -1769,6 +2144,7 @@ export default function JobsView({
                                             e.stopPropagation();
                                             handleDiscardChanges(job);
                                           }}
+                                          disabled={isSaving || isConfirming}
                                           title="Discard changes"
                                           style={{
                                             padding: "4px 8px",
@@ -1777,7 +2153,7 @@ export default function JobsView({
                                             background: "#ffffff",
                                             color: "#64748b",
                                             fontSize: "12px",
-                                            cursor: "pointer"
+                                            cursor: isSaving || isConfirming ? "not-allowed" : "pointer"
                                           }}
                                         >
                                           ✕
@@ -1849,6 +2225,7 @@ export default function JobsView({
                                                 type="date"
                                                 value={toInputDateFormat(dateConfVal)}
                                                 onChange={(e) => handleDraftFieldChange(job, "dateConf", e.target.value)}
+                                                onKeyDown={(e) => handleFieldKeyDown(e, job, "dateConf")}
                                                 style={{
                                                   width: "100%",
                                                   padding: "5px 7px",
@@ -1861,29 +2238,30 @@ export default function JobsView({
                                               />
                                             </div>
 
-                                            {/* VAT Status */}
+                                            {/* % Likelihood */}
                                             <div>
                                               <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
-                                                VAT Applicable?
+                                                % Likelihood {isConfirmed ? "(100% = Confirmed)" : ""}
                                               </label>
-                                              <select
-                                                value={vatVal}
-                                                onChange={(e) => handleDraftFieldChange(job, "vat", e.target.value)}
+                                              <input
+                                                type="text"
+                                                value={likelihoodVal !== undefined && likelihoodVal !== "" ? likelihoodVal : (isConfirmed ? "100%" : "")}
+                                                onChange={(e) => handleDraftFieldChange(job, "likelihood", e.target.value)}
+                                                onKeyDown={(e) => handleFieldKeyDown(e, job, "likelihood")}
+                                                placeholder={isConfirmed ? "100%" : "50%"}
+                                                title={isConfirmed ? "Confirmed (100%). Change to <100% and save to unconfirm." : "Pipeline likelihood. Change to 100% and save to confirm."}
                                                 style={{
                                                   width: "100%",
                                                   padding: "5px 7px",
                                                   borderRadius: "5px",
-                                                  border: isDirty && draftEdits[jobKey]?.vat !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                                                  border: isDirty && draftEdits[jobKey]?.likelihood !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
                                                   fontSize: "12px",
+                                                  fontWeight: "600",
+                                                  color: isConfirmed && (draftEdits[jobKey]?.likelihood === undefined || draftEdits[jobKey]?.likelihood === "100%") ? "#15803d" : "#0369a1",
                                                   outline: "none",
-                                                  background: "#ffffff",
-                                                  cursor: "pointer",
                                                   boxSizing: "border-box"
                                                 }}
-                                              >
-                                                <option value="Yes">Yes</option>
-                                                <option value="No">No</option>
-                                              </select>
+                                              />
                                             </div>
 
                                             {/* Lead Source */}
@@ -1894,6 +2272,7 @@ export default function JobsView({
                                               <select
                                                 value={leadSrcVal || ""}
                                                 onChange={(e) => handleDraftFieldChange(job, "leadSrc", e.target.value)}
+                                                onKeyDown={(e) => handleFieldKeyDown(e, job, "leadSrc")}
                                                 style={{
                                                   width: "100%",
                                                   padding: "5px 7px",
@@ -1921,6 +2300,7 @@ export default function JobsView({
                                               <select
                                                 value={prodLineVal || ""}
                                                 onChange={(e) => handleDraftFieldChange(job, "prodLine", e.target.value)}
+                                                onKeyDown={(e) => handleFieldKeyDown(e, job, "prodLine")}
                                                 style={{
                                                   width: "100%",
                                                   padding: "5px 7px",
@@ -1940,8 +2320,34 @@ export default function JobsView({
                                               </select>
                                             </div>
 
+                                            {/* VAT Status */}
+                                            <div>
+                                              <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
+                                                VAT Applicable?
+                                              </label>
+                                              <select
+                                                value={vatVal}
+                                                onChange={(e) => handleDraftFieldChange(job, "vat", e.target.value)}
+                                                onKeyDown={(e) => handleFieldKeyDown(e, job, "vat")}
+                                                style={{
+                                                  width: "100%",
+                                                  padding: "5px 7px",
+                                                  borderRadius: "5px",
+                                                  border: isDirty && draftEdits[jobKey]?.vat !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                                                  fontSize: "12px",
+                                                  outline: "none",
+                                                  background: "#ffffff",
+                                                  cursor: "pointer",
+                                                  boxSizing: "border-box"
+                                                }}
+                                              >
+                                                <option value="Yes">Yes</option>
+                                                <option value="No">No</option>
+                                              </select>
+                                            </div>
+
                                             {/* Project Code */}
-                                            <div style={{ gridColumn: "span 2" }}>
+                                            <div>
                                               <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
                                                 Project Code
                                               </label>
@@ -1949,6 +2355,7 @@ export default function JobsView({
                                                 type="text"
                                                 value={projectCodeVal || ""}
                                                 onChange={(e) => handleDraftFieldChange(job, "projectCode", e.target.value)}
+                                                onKeyDown={(e) => handleFieldKeyDown(e, job, "projectCode")}
                                                 placeholder="e.g. PRJ-2026-01"
                                                 style={{
                                                   width: "100%",
@@ -2306,11 +2713,64 @@ export default function JobsView({
                                         <div style={{ fontSize: "12px", color: isDirty ? "#b45309" : "#64748b", fontWeight: isDirty ? "600" : "400" }}>
                                           {isDirty ? "⚠️ Unsaved changes to this job." : "✓ All job details saved to spreadsheet."}
                                         </div>
-                                        <div style={{ display: "flex", gap: "8px" }}>
+                                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                                          {/* Confirm / Unconfirm Button */}
+                                          {isConfirmed ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleUnconfirmJob(job, draftEdits[jobKey]?.likelihood)}
+                                              disabled={isSaving || isConfirming}
+                                              style={{
+                                                background: "#fffbeb",
+                                                border: "1px solid #f59e0b",
+                                                color: "#b45309",
+                                                padding: "6px 14px",
+                                                borderRadius: "6px",
+                                                fontSize: "12px",
+                                                fontWeight: "600",
+                                                cursor: isConfirming ? "wait" : "pointer",
+                                                display: "inline-flex",
+                                                alignItems: "center",
+                                                gap: "6px",
+                                                opacity: isConfirming ? 0.7 : 1
+                                              }}
+                                              title="Move job from Confirmed back to Pipeline"
+                                            >
+                                              {isConfirming ? <Spinner size={12} color="#b45309" /> : null}
+                                              <span>{isConfirming ? "Unconfirming..." : "Unconfirm Job"}</span>
+                                            </button>
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleConfirmJob(job)}
+                                              disabled={isSaving || isConfirming}
+                                              style={{
+                                                background: "#16a34a",
+                                                border: "none",
+                                                color: "#ffffff",
+                                                padding: "6px 14px",
+                                                borderRadius: "6px",
+                                                fontSize: "12px",
+                                                fontWeight: "600",
+                                                cursor: isConfirming ? "wait" : "pointer",
+                                                display: "inline-flex",
+                                                alignItems: "center",
+                                                gap: "6px",
+                                                opacity: isConfirming ? 0.7 : 1,
+                                                boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)"
+                                              }}
+                                              title="Mark job as 100% confirmed and move to Confirmed"
+                                            >
+                                              {isConfirming ? <Spinner size={12} color="#ffffff" /> : null}
+                                              <span>{isConfirming ? "Confirming..." : "Confirm Job"}</span>
+                                            </button>
+                                          )}
+
                                           {isDirty && (
                                             <button
                                               type="button"
                                               onClick={() => handleDiscardChanges(job)}
+                                              disabled={isSaving || isConfirming}
                                               style={{
                                                 padding: "6px 14px",
                                                 borderRadius: "6px",
@@ -2319,7 +2779,7 @@ export default function JobsView({
                                                 color: "#475569",
                                                 fontSize: "12px",
                                                 fontWeight: "600",
-                                                cursor: "pointer"
+                                                cursor: isSaving || isConfirming ? "not-allowed" : "pointer"
                                               }}
                                             >
                                               Discard Changes
@@ -2328,22 +2788,22 @@ export default function JobsView({
                                           <button
                                             type="button"
                                             onClick={() => handleSaveJob(job)}
-                                            disabled={!isDirty || isSaving}
+                                            disabled={!isDirty || isSaving || isConfirming}
                                             style={{
                                               padding: "6px 16px",
                                               borderRadius: "6px",
                                               border: "none",
-                                              background: isDirty ? "#16a34a" : "#cbd5e1",
+                                              background: isDirty && !isSaving && !isConfirming ? "#16a34a" : "#cbd5e1",
                                               color: "#ffffff",
                                               fontSize: "12px",
                                               fontWeight: "600",
-                                              cursor: !isDirty || isSaving ? "not-allowed" : "pointer",
+                                              cursor: !isDirty || isSaving || isConfirming ? "not-allowed" : "pointer",
                                               display: "inline-flex",
                                               alignItems: "center",
                                               gap: "6px"
                                             }}
                                           >
-                                            {isSaving ? <><Spinner size={12} /> Saving...</> : "💾 Save Job"}
+                                            {isSaving || isConfirming ? <><Spinner size={12} color="#ffffff" /> Saving...</> : "💾 Save Job"}
                                           </button>
                                         </div>
                                       </div>
@@ -2389,6 +2849,33 @@ export default function JobsView({
                     </button>
                   ))}
                   <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "14px", marginBottom: "4px" }}>
+                    {jobsTab === "Pipeline" && (
+                      <label
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          fontSize: "13px",
+                          fontWeight: "500",
+                          color: showZeroPercentJobs ? "#1d4ed8" : "#475569",
+                          cursor: "pointer",
+                          userSelect: "none",
+                          padding: "4px 8px",
+                          borderRadius: "6px",
+                          background: showZeroPercentJobs ? "#eff6ff" : "#ffffff",
+                          border: `1px solid ${showZeroPercentJobs ? "#93c5fd" : "#cbd5e1"}`
+                        }}
+                        title="Toggle visibility of pipeline jobs with 0% likelihood"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={showZeroPercentJobs}
+                          onChange={(e) => setShowZeroPercentJobs(e.target.checked)}
+                          style={{ cursor: "pointer", accentColor: "#2563eb", width: "14px", height: "14px", margin: 0 }}
+                        />
+                        <span>Show 0% jobs</span>
+                      </label>
+                    )}
                     <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                       <label htmlFor="legacy-sort-select" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>
                         Sort:

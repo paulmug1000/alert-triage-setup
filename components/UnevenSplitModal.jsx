@@ -32,6 +32,14 @@ export default function UnevenSplitModal({ editSplit, client, tabName, onClose, 
     }
   }, [jobRow.unevenSplit, isActive]);
 
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape" && !saving) onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [saving, onClose]);
+
   const getMonthsArray = () => {
     if (!startDate || !endDate || startDate > endDate) return [];
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

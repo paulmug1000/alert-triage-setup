@@ -1,14 +1,18 @@
 import React, { useState } from "react";
 import Spinner from "./Spinner";
 import { stripCurrency } from "../utils/helpers";
+import { useAuth } from "../hooks/useAuth";
 
 export default function InvoicesEditModal({ 
   editSlot, 
   invoicesClient, 
   onClose, 
   onUpdateInvoiceJobs, 
-  onMarkPullPending 
+  onMarkPullPending,
+  isAdmin: propIsAdmin
 }) {
+  const auth = useAuth();
+  const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
   const { rowNum, slotNum, slot, jobClient, jobName } = editSlot;
   
   const [invoiceNo, setInvoiceNo] = useState(slot.ref || "");
@@ -18,8 +22,15 @@ export default function InvoicesEditModal({
   const [status, setStatus] = useState(slot.status || "");
   const [saving, setSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-
   const close = () => { if (!saving) onClose(); };
+
+  React.useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [saving]);
 
   const save = async () => {
     setSaving(true);
@@ -82,7 +93,11 @@ export default function InvoicesEditModal({
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>Edit invoice - {editSlot.slotLabel ? `${editSlot.slotLabel} (Row ${rowNum})` : `Row ${rowNum}, Slot ${slotNum}`}</h3>
+          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>
+            Edit invoice - {isAdmin
+              ? (editSlot.slotLabel ? `${editSlot.slotLabel} (Row ${rowNum})` : `Row ${rowNum}, Slot ${slotNum}`)
+              : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/i, "") : `Slot ${slotNum}`)}
+          </h3>
           <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
 

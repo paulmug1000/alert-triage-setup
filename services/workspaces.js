@@ -791,6 +791,23 @@ export async function handleGetAllClientJobs(req, res, sheets) {
     }
 
     const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
+
+    // Dynamically locate "Copied to confirmed tab?" column in Pipeline headers, fallback to 107 (Column DD)
+    let pipelineCopiedColIdx = 107;
+    if (pipeRows && pipeRows.length > 0) {
+      for (let r = 0; r < Math.min(pipeRows.length, 5); r++) {
+        const hRow = pipeRows[r] || [];
+        const found = hRow.findIndex((h) => {
+          const s = String(h || "").trim().toLowerCase();
+          return s.includes("copied") || s.includes("conf?");
+        });
+        if (found !== -1) {
+          pipelineCopiedColIdx = found;
+          break;
+        }
+      }
+    }
+
     const buildRowData = (rowNum, row, isParent, currentTab) => ({
       rowNum, isParent, tabName: currentTab,
       client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
@@ -801,7 +818,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       projectRetainer: colVal(row, 35), prodLine: colVal(row, 36), 
       startDate: colVal(row, 37), endDate: colVal(row, 38),
       likelihood: currentTab === "Pipeline" ? colVal(row, 39) : (colVal(row, 39) || "100%"),
-      copiedToConf: currentTab === "Pipeline" ? colVal(row, 107) : null,
+      copiedToConf: currentTab === "Pipeline" ? colVal(row, pipelineCopiedColIdx) : null,
       leftToInvoice: colVal(row, 74), 
       costsOutstanding: colVal(row, 106), 
       invoiceSlots: [1,2,3].map(n => {
@@ -854,6 +871,14 @@ export async function handleGetAllClientJobs(req, res, sheets) {
         }
         ri = cj;
         
+        // Skip pipeline jobs that have been copied to confirmed tab (Column DD == "Yes")
+        if (currentTab === "Pipeline") {
+          const parentCopiedVal = String(colVal(row, pipelineCopiedColIdx) || "").trim().toLowerCase();
+          if (parentCopiedVal === "yes" || parentCopiedVal === "y") {
+            continue;
+          }
+        }
+
         tabJobs.push({
           id: `${currentTab.toLowerCase()}_${parentRowNum}`,
           tabName: currentTab,
@@ -861,6 +886,7 @@ export async function handleGetAllClientJobs(req, res, sheets) {
           client,
           jobName,
           projectCode: row[2] || "",
+          copiedToConf: currentTab === "Pipeline" ? colVal(row, pipelineCopiedColIdx) : null,
           rows: jobRows
         });
       }

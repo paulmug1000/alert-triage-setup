@@ -86,10 +86,51 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
   const [newAmount, setNewAmount] = React.useState("");
   const [changeMonth, setChangeMonth] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
   const [savingMessage, setSavingMessage] = React.useState("");
   const [error, setError] = React.useState("");
 
-  const close = () => { if (!saving) onClose(); };
+  const close = () => { if (!saving && !deleting) onClose(); };
+
+  const handleDeleteRetainer = async () => {
+    if (hasRealInvoices) {
+      setError("Cannot delete retainer: Job has real invoices.");
+      return;
+    }
+    const ok = window.confirm(`Are you sure you want to delete this retainer ("${job.jobName}")?\n\nThis will permanently clear all rows for this retainer from the Confirmed sheet.`);
+    if (!ok) return;
+
+    setError("");
+    setDeleting(true);
+    setSavingMessage("Deleting retainer...");
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "delete_retainer",
+          clientSheetId,
+          masterSheetId,
+          parentRowNum: job.parentRowNum || job.rows?.[0]?.rowNum,
+          jobName: job.jobName,
+          clientName: clientName || job.client,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || "Failed to delete retainer");
+      }
+      onNeedsReload();
+      onClose();
+    } catch (err) {
+      console.error("Delete retainer error:", err);
+      setError(err.message);
+    } finally {
+      setDeleting(false);
+      setSavingMessage("");
+    }
+  };
 
   const saveNameAndDate = async () => {
     setError("");
@@ -327,13 +368,39 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
 
             {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px", marginTop: "12px" }}>{error}</div>}
 
-            <div style={{ display: "flex", gap: "8px", marginTop: "20px", justifyContent: "flex-end" }}>
-              <button onClick={close} disabled={saving}
-                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
-              <button onClick={saveNameAndDate} disabled={saving}
-                style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving ? 0.8 : 1 }}>
-                {saving ? "Saving..." : "Save changes"}
-              </button>
+            <div style={{ display: "flex", gap: "8px", marginTop: "20px", alignItems: "center", justifyContent: "space-between" }}>
+              {!hasRealInvoices && (
+                <button
+                  type="button"
+                  onClick={handleDeleteRetainer}
+                  disabled={saving || deleting}
+                  style={{
+                    padding: "8px 14px",
+                    background: "#fff",
+                    border: "1px solid #fca5a5",
+                    color: "#dc2626",
+                    borderRadius: "6px",
+                    cursor: saving || deleting ? "not-allowed" : "pointer",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    transition: "all 0.15s ease"
+                  }}
+                  title="Delete this retainer and clear its rows (only available when there are no real invoices)"
+                >
+                  {deleting ? <><Spinner size={12} color="#dc2626" /> Deleting...</> : "🗑️ Delete retainer"}
+                </button>
+              )}
+              <div style={{ marginLeft: !hasRealInvoices ? "0" : "auto", display: "flex", gap: "8px" }}>
+                <button onClick={close} disabled={saving || deleting}
+                  style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+                <button onClick={saveNameAndDate} disabled={saving || deleting}
+                  style={{ padding: "8px 22px", background: saving ? "#4caf50" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: saving || deleting ? "default" : "pointer", fontSize: "13px", fontWeight: "600", opacity: saving || deleting ? 0.8 : 1 }}>
+                  {saving ? "Saving..." : "Save changes"}
+                </button>
+              </div>
             </div>
           </>
         ) : (

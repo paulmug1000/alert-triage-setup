@@ -43,7 +43,7 @@ import {
   handleGetRetainerJobs, handleRenameRetainerJob, handleChangeRetainerStartDate, handleChangeRetainerEndDate,
   handleChangeRetainerMonthlyAmount, handleCreateRetainerJob, handleTidyUpRetainers,
   handleComputeRetainerAlertResolution, handleComputeRetainerSplitInvoicePreview,
-  handleApplyRetainerSplitInvoice
+  handleApplyRetainerSplitInvoice, handleDeleteRetainer
 } from "../../services/retainers";
 import {
   handleEomGetTemplates, handleEomGetExcludedClients, handleEomToggleClientExcluded,
@@ -376,6 +376,8 @@ export default async function handler(req, res) {
       return await handleComputeRetainerSplitInvoicePreview(req, res, sheets);
     } else if (action === "apply_retainer_split_invoice") {
       return await handleApplyRetainerSplitInvoice(req, res, sheets);
+    } else if (action === "delete_retainer") {
+      return await handleDeleteRetainer(req, res, sheets);
 
     } else if (action === "update_outgoing_note") {
       return await handleUpdateOutgoingNote(req, res, sheets);

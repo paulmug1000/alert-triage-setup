@@ -516,6 +516,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         <InvoicesView
           allOutgoingsClients={allOutgoingsClients}
           styles={styles}
+          isAdmin={isAdmin}
         />
       );
     }
@@ -527,6 +528,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           allOutgoingsClients={allOutgoingsClients}
           styles={styles}
           withModal={withModal}
+          isAdmin={isAdmin}
         />
       );
     }

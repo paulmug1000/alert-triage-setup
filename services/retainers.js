@@ -3,6 +3,7 @@ import { getToleranceValues, checkAllGASLocks } from "./sharedHelpers";
 import { logPmaActivity } from "./pmaLogger";
 import { resolveClientNameBySheetId } from "./workspaces";
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers";
+import { getSessionUser } from "./authService";
 
 const RET_MONTHS_MAP = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
 
@@ -1374,6 +1375,12 @@ export async function handleCreateRetainerJob(req, res, sheets) {
 }
 
 export async function handleTidyUpRetainers(req, res, sheets) {
+  const sessionUser = getSessionUser(req);
+  const isAdmin = !sessionUser?.isReadOnly && !!(sessionUser?.isAdmin || sessionUser?.role === "Admin");
+  if (!isAdmin) {
+    return res.status(403).json({ success: false, error: "Forbidden: Tidy up retainers is an Admin-only function" });
+  }
+
   const { clientSheetId, masterSheetId } = req.body;
   if (!clientSheetId || !masterSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId or masterSheetId" });
   try {
@@ -2090,6 +2097,176 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
     }
   } catch (err) {
     console.error("❌ apply_retainer_split_invoice error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleDeleteRetainer(req, res, sheets) {
+  const { clientSheetId, masterSheetId, parentRowNum, jobName } = req.body;
+  if (!clientSheetId || !masterSheetId || !parentRowNum) {
+    return res.status(400).json({ success: false, error: "Missing required parameters: clientSheetId, masterSheetId, or parentRowNum" });
+  }
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+  }
+
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const masterIdClean = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
+
+    const allLocks = await checkAllGASLocks(sheets, masterIdClean);
+    if (allLocks.invoice.locked) return res.status(400).json({ success: false, error: allLocks.invoice.message });
+    if (allLocks.expense.locked) return res.status(400).json({ success: false, error: allLocks.expense.message });
+    if (allLocks.crm.locked) return res.status(400).json({ success: false, error: allLocks.crm.message });
+
+    const metaResp = await sheets.spreadsheets.get({
+      spreadsheetId: sheetIdClean,
+      fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)"
+    });
+    const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
+    if (!confirmedSheet) return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+    const confirmedSheetId = confirmedSheet.properties.sheetId;
+    const maxRows = confirmedSheet.properties.gridProperties?.rowCount || 2000;
+
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetIdClean,
+      range: `Confirmed!A1:CR${maxRows}`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const allRows = resp.data.values || [];
+
+    const pIdx = parentRowNum - 1;
+    if (pIdx < 0 || pIdx >= allRows.length) {
+      return res.status(404).json({ success: false, error: `Parent row ${parentRowNum} not found in Confirmed sheet` });
+    }
+
+    const pRow = allRows[pIdx] || [];
+    const pClient = String(pRow[0] || "").trim();
+    const pJob = String(pRow[1] || "").trim();
+
+    if (jobName && pJob && pJob.toLowerCase() !== String(jobName).trim().toLowerCase()) {
+      return res.status(400).json({
+        success: false,
+        error: `Job name mismatch at row ${parentRowNum}: expected "${jobName}", found "${pJob}"`
+      });
+    }
+
+    // Collect parent and child rows
+    const rowsToClear = [parentRowNum];
+    let ci = pIdx + 1;
+    while (ci < allRows.length) {
+      const next = allRows[ci] || [];
+      const nc = String(next[0] || "").trim();
+      const nj = String(next[1] || "").trim();
+      const nRevenue = String(next[32] || "").trim();
+      const nStart = String(next[37] || "").trim();
+      const nEnd = String(next[38] || "").trim();
+
+      const hasParentIndicators = (nStart !== "" || nEnd !== "") || (nRevenue !== "" && parseFloat(String(nRevenue).replace(/[^0-9.-]/g, "")) > 0);
+      if (hasParentIndicators) break;
+
+      const clientMatches = !nc || nc.toLowerCase() === pClient.toLowerCase();
+      const jobMatches = (nj && nj.toLowerCase() === pJob.toLowerCase()) || (!nj && (next[41] || next[42] || next[75] || next[76]));
+
+      if (clientMatches && jobMatches) {
+        rowsToClear.push(ci + 1);
+        ci++;
+      } else {
+        break;
+      }
+    }
+
+    // Verify on server that NO real invoices exist on ANY of these rows
+    for (const rNum of rowsToClear) {
+      const rData = allRows[rNum - 1] || [];
+      // Slots: AP:AT (41..45), AW:BA (48..52), BD:BH (55..59)
+      const slots = [
+        { ref: rData[42], status: rData[45] },
+        { ref: rData[49], status: rData[52] },
+        { ref: rData[56], status: rData[59] },
+      ];
+      for (const s of slots) {
+        const ref = String(s.ref || "").trim();
+        const status = String(s.status || "").trim().toLowerCase();
+        if ((ref && !isPlaceholderInvoice(ref)) || status.includes("sent") || status.includes("paid")) {
+          return res.status(400).json({
+            success: false,
+            error: `Cannot delete retainer: Found real invoice "${ref || status}" on row ${rNum}`
+          });
+        }
+      }
+    }
+
+    // Clear safe data ranges from Confirmed sheet
+    // Safe ranges: A:AM (1-39), AP:BH (42-60), BX:CR (76-96)
+    const clearRanges = [];
+    for (const rNum of rowsToClear) {
+      clearRanges.push(
+        `Confirmed!A${rNum}:AM${rNum}`,
+        `Confirmed!AP${rNum}:BH${rNum}`,
+        `Confirmed!BX${rNum}:CR${rNum}`
+      );
+    }
+
+    await withRetry(() =>
+      sheets.spreadsheets.values.batchClear({
+        spreadsheetId: sheetIdClean,
+        requestBody: { ranges: clearRanges },
+      })
+    );
+
+    // If there was a dimension group for the child rows, remove it
+    if (rowsToClear.length > 1) {
+      const childStart = rowsToClear[1] - 1;
+      const childEnd = rowsToClear[rowsToClear.length - 1];
+      const existingGroups = confirmedSheet.rowGroups || [];
+      const matchGroup = existingGroups.find(
+        g => g.range?.startIndex <= childStart && g.range?.endIndex >= childEnd
+      );
+      if (matchGroup) {
+        try {
+          await withRetry(() =>
+            sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: {
+                requests: [{
+                  deleteDimensionGroup: {
+                    range: {
+                      sheetId: confirmedSheetId,
+                      dimension: "ROWS",
+                      startIndex: matchGroup.range.startIndex,
+                      endIndex: matchGroup.range.endIndex,
+                    }
+                  }
+                }]
+              }
+            })
+          );
+        } catch (groupErr) {
+          console.warn("⚠️ Delete dimension group warning (non-fatal):", groupErr.message);
+        }
+      }
+    }
+
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: tenantClient,
+      category: "RETAINER",
+      action: "Retainer Deleted",
+      summary: `Deleted retainer "${pJob || jobName}" (${rowsToClear.length} rows cleared) for ${pClient || tenantClient}`,
+      details: { clientName: tenantClient, endClient: pClient, jobName: pJob || jobName, rowsToClear }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({ success: true, clearedRows: rowsToClear.length });
+  } catch (err) {
+    console.error("❌ delete_retainer error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

@@ -3,11 +3,15 @@ import Spinner from "./Spinner";
 import RetainersEditModal from "./RetainersEditModal";
 import CreateRetainerModal from "./CreateRetainerModal";
 import { useRetainers } from "../hooks/useRetainers";
+import { useAuth } from "../hooks/useAuth";
 
 export default function RetainersView({
   allOutgoingsClients,
-  styles
+  styles,
+  isAdmin: propIsAdmin
 }) {
+  const auth = useAuth();
+  const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
   const {
     retainersClient, setRetainersClient,
     retainersJobs, setRetainersJobs,
@@ -94,7 +98,7 @@ export default function RetainersView({
           {retainersClient ? retainersClient.clientName : "Retainers"}
         </h2>
         <div style={{ display: "flex", gap: "8px" }}>
-          {retainersClient && (
+          {isAdmin && retainersClient && (
             <button className="triage-btn" onClick={() => setShowTidyConfirm(true)} disabled={isTidying}
               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 12px", color: "#1d4ed8", borderColor: "#93c5fd" }}>
               {isTidying ? <><Spinner size={12} color="#1d4ed8" />Tidying...</> : "🧹 Tidy up retainers"}

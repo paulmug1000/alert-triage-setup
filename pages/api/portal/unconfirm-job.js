@@ -185,7 +185,13 @@ export default async function handler(req, res) {
 
     // Determine parent likelihood
     let targetLikelihood = "50%";
-    if (isExistingJob) {
+    if (req.body?.likelihood !== undefined && String(req.body.likelihood).trim() !== "") {
+      let lVal = String(req.body.likelihood).trim();
+      if (!lVal.endsWith("%") && !isNaN(parseFloat(lVal))) {
+        lVal = `${lVal}%`;
+      }
+      targetLikelihood = lVal;
+    } else if (isExistingJob) {
       try {
         const existingLikelihoodResp = await withRetry(() =>
           sheets.spreadsheets.values.get({

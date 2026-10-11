@@ -22,6 +22,14 @@ export default function DirectCostsEditModal({
 
   const close = () => { if (!saving) onClose(); };
 
+  React.useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [saving]);
+
   const save = async () => {
     setSaving(true);
     try {

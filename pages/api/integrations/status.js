@@ -15,6 +15,10 @@ import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheets
 import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
 import { getSessionUser } from "../../../services/authService.js";
+import { redisClient } from "../../../services/redisClient.js";
+
+let _allIntegrationsStatusCache = null;
+let _allIntegrationsStatusCachedAt = 0;
 
 export default async function handler(req, res) {
   if (req.method !== "GET") {
@@ -29,6 +33,39 @@ export default async function handler(req, res) {
     const sessionUser = getSessionUser(req);
     if (!sessionUser) {
       return res.status(401).json({ error: "Active session required." });
+    }
+
+    const now = Date.now();
+    const cacheKey = "pulse:integrations:status_all";
+
+    // Fast cache check
+    if (!forceRefresh) {
+      let cachedData = null;
+      if (_allIntegrationsStatusCache && (now - _allIntegrationsStatusCachedAt < 60000)) {
+        cachedData = _allIntegrationsStatusCache;
+      } else if (redisClient?.isOpen) {
+        try {
+          const raw = await redisClient.get(cacheKey);
+          if (raw) {
+            cachedData = JSON.parse(raw);
+            _allIntegrationsStatusCache = cachedData;
+            _allIntegrationsStatusCachedAt = now;
+          }
+        } catch (e) {}
+      }
+
+      if (cachedData) {
+        let scopedClients = cachedData.allClients || [];
+        if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+          const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
+          scopedClients = scopedClients.filter(c => assignedList.some(assigned => matchesClientName(assigned, c.clientName)));
+        }
+        return res.status(200).json({
+          success: true,
+          allClients: scopedClients,
+          sharedXero: cachedData.sharedXero
+        });
+      }
     }
 
     try {
@@ -132,6 +169,14 @@ export default async function handler(req, res) {
       if (!forceRefresh) {
         revalidateClientsSetupInBackground(clients);
       }
+
+      if (redisClient?.isOpen) {
+        try {
+          await redisClient.set(cacheKey, JSON.stringify({ allClients: clientConfigs, sharedXero }), { EX: 300 });
+        } catch (e) {}
+      }
+      _allIntegrationsStatusCache = { allClients: clientConfigs, sharedXero };
+      _allIntegrationsStatusCachedAt = now;
 
       return res.status(200).json({
         success: true,

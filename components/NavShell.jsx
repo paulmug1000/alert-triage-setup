@@ -106,7 +106,7 @@ if (typeof document !== "undefined") {
 
 // Persistent top bar - rendered around every screen
 export default function NavShell({
-  activeNav, onHome, onOverview, onTasks, onActivity, onAppLog,
+  activeNav, onHome, onAlerts, onOverview, onTasks, onActivity, onAppLog,
   onOutgoings, onInvoices, onRetainers, onJobs, onViews, onTools, onIntegrations, onSetup, onSettings,
   homeAlertCount, taskCount, user, onLogout, clients = [], children
 }) {
@@ -208,19 +208,20 @@ export default function NavShell({
   });
 
   // Strict requested menu order:
-  // Home, Jobs, Contractors, Invoices, Retainers, Tasks, Activity, Views, EoM, Settings
+  // Home, Alerts, Tasks, Jobs, Contractors, Invoices, Retainers, Views, EoM, Integrations, Setup, Activity, Settings
   const allNavItems = [
-    { key: "home", label: "Home", handler: onHome, badge: homeAlertCount },
+    { key: "home", label: "Home", handler: onHome },
+    { key: "alerts", label: "Alerts", handler: onAlerts, badge: homeAlertCount },
+    { key: "tasks", label: "Tasks", handler: onTasks, badge: taskCount },
     { key: "jobs", label: "Jobs", handler: onJobs },
     { key: "outgoings", label: "Contractors", handler: onOutgoings },
     { key: "invoices", label: "Invoices", handler: onInvoices },
     { key: "retainers", label: "Retainers", handler: onRetainers },
-    { key: "tasks", label: "Tasks", handler: onTasks, badge: taskCount },
-    { key: "activity", label: "Activity", handler: onActivity || onAppLog },
     { key: "views", label: "Views", handler: onViews },
     { key: "tools", label: "EoM", handler: onTools },
     { key: "integrations", label: "Integrations", handler: onIntegrations },
     { key: "setup", label: "Setup", handler: onSetup },
+    { key: "activity", label: "Activity", handler: onActivity || onAppLog },
     { key: "settings", label: "⚙ Settings", handler: onSettings },
   ];
 
@@ -504,9 +505,17 @@ export default function NavShell({
         {isMobile && (
           <>
             <button className="triage-btn pulse-nav-item" onClick={onHome} style={navBtnStyle("home")}>
-              Home<Badge count={homeAlertCount} />
+              Home
             </button>
-            {activeNav !== "home" && (
+            <button className="triage-btn pulse-nav-item" onClick={onAlerts} style={navBtnStyle("alerts")}>
+              Alerts
+              {homeAlertCount !== undefined && <Badge count={homeAlertCount} />}
+            </button>
+            <button className="triage-btn pulse-nav-item" onClick={onTasks} style={navBtnStyle("tasks")}>
+              Tasks
+              {taskCount !== undefined && <Badge count={taskCount} />}
+            </button>
+            {activeNav !== "home" && activeNav !== "alerts" && activeNav !== "tasks" && (
               (() => {
                 const current = allNavItems.find(n => isTabActive(n.key));
                 if (!current) return null;
@@ -518,10 +527,27 @@ export default function NavShell({
                 );
               })()
             )}
-            <button className="nav-more-btn triage-btn"
+            <button
+              className="nav-more-btn triage-btn"
               onClick={(e) => { e.stopPropagation(); setShowMore(v => !v); }}
-              style={{ background: "none", border: "none", cursor: "pointer", padding: "12px 14px", fontSize: "16px", color: "#666", borderBottom: "2px solid transparent", marginLeft: "auto" }}>
-              {showMore ? "✕" : "••• Menu"}
+              aria-label="Open menu"
+              title="Menu"
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "10px 12px",
+                fontSize: "18px",
+                color: showMore ? "#0066cc" : "#444",
+                borderBottom: "2px solid transparent",
+                marginLeft: "auto",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                lineHeight: "1"
+              }}
+            >
+              {showMore ? "✕" : "☰"}
             </button>
             {showMore && (
               <div className="nav-more-dropdown"

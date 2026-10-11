@@ -61,18 +61,29 @@ export async function ensureUsersTab(sheets, automationCommanderSheetId = DEFAUL
   }
 }
 
+let _usersMemoryCache = null;
+let _usersCachedAt = 0;
+
 /**
- * Get all users from the Users sheet (cached in Redis for 5 minutes)
+ * Get all users from the Users sheet (cached in Redis for 5 minutes and in-memory for 60 seconds)
  */
 export async function getAllUsers(sheets, automationCommanderSheetId = DEFAULT_AC_SHEET_ID, bypassCache = false) {
   const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+  const now = Date.now();
+
+  if (!bypassCache && _usersMemoryCache && (now - _usersCachedAt < 60000)) {
+    return _usersMemoryCache;
+  }
 
   // Try Redis cache
   if (!bypassCache) {
     try {
       const cached = await redisClient.get(REDIS_USERS_KEY);
       if (cached) {
-        return JSON.parse(cached);
+        const parsed = JSON.parse(cached);
+        _usersMemoryCache = parsed;
+        _usersCachedAt = now;
+        return parsed;
       }
     } catch (e) {
       console.warn("⚠️ Redis get users cache error:", e.message);

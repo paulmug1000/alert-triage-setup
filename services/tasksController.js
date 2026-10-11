@@ -9,6 +9,17 @@ import { getSessionUser } from "./authService";
 import { matchesClientName, isUserAuthorizedForClient } from "./userPermissions";
 import { ADMIN_ONLY_ALERT_TYPES } from "../utils/helpers";
 
+let _tasksMemoryCache = null;
+let _tasksCachedAt = 0;
+
+export function invalidateTasksCache() {
+  _tasksMemoryCache = null;
+  _tasksCachedAt = 0;
+  if (redisClient?.isOpen) {
+    redisClient.del("triage_tasks_cache").catch(() => {});
+  }
+}
+
 export async function handleBulkCreateTasks(req, res, sheets) {
   const { alerts: alertsToTask, taskNote, snoozedUntil, automationCommanderSheetId: acId } = req.body;
   if (!alertsToTask?.length || !acId) return res.status(400).json({ success: false, error: "Missing alerts or automationCommanderSheetId" });
@@ -71,7 +82,7 @@ export async function handleBulkCreateTasks(req, res, sheets) {
       }
     }
 
-    await redisClient.del("triage_tasks_cache").catch(() => {});
+    invalidateTasksCache();
 
     const createdCount = results.filter(r => r.taskKey).length;
     if (createdCount > 0) {
@@ -177,7 +188,7 @@ export async function handleCreateTask(req, res, sheets) {
       });
     }
 
-    await redisClient.del("triage_tasks_cache").catch(() => {});
+    invalidateTasksCache();
 
     const taskCat = (() => {
       const t = String(alert.type || alert.flagType || alert.alertType || "").toLowerCase();
@@ -217,7 +228,10 @@ export async function handleGetTasks(req, res, sheets) {
 
   try {
     let allTasks = null;
-    if (!bypassCache) {
+    const nowMs = Date.now();
+    if (!bypassCache && _tasksMemoryCache && (nowMs - _tasksCachedAt < 60000)) {
+      allTasks = _tasksMemoryCache;
+    } else if (!bypassCache && redisClient?.isOpen) {
       try {
         const cached = await redisClient.get(TASK_CACHE_KEY);
         if (cached) allTasks = JSON.parse(cached);
@@ -228,8 +242,12 @@ export async function handleGetTasks(req, res, sheets) {
       await ensureAlertMemoryTab(sheets, acId);
       const rows = await readAlertMemory(sheets, acId);
       allTasks = rows.filter(r => r.status === "task" || r.status === "task_resolved");
-      await redisClient.set(TASK_CACHE_KEY, JSON.stringify(allTasks), { EX: TASK_CACHE_TTL_S });
+      if (redisClient?.isOpen) {
+        await redisClient.set(TASK_CACHE_KEY, JSON.stringify(allTasks), { EX: TASK_CACHE_TTL_S });
+      }
     }
+    _tasksMemoryCache = allTasks;
+    _tasksCachedAt = nowMs;
 
     const now = new Date();
     const parsed = allTasks.map(r => {
@@ -376,7 +394,7 @@ export async function handleAddTaskNote(req, res, sheets) {
     taskMeta.furtherNotes = notes;
 
     await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, dataSnapshot: JSON.stringify(taskMeta) });
-    await redisClient.del("triage_tasks_cache").catch(() => {});
+    invalidateTasksCache();
 
     logPmaActivity(sheets, {
       automationCommanderSheetId: acId,
@@ -445,7 +463,7 @@ export async function handleSnoozeTask(req, res, sheets) {
     }
 
     await updateAlertMemoryRowsBatch(sheets, acId, batchUpdates);
-    await redisClient.del("triage_tasks_cache").catch(() => {});
+    invalidateTasksCache();
 
     if (snoozedTasks.length === 1) {
       logPmaActivity(sheets, {
@@ -499,7 +517,7 @@ export async function handleRevertTaskToAlert(req, res, sheets) {
     }
 
     await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, status: "cached" });
-    await redisClient.del("triage_tasks_cache").catch(() => {});
+    invalidateTasksCache();
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -549,7 +567,7 @@ export async function handleResolveTask(req, res, sheets) {
     }
 
     await updateAlertMemoryRowsBatch(sheets, acId, batchUpdates);
-    await redisClient.del("triage_tasks_cache").catch(() => {});
+    invalidateTasksCache();
 
     if (resolvedTasks.length === 1) {
       logPmaActivity(sheets, {
@@ -593,7 +611,7 @@ export async function handleUpdateTask(req, res, sheets) {
     if (newAlertData) taskMeta.alertData = newAlertData;
 
     await updateAlertMemoryRow(sheets, acId, memoryRow.rowIndex, { ...memoryRow, cachedOptionsJSON: newCachedOptionsJSON || memoryRow.cachedOptionsJSON, dataSnapshot: JSON.stringify(taskMeta) });
-    await redisClient.del("triage_tasks_cache").catch(() => {});
+    invalidateTasksCache();
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });

@@ -20,6 +20,7 @@ import ClientSelectionView from "../components/ClientSelectionView";
 import AlertSelectionView from "../components/AlertSelectionView";
 import TriageAnalysisView from "../components/TriageAnalysisView";
 import ViewsScreen from "../components/ViewsScreen";
+import HomeView from "../components/HomeView";
 import AuthGateView from "../components/AuthGateView";
 import { useAuth } from "../hooks/useAuth";
 import { useOverview } from "../hooks/useOverview";
@@ -38,15 +39,15 @@ import { useTriageEngine } from "../hooks/useTriageEngine";
 // Inject global styles into the document head
 injectGlobalStyles();
 
-export default function TriageSystem({ onBack }) {
+export default function TriageSystem({ onBack, initialNav }) {
   return (
     <AppGlobalsProvider>
-      <TriageSystemWithGlobals onBack={onBack} />
+      <TriageSystemWithGlobals onBack={onBack} initialNav={initialNav} />
     </AppGlobalsProvider>
   );
 }
 
-function TriageSystemWithGlobals({ onBack }) {
+function TriageSystemWithGlobals({ onBack, initialNav }) {
   const appGlobals = useAppGlobals();
   return (
     <>
@@ -54,13 +55,13 @@ function TriageSystemWithGlobals({ onBack }) {
         <title>PMA - Pulse Management Area</title>
       </Head>
       <TaskProvider automationCommanderSheetId={appGlobals.automationCommanderSheetId}>
-        <TriageSystemContent onBack={onBack} appGlobals={appGlobals} />
+        <TriageSystemContent onBack={onBack} appGlobals={appGlobals} initialNav={initialNav} />
       </TaskProvider>
     </>
   );
 }
 
-function TriageSystemContent({ onBack, appGlobals }) {
+function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   const {
     automationCommanderSheetId, assignedAppIds, setAssignedAppIds,
     assignedByClient, setAssignedByClient, addAssignedAppId,
@@ -91,7 +92,17 @@ function TriageSystemContent({ onBack, appGlobals }) {
 
   const [screen, setScreen] = useState("initial");
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
-  const [activeNav, setActiveNav] = useState("home");
+  const [activeNav, setActiveNav] = useState(() => {
+    if (initialNav) return initialNav;
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const navParam = p.get("nav");
+      if (navParam) return navParam;
+      const path = window.location.pathname.toLowerCase();
+      if (path.includes("/alerts")) return "alerts";
+    }
+    return "home";
+  });
 
   const {
     navTaskCount, setNavTaskCount, snoozedTaskCount, setSnoozedTaskCount,
@@ -114,7 +125,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const {
     sessionId, selectedClient, clientAlerts, proactiveAlerts,
     liveAlertCount, startTriage, acceptError, setAcceptError,
-    isAccepting, setIsAccepting, refreshTriage
+    isAccepting, setIsAccepting, refreshTriage, reloadFromCache
   } = triageEngine;
 
   // --- INITIAL DATA LOAD ---
@@ -135,6 +146,18 @@ function TriageSystemContent({ onBack, appGlobals }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, authChecking, isPulseOnly, currentAuthEmail, sessionId]);
+
+  // Background reload of latest cached triage data every 15 minutes if left open
+  useEffect(() => {
+    if (!isAuthenticated || authChecking || isPulseOnly) return;
+    const FIFTEEN_MINUTES = 15 * 60 * 1000;
+    const interval = setInterval(() => {
+      console.log("⏰ 15-minute background refresh: reloading cached triage data...");
+      reloadFromCache?.(true);
+      refreshTaskCount?.(true);
+    }, FIFTEEN_MINUTES);
+    return () => clearInterval(interval);
+  }, [isAuthenticated, authChecking, isPulseOnly, reloadFromCache, refreshTaskCount]);
 
   const { overviewData, setOverviewData, overviewLoading, setOverviewLoading, loadOverview } = useOverview(automationCommanderSheetId);
 
@@ -202,7 +225,8 @@ function TriageSystemContent({ onBack, appGlobals }) {
     }
   }, [isAuthenticated, user?.email, loadClients]);
 
-  const handleNavHome = () => { fireOutgoingsPullIfPending(); setActiveNav("home"); setScreen("clientSelection"); };
+  const handleNavHome = () => { fireOutgoingsPullIfPending(); setActiveNav("home"); };
+  const handleNavAlerts = () => { fireOutgoingsPullIfPending(); setActiveNav("alerts"); setScreen("clientSelection"); };
   const handleNavOverview = () => { fireOutgoingsPullIfPending(); setActiveNav("overview"); loadOverview(); };
   const handleNavTasks = () => { fireOutgoingsPullIfPending(); setActiveNav("tasks"); setTasksFilter("active"); loadTasks("active", true); };
   const handleNavActivity = () => { fireOutgoingsPullIfPending(); setActiveNav("activity"); loadClients(); };
@@ -217,17 +241,55 @@ function TriageSystemContent({ onBack, appGlobals }) {
   const handleNavRetainers = () => { setActiveNav("retainers"); loadClients(); };
   const handleNavViews = () => { setActiveNav("views"); loadClients(); };
 
-  // Check URL query parameters on mount to deep-link to integrations or setup tab
+  // Synchronize browser URL with activeNav so direct bookmarking works naturally
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const isPma = window.location.pathname.startsWith("/pma");
+    let target = isPma ? "/pma" : "/";
+    if (activeNav === "alerts") {
+      target = isPma ? "/pma/alerts" : "/alerts";
+    } else if (activeNav !== "home") {
+      target = isPma ? `/pma?nav=${activeNav}` : `/?nav=${activeNav}`;
+    }
+    const current = window.location.pathname + (window.location.search ? window.location.search : "");
+    if (current !== target && !window.location.search.includes("integration=")) {
+      window.history.replaceState({ nav: activeNav }, "", target);
+    }
+  }, [activeNav]);
+
+  useEffect(() => {
+    const onPopState = (e) => {
+      if (e.state?.nav) {
+        setActiveNav(e.state.nav);
+      } else if (typeof window !== "undefined") {
+        const path = window.location.pathname.toLowerCase();
+        if (path.includes("/alerts")) setActiveNav("alerts");
+        else setActiveNav("home");
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  // Check URL query parameters and initialNav on mount to deep-link
   useEffect(() => {
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
-      if (p.get("nav") === "integrations" || p.get("integration") === "xero") {
+      const navParam = p.get("nav");
+      const path = window.location.pathname.toLowerCase();
+      if (initialNav) {
+        setActiveNav(initialNav);
+      } else if (path.includes("/alerts") || navParam === "alerts") {
+        setActiveNav("alerts");
+      } else if (navParam === "integrations" || p.get("integration") === "xero") {
         setActiveNav("integrations");
-      } else if (p.get("nav") === "setup") {
+      } else if (navParam === "setup") {
         setActiveNav("setup");
+      } else if (navParam === "tasks") {
+        setActiveNav("tasks");
       }
     }
-  }, []);
+  }, [initialNav]);
 
   // Page title and favicon are handled globally by Next.js <Head> in index.js
   useEffect(() => {
@@ -293,29 +355,127 @@ function TriageSystemContent({ onBack, appGlobals }) {
 
   // --- DYNAMIC VIEW ROUTER ---
   const renderActiveView = () => {
-    // Screen: Ignored Alerts
-    if (screen === "ignoredAlerts" && activeNav === "home") {
-      if (!isAdmin) {
-        setScreen("clientSelection");
-        return null;
-      }
+    // ── HOME SCREEN ─────────────────────────────────────────────────────────────
+    if (activeNav === "home") {
       return (
-        <IgnoredAlertsView
-          styles={styles}
-          acceptError={acceptError}
-          setAcceptError={setAcceptError}
-          isLoadingIgnored={isLoadingIgnored}
-          ignoredAlerts={ignoredAlerts}
-          isUnignoring={isUnignoring}
-          unignoreAlert={unignoreAlert}
-          setScreen={setScreen}
-          automationCommanderSheetId={automationCommanderSheetId}
+        <HomeView
+          clients={allOutgoingsClients}
+          clientsWithFlags={triageEngine.clientsWithFlags}
+          proactiveAlerts={triageEngine.proactiveAlerts}
+          proactiveCountsByClient={triageEngine.proactiveCountsByClient}
+          assignedByClient={assignedByClient}
+          assignedAppIds={assignedAppIds}
+          navTaskCount={navTaskCount}
+          user={user}
+          isAdmin={isAdmin}
+          onGoToAlerts={handleNavAlerts}
+          onGoToTasks={handleNavTasks}
+          onGoToSetup={(clientName) => {
+            handleNavSetup();
+            if (clientName && typeof window !== "undefined") {
+              const isPma = window.location.pathname.startsWith("/pma");
+              window.history.replaceState({}, "", isPma ? `/pma?nav=setup&client=${encodeURIComponent(clientName)}` : `/?nav=setup&client=${encodeURIComponent(clientName)}`);
+            }
+          }}
+          onGoToIntegrations={handleNavIntegrations}
+          onSelectClientAlerts={(clientName) => {
+            handleNavAlerts();
+            const match = (triageEngine.clientsWithFlags || []).find(c => c.clientName === clientName);
+            if (match) triageEngine.selectClient(match);
+          }}
+          isLoadingAlerts={isLoading}
         />
       );
     }
 
+    // ── ALERTS SCREEN ───────────────────────────────────────────────────────────
+    if (activeNav === "alerts") {
+      // Screen: Ignored Alerts
+      if (screen === "ignoredAlerts") {
+        if (!isAdmin) {
+          setScreen("clientSelection");
+          return null;
+        }
+        return (
+          <IgnoredAlertsView
+            styles={styles}
+            acceptError={acceptError}
+            setAcceptError={setAcceptError}
+            isLoadingIgnored={isLoadingIgnored}
+            ignoredAlerts={ignoredAlerts}
+            isUnignoring={isUnignoring}
+            unignoreAlert={unignoreAlert}
+            setScreen={setScreen}
+            automationCommanderSheetId={automationCommanderSheetId}
+          />
+        );
+      }
 
+      // Screen: Triage Analysis
+      if (screen === "triageAnalysis" && selectedClient && clientAlerts.length > 0) {
+        return (
+          <TriageAnalysisView
+            styles={styles}
+            setScreen={setScreen}
+            getFlagName={getFlagName}
+            openCreateTaskModal={openCreateTaskModal}
+            setActiveNav={setActiveNav}
+            handleNavTasks={handleNavTasks}
+            isAdmin={isAdmin}
+            user={user}
+          />
+        );
+      }
 
+      // Screen: Alert Selection
+      if (screen === "alertSelection" && selectedClient) {
+        return (
+          <AlertSelectionView
+            styles={styles}
+            setScreen={setScreen}
+            getFlagName={getFlagName}
+            getAlertSummary={getAlertSummary}
+            PROACTIVE_TYPE_LABELS={PROACTIVE_TYPE_LABELS}
+            openCreateTaskModal={openCreateTaskModal}
+            setActiveNav={setActiveNav}
+            isAdmin={isAdmin}
+            user={user}
+          />
+        );
+      }
+
+      // Screen: Client Selection (Main Alerts List)
+      if (sessionId || (!isLoading && (triageEngine.clientsWithFlags || []).length >= 0)) {
+        return (
+          <ClientSelectionView
+            styles={styles}
+            isLoading={isLoading}
+            error={error}
+            getFlagName={getFlagName}
+            PROACTIVE_TYPE_LABELS={PROACTIVE_TYPE_LABELS}
+            setScreen={setScreen}
+            loadIgnoredAlerts={loadIgnoredAlerts}
+            user={user}
+          />
+        );
+      }
+
+      return (
+        <div style={styles.container}>
+          <div style={styles.header}>
+            <h1 style={styles.title}>Alerts</h1>
+            <p style={styles.subtitle}>{isLoading ? "Loading..." : error ? error : "Initialising..."}</p>
+          </div>
+          {error && <div style={styles.errorBanner}>{error}</div>}
+          {isLoading && (
+            <div style={{ textAlign: "center", padding: "40px" }}>
+              <Spinner size={28} color="#0066cc" />
+              <div style={{ marginTop: "12px", color: "#666" }}>Loading data...</div>
+            </div>
+          )}
+        </div>
+      );
+    }
 
     // ── OUTGOINGS SCREEN ────────────────────────────────────────────────────────
     if (activeNav === "outgoings") {
@@ -432,55 +592,6 @@ function TriageSystemContent({ onBack, appGlobals }) {
       );
     }
 
-    // ── CLIENT SELECTION SCREEN ─────────────────────────────────────────────────
-    if (screen === "clientSelection" && sessionId && activeNav !== "tasks") {
-      return (
-        <ClientSelectionView
-          styles={styles}
-          isLoading={isLoading}
-          error={error}
-          getFlagName={getFlagName}
-          PROACTIVE_TYPE_LABELS={PROACTIVE_TYPE_LABELS}
-          setScreen={setScreen}
-          loadIgnoredAlerts={loadIgnoredAlerts}
-          user={user}
-        />
-      );
-    }
-
-    // ── ALERT SELECTION SCREEN ──────────────────────────────────────────────────
-    if (screen === "alertSelection" && selectedClient && activeNav !== "tasks") {
-      return (
-        <AlertSelectionView
-          styles={styles}
-          setScreen={setScreen}
-          getFlagName={getFlagName}
-          getAlertSummary={getAlertSummary}
-          PROACTIVE_TYPE_LABELS={PROACTIVE_TYPE_LABELS}
-          openCreateTaskModal={openCreateTaskModal}
-          setActiveNav={setActiveNav}
-          isAdmin={isAdmin}
-          user={user}
-        />
-      );
-    }
-
-    // ── TRIAGE ANALYSIS SCREEN ──────────────────────────────────────────────────
-    if (screen === "triageAnalysis" && selectedClient && clientAlerts.length > 0 && activeNav !== "tasks") {
-      return (
-        <TriageAnalysisView
-          styles={styles}
-          setScreen={setScreen}
-          getFlagName={getFlagName}
-          openCreateTaskModal={openCreateTaskModal}
-          setActiveNav={setActiveNav}
-          handleNavTasks={handleNavTasks}
-          isAdmin={isAdmin}
-          user={user}
-        />
-      );
-    }
-
     // ── TASKS SCREEN ────────────────────────────────────────────────────────────
     if (activeNav === "tasks") {
       return (
@@ -497,11 +608,11 @@ function TriageSystemContent({ onBack, appGlobals }) {
       );
     }
 
-    // ── DEFAULT / HOME SCREEN ───────────────────────────────────────────────────
+    // ── DEFAULT FALLBACK SCREEN ─────────────────────────────────────────────────
     return (
       <div style={styles.container}>
         <div style={styles.header}>
-          <h1 style={styles.title}>Alerts</h1>
+          <h1 style={styles.title}>Pulse Management Area</h1>
           <p style={styles.subtitle}>{isLoading ? "Loading..." : error ? error : "Initialising..."}</p>
         </div>
         {error && <div style={styles.errorBanner}>{error}</div>}
@@ -522,6 +633,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
       <NavShell
         activeNav={activeNav}
         onHome={handleNavHome}
+        onAlerts={handleNavAlerts}
         onOverview={handleNavOverview}
         onTasks={handleNavTasks}
         onActivity={handleNavActivity}

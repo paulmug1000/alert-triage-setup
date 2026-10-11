@@ -14,10 +14,10 @@ export const GLOBAL_STYLES = `
 `;
 
 export const styles = {
-  container: { maxWidth: "900px", margin: "0 auto", padding: "20px", fontFamily: "system-ui, -apple-system, sans-serif" },
-  header: { marginBottom: "30px", textAlign: "center" },
-  title: { fontSize: "28px", fontWeight: "700", color: "#1a1a1a", margin: "0 0 8px 0" },
-  subtitle: { fontSize: "14px", color: "#666", margin: "0" },
+  container: { maxWidth: "1080px", margin: "0 auto", padding: "24px 16px", fontFamily: "system-ui, -apple-system, sans-serif" },
+  header: { marginBottom: "24px", textAlign: "left" },
+  title: { fontSize: "24px", fontWeight: "700", color: "#0F172A", margin: "0 0 6px 0" },
+  subtitle: { fontSize: "14px", color: "#64748B", margin: "0" },
   card: { background: "#fff", border: "1px solid #e0e0e0", borderRadius: "8px", padding: "24px", marginBottom: "20px" },
   button: { background: "#0066cc", color: "white", border: "none", padding: "12px 24px", borderRadius: "6px", fontSize: "16px", fontWeight: "600", cursor: "pointer", transition: "background 0.2s" },
   buttonSecondary: { background: "#f0f0f0", color: "#1a1a1a", border: "1px solid #ddd", padding: "10px 16px", borderRadius: "6px", fontSize: "14px", fontWeight: "500", cursor: "pointer" },

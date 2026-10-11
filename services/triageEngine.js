@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter } from "./sheetsClient";
 import { 
   buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory, 
-  findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow, 
+  readHandledAlertHashes, findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow, 
   deleteAlertMemoryRows, purgeOldAlertMemoryRows,
   getHandledFingerprintHashes_, findPreviousIgnoreReason,
   normaliseArrayForFingerprint
@@ -28,7 +28,7 @@ import { matchesClientName, getClientManagerClientMap } from "./userPermissions"
 const ALERT_MEMORY_TAB = "AlertMemory";
 
 export const PRECOMPUTED_KEY = "triage_precomputed";
-export const PRECOMPUTED_MAX_AGE_MS = 240 * 60 * 1000; 
+export const PRECOMPUTED_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours 
 
 export const FLAG_NAMES = {
   invoiceDashboardDiscr: "Invoice dashboard discr",
@@ -908,11 +908,14 @@ export async function handleRehashIgnoredAlerts(req, res, sheets) {
 }
 
 export async function handleGetPrecomputed(req, res, sheets) {
+  const tStart = Date.now();
   const { automationCommanderSheetId } = req.body;
   try {
+    const t0 = Date.now();
     const raw = await redisClient.get(PRECOMPUTED_KEY);
+    const tRedis = Date.now() - t0;
     if (!raw) {
-      console.log(`  No precomputed data found`);
+      console.log(`  No precomputed data found (${tRedis}ms)`);
       return res.status(200).json({ success: true, available: false });
     }
 
@@ -924,24 +927,25 @@ export async function handleGetPrecomputed(req, res, sheets) {
       return res.status(200).json({ success: true, available: false, staleMinutes: Math.round(ageMs / 60000) });
     }
 
-    console.log(`  ✅ Returning precomputed data (${Math.round(ageMs / 60000)} mins old, ${data.totalAlerts} alerts)`);
+    const tMem0 = Date.now();
+    const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId);
+    const tMem = Date.now() - tMem0;
 
-    await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
-    const memoryRows = await readAlertMemory(sheets, automationCommanderSheetId);
-
+    const tFilt0 = Date.now();
     const filteredAlerts = data.alerts.filter(alert => {
       const hash = alert.fingerprintHash || buildAlertFingerprint(alert);
-      const memRow = findMemoryRow(memoryRows, hash);
-      if (!memRow) return true;
-      return memRow.status === "cached" || memRow.status === "pending_automation";
+      const status = handledMap[hash];
+      if (!status) return true;
+      return status === "cached" || status === "pending_automation";
     });
     
     const filteredProactive = (data.proactiveAlerts || []).filter(alert => {
       const hash = alert.fingerprintHash || createHash("sha256").update(alert.alertKey || "").digest("hex").substring(0, 16);
-      const memRow = findMemoryRow(memoryRows, hash);
-      if (!memRow) return true;
-      return memRow.status === "cached" || memRow.status === "pending_automation";
+      const status = handledMap[hash];
+      if (!status) return true;
+      return status === "cached" || status === "pending_automation";
     });
+    const tFilt = Date.now() - tFilt0;
 
     const filteredNoAction = (data.noActionAlerts || []).filter(alert => {
       if (alert.flagType === "expenseUnreconGaps") {
@@ -949,9 +953,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
         if (detail.includes("Manual Gap") || detail.includes("Placeholder Gap")) return false;
       }
       if (!alert.fingerprintHash) return true;
-      const memRow = findMemoryRow(memoryRows, alert.fingerprintHash);
-      if (!memRow) return true;
-      return memRow.status === "cached" || memRow.status === "pending_automation";
+      const status = handledMap[alert.fingerprintHash];
+      if (!status) return true;
+      return status === "cached" || status === "pending_automation";
     });
 
     const sessionUser = getSessionUser(req);
@@ -1030,7 +1034,10 @@ export async function handleGetPrecomputed(req, res, sheets) {
       );
     }
 
+    const tCm0 = Date.now();
     const cmMap = await getClientManagerClientMap(sheets, automationCommanderSheetId);
+    const tCm = Date.now() - tCm0;
+
     const clientsWithUpdatedCounts = clientsSource.map(c => {
       const counts = alertCountsByClientAndFlag[c.clientName] || {};
       const updatedFlags = { ...(c.flags || {}) };
@@ -1066,6 +1073,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       }
     }
 
+    const tSession0 = Date.now();
     const sessionId = Math.random().toString(36).substring(2, 15);
     await redisClient.set(
       `triage_alerts:${sessionId}`,
@@ -1077,6 +1085,10 @@ export async function handleGetPrecomputed(req, res, sheets) {
       }),
       { EX: 3600 } 
     );
+    const tSession = Date.now() - tSession0;
+    const totalMs = Date.now() - tStart;
+
+    console.log(`⏱️ [handleGetPrecomputed]: total=${totalMs}ms (redisGet=${tRedis}ms, mem=${tMem}ms, filt=${tFilt}ms, cm=${tCm}ms, sessSet=${tSession}ms)`);
 
     return res.status(200).json({
       success: true,
@@ -1096,6 +1108,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       computedAt: data.computedAt,
       computedMinutesAgo: Math.round(ageMs / 60000),
       noActionAnalysisResults: aggregatedNoActionResults,
+      _timing: { totalMs, tRedis, tMem, tFilt, tCm, tSession },
     });
   } catch (err) {
     console.error("❌ Error retrieving precomputed data:", err);
@@ -1335,7 +1348,7 @@ export async function handleStorePrecomputed(req, res, sheets) {
     await redisClient.set(
       PRECOMPUTED_KEY,
       JSON.stringify(precomputedData),
-      { EX: 3600 } 
+      { EX: 86400 * 7 } // 7-day TTL in Redis
     );
 
     const analysisCount = Object.keys(precomputedData.noActionAnalysisResults).length;

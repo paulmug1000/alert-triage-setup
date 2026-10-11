@@ -4,7 +4,12 @@ import { logPmaActivity, DEFAULT_AC_SHEET_ID } from "./pmaLogger";
 import { isPlaceholderInvoice } from "../utils/helpers";
 import { getSessionUser } from "./authService";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap } from "./userPermissions";
+import { redisClient } from "./redisClient";
 
+let _allClientsMemoryCache = null;
+let _allClientsCachedAt = 0;
+let _assignedExpensesMemoryCache = null;
+let _assignedExpensesCachedAt = 0;
 
 export let assignedExpensesTabVerified = false;
 
@@ -47,40 +52,77 @@ export async function resolveClientNameBySheetId(sheets, sheetId, acId = DEFAULT
 }
 
 export async function handleGetAllClients(req, res, sheets) {
-  const { automationCommanderSheetId } = req.body;
+  const { automationCommanderSheetId, bypassCache } = req.body;
   if (!automationCommanderSheetId) {
     return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
   }
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+  }
+
+  const cacheKey = `pulse:all_clients:${automationCommanderSheetId}`;
+  const now = Date.now();
+
   try {
-    const resp = await withRetry(() => sheets.spreadsheets.values.get({
-      spreadsheetId: automationCommanderSheetId,
-      range: "AutoUpdates!A2:DB500",
-    }));
-    const cmMap = await getClientManagerClientMap(sheets, automationCommanderSheetId);
-    const rows = resp.data.values || [];
-    const clientsArray = [];
-    const clientsObj = {};
-    for (const row of rows) {
-      const clientName = String(row[0] || "").trim();
-      const reconSheetUrl = row[9];
-      const reconSheetId = extractSheetIdFromUrl(reconSheetUrl) || String(reconSheetUrl || "").trim();
-      const scriptId   = String(row[10] || "").trim();
-      const clientSheetUrl = row[11];
-      const masterSheetUrl = row[12];
-      const hasWebAppUrl = !!String(row[13] || "").trim();
-      const splitEnabled = String(row[104] || "").trim().toLowerCase() === "yes";
-      if (!clientName || !clientSheetUrl) continue;
-      if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
-      const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
-      const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
-      const hasClientManager = cmMap.hasManager(clientName);
-      clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl, splitEnabled, reconSheetUrl, reconSheetId, hasClientManager });
-      if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl, reconSheetUrl, reconSheetId, hasClientManager };
+    let clientsArray = null;
+    let clientsObj = null;
+
+    if (!bypassCache && _allClientsMemoryCache && (now - _allClientsCachedAt < 60000)) {
+      clientsArray = _allClientsMemoryCache.clientsArray;
+      clientsObj = _allClientsMemoryCache.clientsObj;
+    } else if (!bypassCache && redisClient?.isOpen) {
+      try {
+        const cached = await redisClient.get(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          clientsArray = parsed.clientsArray;
+          clientsObj = parsed.clientsObj;
+          _allClientsMemoryCache = { clientsArray, clientsObj };
+          _allClientsCachedAt = now;
+        }
+      } catch (e) {
+        console.warn("⚠️ Redis get all clients cache error:", e.message);
+      }
     }
 
-    const sessionUser = getSessionUser(req);
-    if (!sessionUser) {
-      return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
+    if (!clientsArray || !clientsObj) {
+      const resp = await withRetry(() => sheets.spreadsheets.values.get({
+        spreadsheetId: automationCommanderSheetId,
+        range: "AutoUpdates!A2:DB500",
+      }));
+      const cmMap = await getClientManagerClientMap(sheets, automationCommanderSheetId);
+      const rows = resp.data.values || [];
+      clientsArray = [];
+      clientsObj = {};
+      for (const row of rows) {
+        const clientName = String(row[0] || "").trim();
+        const reconSheetUrl = row[9];
+        const reconSheetId = extractSheetIdFromUrl(reconSheetUrl) || String(reconSheetUrl || "").trim();
+        const scriptId   = String(row[10] || "").trim();
+        const clientSheetUrl = row[11];
+        const masterSheetUrl = row[12];
+        const hasWebAppUrl = !!String(row[13] || "").trim();
+        const splitEnabled = String(row[104] || "").trim().toLowerCase() === "yes";
+        if (!clientName || !clientSheetUrl) continue;
+        if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
+        const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
+        const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
+        const hasClientManager = cmMap.hasManager(clientName);
+        clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl, splitEnabled, reconSheetUrl, reconSheetId, hasClientManager });
+        if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl, reconSheetUrl, reconSheetId, hasClientManager };
+      }
+
+      if (redisClient?.isOpen) {
+        try {
+          await redisClient.set(cacheKey, JSON.stringify({ clientsArray, clientsObj }), { EX: 300 });
+        } catch (e) {
+          console.warn("⚠️ Redis set all clients cache error:", e.message);
+        }
+      }
+      _allClientsMemoryCache = { clientsArray, clientsObj };
+      _allClientsCachedAt = now;
     }
 
     let finalClientsArray = clientsArray;
@@ -107,9 +149,30 @@ export async function handleGetAllClients(req, res, sheets) {
 }
 
 export async function handleGetAssignedExpenses(req, res, sheets) {
-  const { automationCommanderSheetId: aeAcId } = req.body;
+  const { automationCommanderSheetId: aeAcId, bypassCache } = req.body;
   if (!aeAcId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const cacheKey = `pulse:assigned_expenses:${aeAcId}`;
+  const now = Date.now();
+
   try {
+    if (!bypassCache && _assignedExpensesMemoryCache && (now - _assignedExpensesCachedAt < 60000)) {
+      return res.status(200).json({ success: true, assignedByClient: _assignedExpensesMemoryCache });
+    }
+
+    if (!bypassCache && redisClient?.isOpen) {
+      try {
+        const cached = await redisClient.get(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          _assignedExpensesMemoryCache = parsed;
+          _assignedExpensesCachedAt = now;
+          return res.status(200).json({ success: true, assignedByClient: parsed });
+        }
+      } catch (e) {
+        console.warn("⚠️ Redis get assigned expenses cache error:", e.message);
+      }
+    }
+
     await ensureAssignedExpensesTab_(sheets, aeAcId);
     const resp = await withRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: aeAcId, range: "AssignedExpenses!A2:C50000" }));
     const assignedByClient = {};
@@ -118,6 +181,17 @@ export async function handleGetAssignedExpenses(req, res, sheets) {
       if (!assignedByClient[r[0]]) assignedByClient[r[0]] = [];
       assignedByClient[r[0]].push(r[1]);
     });
+
+    if (redisClient?.isOpen) {
+      try {
+        await redisClient.set(cacheKey, JSON.stringify(assignedByClient), { EX: 300 });
+      } catch (e) {
+        console.warn("⚠️ Redis set assigned expenses cache error:", e.message);
+      }
+    }
+    _assignedExpensesMemoryCache = assignedByClient;
+    _assignedExpensesCachedAt = now;
+
     return res.status(200).json({ success: true, assignedByClient });
   } catch (err) {
     console.error("❌ get_assigned_expenses error:", err);
@@ -131,6 +205,11 @@ export async function handleMarkExpenseAssigned(req, res, sheets) {
     return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId, clientName, or appId" });
   }
   try {
+    _assignedExpensesMemoryCache = null;
+    _assignedExpensesCachedAt = 0;
+    if (redisClient?.isOpen) {
+      redisClient.del(`pulse:assigned_expenses:${aeAcId}`).catch(() => {});
+    }
     await ensureAssignedExpensesTab_(sheets, aeAcId);
     await withRetry(() => sheets.spreadsheets.values.append({
       spreadsheetId: aeAcId, range: "AssignedExpenses!A:C", valueInputOption: "RAW",

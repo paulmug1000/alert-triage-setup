@@ -44,6 +44,18 @@ const nextConfig = {
       },
     ];
   },
+  async rewrites() {
+    return [
+      {
+        source: "/pma/alerts",
+        destination: "/PMA/alerts",
+      },
+      {
+        source: "/pma",
+        destination: "/PMA",
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;

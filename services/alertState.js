@@ -152,14 +152,14 @@ export async function handleRemoveAlert(req, res) {
     const parsed = JSON.parse(sessionData);
     
     const { removedCount } = applyAlertRemovalToTriageData(parsed, targetIds);
-    await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
+    await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
 
     try {
       const preRaw = await redisClient.get(PRECOMPUTED_KEY);
       if (preRaw) {
         const pre = JSON.parse(preRaw);
         applyAlertRemovalToTriageData(pre, targetIds);
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 3600 });
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
     } catch (e) {
       console.warn("Could not sync PRECOMPUTED_KEY in handleRemoveAlert:", e.message);
@@ -224,7 +224,7 @@ export async function handleUpdateSessionFlags(req, res) {
         const richFlags = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete", "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
         richFlags.forEach(flagType => { if (keysToZero.has(flagType)) delete parsed.noActionAnalysisResults[`${clientName}___${flagType}`]; });
       }
-      await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 3600 });
+      await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(parsed), { EX: 86400 * 7 });
     }
     return res.status(200).json({ success: true });
   } catch (err) {
@@ -243,7 +243,7 @@ export async function handleResolveNoActionFlag(req, res, sheets) {
     const resolvedId = fingerprintHash || flagType;
     const key = `${clientName}___${resolvedId}`;
     if (!parsed.resolvedNoActionFlags.includes(key)) parsed.resolvedNoActionFlags.push(key);
-    await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
+    await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
 
     if (acIdResolve) {
       try {
@@ -398,7 +398,7 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
         if (sessionData) {
           const parsed = JSON.parse(sessionData);
           applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash]);
-          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
         }
       } catch (e) {}
     }
@@ -407,7 +407,7 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
       if (preRaw) {
         const pre = JSON.parse(preRaw);
         applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash]);
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 3600 });
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
     } catch (e) {}
 
@@ -465,7 +465,7 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
         if (sessionData) {
           const parsed = JSON.parse(sessionData);
           applyAlertRemovalToTriageData(parsed, [alertKey, fingerprintHash]);
-          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
         }
       } catch (e) {}
     }
@@ -474,7 +474,7 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
       if (preRaw) {
         const pre = JSON.parse(preRaw);
         applyAlertRemovalToTriageData(pre, [alertKey, fingerprintHash]);
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 3600 });
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
     } catch (e) {}
 
@@ -530,7 +530,7 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
         if (sessionData) {
           const parsed = JSON.parse(sessionData);
           applyAlertRemovalToTriageData(parsed, hashesToRemove);
-          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 3600 });
+          await redisClient.set(`triage_alerts:${sessionId}`, JSON.stringify(parsed), { EX: 86400 * 7 });
         }
       } catch (e) {}
     }
@@ -539,7 +539,7 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
       if (preRaw) {
         const pre = JSON.parse(preRaw);
         applyAlertRemovalToTriageData(pre, hashesToRemove);
-        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 3600 });
+        await redisClient.set(PRECOMPUTED_KEY, JSON.stringify(pre), { EX: 86400 * 7 });
       }
     } catch (e) {}
 

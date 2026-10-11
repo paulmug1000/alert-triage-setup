@@ -231,11 +231,13 @@ export function useTriageEngine({
     }
   };
 
-  const reloadFromCache = async () => {
+  const reloadFromCache = async (isBackground = false) => {
     try {
-      setIsLoading(true);
-      setError("");
-      setRefreshStatus("Loading from cache...");
+      if (!isBackground) {
+        setIsLoading(true);
+        setError("");
+        setRefreshStatus("Loading from cache...");
+      }
 
       const preResponse = await fetch("/api/triage", {
         method: "POST",
@@ -255,8 +257,6 @@ export function useTriageEngine({
         setProactiveCountsByClient(pCounts);
         setProactiveLoadedAt(Date.now());
         setClientsWithFlags(scopeClients(preData.clientsWithFlags || []));
-        setAcknowledgedNoAction(new Set());
-        setProcessedAlerts(new Set());
 
         if (preData.noActionAnalysisResults && Object.keys(preData.noActionAnalysisResults).length > 0) {
           const raw = preData.noActionAnalysisResults;
@@ -273,17 +273,27 @@ export function useTriageEngine({
           setPrecomputedNoActionResults(flat);
         }
 
-        setScreen("clientSelection");
-        setTriageComplete(true);
+        if (!isBackground) {
+          setAcknowledgedNoAction(new Set());
+          setProcessedAlerts(new Set());
+          setScreen("clientSelection");
+          setTriageComplete(true);
+        }
         onRefreshTasks?.();
-      } else {
-        setError("Cache is empty or stale (>4 hours old). Please use '↻ Refresh' to run a full sweep.");
+      } else if (!isBackground) {
+        setError("Cache is empty or stale. Please use '↻ Refresh' to run a full sweep.");
       }
     } catch (err) {
-      setError("Failed to load from cache: " + err.message);
+      if (!isBackground) {
+        setError("Failed to load from cache: " + err.message);
+      } else {
+        console.warn("Background cache reload error:", err.message);
+      }
     } finally {
-      setIsLoading(false);
-      setRefreshStatus("");
+      if (!isBackground) {
+        setIsLoading(false);
+        setRefreshStatus("");
+      }
     }
   };
 

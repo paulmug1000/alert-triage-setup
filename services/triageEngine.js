@@ -941,7 +941,11 @@ export async function handleGetPrecomputed(req, res, sheets) {
     
     const filteredProactive = (data.proactiveAlerts || []).filter(alert => {
       const hash = alert.fingerprintHash || createHash("sha256").update(alert.alertKey || "").digest("hex").substring(0, 16);
-      const status = handledMap[hash];
+      let status = handledMap[hash];
+      if (!status && alert.legacyAlertKey) {
+        const legacyHash = createHash("sha256").update(alert.legacyAlertKey).digest("hex").substring(0, 16);
+        status = handledMap[legacyHash];
+      }
       if (!status) return true;
       return status === "cached" || status === "pending_automation";
     });
@@ -953,7 +957,10 @@ export async function handleGetPrecomputed(req, res, sheets) {
         if (detail.includes("Manual Gap") || detail.includes("Placeholder Gap")) return false;
       }
       if (!alert.fingerprintHash) return true;
-      const status = handledMap[alert.fingerprintHash];
+      let status = handledMap[alert.fingerprintHash];
+      if (!status && alert.legacyFingerprint) {
+        status = handledMap[alert.legacyFingerprint];
+      }
       if (!status) return true;
       return status === "cached" || status === "pending_automation";
     });
@@ -1652,12 +1659,14 @@ export async function handleRunFlagSweep(req, res, sheets) {
                   if (!isActive) continue; // Skip: underlying expense already resolved in sheet
                 }
                 const fingerprintInput = `${client.clientName}|${autoLogType}|${ts}|${line}`;
+                const legacyFingerprintInput = `${client.clientName}|${autoLogType}|${line}`;
                 matchedAlerts.push({
                   clientName: client.clientName,
                   alertType: autoLogType,
                   summary: line,
                   timestamp: ts,
                   _fingerprint: createHash("sha256").update(fingerprintInput).digest("hex").substring(0, 16),
+                  _legacyFingerprint: createHash("sha256").update(legacyFingerprintInput).digest("hex").substring(0, 16),
                 });
               }
             }
@@ -1940,14 +1949,41 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
               // Case 3: Previously ignored or accepted
               if (exRow.status === "ignored" || exRow.status === "accepted") {
-                // For autolog_error: if the error has a newer timestamp or more occurrences than the acknowledged snapshot, revive it!
-                if (exRow.status === "accepted" && item.alertType === "autolog_error") {
-                  let oldSnap = {};
-                  try { oldSnap = JSON.parse(exRow.dataSnapshot || "{}"); } catch(e) {}
-                  const hasNewTimestamp = alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp;
-                  const hasMoreOccurrences = alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount);
-                  
-                  if (hasNewTimestamp || hasMoreOccurrences) {
+                let oldSnap = {};
+                try { oldSnap = JSON.parse(exRow.dataSnapshot || "{}"); } catch(e) {}
+
+                // Determine whether the underlying situation has genuinely changed since acknowledgment:
+                let situationChanged = false;
+
+                if (exRow.status === "accepted") {
+                  // 1. autolog_error: newer timestamp or higher occurrence count
+                  if (item.alertType === "autolog_error") {
+                    const hasNewTimestamp = alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp;
+                    const hasMoreOccurrences = alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount);
+                    if (hasNewTimestamp || hasMoreOccurrences) situationChanged = true;
+                  }
+                  // 2. infinite_loop: newer oscillation timestamp or higher count
+                  else if (item.alertType === "infinite_loop") {
+                    if (alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp) situationChanged = true;
+                    if (alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount)) situationChanged = true;
+                  }
+                  // 3. Informational alerts: new AutoLog entry timestamp
+                  else if (item.category === "info") {
+                    if (alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp) situationChanged = true;
+                  }
+                  // 4. Proactive state alerts: key figures changed compared to acknowledged snapshot
+                  else if (item.category === "proactive") {
+                    if (alert.revenue !== undefined && oldSnap.revenue !== undefined && String(alert.revenue) !== String(oldSnap.revenue)) situationChanged = true;
+                    if (alert.totalInvoiced !== undefined && oldSnap.totalInvoiced !== undefined && String(alert.totalInvoiced) !== String(oldSnap.totalInvoiced)) situationChanged = true;
+                    if (alert.directCosts !== undefined && oldSnap.directCosts !== undefined && String(alert.directCosts) !== String(oldSnap.directCosts)) situationChanged = true;
+                    if (alert.totalExpenses !== undefined && oldSnap.totalExpenses !== undefined && String(alert.totalExpenses) !== String(oldSnap.totalExpenses)) situationChanged = true;
+                    if (alert.uninvoicedAmount !== undefined && oldSnap.uninvoicedAmount !== undefined && String(alert.uninvoicedAmount) !== String(oldSnap.uninvoicedAmount)) situationChanged = true;
+                    if (alert.unreceivedAmount !== undefined && oldSnap.unreceivedAmount !== undefined && String(alert.unreceivedAmount) !== String(oldSnap.unreceivedAmount)) situationChanged = true;
+                    if (alert.childExp !== undefined && oldSnap.childExp !== undefined && String(alert.childExp) !== String(oldSnap.childExp)) situationChanged = true;
+                    if (alert.expectedForRow !== undefined && oldSnap.expectedForRow !== undefined && String(alert.expectedForRow) !== String(oldSnap.expectedForRow)) situationChanged = true;
+                  }
+
+                  if (situationChanged) {
                     const clientMeta = clientMetaMap.get(item.clientName);
                     const newStatus = evaluateAutomationStatus_(item.alertType, item.category, clientMeta, new Date(detectedAtIso).getTime(), null);
                     await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
@@ -1962,7 +1998,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
                     exRow.fingerprintHash = alert._fingerprint;
                     flagsRaised++;
                     raisedDetail.push({ clientName: item.clientName, flagKey: item.alertType, status: "revived" });
-                    console.log(`  🔄 REVIVED accepted autolog_error for ${item.clientName} (new occurrences detected: ${alert.timestamp}): ${alert._fingerprint} -> ${newStatus}`);
+                    console.log(`  🔄 REVIVED accepted alert for ${item.clientName} (${item.alertType}) due to changed situation: ${alert._fingerprint} -> ${newStatus}`);
                     continue;
                   }
                 }

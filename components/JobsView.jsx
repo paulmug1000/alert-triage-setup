@@ -32,9 +32,40 @@ export const parseSheetDate = (dStr) => {
   return isNaN(d.getTime()) ? null : d;
 };
 
+export const toInputDateFormat = (dStr) => {
+  if (!dStr) return "";
+  const d = parseSheetDate(dStr);
+  if (!d) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+export const toSheetDateFormat = (dStr) => {
+  if (!dStr) return "";
+  const d = parseSheetDate(dStr);
+  if (!d) return String(dStr).trim();
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const day = d.getDate();
+  const mmm = months[d.getMonth()];
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${day}-${mmm}-${yy}`;
+};
+
+export const formatCurrency = (val) => {
+  const s = String(val || "").trim();
+  if (!s) return "";
+  const hasSymbol = /^[£$€]/.test(s);
+  const symbol = hasSymbol ? s.charAt(0) : "£";
+  const num = parseFloat(s.replace(/[£$€,\s]/g, ""));
+  if (isNaN(num)) return s;
+  return symbol + num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
 export default function JobsView({
   allOutgoingsClients,
-  styles
+  styles = {}
 }) {
   const { outgoingsPullPendingRef } = useAppGlobals();
 
@@ -52,101 +83,491 @@ export default function JobsView({
     loadJobsData
   } = useJobs();
 
-  // Local state for modals rendered by this view
+  // Mode: "modern" (default, user-friendly combined view) or "legacy" (spreadsheet view for admins)
+  const [viewMode, setViewMode] = useState("modern");
+
+  // Modern view filter: 'all' | 'confirmed' | 'pipeline'
+  const [filterType, setFilterType] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Set of expanded job IDs in modern view
+  const [expandedJobIds, setExpandedJobIds] = useState(() => new Set());
+
+  // Draft edits keyed by job identifier: { [jobKey]: { [field]: newValue } }
+  const [draftEdits, setDraftEdits] = useState({});
+
+  // Loading / saving states
+  const [savingJobKeys, setSavingJobKeys] = useState(() => new Set());
+  const [recentlySavedKeys, setRecentlySavedKeys] = useState(() => new Set());
+  const [actionError, setActionError] = useState(null);
+
+  // Modals state
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null);
   const [showAddJobModal, setShowAddJobModal] = useState(false);
 
   const noJobsClient = !jobsClient;
 
-  const sortedJobs = useMemo(() => {
-    if (!jobsData || !Array.isArray(jobsData)) return [];
-    const list = [...jobsData];
-    switch (jobsSortBy) {
-      case "endDateDesc":
-      case "endDate":
-        return list.sort((a, b) => {
-          const da = parseSheetDate(a.rows?.[0]?.endDate);
-          const db = parseSheetDate(b.rows?.[0]?.endDate);
-          if (!da && !db) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          const diff = db.getTime() - da.getTime();
-          if (diff !== 0) return diff;
-          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-        });
-      case "startDateAsc":
-        return list.sort((a, b) => {
-          const da = parseSheetDate(a.rows?.[0]?.startDate);
-          const db = parseSheetDate(b.rows?.[0]?.startDate);
-          if (!da && !db) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          const diff = da.getTime() - db.getTime();
-          if (diff !== 0) return diff;
-          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-        });
-      case "endDateAsc":
-        return list.sort((a, b) => {
-          const da = parseSheetDate(a.rows?.[0]?.endDate);
-          const db = parseSheetDate(b.rows?.[0]?.endDate);
-          if (!da && !db) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          const diff = da.getTime() - db.getTime();
-          if (diff !== 0) return diff;
-          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-        });
-      case "clientName":
-        return list.sort((a, b) => {
-          const nameA = String(a.client || a.rows?.[0]?.client || "").trim();
-          const nameB = String(b.client || b.rows?.[0]?.client || "").trim();
-          if (!nameA && !nameB) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-          if (!nameA) return 1;
-          if (!nameB) return -1;
-          const cmp = nameA.localeCompare(nameB, undefined, { sensitivity: "base", numeric: true });
-          if (cmp !== 0) return cmp;
-          const jobA = String(a.jobName || a.rows?.[0]?.jobName || "").trim();
-          const jobB = String(b.jobName || b.rows?.[0]?.jobName || "").trim();
-          const jcmp = jobA.localeCompare(jobB, undefined, { sensitivity: "base", numeric: true });
-          if (jcmp !== 0) return jcmp;
-          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-        });
-      case "rowNumber":
-        return list.sort((a, b) => {
-          const rowA = a.rows?.[0]?.rowNum ?? 0;
-          const rowB = b.rows?.[0]?.rowNum ?? 0;
-          return rowA - rowB;
-        });
-      case "startDateDesc":
-      case "startDate":
-      default:
-        return list.sort((a, b) => {
-          const da = parseSheetDate(a.rows?.[0]?.startDate);
-          const db = parseSheetDate(b.rows?.[0]?.startDate);
-          if (!da && !db) return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-          if (!da) return 1;
-          if (!db) return -1;
-          const diff = db.getTime() - da.getTime();
-          if (diff !== 0) return diff;
-          return (a.rows?.[0]?.rowNum ?? 0) - (b.rows?.[0]?.rowNum ?? 0);
-        });
-    }
-  }, [jobsData, jobsSortBy]);
-
-  const formatCurrency = (val) => {
-    const s = String(val || "").trim();
-    if (!s) return "";
-    const hasSymbol = /^[£$€]/.test(s);
-    const symbol = hasSymbol ? s.charAt(0) : "£";
-    const num = parseFloat(s.replace(/[£$€,\s]/g, ""));
-    if (isNaN(num)) return s;
-    return symbol + num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // Toggle expand for a job in modern view
+  const toggleJobExpanded = (jobKey) => {
+    setExpandedJobIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobKey)) next.delete(jobKey);
+      else next.add(jobKey);
+      return next;
+    });
   };
 
-  // Inline Editable Cell Component
-  const EditableCell = ({ value, colLetter, rowNum, type = "text", onSave, customStyle = {}, isCurrency = false }) => {
-    const [isEditing, React_useState] = React.useState(false);
+  // Helper to extract a job key
+  const getJobKey = (job) => {
+    if (!job) return "";
+    return job.id || `${job.tabName || "confirmed"}_${job.rows?.[0]?.rowNum || 0}`;
+  };
+
+  // Check if a specific job has unsaved changes
+  const isJobDirty = (jobKey) => {
+    return Boolean(draftEdits[jobKey] && Object.keys(draftEdits[jobKey]).length > 0);
+  };
+
+  // Get field value (from draft if edited, otherwise from sheet data)
+  const getJobFieldValue = (job, fieldKey) => {
+    const jobKey = getJobKey(job);
+    const parentRow = job?.rows?.[0] || {};
+    if (draftEdits[jobKey] && draftEdits[jobKey][fieldKey] !== undefined) {
+      return draftEdits[jobKey][fieldKey];
+    }
+    return parentRow[fieldKey] !== undefined ? parentRow[fieldKey] : "";
+  };
+
+  // Update a single draft field for a job
+  const handleDraftFieldChange = (job, fieldKey, newValue) => {
+    const jobKey = getJobKey(job);
+    setDraftEdits((prev) => ({
+      ...prev,
+      [jobKey]: {
+        ...(prev[jobKey] || {}),
+        [fieldKey]: newValue
+      }
+    }));
+  };
+
+  // Discard draft edits for a job
+  const handleDiscardChanges = (job) => {
+    const jobKey = getJobKey(job);
+    setDraftEdits((prev) => {
+      const next = { ...prev };
+      delete next[jobKey];
+      return next;
+    });
+  };
+
+  // Save changes for a single job
+  const handleSaveJob = async (job) => {
+    const jobKey = getJobKey(job);
+    const parentRow = job?.rows?.[0];
+    if (!parentRow || !isJobDirty(jobKey)) return;
+
+    const currentDraft = draftEdits[jobKey] || {};
+    const tabName = job.tabName || parentRow.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed");
+    const parentRowNum = parentRow.rowNum;
+
+    const FIELD_MAP = {
+      client: { colLetter: "A", fieldName: "Client" },
+      jobName: { colLetter: "B", fieldName: "Job Name" },
+      projectCode: { colLetter: "C", fieldName: "Project Code" },
+      dateConf: { colLetter: "D", fieldName: tabName === "Pipeline" ? "Date Added" : "Date Confirmed", isDate: true },
+      leadSrc: { colLetter: "E", fieldName: "Lead Source" },
+      revenue: { colLetter: "AG", fieldName: "Revenue" },
+      directCosts: { colLetter: "AH", fieldName: "Direct Costs" },
+      vat: { colLetter: "AI", fieldName: "VAT" },
+      projectRetainer: { colLetter: "AJ", fieldName: "Type" },
+      prodLine: { colLetter: "AK", fieldName: "Product Line" },
+      startDate: { colLetter: "AL", fieldName: "Start Date", isDate: true },
+      endDate: { colLetter: "AM", fieldName: "End Date", isDate: true },
+      likelihood: { colLetter: "AN", fieldName: "Likelihood" }
+    };
+
+    const updates = [];
+    Object.keys(currentDraft).forEach((fieldKey) => {
+      const meta = FIELD_MAP[fieldKey];
+      if (!meta) return;
+      let val = currentDraft[fieldKey];
+      if (meta.isDate && val) {
+        val = toSheetDateFormat(val);
+      }
+      updates.push({
+        colLetter: meta.colLetter,
+        rowNum: parentRowNum,
+        cellRef: `${meta.colLetter}${parentRowNum}`,
+        fieldName: meta.fieldName,
+        value: val
+      });
+
+      // If client name or job name changed, also update child rows to keep sheet synchronized
+      if ((fieldKey === "client" || fieldKey === "jobName") && job.rows && job.rows.length > 1) {
+        job.rows.slice(1).forEach((childRow) => {
+          updates.push({
+            colLetter: meta.colLetter,
+            rowNum: childRow.rowNum,
+            cellRef: `${meta.colLetter}${childRow.rowNum}`,
+            fieldName: meta.fieldName,
+            value: val
+          });
+        });
+      }
+    });
+
+    if (updates.length === 0) return;
+
+    setActionError(null);
+    setSavingJobKeys((prev) => new Set(prev).add(jobKey));
+
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_job_fields",
+          clientSheetId: jobsClient.clientSheetId,
+          clientName: jobsClient.clientName || jobsClient.name || "",
+          tabName,
+          rowNum: parentRowNum,
+          endClientName: currentDraft.client || parentRow.client || job.client,
+          jobName: currentDraft.jobName || parentRow.jobName || job.jobName,
+          updates
+        })
+      });
+
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || "Failed to update job");
+      }
+
+      // Optimistically update local jobsData
+      setJobsData((prevJobs) => {
+        if (!prevJobs) return prevJobs;
+        return prevJobs.map((j) => {
+          if (getJobKey(j) !== jobKey) return j;
+          const updatedRows = j.rows.map((r, rIdx) => {
+            const nextRow = { ...r };
+            Object.keys(currentDraft).forEach((f) => {
+              let nextVal = currentDraft[f];
+              if (FIELD_MAP[f]?.isDate && nextVal) nextVal = toSheetDateFormat(nextVal);
+              if (rIdx === 0 || f === "client" || f === "jobName") {
+                nextRow[f] = nextVal;
+              }
+            });
+            return nextRow;
+          });
+          return {
+            ...j,
+            client: currentDraft.client || j.client,
+            jobName: currentDraft.jobName || j.jobName,
+            projectCode: currentDraft.projectCode !== undefined ? currentDraft.projectCode : j.projectCode,
+            rows: updatedRows
+          };
+        });
+      });
+
+      // Clear draft for this job
+      setDraftEdits((prev) => {
+        const next = { ...prev };
+        delete next[jobKey];
+        return next;
+      });
+
+      // Show brief success badge
+      setRecentlySavedKeys((prev) => new Set(prev).add(jobKey));
+      setTimeout(() => {
+        setRecentlySavedKeys((prev) => {
+          const next = new Set(prev);
+          next.delete(jobKey);
+          return next;
+        });
+      }, 3000);
+    } catch (err) {
+      console.error("Save job failed:", err);
+      setActionError(`Save failed for ${job.jobName || "job"}: ${err.message}`);
+    } finally {
+      setSavingJobKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(jobKey);
+        return next;
+      });
+    }
+  };
+
+  // Filtered and sorted jobs list
+  const processedJobs = useMemo(() => {
+    if (!jobsData || !Array.isArray(jobsData)) return [];
+    let list = [...jobsData];
+
+    // 1. Filter by Confirmed / Pipeline in modern view
+    if (viewMode === "modern") {
+      if (filterType === "confirmed") {
+        list = list.filter((j) => {
+          const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "").toLowerCase();
+          return tab === "confirmed" || (!tab.includes("pipeline") && j.rows?.[0]?.likelihood === "100%");
+        });
+      } else if (filterType === "pipeline") {
+        list = list.filter((j) => {
+          const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "").toLowerCase();
+          return tab === "pipeline" || tab.includes("pipe");
+        });
+      }
+
+      // Filter by search query
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        list = list.filter((j) => {
+          const cName = String(j.client || j.rows?.[0]?.client || "").toLowerCase();
+          const jName = String(j.jobName || j.rows?.[0]?.jobName || "").toLowerCase();
+          const pLine = String(j.rows?.[0]?.prodLine || "").toLowerCase();
+          const pCode = String(j.projectCode || j.rows?.[0]?.projectCode || "").toLowerCase();
+          return cName.includes(q) || jName.includes(q) || pLine.includes(q) || pCode.includes(q);
+        });
+      }
+    } else {
+      // In legacy view, filter strictly by jobsTab ("Confirmed" or "Pipeline")
+      list = list.filter((j) => {
+        const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "Confirmed").toLowerCase();
+        return tab === jobsTab.toLowerCase();
+      });
+    }
+
+    // 2. Sort jobs
+    return list.sort((a, b) => {
+      const rowA = a.rows?.[0] || {};
+      const rowB = b.rows?.[0] || {};
+
+      switch (jobsSortBy) {
+        case "startDateAsc": {
+          const da = parseSheetDate(rowA.startDate);
+          const db = parseSheetDate(rowB.startDate);
+          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          return da.getTime() - db.getTime();
+        }
+        case "endDateDesc": {
+          const da = parseSheetDate(rowA.endDate);
+          const db = parseSheetDate(rowB.endDate);
+          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          return db.getTime() - da.getTime();
+        }
+        case "endDateAsc": {
+          const da = parseSheetDate(rowA.endDate);
+          const db = parseSheetDate(rowB.endDate);
+          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          return da.getTime() - db.getTime();
+        }
+        case "revDesc": {
+          const revA = parseFloat(String(rowA.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+          const revB = parseFloat(String(rowB.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+          return revB - revA;
+        }
+        case "revAsc": {
+          const revA = parseFloat(String(rowA.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+          const revB = parseFloat(String(rowB.revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
+          return revA - revB;
+        }
+        case "clientName": {
+          const nameA = String(a.client || rowA.client || "").trim();
+          const nameB = String(b.client || rowB.client || "").trim();
+          const cmp = nameA.localeCompare(nameB, undefined, { sensitivity: "base", numeric: true });
+          if (cmp !== 0) return cmp;
+          const jobA = String(a.jobName || rowA.jobName || "").trim();
+          const jobB = String(b.jobName || rowB.jobName || "").trim();
+          return jobA.localeCompare(jobB, undefined, { sensitivity: "base", numeric: true });
+        }
+        case "likelihoodDesc": {
+          const lA = parseFloat(String(rowA.likelihood || "0").replace(/[^0-9.-]/g, "")) || 0;
+          const lB = parseFloat(String(rowB.likelihood || "0").replace(/[^0-9.-]/g, "")) || 0;
+          return lB - lA;
+        }
+        case "rowNumber": {
+          return (rowA.rowNum || 0) - (rowB.rowNum || 0);
+        }
+        case "startDateDesc":
+        default: {
+          const da = parseSheetDate(rowA.startDate);
+          const db = parseSheetDate(rowB.startDate);
+          if (!da && !db) return (rowA.rowNum || 0) - (rowB.rowNum || 0);
+          if (!da) return 1;
+          if (!db) return -1;
+          return db.getTime() - da.getTime();
+        }
+      }
+    });
+  }, [jobsData, viewMode, filterType, jobsTab, searchQuery, jobsSortBy]);
+
+  // Counts for filter pills
+  const counts = useMemo(() => {
+    if (!jobsData || !Array.isArray(jobsData)) return { all: 0, confirmed: 0, pipeline: 0 };
+    let conf = 0;
+    let pipe = 0;
+    jobsData.forEach((j) => {
+      const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "").toLowerCase();
+      if (tab === "pipeline" || tab.includes("pipe")) pipe++;
+      else conf++;
+    });
+    return { all: jobsData.length, confirmed: conf, pipeline: pipe };
+  }, [jobsData]);
+
+  // Number of unsaved dirty jobs
+  const dirtyCount = Object.keys(draftEdits).length;
+
+  // Status pill styling
+  const getStatusPill = (status) => {
+    const s = String(status || "").trim();
+    if (s === "Paid") return { backgroundColor: "#dcfce7", color: "#166534", border: "1px solid #bbf7d0" };
+    if (s === "Draft") return { backgroundColor: "#ffedd5", color: "#9a3412", border: "1px solid #fed7aa" };
+    if (s === "Sent" || s === "Received") return { backgroundColor: "#e0f2fe", color: "#0369a1", border: "1px solid #bae6fd" };
+    return { backgroundColor: "#f1f5f9", color: "#475569", border: "1px solid #e2e8f0" };
+  };
+
+  // Helper to gather all invoice items across parent and child rows
+  const getJobInvoiceItems = (job, isRetainer) => {
+    if (!job || !job.rows || job.rows.length === 0) return [];
+    const items = [];
+
+    if (isRetainer) {
+      // Retainer billing: each row in job.rows represents a period (Month 1, Month 2...)
+      job.rows.forEach((r, rIdx) => {
+        const periodNum = rIdx + 1;
+        const slots = r.invoiceSlots || [];
+
+        // Primary monthly retainer invoice slot (slot 1)
+        const mainSlot = slots.find((s) => s.slotNum === 1) || {
+          slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: ""
+        };
+        items.push({
+          id: `ret_inv_${r.rowNum}_1`,
+          rowNum: r.rowNum,
+          slotNum: 1,
+          slot: mainSlot,
+          row: r,
+          label: `Month ${periodNum}`,
+          subLabel: `Row ${r.rowNum}${mainSlot.sentDate ? ` · ${mainSlot.sentDate}` : ""}`
+        });
+
+        // Any extra invoices assigned to this month/period (slot 2 or 3)
+        slots.filter((s) => s.slotNum > 1).forEach((extraSlot) => {
+          const hasData = Boolean(
+            (extraSlot.ref && String(extraSlot.ref).trim() !== "") ||
+            (extraSlot.amount && String(extraSlot.amount).trim() !== "")
+          );
+          if (hasData) {
+            items.push({
+              id: `ret_inv_${r.rowNum}_${extraSlot.slotNum}`,
+              rowNum: r.rowNum,
+              slotNum: extraSlot.slotNum,
+              slot: extraSlot,
+              row: r,
+              label: `Month ${periodNum} (Extra Inv ${extraSlot.slotNum})`,
+              subLabel: `Row ${r.rowNum}`
+            });
+          }
+        });
+      });
+    } else {
+      // Project billing: sequential invoices across rows
+      // Row 0 -> Invoice 1, 2, 3
+      // Row 1 -> Invoice 4, 5, 6
+      // Row 2 -> Invoice 7, 8, 9...
+      job.rows.forEach((r, rIdx) => {
+        const slots = r.invoiceSlots || [
+          { slotNum: 1, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
+          { slotNum: 2, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" },
+          { slotNum: 3, amount: "", ref: "", sentDate: "", daysToPay: "", status: "" }
+        ];
+
+        slots.forEach((s) => {
+          const seqNum = rIdx * 3 + s.slotNum;
+          items.push({
+            id: `proj_inv_${r.rowNum}_${s.slotNum}`,
+            rowNum: r.rowNum,
+            slotNum: s.slotNum,
+            slot: s,
+            row: r,
+            label: `Invoice ${seqNum}`,
+            subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
+          });
+        });
+      });
+    }
+
+    return items;
+  };
+
+  // Helper to gather all expense / direct cost items across parent and child rows
+  const getJobExpenseItems = (job, isRetainer) => {
+    if (!job || !job.rows || job.rows.length === 0) return [];
+    const items = [];
+
+    if (isRetainer) {
+      job.rows.forEach((r, rIdx) => {
+        const periodNum = rIdx + 1;
+        const slots = r.expenseSlots || [];
+
+        slots.forEach((s) => {
+          const hasData = Boolean(
+            (s.description && String(s.description).trim() !== "") ||
+            (s.amount && String(s.amount).trim() !== "") ||
+            (s.transactionId && String(s.transactionId).trim() !== "")
+          );
+          if (hasData || (rIdx === 0 && s.slotNum === 1)) {
+            items.push({
+              id: `ret_exp_${r.rowNum}_${s.slotNum}`,
+              rowNum: r.rowNum,
+              slotNum: s.slotNum,
+              slot: s,
+              row: r,
+              label: s.slotNum === 1 ? `Month ${periodNum} Cost` : `Month ${periodNum} Cost ${s.slotNum}`,
+              subLabel: `Row ${r.rowNum}`
+            });
+          }
+        });
+      });
+    } else {
+      // Project direct costs: sequential across rows
+      // Row 0 -> Direct Cost 1, 2, 3
+      // Row 1 -> Direct Cost 4, 5, 6
+      // Row 2 -> Direct Cost 7, 8, 9...
+      job.rows.forEach((r, rIdx) => {
+        const slots = r.expenseSlots || [
+          { slotNum: 1, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
+          { slotNum: 2, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" },
+          { slotNum: 3, description: "", amount: "", vat: "", date: "", daysToPay: "", status: "", transactionId: "" }
+        ];
+
+        slots.forEach((s) => {
+          const seqNum = rIdx * 3 + s.slotNum;
+          items.push({
+            id: `proj_exp_${r.rowNum}_${s.slotNum}`,
+            rowNum: r.rowNum,
+            slotNum: s.slotNum,
+            slot: s,
+            row: r,
+            label: `Direct Cost ${seqNum}`,
+            subLabel: rIdx > 0 ? `Row ${r.rowNum}` : ""
+          });
+        });
+      });
+    }
+
+    return items;
+  };
+
+  // ============================================================================
+  // LEGACY INLINE CELL FOR SPREADSHEET VIEW
+  // ============================================================================
+  const LegacyEditableCell = ({ value, colLetter, rowNum, type = "text", onSave, customStyle = {}, isCurrency = false }) => {
+    const [isEditing, setIsEditing] = React.useState(false);
     const [val, setVal] = React.useState(value || "");
     const inputRef = React.useRef(null);
 
@@ -154,13 +575,13 @@ export default function JobsView({
     React.useEffect(() => { if (isEditing && inputRef.current) inputRef.current.focus(); }, [isEditing]);
 
     const handleBlur = () => {
-      React_useState(false);
+      setIsEditing(false);
       if (val !== (value || "")) onSave(colLetter, rowNum, val);
     };
 
     const handleKeyDown = (e) => {
       if (e.key === "Enter") handleBlur();
-      if (e.key === "Escape") { React_useState(false); setVal(value || ""); }
+      if (e.key === "Escape") { setIsEditing(false); setVal(value || ""); }
     };
 
     if (isEditing) {
@@ -179,7 +600,7 @@ export default function JobsView({
 
     return (
       <div
-        onClick={() => React_useState(true)}
+        onClick={() => setIsEditing(true)}
         style={{ minHeight: "20px", cursor: "text", padding: "2px", borderRadius: "3px", ...customStyle }}
         onMouseEnter={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor ? customStyle.backgroundColor : "rgba(0,102,204,0.05)"}
         onMouseLeave={(e) => e.currentTarget.style.backgroundColor = customStyle.backgroundColor || "transparent"}
@@ -190,13 +611,12 @@ export default function JobsView({
     );
   };
 
-  const handleInlineUpdate = async (colLetter, rowNum, newValue) => {
-    // Find target job and row identity from current jobsData
+  const handleLegacyInlineUpdate = async (colLetter, rowNum, newValue) => {
     let targetEndClient = "";
     let targetJobName = "";
     if (jobsData) {
       for (const job of jobsData) {
-        const matchRow = (job.rows || []).find(r => r.rowNum === rowNum);
+        const matchRow = (job.rows || []).find((r) => r.rowNum === rowNum);
         if (matchRow) {
           targetEndClient = matchRow.client || job.client || "";
           targetJobName = matchRow.jobName || job.jobName || "";
@@ -206,51 +626,42 @@ export default function JobsView({
     }
 
     const FIELD_NAMES = {
-      A: "Client",
-      B: "Job Name",
-      C: "Project Code",
-      D: "Date Confirmed",
-      E: "Lead Source",
-      AE: "Revenue Split",
-      AG: "Revenue",
-      AH: "Direct Costs",
-      AI: "VAT",
-      AJ: "Type",
-      AK: "Product Line",
-      AL: "Start Date",
-      AM: "End Date",
-      AN: "Likelihood",
-      DD: "Copied to Confirmed"
+      A: "Client", B: "Job Name", C: "Project Code", D: "Date Confirmed",
+      E: "Lead Source", AE: "Revenue Split", AG: "Revenue", AH: "Direct Costs",
+      AI: "VAT", AJ: "Type", AK: "Product Line", AL: "Start Date",
+      AM: "End Date", AN: "Likelihood", DD: "Copied to Confirmed"
     };
     const fieldName = FIELD_NAMES[colLetter] || `Field ${colLetter}`;
 
-    // Optimistic local update
-    setJobsData(prev => prev.map(job => ({
-      ...job,
-      rows: job.rows.map(r => {
-        if (r.rowNum !== rowNum) return r;
-        const updated = { ...r };
-        if (colLetter === 'A') updated.client = newValue;
-        if (colLetter === 'B') updated.jobName = newValue;
-        if (colLetter === 'C') updated.projectCode = newValue;
-        if (colLetter === 'AG') updated.revenue = newValue;
-        if (colLetter === 'AH') updated.directCosts = newValue;
-        if (colLetter === 'AI') updated.vat = newValue;
-        if (colLetter === 'AJ') updated.projectRetainer = newValue;
-        if (colLetter === 'AL') updated.startDate = newValue;
-        if (colLetter === 'AM') updated.endDate = newValue;
-        if (colLetter === 'AN') updated.likelihood = newValue;
-        if (colLetter === 'DD') updated.copiedToConf = newValue;
-        if (colLetter === 'D')  updated.dateConf = newValue;
-        if (colLetter === 'E')  updated.leadSrc = newValue;
-        if (colLetter === 'AK') updated.prodLine = newValue;
-        return updated;
-      })
-    })));
+    setJobsData((prev) =>
+      prev.map((job) => ({
+        ...job,
+        rows: job.rows.map((r) => {
+          if (r.rowNum !== rowNum) return r;
+          const updated = { ...r };
+          if (colLetter === "A") updated.client = newValue;
+          if (colLetter === "B") updated.jobName = newValue;
+          if (colLetter === "C") updated.projectCode = newValue;
+          if (colLetter === "AG") updated.revenue = newValue;
+          if (colLetter === "AH") updated.directCosts = newValue;
+          if (colLetter === "AI") updated.vat = newValue;
+          if (colLetter === "AJ") updated.projectRetainer = newValue;
+          if (colLetter === "AL") updated.startDate = newValue;
+          if (colLetter === "AM") updated.endDate = newValue;
+          if (colLetter === "AN") updated.likelihood = newValue;
+          if (colLetter === "DD") updated.copiedToConf = newValue;
+          if (colLetter === "D")  updated.dateConf = newValue;
+          if (colLetter === "E")  updated.leadSrc = newValue;
+          if (colLetter === "AK") updated.prodLine = newValue;
+          return updated;
+        })
+      }))
+    );
 
     try {
       await fetch("/api/triage", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "update_job_field",
           clientSheetId: jobsClient.clientSheetId,
@@ -272,480 +683,1567 @@ export default function JobsView({
 
   return (
     <>
+      {/* Modals reused across views */}
       {jobsEditSplit && (
         <UnevenSplitModal
           editSplit={jobsEditSplit}
           client={jobsClient}
-          tabName={jobsTab}
+          tabName={jobsEditSplit.tabName || jobsTab}
           onClose={() => setJobsEditSplit(null)}
           onUpdateJobsData={(rNum, splitStr) => {
-            setJobsData(prev => prev.map(j => ({
-              ...j,
-              rows: j.rows.map(r => r.rowNum === rNum ? { ...r, unevenSplit: splitStr } : r)
-            })));
+            setJobsData((prev) =>
+              prev.map((j) => ({
+                ...j,
+                rows: j.rows.map((r) => (r.rowNum === rNum ? { ...r, unevenSplit: splitStr } : r))
+              }))
+            );
           }}
         />
       )}
+
       {invoicesEditSlot && (
-        <InvoicesEditModal 
+        <InvoicesEditModal
           editSlot={invoicesEditSlot}
           invoicesClient={jobsClient}
           onClose={() => setInvoicesEditSlot(null)}
-          onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
+          onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
           onUpdateInvoiceJobs={(rNum, sNum, newData) => {
-            setJobsData(prev => prev && prev.map(j => ({
-              ...j,
-              rows: j.rows.map(r => r.rowNum !== rNum ? r : {
-                ...r,
-                invoiceSlots: r.invoiceSlots.map(sl => sl.slotNum !== sNum ? sl : { ...sl, ...newData })
-              }),
-            })));
+            setJobsData((prev) =>
+              prev &&
+              prev.map((j) => ({
+                ...j,
+                rows: j.rows.map((r) =>
+                  r.rowNum !== rNum
+                    ? r
+                    : {
+                        ...r,
+                        invoiceSlots: r.invoiceSlots.map((sl) =>
+                          sl.slotNum !== sNum ? sl : { ...sl, ...newData }
+                        )
+                      }
+                )
+              }))
+            );
           }}
         />
       )}
+
       {directCostsEditSlot && (
         <DirectCostsEditModal
           editSlot={directCostsEditSlot}
           client={jobsClient}
           onClose={() => setDirectCostsEditSlot(null)}
-          onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
+          onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}
           onUpdateJobs={(rNum, sNum, newData) => {
-            setJobsData(prev => prev && prev.map(j => ({
-              ...j,
-              rows: j.rows.map(r => r.rowNum !== rNum ? r : {
-                ...r,
-                expenseSlots: r.expenseSlots.map(sl => sl.slotNum !== sNum ? sl : { ...sl, ...newData })
-              }),
-            })));
+            setJobsData((prev) =>
+              prev &&
+              prev.map((j) => ({
+                ...j,
+                rows: j.rows.map((r) =>
+                  r.rowNum !== rNum
+                    ? r
+                    : {
+                        ...r,
+                        expenseSlots: r.expenseSlots.map((sl) =>
+                          sl.slotNum !== sNum ? sl : { ...sl, ...newData }
+                        )
+                      }
+                )
+              }))
+            );
           }}
         />
       )}
+
       {showAddJobModal && (
         <JobsNewJobModal
           jobsClient={jobsClient}
-          initialTab={jobsTab}
+          initialTab={filterType === "pipeline" ? "Pipeline" : "Confirmed"}
           productLines={productLines}
           leadSources={leadSources}
           existingClients={existingClients}
           onClose={() => setShowAddJobModal(false)}
           onSuccess={(targetTab) => {
             setShowAddJobModal(false);
-            if (targetTab && targetTab !== jobsTab) {
-              setJobsTab(targetTab);
-              loadJobsData(jobsClient, targetTab);
-            } else {
-              loadJobsData(jobsClient, jobsTab);
-            }
+            loadJobsData(jobsClient, "All");
           }}
         />
       )}
-      
-      <div style={{ padding: "20px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>
-            {jobsClient ? jobsClient.clientName : "Jobs Management"}
-          </h2>
+
+      <div style={{ padding: "24px", maxWidth: "1560px", margin: "0 auto", boxSizing: "border-box" }}>
+        {/* Top Header Bar */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <h1 style={{ margin: 0, fontSize: "22px", fontWeight: "700", color: "#0f172a" }}>
+                {jobsClient ? jobsClient.clientName : "Jobs Management"}
+              </h1>
+              {jobsClient && (
+                <span style={{ fontSize: "12px", background: "#f1f5f9", color: "#475569", padding: "3px 8px", borderRadius: "12px", fontWeight: "600" }}>
+                  {viewMode === "modern" ? "Modern View" : "Legacy View"}
+                </span>
+              )}
+            </div>
+            <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
+              {jobsClient ? "Manage client confirmed and pipeline jobs, revenue splits, and cost allocations." : "Select a client to view and manage jobs."}
+            </p>
+          </div>
+
           {jobsClient && (
-            <button className="triage-btn" onClick={() => { setJobsClient(null); setJobsData(null); setJobsSortBy("startDateDesc"); }}
-              style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "5px 10px" }}>
-              ← Back to Clients
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              {/* Legacy View Toggle Button */}
+              <button
+                type="button"
+                onClick={() => setViewMode((prev) => (prev === "modern" ? "legacy" : "modern"))}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: "7px",
+                  border: "1px solid #cbd5e1",
+                  background: viewMode === "legacy" ? "#0f172a" : "#ffffff",
+                  color: viewMode === "legacy" ? "#ffffff" : "#334155",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
+                }}
+                title={viewMode === "modern" ? "Switch to traditional spreadsheet view" : "Switch to improved modern view"}
+              >
+                <span>{viewMode === "modern" ? "📋 Legacy View" : "✨ Modern View"}</span>
+              </button>
+
+              {/* Add Job Button */}
+              <button
+                type="button"
+                onClick={() => setShowAddJobModal(true)}
+                style={{
+                  padding: "7px 15px",
+                  borderRadius: "7px",
+                  border: "none",
+                  background: "#2563eb",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  boxShadow: "0 1px 3px rgba(37,99,235,0.3)"
+                }}
+              >
+                <span style={{ fontSize: "15px", fontWeight: "bold" }}>+</span> Add Job
+              </button>
+
+              {/* Back to Clients */}
+              <button
+                type="button"
+                onClick={() => {
+                  setJobsClient(null);
+                  setJobsData(null);
+                  setDraftEdits({});
+                }}
+                style={{
+                  padding: "7px 12px",
+                  borderRadius: "7px",
+                  border: "1px solid #e2e8f0",
+                  background: "#ffffff",
+                  color: "#64748b",
+                  fontSize: "13px",
+                  fontWeight: "500",
+                  cursor: "pointer"
+                }}
+              >
+                ← Back to Clients
+              </button>
+            </div>
           )}
         </div>
 
+        {/* Global Error Banner if any */}
+        {actionError && (
+          <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", color: "#991b1b", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>{actionError}</span>
+            <button onClick={() => setActionError(null)} style={{ background: "none", border: "none", color: "#991b1b", fontSize: "16px", cursor: "pointer" }}>✕</button>
+          </div>
+        )}
+
+        {/* Client Selection Screen (when no client chosen) */}
         {noJobsClient && (
-          <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e0e0e0", padding: "24px" }}>
-            <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666" }}>Select a client to view and edit all their jobs:</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {(allOutgoingsClients || []).map(c => (
-                <button key={c.clientName} className="triage-btn"
-                  onClick={() => { setJobsClient(c); loadJobsData(c, jobsTab); }}
-                  style={{ ...styles.buttonSecondary, textAlign: "left", padding: "12px 16px", fontSize: "14px" }}>
-                  {c.clientName}
+          <div style={{ background: "#ffffff", borderRadius: "12px", border: "1px solid #e2e8f0", padding: "28px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: "16px", fontWeight: "600", color: "#1e293b" }}>Select a Client</h3>
+            <p style={{ margin: "0 0 20px", fontSize: "13px", color: "#64748b" }}>Choose a tenant client to inspect, edit, or configure jobs:</p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "10px" }}>
+              {(allOutgoingsClients || []).map((c) => (
+                <button
+                  key={c.clientName}
+                  type="button"
+                  onClick={() => {
+                    setJobsClient(c);
+                    loadJobsData(c, "All");
+                  }}
+                  style={{
+                    textAlign: "left",
+                    padding: "14px 18px",
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "8px",
+                    fontSize: "14px",
+                    fontWeight: "600",
+                    color: "#1e293b",
+                    cursor: "pointer",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    transition: "all 0.15s ease"
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "#eff6ff";
+                    e.currentTarget.style.borderColor = "#93c5fd";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "#f8fafc";
+                    e.currentTarget.style.borderColor = "#e2e8f0";
+                  }}
+                >
+                  <span>{c.clientName}</span>
+                  <span style={{ color: "#94a3b8", fontSize: "12px" }}>→</span>
                 </button>
               ))}
             </div>
           </div>
         )}
 
+        {/* Main Content when Client is selected */}
         {!noJobsClient && (
           <>
-            <div style={{ display: "flex", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0", alignItems: "center" }}>
-              {["Confirmed", "Pipeline"].map(tab => (
-                <button key={tab} onClick={() => { setJobsTab(tab); loadJobsData(jobsClient, tab); }}
-                  style={{ padding: "8px 16px", background: "none", border: "none",
-                    borderBottom: jobsTab === tab ? "2px solid #0066cc" : "2px solid transparent",
-                    color: jobsTab === tab ? "#0066cc" : "#666",
-                    fontWeight: jobsTab === tab ? "700" : "500", fontSize: "14px", cursor: "pointer" }}>
-                  {tab}
-                </button>
-              ))}
-              <button
-                className="triage-btn"
-                onClick={() => setShowAddJobModal(true)}
-                style={{
-                  marginLeft: "8px",
-                  marginBottom: "4px",
-                  padding: "5px 13px",
-                  backgroundColor: "#0066cc",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: "6px",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  cursor: "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "5px",
-                  boxShadow: "0 1px 2px rgba(0, 102, 204, 0.2)"
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#0052a3"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "#0066cc"; }}
-              >
-                <span style={{ fontSize: "15px", fontWeight: "bold", lineHeight: "1" }}>+</span> Add Job
-              </button>
-              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "14px", marginBottom: "4px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                  <label htmlFor="jobs-sort-select" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>
-                    Sort:
-                  </label>
-                  <select
-                    id="jobs-sort-select"
-                    value={jobsSortBy}
-                    onChange={(e) => setJobsSortBy(e.target.value)}
+            {/* ========================================================================= */}
+            {/* MODERN VIEW                                                               */}
+            {/* ========================================================================= */}
+            {viewMode === "modern" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                {/* Filter and Control Bar */}
+                <div
+                  style={{
+                    background: "#ffffff",
+                    borderRadius: "10px",
+                    border: "1px solid #e2e8f0",
+                    padding: "12px 18px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: "14px",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
+                  }}
+                >
+                  {/* Filter Pills (All / Confirmed / Pipeline) */}
+                  <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px" }}>
+                    {[
+                      { key: "all", label: "All Jobs", count: counts.all },
+                      { key: "confirmed", label: "Confirmed", count: counts.confirmed },
+                      { key: "pipeline", label: "Pipeline", count: counts.pipeline }
+                    ].map((tab) => {
+                      const isActive = filterType === tab.key;
+                      return (
+                        <button
+                          key={tab.key}
+                          type="button"
+                          onClick={() => setFilterType(tab.key)}
+                          style={{
+                            padding: "6px 14px",
+                            border: "none",
+                            borderRadius: "6px",
+                            background: isActive ? "#ffffff" : "transparent",
+                            color: isActive ? "#0f172a" : "#64748b",
+                            fontWeight: isActive ? "700" : "500",
+                            fontSize: "13px",
+                            cursor: "pointer",
+                            boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            transition: "all 0.15s ease"
+                          }}
+                        >
+                          <span>{tab.label}</span>
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              padding: "1px 6px",
+                              borderRadius: "10px",
+                              background: isActive ? "#eff6ff" : "#e2e8f0",
+                              color: isActive ? "#1d4ed8" : "#64748b",
+                              fontWeight: "600"
+                            }}
+                          >
+                            {tab.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Search and Sort controls */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                    {/* Search Input */}
+                    <div style={{ position: "relative" }}>
+                      <input
+                        type="text"
+                        placeholder="Search client or job..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        style={{
+                          width: "210px",
+                          padding: "6px 28px 6px 10px",
+                          borderRadius: "6px",
+                          border: "1px solid #cbd5e1",
+                          fontSize: "13px",
+                          outline: "none",
+                          color: "#1e293b"
+                        }}
+                      />
+                      {searchQuery ? (
+                        <button
+                          onClick={() => setSearchQuery("")}
+                          style={{
+                            position: "absolute",
+                            right: "6px",
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            background: "none",
+                            border: "none",
+                            color: "#94a3b8",
+                            cursor: "pointer",
+                            fontSize: "12px"
+                          }}
+                        >
+                          ✕
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {/* Sort Select */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <label style={{ fontSize: "12px", fontWeight: "600", color: "#64748b" }}>Sort:</label>
+                      <select
+                        value={jobsSortBy}
+                        onChange={(e) => setJobsSortBy(e.target.value)}
+                        style={{
+                          padding: "5px 10px",
+                          borderRadius: "6px",
+                          border: "1px solid #cbd5e1",
+                          fontSize: "13px",
+                          fontWeight: "500",
+                          color: "#1e293b",
+                          background: "#ffffff",
+                          cursor: "pointer",
+                          outline: "none"
+                        }}
+                      >
+                        <option value="startDateDesc">Start Date (Newest first)</option>
+                        <option value="startDateAsc">Start Date (Oldest first)</option>
+                        <option value="endDateDesc">End Date (Newest first)</option>
+                        <option value="endDateAsc">End Date (Oldest first)</option>
+                        <option value="revDesc">Revenue (Highest first)</option>
+                        <option value="revAsc">Revenue (Lowest first)</option>
+                        <option value="clientName">Client Name (A - Z)</option>
+                        <option value="likelihoodDesc">% Likelihood (Highest first)</option>
+                      </select>
+                    </div>
+
+                    {/* Refresh Button */}
+                    <button
+                      type="button"
+                      onClick={() => loadJobsData(jobsClient, "All")}
+                      disabled={jobsLoading}
+                      style={{
+                        background: "none",
+                        border: "1px solid #e2e8f0",
+                        padding: "5px 10px",
+                        borderRadius: "6px",
+                        color: "#475569",
+                        cursor: "pointer",
+                        fontSize: "12px",
+                        fontWeight: "500",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px"
+                      }}
+                    >
+                      {jobsLoading ? <><Spinner size={12} /> Refreshing</> : "↻ Refresh"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Unsaved Changes Banner */}
+                {dirtyCount > 0 && (
+                  <div
                     style={{
-                      padding: "5px 10px",
-                      borderRadius: "6px",
-                      border: "1px solid #cbd5e1",
+                      background: "#fffbeb",
+                      border: "1px solid #fef3c7",
+                      borderRadius: "8px",
+                      padding: "9px 14px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      color: "#92400e",
                       fontSize: "13px",
-                      fontWeight: "500",
-                      color: "#1e293b",
-                      background: "#fff",
-                      cursor: "pointer",
-                      outline: "none"
+                      fontWeight: "500"
                     }}
                   >
-                    <option value="startDateDesc">By job start date - descending</option>
-                    <option value="endDateDesc">By job end date - descending</option>
-                    <option value="startDateAsc">By job start date - ascending</option>
-                    <option value="endDateAsc">By job end date - ascending</option>
-                    <option value="clientName">By client name</option>
-                    <option value="rowNumber">By row number</option>
-                  </select>
-                </div>
-                <button
-                  onClick={() => loadJobsData(jobsClient, jobsTab)}
-                  disabled={jobsLoading}
-                  style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "4px" }}
-                >
-                  {jobsLoading ? <><Spinner size={12}/> Refreshing</> : "↻ Refresh"}
-                </button>
-              </div>
-            </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span>⚠️</span>
+                      <span>
+                        You have unsaved changes across <strong>{dirtyCount} {dirtyCount === 1 ? "job" : "jobs"}</strong>. Click &ldquo;Save&rdquo; on any modified row to commit changes to the spreadsheet.
+                      </span>
+                    </div>
+                  </div>
+                )}
 
-            {jobsLoading && !jobsData ? (
-              <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
-            ) : jobsData && (() => {
-              const getStatusPillStyle = (status) => {
-                const s = String(status || "").trim();
-                if (s === "Paid") return { backgroundColor: "#d9ead3", color: "#0c343d", padding: "1px 4px", borderRadius: "3px", marginLeft: "4px" };
-                if (s === "Draft") return { backgroundColor: "#fce5cd", color: "#b45f06", padding: "1px 4px", borderRadius: "3px", marginLeft: "4px" };
-                if (s === "Sent" || s === "Received") return { backgroundColor: "#cfe2f3", color: "#0b5394", padding: "1px 4px", borderRadius: "3px", marginLeft: "4px" };
-                return s ? { backgroundColor: "#f1f5f9", color: "#64748b", padding: "1px 4px", borderRadius: "3px", marginLeft: "4px" } : null;
-              };
+                {/* Loading State */}
+                {jobsLoading && !jobsData ? (
+                  <div style={{ textAlign: "center", padding: "48px 0", color: "#64748b" }}>
+                    <Spinner size={24} />
+                    <div style={{ marginTop: "12px", fontSize: "14px" }}>Loading client jobs...</div>
+                  </div>
+                ) : processedJobs.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: "48px 0", background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", color: "#64748b" }}>
+                    <div style={{ fontSize: "18px", fontWeight: "600", color: "#334155", marginBottom: "4px" }}>No jobs found</div>
+                    <div style={{ fontSize: "13px" }}>
+                      {searchQuery ? `No jobs matched query "${searchQuery}".` : `No ${filterType === "all" ? "" : filterType} jobs found for this client.`}
+                    </div>
+                  </div>
+                ) : (
+                  /* Modern Table Container */
+                  <div style={{ background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", overflowX: "auto", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left", minWidth: "1220px" }}>
+                      <thead>
+                        <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#475569", fontWeight: "600", fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                          <th style={{ padding: "10px 10px", width: "36px", textAlign: "center" }}></th>
+                          <th style={{ padding: "10px 10px", width: "95px" }}>Status</th>
+                          <th style={{ padding: "10px 10px", width: "160px" }}>Client</th>
+                          <th style={{ padding: "10px 10px", width: "210px" }}>Job Name</th>
+                          <th style={{ padding: "10px 10px", width: "115px" }}>Type</th>
+                          <th style={{ padding: "10px 10px", width: "125px" }}>Revenue</th>
+                          <th style={{ padding: "10px 10px", width: "125px" }}>Direct Costs</th>
+                          <th style={{ padding: "10px 10px", width: "130px" }}>Start Date</th>
+                          <th style={{ padding: "10px 10px", width: "130px" }}>End Date</th>
+                          <th style={{ padding: "10px 10px", width: "100px" }}>Likelihood</th>
+                          <th style={{ padding: "10px 12px", width: "110px", textAlign: "right" }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {processedJobs.map((job) => {
+                          const jobKey = getJobKey(job);
+                          const isExpanded = expandedJobIds.has(jobKey);
+                          const isDirty = isJobDirty(jobKey);
+                          const isSaving = savingJobKeys.has(jobKey);
+                          const recentlySaved = recentlySavedKeys.has(jobKey);
 
-              const hasProjectCode = jobsData.some(j => j.rows.some(r => r.projectCode && String(r.projectCode).trim() !== ""));
-              const hasDateConf = jobsData.some(j => j.rows.some(r => r.dateConf && String(r.dateConf).trim() !== ""));
-              const hasLeadSrc = jobsData.some(j => j.rows.some(r => r.leadSrc && String(r.leadSrc).trim() !== ""));
-              const hasProdLine = jobsData.some(j => j.rows.some(r => r.prodLine && String(r.prodLine).trim() !== ""));
+                          const parentRow = job.rows?.[0] || {};
+                          const tabName = job.tabName || parentRow.tabName || "Confirmed";
+                          const isConfirmed = tabName.toLowerCase() === "confirmed";
 
-              return (
-              <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
-                <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "2000px", tableLayout: "fixed" }}>
-                  <colgroup>
-                    <col style={{ width: "24px" }} />
-                    <col style={{ width: "50px" }} />
-                    <col style={{ width: "120px" }} />
-                    <col style={{ width: "160px" }} />
-                    {hasProjectCode && <col style={{ width: "80px" }} />}
-                    {hasDateConf && <col style={{ width: "80px" }} />}
-                    {hasLeadSrc && <col style={{ width: "80px" }} />}
-                    <col style={{ width: "90px" }} />
-                    {hasProdLine && <col style={{ width: "90px" }} />}
-                    {jobsClient?.splitEnabled && <col style={{ width: "60px" }} />}
-                    <col style={{ width: "80px" }} />
-                    <col style={{ width: "80px" }} />
-                    <col style={{ width: "60px" }} />
-                    <col style={{ width: "95px" }} />
-                    <col style={{ width: "95px" }} />
-                    {jobsTab === "Pipeline" && <><col style={{ width: "70px" }}/><col style={{ width: "70px" }}/></>}
-                    <col style={{ width: "175px" }} />
-                    <col style={{ width: "175px" }} />
-                    <col style={{ width: "175px" }} />
-                    <col style={{ width: "90px" }} />
-                    <col style={{ width: "175px" }} />
-                    <col style={{ width: "175px" }} />
-                    <col style={{ width: "175px" }} />
-                    <col style={{ width: "90px" }} />
-                  </colgroup>
-                  <thead>
-                    <tr style={{ background: "#f5f6fa" }}>
-                      {["", "Row", "Client", "Job name", 
-                        ...(hasProjectCode ? ["Code"] : []),
-                        ...(hasDateConf ? [jobsTab === "Pipeline" ? "Date Added" : "Date Conf"] : []),
-                        ...(hasLeadSrc ? ["Lead src"] : []),
-                        "Type", 
-                        ...(hasProdLine ? ["Prod. line"] : []),
-                        ...(jobsClient?.splitEnabled ? ["Split"] : []),
-                        "Revenue", "Costs", "VAT", "Start", "End",
-                        ...(jobsTab === "Pipeline" ? ["Likelihood", "Copied?"] : []),
-                        "InvSlot1", "InvSlot2", "InvSlot3", "Left to inv.",
-                        "ExpSlot1", "ExpSlot2", "ExpSlot3", "Costs outst."].map((h, i) => (
-                        <th key={i} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedJobs.flatMap((job, jobIdx) => {
-                      const isRetainer = String(job.rows[0]?.projectRetainer || "").toLowerCase().includes("retainer");
-                      const isExpanded = jobsExpanded.has(job.rows[0]?.rowNum);
-                      
-                      const visibleRows = (isRetainer && !isExpanded) ? job.rows.slice(0, 1) : job.rows;
+                          // Current values (draft if modified, else parentRow)
+                          const clientVal = getJobFieldValue(job, "client");
+                          const jobNameVal = getJobFieldValue(job, "jobName");
+                          const typeVal = getJobFieldValue(job, "projectRetainer") || "Project";
+                          const isRetainer = String(typeVal).toLowerCase().includes("retainer");
+                          const revVal = getJobFieldValue(job, "revenue");
+                          const directCostsVal = getJobFieldValue(job, "directCosts");
+                          const startDateVal = getJobFieldValue(job, "startDate");
+                          const endDateVal = getJobFieldValue(job, "endDate");
+                          const likelihoodVal = getJobFieldValue(job, "likelihood");
 
-                      return visibleRows.map((r, rIdx) => {
-                        const isParent = r.isParent;
-                        const showFields = !isRetainer || isParent;
-                        const showIdentity = isParent; 
-                        
-                        return (
-                          <tr key={r.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
-                            <td style={{ padding: "7px 4px", borderBottom: "1px solid #eee", textAlign: "center", verticalAlign: "top" }}>
-                              {rIdx === 0 && isRetainer && job.rows.length > 1 && (
-                                <span
-                                  onClick={() => setJobsExpanded(prev => { const n = new Set(prev); if (n.has(r.rowNum)) n.delete(r.rowNum); else n.add(r.rowNum); return n; })}
-                                  style={{ cursor: "pointer", color: "#7c3aed", fontSize: "11px", userSelect: "none" }}
-                                >
-                                  {isExpanded ? "▼" : "▶"}
-                                </span>
-                              )}
-                            </td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888", verticalAlign: "top" }}>{r.rowNum}</td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                              {showIdentity && <EditableCell value={r.client} colLetter="A" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                            </td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                              {showIdentity && <EditableCell value={r.jobName} colLetter="B" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                            </td>
-                            {hasProjectCode && (
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", maxWidth: "80px" }}>
-                                {showFields && (
-                                  <div style={{ overflowX: "auto", whiteSpace: "nowrap", scrollbarWidth: "thin", paddingBottom: "2px" }}>
-                                    <EditableCell value={r.projectCode} colLetter="C" rowNum={r.rowNum} onSave={handleInlineUpdate} />
-                                  </div>
-                                )}
-                              </td>
-                            )}
-                            {hasDateConf && (
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.dateConf} colLetter="D" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                              </td>
-                            )}
-                            {hasLeadSrc && (
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.leadSrc} colLetter="E" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                              </td>
-                            )}
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                              {showFields && (() => {
-                                let typeStyle = {};
-                                if (r.projectRetainer) {
-                                  const tStr = String(r.projectRetainer).toLowerCase();
-                                  if (tStr.includes("retainer")) typeStyle = { backgroundColor: "#e0f2fe", color: "#0284c7", fontWeight: "600", padding: "2px 6px", display: "inline-block" };
-                                  else if (tStr.includes("project")) typeStyle = { backgroundColor: "#f3e8ff", color: "#9333ea", fontWeight: "600", padding: "2px 6px", display: "inline-block" };
-                                }
-                                return <EditableCell value={r.projectRetainer} colLetter="AJ" rowNum={r.rowNum} onSave={handleInlineUpdate} customStyle={typeStyle} />;
-                              })()}
-                            </td>
-                            {hasProdLine && (
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                {showFields && <EditableCell value={r.prodLine} colLetter="AK" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                              </td>
-                            )}
-                            
-                            {jobsClient?.splitEnabled && (
-                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", textAlign: "center", verticalAlign: "top" }}>
-                                {showFields && !isRetainer && isParent && (
-                                  <button onClick={() => setJobsEditSplit({ jobRow: r })} style={{ background: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#0066cc" : "#f0f0f0", color: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#fff" : "#666", border: "none", borderRadius: "4px", padding: "2px 6px", fontSize: "10px", cursor: "pointer" }}>
-                                    Split
-                                  </button>
-                                )}
-                              </td>
-                            )}
-                            
-                            {(() => {
-                              let revBg = "transparent";
-                              if (jobsTab === "Pipeline" && isParent) {
-                                const l = String(r.likelihood || "").trim();
-                                const c = String(r.copiedToConf || "").trim().toLowerCase();
-                                const isZero = l === "0%" || l === "0" || parseFloat(l.replace(/[^0-9.-]/g, "")) === 0;
-                                if (!isZero && l !== "" && c !== "yes") revBg = "#e0f2fe"; 
-                              }
-                              const leftToInvVal = parseFloat(String(r.leftToInvoice).replace(/[£$€,\s]/g,""));
-                              if (!isNaN(leftToInvVal) && Math.abs(leftToInvVal) > 0.01 && revBg === "transparent") {
-                                revBg = "#fce8b2"; 
-                              }
-                              return (
-                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: revBg }}>
-                                  {showFields && <EditableCell value={r.revenue} colLetter="AG" rowNum={r.rowNum} onSave={handleInlineUpdate} isCurrency={true} />}
-                                </td>
-                              );
-                            })()}
-                            {(() => {
-                              let costsBg = "transparent";
-                              const costsOutVal = parseFloat(String(r.costsOutstanding).replace(/[£$€,\s]/g,""));
-                              if (!isNaN(costsOutVal) && Math.abs(costsOutVal) > 0.01) {
-                                costsBg = "#fce8b2";
-                              }
-                              return (
-                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: costsBg }}>
-                                  {showFields && <EditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleInlineUpdate} isCurrency={true} />}
-                                </td>
-                              );
-                            })()}
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                              {showFields && <EditableCell value={r.vat} colLetter="AI" rowNum={r.rowNum} onSave={handleInlineUpdate} isCurrency={true} />}
-                            </td>
-                            <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                              {showFields && <EditableCell value={r.startDate} colLetter="AL" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                            </td>
-                            {(() => {
-                              let endBg = "transparent";
-                              const startDt = parseSheetDate(r.startDate);
-                              const endDt = parseSheetDate(r.endDate);
-                              if (startDt && endDt && endDt < startDt) {
-                                endBg = "#f4c7c3"; 
-                              }
-                              return (
-                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: endBg }}>
-                                  {showFields && <EditableCell value={r.endDate} colLetter="AM" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                                </td>
-                              );
-                            })()}
-                            {jobsTab === "Pipeline" && (
-                              <>
-                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                  {showFields && <EditableCell value={r.likelihood} colLetter="AN" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                                </td>
-                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
-                                  {showFields && <EditableCell value={r.copiedToConf} colLetter="DD" rowNum={r.rowNum} onSave={handleInlineUpdate} />}
-                                </td>
-                              </>
-                            )}
-                            
-                            {r.invoiceSlots.map(s => {
-                              let sentStyle = {};
-                              let amtStyle = {};
-                              
-                              const sentDt = parseSheetDate(s.sentDate);
-                              if (sentDt) {
-                                const today = new Date();
-                                today.setHours(0,0,0,0);
-                                const status = String(s.status || "").trim();
-                                const isPaid = status === "Paid";
-                                const isSent = status === "Sent";
-                                const todayPlus30 = new Date(today);
-                                todayPlus30.setDate(todayPlus30.getDate() + 30);
-                                
-                                const days = parseInt(s.daysToPay, 10) || 0;
-                                const dueDt = new Date(sentDt);
-                                dueDt.setDate(dueDt.getDate() + days);
+                          // Expanded values
+                          const dateConfVal = getJobFieldValue(job, "dateConf");
+                          const leadSrcVal = getJobFieldValue(job, "leadSrc");
+                          const prodLineVal = getJobFieldValue(job, "prodLine");
+                          const vatVal = getJobFieldValue(job, "vat") || "Yes";
+                          const projectCodeVal = getJobFieldValue(job, "projectCode");
+                          const unevenSplitVal = parentRow.unevenSplit || "";
+                          const leftToInvoiceVal = parentRow.leftToInvoice || "";
+                          const costsOutstandingVal = parentRow.costsOutstanding || "";
 
-                                if (sentDt < today && !isPaid && !isSent) {
-                                  sentStyle = { backgroundColor: "#f4c7c3", color: "#b71c1c", padding: "1px 4px", borderRadius: "3px" };
-                                } else if (sentDt < todayPlus30 && !isPaid && !isSent) {
-                                  sentStyle = { backgroundColor: "#fff2cc", color: "#f57f17", padding: "1px 4px", borderRadius: "3px" };
-                                } else if (dueDt < today && !isPaid) {
-                                  sentStyle = { backgroundColor: "#fce8b2", color: "#e65100", padding: "1px 4px", borderRadius: "3px" }; 
-                                }
-                              }
-                              
-                              if (s.amount && String(s.amount).trim() !== "") {
-                                const isRetainer = String(r.projectRetainer || "").trim() === "Retainer";
-                                const startDt = parseSheetDate(r.startDate);
-                                const endDt = parseSheetDate(r.endDate);
-                                if (isRetainer && startDt && endDt) {
-                                  const eom = new Date(startDt.getFullYear(), startDt.getMonth() + 1, 0);
-                                  if (endDt > eom) {
-                                    amtStyle = { backgroundColor: "#ead1dc", color: "#4a148c", padding: "1px 4px", borderRadius: "3px" };
+                          // Distinct product line and lead source options including current value
+                          const plOptions = Array.from(new Set([...(productLines || []), prodLineVal].filter(Boolean))).sort();
+                          const lsOptions = Array.from(new Set([...(leadSources || []), leadSrcVal].filter(Boolean))).sort();
+
+                          return (
+                            <React.Fragment key={jobKey}>
+                              {/* Main Job Row */}
+                              <tr
+                                onClick={(e) => {
+                                  // Don't toggle if user clicked directly inside an input, select, or button
+                                  const tag = e.target.tagName.toLowerCase();
+                                  if (tag === "input" || tag === "select" || tag === "button" || e.target.closest("button")) {
+                                    return;
                                   }
-                                }
-                              }
+                                  toggleJobExpanded(jobKey);
+                                }}
+                                style={{
+                                  borderBottom: isExpanded ? "none" : "1px solid #f1f5f9",
+                                  backgroundColor: isDirty ? "#fffbeb" : isExpanded ? "#f8fafc" : "#ffffff",
+                                  borderLeft: isDirty ? "4px solid #f59e0b" : "4px solid transparent",
+                                  transition: "background-color 0.1s ease",
+                                  cursor: "pointer"
+                                }}
+                                onMouseEnter={(e) => {
+                                  if (!isDirty && !isExpanded) e.currentTarget.style.backgroundColor = "#f8fafc";
+                                }}
+                                onMouseLeave={(e) => {
+                                  if (!isDirty && !isExpanded) e.currentTarget.style.backgroundColor = "#ffffff";
+                                }}
+                              >
+                                {/* Chevron expand toggle */}
+                                <td style={{ padding: "9px 10px", textAlign: "center", verticalAlign: "middle" }}>
+                                  <span
+                                    style={{
+                                      display: "inline-block",
+                                      transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                                      transition: "transform 0.15s ease",
+                                      color: "#64748b",
+                                      fontSize: "11px",
+                                      userSelect: "none"
+                                    }}
+                                  >
+                                    ▶
+                                  </span>
+                                </td>
 
-                              return (
-                                <td key={`inv${s.slotNum}`} onClick={() => {
-                                  setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s });
-                                }} style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer", borderLeft: s.slotNum === 1 ? "2px solid #f0f0f0" : "none" }} onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                                  {!s.ref && !s.amount ? <span style={{ color: "#ccc" }}>-</span> : (
-                                    <div>
-                                      <div style={{ fontWeight: "600", color: isPlaceholderInvoice(s.ref) ? "#9333ea" : "inherit" }}>{s.ref}</div>
-                                      <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
-                                        <span style={amtStyle}>{formatCurrency(s.amount)}</span>
-                                        {s.sentDate ? <><span style={{ margin: "0 2px" }}>·</span><span style={{ ...sentStyle, whiteSpace: "nowrap" }}>{s.sentDate}</span></> : null}
-                                        {s.status ? <span style={getStatusPillStyle(s.status)}>{s.status}</span> : null}
-                                      </div>
-                                    </div>
+                                {/* Status Badge */}
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
+                                  <span
+                                    style={{
+                                      display: "inline-block",
+                                      padding: "2px 8px",
+                                      borderRadius: "12px",
+                                      fontSize: "11px",
+                                      fontWeight: "600",
+                                      background: isConfirmed ? "#dcfce7" : "#e0f2fe",
+                                      color: isConfirmed ? "#15803d" : "#0369a1",
+                                      border: isConfirmed ? "1px solid #bbf7d0" : "1px solid #bae6fd"
+                                    }}
+                                  >
+                                    {isConfirmed ? "Confirmed" : "Pipeline"}
+                                  </span>
+                                </td>
+
+                                {/* Client Name (Inline Editable) */}
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
+                                  <input
+                                    type="text"
+                                    value={clientVal}
+                                    onChange={(e) => handleDraftFieldChange(job, "client", e.target.value)}
+                                    placeholder="Client Name"
+                                    style={{
+                                      width: "100%",
+                                      padding: "4px 6px",
+                                      borderRadius: "5px",
+                                      border: isDirty && draftEdits[jobKey]?.client !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
+                                      background: "transparent",
+                                      fontSize: "13px",
+                                      fontWeight: "600",
+                                      color: "#0f172a",
+                                      outline: "none",
+                                      boxSizing: "border-box"
+                                    }}
+                                    onFocus={(e) => {
+                                      e.target.style.background = "#ffffff";
+                                      e.target.style.borderColor = "#3b82f6";
+                                    }}
+                                    onBlur={(e) => {
+                                      e.target.style.background = "transparent";
+                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.client !== undefined ? "#f59e0b" : "transparent";
+                                    }}
+                                  />
+                                </td>
+
+                                {/* Job Name (Inline Editable) */}
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
+                                  <input
+                                    type="text"
+                                    value={jobNameVal}
+                                    onChange={(e) => handleDraftFieldChange(job, "jobName", e.target.value)}
+                                    placeholder="Job Name"
+                                    style={{
+                                      width: "100%",
+                                      padding: "4px 6px",
+                                      borderRadius: "5px",
+                                      border: isDirty && draftEdits[jobKey]?.jobName !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
+                                      background: "transparent",
+                                      fontSize: "13px",
+                                      fontWeight: "500",
+                                      color: "#334155",
+                                      outline: "none",
+                                      boxSizing: "border-box"
+                                    }}
+                                    onFocus={(e) => {
+                                      e.target.style.background = "#ffffff";
+                                      e.target.style.borderColor = "#3b82f6";
+                                    }}
+                                    onBlur={(e) => {
+                                      e.target.style.background = "transparent";
+                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.jobName !== undefined ? "#f59e0b" : "transparent";
+                                    }}
+                                  />
+                                </td>
+
+                                {/* Job Type (Project / Retainer) */}
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
+                                  <select
+                                    value={isRetainer ? "Retainer" : "Project"}
+                                    onChange={(e) => handleDraftFieldChange(job, "projectRetainer", e.target.value)}
+                                    style={{
+                                      padding: "3px 6px",
+                                      borderRadius: "5px",
+                                      border: isDirty && draftEdits[jobKey]?.projectRetainer !== undefined ? "1px solid #f59e0b" : "1px solid #e2e8f0",
+                                      background: isRetainer ? "#e0f2fe" : "#f3e8ff",
+                                      color: isRetainer ? "#0284c7" : "#7e22ce",
+                                      fontSize: "11px",
+                                      fontWeight: "600",
+                                      cursor: "pointer",
+                                      outline: "none"
+                                    }}
+                                  >
+                                    <option value="Project">Project</option>
+                                    <option value="Retainer">Retainer</option>
+                                  </select>
+                                </td>
+
+                                {/* Revenue */}
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
+                                  <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                                    <input
+                                      type="text"
+                                      value={revVal}
+                                      onChange={(e) => handleDraftFieldChange(job, "revenue", e.target.value)}
+                                      placeholder="0.00"
+                                      style={{
+                                        width: "100%",
+                                        padding: "4px 6px",
+                                        borderRadius: "5px",
+                                        border: isDirty && draftEdits[jobKey]?.revenue !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
+                                        background: "transparent",
+                                        fontSize: "13px",
+                                        fontWeight: "600",
+                                        color: "#0f172a",
+                                        outline: "none",
+                                        boxSizing: "border-box"
+                                      }}
+                                      onFocus={(e) => {
+                                        e.target.style.background = "#ffffff";
+                                        e.target.style.borderColor = "#3b82f6";
+                                      }}
+                                      onBlur={(e) => {
+                                        e.target.style.background = "transparent";
+                                        e.target.style.borderColor = isDirty && draftEdits[jobKey]?.revenue !== undefined ? "#f59e0b" : "transparent";
+                                      }}
+                                    />
+                                  </div>
+                                </td>
+
+                                {/* Direct Costs */}
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
+                                  <input
+                                    type="text"
+                                    value={directCostsVal}
+                                    onChange={(e) => handleDraftFieldChange(job, "directCosts", e.target.value)}
+                                    placeholder="0.00"
+                                    style={{
+                                      width: "100%",
+                                      padding: "4px 6px",
+                                      borderRadius: "5px",
+                                      border: isDirty && draftEdits[jobKey]?.directCosts !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
+                                      background: "transparent",
+                                      fontSize: "13px",
+                                      color: "#475569",
+                                      outline: "none",
+                                      boxSizing: "border-box"
+                                    }}
+                                    onFocus={(e) => {
+                                      e.target.style.background = "#ffffff";
+                                      e.target.style.borderColor = "#3b82f6";
+                                    }}
+                                    onBlur={(e) => {
+                                      e.target.style.background = "transparent";
+                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.directCosts !== undefined ? "#f59e0b" : "transparent";
+                                    }}
+                                  />
+                                </td>
+
+                                {/* Start Date */}
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
+                                  <input
+                                    type="date"
+                                    value={toInputDateFormat(startDateVal)}
+                                    onChange={(e) => handleDraftFieldChange(job, "startDate", e.target.value)}
+                                    style={{
+                                      padding: "3px 4px",
+                                      borderRadius: "5px",
+                                      border: isDirty && draftEdits[jobKey]?.startDate !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
+                                      background: "transparent",
+                                      fontSize: "12px",
+                                      color: "#334155",
+                                      outline: "none"
+                                    }}
+                                    onFocus={(e) => {
+                                      e.target.style.background = "#ffffff";
+                                      e.target.style.borderColor = "#3b82f6";
+                                    }}
+                                    onBlur={(e) => {
+                                      e.target.style.background = "transparent";
+                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.startDate !== undefined ? "#f59e0b" : "transparent";
+                                    }}
+                                  />
+                                </td>
+
+                                {/* End Date */}
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
+                                  <input
+                                    type="date"
+                                    value={toInputDateFormat(endDateVal)}
+                                    onChange={(e) => handleDraftFieldChange(job, "endDate", e.target.value)}
+                                    style={{
+                                      padding: "3px 4px",
+                                      borderRadius: "5px",
+                                      border: isDirty && draftEdits[jobKey]?.endDate !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
+                                      background: "transparent",
+                                      fontSize: "12px",
+                                      color: "#334155",
+                                      outline: "none"
+                                    }}
+                                    onFocus={(e) => {
+                                      e.target.style.background = "#ffffff";
+                                      e.target.style.borderColor = "#3b82f6";
+                                    }}
+                                    onBlur={(e) => {
+                                      e.target.style.background = "transparent";
+                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.endDate !== undefined ? "#f59e0b" : "transparent";
+                                    }}
+                                  />
+                                </td>
+
+                                {/* Likelihood (%) */}
+                                <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
+                                  {isConfirmed ? (
+                                    <span style={{ fontSize: "12px", fontWeight: "600", color: "#15803d", padding: "2px 6px", background: "#f0fdf4", borderRadius: "4px" }}>
+                                      100%
+                                    </span>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      value={likelihoodVal || ""}
+                                      onChange={(e) => handleDraftFieldChange(job, "likelihood", e.target.value)}
+                                      placeholder="50%"
+                                      style={{
+                                        width: "60px",
+                                        padding: "3px 5px",
+                                        borderRadius: "5px",
+                                        border: isDirty && draftEdits[jobKey]?.likelihood !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
+                                        background: "transparent",
+                                        fontSize: "12px",
+                                        fontWeight: "600",
+                                        color: "#0369a1",
+                                        outline: "none"
+                                      }}
+                                      onFocus={(e) => {
+                                        e.target.style.background = "#ffffff";
+                                        e.target.style.borderColor = "#3b82f6";
+                                      }}
+                                      onBlur={(e) => {
+                                        e.target.style.background = "transparent";
+                                        e.target.style.borderColor = isDirty && draftEdits[jobKey]?.likelihood !== undefined ? "#f59e0b" : "transparent";
+                                      }}
+                                    />
                                   )}
                                 </td>
-                              );
-                            })}
 
-                            {(() => {
-                              let varBg = "transparent";
-                              const val = parseFloat(String(r.leftToInvoice).replace(/[£$€,\s]/g,""));
-                              if (!isNaN(val) && (val > 1 || val < -1)) varBg = "#f4c7c3";
-                              return (
-                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: varBg }}>
+                                {/* Row Actions (Save / Cancel or Saved check) */}
+                                <td style={{ padding: "9px 12px", verticalAlign: "middle", textAlign: "right" }}>
+                                  <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                                    {isDirty ? (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleSaveJob(job);
+                                          }}
+                                          disabled={isSaving}
+                                          style={{
+                                            padding: "4px 10px",
+                                            borderRadius: "5px",
+                                            border: "none",
+                                            background: "#16a34a",
+                                            color: "#ffffff",
+                                            fontSize: "12px",
+                                            fontWeight: "600",
+                                            cursor: isSaving ? "not-allowed" : "pointer",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "4px",
+                                            boxShadow: "0 1px 2px rgba(22,163,74,0.2)"
+                                          }}
+                                        >
+                                          {isSaving ? <Spinner size={10} /> : "💾"} Save
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDiscardChanges(job);
+                                          }}
+                                          title="Discard changes"
+                                          style={{
+                                            padding: "4px 8px",
+                                            borderRadius: "5px",
+                                            border: "1px solid #e2e8f0",
+                                            background: "#ffffff",
+                                            color: "#64748b",
+                                            fontSize: "12px",
+                                            cursor: "pointer"
+                                          }}
+                                        >
+                                          ✕
+                                        </button>
+                                      </>
+                                    ) : recentlySaved ? (
+                                      <span style={{ fontSize: "11px", fontWeight: "600", color: "#16a34a", background: "#f0fdf4", padding: "3px 8px", borderRadius: "10px" }}>
+                                        ✓ Saved
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          toggleJobExpanded(jobKey);
+                                        }}
+                                        style={{
+                                          background: "none",
+                                          border: "none",
+                                          color: "#64748b",
+                                          cursor: "pointer",
+                                          fontSize: "11px",
+                                          fontWeight: "500",
+                                          padding: "3px 6px"
+                                        }}
+                                      >
+                                        {isExpanded ? "Collapse" : "Expand"}
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+
+                              {/* Expanded Panel Details */}
+                              {isExpanded && (
+                                <tr>
+                                  <td colSpan={11} style={{ padding: 0, borderBottom: "1px solid #e2e8f0" }}>
+                                    <div
+                                      style={{
+                                        background: "#f8fafc",
+                                        padding: "18px 24px 22px",
+                                        borderTop: "1px solid #e2e8f0",
+                                        boxShadow: "inset 0 2px 4px rgba(0,0,0,0.02)"
+                                      }}
+                                    >
+                                      {/* Sub-grid of cards */}
+                                      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.4fr 1.4fr", gap: "16px", marginBottom: "16px" }}>
+                                        {/* Card 1: Additional Job Details */}
+                                        <div
+                                          style={{
+                                            background: "#ffffff",
+                                            borderRadius: "8px",
+                                            border: "1px solid #e2e8f0",
+                                            padding: "14px 16px",
+                                            boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                                          }}
+                                        >
+                                          <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
+                                            Additional Information
+                                          </div>
+
+                                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                                            {/* Date Confirmed / Date Added */}
+                                            <div>
+                                              <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
+                                                {isConfirmed ? "Date Confirmed" : "Date Added"}
+                                              </label>
+                                              <input
+                                                type="date"
+                                                value={toInputDateFormat(dateConfVal)}
+                                                onChange={(e) => handleDraftFieldChange(job, "dateConf", e.target.value)}
+                                                style={{
+                                                  width: "100%",
+                                                  padding: "5px 7px",
+                                                  borderRadius: "5px",
+                                                  border: isDirty && draftEdits[jobKey]?.dateConf !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                                                  fontSize: "12px",
+                                                  outline: "none",
+                                                  boxSizing: "border-box"
+                                                }}
+                                              />
+                                            </div>
+
+                                            {/* VAT Status */}
+                                            <div>
+                                              <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
+                                                VAT Applicable?
+                                              </label>
+                                              <select
+                                                value={vatVal}
+                                                onChange={(e) => handleDraftFieldChange(job, "vat", e.target.value)}
+                                                style={{
+                                                  width: "100%",
+                                                  padding: "5px 7px",
+                                                  borderRadius: "5px",
+                                                  border: isDirty && draftEdits[jobKey]?.vat !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                                                  fontSize: "12px",
+                                                  outline: "none",
+                                                  background: "#ffffff",
+                                                  cursor: "pointer",
+                                                  boxSizing: "border-box"
+                                                }}
+                                              >
+                                                <option value="Yes">Yes</option>
+                                                <option value="No">No</option>
+                                              </select>
+                                            </div>
+
+                                            {/* Lead Source */}
+                                            <div>
+                                              <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
+                                                Lead Source
+                                              </label>
+                                              <select
+                                                value={leadSrcVal || ""}
+                                                onChange={(e) => handleDraftFieldChange(job, "leadSrc", e.target.value)}
+                                                style={{
+                                                  width: "100%",
+                                                  padding: "5px 7px",
+                                                  borderRadius: "5px",
+                                                  border: isDirty && draftEdits[jobKey]?.leadSrc !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                                                  fontSize: "12px",
+                                                  outline: "none",
+                                                  background: "#ffffff",
+                                                  cursor: "pointer",
+                                                  boxSizing: "border-box"
+                                                }}
+                                              >
+                                                <option value="">Select Lead Source...</option>
+                                                {lsOptions.map((opt) => (
+                                                  <option key={opt} value={opt}>{opt}</option>
+                                                ))}
+                                              </select>
+                                            </div>
+
+                                            {/* Product Line */}
+                                            <div>
+                                              <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
+                                                Product Line
+                                              </label>
+                                              <select
+                                                value={prodLineVal || ""}
+                                                onChange={(e) => handleDraftFieldChange(job, "prodLine", e.target.value)}
+                                                style={{
+                                                  width: "100%",
+                                                  padding: "5px 7px",
+                                                  borderRadius: "5px",
+                                                  border: isDirty && draftEdits[jobKey]?.prodLine !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                                                  fontSize: "12px",
+                                                  outline: "none",
+                                                  background: "#ffffff",
+                                                  cursor: "pointer",
+                                                  boxSizing: "border-box"
+                                                }}
+                                              >
+                                                <option value="">Select Product Line...</option>
+                                                {plOptions.map((opt) => (
+                                                  <option key={opt} value={opt}>{opt}</option>
+                                                ))}
+                                              </select>
+                                            </div>
+
+                                            {/* Project Code */}
+                                            <div style={{ gridColumn: "span 2" }}>
+                                              <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
+                                                Project Code
+                                              </label>
+                                              <input
+                                                type="text"
+                                                value={projectCodeVal || ""}
+                                                onChange={(e) => handleDraftFieldChange(job, "projectCode", e.target.value)}
+                                                placeholder="e.g. PRJ-2026-01"
+                                                style={{
+                                                  width: "100%",
+                                                  padding: "5px 7px",
+                                                  borderRadius: "5px",
+                                                  border: isDirty && draftEdits[jobKey]?.projectCode !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
+                                                  fontSize: "12px",
+                                                  outline: "none",
+                                                  boxSizing: "border-box"
+                                                }}
+                                              />
+                                            </div>
+
+                                            {/* Uneven Revenue Split */}
+                                            <div style={{ gridColumn: "span 2", marginTop: "4px", padding: "8px 10px", background: "#f8fafc", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                <div>
+                                                  <div style={{ fontSize: "11px", fontWeight: "700", color: "#334155" }}>Revenue Split</div>
+                                                  <div style={{ fontSize: "11px", color: "#64748b" }}>
+                                                    {isRetainer
+                                                      ? "Even monthly (Retainer)"
+                                                      : String(unevenSplitVal).toLowerCase().startsWith("[split]")
+                                                      ? "Custom uneven split active"
+                                                      : "Even monthly distribution"}
+                                                  </div>
+                                                </div>
+                                                {!isRetainer && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => setJobsEditSplit({ jobRow: parentRow, tabName })}
+                                                    style={{
+                                                      padding: "4px 9px",
+                                                      borderRadius: "5px",
+                                                      border: "1px solid #cbd5e1",
+                                                      background: String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#0284c7" : "#ffffff",
+                                                      color: String(unevenSplitVal).toLowerCase().startsWith("[split]") ? "#ffffff" : "#0284c7",
+                                                      fontSize: "11px",
+                                                      fontWeight: "600",
+                                                      cursor: "pointer"
+                                                    }}
+                                                  >
+                                                    Configure Split
+                                                  </button>
+                                                )}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        {/* Card 2: Invoices */}
+                                        {(() => {
+                                          const invoiceItems = getJobInvoiceItems(job, isRetainer);
+                                          return (
+                                            <div
+                                              style={{
+                                                background: "#ffffff",
+                                                borderRadius: "8px",
+                                                border: "1px solid #e2e8f0",
+                                                padding: "14px 16px",
+                                                boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                                display: "flex",
+                                                flexDirection: "column"
+                                              }}
+                                            >
+                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
+                                                <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                                                  Invoices ({invoiceItems.length})
+                                                </div>
+                                                {leftToInvoiceVal && (
+                                                  <span
+                                                    style={{
+                                                      fontSize: "11px",
+                                                      padding: "2px 7px",
+                                                      borderRadius: "10px",
+                                                      fontWeight: "600",
+                                                      background: parseFloat(String(leftToInvoiceVal).replace(/[£$€,\s]/g, "")) !== 0 ? "#fef3c7" : "#f1f5f9",
+                                                      color: parseFloat(String(leftToInvoiceVal).replace(/[£$€,\s]/g, "")) !== 0 ? "#92400e" : "#64748b"
+                                                    }}
+                                                  >
+                                                    Left to inv: {formatCurrency(leftToInvoiceVal)}
+                                                  </span>
+                                                )}
+                                              </div>
+
+                                              <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
+                                                {invoiceItems.length === 0 ? (
+                                                  <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", padding: "8px 0" }}>
+                                                    No invoice slots found.
+                                                  </div>
+                                                ) : (
+                                                  invoiceItems.map((item) => {
+                                                    const slot = item.slot;
+                                                    const hasData = Boolean((slot.ref && String(slot.ref).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
+                                                    const pillStyle = getStatusPill(slot.status);
+                                                    return (
+                                                      <div
+                                                        key={item.id}
+                                                        onClick={() => {
+                                                          setInvoicesEditSlot({
+                                                            rowNum: item.rowNum,
+                                                            slotNum: item.slotNum,
+                                                            slot,
+                                                            jobClient: item.row.client || parentRow.client || job.client,
+                                                            jobName: item.row.jobName || parentRow.jobName || job.jobName,
+                                                            slotLabel: item.label
+                                                          });
+                                                        }}
+                                                        style={{
+                                                          padding: "8px 10px",
+                                                          borderRadius: "6px",
+                                                          border: "1px solid #e2e8f0",
+                                                          background: hasData ? "#f8fafc" : "#ffffff",
+                                                          cursor: "pointer",
+                                                          transition: "border-color 0.15s ease"
+                                                        }}
+                                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
+                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
+                                                      >
+                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                          <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>
+                                                            {item.label}
+                                                          </span>
+                                                          <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                                                            {item.subLabel && (
+                                                              <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>
+                                                            )}
+                                                            {slot.status && (
+                                                              <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
+                                                                {slot.status}
+                                                              </span>
+                                                            )}
+                                                          </div>
+                                                        </div>
+                                                        {hasData ? (
+                                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
+                                                            <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholderInvoice(slot.ref) ? "#9333ea" : "#0f172a" }}>
+                                                              {slot.ref || "No Ref"}
+                                                            </span>
+                                                            <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
+                                                              {formatCurrency(slot.amount)}
+                                                            </span>
+                                                          </div>
+                                                        ) : (
+                                                          <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", marginTop: "4px" }}>
+                                                            Empty · Click to assign invoice
+                                                          </div>
+                                                        )}
+                                                        {slot.sentDate && (
+                                                          <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                                            Sent: {slot.sentDate} ({slot.daysToPay || 30} days)
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                    );
+                                                  })
+                                                )}
+                                              </div>
+                                            </div>
+                                          );
+                                        })()}
+
+                                        {/* Card 3: Direct Costs / Expenses */}
+                                        {(() => {
+                                          const expenseItems = getJobExpenseItems(job, isRetainer);
+                                          return (
+                                            <div
+                                              style={{
+                                                background: "#ffffff",
+                                                borderRadius: "8px",
+                                                border: "1px solid #e2e8f0",
+                                                padding: "14px 16px",
+                                                boxShadow: "0 1px 2px rgba(0,0,0,0.02)",
+                                                display: "flex",
+                                                flexDirection: "column"
+                                              }}
+                                            >
+                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", borderBottom: "1px solid #f1f5f9", paddingBottom: "6px" }}>
+                                                <div style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                                                  Direct Costs ({expenseItems.length})
+                                                </div>
+                                                {costsOutstandingVal && (
+                                                  <span
+                                                    style={{
+                                                      fontSize: "11px",
+                                                      padding: "2px 7px",
+                                                      borderRadius: "10px",
+                                                      fontWeight: "600",
+                                                      background: parseFloat(String(costsOutstandingVal).replace(/[£$€,\s]/g, "")) !== 0 ? "#fef3c7" : "#f1f5f9",
+                                                      color: parseFloat(String(costsOutstandingVal).replace(/[£$€,\s]/g, "")) !== 0 ? "#92400e" : "#64748b"
+                                                    }}
+                                                  >
+                                                    Costs outst: {formatCurrency(costsOutstandingVal)}
+                                                  </span>
+                                                )}
+                                              </div>
+
+                                              <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
+                                                {expenseItems.length === 0 ? (
+                                                  <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", padding: "8px 0" }}>
+                                                    No direct cost slots found.
+                                                  </div>
+                                                ) : (
+                                                  expenseItems.map((item) => {
+                                                    const slot = item.slot;
+                                                    const hasData = Boolean((slot.description && String(slot.description).trim() !== "") || (slot.amount && String(slot.amount).trim() !== ""));
+                                                    const pillStyle = getStatusPill(slot.status);
+                                                    return (
+                                                      <div
+                                                        key={item.id}
+                                                        onClick={() => {
+                                                          setDirectCostsEditSlot({
+                                                            rowNum: item.rowNum,
+                                                            slotNum: item.slotNum,
+                                                            slot,
+                                                            jobName: item.row.jobName || parentRow.jobName || job.jobName,
+                                                            jobClient: item.row.client || parentRow.client || job.client,
+                                                            slotLabel: item.label
+                                                          });
+                                                        }}
+                                                        style={{
+                                                          padding: "8px 10px",
+                                                          borderRadius: "6px",
+                                                          border: "1px solid #e2e8f0",
+                                                          background: hasData ? "#f8fafc" : "#ffffff",
+                                                          cursor: "pointer",
+                                                          transition: "border-color 0.15s ease"
+                                                        }}
+                                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#93c5fd"; e.currentTarget.style.background = "#eff6ff"; }}
+                                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = hasData ? "#f8fafc" : "#ffffff"; }}
+                                                      >
+                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                          <span style={{ fontSize: "11px", fontWeight: "700", color: "#475569" }}>
+                                                            {item.label}
+                                                          </span>
+                                                          <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                                                            {item.subLabel && (
+                                                              <span style={{ fontSize: "10px", color: "#94a3b8" }}>{item.subLabel}</span>
+                                                            )}
+                                                            {slot.status && (
+                                                              <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "8px", fontWeight: "600", ...pillStyle }}>
+                                                                {slot.status}
+                                                              </span>
+                                                            )}
+                                                          </div>
+                                                        </div>
+                                                        {hasData ? (
+                                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "4px" }}>
+                                                            <span style={{ fontSize: "13px", fontWeight: "600", color: isPlaceholderExpense(slot.transactionId) ? "#9333ea" : "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
+                                                              {slot.description || slot.transactionId || "Expense"}
+                                                            </span>
+                                                            <span style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
+                                                              {formatCurrency(slot.amount)}
+                                                            </span>
+                                                          </div>
+                                                        ) : (
+                                                          <div style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", marginTop: "4px" }}>
+                                                            Empty · Click to assign direct cost
+                                                          </div>
+                                                        )}
+                                                        {slot.date && (
+                                                          <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                                                            Date: {slot.date} {slot.vat ? `· VAT: ${slot.vat}` : ""}
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                    );
+                                                  })
+                                                )}
+                                              </div>
+                                            </div>
+                                          );
+                                        })()}
+                                      </div>
+
+                                      {/* Bottom Save Bar for Expanded Row */}
+                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e2e8f0", paddingTop: "12px" }}>
+                                        <div style={{ fontSize: "12px", color: isDirty ? "#b45309" : "#64748b", fontWeight: isDirty ? "600" : "400" }}>
+                                          {isDirty ? "⚠️ Unsaved changes to this job." : "✓ All job details saved to spreadsheet."}
+                                        </div>
+                                        <div style={{ display: "flex", gap: "8px" }}>
+                                          {isDirty && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleDiscardChanges(job)}
+                                              style={{
+                                                padding: "6px 14px",
+                                                borderRadius: "6px",
+                                                border: "1px solid #cbd5e1",
+                                                background: "#ffffff",
+                                                color: "#475569",
+                                                fontSize: "12px",
+                                                fontWeight: "600",
+                                                cursor: "pointer"
+                                              }}
+                                            >
+                                              Discard Changes
+                                            </button>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleSaveJob(job)}
+                                            disabled={!isDirty || isSaving}
+                                            style={{
+                                              padding: "6px 16px",
+                                              borderRadius: "6px",
+                                              border: "none",
+                                              background: isDirty ? "#16a34a" : "#cbd5e1",
+                                              color: "#ffffff",
+                                              fontSize: "12px",
+                                              fontWeight: "600",
+                                              cursor: !isDirty || isSaving ? "not-allowed" : "pointer",
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              gap: "6px"
+                                            }}
+                                          >
+                                            {isSaving ? <><Spinner size={12} /> Saving...</> : "💾 Save Job"}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ========================================================================= */}
+            {/* LEGACY VIEW (PRESERVED SPREADSHEET TABLE FOR ADMINS)                      */}
+            {/* ========================================================================= */}
+            {viewMode === "legacy" && (
+              <div>
+                <div style={{ display: "flex", gap: "8px", marginBottom: "14px", borderBottom: "1px solid #e0e0e0", alignItems: "center" }}>
+                  {["Confirmed", "Pipeline"].map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => {
+                        setJobsTab(tab);
+                        loadJobsData(jobsClient, tab);
+                      }}
+                      style={{
+                        padding: "8px 16px",
+                        background: "none",
+                        border: "none",
+                        borderBottom: jobsTab === tab ? "2px solid #0066cc" : "2px solid transparent",
+                        color: jobsTab === tab ? "#0066cc" : "#666",
+                        fontWeight: jobsTab === tab ? "700" : "500",
+                        fontSize: "14px",
+                        cursor: "pointer"
+                      }}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                  <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "14px", marginBottom: "4px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <label htmlFor="legacy-sort-select" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>
+                        Sort:
+                      </label>
+                      <select
+                        id="legacy-sort-select"
+                        value={jobsSortBy}
+                        onChange={(e) => setJobsSortBy(e.target.value)}
+                        style={{
+                          padding: "5px 10px",
+                          borderRadius: "6px",
+                          border: "1px solid #cbd5e1",
+                          fontSize: "13px",
+                          fontWeight: "500",
+                          color: "#1e293b",
+                          background: "#fff",
+                          cursor: "pointer",
+                          outline: "none"
+                        }}
+                      >
+                        <option value="startDateDesc">By job start date - descending</option>
+                        <option value="endDateDesc">By job end date - descending</option>
+                        <option value="startDateAsc">By job start date - ascending</option>
+                        <option value="endDateAsc">By job end date - ascending</option>
+                        <option value="clientName">By client name</option>
+                        <option value="rowNumber">By row number</option>
+                      </select>
+                    </div>
+                    <button
+                      onClick={() => loadJobsData(jobsClient, jobsTab)}
+                      disabled={jobsLoading}
+                      style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                    >
+                      {jobsLoading ? <><Spinner size={12}/> Refreshing</> : "↻ Refresh"}
+                    </button>
+                  </div>
+                </div>
+
+                {jobsLoading && !jobsData ? (
+                  <div style={{ textAlign: "center", color: "#999", padding: "24px" }}>Loading jobs...</div>
+                ) : (
+                  <div style={{ overflowX: "auto", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "12px", minWidth: "2000px", tableLayout: "fixed" }}>
+                      <thead>
+                        <tr style={{ background: "#f5f6fa" }}>
+                          {["", "Row", "Client", "Job name", "Code", jobsTab === "Pipeline" ? "Date Added" : "Date Conf", "Lead src", "Type", "Prod. line", "Split", "Revenue", "Costs", "VAT", "Start", "End",
+                            ...(jobsTab === "Pipeline" ? ["Likelihood", "Copied?"] : []),
+                            "InvSlot1", "InvSlot2", "InvSlot3", "Left to inv.",
+                            "ExpSlot1", "ExpSlot2", "ExpSlot3", "Costs outst."].map((h, i) => (
+                            <th key={i} style={{ padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #ddd", whiteSpace: "nowrap" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {processedJobs.flatMap((job, jobIdx) => {
+                          const isRetainer = String(job.rows[0]?.projectRetainer || "").toLowerCase().includes("retainer");
+                          const isExpanded = jobsExpanded.has(job.rows[0]?.rowNum);
+                          const visibleRows = (isRetainer && !isExpanded) ? job.rows.slice(0, 1) : job.rows;
+
+                          return visibleRows.map((r, rIdx) => {
+                            const isParent = r.isParent;
+                            const showFields = !isRetainer || isParent;
+                            const showIdentity = isParent;
+
+                            return (
+                              <tr key={r.rowNum} style={{ background: jobIdx % 2 === 0 ? "#fff" : "#f1f5f9" }}>
+                                <td style={{ padding: "7px 4px", borderBottom: "1px solid #eee", textAlign: "center", verticalAlign: "top" }}>
+                                  {rIdx === 0 && isRetainer && job.rows.length > 1 && (
+                                    <span
+                                      onClick={() =>
+                                        setJobsExpanded((prev) => {
+                                          const n = new Set(prev);
+                                          if (n.has(r.rowNum)) n.delete(r.rowNum);
+                                          else n.add(r.rowNum);
+                                          return n;
+                                        })
+                                      }
+                                      style={{ cursor: "pointer", color: "#7c3aed", fontSize: "11px", userSelect: "none" }}
+                                    >
+                                      {isExpanded ? "▼" : "▶"}
+                                    </span>
+                                  )}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", color: "#888", verticalAlign: "top" }}>{r.rowNum}</td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showIdentity && <LegacyEditableCell value={r.client} colLetter="A" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showIdentity && <LegacyEditableCell value={r.jobName} colLetter="B" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.projectCode} colLetter="C" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.dateConf} colLetter="D" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.leadSrc} colLetter="E" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.projectRetainer} colLetter="AJ" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.prodLine} colLetter="AK" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", textAlign: "center", verticalAlign: "top" }}>
+                                  {showFields && !isRetainer && isParent && (
+                                    <button
+                                      onClick={() => setJobsEditSplit({ jobRow: r, tabName: jobsTab })}
+                                      style={{
+                                        background: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#0066cc" : "#f0f0f0",
+                                        color: String(r.unevenSplit || "").toLowerCase().startsWith("[split]") ? "#fff" : "#666",
+                                        border: "none",
+                                        borderRadius: "4px",
+                                        padding: "2px 6px",
+                                        fontSize: "10px",
+                                        cursor: "pointer"
+                                      }}
+                                    >
+                                      Split
+                                    </button>
+                                  )}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.revenue} colLetter="AG" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} isCurrency={true} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.directCosts} colLetter="AH" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} isCurrency={true} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.vat} colLetter="AI" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} isCurrency={true} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.startDate} colLetter="AL" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                </td>
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                  {showFields && <LegacyEditableCell value={r.endDate} colLetter="AM" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                </td>
+                                {jobsTab === "Pipeline" && (
+                                  <>
+                                    <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                      {showFields && <LegacyEditableCell value={r.likelihood} colLetter="AN" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                    </td>
+                                    <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
+                                      {showFields && <LegacyEditableCell value={r.copiedToConf} colLetter="DD" rowNum={r.rowNum} onSave={handleLegacyInlineUpdate} />}
+                                    </td>
+                                  </>
+                                )}
+                                {r.invoiceSlots.map((s) => (
+                                  <td
+                                    key={`legacy_inv${s.slotNum}`}
+                                    onClick={() => setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobClient: r.client || job.client, jobName: r.jobName || job.jobName })}
+                                    style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer" }}
+                                  >
+                                    {!s.ref && !s.amount ? (
+                                      <span style={{ color: "#ccc" }}>-</span>
+                                    ) : (
+                                      <div>
+                                        <div style={{ fontWeight: "600", color: isPlaceholderInvoice(s.ref) ? "#9333ea" : "inherit" }}>{s.ref}</div>
+                                        <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
+                                          <span>{formatCurrency(s.amount)}</span>
+                                          {s.sentDate ? <span> · {s.sentDate}</span> : null}
+                                          {s.status ? <span style={{ marginLeft: "4px", ...getStatusPill(s.status) }}>{s.status}</span> : null}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </td>
+                                ))}
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                   {showFields && formatCurrency(r.leftToInvoice)}
                                 </td>
-                              );
-                            })()}
-
-                            {r.expenseSlots.map(s => (
-                              <td key={`exp${s.slotNum}`} onClick={() => {
-                                setDirectCostsEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s });
-                              }} style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer", borderLeft: s.slotNum === 1 ? "2px solid #f0f0f0" : "none" }} onMouseEnter={e => e.currentTarget.style.background = "#f0f4ff"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                                {!s.description && !s.amount ? <span style={{ color: "#ccc" }}>-</span> : (
-                                  <div>
-                                    <div style={{ fontWeight: "600", color: isPlaceholderExpense(s.transactionId) ? "#9333ea" : "inherit", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "155px" }}>{s.description || s.transactionId}</div>
-                                    <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
-                                      <span>{formatCurrency(s.amount)}</span>
-                                      {s.date ? <><span style={{ margin: "0 2px" }}>·</span><span style={{ whiteSpace: "nowrap" }}>{s.date}</span></> : null}
-                                      {s.status ? <span style={getStatusPillStyle(s.status)}>{s.status}</span> : null}
-                                    </div>
-                                  </div>
-                                )}
-                              </td>
-                            ))}
-
-                            {(() => {
-                              let costsVarBg = "transparent";
-                              const val = parseFloat(String(r.costsOutstanding).replace(/[£$€,\s]/g,""));
-                              if (!isNaN(val) && (val > 1 || val < -1)) costsVarBg = "#f4c7c3";
-                              return (
-                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top", background: costsVarBg }}>
+                                {r.expenseSlots.map((s) => (
+                                  <td
+                                    key={`legacy_exp${s.slotNum}`}
+                                    onClick={() => setDirectCostsEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobName: r.jobName || job.jobName, jobClient: r.client || job.client })}
+                                    style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer" }}
+                                  >
+                                    {!s.description && !s.amount ? (
+                                      <span style={{ color: "#ccc" }}>-</span>
+                                    ) : (
+                                      <div>
+                                        <div style={{ fontWeight: "600", color: isPlaceholderExpense(s.transactionId) ? "#9333ea" : "inherit" }}>
+                                          {s.description || s.transactionId}
+                                        </div>
+                                        <div style={{ color: "#888", fontSize: "10px", marginTop: "3px" }}>
+                                          <span>{formatCurrency(s.amount)}</span>
+                                          {s.date ? <span> · {s.date}</span> : null}
+                                          {s.status ? <span style={{ marginLeft: "4px", ...getStatusPill(s.status) }}>{s.status}</span> : null}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </td>
+                                ))}
+                                <td style={{ padding: "7px 10px", borderBottom: "1px solid #eee", verticalAlign: "top" }}>
                                   {showFields && formatCurrency(r.costsOutstanding)}
                                 </td>
-                              );
-                            })()}
-                          </tr>
-                        );
-                      });
-                    })}
-                  </tbody>
-                </table>
+                              </tr>
+                            );
+                          });
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
-              );
-            })()}
+            )}
           </>
         )}
       </div>

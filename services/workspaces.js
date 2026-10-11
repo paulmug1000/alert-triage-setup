@@ -725,21 +725,74 @@ export async function handleGetInvoiceJobs(req, res, sheets) {
 }
 
 export async function handleGetAllClientJobs(req, res, sheets) {
-  const { clientSheetId, tabName } = req.body;
-  if (!clientSheetId || !tabName) return res.status(400).json({ success: false, error: "Missing clientSheetId or tabName" });
+  const { clientSheetId, tabName = "All" } = req.body;
+  if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
 
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetIdClean,
-      range: `${tabName}!A1:DD5000`,
-      valueRenderOption: "FORMATTED_VALUE",
-    });
-    const rows = resp.data.values || [];
+    let confRows = [];
+    let pipeRows = [];
+    let productLines = [];
+    let leadSources = [];
+
+    if (tabName === "All" || !tabName) {
+      try {
+        const batchResp = await sheets.spreadsheets.values.batchGet({
+          spreadsheetId: sheetIdClean,
+          ranges: ["Confirmed!A1:DD5000", "Pipeline!A1:DD5000", "KeyInfo!C23:C26", "KeyInfo!G32:G75"],
+          valueRenderOption: "FORMATTED_VALUE",
+        });
+        confRows = batchResp.data.valueRanges?.[0]?.values || [];
+        pipeRows = batchResp.data.valueRanges?.[1]?.values || [];
+        const plData = batchResp.data.valueRanges?.[2]?.values || [];
+        const lsData = batchResp.data.valueRanges?.[3]?.values || [];
+        productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
+        leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
+      } catch (batchErr) {
+        try {
+          const cResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: "Confirmed!A1:DD5000",
+            valueRenderOption: "FORMATTED_VALUE",
+          });
+          confRows = cResp.data.values || [];
+        } catch (_) {}
+        try {
+          const pResp = await sheets.spreadsheets.values.get({
+            spreadsheetId: sheetIdClean,
+            range: "Pipeline!A1:DD5000",
+            valueRenderOption: "FORMATTED_VALUE",
+          });
+          pipeRows = pResp.data.values || [];
+        } catch (_) {}
+      }
+    } else {
+      const resp = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: `${tabName}!A1:DD5000`,
+        valueRenderOption: "FORMATTED_VALUE",
+      });
+      if (tabName === "Confirmed") {
+        confRows = resp.data.values || [];
+      } else {
+        pipeRows = resp.data.values || [];
+      }
+      try {
+        const keyInfoResp = await sheets.spreadsheets.values.batchGet({
+          spreadsheetId: sheetIdClean,
+          ranges: ["KeyInfo!C23:C26", "KeyInfo!G32:G75"],
+          valueRenderOption: "FORMATTED_VALUE"
+        });
+        const plData = keyInfoResp.data.valueRanges?.[0]?.values || [];
+        const lsData = keyInfoResp.data.valueRanges?.[1]?.values || [];
+        productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
+        leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
+      } catch (_) {}
+    }
 
     const colVal = (row, idx) => row[idx] !== undefined ? row[idx] : "";
-    const buildRowData = (rowNum, row, isParent) => ({
-      rowNum, isParent,
+    const buildRowData = (rowNum, row, isParent, currentTab) => ({
+      rowNum, isParent, tabName: currentTab,
       client: colVal(row, 0), jobName: colVal(row, 1), projectCode: colVal(row, 2),
       dateConf: colVal(row, 3), 
       leadSrc: colVal(row, 4), 
@@ -747,8 +800,8 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       revenue: colVal(row, 32), directCosts: colVal(row, 33), vat: colVal(row, 34),
       projectRetainer: colVal(row, 35), prodLine: colVal(row, 36), 
       startDate: colVal(row, 37), endDate: colVal(row, 38),
-      likelihood: tabName === "Pipeline" ? colVal(row, 39) : null,
-      copiedToConf: tabName === "Pipeline" ? colVal(row, 107) : null,
+      likelihood: currentTab === "Pipeline" ? colVal(row, 39) : (colVal(row, 39) || "100%"),
+      copiedToConf: currentTab === "Pipeline" ? colVal(row, 107) : null,
       leftToInvoice: colVal(row, 74), 
       costsOutstanding: colVal(row, 106), 
       invoiceSlots: [1,2,3].map(n => {
@@ -764,33 +817,65 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       }),
     });
 
-    const jobs = [];
-    let ri = tabName === "Pipeline" ? 5 : 1; 
-    while (ri < rows.length) {
-      const row = rows[ri] || [];
-      const client = String(row[0] || "").trim();
-      const jobName = String(row[1] || "").trim();
-      if (!client && !jobName) { ri++; continue; }
+    const parseTabJobs = (rows, currentTab) => {
+      const tabJobs = [];
+      let ri = currentTab === "Pipeline" ? 5 : 1; 
+      while (ri < rows.length) {
+        const row = rows[ri] || [];
+        const client = String(row[0] || "").trim();
+        const jobName = String(row[1] || "").trim();
+        if (!client && !jobName) { ri++; continue; }
 
-      const parentRowNum = ri + 1;
-      const jobRows = [buildRowData(parentRowNum, row, true)];
-      let cj = ri + 1;
-      while (cj < rows.length) {
-        const next = rows[cj] || [];
-        const nc = String(next[0]||"").trim();
-        const nj = String(next[1]||"").trim();
-        const nRevenue = String(next[32]||"").trim();
-        const nStart = String(next[37]||"").trim();
-        if (nc === client && nj === jobName && !nRevenue && !nStart) {
-          jobRows.push(buildRowData(cj + 1, next, false));
-          cj++;
-        } else {
-          break;
+        const parentRowNum = ri + 1;
+        const jobRows = [buildRowData(parentRowNum, row, true, currentTab)];
+        let cj = ri + 1;
+        while (cj < rows.length) {
+          const next = rows[cj] || [];
+          const nc = String(next[0] || "").trim();
+          const nj = String(next[1] || "").trim();
+          const nRevenue = String(next[32] || "").trim();
+          const nStart = String(next[37] || "").trim();
+          const nEnd = String(next[38] || "").trim();
+
+          const hasParentIndicators = (nStart !== "" || nEnd !== "") || (nRevenue !== "" && parseFloat(String(nRevenue).replace(/[^0-9.-]/g, "")) > 0);
+          if (hasParentIndicators) {
+            break;
+          }
+
+          const clientMatches = !nc || nc.toLowerCase() === client.toLowerCase();
+          const jobMatches = (nj && nj.toLowerCase() === jobName.toLowerCase()) || (!nj && (next[41] || next[42] || next[75] || next[76]));
+
+          if (clientMatches && jobMatches) {
+            jobRows.push(buildRowData(cj + 1, next, false, currentTab));
+            cj++;
+          } else {
+            break;
+          }
         }
+        ri = cj;
+        
+        tabJobs.push({
+          id: `${currentTab.toLowerCase()}_${parentRowNum}`,
+          tabName: currentTab,
+          status: currentTab,
+          client,
+          jobName,
+          projectCode: row[2] || "",
+          rows: jobRows
+        });
       }
-      ri = cj;
-      
-      jobs.push({ client, jobName, projectCode: row[2] || "", rows: jobRows });
+      return tabJobs;
+    };
+
+    let jobs = [];
+    if (tabName === "All" || !tabName) {
+      const confJobs = parseTabJobs(confRows, "Confirmed");
+      const pipeJobs = parseTabJobs(pipeRows, "Pipeline");
+      jobs = [...confJobs, ...pipeJobs];
+    } else if (tabName === "Confirmed") {
+      jobs = parseTabJobs(confRows, "Confirmed");
+    } else {
+      jobs = parseTabJobs(pipeRows, "Pipeline");
     }
 
     const parseSheetDate = (d) => {
@@ -812,23 +897,6 @@ export async function handleGetAllClientJobs(req, res, sheets) {
       if (!db) return -1;
       return db - da;
     });
-
-    // Fetch KeyInfo dropdown options (Product Lines from C23:C26, Lead Sources from G32:G75)
-    let productLines = [];
-    let leadSources = [];
-    try {
-      const keyInfoResp = await sheets.spreadsheets.values.batchGet({
-        spreadsheetId: sheetIdClean,
-        ranges: ["KeyInfo!C23:C26", "KeyInfo!G32:G75"],
-        valueRenderOption: "FORMATTED_VALUE"
-      });
-      const plData = keyInfoResp.data.valueRanges?.[0]?.values || [];
-      const lsData = keyInfoResp.data.valueRanges?.[1]?.values || [];
-      productLines = plData.flat().map(v => String(v || "").trim()).filter(Boolean);
-      leadSources = lsData.flat().map(v => String(v || "").trim()).filter(Boolean);
-    } catch (e) {
-      // KeyInfo tab may not exist or differs
-    }
 
     const distinctPl = new Set(productLines);
     const distinctLs = new Set(leadSources);
@@ -954,6 +1022,59 @@ export async function handleUpdateJobField(req, res, sheets) {
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ update_job_field error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function handleUpdateJobFields(req, res, sheets) {
+  const { clientSheetId, tabName, rowNum, updates, endClientName, jobName } = req.body;
+  if (!clientSheetId || !tabName || !Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ success: false, error: "Missing required fields or empty updates" });
+  }
+  try {
+    const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+
+    const data = updates.map(u => ({
+      range: `${tabName}!${u.cellRef || `${u.colLetter}${u.rowNum || rowNum}`}`,
+      values: [[sanitizeFormulaInput(u.value)]]
+    }));
+
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: sheetIdClean,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data
+      }
+    });
+
+    let resolvedClient = req.body.clientName || "";
+    if (!resolvedClient) {
+      resolvedClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+    const resolvedEndClient = endClientName || "";
+    const resolvedJobName = jobName || "";
+    const jobIdentifier = resolvedEndClient && resolvedJobName ? `"${resolvedEndClient} - ${resolvedJobName}"` : `Row ${rowNum}`;
+    const fieldSummary = updates.map(u => u.fieldName || u.colLetter).join(", ");
+
+    logPmaActivity(sheets, {
+      automationCommanderSheetId: req.body.automationCommanderSheetId,
+      clientName: resolvedClient,
+      category: "JOB",
+      action: "Job Fields Updated",
+      summary: `Updated ${fieldSummary} for ${jobIdentifier}`,
+      details: {
+        tabName,
+        rowNum,
+        updates,
+        endClient: resolvedEndClient,
+        jobName: resolvedJobName,
+        clientName: resolvedClient
+      }
+    }).catch(e => console.error("PMA log failed:", e));
+
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error("❌ update_job_fields error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 }

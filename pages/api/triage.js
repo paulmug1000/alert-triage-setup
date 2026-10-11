@@ -34,7 +34,7 @@ import {
   handleGetAllClients, handleGetAssignedExpenses, handleMarkExpenseAssigned,
   handlePruneAssignedExpenses, handleGetOutgoingsInbox, handleGetInvoicesInbox,
   handleCreateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
-  handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField,
+  handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
   handleUpdateInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
   handleFireOutgoingsPull, handleMarkPipelineCopied
@@ -340,6 +340,8 @@ export default async function handler(req, res) {
       return await handleGetAllClientJobs(req, res, sheets);
     } else if (action === "update_job_field") {
       return await handleUpdateJobField(req, res, sheets);
+    } else if (action === "update_job_fields") {
+      return await handleUpdateJobFields(req, res, sheets);
     } else if (action === "assign_expense_to_job") {
       return await handleAssignExpenseToJob(req, res, sheets);
     } else if (action === "update_expense_slot") {

@@ -79,7 +79,7 @@ export default function DirectCostsEditModal({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
           <div>
             <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
-              {jobName ? `${jobName} · Slot ${slotNum}` : `Edit expense - Row ${rowNum}, Slot ${slotNum}`}
+              {jobName ? `${jobName} · ${editSlot.slotLabel || `Slot ${slotNum}`}` : `Edit expense - ${editSlot.slotLabel ? `${editSlot.slotLabel} (Row ${rowNum})` : `Row ${rowNum}, Slot ${slotNum}`}`}
             </h3>
             {jobClient && <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>Client: <strong>{jobClient}</strong> · Row {rowNum}</div>}
           </div>

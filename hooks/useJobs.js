@@ -2,7 +2,7 @@ import { useState } from "react";
 
 export function useJobs() {
   const [jobsClient, setJobsClient] = useState(null);
-  const [jobsTab, setJobsTab] = useState("Confirmed");
+  const [jobsTab, setJobsTab] = useState("All");
   const [jobsSortBy, setJobsSortBy] = useState("startDateDesc");
   const [jobsData, setJobsData] = useState(null);
   const [jobsLoading, setJobsLoading] = useState(false);
@@ -12,7 +12,7 @@ export function useJobs() {
   const [leadSources, setLeadSources] = useState([]);
   const [existingClients, setExistingClients] = useState([]);
 
-  const loadJobsData = async (client, tabName) => {
+  const loadJobsData = async (client, tabName = "All") => {
     if (!client?.clientSheetId) return;
     try {
       setJobsLoading(true);

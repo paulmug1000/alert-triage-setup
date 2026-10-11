@@ -379,6 +379,7 @@ function TriageSystemContent({ onBack, appGlobals }) {
         <IntegrationsView
           allOutgoingsClients={allOutgoingsClients}
           user={user}
+          isAdmin={isAdmin}
         />
       );
     }

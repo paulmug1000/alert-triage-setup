@@ -214,7 +214,7 @@ export default function SettingsView({
     <div style={{ padding: "20px", maxWidth: "800px" }}>
       {/* Top Application Version & Copyright Header */}
       <div style={{ fontSize: "11px", fontStyle: "italic", color: "#666", marginBottom: "16px" }}>
-        Pulse Management Area v{SYSTEM_VERSION} - {getSystemCopyright()}
+        Pulse v{SYSTEM_VERSION} - {getSystemCopyright()}
       </div>
 
       <h2 style={{ margin: "0 0 20px", fontSize: "20px", fontWeight: "700" }}>Settings</h2>

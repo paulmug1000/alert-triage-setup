@@ -114,8 +114,12 @@ function getCrmToolType(toolStr, clientIntegrations) {
 
 export default function IntegrationsView({
   allOutgoingsClients = [],
-  user
+  user,
+  isAdmin: propIsAdmin
 }) {
+  const isAdmin = propIsAdmin !== undefined
+    ? Boolean(propIsAdmin)
+    : Boolean(!user?.isReadOnly && (user?.isAdmin || user?.role === "Admin"));
   const [clientsData, setClientsData] = useState([]);
   const [sharedXero, setSharedXero] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -486,20 +490,25 @@ export default function IntegrationsView({
     return { total, accountingConnected, crmConnected, attentionCount };
   }, [clientsData, sharedXero]);
 
+  if (loading) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "50vh", padding: "60px 20px" }}>
+        <Spinner size={32} color="#0066cc" style={{ marginRight: 0 }} />
+        <span style={{ marginTop: "14px", fontSize: "14px", color: "#64748b", fontWeight: "600" }}>
+          Loading...
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: "20px 24px", maxWidth: "1380px", margin: "0 auto" }}>
       {/* ── TOP HEADER ──────────────────────────────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "20px", flexWrap: "wrap", gap: "16px" }}>
         <div>
-          <h1 style={{ fontSize: "23px", fontWeight: "700", color: "#0f172a", margin: "0 0 6px 0", display: "flex", alignItems: "center", gap: "10px" }}>
+          <h1 style={{ fontSize: "23px", fontWeight: "700", color: "#0f172a", margin: 0, display: "flex", alignItems: "center", gap: "10px" }}>
             <span>Third-party integrations</span>
-            <span style={{ fontSize: "12px", fontWeight: "600", padding: "2px 10px", borderRadius: "14px", background: "#f1f5f9", color: "#475569" }}>
-              Multi-Client Hub
-            </span>
           </h1>
-          <p style={{ fontSize: "13px", color: "#64748b", margin: 0 }}>
-            Central OAuth vault & token broker management across all clients. Configured tools reflect live KeyInfo settings in order from the AutoUpdates tab.
-          </p>
         </div>
 
         {/* Global Action & Refresh */}
@@ -530,30 +539,32 @@ export default function IntegrationsView({
       </div>
 
       {/* ── METRICS SUMMARY PILLS ───────────────────────────────────────────── */}
-      <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", marginBottom: "20px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#f8fafc", border: "1px solid #e2e8f0", fontSize: "12px" }}>
-          <span style={{ color: "#64748b", fontWeight: "600" }}>Total Clients:</span>
-          <span style={{ fontWeight: "700", color: "#0f172a" }}>{metrics.total}</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#f0fdf4", border: "1px solid #bbf7d0", fontSize: "12px" }}>
-          <span style={{ color: "#166534", fontWeight: "600" }}>Accounting Active:</span>
-          <span style={{ fontWeight: "700", color: "#15803d" }}>{metrics.accountingConnected} / {metrics.total}</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#eff6ff", border: "1px solid #bfdbfe", fontSize: "12px" }}>
-          <span style={{ color: "#1e40af", fontWeight: "600" }}>CRM Active:</span>
-          <span style={{ fontWeight: "700", color: "#1d4ed8" }}>{metrics.crmConnected} / {metrics.total}</span>
-        </div>
-        {metrics.attentionCount > 0 ? (
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#fef2f2", border: "1px solid #fecaca", fontSize: "12px" }}>
-            <span style={{ color: "#991b1b", fontWeight: "700" }}>⚠️ Attention Required:</span>
-            <span style={{ fontWeight: "700", color: "#dc2626" }}>{metrics.attentionCount}</span>
+      {!loading && (
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", marginBottom: "20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#f8fafc", border: "1px solid #e2e8f0", fontSize: "12px" }}>
+            <span style={{ color: "#64748b", fontWeight: "600" }}>Total Clients:</span>
+            <span style={{ fontWeight: "700", color: "#0f172a" }}>{metrics.total}</span>
           </div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#f8fafc", border: "1px solid #e2e8f0", fontSize: "12px", color: "#475569" }}>
-            <span>✓ All Active Tokens Healthy</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#f0fdf4", border: "1px solid #bbf7d0", fontSize: "12px" }}>
+            <span style={{ color: "#166534", fontWeight: "600" }}>Accounting Active:</span>
+            <span style={{ fontWeight: "700", color: "#15803d" }}>{metrics.accountingConnected} / {metrics.total}</span>
           </div>
-        )}
-      </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#eff6ff", border: "1px solid #bfdbfe", fontSize: "12px" }}>
+            <span style={{ color: "#1e40af", fontWeight: "600" }}>CRM Active:</span>
+            <span style={{ fontWeight: "700", color: "#1d4ed8" }}>{metrics.crmConnected} / {metrics.total}</span>
+          </div>
+          {metrics.attentionCount > 0 ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#fef2f2", border: "1px solid #fecaca", fontSize: "12px" }}>
+              <span style={{ color: "#991b1b", fontWeight: "700" }}>⚠️ Attention Required:</span>
+              <span style={{ fontWeight: "700", color: "#dc2626" }}>{metrics.attentionCount}</span>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 14px", borderRadius: "10px", background: "#f8fafc", border: "1px solid #e2e8f0", fontSize: "12px", color: "#475569" }}>
+              <span>✓ All Active Tokens Healthy</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── FEEDBACK NOTIFICATION BANNER ────────────────────────────────────── */}
       {feedback && (
@@ -585,109 +596,111 @@ export default function IntegrationsView({
       )}
 
       {/* ── CENTRAL ADVISOR XERO ACCOUNT BANNER ─────────────────────────────── */}
-      <div
-        style={{
-          background: sharedXero?.connected ? "linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%)" : "linear-gradient(135deg, #f8fafc 0%, #ffffff 100%)",
-          borderRadius: "14px",
-          border: `1px solid ${sharedXero?.connected ? "#bbf7d0" : "#e2e8f0"}`,
-          padding: "16px 20px",
-          marginBottom: "22px",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: "14px"
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "14px", maxWidth: "880px" }}>
-          <div
-            style={{
-              width: "44px",
-              height: "44px",
-              borderRadius: "10px",
-              background: "rgba(0, 180, 216, 0.12)",
-              color: "#00b4d8",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: "22px",
-              fontWeight: "800",
-              flexShrink: 0
-            }}
-          >
-            X
-          </div>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "4px" }}>
-              <h2 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#0f172a" }}>
-                Central Advisor Xero Account
-              </h2>
-              <span
-                style={{
-                  fontSize: "11px",
-                  fontWeight: "700",
-                  padding: "2px 9px",
-                  borderRadius: "20px",
-                  background: sharedXero?.reconnectRequired ? "#fee2e2" : sharedXero?.connected ? "#dcfce7" : "#f1f5f9",
-                  color: sharedXero?.reconnectRequired ? "#dc2626" : sharedXero?.connected ? "#15803d" : "#64748b"
-                }}
-              >
-                {sharedXero?.reconnectRequired ? "Re-auth Required" : sharedXero?.connected ? "Active & Auto-refreshing" : "Not Connected"}
-              </span>
+      {isAdmin && (
+        <div
+          style={{
+            background: sharedXero?.connected ? "linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%)" : "linear-gradient(135deg, #f8fafc 0%, #ffffff 100%)",
+            borderRadius: "14px",
+            border: `1px solid ${sharedXero?.connected ? "#bbf7d0" : "#e2e8f0"}`,
+            padding: "16px 20px",
+            marginBottom: "22px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "14px"
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "14px", maxWidth: "880px" }}>
+            <div
+              style={{
+                width: "44px",
+                height: "44px",
+                borderRadius: "10px",
+                background: "rgba(0, 180, 216, 0.12)",
+                color: "#00b4d8",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: "22px",
+                fontWeight: "800",
+                flexShrink: 0
+              }}
+            >
+              X
             </div>
-            <p style={{ margin: 0, fontSize: "12px", color: "#64748b", lineHeight: "1.4" }}>
-              Your advisor account powers multiple client organisations in Pulse through a single consolidated OAuth grant, ensuring tokens refresh smoothly without cross-client session conflicts.
-            </p>
-            {sharedXero?.connected && sharedXero?.availableTenants && sharedXero.availableTenants.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "8px" }}>
-                <span style={{ fontSize: "11px", fontWeight: "600", color: "#475569" }}>
-                  Linked Organisations ({sharedXero.availableTenants.length}):
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "4px" }}>
+                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#0f172a" }}>
+                  Central Advisor Xero Account
+                </h2>
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: "700",
+                    padding: "2px 9px",
+                    borderRadius: "20px",
+                    background: sharedXero?.reconnectRequired ? "#fee2e2" : sharedXero?.connected ? "#dcfce7" : "#f1f5f9",
+                    color: sharedXero?.reconnectRequired ? "#dc2626" : sharedXero?.connected ? "#15803d" : "#64748b"
+                  }}
+                >
+                  {sharedXero?.reconnectRequired ? "Re-auth Required" : sharedXero?.connected ? "Active & Auto-refreshing" : "Not Connected"}
                 </span>
-                {sharedXero.availableTenants.map((t) => (
-                  <span
-                    key={t.tenantId}
-                    style={{
-                      fontSize: "11px",
-                      padding: "2px 8px",
-                      borderRadius: "6px",
-                      background: "#e0f2fe",
-                      color: "#0369a1",
-                      fontWeight: "500"
-                    }}
-                  >
-                    {t.tenantName}
-                  </span>
-                ))}
               </div>
-            )}
+              <p style={{ margin: 0, fontSize: "12px", color: "#64748b", lineHeight: "1.4" }}>
+                Your advisor account powers multiple client organisations in Pulse through a single consolidated OAuth grant, ensuring tokens refresh smoothly without cross-client session conflicts.
+              </p>
+              {sharedXero?.connected && sharedXero?.availableTenants && sharedXero.availableTenants.length > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "8px" }}>
+                  <span style={{ fontSize: "11px", fontWeight: "600", color: "#475569" }}>
+                    Linked Organisations ({sharedXero.availableTenants.length}):
+                  </span>
+                  {sharedXero.availableTenants.map((t) => (
+                    <span
+                      key={t.tenantId}
+                      style={{
+                        fontSize: "11px",
+                        padding: "2px 8px",
+                        borderRadius: "6px",
+                        background: "#e0f2fe",
+                        color: "#0369a1",
+                        fontWeight: "500"
+                      }}
+                    >
+                      {t.tenantName}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <button
+              onClick={handleConnectAdvisorXero}
+              style={{
+                padding: "9px 16px",
+                borderRadius: "8px",
+                border: "none",
+                background: "#00b4d8",
+                color: "#ffffff",
+                fontSize: "13px",
+                fontWeight: "600",
+                cursor: "pointer",
+                boxShadow: "0 1px 2px rgba(0, 180, 216, 0.2)",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                whiteSpace: "nowrap"
+              }}
+            >
+              <span>🔗</span>
+              <span>{sharedXero?.connected ? "Re-authorise Advisor Xero" : "Connect Advisor Xero"}</span>
+            </button>
           </div>
         </div>
-
-        <div>
-          <button
-            onClick={handleConnectAdvisorXero}
-            style={{
-              padding: "9px 16px",
-              borderRadius: "8px",
-              border: "none",
-              background: "#00b4d8",
-              color: "#ffffff",
-              fontSize: "13px",
-              fontWeight: "600",
-              cursor: "pointer",
-              boxShadow: "0 1px 2px rgba(0, 180, 216, 0.2)",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              whiteSpace: "nowrap"
-            }}
-          >
-            <span>🔗</span>
-            <span>{sharedXero?.connected ? "Re-authorise Advisor Xero" : "Connect Advisor Xero"}</span>
-          </button>
-        </div>
-      </div>
+      )}
 
       {/* ── SEARCH & JUMP NAVIGATION BAR ─────────────────────────────────────── */}
       <div
@@ -773,14 +786,7 @@ export default function IntegrationsView({
       </div>
 
       {/* ── CLIENTS STREAM (ORDERED DOWN THE PAGE) ───────────────────────────── */}
-      {loading && clientsData.length === 0 ? (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "60px 20px" }}>
-          <Spinner />
-          <span style={{ marginTop: "12px", fontSize: "13px", color: "#64748b", fontWeight: "600" }}>
-            Loading multi-client integrations...
-          </span>
-        </div>
-      ) : filteredClients.length === 0 ? (
+      {filteredClients.length === 0 ? (
         <div style={{ padding: "40px 20px", textAlign: "center", background: "#f8fafc", borderRadius: "12px", border: "1px dashed #cbd5e1", color: "#64748b" }}>
           <span style={{ fontSize: "24px", display: "block", marginBottom: "8px" }}>🔍</span>
           <p style={{ margin: 0, fontWeight: "600" }}>No clients matched &quot;{searchTerm}&quot;.</p>
@@ -996,14 +1002,16 @@ export default function IntegrationsView({
       )}
 
       {/* ── FOOTER ARCHITECTURE NOTE ────────────────────────────────────────── */}
-      <div style={{ marginTop: "32px", background: "#f8fafc", borderRadius: "12px", border: "1px solid #e2e8f0", padding: "16px 20px" }}>
-        <h4 style={{ margin: "0 0 6px 0", fontSize: "13.5px", fontWeight: "700", color: "#0f172a" }}>
-          💡 Vault & Broker Architecture
-        </h4>
-        <p style={{ margin: 0, fontSize: "12px", color: "#475569", lineHeight: "1.6" }}>
-          All credentials are encrypted with AES-256-GCM in Redis. Google Apps Script queries <code style={{ background: "#e2e8f0", padding: "2px 5px", borderRadius: "4px" }}>/api/integrations/token</code> during automated sync cycles using client-specific tokens. When any connection is authorised, automated notifications are immediately sent to all Admins and assigned Client Managers.
-        </p>
-      </div>
+      {isAdmin && (
+        <div style={{ marginTop: "32px", background: "#f8fafc", borderRadius: "12px", border: "1px solid #e2e8f0", padding: "16px 20px" }}>
+          <h4 style={{ margin: "0 0 6px 0", fontSize: "13.5px", fontWeight: "700", color: "#0f172a" }}>
+            💡 Vault & Broker Architecture
+          </h4>
+          <p style={{ margin: 0, fontSize: "12px", color: "#475569", lineHeight: "1.6" }}>
+            All credentials are encrypted with AES-256-GCM in Redis. Google Apps Script queries <code style={{ background: "#e2e8f0", padding: "2px 5px", borderRadius: "4px" }}>/api/integrations/token</code> during automated sync cycles using client-specific tokens. When any connection is authorised, automated notifications are immediately sent to all Admins and assigned Client Managers.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

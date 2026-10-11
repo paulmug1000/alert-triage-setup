@@ -32,6 +32,17 @@ export default function HomeView({
   const [integrationsData, setIntegrationsData] = useState([]);
   const [integrationsLoading, setIntegrationsLoading] = useState(true);
 
+  // Optimistic cached alert count from previous session
+  const [cachedTotalAlerts, setCachedTotalAlerts] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_total_alerts");
+        return stored != null ? Number(stored) : null;
+      } catch { return null; }
+    }
+    return null;
+  });
+
   // Filter clients to those the current user has access to
   const authorizedClients = useMemo(() => {
     return (clients || []).filter((c) => isUserAuthorizedForClient(user, c.clientName));
@@ -120,6 +131,16 @@ export default function HomeView({
     return Object.values(clientAlertCounts).reduce((acc, count) => acc + count, 0);
   }, [clientAlertCounts]);
 
+  // Sync latest confirmed alert count to localStorage
+  useEffect(() => {
+    if (!isLoadingAlerts && totalAlertsCount != null) {
+      setCachedTotalAlerts(totalAlertsCount);
+      try {
+        localStorage.setItem("pulse_cached_total_alerts", String(totalAlertsCount));
+      } catch {}
+    }
+  }, [isLoadingAlerts, totalAlertsCount]);
+
   // Clients that are not yet fully set up
   const clientsPendingSetup = useMemo(() => {
     return authorizedClients.filter((c) => {
@@ -187,18 +208,21 @@ export default function HomeView({
             </div>
 
             <div style={{ display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "8px" }}>
-              {isLoadingAlerts ? (
+              {isLoadingAlerts && cachedTotalAlerts === null ? (
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "4px 0" }}>
                   <Spinner size={22} color="#0047AB" />
                   <span style={{ color: "#64748B", fontSize: "14px" }}>Checking alerts...</span>
                 </div>
               ) : (
                 <>
-                  <span style={{ fontSize: "36px", fontWeight: "800", color: totalAlertsCount > 0 ? "#DC2626" : "#0F172A", lineHeight: 1 }}>
-                    {totalAlertsCount}
+                  <span style={{ fontSize: "36px", fontWeight: "800", color: ((isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) > 0) ? "#DC2626" : "#0F172A", lineHeight: 1 }}>
+                    {isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount}
                   </span>
-                  <span style={{ fontSize: "14px", color: "#64748B", fontWeight: "500" }}>
-                    total {totalAlertsCount === 1 ? "alert" : "alerts"}
+                  <span style={{ fontSize: "14px", color: "#64748B", fontWeight: "500", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                    total {(isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) === 1 ? "alert" : "alerts"}
+                    {isLoadingAlerts && cachedTotalAlerts !== null && (
+                      <span style={{ fontSize: "12px", color: "#94A3B8" }}>(syncing...)</span>
+                    )}
                   </span>
                 </>
               )}

@@ -128,6 +128,27 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     isAccepting, setIsAccepting, refreshTriage, reloadFromCache
   } = triageEngine;
 
+  const [cachedAlertCount, setCachedAlertCount] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_alert_badge");
+        return stored != null ? parseInt(stored, 10) : 0;
+      } catch { return 0; }
+    }
+    return 0;
+  });
+
+  const currentLiveAlertCount = liveAlertCount + (proactiveAlerts || []).length;
+
+  useEffect(() => {
+    if (triageEngine.triageComplete) {
+      setCachedAlertCount(currentLiveAlertCount);
+      try {
+        localStorage.setItem("pulse_cached_alert_badge", String(currentLiveAlertCount));
+      } catch {}
+    }
+  }, [triageEngine.triageComplete, currentLiveAlertCount]);
+
   // --- INITIAL DATA LOAD ---
   // Explicitly trigger triage data load only when authenticated, scoped to current user, and allowed in PMA
   const currentAuthEmail = user?.email || "";
@@ -647,7 +668,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         onIntegrations={handleNavIntegrations}
         onSetup={handleNavSetup}
         onSettings={handleNavSettings}
-        homeAlertCount={liveAlertCount + proactiveAlerts.length}
+        homeAlertCount={triageEngine.triageComplete ? currentLiveAlertCount : (cachedAlertCount || currentLiveAlertCount)}
         taskCount={navTaskCount}
         user={user}
         onLogout={logout}

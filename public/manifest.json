@@ -1,0 +1,303 @@
+{
+  "name": "Pulse Management Ecosystem",
+  "short_name": "Pulse",
+  "description": "Unified Financial Intelligence & Management Platform for Agencies",
+  "start_url": "/pma",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#0047AB",
+  "icons": [
+    {
+      "src": "/pulselogo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pulselogo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pulselogo-transparent.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pulselogo-transparent.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "PMA - Command Center",
+      "short_name": "PMA Home",
+      "url": "/pma",
+      "description": "Pulse Management Area Home Dashboard"
+    },
+    {
+      "name": "PMA - Alerts & Triage",
+      "short_name": "Alerts",
+      "url": "/pma/alerts",
+      "description": "Anomaly Detection and Triage System"
+    },
+    {
+      "name": "PMA - Tasks",
+      "short_name": "Tasks",
+      "url": "/pma?nav=tasks",
+      "description": "Task Management"
+    },
+    {
+      "name": "PMA - Integrations",
+      "short_name": "Integrations",
+      "url": "/pma?nav=integrations",
+      "description": "Client Connector & OAuth Management"
+    },
+    {
+      "name": "Pulse - Client Portal",
+      "short_name": "Pulse Portal",
+      "url": "/pulse",
+      "description": "Client Financial Dashboard and Reports"
+    }
+  ],
+  "categories": ["business", "finance", "productivity"],
+  "pulse_ecosystem_directory": {
+    "version": "4.82",
+    "areas": {
+      "pma": {
+        "title": "Pulse Management Area (PMA)",
+        "canonical_root": "/pma",
+        "description": "Internal multi-tenant operations, client management, triage, and task execution.",
+        "routes": [
+          {
+            "id": "pma_home",
+            "name": "PMA Home",
+            "url": "/pma",
+            "query_param": "nav=home",
+            "description": "Command Center overview with proactive triage summary and client health cards."
+          },
+          {
+            "id": "pma_alerts",
+            "name": "Alerts & Triage",
+            "url": "/pma/alerts",
+            "alias_url": "/pma?nav=alerts",
+            "query_param": "nav=alerts",
+            "sub_screens": ["clientSelection", "alertSelection", "triageAnalysis", "ignoredAlerts"],
+            "description": "Anomaly detection, automated health check alerts, and triage action flows."
+          },
+          {
+            "id": "pma_tasks",
+            "name": "Tasks",
+            "url": "/pma?nav=tasks",
+            "query_param": "nav=tasks",
+            "description": "Central task tracker across active, overdue, and completed client action items."
+          },
+          {
+            "id": "pma_integrations",
+            "name": "Integrations",
+            "url": "/pma?nav=integrations",
+            "query_param": "nav=integrations",
+            "description": "Management of Xero, HubSpot, Pipedrive, Harvest, ClickUp, and custom connectors."
+          },
+          {
+            "id": "pma_setup",
+            "name": "Setup & KeyInfo",
+            "url": "/pma?nav=setup",
+            "url_pattern": "/pma?nav=setup&client={clientName}",
+            "query_param": "nav=setup",
+            "description": "Client onboarding, KeyInfo configuration editor, and Google Sheet bindings."
+          },
+          {
+            "id": "pma_outgoings",
+            "name": "Outgoings",
+            "url": "/pma?nav=outgoings",
+            "query_param": "nav=outgoings",
+            "description": "Monthly recurring outgoings, supplier costs, and automated pull reviews."
+          },
+          {
+            "id": "pma_invoices",
+            "name": "Invoices",
+            "url": "/pma?nav=invoices",
+            "query_param": "nav=invoices",
+            "description": "Invoicing pipeline, sync status, and debtor ledger."
+          },
+          {
+            "id": "pma_jobs",
+            "name": "Jobs",
+            "url": "/pma?nav=jobs",
+            "query_param": "nav=jobs",
+            "description": "Jobs, project deliveries, and fee reconciliations."
+          },
+          {
+            "id": "pma_retainers",
+            "name": "Retainers",
+            "url": "/pma?nav=retainers",
+            "query_param": "nav=retainers",
+            "description": "Retainers, contract renewals, and recurring revenue tracker."
+          },
+          {
+            "id": "pma_tools",
+            "name": "EOM Tools",
+            "url": "/pma?nav=tools",
+            "query_param": "nav=tools",
+            "description": "End-of-Month (EOM) reconciliation toolkit, cashflow recon, and adjustments."
+          },
+          {
+            "id": "pma_views",
+            "name": "Views",
+            "url": "/pma?nav=views",
+            "query_param": "nav=views",
+            "description": "Raw sheet structure inspector and live spreadsheet formula visualizer."
+          },
+          {
+            "id": "pma_activity",
+            "name": "Activity & Audit",
+            "url": "/pma?nav=activity",
+            "query_param": "nav=activity",
+            "description": "Historical audit logs, sync events, and multi-tenant user action logs."
+          },
+          {
+            "id": "pma_settings",
+            "name": "Settings",
+            "url": "/pma?nav=settings",
+            "query_param": "nav=settings",
+            "description": "User permission matrix, role-based access control, and system versioning."
+          }
+        ]
+      },
+      "pulse": {
+        "title": "Pulse Client Portal",
+        "canonical_root": "/pulse",
+        "description": "Client-facing financial intelligence dashboard, cashflow, and performance reporting.",
+        "routes": [
+          {
+            "id": "pulse_month",
+            "name": "Month View (Dashboard)",
+            "url": "/pulse?view=month",
+            "url_pattern": "/pulse?client={clientName}&view=month",
+            "query_param": "view=month",
+            "alias_param": "view=dashboard",
+            "has_chart": true,
+            "chart_name": "Last 12 Months Performance Chart",
+            "description": "Executive summary with revenue, gross profit, operating profit, and trailing 12-month trends."
+          },
+          {
+            "id": "pulse_ytd",
+            "name": "Year to Date (YTD)",
+            "url": "/pulse?view=ytd",
+            "url_pattern": "/pulse?client={clientName}&view=ytd",
+            "query_param": "view=ytd",
+            "description": "Cumulative financial performance metrics compared against full-year targets."
+          },
+          {
+            "id": "pulse_perf_breakdown",
+            "name": "Performance Breakdown",
+            "url": "/pulse?view=perfBreakdown",
+            "url_pattern": "/pulse?client={clientName}&view=perfBreakdown",
+            "query_param": "view=perfBreakdown",
+            "description": "Granular P&L line-by-line financial analysis with deep dive capabilities."
+          },
+          {
+            "id": "pulse_cash",
+            "name": "Cashflow Forecast",
+            "url": "/pulse?view=cash",
+            "url_pattern": "/pulse?client={clientName}&view=cash",
+            "query_param": "view=cash",
+            "has_chart": true,
+            "chart_name": "Cashflow Trajectory Chart (Excl. vs Incl. Pipeline)",
+            "chart_toggle": "AppData!G59",
+            "description": "Rolling 7-month cashflow forecast tables and SVG cash trajectory line chart."
+          },
+          {
+            "id": "pulse_cash_breakdown",
+            "name": "Cashflow Breakdown",
+            "url": "/pulse?view=cashBreakdown",
+            "url_pattern": "/pulse?client={clientName}&view=cashBreakdown",
+            "query_param": "view=cashBreakdown",
+            "description": "Cash receipts and disbursements categorized by payroll, contractors, taxes, and overheads."
+          },
+          {
+            "id": "pulse_jobs",
+            "name": "Jobs & Projects",
+            "url": "/pulse?view=jobs",
+            "url_pattern": "/pulse?client={clientName}&view=jobs",
+            "query_param": "view=jobs",
+            "description": "Project profitability, revenue pipeline, and delivery burn rates."
+          },
+          {
+            "id": "pulse_contractors",
+            "name": "Contractors",
+            "url": "/pulse?view=contractors",
+            "url_pattern": "/pulse?client={clientName}&view=contractors",
+            "query_param": "view=contractors",
+            "description": "Freelancer and subcontractor cost analysis."
+          },
+          {
+            "id": "pulse_expenses",
+            "name": "Expenses",
+            "url": "/pulse?view=expenses",
+            "url_pattern": "/pulse?client={clientName}&view=expenses",
+            "query_param": "view=expenses",
+            "description": "Overheads and direct operating costs categorized by supplier and GL code."
+          },
+          {
+            "id": "pulse_salaries",
+            "name": "Salaries",
+            "url": "/pulse?view=salaries",
+            "url_pattern": "/pulse?client={clientName}&view=salaries",
+            "query_param": "view=salaries",
+            "restricted_to_senior": true,
+            "description": "Staff payroll breakdown and personnel costs (restricted to Senior user permissions)."
+          },
+          {
+            "id": "pulse_dividends",
+            "name": "Dividends",
+            "url": "/pulse?view=dividends",
+            "url_pattern": "/pulse?client={clientName}&view=dividends",
+            "query_param": "view=dividends",
+            "restricted_to_senior": true,
+            "description": "Director dividend distributions (restricted to Senior user permissions)."
+          },
+          {
+            "id": "pulse_nbtofind",
+            "name": "New Business to Find",
+            "url": "/pulse?view=nbtofind",
+            "url_pattern": "/pulse?client={clientName}&view=nbtofind",
+            "query_param": "view=nbtofind",
+            "description": "Revenue gaps against budget target requiring new business acquisition."
+          },
+          {
+            "id": "pulse_budget",
+            "name": "Budget",
+            "url": "/pulse?view=viewBudget",
+            "url_pattern": "/pulse?client={clientName}&view=viewBudget",
+            "query_param": "view=viewBudget",
+            "description": "Full-year financial budget projections."
+          },
+          {
+            "id": "pulse_budget_variance",
+            "name": "Budget Variance",
+            "url": "/pulse?view=budgetVariance",
+            "url_pattern": "/pulse?client={clientName}&view=budgetVariance",
+            "query_param": "view=budgetVariance",
+            "description": "Side-by-side variance analysis comparing actuals against budget targets."
+          },
+          {
+            "id": "pulse_scenarios",
+            "name": "Scenario Planner",
+            "url": "/pulse?view=scenarios",
+            "url_pattern": "/pulse?client={clientName}&view=scenarios",
+            "query_param": "view=scenarios",
+            "description": "Interactive scenario modeling for projected revenue changes and hiring plans."
+          }
+        ]
+      }
+    }
+  }
+}

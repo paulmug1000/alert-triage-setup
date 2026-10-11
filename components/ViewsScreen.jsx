@@ -297,38 +297,40 @@ export default function ViewsScreen({
             Client Views
           </h1>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <label htmlFor="pma-views-client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#64748b" }}>
-              Client:
-            </label>
-            <select
-              id="pma-views-client-selector"
-              value={selectedClient?.clientName || ""}
-              onChange={(e) => {
-                const found = (allClients || []).find((c) => c.clientName === e.target.value);
-                if (found) handleSelectClient(found);
-              }}
-              style={{
-                padding: "8px 14px",
-                fontSize: "13.5px",
-                fontWeight: "600",
-                color: "#1e293b",
-                background: "#f8fafc",
-                border: "1px solid #cbd5e1",
-                borderRadius: "8px",
-                cursor: "pointer",
-                outline: "none",
-                minWidth: "220px",
-              }}
-            >
-              <option value="" disabled>-- Select a Client --</option>
-              {(allClients || []).map((c) => (
-                <option key={c.clientName} value={c.clientName}>
-                  {c.clientName}
-                </option>
-              ))}
-            </select>
-          </div>
+          {!managedClient && (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <label htmlFor="pma-views-client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#64748b" }}>
+                Client:
+              </label>
+              <select
+                id="pma-views-client-selector"
+                value={selectedClient?.clientName || ""}
+                onChange={(e) => {
+                  const found = (allClients || []).find((c) => c.clientName === e.target.value);
+                  if (found) handleSelectClient(found);
+                }}
+                style={{
+                  padding: "8px 14px",
+                  fontSize: "13.5px",
+                  fontWeight: "600",
+                  color: "#1e293b",
+                  background: "#f8fafc",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "8px",
+                  cursor: "pointer",
+                  outline: "none",
+                  minWidth: "220px",
+                }}
+              >
+                <option value="" disabled>-- Select a Client --</option>
+                {(allClients || []).map((c) => (
+                  <option key={c.clientName} value={c.clientName}>
+                    {c.clientName}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* Right Actions */}

@@ -3,7 +3,7 @@ import { useTasks as useBaseTasks } from '../hooks/useTasks';
 
 const TaskContext = createContext();
 
-export function TaskProvider({ children, automationCommanderSheetId }) {
+export function TaskProvider({ children, automationCommanderSheetId, managedClient }) {
   const taskState = useBaseTasks();
   
   const [navTaskCount, setNavTaskCount] = useState(0);
@@ -28,7 +28,13 @@ export function TaskProvider({ children, automationCommanderSheetId }) {
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId, filter: "active", bypassCache }),
+        body: JSON.stringify({
+          action: "get_tasks",
+          automationCommanderSheetId,
+          filter: "active",
+          clientName: managedClient?.clientName || "",
+          bypassCache
+        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -45,26 +51,22 @@ export function TaskProvider({ children, automationCommanderSheetId }) {
     } catch (e) {
       console.error("Failed to load task counts:", e);
     }
-  }, [automationCommanderSheetId]);
+  }, [automationCommanderSheetId, managedClient?.clientName]);
 
-  useEffect(() => {
-    if (automationCommanderSheetId) {
-      refreshTaskCount();
-    }
-    const interval = setInterval(() => {
-      refreshTaskCount();
-    }, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [automationCommanderSheetId, refreshTaskCount]);
-
-  const loadTasks = async (filter = "active", bypassCache = false) => {
+  const loadTasks = useCallback(async (filter = "active", bypassCache = false) => {
     try {
       taskState.setTasksLoading(true);
       taskState.setTaskActionError("");
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_tasks", automationCommanderSheetId, filter, bypassCache }),
+        body: JSON.stringify({
+          action: "get_tasks",
+          automationCommanderSheetId,
+          filter,
+          clientName: managedClient?.clientName || "",
+          bypassCache
+        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -87,7 +89,24 @@ export function TaskProvider({ children, automationCommanderSheetId }) {
     } finally {
       taskState.setTasksLoading(false);
     }
-  };
+  }, [automationCommanderSheetId, managedClient?.clientName, taskState.setTasks, taskState.setTasksLoading, taskState.setTaskActionError]);
+
+  useEffect(() => {
+    if (automationCommanderSheetId) {
+      refreshTaskCount(true);
+      loadTasks(taskState.tasksFilter || "active", true);
+    }
+  }, [automationCommanderSheetId, managedClient?.clientName]);
+
+  useEffect(() => {
+    if (automationCommanderSheetId) {
+      refreshTaskCount();
+    }
+    const interval = setInterval(() => {
+      refreshTaskCount();
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [automationCommanderSheetId, refreshTaskCount]);
 
   const value = {
     ...taskState,

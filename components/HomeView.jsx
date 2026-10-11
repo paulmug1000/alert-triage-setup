@@ -132,20 +132,25 @@ export default function HomeView({
     return counts;
   }, [clientsWithFlags, authorizedProactiveAlerts, user, isAdmin, assignedByClient, assignedAppIds]);
 
-  // Total alerts needing processing across all authorized clients
+  // Total alerts needing processing across all authorized clients (or managed client)
   const totalAlertsCount = useMemo(() => {
+    if (managedClient?.clientName) {
+      const target = managedClient.clientName.toLowerCase();
+      const matchKey = Object.keys(clientAlertCounts).find(k => k.toLowerCase() === target);
+      return matchKey ? (clientAlertCounts[matchKey] || 0) : (clientAlertCounts[managedClient.clientName] || 0);
+    }
     return Object.values(clientAlertCounts).reduce((acc, count) => acc + count, 0);
-  }, [clientAlertCounts]);
+  }, [clientAlertCounts, managedClient]);
 
-  // Sync latest confirmed alert count to localStorage
+  // Sync latest confirmed alert count to localStorage (only when not in managedClient mode)
   useEffect(() => {
-    if (!isLoadingAlerts && totalAlertsCount != null) {
+    if (!managedClient && !isLoadingAlerts && totalAlertsCount != null) {
       setCachedTotalAlerts(totalAlertsCount);
       try {
         localStorage.setItem("pulse_cached_total_alerts", String(totalAlertsCount));
       } catch {}
     }
-  }, [isLoadingAlerts, totalAlertsCount]);
+  }, [isLoadingAlerts, totalAlertsCount, managedClient]);
 
   // Clients that are not yet fully set up
   const clientsPendingSetup = useMemo(() => {
@@ -214,19 +219,19 @@ export default function HomeView({
             </div>
 
             <div style={{ display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "8px" }}>
-              {isLoadingAlerts && cachedTotalAlerts === null ? (
+              {isLoadingAlerts && cachedTotalAlerts === null && !managedClient ? (
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "4px 0" }}>
                   <Spinner size={22} color="#0047AB" />
                   <span style={{ color: "#64748B", fontSize: "14px" }}>Checking alerts...</span>
                 </div>
               ) : (
                 <>
-                  <span style={{ fontSize: "36px", fontWeight: "800", color: ((isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) > 0) ? "#DC2626" : "#0F172A", lineHeight: 1 }}>
-                    {isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount}
+                  <span style={{ fontSize: "36px", fontWeight: "800", color: (((!managedClient && isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) > 0)) ? "#DC2626" : "#0F172A", lineHeight: 1 }}>
+                    {!managedClient && isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount}
                   </span>
                   <span style={{ fontSize: "14px", color: "#64748B", fontWeight: "500", display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                    total {(isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) === 1 ? "alert" : "alerts"}
-                    {isLoadingAlerts && cachedTotalAlerts !== null && (
+                    total {(!managedClient && isLoadingAlerts && cachedTotalAlerts !== null ? cachedTotalAlerts : totalAlertsCount) === 1 ? "alert" : "alerts"}
+                    {!managedClient && isLoadingAlerts && cachedTotalAlerts !== null && (
                       <span style={{ fontSize: "12px", color: "#94A3B8" }}>(syncing...)</span>
                     )}
                   </span>
@@ -236,8 +241,12 @@ export default function HomeView({
 
             <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#64748B", lineHeight: "1.4" }}>
               {totalAlertsCount === 0 && !isLoadingAlerts
-                ? "All alerts across your assigned clients are currently clear."
-                : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients you have access to.`}
+                ? (managedClient?.clientName
+                    ? `All alerts for ${managedClient.clientName} are currently clear.`
+                    : "All alerts across your assigned clients are currently clear.")
+                : (managedClient?.clientName
+                    ? `Active discrepancies and proactive alerts for ${managedClient.clientName}.`
+                    : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients you have access to.`)}
             </p>
           </div>
 

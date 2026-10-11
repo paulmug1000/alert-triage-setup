@@ -24,8 +24,12 @@ export default function ToolsView({
 
   useEffect(() => {
     if (managedClient?.clientName) {
+      setEomDetailClient(managedClient.clientName);
+      setEomSubView("overview");
       setEomPushOutgoingsClient(managedClient.clientName);
       setEomCashflowReconClient(managedClient.clientName);
+    } else {
+      setEomDetailClient(null);
     }
   }, [managedClient]);
 
@@ -704,19 +708,21 @@ export default function ToolsView({
 
       <h2 style={{ margin: "0 0 14px", fontSize: "20px", fontWeight: "700" }}>EoM</h2>
 
-      <div style={{ display: "flex", gap: "4px", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
-        {[["overview", "Overview"], ["payroll", "Payroll Import"], ["time", "Time Import"], ["cash", "Cash Balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push Outgoings"]].map(([key, label]) => (
-          <button key={key} onClick={() => setEomSubView(key)}
-            style={{
-              padding: "8px 16px", background: "none", border: "none",
-              borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
-              color: eomSubView === key ? "#0066cc" : "#666", fontWeight: eomSubView === key ? "600" : "400",
-              fontSize: "13px", cursor: "pointer"
-            }}>
-            {label}
-          </button>
-        ))}
-      </div>
+      {!managedClient && (
+        <div style={{ display: "flex", gap: "4px", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
+          {[["overview", "Overview"], ["payroll", "Payroll Import"], ["time", "Time Import"], ["cash", "Cash Balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push Outgoings"]].map(([key, label]) => (
+            <button key={key} onClick={() => setEomSubView(key)}
+              style={{
+                padding: "8px 16px", background: "none", border: "none",
+                borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
+                color: eomSubView === key ? "#0066cc" : "#666", fontWeight: eomSubView === key ? "600" : "400",
+                fontSize: "13px", cursor: "pointer"
+              }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {eomSubView === "overview" && !eomDetailClient && !eomShowTemplateManager && !eomShowExcludedManager && (() => {
         const [y, m] = eomMonthKey.split("-").map(Number);
@@ -1348,9 +1354,17 @@ export default function ToolsView({
 
         return (
           <div>
-            <button onClick={() => { setEomDetailClient(null); setEomAddTaskMode(""); setEomEditingNotesFor(""); }}
+            <button onClick={() => {
+              if (managedClient) {
+                onClearManagedClient?.();
+              } else {
+                setEomDetailClient(null);
+                setEomAddTaskMode("");
+                setEomEditingNotesFor("");
+              }
+            }}
               style={{ background: "none", border: "none", color: "#0066cc", cursor: "pointer", fontSize: "13px", padding: "0 0 12px", display: "block" }}>
-              ‹ Back to overview
+              {managedClient ? "‹ Back to all clients" : "‹ Back to overview"}
             </button>
 
             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>

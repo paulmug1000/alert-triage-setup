@@ -757,38 +757,40 @@ export default function IntegrationsView({
           )}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <label htmlFor="jump-to-client" style={{ fontSize: "12.5px", fontWeight: "600", color: "#475569", whiteSpace: "nowrap" }}>
-            Jump to Client:
-          </label>
-          <select
-            id="jump-to-client"
-            defaultValue=""
-            onChange={(e) => {
-              handleJumpToClient(e.target.value);
-              e.target.value = "";
-            }}
-            style={{
-              padding: "7px 12px",
-              borderRadius: "8px",
-              border: "1px solid #cbd5e1",
-              fontSize: "13px",
-              fontWeight: "600",
-              color: "#0f172a",
-              background: "#ffffff",
-              cursor: "pointer",
-              minWidth: "220px",
-              outline: "none"
-            }}
-          >
-            <option value="" disabled>Select client ({clientsData.length})...</option>
-            {clientsData.map((c) => (
-              <option key={c.clientName} value={c.clientName}>
-                {c.clientName} {c.isSetupMode ? "🛠️" : ""}
-              </option>
-            ))}
-          </select>
-        </div>
+        {!managedClient && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <label htmlFor="jump-to-client" style={{ fontSize: "12.5px", fontWeight: "600", color: "#475569", whiteSpace: "nowrap" }}>
+              Jump to Client:
+            </label>
+            <select
+              id="jump-to-client"
+              defaultValue=""
+              onChange={(e) => {
+                handleJumpToClient(e.target.value);
+                e.target.value = "";
+              }}
+              style={{
+                padding: "7px 12px",
+                borderRadius: "8px",
+                border: "1px solid #cbd5e1",
+                fontSize: "13px",
+                fontWeight: "600",
+                color: "#0f172a",
+                background: "#ffffff",
+                cursor: "pointer",
+                minWidth: "220px",
+                outline: "none"
+              }}
+            >
+              <option value="" disabled>Select client ({clientsData.length})...</option>
+              {clientsData.map((c) => (
+                <option key={c.clientName} value={c.clientName}>
+                  {c.clientName} {c.isSetupMode ? "🛠️" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* ── CLIENTS STREAM (ORDERED DOWN THE PAGE) ───────────────────────────── */}

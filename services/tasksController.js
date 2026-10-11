@@ -312,6 +312,10 @@ export async function handleGetTasks(req, res, sheets) {
       accessibleTasks = accessibleTasks.filter(t => checkIsMine(t));
     }
 
+    if (clientName && typeof clientName === "string" && clientName.trim()) {
+      accessibleTasks = accessibleTasks.filter(t => matchesClientName(clientName.trim(), t.clientName));
+    }
+
     // Compute counts
     let myActiveCount = 0;
     let mySnoozedCount = 0;

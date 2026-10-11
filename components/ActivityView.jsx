@@ -1215,32 +1215,34 @@ export default function ActivityView({
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
           {/* CLIENT SELECTOR DROPDOWN */}
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <label style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>Client:</label>
-            <select
-              value={selectedClient}
-              onChange={handleClientChange}
-              style={{
-                padding: "7px 12px",
-                borderRadius: "6px",
-                border: "1px solid #cbd5e1",
-                fontSize: "13px",
-                fontWeight: "500",
-                color: "#1e293b",
-                background: "#f8fafc",
-                cursor: "pointer",
-                outline: "none"
-              }}
-            >
-              <option value="ALL">All Clients ({allOutgoingsClients.length})</option>
-              {effectiveIsAdmin && (
-                <option value="SYSTEM">🛡️ System & Security (Global)</option>
-              )}
-              {allOutgoingsClients.map(c => (
-                <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
-              ))}
-            </select>
-          </div>
+          {!managedClient && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <label style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>Client:</label>
+              <select
+                value={selectedClient}
+                onChange={handleClientChange}
+                style={{
+                  padding: "7px 12px",
+                  borderRadius: "6px",
+                  border: "1px solid #cbd5e1",
+                  fontSize: "13px",
+                  fontWeight: "500",
+                  color: "#1e293b",
+                  background: "#f8fafc",
+                  cursor: "pointer",
+                  outline: "none"
+                }}
+              >
+                <option value="ALL">All Clients ({allOutgoingsClients.length})</option>
+                {effectiveIsAdmin && (
+                  <option value="SYSTEM">🛡️ System & Security (Global)</option>
+                )}
+                {allOutgoingsClients.map(c => (
+                  <option key={c.clientName} value={c.clientName}>{c.clientName}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* ROUTINE TOGGLE */}
           <label style={{
@@ -1327,7 +1329,7 @@ export default function ActivityView({
             alignItems: "center"
           }}>
             <div>
-              <span style={{ fontSize: "12px", color: "#0284c7", fontWeight: "600", cursor: "pointer" }} onClick={() => setSelectedClient("ALL")}>
+              <span style={{ fontSize: "12px", color: "#0284c7", fontWeight: "600", cursor: "pointer" }} onClick={() => managedClient ? onClearManagedClient?.() : setSelectedClient("ALL")}>
                 ← Back to All Clients
               </span>
               <h3 style={{ margin: "4px 0 0 0", fontSize: "18px", color: "#0f172a" }}>

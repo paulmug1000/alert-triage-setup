@@ -171,35 +171,37 @@ export default function SetupView({
         </div>
 
         {/* Client Chooser */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <label htmlFor="client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Client:</label>
-          <select
-            id="client-selector"
-            value={selectedClient ? selectedClient.clientName : selectedClientName}
-            onChange={(e) => {
-              const val = e.target.value;
-              setSelectedClientName(val);
-              if (onSelectClient) onSelectClient(val);
-            }}
-            style={{
-              padding: "8px 14px",
-              borderRadius: "8px",
-              border: "1px solid #CBD5E1",
-              background: "#FFFFFF",
-              fontSize: "14px",
-              fontWeight: "600",
-              color: "#1E293B",
-              minWidth: "220px",
-              cursor: "pointer"
-            }}
-          >
-            {allOutgoingsClients.map((c) => (
-              <option key={c.clientName} value={c.clientName}>
-                {c.clientName}
-              </option>
-            ))}
-          </select>
-        </div>
+        {!managedClient && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <label htmlFor="client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Client:</label>
+            <select
+              id="client-selector"
+              value={selectedClient ? selectedClient.clientName : selectedClientName}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedClientName(val);
+                if (onSelectClient) onSelectClient(val);
+              }}
+              style={{
+                padding: "8px 14px",
+                borderRadius: "8px",
+                border: "1px solid #CBD5E1",
+                background: "#FFFFFF",
+                fontSize: "14px",
+                fontWeight: "600",
+                color: "#1E293B",
+                minWidth: "220px",
+                cursor: "pointer"
+              }}
+            >
+              {allOutgoingsClients.map((c) => (
+                <option key={c.clientName} value={c.clientName}>
+                  {c.clientName}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {feedback && (

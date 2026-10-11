@@ -54,7 +54,7 @@ function TriageSystemWithGlobals({ onBack, initialNav }) {
       <Head>
         <title>PMA - Pulse Management Area</title>
       </Head>
-      <TaskProvider automationCommanderSheetId={appGlobals.automationCommanderSheetId}>
+      <TaskProvider automationCommanderSheetId={appGlobals.automationCommanderSheetId} managedClient={appGlobals.managedClient}>
         <TriageSystemContent onBack={onBack} appGlobals={appGlobals} initialNav={initialNav} />
       </TaskProvider>
     </>
@@ -157,14 +157,56 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
 
   const currentLiveAlertCount = liveAlertCount + (proactiveAlerts || []).length;
 
+  const managedClientAlertCount = useMemo(() => {
+    if (!managedClient?.clientName) return null;
+    const targetName = managedClient.clientName.toLowerCase();
+    const ACTIONABLE_FLAG_KEYS_SET = new Set([
+      "invoiceDashboardDiscr", "expenseDashboardDiscr",
+      "crmPipeDashDiscr", "crmPipeAppDiscr", "crmConfDashDiscr", "crmConfAppDiscr",
+    ]);
+    const EXPENSE_TYPES = new Set(["expenseDashboardDiscr"]);
+    const INVOICE_TYPES = new Set(["invoiceDashboardDiscr"]);
+
+    const client = (triageEngine.clientsWithFlags || []).find(
+      c => (c.clientName || "").toLowerCase() === targetName
+    );
+
+    let flagCount = 0;
+    if (client) {
+      const assignedSet = assignedByClient[client.clientName] || new Set();
+      const expenseIds = client.activeExpenseIds || [];
+      const invoiceIds = client.activeInvoiceIds || [];
+      const validAssignedExp = expenseIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+      const validAssignedInv = invoiceIds.filter(id => assignedSet.has(id) || assignedAppIds.has(id)).length;
+
+      Object.entries(client.flags || {}).forEach(([flagKey, isSet]) => {
+        if (!isSet) return;
+        let count = client.alertCounts?.[flagKey] || 0;
+        if (ACTIONABLE_FLAG_KEYS_SET.has(flagKey)) {
+          if (EXPENSE_TYPES.has(flagKey)) count = Math.max(0, count - validAssignedExp);
+          if (INVOICE_TYPES.has(flagKey)) count = Math.max(0, count - validAssignedInv);
+          flagCount += count;
+        } else {
+          flagCount += (count > 0 ? count : 0);
+        }
+      });
+    }
+
+    const proactiveCount = (proactiveAlerts || []).filter(
+      a => (a.clientName || "").toLowerCase() === targetName
+    ).length;
+
+    return flagCount + proactiveCount;
+  }, [managedClient, triageEngine.clientsWithFlags, assignedByClient, assignedAppIds, proactiveAlerts]);
+
   useEffect(() => {
-    if (triageEngine.triageComplete) {
+    if (triageEngine.triageComplete && !managedClient) {
       setCachedAlertCount(currentLiveAlertCount);
       try {
         localStorage.setItem("pulse_cached_alert_badge", String(currentLiveAlertCount));
       } catch {}
     }
-  }, [triageEngine.triageComplete, currentLiveAlertCount]);
+  }, [triageEngine.triageComplete, currentLiveAlertCount, managedClient]);
 
   // --- INITIAL DATA LOAD ---
   // Explicitly trigger triage data load only when authenticated, scoped to current user, and allowed in PMA
@@ -746,7 +788,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
         onIntegrations={handleNavIntegrations}
         onSetup={handleNavSetup}
         onSettings={handleNavSettings}
-        homeAlertCount={triageEngine.triageComplete ? currentLiveAlertCount : (cachedAlertCount || currentLiveAlertCount)}
+        homeAlertCount={managedClient ? (managedClientAlertCount ?? 0) : (triageEngine.triageComplete ? currentLiveAlertCount : (cachedAlertCount || currentLiveAlertCount))}
         taskCount={navTaskCount}
         user={user}
         onLogout={logout}

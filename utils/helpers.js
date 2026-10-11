@@ -12,8 +12,11 @@ export function isPlaceholderInvoice(ref, status) {
   const s = String(typeof ref === "object" ? (ref?.ref || "") : ref || "").trim().toUpperCase();
   const st = String(typeof ref === "object" ? (ref?.status || "") : status || "").trim().toUpperCase();
   return (
+    s.startsWith("PLACE") ||
     s.includes("PLACE-INV") ||
     s.includes("MANUAL-INV") ||
+    s.startsWith("MANUAL") ||
+    s.includes("PLACEHOLDER") ||
     st.includes("PLACEHOLDER")
   );
 }
@@ -24,7 +27,13 @@ export function isPlaceholderExpense(appId, description, status) {
   const desc = String(typeof appId === "object" ? (appId?.description || "") : description || "").trim().toUpperCase();
   const st = String(typeof appId === "object" ? (appId?.status || "") : status || "").trim().toUpperCase();
   const tags = ["PLACE-EXP", "MANUAL-ENTRY", "UNRECON-GAP", "PLACE-GAP", "MANUAL-GAP", "PLACEHOLDER"];
-  return tags.some((t) => id.includes(t) || desc.includes(t) || st.includes(t));
+  return (
+    tags.some((t) => id.includes(t) || desc.includes(t) || st.includes(t)) ||
+    id.startsWith("PLACE") ||
+    desc.startsWith("PLACE") ||
+    id.startsWith("MANUAL") ||
+    desc.startsWith("MANUAL")
+  );
 }
 
 export function getAlertSummary(alert) {

@@ -92,12 +92,17 @@ export default function InvoicesEditModal({
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 480px)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700" }}>
-            Edit invoice - {isAdmin
-              ? (editSlot.slotLabel ? `${editSlot.slotLabel} (Row ${rowNum})` : `Row ${rowNum}, Slot ${slotNum}`)
-              : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/i, "") : `Slot ${slotNum}`)}
-          </h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
+              {jobName
+                ? `${jobName} · ${isAdmin ? (editSlot.slotLabel || `Slot ${slotNum}`) : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/gi, "").replace(/\bRow\s*\d+\b,?\s*/gi, "").trim() : `Slot ${slotNum}`)}`
+                : `Edit invoice - ${isAdmin
+                    ? (editSlot.slotLabel ? `${editSlot.slotLabel} (Row ${rowNum})` : `Row ${rowNum}, Slot ${slotNum}`)
+                    : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/gi, "").replace(/\bRow\s*\d+\b,?\s*/gi, "").trim() : `Slot ${slotNum}`)}`}
+            </h3>
+            {jobClient && <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>Client: <strong>{jobClient}</strong>{isAdmin ? ` · Row ${rowNum}` : ""}</div>}
+          </div>
           <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>
 

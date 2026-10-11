@@ -1,13 +1,28 @@
+import { useEffect } from "react";
+import { useRouter } from "next/router";
 import Head from "next/head";
-import TriageSystem from "./triage";
 
 export default function AlertsPage() {
+  const router = useRouter();
+
+  useEffect(() => {
+    router.replace("/pma/alerts");
+  }, [router]);
+
   return (
     <>
       <Head>
         <title>Alerts - Pulse Management Area</title>
       </Head>
-      <TriageSystem initialNav="alerts" onBack={() => {}} />
     </>
   );
+}
+
+export async function getServerSideProps() {
+  return {
+    redirect: {
+      destination: "/pma/alerts",
+      permanent: false,
+    },
+  };
 }

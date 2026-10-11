@@ -1,14 +1,18 @@
 import React, { useState } from "react";
 import Spinner from "./Spinner";
 import { stripCurrency } from "../utils/helpers";
+import { useAuth } from "../hooks/useAuth";
 
 export default function DirectCostsEditModal({
   editSlot,
   client,
   onClose,
   onMarkPullPending,
-  onUpdateJobs
+  onUpdateJobs,
+  isAdmin: propIsAdmin,
 }) {
+  const auth = useAuth();
+  const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
   const { rowNum, slotNum, slot, jobName, jobClient } = editSlot;
   const [description, setDescription] = useState(slot.description || "");
   const [amount, setAmount] = useState(stripCurrency(slot.amount));
@@ -87,9 +91,13 @@ export default function DirectCostsEditModal({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
           <div>
             <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
-              {jobName ? `${jobName} · ${editSlot.slotLabel || `Slot ${slotNum}`}` : `Edit expense - ${editSlot.slotLabel ? `${editSlot.slotLabel} (Row ${rowNum})` : `Row ${rowNum}, Slot ${slotNum}`}`}
+              {jobName
+                ? `${jobName} · ${isAdmin ? (editSlot.slotLabel || `Slot ${slotNum}`) : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/gi, "").replace(/\bRow\s*\d+\b,?\s*/gi, "").trim() : `Slot ${slotNum}`)}`
+                : `Edit expense - ${isAdmin
+                    ? (editSlot.slotLabel ? `${editSlot.slotLabel} (Row ${rowNum})` : `Row ${rowNum}, Slot ${slotNum}`)
+                    : (editSlot.slotLabel ? editSlot.slotLabel.replace(/\s*\(Row\s*\d+\)/gi, "").replace(/\bRow\s*\d+\b,?\s*/gi, "").trim() : `Slot ${slotNum}`)}`}
             </h3>
-            {jobClient && <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>Client: <strong>{jobClient}</strong> · Row {rowNum}</div>}
+            {jobClient && <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>Client: <strong>{jobClient}</strong>{isAdmin ? ` · Row ${rowNum}` : ""}</div>}
           </div>
           <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
         </div>

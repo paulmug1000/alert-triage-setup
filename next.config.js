@@ -38,8 +38,18 @@ const nextConfig = {
   async redirects() {
     return [
       {
+        source: "/",
+        destination: "/pma",
+        permanent: false,
+      },
+      {
         source: "/portal",
         destination: "/pulse",
+        permanent: false,
+      },
+      {
+        source: "/alerts",
+        destination: "/pma/alerts",
         permanent: false,
       },
     ];

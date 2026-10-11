@@ -83,7 +83,7 @@ export default function OutgoingsNewVendorModal({ newVendorData, outgoingsClient
           {error && <div style={{ fontSize: "12px", color: "#d32f2f", background: "#fff5f5", padding: "8px", borderRadius: "4px" }}>{error}</div>}
         </div>
         <p style={{ fontSize: "11px", color: "#999", margin: "12px 0 0" }}>
-          A new row will be inserted in the Contractors section of the Outgoings tab. You can then place the expense in the correct month cell.
+          A new vendor will be added to the Contractors section of the Outgoings tab. You can then place the expense in the correct month cell.
         </p>
         <div style={{ display: "flex", gap: "8px", marginTop: "16px", justifyContent: "flex-end" }}>
           <button onClick={onClose}

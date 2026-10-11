@@ -1,8 +1,21 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
 
-export default function SetupView({ allOutgoingsClients = [], user }) {
-  const [selectedClientName, setSelectedClientName] = useState("");
+export default function SetupView({
+  allOutgoingsClients = [],
+  initialClientName = "",
+  onSelectClient,
+  user
+}) {
+  const [selectedClientName, setSelectedClientName] = useState(() => {
+    if (initialClientName) return initialClientName;
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      const urlClient = p.get("client");
+      if (urlClient) return urlClient;
+    }
+    return "";
+  });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -15,25 +28,46 @@ export default function SetupView({ allOutgoingsClients = [], user }) {
   const [crmTool, setCrmTool] = useState("None");
   const [crmDrives, setCrmDrives] = useState("NA");
 
-  // Read URL query parameter on mount or pick first client
+  // Synchronize client selection when initialClientName, URL query, or client list updates
   useEffect(() => {
+    if (initialClientName) {
+      if (allOutgoingsClients.length > 0) {
+        const found = allOutgoingsClients.find(c => c.clientName.toLowerCase() === initialClientName.toLowerCase());
+        if (found) {
+          setSelectedClientName(found.clientName);
+          return;
+        }
+      }
+      setSelectedClientName(initialClientName);
+      return;
+    }
+
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
       const urlClient = p.get("client");
-      if (urlClient && allOutgoingsClients.some(c => c.clientName.toLowerCase() === urlClient.toLowerCase())) {
-        const found = allOutgoingsClients.find(c => c.clientName.toLowerCase() === urlClient.toLowerCase());
-        setSelectedClientName(found.clientName);
+      if (urlClient) {
+        if (allOutgoingsClients.length > 0) {
+          const found = allOutgoingsClients.find(c => c.clientName.toLowerCase() === urlClient.toLowerCase());
+          if (found) {
+            setSelectedClientName(found.clientName);
+            return;
+          }
+        }
+        setSelectedClientName(urlClient);
         return;
       }
     }
 
-    if (allOutgoingsClients.length > 0 && !selectedClientName) {
-      const preferred = allOutgoingsClients.find(c => c.clientName.toUpperCase().includes("APPTEST")) || allOutgoingsClients[0];
-      setSelectedClientName(preferred.clientName);
+    if (allOutgoingsClients.length > 0) {
+      setSelectedClientName(prev => {
+        if (prev) return prev;
+        const preferred = allOutgoingsClients.find(c => c.clientName.toUpperCase().includes("APPTEST")) || allOutgoingsClients[0];
+        return preferred?.clientName || "";
+      });
     }
-  }, [allOutgoingsClients, selectedClientName]);
+  }, [allOutgoingsClients, initialClientName]);
 
-  const selectedClient = allOutgoingsClients.find(c => c.clientName === selectedClientName) || null;
+  const selectedClient = allOutgoingsClients.find(c => c.clientName.toLowerCase() === (selectedClientName || "").toLowerCase()) || null;
 
   // Load config when selected client changes
   const loadConfig = useCallback(async (client) => {
@@ -130,8 +164,12 @@ export default function SetupView({ allOutgoingsClients = [], user }) {
           <label htmlFor="client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Client:</label>
           <select
             id="client-selector"
-            value={selectedClientName}
-            onChange={(e) => setSelectedClientName(e.target.value)}
+            value={selectedClient ? selectedClient.clientName : selectedClientName}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSelectedClientName(val);
+              if (onSelectClient) onSelectClient(val);
+            }}
             style={{
               padding: "8px 14px",
               borderRadius: "8px",

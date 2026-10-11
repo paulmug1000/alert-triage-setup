@@ -96,7 +96,7 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
 
         <!-- Call to Action -->
         <div style="text-align:center;margin:28px 0 16px 0;">
-          <a href="${appUrl}" target="_blank" style="background:#0066cc;color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;padding:12px 28px;border-radius:6px;display:inline-block;box-shadow:0 2px 4px rgba(0,102,204,0.2);">
+          <a href="${appUrl}/pma" target="_blank" style="background:#0066cc;color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;padding:12px 28px;border-radius:6px;display:inline-block;box-shadow:0 2px 4px rgba(0,102,204,0.2);">
             Open Pulse Management Area &rarr;
           </a>
         </div>

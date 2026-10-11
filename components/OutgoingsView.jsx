@@ -255,6 +255,7 @@ export default function OutgoingsView({
         <DirectCostsEditModal
           editSlot={directCostsEditSlot}
           client={outgoingsClient}
+          isAdmin={isAdmin}
           onClose={() => setDirectCostsEditSlot(null)}
           onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
           onUpdateJobs={(rNum, sNum, newData) => {
@@ -936,7 +937,7 @@ export default function OutgoingsView({
                             }
 
                             const jobTotalExpenses = job.rows.reduce((sum, r) => sum + r.expenseSlots.reduce((s, slot) => {
-                              const isReal = slot.transactionId && !isPlaceholderExpense(slot.transactionId);
+                              const isReal = (slot.transactionId || slot.description) && !isPlaceholderExpense(slot.transactionId, slot.description, slot.status);
                               return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
                             }, 0), 0);
                             const jobBudget = parseFloat(String(job.rows[0]?.directCosts || "").replace(/[£$€,\s]/g, "")) || 0;
@@ -990,7 +991,7 @@ export default function OutgoingsView({
                                       <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
                                     ) : (
                                       <div style={{ fontSize: "11px", color: "#64748b", paddingLeft: "8px" }}>
-                                        {isRetainer ? `↳ Month ${rIdx + 1}` : `↳ Row ${rIdx + 1}`}
+                                        {isRetainer ? `↳ Month ${rIdx + 1}` : (isAdmin ? `↳ Row ${rIdx + 1}` : `↳ Part ${rIdx + 1}`)}
                                       </div>
                                     )}
                                   </td>
@@ -1047,7 +1048,7 @@ export default function OutgoingsView({
                                       )
                                     ) : (
                                       <span style={{ fontSize: "10px", color: "#94a3b8" }}>
-                                        {isRetainer ? `mo. ${rIdx + 1}` : `row ${rIdx + 1}`}
+                                        {isRetainer ? `mo. ${rIdx + 1}` : (isAdmin ? `row ${rIdx + 1}` : `part ${rIdx + 1}`)}
                                       </span>
                                     )}
                                   </td>
@@ -1081,9 +1082,20 @@ export default function OutgoingsView({
 
                                   {/* Expense Slots 1, 2, 3 */}
                                   {jr.expenseSlots.map((s) => {
-                                    const isManualEntry = isPlaceholderExpense(s.transactionId);
+                                    const txUpper = String(s.transactionId || "").trim().toUpperCase();
+                                    const descUpper = String(s.description || "").trim().toUpperCase();
+                                    const statusUpper = String(s.status || "").trim().toUpperCase();
+                                    const isPlaceholder = isPlaceholderExpense(s.transactionId, s.description, s.status) ||
+                                      txUpper.startsWith("PLACE") ||
+                                      descUpper.startsWith("PLACE") ||
+                                      txUpper.includes("PLACEHOLDER") ||
+                                      descUpper.includes("PLACEHOLDER") ||
+                                      statusUpper.includes("PLACEHOLDER") ||
+                                      txUpper.startsWith("MANUAL") ||
+                                      descUpper.startsWith("MANUAL") ||
+                                      (!s.description && !!s.amount);
                                     const isGenuinelyBlank = !s.description && !s.amount;
-                                    const isEmpty = isGenuinelyBlank || isManualEntry;
+                                    const isEmpty = isGenuinelyBlank || isPlaceholder;
                                     const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
                                     const isSaving = directCostsSavingCell === cellSavingKey;
 
@@ -1219,18 +1231,20 @@ export default function OutgoingsView({
                                             <div>
                                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "4px" }}>
                                                 <span
-                                                  title={s.description}
+                                                  title={!isAdmin && isPlaceholder ? "Placeholder" : (s.description || "")}
                                                   style={{
                                                     fontWeight: "700",
                                                     fontSize: "12px",
-                                                    color: isManualEntry ? "#9333ea" : "#0f172a",
+                                                    color: isPlaceholder ? "#9333ea" : "#0f172a",
                                                     overflow: "hidden",
                                                     textOverflow: "ellipsis",
                                                     whiteSpace: "nowrap",
                                                     maxWidth: "105px"
                                                   }}
                                                 >
-                                                  {isManualEntry ? "⚠️ " : ""}{s.description}
+                                                  {isPlaceholder
+                                                    ? (isAdmin ? `⚠️ ${s.description || "Placeholder"}` : "⚠️ Placeholder")
+                                                    : (s.description || "-")}
                                                 </span>
                                                 <span style={{ fontWeight: "600", fontSize: "11px", color: "#0f172a" }}>
                                                   {formatCurrency(s.amount) || `£${s.amount}`}
@@ -1244,7 +1258,7 @@ export default function OutgoingsView({
                                                   </span>
                                                 )}
                                               </div>
-                                              {isManualEntry && isPlacing && (
+                                              {isPlaceholder && isPlacing && (
                                                 <div style={{ color: "#2563eb", fontWeight: "700", fontSize: "10px", marginTop: "3px" }}>
                                                   Click to overwrite
                                                 </div>
@@ -1270,7 +1284,7 @@ export default function OutgoingsView({
                                     ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing ? (
                                       <button
                                         type="button"
-                                        title="No spare expense slot - click to add a new row for this job"
+                                        title={isAdmin ? "No spare expense slot - click to add a new row for this job" : "No spare expense slot - click to add more space for this job"}
                                         onClick={async () => {
                                           const toPlace = selectedInboxAppIds.size > 0
                                             ? outgoingsInbox.filter(e => selectedInboxAppIds.has(e.appId))

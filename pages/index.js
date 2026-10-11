@@ -1,16 +1,28 @@
+import { useEffect } from "react";
+import { useRouter } from "next/router";
 import Head from "next/head";
-import TriageSystem from "./triage";
 
 export default function Index() {
+  const router = useRouter();
+
+  useEffect(() => {
+    router.replace("/pma");
+  }, [router]);
+
   return (
     <>
       <Head>
         <title>PMA - Pulse Management Area</title>
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        <meta name="apple-mobile-web-app-title" content="Pulse Management Area" />
       </Head>
-      <TriageSystem onBack={() => { }} />
     </>
   );
+}
+
+export async function getServerSideProps() {
+  return {
+    redirect: {
+      destination: "/pma",
+      permanent: false,
+    },
+  };
 }

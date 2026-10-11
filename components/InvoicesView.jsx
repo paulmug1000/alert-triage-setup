@@ -209,7 +209,9 @@ export default function InvoicesView({
               </div>
             </div>
             <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "18px" }}>
-              Updating will change the client name across all rows for this job in the Confirmed sheet.
+              {isAdmin
+                ? "Updating will change the client name across all rows for this job in the Confirmed sheet."
+                : "Updating will change the client name for this job in the Confirmed sheet."}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <button className="triage-btn"
@@ -238,6 +240,7 @@ export default function InvoicesView({
         <InvoicesEditModal 
           editSlot={invoicesEditSlot}
           invoicesClient={invoicesClient}
+          isAdmin={isAdmin}
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => outgoingsPullPendingRef.current = masterId}
           onUpdateInvoiceJobs={(rNum, sNum, newData) => {
@@ -523,7 +526,7 @@ export default function InvoicesView({
                             }
 
                             const jobTotalInvoiced = job.rows.reduce((sum, r) => sum + r.invoiceSlots.reduce((s, slot) => {
-                              const isReal = slot.ref && !isPlaceholderInvoice(slot.ref);
+                              const isReal = slot.ref && !isPlaceholderInvoice(slot.ref, slot.status);
                               return s + (isReal ? (parseFloat(String(slot.amount).replace(/[£$€,\s]/g, "")) || 0) : 0);
                             }, 0), 0);
                             const jobRevenue = parseFloat(String(job.rows[0]?.revenue || "").replace(/[£$€,\s]/g, "")) || 0;
@@ -577,7 +580,7 @@ export default function InvoicesView({
                                       <div style={{ fontWeight: "600", color: "#1e293b" }}>{jr.jobName}</div>
                                     ) : (
                                       <div style={{ fontSize: "11px", color: "#64748b", paddingLeft: "8px" }}>
-                                        {isRetainer ? `↳ Month ${rIdx + 1}` : `↳ Row ${rIdx + 1}`}
+                                        {isRetainer ? `↳ Month ${rIdx + 1}` : (isAdmin ? `↳ Row ${rIdx + 1}` : `↳ Part ${rIdx + 1}`)}
                                       </div>
                                     )}
                                   </td>
@@ -634,7 +637,7 @@ export default function InvoicesView({
                                       )
                                     ) : (
                                       <span style={{ fontSize: "10px", color: "#94a3b8" }}>
-                                        {isRetainer ? `mo. ${rIdx + 1}` : `row ${rIdx + 1}`}
+                                        {isRetainer ? `mo. ${rIdx + 1}` : (isAdmin ? `row ${rIdx + 1}` : `part ${rIdx + 1}`)}
                                       </span>
                                     )}
                                   </td>
@@ -668,11 +671,16 @@ export default function InvoicesView({
 
                                   {/* Invoice Slots 1, 2, 3 */}
                                   {jr.invoiceSlots.map((s) => {
-                                    const isManualEntry = isPlaceholderInvoice(s.ref);
-                                    const isBlankRef = !s.ref || String(s.ref).trim() === "";
-                                    const isGenuinelyBlank = isBlankRef && !s.amount;
-                                    const isPlaceholder = isBlankRef && !!s.amount;
-                                    const isEmpty = isBlankRef || isManualEntry;
+                                    const refUpper = String(s.ref || "").trim().toUpperCase();
+                                    const statusUpper = String(s.status || "").trim().toUpperCase();
+                                    const isPlaceholder = isPlaceholderInvoice(s.ref, s.status) ||
+                                      refUpper.startsWith("PLACE") ||
+                                      refUpper.includes("PLACEHOLDER") ||
+                                      refUpper.startsWith("MANUAL") ||
+                                      statusUpper.includes("PLACEHOLDER") ||
+                                      (!s.ref && !!s.amount);
+                                    const isGenuinelyBlank = (!s.ref || String(s.ref).trim() === "") && !s.amount;
+                                    const isEmpty = isGenuinelyBlank || isPlaceholder;
                                     const cellSavingKey = `${jr.rowNum}-${s.slotNum}`;
                                     const isSaving = invoicesSavingCell === cellSavingKey;
 
@@ -746,8 +754,21 @@ export default function InvoicesView({
                                           ) : (
                                             <div>
                                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "4px" }}>
-                                                <span style={{ fontWeight: "700", fontSize: "12px", color: isManualEntry ? "#9333ea" : "#0f172a" }}>
-                                                  {(isManualEntry || isPlaceholder) ? "⚠️ " : ""}{s.ref ? (s.ref.startsWith("#") ? s.ref : `#${s.ref}`) : (isManualEntry || isPlaceholder ? "Placeholder" : "")}
+                                                <span
+                                                  title={!isAdmin && isPlaceholder ? "Placeholder" : (s.ref || "")}
+                                                  style={{
+                                                    fontWeight: "700",
+                                                    fontSize: "12px",
+                                                    color: isPlaceholder ? "#9333ea" : "#0f172a",
+                                                    overflow: "hidden",
+                                                    textOverflow: "ellipsis",
+                                                    whiteSpace: "nowrap",
+                                                    maxWidth: "115px"
+                                                  }}
+                                                >
+                                                  {isPlaceholder
+                                                    ? (isAdmin && s.ref ? `⚠️ ${s.ref.startsWith("#") ? s.ref : `#${s.ref}`}` : "⚠️ Placeholder")
+                                                    : (s.ref ? (s.ref.startsWith("#") ? s.ref : `#${s.ref}`) : "")}
                                                 </span>
                                                 <span style={{ fontWeight: "600", fontSize: "11px", color: "#0f172a" }}>
                                                   {formatCurrency(s.amount) || `£${s.amount}`}
@@ -761,7 +782,7 @@ export default function InvoicesView({
                                                   </span>
                                                 )}
                                               </div>
-                                              {(isManualEntry || isPlaceholder) && isPlacing && (
+                                              {isPlaceholder && isPlacing && (
                                                 <div style={{ color: "#2563eb", fontWeight: "700", fontSize: "10px", marginTop: "3px" }}>
                                                   Click to overwrite
                                                 </div>
@@ -787,7 +808,7 @@ export default function InvoicesView({
                                     ) : isLastRowOfJob && !jobHasEmptySlot && isPlacing ? (
                                       <button
                                         type="button"
-                                        title="No spare invoice slot - click to add a new row for this job"
+                                        title={isAdmin ? "No spare invoice slot - click to add a new row for this job" : "No spare invoice slot - click to add more space for this job"}
                                         onClick={async () => {
                                           const inv = invoicesPlacingRef.current;
                                           if (!inv) return;

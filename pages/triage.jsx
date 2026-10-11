@@ -103,6 +103,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     }
     return "home";
   });
+  const [setupClientName, setSetupClientName] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("client") || "";
+    }
+    return "";
+  });
 
   const {
     navTaskCount, setNavTaskCount, snoozedTaskCount, setSnoozedTaskCount,
@@ -254,7 +261,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   const handleNavAppLog = handleNavActivity;
   const handleNavSettings = () => { fireOutgoingsPullIfPending(); setActiveNav("settings"); loadClients(); };
   const handleNavIntegrations = () => { fireOutgoingsPullIfPending(); setActiveNav("integrations"); loadClients(); };
-  const handleNavSetup = () => { fireOutgoingsPullIfPending(); setActiveNav("setup"); loadClients(); };
+  const handleNavSetup = (clientName = "") => {
+    fireOutgoingsPullIfPending();
+    if (typeof clientName === "string" && clientName.trim()) {
+      setSetupClientName(clientName.trim());
+    }
+    setActiveNav("setup");
+    loadClients();
+  };
   const handleNavTools = () => { setActiveNav("tools"); loadClients(); };
   const handleNavOutgoings = () => { setActiveNav("outgoings"); loadClients(); };
   const handleNavInvoices = () => { setActiveNav("invoices"); loadClients(); };
@@ -263,25 +277,32 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
   const handleNavViews = () => { setActiveNav("views"); loadClients(); };
 
   // Synchronize browser URL with activeNav so direct bookmarking works naturally
+  // Rule: Canonical URL for PMA is ALWAYS /pma (never bare root /)
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const isPma = window.location.pathname.startsWith("/pma");
-    let target = isPma ? "/pma" : "/";
+    let target = "/pma";
     if (activeNav === "alerts") {
-      target = isPma ? "/pma/alerts" : "/alerts";
+      target = "/pma/alerts";
+    } else if (activeNav === "setup") {
+      target = setupClientName ? `/pma?nav=setup&client=${encodeURIComponent(setupClientName)}` : `/pma?nav=setup`;
     } else if (activeNav !== "home") {
-      target = isPma ? `/pma?nav=${activeNav}` : `/?nav=${activeNav}`;
+      target = `/pma?nav=${activeNav}`;
     }
     const current = window.location.pathname + (window.location.search ? window.location.search : "");
     if (current !== target && !window.location.search.includes("integration=")) {
       window.history.replaceState({ nav: activeNav }, "", target);
     }
-  }, [activeNav]);
+  }, [activeNav, setupClientName]);
 
   useEffect(() => {
     const onPopState = (e) => {
       if (e.state?.nav) {
         setActiveNav(e.state.nav);
+        if (typeof window !== "undefined") {
+          const p = new URLSearchParams(window.location.search);
+          const clientParam = p.get("client");
+          if (clientParam) setSetupClientName(clientParam);
+        }
       } else if (typeof window !== "undefined") {
         const path = window.location.pathname.toLowerCase();
         if (path.includes("/alerts")) setActiveNav("alerts");
@@ -297,6 +318,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
       const navParam = p.get("nav");
+      const clientParam = p.get("client");
+      if (clientParam) {
+        setSetupClientName(clientParam);
+      }
       const path = window.location.pathname.toLowerCase();
       if (initialNav) {
         setActiveNav(initialNav);
@@ -392,11 +417,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           onGoToAlerts={handleNavAlerts}
           onGoToTasks={handleNavTasks}
           onGoToSetup={(clientName) => {
-            handleNavSetup();
-            if (clientName && typeof window !== "undefined") {
-              const isPma = window.location.pathname.startsWith("/pma");
-              window.history.replaceState({}, "", isPma ? `/pma?nav=setup&client=${encodeURIComponent(clientName)}` : `/?nav=setup&client=${encodeURIComponent(clientName)}`);
-            }
+            handleNavSetup(clientName);
           }}
           onGoToIntegrations={handleNavIntegrations}
           onSelectClientAlerts={(clientName) => {
@@ -572,6 +593,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
       return (
         <SetupView
           allOutgoingsClients={allOutgoingsClients}
+          initialClientName={setupClientName}
+          onSelectClient={setSetupClientName}
           user={user}
         />
       );

@@ -373,6 +373,7 @@ export default function HomeView({
             </p>
           </div>
 
+
           <button
             type="button"
             className="triage-btn"

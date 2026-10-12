@@ -1,4 +1,5 @@
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers.js";
+import { withRetry, colIndexToLetter } from "./sheetsClient.js";
 
 export function parseConfirmedDate_(val) {
   if (!val) return null;
@@ -1448,6 +1449,120 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
     }
   } catch (e) {
     console.error(`Error in checkAutoLogInfiniteLoops_ for ${clientName}:`, e.message);
+  }
+  return alerts;
+}
+
+export async function checkStaleUnreconGapExpenses_(clientName, clientSheetId, sharedData, sheets) {
+  const alerts = [];
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const SIX_WEEKS_MS = 6 * 7 * 24 * 60 * 60 * 1000;
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const fmtDate = (d) => `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+
+    // 1. Check Outgoings tab
+    let outgoingsData = sharedData?.outgoingsData || null;
+    if (!outgoingsData && clientSheetId && sheets) {
+      try {
+        const resp = await withRetry(() => sheets.spreadsheets.get({
+          spreadsheetId: clientSheetId,
+          ranges: ["Outgoings!A1:AZ350"],
+          fields: "sheets(data(rowData(values(formattedValue,note))))"
+        }));
+        outgoingsData = resp.data?.sheets?.[0]?.data?.[0]?.rowData || [];
+        if (sharedData) sharedData.outgoingsData = outgoingsData;
+      } catch (e) {
+        // Outgoings tab may not exist or error reading
+      }
+    }
+
+    if (outgoingsData && outgoingsData.length >= 2) {
+      const headerRow = outgoingsData[0]?.values || [];
+      const colHeaders = headerRow.map(c => String(c?.formattedValue || "").trim());
+
+      for (let rIdx = 1; rIdx < outgoingsData.length; rIdx++) {
+        const rowCells = outgoingsData[rIdx]?.values || [];
+        const contractor = String(rowCells[0]?.formattedValue || "").trim();
+        if (!contractor) continue;
+        const contrLower = contractor.toLowerCase();
+        if (contrLower === "contractors" || contrLower.startsWith("total") || contrLower.startsWith("=")) continue;
+
+        for (let cIdx = 1; cIdx < rowCells.length; cIdx++) {
+          const cell = rowCells[cIdx];
+          const note = String(cell?.note || "");
+          if (!note.toUpperCase().includes("UNRECON-GAP")) continue;
+
+          const blocks = note.split(/(?=\{App ID:)/i).map(b => b.trim()).filter(Boolean);
+          for (const block of blocks) {
+            if (!block.toUpperCase().includes("UNRECON-GAP")) continue;
+
+            const appId = block.match(/\{App ID:\s*([^}]+)\}/i)?.[1]?.trim() || "";
+            const amtStr = block.match(/\{Amt:\s*([^}]+)\}/i)?.[1] || "";
+            const amount = parseFloat(amtStr.replace(/[£$€,\s]/g, "")) || 0;
+            const status = block.match(/\{Status:\s*([^}]*)\}/i)?.[1]?.trim().toLowerCase() || "";
+            const recDateRaw = block.match(/\{Rec date:\s*([^}]*)\}/i)?.[1]?.trim() || "";
+            const payDateRaw = block.match(/\{Pay date:\s*([^}]*)\}/i)?.[1]?.trim() || "";
+            const desc = block.match(/\{Description:\s*([^}]*)\}/i)?.[1]?.trim() || "";
+
+            if (status === "paid" || status === "complete" || status === "received") continue;
+            if (amount <= 0 && Math.abs(amount) < 0.01) continue;
+
+            const monthHeader = colHeaders[cIdx] || "";
+            const recDate = parseConfirmedDate_(recDateRaw) || parseConfirmedDate_(monthHeader);
+            if (!recDate) continue;
+
+            const diffMs = today.getTime() - recDate.getTime();
+            if (diffMs > SIX_WEEKS_MS) {
+              const weeksAgo = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000));
+              const recDateFormatted = fmtDate(recDate);
+              const colLetter = colIndexToLetter(cIdx + 1);
+              const cellCoord = `${colLetter}${rIdx + 1}`;
+              const safeAppId = (appId && appId !== "UNRECON-GAP") ? appId : `UNRECON-GAP-${monthHeader}-${contractor.replace(/[^a-zA-Z0-9]/g, "")}-${cellCoord}`;
+
+              alerts.push({
+                alertType: "stale_unrecon_gap",
+                alertKey: `stale_unrecon_gap|${clientName}|${safeAppId}|${recDateFormatted}`,
+                legacyAlertKey: `stale_unrecon_gap|${clientName}|${safeAppId}`,
+                heading: "Stale UNRECON-GAP expense entry",
+                detail: `${contractor} (Outgoings ${monthHeader ? `${monthHeader}, ` : ""}Cell ${cellCoord}): UNRECON-GAP expense [${appId || "Gap"}] of £${amount.toFixed(2)} has received date ${recDateFormatted} (${weeksAgo} weeks ago - more than 6 weeks overdue).`,
+                contractor,
+                jobName: contractor,
+                endClientName: contractor,
+                month: monthHeader,
+                cellCoord,
+                appId,
+                amount: amount.toFixed(2),
+                recDate: recDateFormatted,
+                weeksAgo: String(weeksAgo),
+                sourceTab: "Outgoings",
+                rowNum: rIdx + 1,
+                stableJobKey: safeAppId,
+                metadata: {
+                  sourceTab: "Outgoings",
+                  contractor,
+                  jobName: contractor,
+                  endClientName: contractor,
+                  month: monthHeader,
+                  cellCoord,
+                  appId,
+                  amount: amount.toFixed(2),
+                  recDate: recDateFormatted,
+                  payDate: payDateRaw,
+                  weeksAgo: String(weeksAgo),
+                  description: desc || "Manual/Unaccounted balance (Gap)",
+                  rowNum: rIdx + 1,
+                  stableJobKey: safeAppId,
+                }
+              });
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`Error in checkStaleUnreconGapExpenses_ for ${clientName}:`, e.message);
   }
   return alerts;
 }

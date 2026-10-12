@@ -11,7 +11,8 @@ import {
   checkRetainerInvoices_, checkCRMWipe_, checkRevenueMismatch_, checkDirectCostsMismatch_,
   checkPipelineConfirmedOverlap_, checkRetainerShrinkBlocked_, checkUninvoicedNewJobs_,
   checkUninvoicedRevenue_, checkDeletedInvoices_, checkJobStructureErrors_,
-  checkDeletedExpenses_, checkUnreceivedExpenses_, checkAutoLogErrors_, checkAutoLogInfiniteLoops_
+  checkDeletedExpenses_, checkUnreceivedExpenses_, checkAutoLogErrors_, checkAutoLogInfiniteLoops_,
+  checkStaleUnreconGapExpenses_
 } from "./proactiveChecks";
 import { 
   checkAllGASLocks, setCRMMode, getToleranceValues, 
@@ -91,7 +92,7 @@ export function evaluateAutomationStatus_(alertType, category, clientMeta, detec
   if ((nowMs - baseTimeMs) > 16 * 60 * 60 * 1000) return "cached"; 
 
   const invoiceDependent = ["revenue_mismatch", "retainer_invoice", "uninvoiced_revenue", "deleted_invoice"];
-  const expenseDependent = ["direct_costs_mismatch", "deleted_expense", "unreceived_expenses"];
+  const expenseDependent = ["direct_costs_mismatch", "deleted_expense", "unreceived_expenses", "stale_unrecon_gap"];
 
   let autoLastRun = 0;
   if (alertType.startsWith("invoice") || invoiceDependent.includes(alertType)) {
@@ -223,7 +224,6 @@ export const AUTOLOG_TYPE_PATTERNS = {
     "Copied Pipeline Project to Confirmed:",
     "Copied Pipeline Project (with",
     "Converted Pipeline Job to Confirmed Retainer:",
-    "Skipped Copy: Job with Project Code",
   ],
   crmCopiedConfUnchecked:    ["Copied Status: 'Yes' -> 'No' (Reverted by Source)"],
   crmCopiedConfDelete:       ["Deleted Confirmed Job: Row"],
@@ -1261,6 +1261,10 @@ export async function handleStorePrecomputed(req, res, sheets) {
             const summary = String(row.alertSummary || "");
             if (summary.includes("Manual Gap") || summary.includes("Placeholder Gap")) continue;
           } 
+          if (row.alertType === "crmCopiedConfChecked") {
+            const summary = String(row.alertSummary || "");
+            if (summary.includes("Skipped Copy: Job with Project Code") || summary.includes("already exists in Confirmed")) continue;
+          } 
 
           let analysisResult = null;
           if (row.cachedOptionsJSON) {
@@ -1654,6 +1658,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
               const ts = entry.timestamp ? (entry.timestamp instanceof Date ? entry.timestamp.toISOString() : String(entry.timestamp).trim()) : "";
               for (const line of lines) {
                 if (!patterns.some(p => line.includes(p))) continue;
+                if (autoLogType === "crmCopiedConfChecked") {
+                  if (line.includes("Skipped Copy: Job with Project Code") || line.includes("already exists in Confirmed")) continue;
+                }
                 if (autoLogType === "expenseUnreconGaps") {
                   const isActive = await isExpensePlaceholderStillActive_(line, client.clientSheetId, null, sheets);
                   if (!isActive) continue; // Skip: underlying expense already resolved in sheet
@@ -1712,7 +1719,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               checkDeletedExpenses_(client.clientName, client.clientSheetId, client.masterSheetId, sharedData, sheets),
               checkUnreceivedExpenses_(client.clientName, client.clientSheetId, sharedData),
               checkAutoLogErrors_(client.clientName, client.masterSheetId, sharedData),
-              checkAutoLogInfiniteLoops_(client.clientName, client.masterSheetId, sharedData)
+              checkAutoLogInfiniteLoops_(client.clientName, client.masterSheetId, sharedData),
+              checkStaleUnreconGapExpenses_(client.clientName, client.clientSheetId, sharedData, sheets)
             ];
 
             const proResults = await Promise.all(proChecks);
@@ -1722,7 +1730,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
               "retainer_invoice", "crm_wipe", "revenue_mismatch", "direct_costs_mismatch",
               "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_new_job", "uninvoiced_revenue",
               "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses",
-              "autolog_error", "infinite_loop"
+              "autolog_error", "infinite_loop", "stale_unrecon_gap"
             ];
             
             const groupedProactive = {};
@@ -1773,6 +1781,27 @@ export async function handleRunFlagSweep(req, res, sheets) {
       console.log(`  run_flag_sweep: ${sweepItems.length} fingerprint items to resolve, ${handledHashes.size} handled hashes, ${existingHashes.size} existing hashes`);
 
       const clientMetaMap = new Map(clientChunk.map(c => [c.clientName, c]));
+
+      // Auto-resolve any legacy/cached "crmCopiedConfChecked" rows triggered by skipped duplicate copies
+      const invalidCrmRows = memoryRows.filter(r =>
+        r.alertType === "crmCopiedConfChecked" &&
+        (r.status === "cached" || r.status === "pending_automation") &&
+        (String(r.alertSummary || "").includes("Skipped Copy: Job with Project Code") ||
+         String(r.alertSummary || "").includes("already exists in Confirmed"))
+      );
+      for (const invRow of invalidCrmRows) {
+        try {
+          await updateAlertMemoryRow(sheets, acIdSweep, invRow.rowIndex, {
+            ...invRow,
+            status: "auto_resolved",
+            lastRechecked: new Date().toISOString()
+          });
+          invRow.status = "auto_resolved";
+          console.log(`  🩹 AUTO-RESOLVED skipped duplicate crmCopiedConfChecked row for ${invRow.clientName}: ${invRow.fingerprintHash}`);
+        } catch (e) {
+          console.log(`  ⚠️ Failed to auto-resolve invalid crmCopiedConfChecked row: ${e.message}`);
+        }
+      }
 
       for (const item of sweepItems) {
         if (item.category === "discrepancy" || item.category === "proactive" || item.alertType === "expenseUnreconGaps") {
@@ -2329,7 +2358,11 @@ export async function handleBuildCachedAlertOptions(req, res, sheets) {
     const RICH_INFO_TYPES = ["crmCopiedConfChecked", "crmCopiedConfUnchecked", "crmCopiedConfDelete",
       "retainerInvoicesCreated", "retainerInvoicesDeleted", "invoiceStaleUnsentChanges"];
     const pendingRich = memoryRows.filter(r =>
-      r.status === "cached" && RICH_INFO_TYPES.includes(r.alertType) && !r.cachedOptionsJSON
+      r.status === "cached" && RICH_INFO_TYPES.includes(r.alertType) && !r.cachedOptionsJSON &&
+      !(r.alertType === "crmCopiedConfChecked" && (
+        String(r.alertSummary || "").includes("Skipped Copy: Job with Project Code") ||
+        String(r.alertSummary || "").includes("already exists in Confirmed")
+      ))
     );
     let richAnalyzed = 0, richErrors = 0;
     if (pendingRich.length > 0 && !hasMore) {
@@ -6637,10 +6670,10 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
           const relevantEntries = allCRMEntries.filter(row => {
             const details = String(row[3] || "");
             if (expectCopied) {
-              // Pipeline DD changed to Yes, OR the job was skipped as a duplicate
-              return (details.includes("Copied Status:") && (
+              // Pipeline DD changed to Yes
+              return details.includes("Copied Status:") && (
                 details.includes("-> 'Yes'") || details.includes("-> \"Yes\"")
-              )) || details.includes("Skipped Copy: Job with Project Code");
+              );
             } else {
               // Pipeline DD changed away from Yes
               return details.includes("Copied Status:") && (
@@ -6660,11 +6693,7 @@ export async function handleAnalyzeNoActionFlag(req, res, sheets) {
               // We need to match the line that contains BOTH the job info AND the Copied Status change
               const lines = details.split('\n');
               for (const line of lines) {
-                if (line.includes("Skipped Copy: Job with Project Code")) {
-                  const codeMatch = line.match(/Project Code\s+"([^"]+)"/i);
-                  if (codeMatch) {
-                    affectedJobs.push({ jobName: "-", clientParsed: "", projectCodeFromLog: codeMatch[1].trim(), logTimestamp: String(entry[0] || "") });
-                  }
+                if (line.includes("Skipped Copy: Job with Project Code") || line.includes("already exists in Confirmed")) {
                   continue;
                 }
                 if (!line.includes("Copied Status:")) continue;

@@ -434,7 +434,7 @@ export default function SettingsView({
                     {[
                       { key: "actionable", label: "Actionable", hint: "Discrepancies needing review - invoice, CRM, expense" },
                       { key: "info", label: "Informational", hint: "Acknowledge-only events from AutoLog" },
-                      { key: "proactive", label: "Proactive", hint: "The 14 proactive checks" },
+                      { key: "proactive", label: "Proactive", hint: "The 15 proactive checks" },
                     ].map(cat => {
                       const entry = sweepSchedule?.[cat.key];
                       return (
@@ -689,6 +689,7 @@ export default function SettingsView({
                     { name: "Uninvoiced new job", detail: "Flags jobs that started over a month ago but still have no real invoices recorded (only placeholders or empty slots)." },
                     { name: "Uninvoiced revenue on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have uninvoiced revenue, excluding placeholder invoices and Draft invoices that haven't been sent." },
                     { name: "Unreceived expenses on completed jobs", detail: "Flags project jobs (not retainers) that ended more than 2 weeks ago but still have unreceived expenses against their direct cost budget, excluding manual estimates and unreconciled-gap placeholders." },
+                    { name: "Stale UNRECON-GAP expenses", detail: "Flags unreconciled gap expense entries on the Outgoings tab that have an open balance and a received date that is more than 6 weeks ago." },
                     { name: "Deleted invoice detection", detail: "Flags invoices with a real reference on the Confirmed tab that no longer appear in the accounting system - a likely sign the invoice was deleted or voided." },
                     { name: "Job structure errors", detail: "Flags jobs whose invoice/expense slots don't match the expected layout - e.g. a multi-row retainer with an invoice on the parent row, or slots filled out of sequence." },
                     { name: "Deleted expense detection", detail: "Flags expenses with a real reference that no longer appear in the accounting system - the expense equivalent of deleted invoice detection." },

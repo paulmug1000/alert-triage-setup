@@ -1632,7 +1632,7 @@ export default function AlertSelectionView({
                               {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(alert.alertType) && <AdminBadge show={clientHasManager} />}
                             </div>
                             <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                              {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" || alert.alertType === "unreceived_expenses" ? null : alert.detail}
+                              {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" || alert.alertType === "unreceived_expenses" || alert.alertType === "stale_unrecon_gap" ? null : alert.detail}
                             </div>
 
                             {alert.alertType === "retainer_invoice" && (
@@ -1736,6 +1736,30 @@ export default function AlertSelectionView({
                                       {pCount} expense{pCount > 1 ? "s" : ""} totalling £{pTotal.toFixed(2)} {pCount > 1 ? "are placeholders - not counted as received above." : "is a placeholder - not counted as received above."}
                                     </div>
                                   )}
+                                </div>
+                              );
+                            })()}
+
+                            {alert.alertType === "stale_unrecon_gap" && (() => {
+                              const contractor = m.contractor || alert.contractor;
+                              const cellCoord = m.cellCoord || alert.cellCoord;
+                              const month = m.month || alert.month;
+                              const amount = m.amount || alert.amount;
+                              const recDate = m.recDate || alert.recDate;
+                              const payDate = m.payDate || alert.payDate;
+                              const weeksAgo = m.weeksAgo || alert.weeksAgo;
+                              const appId = m.appId || alert.appId;
+                              const desc = m.description || alert.description;
+
+                              return (
+                                <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#fffbeb", border: "1px solid #fde68a", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>
+                                  {contractor && <div><strong>Contractor:</strong> {contractor}</div>}
+                                  <div><strong>Location:</strong> Outgoings tab{month ? ` (${month})` : ""}{cellCoord ? `, Cell ${cellCoord}` : ""}</div>
+                                  {appId && <div><strong>App ID:</strong> {appId}</div>}
+                                  {amount && <div><strong>Amount:</strong> £{parseFloat(amount).toFixed(2)}</div>}
+                                  {recDate && <div><strong>Received date:</strong> {recDate} {weeksAgo ? <span style={{ color: "#b45309", fontWeight: "600" }}>({weeksAgo} weeks ago - overdue)</span> : null}</div>}
+                                  {payDate && <div><strong>Estimated pay date:</strong> {payDate}</div>}
+                                  {desc && <div style={{ marginTop: "4px", color: "#78716c", fontStyle: "italic" }}>{desc}</div>}
                                 </div>
                               );
                             })()}

@@ -60,6 +60,68 @@ export function colIndexToLetter(colNum) {
 }
 
 /**
+ * Securely sanitizes cash adjustment inputs before updating Google Sheets.
+ * If the input is an arithmetic expression or formula (=1234-E19, =E19+100, =SUM(...)),
+ * it validates that it does NOT contain dangerous functions (IMPORT*, HYPERLINK, WEBSERVICE, etc.)
+ * or DDE / shell injection commands.
+ * If safe, returns the formula as-is so Google Sheets calculates it.
+ * If it contains dangerous or unrecognized tokens, it neutralizes it with a leading quote '.
+ */
+export function sanitizeCashAdjustmentInput(val) {
+  if (val === null || val === undefined) return "";
+  const str = String(val).trim();
+  if (!str) return "";
+
+  // 1. Valid finite numbers are always safe
+  if (!isNaN(Number(str))) return str;
+
+  // 2. If it begins with '=', validate if it's a safe spreadsheet formula
+  if (str.startsWith("=")) {
+    // Length safety check
+    if (str.length > 500) {
+      return `'${str}`;
+    }
+
+    // Strictly forbid dangerous exfiltration / external execution keywords
+    const dangerousPattern = /(importxml|importhtml|importdata|importfeed|importrange|hyperlink|image|webservice|encodeurl|cmd|powershell|exec|script|shell|http:|https:|ftp:|file:)/i;
+    if (dangerousPattern.test(str)) {
+      return `'${str}`;
+    }
+
+    // Strictly forbid shell pipe, semicolons, backticks
+    if (/[|;`]/.test(str)) {
+      return `'${str}`;
+    }
+
+    // Validate that the formula only contains safe arithmetic, cell coordinates, and safe math functions
+    let stripped = str.slice(1);
+    // Strip allowed function names
+    stripped = stripped.replace(/\b(SUM|ROUND|ABS|MIN|MAX|AVERAGE|SUBTOTAL|IF|INT)\s*\(/gi, "(");
+    // Strip sheet references e.g. Cash! or 'Cash'!
+    stripped = stripped.replace(/('?[A-Za-z0-9_ ]+'?!)?[A-Z]+[0-9]+(:[A-Z]+[0-9]+)?/gi, "1");
+    // Strip numbers
+    stripped = stripped.replace(/[0-9]+(\.[0-9]+)?/g, "1");
+    // Strip operators, parentheses, commas, whitespace
+    stripped = stripped.replace(/[\+\-\*\/\^\%\(\)\,\s]/g, "");
+
+    // If anything remains after stripping allowed components, it is unrecognized -> neutralize it
+    if (stripped.length > 0) {
+      return `'${str}`;
+    }
+
+    // Safe formula! Return as genuine formula for USER_ENTERED
+    return str;
+  }
+
+  // 3. If starts with +, -, @ but isn't a number or formula, neutralize with leading quote
+  if (/^[+\-@]/.test(str)) {
+    return `'${str}`;
+  }
+
+  return str;
+}
+
+/**
  * Get Cashflow Recon Data
  * Fetches the 3 months around the target month from Cash tab (Row 1 down to Difference row)
  * and retrieves actuals from Recon sheet U3:X16.
@@ -186,6 +248,8 @@ export async function getCashflowReconData({
     const isContractors = lowerLabel.includes("contractors outgoing");
     const isDirectCosts = lowerLabel.includes("direct costs outgoing");
     const isOtherExpenses = lowerLabel.includes("other expenses outgoing");
+    const isCorpTax = lowerLabel.includes("corporation tax") && !lowerLabel.includes("adjustment");
+    const isVat = (lowerLabel === "vat" || lowerLabel.startsWith("vat ") || lowerLabel.includes(" vat")) && !lowerLabel.includes("adjustment");
 
     let mappedItemType = null;
     let targetAdjustmentRow = null;
@@ -207,6 +271,12 @@ export async function getCashflowReconData({
     } else if (isOtherExpenses) {
       mappedItemType = "other_expenses";
       targetAdjustmentRow = 17; // Other expenses adjustment
+    } else if (isCorpTax) {
+      mappedItemType = "corporation_tax";
+      targetAdjustmentRow = 20; // Corporation tax adjustment
+    } else if (isVat) {
+      mappedItemType = "vat";
+      targetAdjustmentRow = 22; // VAT adjustment
     }
 
     const parsedCells = selectedCols.map(col => {
@@ -297,6 +367,8 @@ export async function getCashflowReconData({
         let contractors = 0;
         let directCosts = 0;
         let outgoings = 0;
+        let vat = 0;
+        let corpTax = 0;
 
         rawReconRows.forEach(r => {
           const label = String(r[0] || "").trim().toLowerCase();
@@ -313,6 +385,10 @@ export async function getCashflowReconData({
             directCosts += val;
           } else if (label.includes("outgoing")) {
             outgoings += val;
+          } else if (label.includes("vat")) {
+            vat += val;
+          } else if (label.includes("corp") || label.includes("corporation tax") || (label.includes("tax") && !label.includes("vat"))) {
+            corpTax += val;
           }
         });
 
@@ -323,6 +399,8 @@ export async function getCashflowReconData({
           contractors,
           directCosts,
           outgoings,
+          vat,
+          corpTax,
           tabName: reconTabName
         };
       }
@@ -374,7 +452,7 @@ export async function updateCashAdjustment({
   const rowNum = parseInt(sheetRow, 10);
   const cellRange = `Cash!${colLetter}${rowNum}`;
 
-  const safeValue = sanitizeFormulaInput(value ?? "");
+  const safeValue = sanitizeCashAdjustmentInput(value ?? "");
 
   await withRetry(() => sheets.spreadsheets.values.update({
     spreadsheetId: cleanClientSheetId,

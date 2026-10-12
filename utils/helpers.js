@@ -395,3 +395,38 @@ export function parseStaleExpenseDetail(detail = "") {
   return null;
 }
 
+/**
+ * Safely downloads a CSV file on the client with UTF-8 BOM (\uFEFF)
+ * so that Excel / Windows opens the file without showing weird characters (e.g. Â£ instead of £).
+ * Accepts either a pre-formatted CSV string or a 2D array of rows.
+ */
+export function downloadCsv(filename, content) {
+  let csvText = "";
+  if (Array.isArray(content)) {
+    csvText = content
+      .map((row) =>
+        (row || [])
+          .map((val) => {
+            if (val === null || val === undefined) return '""';
+            const str = String(val);
+            return `"${str.replace(/"/g, '""')}"`;
+          })
+          .join(",")
+      )
+      .join("\r\n");
+  } else {
+    csvText = String(content || "");
+  }
+
+  // Prepend UTF-8 BOM so Excel / Windows correctly identifies UTF-8 and displays currency symbols like £ without Â
+  const blob = new Blob(["\uFEFF" + csvText], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", filename.endsWith(".csv") ? filename : `${filename}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+

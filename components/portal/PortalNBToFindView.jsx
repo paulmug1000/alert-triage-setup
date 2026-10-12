@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
+import { downloadCsv } from "../../utils/helpers";
 
 export default function PortalNBToFindView({
   clientName,
@@ -149,20 +150,7 @@ export default function PortalNBToFindView({
       formatGBP(totalTarget),
     ];
 
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      [header, row]
-        .map((e) =>
-          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
-        )
-        .join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Pulse_NB_To_Find_Year_${selectedYear}_${dateStr}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCsv(`Pulse_NB_To_Find_Year_${selectedYear}_${dateStr}.csv`, [header, row]);
   };
 
   if (isLoading && !nbData) {

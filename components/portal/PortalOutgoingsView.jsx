@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Spinner from "../Spinner";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
+import { downloadCsv } from "../../utils/helpers";
 
 export default function PortalOutgoingsView({
   clientName,
@@ -192,20 +193,7 @@ export default function PortalOutgoingsView({
       ];
     });
 
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      [header, ...rowsData]
-        .map((e) =>
-          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
-        )
-        .join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Pulse_${pageTitle}_${fyName}_${dateStr}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCsv(`Pulse_${pageTitle}_${fyName}_${dateStr}.csv`, [header, ...rowsData]);
   };
 
   if (isLoading && !outgoingsData) {

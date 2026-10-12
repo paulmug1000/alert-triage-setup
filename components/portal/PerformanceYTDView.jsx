@@ -3,6 +3,7 @@ import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString } from "../../services/deepDiveHelper";
 import PerformanceTrajectoryChartRow from "./PerformanceTrajectoryChartRow";
+import { downloadCsv } from "../../utils/helpers";
 
 export default function PerformanceYTDView({
   clientName,
@@ -391,20 +392,7 @@ export default function PerformanceYTDView({
       r.isPct ? formatPct(r.ytdTotalVal) : formatMoney(r.ytdTotalVal),
     ]);
 
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      [header, ...rowsData]
-        .map((e) =>
-          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
-        )
-        .join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Pulse_Performance_YTD_${fyName}_${dateStr}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCsv(`Pulse_Performance_YTD_${fyName}_${dateStr}.csv`, [header, ...rowsData]);
   };
 
   // Fixed column widths fitting 100% desktop width

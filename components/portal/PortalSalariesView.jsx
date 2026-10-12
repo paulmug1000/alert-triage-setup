@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
 import { formatMoney } from "../../services/deepDiveHelper";
+import { downloadCsv } from "../../utils/helpers";
 
 export default function PortalSalariesView({
   clientName,
@@ -76,20 +77,7 @@ export default function PortalSalariesView({
       r.map((c, cIdx) => (cIdx === 2 ? formatMoney(c, 0, currencySymbol, thousandsSeparator) : String(c || "")))
     );
 
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      [header, ...rowsData]
-        .map((e) =>
-          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
-        )
-        .join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Pulse_Salaries_${dateStr}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCsv(`Pulse_Salaries_${dateStr}.csv`, [header, ...rowsData]);
   };
 
   if (isLoading && !salariesData) {

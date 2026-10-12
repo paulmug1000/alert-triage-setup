@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney, formatCurrencyString } from "../../services/deepDiveHelper";
+import { downloadCsv } from "../../utils/helpers";
 
 function escapeHtml(str) {
   if (!str) return "";
@@ -158,16 +159,8 @@ export default function MonthView({
     const cleanRows = currMonth.tableRows
       .filter((r) => r.label && r.label.toLowerCase() !== "hide")
       .map((r) => [r.label, formatCurrencyString(r.value, null, currencySymbol, thousandsSeparator)]);
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      ["Line Item,Amount (" + monthPeriod + ")", ...cleanRows.map((e) => `"${e[0]}","${e[1]}"`)].join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Pulse_${monthPeriod.replace(/\s+/g, "_")}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const header = [`Line Item`, `Amount (${monthPeriod})`];
+    downloadCsv(`Pulse_${monthPeriod.replace(/\s+/g, "_")}.csv`, [header, ...cleanRows]);
   };
 
   // Calculate threshold background color for percentage cells

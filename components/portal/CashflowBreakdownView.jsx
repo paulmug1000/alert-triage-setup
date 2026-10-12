@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
 import { CashDeepDiveEngine, DeepDiveEngine, formatMoney, parseMoney } from "../../services/deepDiveHelper";
+import { downloadCsv } from "../../utils/helpers";
 
 export default function CashflowBreakdownView({
   clientName,
@@ -448,17 +449,10 @@ export default function CashflowBreakdownView({
       rows.push(["Total", "", finalDisplayTotal]);
     }
 
-    const csvContent = "data:text/csv;charset=utf-8," + rows.map((e) => e.map((val) => `"${String(val || "").replace(/"/g, '""')}"`).join(",")).join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `cash_breakdown_${activeCategory}_${periodLabel.replace(/\s+/g, "_")}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCsv(`cash_breakdown_${activeCategory}_${periodLabel.replace(/\s+/g, "_")}.csv`, rows);
   };
 
-  if (isLoading && !data && !keyData) {
+  if (isLoading && (!data || !keyData)) {
     return (
       <div
         style={{
@@ -722,6 +716,13 @@ export default function CashflowBreakdownView({
                   )}
                 </table>
               </div>
+            ) : isLoading ? (
+              <div style={{ padding: "3rem 0", textAlign: "center", color: "#64748b", fontSize: "14px" }}>
+                <Spinner size={28} color="#0047AB" />
+                <p style={{ marginTop: "0.75rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
+                  Please wait - loading invoices...
+                </p>
+              </div>
             ) : (
               <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
                 No invoices sent in this period.
@@ -762,7 +763,16 @@ export default function CashflowBreakdownView({
                 </tr>
               </thead>
               <tbody>
-                {listData.length === 0 ? (
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={8} style={{ padding: "3rem 0", textAlign: "center", color: "#64748b", fontSize: "14px" }}>
+                      <Spinner size={28} color="#0047AB" />
+                      <p style={{ marginTop: "0.75rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
+                        Please wait - loading transactions...
+                      </p>
+                    </td>
+                  </tr>
+                ) : listData.length === 0 ? (
                   <tr>
                     <td colSpan={8} style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
                       No contractor transactions in this period.
@@ -829,7 +839,16 @@ export default function CashflowBreakdownView({
                   <td style={{ borderBottom: "1px solid #e5e7eb" }}></td>
                 </tr>
 
-                {listData.length === 0 ? (
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={7} style={{ padding: "3rem 0", textAlign: "center", color: "#64748b", fontSize: "14px" }}>
+                      <Spinner size={28} color="#0047AB" />
+                      <p style={{ marginTop: "0.75rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
+                        Please wait - loading transactions...
+                      </p>
+                    </td>
+                  </tr>
+                ) : listData.length === 0 ? (
                   <tr>
                     <td colSpan={7} style={{ padding: "14px 10px 14px 0", color: "#94a3b8", textAlign: "center" }}>
                       No transactions in this period
@@ -891,7 +910,16 @@ export default function CashflowBreakdownView({
                 </tr>
               </thead>
               <tbody>
-                {listData.length === 0 ? (
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={2} style={{ padding: "3rem 0", textAlign: "center", color: "#64748b", fontSize: "14px" }}>
+                      <Spinner size={28} color="#0047AB" />
+                      <p style={{ marginTop: "0.75rem", color: "#64748b", fontWeight: 500, fontSize: "14px" }}>
+                        Please wait - loading transactions...
+                      </p>
+                    </td>
+                  </tr>
+                ) : listData.length === 0 ? (
                   <tr>
                     <td colSpan={2} style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
                       No transactions in this period.

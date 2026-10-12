@@ -146,6 +146,8 @@ export default function CashflowReconTab({
       else if (row.mappedItemType === "contractors") reconVal = reconData.reconActuals.contractors;
       else if (row.mappedItemType === "direct_costs") reconVal = reconData.reconActuals.directCosts;
       else if (row.mappedItemType === "other_expenses") reconVal = reconData.reconActuals.outgoings;
+      else if (row.mappedItemType === "corporation_tax") reconVal = reconData.reconActuals.corpTax;
+      else if (row.mappedItemType === "vat") reconVal = reconData.reconActuals.vat;
 
       const reconFixed = reconVal !== undefined ? reconVal.toFixed(2) : "";
       if (reconFixed && raw.includes(reconFixed)) {
@@ -291,6 +293,14 @@ export default function CashflowReconTab({
     } else if (itemType === "other_expenses") {
       reconVal = recon.outgoings || 0;
       targetAdjustmentRow = 17; // Other expenses adjustment
+      formula = `=${reconVal.toFixed(2)}-${cellRef}`;
+    } else if (itemType === "corporation_tax") {
+      reconVal = recon.corpTax || 0;
+      targetAdjustmentRow = row.targetAdjustmentRow || 20; // Corporation tax adjustment
+      formula = `=${reconVal.toFixed(2)}-${cellRef}`;
+    } else if (itemType === "vat") {
+      reconVal = recon.vat || 0;
+      targetAdjustmentRow = row.targetAdjustmentRow || 22; // VAT adjustment
       formula = `=${reconVal.toFixed(2)}-${cellRef}`;
     } else {
       return;

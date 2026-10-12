@@ -96,7 +96,7 @@ export async function autoCompleteLinkedEomTask_(sheets, automationCommanderShee
         valueInputOption: "RAW", requestBody: { values: [["done", new Date().toISOString()]] },
       }));
     }
-    return true;
+    return linkedTask[0] || true;
   } catch (e) {
     return false;
   }
@@ -667,7 +667,7 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
     });
 
     const cashWorkMonthKey = eomTargetMonthToWorkMonth_(cashTargetMonthKey);
-    await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashWorkMonthKey);
+    const completedTaskId = await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashWorkMonthKey);
 
     logPmaActivity(sheets, {
       automationCommanderSheetId,
@@ -678,7 +678,7 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
       details: { clientName: cashClientName, formula, targetCol: targetColLetter, targetRow }
     }).catch(e => console.error("PMA log failed:", e));
 
-    return res.status(200).json({ success: true, formula, targetCol: targetColLetter, targetRow });
+    return res.status(200).json({ success: true, formula, targetCol: targetColLetter, targetRow, completedTaskId: typeof completedTaskId === "string" ? completedTaskId : null });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }

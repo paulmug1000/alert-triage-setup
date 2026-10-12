@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney as universalParseMoney } from "../../services/deepDiveHelper";
+import { downloadCsv } from "../../utils/helpers";
 
 export default function CashflowView({
   clientName,
@@ -195,15 +196,8 @@ export default function CashflowView({
     });
     addCsvRow("Closing balance", inclClosing);
 
-    const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
     const dateStr = new Date().toISOString().split("T")[0];
-    link.setAttribute("href", url);
-    link.setAttribute("download", `Pulse_Cashflow_Forecast_${dateStr}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCsv(`Pulse_Cashflow_Forecast_${dateStr}.csv`, csvRows.join("\n"));
   };
 
   // Row data definitions matching WebApp.html exactly

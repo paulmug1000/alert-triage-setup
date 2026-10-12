@@ -350,6 +350,24 @@ export default function ToolsView({
       .then(d => {
         if (!d.success) { setEomCashSaveStatus("error"); setEomCashSaveError(d.error || "Failed to save"); return; }
         setEomCashCompletedClients(prev => [...(prev || []), eomCashEntryClient]);
+
+        // Optimistically mark the task as done for this client in eomStatusOverrides
+        const completedTaskId = d.completedTaskId;
+        setEomStatusOverrides(prev => {
+          const matchingTasks = (eomAllTasks || []).filter(
+            t => t.clientName === eomCashEntryClient && (
+              t.linkedFunction === "cash_balance" ||
+              (completedTaskId && t.taskId === completedTaskId) ||
+              (t.name && t.name.toLowerCase().includes("closing balance"))
+            )
+          );
+          const taskIds = new Set(matchingTasks.map(t => t.taskId));
+          if (completedTaskId) taskIds.add(completedTaskId);
+          const withoutThese = (prev || []).filter(s => !(s.clientName === eomCashEntryClient && taskIds.has(s.taskId)));
+          const newOverrides = Array.from(taskIds).map(tId => ({ clientName: eomCashEntryClient, taskId: tId, status: "done" }));
+          return [...withoutThese, ...newOverrides];
+        });
+
         if (eomCashSubView === "flow") handleCashSkip();
         else setEomCashSubView("list");
       })
@@ -709,14 +727,14 @@ export default function ToolsView({
       <h2 style={{ margin: "0 0 14px", fontSize: "20px", fontWeight: "700" }}>EoM</h2>
 
       {!managedClient && (
-        <div style={{ display: "flex", gap: "4px", borderBottom: "1px solid #e0e0e0", marginBottom: "20px" }}>
+        <div className="eom-subview-tabs">
           {[["overview", "Overview"], ["payroll", "Payroll Import"], ["time", "Time Import"], ["cash", "Cash Balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push Outgoings"]].map(([key, label]) => (
             <button key={key} onClick={() => setEomSubView(key)}
               style={{
                 padding: "8px 16px", background: "none", border: "none",
                 borderBottom: eomSubView === key ? "2px solid #0066cc" : "2px solid transparent",
                 color: eomSubView === key ? "#0066cc" : "#666", fontWeight: eomSubView === key ? "600" : "400",
-                fontSize: "13px", cursor: "pointer"
+                fontSize: "13px", cursor: "pointer", flexShrink: 0
               }}>
               {label}
             </button>
@@ -773,7 +791,7 @@ export default function ToolsView({
 
         return (
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+            <div className="eom-month-bar">
               <button onClick={() => shiftMonth(-1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>‹</button>
               <div style={{ fontSize: "15px", fontWeight: "700", minWidth: "140px", textAlign: "center" }}>{monthLabel}</div>
               <button onClick={() => shiftMonth(1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>›</button>
@@ -785,8 +803,9 @@ export default function ToolsView({
             <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", overflow: "hidden" }}>
               {clientRows.map((c, i) => (
                 <div key={c.clientName} onClick={() => setEomDetailClient(c.clientName)}
-                  style={{ display: "flex", alignItems: "center", gap: "14px", padding: "12px 18px", borderTop: i > 0 ? "1px solid #f0f0f0" : "none", cursor: "pointer" }}>
-                  <div style={{ flex: "0 0 200px", fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{c.clientName}</div>
+                  className="eom-client-row"
+                  style={{ borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
+                  <div className="eom-client-name" style={{ flex: "0 0 200px", fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>{c.clientName}</div>
                   {c.total === 0 ? (
                     <div style={{ fontSize: "12px", color: "#aaa", display: "flex", alignItems: "center", gap: "6px" }}>
                       <span>No tasks assigned yet</span>
@@ -806,13 +825,13 @@ export default function ToolsView({
                     </div>
                   ) : (
                     <>
-                      <div style={{ flex: 1, height: "8px", background: "#f0f0f0", borderRadius: "4px", overflow: "hidden" }}>
+                      <div className="eom-client-progress" style={{ flex: 1, height: "8px", background: "#f0f0f0", borderRadius: "4px", overflow: "hidden" }}>
                         <div style={{
                           width: `${c.pct * 100}%`, height: "100%",
                           background: c.pct === 1 ? "#16a34a" : c.pct === 0 ? "#dc2626" : "#f59e0b"
                         }} />
                       </div>
-                      <div style={{
+                      <div className="eom-client-counts" style={{
                         flex: "0 0 85px", fontSize: "12px", color: "#666", textAlign: "right",
                         display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px"
                       }}>
@@ -938,9 +957,9 @@ export default function ToolsView({
                             background: eomDragOverTaskId === t.taskId ? "#f0f7ff" : "transparent",
                             opacity: eomDraggedTaskId === t.taskId ? 0.4 : 1
                           }}>
-                          <div style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
+                          <div className="eom-task-row" style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
                             <div title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", lineHeight: "20px", userSelect: "none" }}>⠿</div>
-                            <div style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
+                            <div className="eom-task-main" style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
                               {eomEditingNameFor === t.taskId ? (
                                 <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                                   <input value={eomNameDraft} onChange={e => setEomNameDraft(e.target.value)} autoFocus
@@ -958,12 +977,14 @@ export default function ToolsView({
                               {t.templateId && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#888", fontWeight: "400" }}>(shared)</span>}
                               {t.linkedFunction === "salaries" && (
                                 <button onClick={() => setEomSubView("payroll")}
+                                  className="eom-task-action-btn"
                                   style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                                   Import Payroll →
                                 </button>
                               )}
                               {t.linkedFunction === "time_import" && (
                                 <button onClick={() => setEomSubView("time")}
+                                  className="eom-task-action-btn"
                                   style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                                   Import Time →
                                 </button>
@@ -975,6 +996,7 @@ export default function ToolsView({
                                 return (
                                   <button onClick={() => handleEomMarkActual(t.taskId, c.clientName)} disabled={eomMarkActualRunning === t.taskId}
                                     title={`Writes &quot;Actual&quot; to the ${targetLabel} column on the Performance tab`}
+                                    className="eom-task-action-btn"
                                     style={{
                                       marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
                                       color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600"
@@ -986,6 +1008,7 @@ export default function ToolsView({
                               {t.linkedFunction === "create_backup" && (
                                 <button onClick={() => handleEomCreateBackup(t.taskId, c.clientName)} disabled={eomBackupRunning === t.taskId}
                                   title={`Copies the Dashboard tab to the backup sheet as values only`}
+                                  className="eom-task-action-btn"
                                   style={{
                                     marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
                                     color: "#0066cc", cursor: eomBackupRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600"
@@ -995,18 +1018,21 @@ export default function ToolsView({
                               )}
                               {t.linkedFunction === "cash_balance" && (
                                 <button onClick={() => { setEomCashPendingClient(c.clientName); setEomSubView("cash"); }}
+                                  className="eom-task-action-btn"
                                   style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                                   Enter Cash Balance →
                                 </button>
                               )}
                               {(t.linkedFunction === "cashflow_recon" || (!t.linkedFunction && t.name && t.name.toLowerCase().includes("reconcile cashflow forecast against actual"))) && (
                                 <button onClick={() => { setEomCashflowReconClient(c.clientName); setEomSubView("cashflow_recon"); }}
+                                  className="eom-task-action-btn"
                                   style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                                   Reconcile Cashflow →
                                 </button>
                               )}
                               {(t.linkedFunction === "push_outgoings" || (!t.linkedFunction && t.name && t.name.toLowerCase().includes("plcomp"))) && (
                                 <button onClick={() => { setEomPushOutgoingsClient(c.clientName); setEomSubView("push_outgoings"); }}
+                                  className="eom-task-action-btn"
                                   style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                                   Push Outgoings →
                                 </button>
@@ -1017,19 +1043,21 @@ export default function ToolsView({
                                 </span>
                               )}
                             </div>
-                            {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending", noteletByTaskId[t.taskId])}
-                            <button onClick={() => setEomExpandedNotesFor(prev => {
-                              const next = new Set(prev);
-                              if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
-                              return next;
-                            })}
-                              title={t.clientNotes ? "Show/hide note" : "Add note"}
-                              style={{
-                                background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
-                                color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400"
-                              }}>
-                              {eomExpandedNotesFor.has(t.taskId) ? "−" : "+"}
-                            </button>
+                            <div className="eom-task-actions">
+                              {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending", noteletByTaskId[t.taskId])}
+                              <button onClick={() => setEomExpandedNotesFor(prev => {
+                                const next = new Set(prev);
+                                if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
+                                return next;
+                              })}
+                                title={t.clientNotes ? "Show/hide note" : "Add note"}
+                                style={{
+                                  background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
+                                  color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400"
+                                }}>
+                                {eomExpandedNotesFor.has(t.taskId) ? "−" : "+"}
+                              </button>
+                            </div>
                           </div>
                           {(eomExpandedNotesFor.has(t.taskId) || eomEditingNotesFor === t.taskId) && (
                             eomEditingNotesFor === t.taskId ? (
@@ -1367,7 +1395,7 @@ export default function ToolsView({
               {managedClient ? "‹ Back to all clients" : "‹ Back to overview"}
             </button>
 
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+            <div className="eom-detail-header" style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
               <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700" }}>{eomDetailClient}</h3>
               <div style={{ flex: 1 }} />
               <button onClick={() => shiftMonth(-1)} style={{ padding: "4px 10px", background: "none", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px" }}>‹</button>
@@ -1393,9 +1421,9 @@ export default function ToolsView({
                     background: eomDragOverTaskId === t.taskId ? "#f0f7ff" : "transparent",
                     opacity: eomDraggedTaskId === t.taskId ? 0.4 : 1
                   }}>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
+                  <div className="eom-task-row" style={{ display: "flex", alignItems: "flex-start", gap: "14px" }}>
                     <div title="Drag to reorder" style={{ cursor: "grab", color: "#ccc", fontSize: "14px", lineHeight: "20px", userSelect: "none" }}>⠿</div>
-                    <div style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
+                    <div className="eom-task-main" style={{ flex: 1, fontSize: "13px", fontWeight: "600", color: "#1a1a1a" }}>
                       {eomEditingNameFor === t.taskId ? (
                         <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                           <input value={eomNameDraft} onChange={e => setEomNameDraft(e.target.value)} autoFocus
@@ -1413,12 +1441,14 @@ export default function ToolsView({
                       {t.templateId && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#888", fontWeight: "400" }}>(shared)</span>}
                       {t.linkedFunction === "salaries" && (
                         <button onClick={() => setEomSubView("payroll")}
+                          className="eom-task-action-btn"
                           style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                           Import Payroll →
                         </button>
                       )}
                       {t.linkedFunction === "time_import" && (
                         <button onClick={() => setEomSubView("time")}
+                          className="eom-task-action-btn"
                           style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                           Import Time →
                         </button>
@@ -1430,6 +1460,7 @@ export default function ToolsView({
                         return (
                           <button onClick={() => handleEomMarkActual(t.taskId)} disabled={eomMarkActualRunning === t.taskId}
                             title={`Writes &quot;Actual&quot; to the ${targetLabel} column on the Performance tab`}
+                            className="eom-task-action-btn"
                             style={{
                               marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
                               color: "#0066cc", cursor: eomMarkActualRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600"
@@ -1441,27 +1472,31 @@ export default function ToolsView({
                       {t.linkedFunction === "create_backup" && (
                         <button onClick={() => handleEomCreateBackup(t.taskId)} disabled={eomBackupRunning === t.taskId}
                           title={`Copies the Dashboard tab to the backup sheet as values only`}
+                          className="eom-task-action-btn"
                           style={{
                             marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
                             color: "#0066cc", cursor: eomBackupRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600"
                           }}>
-                          {eomBackupRunning === t.taskId ? "Creating..." : `Create Backup`}
+                            {eomBackupRunning === t.taskId ? "Creating..." : `Create Backup`}
                         </button>
                       )}
                       {t.linkedFunction === "cash_balance" && (
                         <button onClick={() => { setEomCashPendingClient(eomDetailClient); setEomSubView("cash"); }}
+                          className="eom-task-action-btn"
                           style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                           Enter Cash Balance →
                         </button>
                       )}
                       {(t.linkedFunction === "cashflow_recon" || (!t.linkedFunction && t.name && t.name.toLowerCase().includes("reconcile cashflow forecast against actual"))) && (
                         <button onClick={() => { setEomCashflowReconClient(eomDetailClient); setEomSubView("cashflow_recon"); }}
+                          className="eom-task-action-btn"
                           style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                           Reconcile Cashflow →
                         </button>
                       )}
                       {(t.linkedFunction === "push_outgoings" || (!t.linkedFunction && t.name && t.name.toLowerCase().includes("plcomp"))) && (
                         <button onClick={() => { setEomPushOutgoingsClient(eomDetailClient); setEomSubView("push_outgoings"); }}
+                          className="eom-task-action-btn"
                           style={{ marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px", color: "#0066cc", cursor: "pointer", fontSize: "10px", fontWeight: "600" }}>
                           Push Outgoings →
                         </button>
@@ -1472,21 +1507,23 @@ export default function ToolsView({
                         </span>
                       )}
                     </div>
-                    {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending", noteletByTaskId[t.taskId])}
-                    <button onClick={() => setEomExpandedNotesFor(prev => {
-                      const next = new Set(prev);
-                      if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
-                      return next;
-                    })}
-                      title={t.clientNotes ? "Show/hide note" : "Add note"}
-                      style={{
-                        background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
-                        color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400"
-                      }}>
-                      {eomExpandedNotesFor.has(t.taskId) ? "−" : "+"}
-                    </button>
-                    <button onClick={() => setEomDeactivateConfirm(t)} title="Stop tracking this task for this client"
-                      style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", fontSize: "12px", padding: "3px" }}>✕</button>
+                    <div className="eom-task-actions">
+                      {t.linkedFunction === "alert_check" ? alertCheckPill(t.alertCategories) : statePill(t.taskId, statusByTaskId[t.taskId] || "pending", noteletByTaskId[t.taskId])}
+                      <button onClick={() => setEomExpandedNotesFor(prev => {
+                        const next = new Set(prev);
+                        if (next.has(t.taskId)) next.delete(t.taskId); else next.add(t.taskId);
+                        return next;
+                      })}
+                        title={t.clientNotes ? "Show/hide note" : "Add note"}
+                        style={{
+                          background: "none", border: "none", cursor: "pointer", fontSize: "13px", padding: "3px",
+                          color: t.clientNotes ? "#0066cc" : "#bbb", fontWeight: t.clientNotes ? "700" : "400"
+                        }}>
+                        {eomExpandedNotesFor.has(t.taskId) ? "−" : "+"}
+                      </button>
+                      <button onClick={() => setEomDeactivateConfirm(t)} title="Stop tracking this task for this client"
+                        style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", fontSize: "12px", padding: "3px" }}>✕</button>
+                    </div>
                   </div>
                   {(eomExpandedNotesFor.has(t.taskId) || eomEditingNotesFor === t.taskId) && (
                     eomEditingNotesFor === t.taskId ? (
@@ -2017,7 +2054,7 @@ export default function ToolsView({
 
             {eomCashSaveStatus === "error" && <div style={{ color: "#dc2626", fontSize: "13px", marginBottom: "12px" }}>{eomCashSaveError}</div>}
 
-            <div style={{ display: "flex", gap: "10px" }}>
+            <div className="eom-cash-buttons" style={{ display: "flex", gap: "10px" }}>
               <button disabled={eomCashSaveStatus === "saving"} onClick={handleCashSave}
                 style={{ padding: "8px 20px", background: eomCashSaveStatus === "saving" ? "#ccc" : "#0066cc", color: "#fff", border: "none", borderRadius: "6px", cursor: eomCashSaveStatus === "saving" ? "default" : "pointer", fontSize: "13px", fontWeight: "600" }}>
                 {eomCashSaveStatus === "saving" ? "Saving..." : "Save" + (isFlow ? " and continue" : "")}
@@ -2059,6 +2096,119 @@ export default function ToolsView({
           styles={styles}
         />
       )}
+
+      <style jsx>{`
+        .eom-subview-tabs {
+          display: flex;
+          border-bottom: 1px solid #e0e0e0;
+          margin-bottom: 20px;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+        }
+        .eom-subview-tabs::-webkit-scrollbar {
+          display: none;
+        }
+        .eom-month-bar {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 14px;
+        }
+        .eom-client-row {
+          display: flex;
+          align-items: center;
+          padding: 12px 18px;
+          gap: 14px;
+          cursor: pointer;
+          transition: background 0.15s ease;
+        }
+        .eom-client-row:hover {
+          background: #fafafa;
+        }
+        .eom-task-row {
+          display: flex;
+          align-items: flex-start;
+          gap: 14px;
+        }
+        .eom-task-actions {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        @media (max-width: 680px) {
+          .eom-subview-tabs {
+            gap: 2px;
+            margin-bottom: 14px;
+            padding-bottom: 2px;
+          }
+          .eom-subview-tabs button {
+            padding: 8px 12px !important;
+            font-size: 12px !important;
+            white-space: nowrap;
+          }
+          .eom-month-bar {
+            justify-content: center;
+            width: 100%;
+          }
+          .eom-client-row {
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 10px 14px;
+          }
+          .eom-client-row :global(.eom-client-name) {
+            flex: 1 1 55% !important;
+            min-width: 120px;
+            font-size: 14px !important;
+          }
+          .eom-client-row :global(.eom-client-counts) {
+            flex: 0 0 auto !important;
+            font-size: 12px !important;
+          }
+          .eom-client-row :global(.eom-client-progress) {
+            flex: 1 1 100% !important;
+            order: 3;
+            height: 6px !important;
+            margin-top: 2px;
+          }
+          .eom-task-row {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 8px;
+          }
+          .eom-task-row :global(.eom-task-main) {
+            width: 100%;
+          }
+          .eom-task-row :global(.eom-task-action-btn) {
+            margin-left: 0 !important;
+            margin-top: 6px;
+            display: inline-block;
+          }
+          .eom-task-actions {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-top: 1px dashed #f0f0f0;
+            padding-top: 8px;
+            margin-top: 4px;
+          }
+          .eom-detail-header {
+            flex-wrap: wrap;
+            gap: 8px;
+          }
+          .eom-cash-buttons {
+            flex-direction: column;
+            width: 100%;
+          }
+          .eom-cash-buttons button {
+            width: 100%;
+            text-align: center;
+            padding: 10px 16px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

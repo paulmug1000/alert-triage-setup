@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
 import { DeepDiveEngine, buildDeepDiveData, getDeepDiveType, parseMoney, formatMoney } from "../../services/deepDiveHelper";
+import { downloadCsv } from "../../utils/helpers";
 
 export default function PerformanceBreakdownView({
   clientName,
@@ -285,23 +286,10 @@ export default function PerformanceBreakdownView({
       rows.push(["", "", "Total", totalAmount]);
     }
 
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
+    downloadCsv(
+      `performance_breakdown_${breakdownType}_${activePeriod?.label || "export"}.csv`,
       rows
-        .map((e) =>
-          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
-        )
-        .join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute(
-      "download",
-      `performance_breakdown_${breakdownType}_${activePeriod?.label || "export"}.csv`
     );
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   };
 
   const dropdownStyle = {

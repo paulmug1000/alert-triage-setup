@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
 import Spinner from "../Spinner";
 import { formatMoney as universalFormatMoney, parseMoney } from "../../services/deepDiveHelper";
+import { downloadCsv } from "../../utils/helpers";
 
 export default function BudgetView({
   clientName,
@@ -333,20 +334,7 @@ export default function BudgetView({
       }
     });
 
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      exportRows
-        .map((e) =>
-          e.map((cell) => `"${String(cell || "").replace(/"/g, '""')}"`).join(",")
-        )
-        .join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Pulse_Budget_Overview_${yearLabel}_${dateStr}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCsv(`Pulse_Budget_Overview_${yearLabel}_${dateStr}.csv`, exportRows);
   };
 
   return (

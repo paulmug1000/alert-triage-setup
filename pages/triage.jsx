@@ -352,6 +352,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     fireOutgoingsPullIfPending();
     if (typeof clientName === "string" && clientName.trim()) {
       setSetupClientName(clientName.trim());
+    } else if (managedClient?.clientName) {
+      setSetupClientName(managedClient.clientName);
+    } else {
+      setSetupClientName("");
     }
     setActiveNav("setup");
     loadClients();
@@ -371,7 +375,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     if (activeNav === "alerts") {
       target = "/pma/alerts";
     } else if (activeNav === "setup") {
-      target = setupClientName ? `/pma?nav=setup&client=${encodeURIComponent(setupClientName)}` : `/pma?nav=setup`;
+      const activeClient = managedClient?.clientName || setupClientName;
+      target = activeClient ? `/pma?nav=setup&client=${encodeURIComponent(activeClient)}` : `/pma?nav=setup`;
     } else if (activeNav !== "home") {
       target = `/pma?nav=${activeNav}`;
     }
@@ -379,7 +384,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
     if (current !== target && !window.location.search.includes("integration=")) {
       window.history.replaceState({ nav: activeNav }, "", target);
     }
-  }, [activeNav, setupClientName]);
+  }, [activeNav, setupClientName, managedClient]);
 
   useEffect(() => {
     const onPopState = (e) => {

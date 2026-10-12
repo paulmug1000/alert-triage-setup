@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Spinner from "./Spinner";
 import EditableSheetEditor from "./EditableSheetEditor";
+import OnboardClientModal from "./OnboardClientModal";
+import OnboardingChecklistView from "./OnboardingChecklistView";
 
 export default function SetupView({
   allOutgoingsClients = [],
@@ -11,6 +13,10 @@ export default function SetupView({
   onClearManagedClient
 }) {
   const [activeSheetEditor, setActiveSheetEditor] = useState(null); // 'budget' | 'contractors' | 'outgoings' | null
+  const [isOnboardModalOpen, setIsOnboardModalOpen] = useState(false);
+  const [showChecklistHistory, setShowChecklistHistory] = useState(false);
+
+  // Determine initial selected client
   const [selectedClientName, setSelectedClientName] = useState(() => {
     if (managedClient?.clientName) return managedClient.clientName;
     if (initialClientName) return initialClientName;
@@ -25,62 +31,64 @@ export default function SetupView({
   useEffect(() => {
     if (managedClient?.clientName) {
       setSelectedClientName(managedClient.clientName);
+    } else {
+      setSelectedClientName(initialClientName || "");
     }
-  }, [managedClient]);
+  }, [managedClient, initialClientName]);
+
+  // Overview screen state
+  const [overviewClients, setOverviewClients] = useState([]);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewSearch, setOverviewSearch] = useState("");
+  const [overviewFilter, setOverviewFilter] = useState("all"); // 'all' | 'setup' | 'live'
+
+  // Single client form state
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState(null);
   const [config, setConfig] = useState(null);
 
-  // Form State
   const [setupMode, setSetupMode] = useState(false);
   const [requestConnections, setRequestConnections] = useState(false);
   const [accountingTool, setAccountingTool] = useState("None");
   const [crmTool, setCrmTool] = useState("None");
   const [crmDrives, setCrmDrives] = useState("NA");
 
-  // Synchronize client selection when initialClientName, URL query, or client list updates
-  useEffect(() => {
-    if (initialClientName) {
-      if (allOutgoingsClients.length > 0) {
-        const found = allOutgoingsClients.find(c => c.clientName.toLowerCase() === initialClientName.toLowerCase());
-        if (found) {
-          setSelectedClientName(found.clientName);
-          return;
-        }
-      }
-      setSelectedClientName(initialClientName);
-      return;
-    }
-
-    if (typeof window !== "undefined") {
-      const p = new URLSearchParams(window.location.search);
-      const urlClient = p.get("client");
-      if (urlClient) {
-        if (allOutgoingsClients.length > 0) {
-          const found = allOutgoingsClients.find(c => c.clientName.toLowerCase() === urlClient.toLowerCase());
-          if (found) {
-            setSelectedClientName(found.clientName);
-            return;
-          }
-        }
-        setSelectedClientName(urlClient);
-        return;
-      }
-    }
-
-    if (allOutgoingsClients.length > 0) {
-      setSelectedClientName(prev => {
-        if (prev) return prev;
-        const preferred = allOutgoingsClients.find(c => c.clientName.toUpperCase().includes("APPTEST")) || allOutgoingsClients[0];
-        return preferred?.clientName || "";
+  // Load Overview data when on the main list
+  const loadOverview = useCallback(async () => {
+    setOverviewLoading(true);
+    try {
+      const res = await fetch("/api/setup/overview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allOutgoingsClients })
       });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.clients)) {
+        setOverviewClients(data.clients);
+      }
+    } catch (err) {
+      console.error("Error loading setup overview:", err);
+    } finally {
+      setOverviewLoading(false);
     }
-  }, [allOutgoingsClients, initialClientName]);
+  }, [allOutgoingsClients]);
 
-  const selectedClient = allOutgoingsClients.find(c => c.clientName.toLowerCase() === (selectedClientName || "").toLowerCase()) || null;
+  useEffect(() => {
+    if (!selectedClientName && !managedClient) {
+      loadOverview();
+    }
+  }, [selectedClientName, managedClient, loadOverview]);
 
-  // Load config when selected client changes
+  const selectedClient = useMemo(() => {
+    return (
+      allOutgoingsClients.find(
+        (c) => c.clientName.toLowerCase() === (selectedClientName || "").toLowerCase()
+      ) || (selectedClientName ? { clientName: selectedClientName, masterSheetId: "" } : null)
+    );
+  }, [allOutgoingsClients, selectedClientName]);
+
+  // Load client setup config
   const loadConfig = useCallback(async (client) => {
     if (!client) return;
     setLoading(true);
@@ -114,7 +122,29 @@ export default function SetupView({
     }
   }, [selectedClient, loadConfig]);
 
-  // Handle Save
+  // Navigate to single client setup
+  const handleSelectClient = (name) => {
+    setSelectedClientName(name);
+    if (onSelectClient) onSelectClient(name);
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      if (name) {
+        p.set("client", name);
+      } else {
+        p.delete("client");
+      }
+      p.set("nav", "setup");
+      window.history.replaceState(null, "", `/pma?${p.toString()}`);
+    }
+  };
+
+  // Return to all clients overview
+  const handleBackToOverview = () => {
+    handleSelectClient("");
+    loadOverview();
+  };
+
+  // Handle Save for live client settings
   const handleSave = async (e) => {
     e?.preventDefault();
     if (!selectedClient) return;
@@ -154,54 +184,397 @@ export default function SetupView({
     }
   };
 
+  // Called when a new client is provisioned in the modal
+  const handleClientProvisioned = (newClientData) => {
+    setIsOnboardModalOpen(false);
+    handleSelectClient(newClientData.clientName);
+  };
+
   const isAccountingOAuth = ["xero", "quickbooks"].includes(accountingTool.toLowerCase());
   const isCrmOAuth = ["clickup", "close", "capsule", "hubspot", "monday", "pipedrive"].includes(crmTool.toLowerCase());
 
+  // ============================================================================
+  // VIEW 1: OVERVIEW SCREEN (NO CLIENT SELECTED & NOT MANAGED CLIENT)
+  // ============================================================================
+  if (!selectedClientName && !managedClient) {
+    const totalClientsCount = overviewClients.length;
+    const setupClientsCount = overviewClients.filter((c) => c.setupMode).length;
+    const liveClientsCount = totalClientsCount - setupClientsCount;
+
+    const filteredClients = overviewClients.filter((c) => {
+      const matchesSearch = c.clientName.toLowerCase().includes(overviewSearch.toLowerCase().trim());
+      if (!matchesSearch) return false;
+      if (overviewFilter === "setup") return c.setupMode;
+      if (overviewFilter === "live") return !c.setupMode;
+      return true;
+    });
+
+    return (
+      <div style={{ maxWidth: "1140px", margin: "0 auto", padding: "24px 16px" }}>
+        {/* Top Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+          <div>
+            <h1 style={{ margin: "0 0 6px 0", fontSize: "24px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "10px" }}>
+              <span>Setup & client connections</span>
+            </h1>
+            <p style={{ margin: 0, color: "#64748B", fontSize: "14px" }}>
+              Monitor client setup statuses, tool connections, and onboarding lifecycles.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button
+              type="button"
+              onClick={() => setIsOnboardModalOpen(true)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "10px 18px",
+                borderRadius: "8px",
+                border: "none",
+                background: "#023f98",
+                color: "#FFFFFF",
+                fontSize: "13px",
+                fontWeight: "700",
+                cursor: "pointer",
+                boxShadow: "0 2px 4px rgba(2, 63, 152, 0.2)"
+              }}
+            >
+              <span>➕</span>
+              <span>Onboard New Client</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Stats Row */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "14px", marginBottom: "24px" }}>
+          <div style={{ background: "#FFFFFF", borderRadius: "10px", border: "1px solid #E2E8F0", padding: "16px 20px" }}>
+            <span style={{ fontSize: "12px", fontWeight: "600", color: "#64748B", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Total Clients
+            </span>
+            <div style={{ fontSize: "24px", fontWeight: "800", color: "#0F172A", marginTop: "4px" }}>
+              {totalClientsCount}
+            </div>
+          </div>
+          <div style={{ background: "#FFFFFF", borderRadius: "10px", border: "1px solid #FDE68A", padding: "16px 20px", background: "#FFFBEB" }}>
+            <span style={{ fontSize: "12px", fontWeight: "600", color: "#B45309", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              In Setup Mode / Onboarding
+            </span>
+            <div style={{ fontSize: "24px", fontWeight: "800", color: "#B45309", marginTop: "4px" }}>
+              {setupClientsCount}
+            </div>
+          </div>
+          <div style={{ background: "#FFFFFF", borderRadius: "10px", border: "1px solid #BBF7D0", padding: "16px 20px", background: "#F0FDF4" }}>
+            <span style={{ fontSize: "12px", fontWeight: "600", color: "#166534", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Live Dashboards Active
+            </span>
+            <div style={{ fontSize: "24px", fontWeight: "800", color: "#166534", marginTop: "4px" }}>
+              {liveClientsCount}
+            </div>
+          </div>
+        </div>
+
+        {/* Search & Filters */}
+        <div
+          style={{
+            background: "#FFFFFF",
+            borderRadius: "12px 12px 0 0",
+            border: "1px solid #E2E8F0",
+            borderBottom: "none",
+            padding: "16px 20px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "12px"
+          }}
+        >
+          {/* Filter Pills */}
+          <div style={{ display: "flex", gap: "6px" }}>
+            <button
+              type="button"
+              onClick={() => setOverviewFilter("all")}
+              style={{
+                padding: "6px 14px",
+                borderRadius: "20px",
+                fontSize: "13px",
+                fontWeight: "600",
+                cursor: "pointer",
+                border: overviewFilter === "all" ? "1px solid #023f98" : "1px solid #E2E8F0",
+                background: overviewFilter === "all" ? "#023f98" : "#FFFFFF",
+                color: overviewFilter === "all" ? "#FFFFFF" : "#475569"
+              }}
+            >
+              All Clients ({totalClientsCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setOverviewFilter("setup")}
+              style={{
+                padding: "6px 14px",
+                borderRadius: "20px",
+                fontSize: "13px",
+                fontWeight: "600",
+                cursor: "pointer",
+                border: overviewFilter === "setup" ? "1px solid #B45309" : "1px solid #E2E8F0",
+                background: overviewFilter === "setup" ? "#FEF3C7" : "#FFFFFF",
+                color: overviewFilter === "setup" ? "#B45309" : "#475569"
+              }}
+            >
+              In Setup Mode ({setupClientsCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setOverviewFilter("live")}
+              style={{
+                padding: "6px 14px",
+                borderRadius: "20px",
+                fontSize: "13px",
+                fontWeight: "600",
+                cursor: "pointer",
+                border: overviewFilter === "live" ? "1px solid #166534" : "1px solid #E2E8F0",
+                background: overviewFilter === "live" ? "#DCFCE7" : "#FFFFFF",
+                color: overviewFilter === "live" ? "#166534" : "#475569"
+              }}
+            >
+              Live ({liveClientsCount})
+            </button>
+          </div>
+
+          {/* Search Box */}
+          <div style={{ minWidth: "260px" }}>
+            <input
+              type="text"
+              placeholder="Search clients..."
+              value={overviewSearch}
+              onChange={(e) => setOverviewSearch(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                borderRadius: "8px",
+                border: "1px solid #CBD5E1",
+                fontSize: "13px",
+                boxSizing: "border-box"
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Clients Table */}
+        <div style={{ background: "#FFFFFF", borderRadius: "0 0 12px 12px", border: "1px solid #E2E8F0", overflowX: "auto" }}>
+          {overviewLoading && overviewClients.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "50px 20px" }}>
+              <Spinner size={28} color="#023f98" />
+              <p style={{ marginTop: "12px", fontSize: "13px", color: "#64748B" }}>Loading client setup records...</p>
+            </div>
+          ) : filteredClients.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "50px 20px", color: "#64748B", fontSize: "14px" }}>
+              No clients found matching the search criteria.
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "13px" }}>
+              <thead>
+                <tr style={{ background: "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
+                  <th style={{ padding: "12px 20px", fontWeight: "700", color: "#475569" }}>Client</th>
+                  <th style={{ padding: "12px 16px", fontWeight: "700", color: "#475569" }}>Status</th>
+                  <th style={{ padding: "12px 16px", fontWeight: "700", color: "#475569" }}>Accounting</th>
+                  <th style={{ padding: "12px 16px", fontWeight: "700", color: "#475569" }}>CRM</th>
+                  <th style={{ padding: "12px 16px", fontWeight: "700", color: "#475569" }}>Onboarding Progress</th>
+                  <th style={{ padding: "12px 20px", fontWeight: "700", color: "#475569", textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredClients.map((client) => {
+                  return (
+                    <tr
+                      key={client.clientName}
+                      style={{ borderBottom: "1px solid #F1F5F9", cursor: "pointer" }}
+                      onClick={() => handleSelectClient(client.clientName)}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = "#F8FAFC"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                    >
+                      <td style={{ padding: "14px 20px", fontWeight: "700", color: "#0F172A" }}>
+                        {client.clientName}
+                      </td>
+                      <td style={{ padding: "14px 16px" }}>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            padding: "3px 8px",
+                            borderRadius: "12px",
+                            background: client.setupMode ? "#FEF3C7" : "#DCFCE7",
+                            color: client.setupMode ? "#B45309" : "#15803D"
+                          }}
+                        >
+                          {client.setupMode ? "● SETUP MODE" : "✓ LIVE"}
+                        </span>
+                      </td>
+                      <td style={{ padding: "14px 16px", color: "#475569" }}>
+                        {client.accountingTool || "None"}
+                      </td>
+                      <td style={{ padding: "14px 16px", color: "#475569" }}>
+                        {client.crmTool || "None"}
+                      </td>
+                      <td style={{ padding: "14px 16px", minWidth: "160px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          <div style={{ flex: 1, height: "6px", borderRadius: "3px", background: "#E2E8F0", overflow: "hidden" }}>
+                            <div
+                              style={{
+                                width: `${client.progressPercent || (client.setupMode ? 15 : 100)}%`,
+                                height: "100%",
+                                background: client.setupMode ? "#023f98" : "#10B981"
+                              }}
+                            />
+                          </div>
+                          <span style={{ fontSize: "12px", fontWeight: "700", color: "#334155" }}>
+                            {client.progressPercent || (client.setupMode ? 15 : 100)}%
+                          </span>
+                        </div>
+                      </td>
+                      <td style={{ padding: "14px 20px", textAlign: "right" }}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSelectClient(client.clientName);
+                          }}
+                          style={{
+                            padding: "6px 12px",
+                            borderRadius: "6px",
+                            border: "1px solid #CBD5E1",
+                            background: "#FFFFFF",
+                            color: "#023f98",
+                            fontWeight: "700",
+                            fontSize: "12px",
+                            cursor: "pointer"
+                          }}
+                        >
+                          Manage Setup →
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Provision Modal */}
+        <OnboardClientModal
+          isOpen={isOnboardModalOpen}
+          onClose={() => setIsOnboardModalOpen(false)}
+          onClientCreated={handleClientProvisioned}
+        />
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // VIEW 2: SINGLE CLIENT SETUP VIEW
+  // ============================================================================
   return (
     <div style={{ maxWidth: "1080px", margin: "0 auto", padding: "24px 16px" }}>
       {/* Top Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
         <div>
+          {!managedClient && (
+            <button
+              type="button"
+              onClick={handleBackToOverview}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                background: "transparent",
+                border: "none",
+                color: "#023f98",
+                fontWeight: "700",
+                fontSize: "13px",
+                cursor: "pointer",
+                padding: 0,
+                marginBottom: "8px"
+              }}
+            >
+              <span>← All Clients Overview</span>
+            </button>
+          )}
+
           <h1 style={{ margin: "0 0 6px 0", fontSize: "24px", fontWeight: "700", color: "#0F172A", display: "flex", alignItems: "center", gap: "10px" }}>
-            <span>Setup & client connections</span>
+            <span>{selectedClient ? selectedClient.clientName : selectedClientName}</span>
+            <span
+              style={{
+                fontSize: "12px",
+                fontWeight: "700",
+                padding: "3px 10px",
+                borderRadius: "12px",
+                background: setupMode ? "#FEF3C7" : "#DCFCE7",
+                color: setupMode ? "#B45309" : "#15803D"
+              }}
+            >
+              {setupMode ? "● SETUP MODE" : "✓ LIVE"}
+            </span>
           </h1>
           <p style={{ margin: 0, color: "#64748B", fontSize: "14px" }}>
-            Control client setup mode, configure tool integrations, and request third-party connections from client users.
+            {setupMode
+              ? "Follow the phased checklist below to onboard this client and connect tools."
+              : "Control client setup mode, configure tool integrations, and edit budget/outgoings spreadsheets."}
           </p>
         </div>
 
-        {/* Client Chooser */}
-        {!managedClient && (
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <label htmlFor="client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Client:</label>
-            <select
-              id="client-selector"
-              value={selectedClient ? selectedClient.clientName : selectedClientName}
-              onChange={(e) => {
-                const val = e.target.value;
-                setSelectedClientName(val);
-                if (onSelectClient) onSelectClient(val);
-              }}
-              style={{
-                padding: "8px 14px",
-                borderRadius: "8px",
-                border: "1px solid #CBD5E1",
-                background: "#FFFFFF",
-                fontSize: "14px",
-                fontWeight: "600",
-                color: "#1E293B",
-                minWidth: "220px",
-                cursor: "pointer"
-              }}
-            >
-              {allOutgoingsClients.map((c) => (
-                <option key={c.clientName} value={c.clientName}>
-                  {c.clientName}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+        {/* Client Chooser & Actions */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          {!managedClient && (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <label htmlFor="client-selector" style={{ fontSize: "13px", fontWeight: "600", color: "#475569" }}>Client:</label>
+              <select
+                id="client-selector"
+                value={selectedClient ? selectedClient.clientName : selectedClientName}
+                onChange={(e) => handleSelectClient(e.target.value)}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: "8px",
+                  border: "1px solid #CBD5E1",
+                  background: "#FFFFFF",
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  color: "#1E293B",
+                  minWidth: "200px",
+                  cursor: "pointer"
+                }}
+              >
+                {allOutgoingsClients.map((c) => (
+                  <option key={c.clientName} value={c.clientName}>
+                    {c.clientName}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setIsOnboardModalOpen(true)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              padding: "8px 14px",
+              borderRadius: "8px",
+              border: "none",
+              background: "#023f98",
+              color: "#FFFFFF",
+              fontSize: "13px",
+              fontWeight: "700",
+              cursor: "pointer"
+            }}
+          >
+            <span>➕</span>
+            <span>New Client</span>
+          </button>
+        </div>
       </div>
 
       {feedback && (
@@ -230,7 +603,25 @@ export default function SetupView({
           <Spinner size={28} color="#023f98" />
           <p style={{ marginTop: "12px", color: "#64748B", fontSize: "14px", fontWeight: "500" }}>Loading client setup details...</p>
         </div>
+      ) : setupMode ? (
+        /* ====================================================================
+           CLIENT IS IN SETUP MODE: DISPLAY 5-PHASE ONBOARDING CHECKLIST
+        ==================================================================== */
+        <OnboardingChecklistView
+          clientName={selectedClient?.clientName || selectedClientName}
+          masterSheetId={selectedClient?.masterSheetId || config?.masterSheetId}
+          clientSheetId={selectedClient?.clientSheetId || config?.clientSheetId}
+          user={user}
+          onOpenSheetEditor={(editor) => setActiveSheetEditor(editor)}
+          onSetupModeToggled={(newMode) => {
+            setSetupMode(newMode);
+            if (selectedClient) loadConfig(selectedClient);
+          }}
+        />
       ) : (
+        /* ====================================================================
+           CLIENT IS LIVE: DISPLAY STANDARD SETUP CONFIGURATION CARDS
+        ==================================================================== */
         <form onSubmit={handleSave}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "20px" }}>
 
@@ -242,7 +633,7 @@ export default function SetupView({
                     1. Setup Mode Lifecycle
                   </h2>
                   <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-                    When active, client users logging into Pulse are presented with a setup screen instead of live financial dashboards.
+                    When active, client users logging into Pulse are held on the onboarding holding screen instead of live dashboards.
                   </p>
                 </div>
                 <div style={{
@@ -280,7 +671,7 @@ export default function SetupView({
                     />
                   </div>
                   <p style={{ margin: 0, fontSize: "12px", color: "#64748B", lineHeight: "1.4" }}>
-                    Check to hold client users on the setup screen while you configure the client. Uncheck once setup is complete to open live access.
+                    Check to hold client users on the setup screen. Uncheck to activate live dashboards.
                   </p>
                 </div>
 
@@ -304,7 +695,7 @@ export default function SetupView({
                     />
                   </div>
                   <p style={{ margin: 0, fontSize: "12px", color: "#64748B", lineHeight: "1.4" }}>
-                    When checked, client users in Setup Mode will see action buttons prompting them to connect their accounting and CRM tools.
+                    Prompt client users in Setup Mode to authorize third-party tools via Central Pulse Vault.
                   </p>
                 </div>
               </div>
@@ -322,7 +713,6 @@ export default function SetupView({
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "18px" }}>
-
                 {/* Accounting Tool */}
                 <div style={{ padding: "16px", borderRadius: "10px", border: "1px solid #E2E8F0", background: "#F8FAFC" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
@@ -352,9 +742,6 @@ export default function SetupView({
                     <option value="Xero">Xero</option>
                     <option value="Quickbooks">QuickBooks Online</option>
                   </select>
-                  <p style={{ margin: "8px 0 0 0", fontSize: "11px", color: "#64748B" }}>
-                    {isAccountingOAuth ? "Requires OAuth handshake via Central Pulse Vault." : "No API connection required."}
-                  </p>
                 </div>
 
                 {/* CRM Tool */}
@@ -375,9 +762,7 @@ export default function SetupView({
                         {config?.crmStatus?.connected ? "● Connected" : "○ Needs Connection"}
                       </span>
                     ) : (
-                      <span style={{ fontSize: "11px", color: "#64748B" }}>
-                        {crmTool === "None" ? "Disabled" : "Spreadsheet source"}
-                      </span>
+                      <span style={{ fontSize: "11px", color: "#64748B" }}>Spreadsheet source</span>
                     )}
                   </div>
                   <select
@@ -393,12 +778,9 @@ export default function SetupView({
                     <option value="HubSpot">HubSpot</option>
                     <option value="Monday">Monday.com</option>
                     <option value="Pipedrive">Pipedrive</option>
-                    <option value="Google Sheet">Google Sheet (No API required)</option>
-                    <option value="Excel">Excel (No API required)</option>
+                    <option value="Google Sheet">Google Sheet</option>
+                    <option value="Excel">Excel</option>
                   </select>
-                  <p style={{ margin: "8px 0 0 0", fontSize: "11px", color: "#64748B" }}>
-                    {isCrmOAuth ? "Requires OAuth handshake via Central Pulse Vault." : "Manual or sheet-based sync."}
-                  </p>
                 </div>
 
                 {/* CRM Driver */}
@@ -416,11 +798,7 @@ export default function SetupView({
                     <option value="Pipeline">Pipeline (Just pipeline)</option>
                     <option value="PipeAndConf">PipeAndConf (Pipeline and confirmed)</option>
                   </select>
-                  <p style={{ margin: "8px 0 0 0", fontSize: "11px", color: "#64748B" }}>
-                    Controls whether CRM deals populate pipeline tabs only or sync into confirmed income.
-                  </p>
                 </div>
-
               </div>
             </div>
 
@@ -484,11 +862,8 @@ export default function SetupView({
                     fontSize: "13px",
                     fontWeight: "600",
                     border: "1px solid #CBD5E1",
-                    cursor: "pointer",
-                    transition: "all 0.15s ease",
+                    cursor: "pointer"
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "#F1F5F9"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "#F8FAFC"; }}
                 >
                   <span>📊</span>
                   <span>Edit budget</span>
@@ -508,11 +883,8 @@ export default function SetupView({
                     fontSize: "13px",
                     fontWeight: "600",
                     border: "1px solid #CBD5E1",
-                    cursor: "pointer",
-                    transition: "all 0.15s ease",
+                    cursor: "pointer"
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "#F1F5F9"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "#F8FAFC"; }}
                 >
                   <span>👷</span>
                   <span>Edit contractors</span>
@@ -532,16 +904,59 @@ export default function SetupView({
                     fontSize: "13px",
                     fontWeight: "600",
                     border: "1px solid #CBD5E1",
-                    cursor: "pointer",
-                    transition: "all 0.15s ease",
+                    cursor: "pointer"
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "#F1F5F9"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "#F8FAFC"; }}
                 >
                   <span>💳</span>
                   <span>Edit outgoings</span>
                 </button>
               </div>
+            </div>
+
+            {/* 5. COLLAPSIBLE ONBOARDING HISTORY */}
+            <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "16px 20px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+              <button
+                type="button"
+                onClick={() => setShowChecklistHistory(!showChecklistHistory)}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: 0
+                }}
+              >
+                <div>
+                  <h3 style={{ margin: "0 0 2px", fontSize: "14px", fontWeight: "700", color: "#0F172A", textAlign: "left" }}>
+                    📋 Onboarding Checklist History & Setup Tasks
+                  </h3>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#64748B", textAlign: "left" }}>
+                    View completed onboarding items, recorded Script IDs, and Master KeyInfo settings.
+                  </p>
+                </div>
+                <span style={{ fontSize: "13px", fontWeight: "600", color: "#023f98" }}>
+                  {showChecklistHistory ? "Hide Checklist ▲" : "View Checklist ▼"}
+                </span>
+              </button>
+
+              {showChecklistHistory && (
+                <div style={{ marginTop: "18px", borderTop: "1px solid #E2E8F0", paddingTop: "18px" }}>
+                  <OnboardingChecklistView
+                    clientName={selectedClient?.clientName || selectedClientName}
+                    masterSheetId={selectedClient?.masterSheetId || config?.masterSheetId}
+                    clientSheetId={selectedClient?.clientSheetId || config?.clientSheetId}
+                    user={user}
+                    onOpenSheetEditor={(editor) => setActiveSheetEditor(editor)}
+                    onSetupModeToggled={(newMode) => {
+                      setSetupMode(newMode);
+                      if (selectedClient) loadConfig(selectedClient);
+                    }}
+                  />
+                </div>
+              )}
             </div>
 
             {/* Bottom Actions */}
@@ -616,6 +1031,7 @@ export default function SetupView({
         </form>
       )}
 
+      {/* Embedded Table Editor Modal */}
       {activeSheetEditor && selectedClient && (
         <EditableSheetEditor
           client={selectedClient}
@@ -624,6 +1040,13 @@ export default function SetupView({
           isAdmin={user?.isAdmin || user?.role === "Admin"}
         />
       )}
+
+      {/* Provision Modal */}
+      <OnboardClientModal
+        isOpen={isOnboardModalOpen}
+        onClose={() => setIsOnboardModalOpen(false)}
+        onClientCreated={handleClientProvisioned}
+      />
     </div>
   );
 }

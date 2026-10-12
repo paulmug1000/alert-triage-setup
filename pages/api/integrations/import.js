@@ -194,6 +194,14 @@ export default async function handler(req, res) {
         accountInfo = await getMondayAccountInfo(activeAccessToken);
       }
 
+      if (!accountInfo || !accountInfo.accountId) {
+        console.error(`🚨 Integration Import: Rejected Monday.com import for ${spreadsheetId} - credentials could not be verified with Monday.com API.`);
+        return res.status(401).json({
+          success: false,
+          error: "Provided Monday.com credentials could not be verified with Monday.com API. Re-authorization required via PMA > Integrations."
+        });
+      }
+
       const effectiveClientKey = clientName || accountInfo?.accountName || spreadsheetId;
       const effectiveClientName = clientName || accountInfo?.accountName || effectiveClientKey;
 
@@ -247,6 +255,14 @@ export default async function handler(req, res) {
         accountInfo = await getPipedriveAccountInfo(activeAccessToken);
       }
 
+      if (!accountInfo || !accountInfo.companyId) {
+        console.error(`🚨 Integration Import: Rejected Pipedrive import for ${spreadsheetId} - credentials could not be verified with Pipedrive API.`);
+        return res.status(401).json({
+          success: false,
+          error: "Provided Pipedrive credentials could not be verified with Pipedrive API. Re-authorization required via PMA > Integrations."
+        });
+      }
+
       const effectiveClientKey = clientName || accountInfo?.companyName || spreadsheetId;
       const effectiveClientName = clientName || accountInfo?.companyName || effectiveClientKey;
 
@@ -291,6 +307,14 @@ export default async function handler(req, res) {
       let workspaceInfo = null;
       if (activeAccessToken) {
         workspaceInfo = await getClickUpWorkspaceInfo(activeAccessToken);
+      }
+
+      if (!workspaceInfo || (!workspaceInfo.teamId && !workspaceInfo.userId)) {
+        console.error(`🚨 Integration Import: Rejected ClickUp import for ${spreadsheetId} - credentials could not be verified with ClickUp API.`);
+        return res.status(401).json({
+          success: false,
+          error: "Provided ClickUp credentials could not be verified with ClickUp API. Re-authorization required via PMA > Integrations."
+        });
       }
 
       const effectiveClientKey = clientName || workspaceInfo?.workspaceName || spreadsheetId;
@@ -346,6 +370,14 @@ export default async function handler(req, res) {
         accountInfo = await getCapsuleAccountInfo(activeAccessToken);
       }
 
+      if (!accountInfo || (!accountInfo.siteName && !accountInfo.userId)) {
+        console.error(`🚨 Integration Import: Rejected Capsule CRM import for ${spreadsheetId} - credentials could not be verified with Capsule API.`);
+        return res.status(401).json({
+          success: false,
+          error: "Provided Capsule CRM credentials could not be verified with Capsule API. Re-authorization required via PMA > Integrations."
+        });
+      }
+
       const effectiveClientKey = clientName || accountInfo?.siteName || spreadsheetId;
       const effectiveClientName = clientName || accountInfo?.siteName || effectiveClientKey;
 
@@ -399,6 +431,14 @@ export default async function handler(req, res) {
         accountInfo = await getCloseAccountInfo(activeAccessToken);
       }
 
+      if (!accountInfo || (!accountInfo.userId && !accountInfo.organizationId)) {
+        console.error(`🚨 Integration Import: Rejected Close CRM import for ${spreadsheetId} - credentials could not be verified with Close API.`);
+        return res.status(401).json({
+          success: false,
+          error: "Provided Close CRM credentials could not be verified with Close API. Re-authorization required via PMA > Integrations."
+        });
+      }
+
       const effectiveClientKey = clientName || accountInfo?.organizationName || spreadsheetId;
       const effectiveClientName = clientName || accountInfo?.organizationName || effectiveClientKey;
 
@@ -450,6 +490,14 @@ export default async function handler(req, res) {
       let accountInfo = null;
       if (activeAccessToken) {
         accountInfo = await getHubSpotAccountInfo(activeAccessToken);
+      }
+
+      if (!accountInfo || (!accountInfo.portalId && !accountInfo.hubId)) {
+        console.error(`🚨 Integration Import: Rejected HubSpot import for ${spreadsheetId} - credentials could not be verified with HubSpot API.`);
+        return res.status(401).json({
+          success: false,
+          error: "Provided HubSpot credentials could not be verified with HubSpot API. Re-authorization required via PMA > Integrations."
+        });
       }
 
       const effectiveClientKey = clientName || accountInfo?.accountName || spreadsheetId;

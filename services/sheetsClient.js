@@ -20,13 +20,21 @@ export function getGoogleAuth() {
   };
   return new google.auth.GoogleAuth({
     credentials,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    scopes: [
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/drive"
+    ],
   });
 }
 
 export async function getSheetsClient() {
   const auth = getGoogleAuth();
   return google.sheets({ version: "v4", auth });
+}
+
+export async function getDriveClient() {
+  const auth = getGoogleAuth();
+  return google.drive({ version: "v3", auth });
 }
 
 export async function withRetry(operation, maxRetries = 5) {

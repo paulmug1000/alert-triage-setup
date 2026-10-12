@@ -148,7 +148,7 @@ export default function HomeView({
       setCachedTotalAlerts(totalAlertsCount);
       try {
         localStorage.setItem("pulse_cached_total_alerts", String(totalAlertsCount));
-      } catch {}
+      } catch { }
     }
   }, [isLoadingAlerts, totalAlertsCount, managedClient]);
 
@@ -242,11 +242,11 @@ export default function HomeView({
             <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#64748B", lineHeight: "1.4" }}>
               {totalAlertsCount === 0 && !isLoadingAlerts
                 ? (managedClient?.clientName
-                    ? `All alerts for ${managedClient.clientName} are currently clear.`
-                    : "All alerts across your assigned clients are currently clear.")
+                  ? `All alerts for ${managedClient.clientName} are currently clear.`
+                  : "All alerts across your assigned clients are currently clear.")
                 : (managedClient?.clientName
-                    ? `Active discrepancies and proactive alerts for ${managedClient.clientName}.`
-                    : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients you have access to.`)}
+                  ? `Active discrepancies and proactive alerts for ${managedClient.clientName}.`
+                  : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients you have access to.`)}
             </p>
           </div>
 
@@ -369,7 +369,7 @@ export default function HomeView({
               )}
             </div>
             <p style={{ margin: "4px 0 0 0", fontSize: "13px", color: "#64748B" }}>
-              Clients you have access to that are in Setup Mode or have missing tool connections.
+              Clients that are in Setup Mode or have missing tool connections.
             </p>
           </div>
 
@@ -388,7 +388,7 @@ export default function HomeView({
               cursor: "pointer",
             }}
           >
-            Manage Setup Tab →
+            Manage setup tab →
           </button>
         </div>
 
@@ -441,10 +441,10 @@ export default function HomeView({
                         {statusObj.crmStatus?.connected
                           ? "● Connected"
                           : ["clickup", "close", "capsule", "hubspot", "monday", "pipedrive"].some((t) => String(crmTool || "").toLowerCase().includes(t))
-                          ? "○ Needs Connection"
-                          : crmTool !== "None"
-                          ? "(Spreadsheet source)"
-                          : ""}
+                            ? "○ Needs Connection"
+                            : crmTool !== "None"
+                              ? "(Spreadsheet source)"
+                              : ""}
                       </div>
                     </div>
                   </div>
@@ -480,7 +480,7 @@ export default function HomeView({
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <h2 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
-                Client Summary
+                Client summary
               </h2>
               <span style={{ background: "#F1F5F9", color: "#475569", border: "1px solid #CBD5E1", padding: "1px 8px", borderRadius: "12px", fontSize: "11px", fontWeight: "700" }}>
                 {authorizedClients.length} clients
@@ -559,7 +559,7 @@ export default function HomeView({
                         {client.clientName}
                       </td>
 
-                      {/* Setup Status */}
+                      {/* Setup status */}
                       <td style={{ padding: "10px 14px" }}>
                         {isSetup ? (
                           <span

@@ -137,6 +137,7 @@ export default function IntegrationsView({
   const [brokerResultsMap, setBrokerResultsMap] = useState({});
   const [selectedTenantsMap, setSelectedTenantsMap] = useState({});
   const [switchingTenantMap, setSwitchingTenantMap] = useState({});
+  const [verifyingAll, setVerifyingAll] = useState(false);
 
   const highlightedRef = useRef(null);
 
@@ -246,7 +247,7 @@ export default function IntegrationsView({
       clientKey: "advisor",
       clientName: "Advisor Account",
       mode: "advisor",
-      redirectBack: "/PMA?nav=integrations"
+      redirectBack: "/pma?nav=integrations"
     });
     window.location.href = `/api/integrations/xero/connect?${params.toString()}`;
   };
@@ -261,7 +262,7 @@ export default function IntegrationsView({
       masterSheetId: client.masterSheetId || "",
       clientSheetId: client.clientSheetId || "",
       mode,
-      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(client.clientName)}`
+      redirectBack: `/pma?nav=integrations&client=${encodeURIComponent(client.clientName)}`
     });
     window.location.href = `/api/integrations/xero/connect?${params.toString()}`;
   };
@@ -349,7 +350,7 @@ export default function IntegrationsView({
       clientName: client.clientName,
       masterSheetId: client.masterSheetId || "",
       clientSheetId: client.clientSheetId || "",
-      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(client.clientName)}`
+      redirectBack: `/pma?nav=integrations&client=${encodeURIComponent(client.clientName)}`
     });
     window.location.href = `/api/integrations/quickbooks/connect?${params.toString()}`;
   };
@@ -392,7 +393,7 @@ export default function IntegrationsView({
       clientName: client.clientName,
       masterSheetId: client.masterSheetId || "",
       clientSheetId: client.clientSheetId || "",
-      redirectBack: `/PMA?nav=integrations&client=${encodeURIComponent(client.clientName)}`
+      redirectBack: `/pma?nav=integrations&client=${encodeURIComponent(client.clientName)}`
     });
     window.location.href = `/api/integrations/${toolKey}/connect?${params.toString()}`;
   };
@@ -446,10 +447,93 @@ export default function IntegrationsView({
       const res = await fetch(`/api/integrations/token?${q.toString()}`);
       const data = await res.json();
       setBrokerResultsMap((m) => ({ ...m, [testKey]: data }));
+      // Automatically refresh statuses so the card badge (and attention count) update in real time
+      await fetchAllStatus(true, true);
     } catch (err) {
       setBrokerResultsMap((m) => ({ ...m, [testKey]: { success: false, error: err.message } }));
     } finally {
       setBrokerTestingMap((m) => ({ ...m, [testKey]: false }));
+    }
+  };
+
+  // --------------------------------------------------------------------------
+  // LIVE VERIFICATION ACROSS ALL ACTIVE INTEGRATIONS
+  // --------------------------------------------------------------------------
+  const handleVerifyAllActive = async () => {
+    if (verifyingAll) return;
+    setVerifyingAll(true);
+    setFeedback({ type: "info", message: "Running live API verification probes across all active integration tokens..." });
+
+    try {
+      const tasks = [];
+      for (const client of clientsData) {
+        // Accounting Tool
+        const accTool = String(client.accountingTool || "").toLowerCase();
+        if ((accTool === "xero" || accTool === "quickbooks" || accTool === "qb") && client.integrations?.[accTool === "qb" ? "quickbooks" : accTool]?.connected) {
+          tasks.push({ client, toolKey: accTool === "qb" ? "quickbooks" : accTool, toolName: accTool === "qb" ? "QuickBooks" : (accTool.charAt(0).toUpperCase() + accTool.slice(1)) });
+        }
+        // CRM Tool
+        const crmTool = String(client.crmTool || "").toLowerCase();
+        if (CRM_TOOLS_CONFIG[crmTool] && client.integrations?.[crmTool]?.connected) {
+          tasks.push({ client, toolKey: crmTool, toolName: CRM_TOOLS_CONFIG[crmTool]?.name || crmTool.toUpperCase() });
+        }
+      }
+
+      if (tasks.length === 0) {
+        setFeedback({ type: "info", message: "No active integrations configured to verify." });
+        setVerifyingAll(false);
+        return;
+      }
+
+      let passed = 0;
+      let failed = [];
+
+      await Promise.all(
+        tasks.map(async ({ client, toolKey, toolName }) => {
+          const testKey = `${client.clientName}_${toolKey}`;
+          setBrokerTestingMap((m) => ({ ...m, [testKey]: true }));
+          try {
+            const q = new URLSearchParams({
+              tool: toolKey,
+              clientKey: client.clientName,
+              verify: "true"
+            });
+            if (client.masterSheetId) q.set("spreadsheetId", client.masterSheetId);
+            const res = await fetch(`/api/integrations/token?${q.toString()}`);
+            const data = await res.json();
+            setBrokerResultsMap((m) => ({ ...m, [testKey]: data }));
+            if (data.verified || (res.ok && data.success)) {
+              passed++;
+            } else {
+              failed.push(`${client.clientName} (${toolName})`);
+            }
+          } catch (err) {
+            setBrokerResultsMap((m) => ({ ...m, [testKey]: { success: false, error: err.message } }));
+            failed.push(`${client.clientName} (${toolName})`);
+          } finally {
+            setBrokerTestingMap((m) => ({ ...m, [testKey]: false }));
+          }
+        })
+      );
+
+      // Re-fetch all statuses so cards update in real time
+      await fetchAllStatus(true, true);
+
+      if (failed.length === 0) {
+        setFeedback({
+          type: "success",
+          message: `✓ Successfully verified all ${passed} active integration tokens against provider APIs!`
+        });
+      } else {
+        setFeedback({
+          type: "error",
+          message: `⚠️ Live verification complete: ${passed} healthy, ${failed.length} failed (${failed.join(", ")}). Re-authorization required.`
+        });
+      }
+    } catch (err) {
+      setFeedback({ type: "error", message: `Verification error: ${err.message}` });
+    } finally {
+      setVerifyingAll(false);
     }
   };
 
@@ -520,9 +604,31 @@ export default function IntegrationsView({
         {/* Global Action & Refresh */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <button
+            onClick={handleVerifyAllActive}
+            title="Live-verify all active client tokens directly with provider APIs"
+            disabled={loading || verifyingAll}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              padding: "8px 14px",
+              borderRadius: "8px",
+              border: "1px solid #93c5fd",
+              background: "#eff6ff",
+              fontSize: "13px",
+              fontWeight: "600",
+              cursor: "pointer",
+              color: "#1d4ed8",
+              boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
+            }}
+          >
+            <span>{verifyingAll ? "⏳" : "⚡"}</span>
+            <span>{verifyingAll ? "Verifying All..." : "Verify All Active"}</span>
+          </button>
+          <button
             onClick={() => fetchAllStatus(false, true)}
             title="Refresh all client integrations (force live sync from Google Sheets)"
-            disabled={loading}
+            disabled={loading || verifyingAll}
             style={{
               display: "flex",
               alignItems: "center",

@@ -717,6 +717,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           withModal={withModal}
           isAdmin={isAdmin}
           user={user}
+          managedClient={managedClient}
         />
       );
     }

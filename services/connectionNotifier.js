@@ -204,7 +204,7 @@ export async function notifyStaffOnClientConnection({
           ` : ""}
 
           <div style="text-align: center; margin-top: 24px;">
-            <a href="${appUrl}/PMA?nav=integrations&client=${encodeURIComponent(clientName)}" class="button">
+            <a href="${appUrl}/pma?nav=integrations&client=${encodeURIComponent(clientName)}" class="button">
               View in Pulse Management Area →
             </a>
           </div>
@@ -228,7 +228,7 @@ Tool: ${toolDisplayName}
 ${tenantName ? `Organisation: ${tenantName}\n` : ""}Authorised At: ${nowFormatted}
 ${allConnected ? "Status: All required tool connections for this client are now active.\n" : remainingTools.length > 0 ? `Status: Remaining pending connection: ${remainingTools.join(", ")}\n` : ""}
 View in Pulse Management Area:
-${appUrl}/PMA?nav=integrations&client=${encodeURIComponent(clientName)}
+${appUrl}/pma?nav=integrations&client=${encodeURIComponent(clientName)}
   `.trim();
 
   if (!emailPass) {

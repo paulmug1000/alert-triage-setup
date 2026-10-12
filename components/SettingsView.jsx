@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Spinner from "./Spinner";
+import ClientSettingsView from "./ClientSettingsView";
 import { useSettings } from "../hooks/useSettings";
 import { useTriage } from "../contexts/TriageContext";
 
@@ -13,11 +14,23 @@ export default function SettingsView({
   allOutgoingsClients,
   getFlagName,
   isAdmin = false,
-  user
+  user,
+  managedClient = null
 }) {
   const { clientsWithFlags, isLoading, refreshTriage } = useTriage();
   // Only Admin is an internal staff role able to see all clients
   const effectiveIsAdmin = !!(isAdmin || user?.isAdmin || user?.role === "Admin");
+
+  // Top tab mode: "system" vs "client"
+  const [settingsMode, setSettingsMode] = useState(() => {
+    return managedClient ? "client" : "system";
+  });
+
+  useEffect(() => {
+    if (managedClient) {
+      setSettingsMode("client");
+    }
+  }, [managedClient]);
 
   const [triggeringProactive, setTriggeringProactive] = useState(false);
   const [triggerProactiveMsg, setTriggerProactiveMsg] = useState("");
@@ -211,13 +224,66 @@ export default function SettingsView({
   const rows = settingsData?.recentRows || [];
 
   return (
-    <div style={{ padding: "20px", maxWidth: "800px" }}>
+    <div style={{ padding: "20px", maxWidth: effectiveIsAdmin ? "1240px" : "800px", margin: "0 auto" }}>
       {/* Top Application Version & Copyright Header */}
       <div style={{ fontSize: "11px", fontStyle: "italic", color: "#666", marginBottom: "16px" }}>
         Pulse v{SYSTEM_VERSION} - {getSystemCopyright()}
       </div>
 
-      <h2 style={{ margin: "0 0 20px", fontSize: "20px", fontWeight: "700" }}>Settings</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+        <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "700" }}>Settings</h2>
+
+        {effectiveIsAdmin && (
+          <div style={{ display: "inline-flex", background: "#f1f5f9", padding: "3px", borderRadius: "8px", border: "1px solid #cbd5e1" }}>
+            <button
+              type="button"
+              onClick={() => setSettingsMode("system")}
+              style={{
+                padding: "6px 14px",
+                borderRadius: "6px",
+                border: "none",
+                background: settingsMode === "system" ? "#ffffff" : "transparent",
+                color: settingsMode === "system" ? "#0066cc" : "#64748b",
+                fontWeight: settingsMode === "system" ? "700" : "500",
+                fontSize: "13px",
+                cursor: "pointer",
+                boxShadow: settingsMode === "system" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                transition: "all 0.15s ease"
+              }}
+            >
+              🏢 PMA System Settings
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsMode("client")}
+              style={{
+                padding: "6px 14px",
+                borderRadius: "6px",
+                border: "none",
+                background: settingsMode === "client" ? "#ffffff" : "transparent",
+                color: settingsMode === "client" ? "#0066cc" : "#64748b",
+                fontWeight: settingsMode === "client" ? "700" : "500",
+                fontSize: "13px",
+                cursor: "pointer",
+                boxShadow: settingsMode === "client" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                transition: "all 0.15s ease"
+              }}
+            >
+              ⚙️ Client Settings {managedClient ? `(${managedClient.clientName})` : ""}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {effectiveIsAdmin && settingsMode === "client" ? (
+        <ClientSettingsView
+          allClients={allOutgoingsClients || []}
+          managedClient={managedClient}
+          user={user}
+          isAdmin={effectiveIsAdmin}
+        />
+      ) : (
+        <>
 
       {/* Notifications / Preferences Section (All Users) */}
       <div style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e0e0e0", padding: "16px 20px", marginBottom: "20px" }}>
@@ -1099,6 +1165,8 @@ export default function SettingsView({
               </div>
             </>
           )}
+        </>
+      )}
         </>
       )}
     </div>

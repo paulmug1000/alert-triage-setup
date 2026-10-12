@@ -569,6 +569,8 @@ export async function getIntegrationTokens({ clientKey, masterSheetId, tool }) {
       realmId: record.realmId || record.tenantId || "",
       companyName: record.companyName || record.tenantName || "",
       status: record.status,
+      reconnectRequired: Boolean(record.reconnectRequired || record.status === "reconnect_required"),
+      lastError: record.lastError || null,
       expiresAt: record.expiresAt,
       tokens: decryptedBundle,
       isSharedGrant: Boolean(record.isSharedGrant),

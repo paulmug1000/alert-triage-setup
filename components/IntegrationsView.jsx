@@ -1712,7 +1712,7 @@ function CrmCard({
       {/* Action Buttons */}
       <div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "10px" }}>
-          {isConnected ? (
+          {isConnected && !toolData.reconnectRequired ? (
             <>
               <button
                 onClick={onDisconnect}
@@ -1759,7 +1759,7 @@ function CrmCard({
                 padding: "9px 14px",
                 borderRadius: "7px",
                 border: "none",
-                background: config.color,
+                background: toolData.reconnectRequired ? "#dc2626" : config.color,
                 color: "#ffffff",
                 fontSize: "12.5px",
                 fontWeight: "600",
@@ -1767,7 +1767,9 @@ function CrmCard({
                 boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
               }}
             >
-              Connect {config.name} for {client.clientName}
+              {toolData.reconnectRequired
+                ? `Re-connect ${config.name} for ${client.clientName}`
+                : `Connect ${config.name} for ${client.clientName}`}
             </button>
           )}
         </div>

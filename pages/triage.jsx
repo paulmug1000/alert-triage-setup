@@ -706,6 +706,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
           initialClientName={managedClient ? managedClient.clientName : setupClientName}
           onSelectClient={setSetupClientName}
           user={user}
+          isAdmin={isAdmin}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
         />

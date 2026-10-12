@@ -124,6 +124,22 @@ function getSheetIndexRedisKey(masterSheetId, tool) {
 }
 
 export const SHARED_XERO_KEY = "pulse:vault:shared:xero";
+export const INTEGRATIONS_STATUS_CACHE_KEY = "pulse:integrations:status_all";
+
+/**
+ * Invalidates the multi-client integrations status cache in Redis
+ * whenever any credential, connection status, or tenant mapping changes.
+ */
+export async function invalidateIntegrationsCache() {
+  try {
+    if (redisClient?.isOpen) {
+      await redisClient.del(INTEGRATIONS_STATUS_CACHE_KEY);
+      console.log("🧹 Vault: Invalidated integrations status cache.");
+    }
+  } catch (err) {
+    console.warn("⚠️ Vault: Failed to invalidate integrations cache:", err.message);
+  }
+}
 
 /**
  * Fuzzy matches a Pulse client identifier (name, slug, or sheet ID)
@@ -219,6 +235,7 @@ export async function saveSharedXeroGrant({ tokens, availableTenants = [], conne
   };
 
   await redisClient.set(SHARED_XERO_KEY, JSON.stringify(record));
+  await invalidateIntegrationsCache();
   console.log(`🔒 Vault: Successfully stored central shared Xero grant with ${verifiedTenants.length} organisations.`);
   return record;
 }
@@ -276,6 +293,7 @@ export async function updateSharedXeroGrantTokens(tokens) {
   record.reconnectRequired = false;
 
   await redisClient.set(SHARED_XERO_KEY, JSON.stringify(record));
+  await invalidateIntegrationsCache();
   console.log(`🔄 Vault: Central Shared Xero grant refreshed. Fresh for ${Math.round(expiresInMs / 60000)}m.`);
   return record;
 }
@@ -325,6 +343,7 @@ export async function linkClientToSharedXero({
   }
 
   console.log(`🔗 Vault: Linked ${cleanClient} to shared Xero tenant: "${tenantName}" (${tenantId})`);
+  await invalidateIntegrationsCache();
   return record;
 }
 
@@ -415,6 +434,7 @@ export async function saveIntegrationTokens({
   }
 
   console.log(`🔒 Vault: Successfully stored credentials for ${cleanClient} [${cleanTool}]. Shared: ${isSharedGrant}, Tenant: ${companyName || tenantName || realmId || tenantId || "N/A"}`);
+  await invalidateIntegrationsCache();
 
   return {
     success: true,
@@ -483,29 +503,32 @@ export async function getIntegrationTokens({ clientKey, masterSheetId, tool }) {
 
   // 1. If tool is Xero: Check if client uses or should use the Central Shared Xero Grant
   if (cleanTool === "xero") {
-    // If the record exists and is dedicated (has encryptedTokens and is NOT marked isSharedGrant) and is connected
-    const isDedicated = record && !record.isSharedGrant && record.encryptedTokens && record.status === "connected";
+    // If the record exists and is dedicated (has encryptedTokens and is NOT marked isSharedGrant)
+    const isDedicated = Boolean(record && !record.isSharedGrant && record.encryptedTokens);
     if (isDedicated) {
+      let decryptedBundle = null;
       try {
         const aad = `${record.clientKey}:${cleanTool}`;
-        const decryptedBundle = decryptPayload(record.encryptedTokens, aad);
-        return {
-          tool: record.tool,
-          clientKey: record.clientKey,
-          clientName: record.clientName,
-          masterSheetId: record.masterSheetId,
-          tenantId: record.tenantId || "",
-          tenantName: record.tenantName || "",
-          status: record.status,
-          expiresAt: record.expiresAt,
-          tokens: decryptedBundle,
-          metadata: record.metadata || {},
-          updatedAt: record.updatedAt,
-          lastRefreshedAt: record.lastRefreshedAt
-        };
+        decryptedBundle = decryptPayload(record.encryptedTokens, aad);
       } catch (err) {
-        console.warn(`Dedicated Xero token decrypt failed for ${record.clientKey}, checking shared grant:`, err.message);
+        console.warn(`Dedicated Xero token decrypt failed for ${record.clientKey}:`, err.message);
       }
+      return {
+        tool: record.tool,
+        clientKey: record.clientKey,
+        clientName: record.clientName,
+        masterSheetId: record.masterSheetId,
+        tenantId: record.tenantId || "",
+        tenantName: record.tenantName || "",
+        status: record.status,
+        reconnectRequired: Boolean(record.reconnectRequired || record.status === "reconnect_required"),
+        lastError: record.lastError || null,
+        expiresAt: record.expiresAt,
+        tokens: decryptedBundle,
+        metadata: record.metadata || {},
+        updatedAt: record.updatedAt,
+        lastRefreshedAt: record.lastRefreshedAt
+      };
     }
 
     // Otherwise, check Central Shared Xero Grant
@@ -640,6 +663,7 @@ export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenant
   }
 
   await redisClient.set(redisKey, JSON.stringify(record));
+  await invalidateIntegrationsCache();
   console.log(`🔄 Vault: Refreshed tokens persisted for ${cleanClient} [${cleanTool}]. Dedicated: ${!record.isSharedGrant}, Expires in ${Math.round(expiresInMs / 60000)}m.`);
   return record;
 }
@@ -873,6 +897,7 @@ export async function markIntegrationReconnectRequired({ clientKey, masterSheetI
     }
   }
 
+  await invalidateIntegrationsCache();
   return record;
 }
 
@@ -912,6 +937,7 @@ export async function deleteIntegrationTokens({ clientKey, masterSheetId, tool }
     await redisClient.del(sheetKey);
   }
 
+  await invalidateIntegrationsCache();
   console.log(`🗑️ Vault: Deleted integration tokens for ${clientKey || masterSheetId} [${cleanTool}].`);
   return { success: true };
 }

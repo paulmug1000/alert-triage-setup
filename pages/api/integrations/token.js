@@ -29,20 +29,54 @@ import { refreshCapsuleTokens } from "../../../services/capsuleService.js";
 import { refreshCloseTokens } from "../../../services/closeService.js";
 import { refreshHubSpotTokens } from "../../../services/hubspotService.js";
 import { getSessionUser } from "../../../services/authService.js";
+import { redisClient } from "../../../services/redisClient.js";
 
-// Module-level in-flight refresh mutex to prevent concurrent refresh token collisions
+// Module-level in-flight refresh mutex to prevent local container concurrent refresh token collisions
 const inFlightRefreshes = new Map();
 
-async function refreshWithConcurrencyLock(lockKey, refreshFn) {
+/**
+ * Distributed concurrency mutex using Redis SET NX EX, backed by in-memory deduplication.
+ * Prevents single-use refresh token collisions across multiple serverless containers.
+ */
+async function refreshWithConcurrencyLock(lockKey, refreshFn, getLatestTokenFn) {
+  const redisLockKey = `pulse:lock:refresh:${lockKey}`;
+
+  // 1. Fast in-process check for local container deduplication
   if (inFlightRefreshes.has(lockKey)) {
-    console.log(`⏳ Token Broker: Refresh already in-flight for "${lockKey}". Awaiting active refresh...`);
+    console.log(`⏳ Token Broker: Local refresh already in-flight for "${lockKey}". Awaiting active promise...`);
     return await inFlightRefreshes.get(lockKey);
   }
 
   const promise = (async () => {
+    let hasRedisLock = false;
     try {
+      if (redisClient?.isOpen) {
+        // Try to acquire distributed Redis lock (valid for 20 seconds)
+        const acquired = await redisClient.set(redisLockKey, "locked", { NX: true, EX: 20 });
+        if (!acquired) {
+          console.log(`🔒 Token Broker: Another worker holds distributed lock for "${lockKey}". Waiting for fresh token...`);
+          // Spin-wait for up to 6 seconds for the active worker to finish and persist fresh tokens
+          for (let attempt = 0; attempt < 24; attempt++) {
+            await new Promise(r => setTimeout(r, 250));
+            if (getLatestTokenFn) {
+              const fresh = await getLatestTokenFn();
+              if (fresh && fresh.expiresIn >= 300) {
+                console.log(`✅ Token Broker: Obtained fresh token refreshed by concurrent worker for "${lockKey}".`);
+                return fresh;
+              }
+            }
+          }
+          console.warn(`⚠️ Token Broker: Distributed lock wait timeout for "${lockKey}". Proceeding with local refresh attempt.`);
+        } else {
+          hasRedisLock = true;
+        }
+      }
+
       return await refreshFn();
     } finally {
+      if (hasRedisLock && redisClient?.isOpen) {
+        try { await redisClient.del(redisLockKey); } catch (_) {}
+      }
       inFlightRefreshes.delete(lockKey);
     }
   })();
@@ -173,6 +207,16 @@ export default async function handler(req, res) {
               expiresIn: refreshed.expiresIn
             };
           }
+        }, async () => {
+          if (record.isSharedGrant) {
+            const latestShared = await getSharedXeroGrant();
+            const latestExpiresIn = Math.max(0, Math.round(((latestShared?.expiresAt || 0) - Date.now()) / 1000));
+            return latestShared?.tokens?.accessToken ? { accessToken: latestShared.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+          } else {
+            const latestDedicated = await getIntegrationTokens({ clientKey: record.clientKey, tool: "xero" });
+            const latestExpiresIn = Math.max(0, Math.round(((latestDedicated?.expiresAt || 0) - Date.now()) / 1000));
+            return latestDedicated?.tokens?.accessToken ? { accessToken: latestDedicated.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+          }
         });
 
         accessToken = refreshResult.accessToken;
@@ -198,27 +242,37 @@ export default async function handler(req, res) {
         });
       }
     } else if (isExpiringSoon && (tool === "quickbooks" || tool === "qb")) {
-      console.log(`🔄 Token Broker: QuickBooks token for ${record.clientKey} is expiring in ${expiresIn}s. Triggering automatic refresh...`);
-
-      if (!record.tokens.refreshToken) {
-        return res.status(401).json({
-          success: false,
-          error: "No refresh token available to refresh QuickBooks connection. Please re-authorize in Pulse.",
-          reconnectRequired: true
-        });
-      }
-
+      const lockKey = `quickbooks:${record.clientKey}`;
       try {
-        const refreshed = await refreshQBTokens(record.tokens.refreshToken);
-        await updateRefreshedTokens({
-          clientKey: record.clientKey,
-          tool: "quickbooks",
-          tokens: refreshed
-        });
-
-        accessToken = refreshed.accessToken;
-        expiresIn = refreshed.expiresIn;
-        console.log(`✅ Token Broker: Successfully refreshed QuickBooks token for ${record.clientKey}. Fresh for ${Math.round(expiresIn / 60)}m.`);
+        const refreshResult = await refreshWithConcurrencyLock(
+          lockKey,
+          async () => {
+            console.log(`🔄 Token Broker: QuickBooks token for ${record.clientKey} is expiring in ${expiresIn}s. Triggering automatic refresh...`);
+            const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "quickbooks" });
+            const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+            if (latestExpiresIn >= 300) {
+              return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
+            }
+            if (!latest?.tokens?.refreshToken) {
+              throw new Error("No refresh token available to refresh QuickBooks connection. Please re-authorize in Pulse.");
+            }
+            const refreshed = await refreshQBTokens(latest.tokens.refreshToken);
+            await updateRefreshedTokens({
+              clientKey: record.clientKey,
+              tool: "quickbooks",
+              tokens: refreshed
+            });
+            console.log(`✅ Token Broker: Successfully refreshed QuickBooks token for ${record.clientKey}. Fresh for ${Math.round(refreshed.expiresIn / 60)}m.`);
+            return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
+          },
+          async () => {
+            const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "quickbooks" });
+            const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+            return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+          }
+        );
+        accessToken = refreshResult.accessToken;
+        expiresIn = refreshResult.expiresIn;
       } catch (refreshErr) {
         console.error(`🚨 Token Broker: QuickBooks refresh failed for ${record.clientKey}:`, refreshErr.message);
         try {
@@ -236,16 +290,33 @@ export default async function handler(req, res) {
       }
     } else if (isExpiringSoon && tool === "pipedrive") {
       if (record.tokens.refreshToken) {
+        const lockKey = `pipedrive:${record.clientKey}`;
         try {
-          const refreshed = await refreshPipedriveTokens(record.tokens.refreshToken);
-          await updateRefreshedTokens({
-            clientKey: record.clientKey,
-            tool: "pipedrive",
-            tokens: refreshed
-          });
-          accessToken = refreshed.accessToken;
-          expiresIn = refreshed.expiresIn;
-          console.log(`✅ Token Broker: Successfully refreshed Pipedrive token for ${record.clientKey}.`);
+          const refreshResult = await refreshWithConcurrencyLock(
+            lockKey,
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "pipedrive" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              if (latestExpiresIn >= 300) {
+                return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
+              }
+              const refreshed = await refreshPipedriveTokens(latest?.tokens?.refreshToken || record.tokens.refreshToken);
+              await updateRefreshedTokens({
+                clientKey: record.clientKey,
+                tool: "pipedrive",
+                tokens: refreshed
+              });
+              console.log(`✅ Token Broker: Successfully refreshed Pipedrive token for ${record.clientKey}.`);
+              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
+            },
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "pipedrive" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+            }
+          );
+          accessToken = refreshResult.accessToken;
+          expiresIn = refreshResult.expiresIn;
         } catch (refreshErr) {
           console.error(`🚨 Token Broker: Pipedrive refresh failed for ${record.clientKey}:`, refreshErr.message);
           if (refreshErr.message.includes("invalid_grant") || refreshErr.message.includes("unauthorized") || refreshErr.message.includes("revoked")) {
@@ -260,16 +331,33 @@ export default async function handler(req, res) {
       }
     } else if (isExpiringSoon && tool === "monday") {
       if (record.tokens.refreshToken) {
+        const lockKey = `monday:${record.clientKey}`;
         try {
-          const refreshed = await refreshMondayTokens(record.tokens.refreshToken);
-          await updateRefreshedTokens({
-            clientKey: record.clientKey,
-            tool: "monday",
-            tokens: refreshed
-          });
-          accessToken = refreshed.accessToken;
-          expiresIn = refreshed.expiresIn;
-          console.log(`✅ Token Broker: Successfully refreshed Monday.com token for ${record.clientKey}.`);
+          const refreshResult = await refreshWithConcurrencyLock(
+            lockKey,
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "monday" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              if (latestExpiresIn >= 300) {
+                return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
+              }
+              const refreshed = await refreshMondayTokens(latest?.tokens?.refreshToken || record.tokens.refreshToken);
+              await updateRefreshedTokens({
+                clientKey: record.clientKey,
+                tool: "monday",
+                tokens: refreshed
+              });
+              console.log(`✅ Token Broker: Successfully refreshed Monday.com token for ${record.clientKey}.`);
+              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
+            },
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "monday" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+            }
+          );
+          accessToken = refreshResult.accessToken;
+          expiresIn = refreshResult.expiresIn;
         } catch (refreshErr) {
           console.error(`🚨 Token Broker: Monday refresh failed for ${record.clientKey}:`, refreshErr.message);
           if (refreshErr.message.includes("invalid_grant") || refreshErr.message.includes("unauthorized") || refreshErr.message.includes("revoked")) {
@@ -284,16 +372,33 @@ export default async function handler(req, res) {
       }
     } else if (isExpiringSoon && tool === "capsule") {
       if (record.tokens.refreshToken) {
+        const lockKey = `capsule:${record.clientKey}`;
         try {
-          const refreshed = await refreshCapsuleTokens(record.tokens.refreshToken);
-          await updateRefreshedTokens({
-            clientKey: record.clientKey,
-            tool: "capsule",
-            tokens: refreshed
-          });
-          accessToken = refreshed.accessToken;
-          expiresIn = refreshed.expiresIn;
-          console.log(`✅ Token Broker: Successfully refreshed Capsule CRM token for ${record.clientKey}.`);
+          const refreshResult = await refreshWithConcurrencyLock(
+            lockKey,
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "capsule" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              if (latestExpiresIn >= 300) {
+                return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
+              }
+              const refreshed = await refreshCapsuleTokens(latest?.tokens?.refreshToken || record.tokens.refreshToken);
+              await updateRefreshedTokens({
+                clientKey: record.clientKey,
+                tool: "capsule",
+                tokens: refreshed
+              });
+              console.log(`✅ Token Broker: Successfully refreshed Capsule CRM token for ${record.clientKey}.`);
+              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
+            },
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "capsule" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+            }
+          );
+          accessToken = refreshResult.accessToken;
+          expiresIn = refreshResult.expiresIn;
         } catch (refreshErr) {
           console.error(`🚨 Token Broker: Capsule refresh failed for ${record.clientKey}:`, refreshErr.message);
           if (refreshErr.message.includes("invalid_grant") || refreshErr.message.includes("unauthorized") || refreshErr.message.includes("revoked")) {
@@ -308,16 +413,33 @@ export default async function handler(req, res) {
       }
     } else if (isExpiringSoon && tool === "close") {
       if (record.tokens.refreshToken) {
+        const lockKey = `close:${record.clientKey}`;
         try {
-          const refreshed = await refreshCloseTokens(record.tokens.refreshToken);
-          await updateRefreshedTokens({
-            clientKey: record.clientKey,
-            tool: "close",
-            tokens: refreshed
-          });
-          accessToken = refreshed.accessToken;
-          expiresIn = refreshed.expiresIn;
-          console.log(`✅ Token Broker: Successfully refreshed Close CRM token for ${record.clientKey}.`);
+          const refreshResult = await refreshWithConcurrencyLock(
+            lockKey,
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "close" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              if (latestExpiresIn >= 300) {
+                return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
+              }
+              const refreshed = await refreshCloseTokens(latest?.tokens?.refreshToken || record.tokens.refreshToken);
+              await updateRefreshedTokens({
+                clientKey: record.clientKey,
+                tool: "close",
+                tokens: refreshed
+              });
+              console.log(`✅ Token Broker: Successfully refreshed Close CRM token for ${record.clientKey}.`);
+              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
+            },
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "close" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+            }
+          );
+          accessToken = refreshResult.accessToken;
+          expiresIn = refreshResult.expiresIn;
         } catch (refreshErr) {
           console.error(`🚨 Token Broker: Close refresh failed for ${record.clientKey}:`, refreshErr.message);
           if (refreshErr.message.includes("invalid_grant") || refreshErr.message.includes("unauthorized") || refreshErr.message.includes("revoked")) {
@@ -332,16 +454,33 @@ export default async function handler(req, res) {
       }
     } else if (isExpiringSoon && tool === "hubspot") {
       if (record.tokens.refreshToken) {
+        const lockKey = `hubspot:${record.clientKey}`;
         try {
-          const refreshed = await refreshHubSpotTokens(record.tokens.refreshToken);
-          await updateRefreshedTokens({
-            clientKey: record.clientKey,
-            tool: "hubspot",
-            tokens: refreshed
-          });
-          accessToken = refreshed.accessToken;
-          expiresIn = refreshed.expiresIn;
-          console.log(`✅ Token Broker: Successfully refreshed HubSpot token for ${record.clientKey}.`);
+          const refreshResult = await refreshWithConcurrencyLock(
+            lockKey,
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "hubspot" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              if (latestExpiresIn >= 300) {
+                return { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn };
+              }
+              const refreshed = await refreshHubSpotTokens(latest?.tokens?.refreshToken || record.tokens.refreshToken);
+              await updateRefreshedTokens({
+                clientKey: record.clientKey,
+                tool: "hubspot",
+                tokens: refreshed
+              });
+              console.log(`✅ Token Broker: Successfully refreshed HubSpot token for ${record.clientKey}.`);
+              return { accessToken: refreshed.accessToken, expiresIn: refreshed.expiresIn };
+            },
+            async () => {
+              const latest = await getIntegrationTokens({ clientKey: record.clientKey, tool: "hubspot" });
+              const latestExpiresIn = Math.max(0, Math.round(((latest?.expiresAt || 0) - Date.now()) / 1000));
+              return latest?.tokens?.accessToken ? { accessToken: latest.tokens.accessToken, expiresIn: latestExpiresIn } : null;
+            }
+          );
+          accessToken = refreshResult.accessToken;
+          expiresIn = refreshResult.expiresIn;
         } catch (refreshErr) {
           console.error(`🚨 Token Broker: HubSpot refresh failed for ${record.clientKey}:`, refreshErr.message);
           if (refreshErr.message.includes("invalid_grant") || refreshErr.message.includes("unauthorized") || refreshErr.message.includes("revoked")) {

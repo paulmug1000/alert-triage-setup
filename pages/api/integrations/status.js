@@ -10,7 +10,7 @@
  * - Single client mode: ?clientKey=...&masterSheetId=... for individual client status.
  */
 
-import { getIntegrationStatus, getSharedXeroGrant } from "../../../services/vaultService.js";
+import { getIntegrationStatus, getSharedXeroGrant, INTEGRATIONS_STATUS_CACHE_KEY } from "../../../services/vaultService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { DEFAULT_AC_SHEET_ID, matchesClientName } from "../../../services/userPermissions.js";
 import { getClientSetupConfig, revalidateClientsSetupInBackground } from "../../../services/setupService.js";
@@ -36,22 +36,31 @@ export default async function handler(req, res) {
     }
 
     const now = Date.now();
-    const cacheKey = "pulse:integrations:status_all";
+    const cacheKey = INTEGRATIONS_STATUS_CACHE_KEY;
 
-    // Fast cache check
-    if (!forceRefresh) {
+    if (forceRefresh) {
+      _allIntegrationsStatusCache = null;
+      _allIntegrationsStatusCachedAt = 0;
+      if (redisClient?.isOpen) {
+        try { await redisClient.del(cacheKey); } catch (e) {}
+      }
+    } else {
       let cachedData = null;
-      if (_allIntegrationsStatusCache && (now - _allIntegrationsStatusCachedAt < 60000)) {
-        cachedData = _allIntegrationsStatusCache;
-      } else if (redisClient?.isOpen) {
+      if (redisClient?.isOpen) {
         try {
           const raw = await redisClient.get(cacheKey);
           if (raw) {
             cachedData = JSON.parse(raw);
             _allIntegrationsStatusCache = cachedData;
             _allIntegrationsStatusCachedAt = now;
+          } else {
+            // Redis key is deleted (invalidated) -> purge in-memory cache
+            _allIntegrationsStatusCache = null;
+            _allIntegrationsStatusCachedAt = 0;
           }
         } catch (e) {}
+      } else if (_allIntegrationsStatusCache && (now - _allIntegrationsStatusCachedAt < 60000)) {
+        cachedData = _allIntegrationsStatusCache;
       }
 
       if (cachedData) {
@@ -117,9 +126,9 @@ export default async function handler(req, res) {
               autoUpdatesRow: c.autoUpdatesRow,
               rowNumber: c.autoUpdatesRow,
               accountingTool: cfg.accountingTool || "None",
-              accountingStatus: cfg.accountingStatus || { connected: false, tool: cfg.accountingTool },
+              accountingStatus: integrations[String(cfg.accountingTool || "").toLowerCase()] || { connected: false, tool: cfg.accountingTool },
               crmTool: cfg.crmTool || "None",
-              crmStatus: cfg.crmStatus || { connected: false, tool: cfg.crmTool },
+              crmStatus: integrations[String(cfg.crmTool || "").toLowerCase()] || { connected: false, tool: cfg.crmTool },
               crmDrives: cfg.crmDrives || "NA",
               setupMode: Boolean(cfg.setupMode),
               isSetupMode: Boolean(cfg.setupMode),

@@ -9,9 +9,14 @@ export default function SetupView({
   initialClientName = "",
   onSelectClient,
   user,
+  isAdmin,
   managedClient,
   onClearManagedClient
 }) {
+  const isUserAdmin = Boolean(
+    !user?.isReadOnly && (isAdmin || user?.isAdmin || user?.role === "Admin")
+  );
+
   const [activeSheetEditor, setActiveSheetEditor] = useState(null); // 'budget' | 'contractors' | 'outgoings' | null
   const [isOnboardModalOpen, setIsOnboardModalOpen] = useState(false);
   const [showChecklistHistory, setShowChecklistHistory] = useState(false);
@@ -222,29 +227,31 @@ export default function SetupView({
             </p>
           </div>
 
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button
-              type="button"
-              onClick={() => setIsOnboardModalOpen(true)}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "8px",
-                padding: "10px 18px",
-                borderRadius: "8px",
-                border: "none",
-                background: "#023f98",
-                color: "#FFFFFF",
-                fontSize: "13px",
-                fontWeight: "700",
-                cursor: "pointer",
-                boxShadow: "0 2px 4px rgba(2, 63, 152, 0.2)"
-              }}
-            >
-              <span>➕</span>
-              <span>Onboard New Client</span>
-            </button>
-          </div>
+          {isUserAdmin && (
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setIsOnboardModalOpen(true)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  padding: "10px 18px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#023f98",
+                  color: "#FFFFFF",
+                  fontSize: "13px",
+                  fontWeight: "700",
+                  cursor: "pointer",
+                  boxShadow: "0 2px 4px rgba(2, 63, 152, 0.2)"
+                }}
+              >
+                <span>➕</span>
+                <span>Onboard New Client</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Stats Row */}
@@ -463,11 +470,13 @@ export default function SetupView({
         </div>
 
         {/* Provision Modal */}
-        <OnboardClientModal
-          isOpen={isOnboardModalOpen}
-          onClose={() => setIsOnboardModalOpen(false)}
-          onClientCreated={handleClientProvisioned}
-        />
+        {isUserAdmin && (
+          <OnboardClientModal
+            isOpen={isOnboardModalOpen}
+            onClose={() => setIsOnboardModalOpen(false)}
+            onClientCreated={handleClientProvisioned}
+          />
+        )}
       </div>
     );
   }
@@ -554,26 +563,28 @@ export default function SetupView({
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => setIsOnboardModalOpen(true)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "8px 14px",
-              borderRadius: "8px",
-              border: "none",
-              background: "#023f98",
-              color: "#FFFFFF",
-              fontSize: "13px",
-              fontWeight: "700",
-              cursor: "pointer"
-            }}
-          >
-            <span>➕</span>
-            <span>New Client</span>
-          </button>
+          {isUserAdmin && (
+            <button
+              type="button"
+              onClick={() => setIsOnboardModalOpen(true)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "8px 14px",
+                borderRadius: "8px",
+                border: "none",
+                background: "#023f98",
+                color: "#FFFFFF",
+                fontSize: "13px",
+                fontWeight: "700",
+                cursor: "pointer"
+              }}
+            >
+              <span>➕</span>
+              <span>New Client</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1042,11 +1053,13 @@ export default function SetupView({
       )}
 
       {/* Provision Modal */}
-      <OnboardClientModal
-        isOpen={isOnboardModalOpen}
-        onClose={() => setIsOnboardModalOpen(false)}
-        onClientCreated={handleClientProvisioned}
-      />
+      {isUserAdmin && (
+        <OnboardClientModal
+          isOpen={isOnboardModalOpen}
+          onClose={() => setIsOnboardModalOpen(false)}
+          onClientCreated={handleClientProvisioned}
+        />
+      )}
     </div>
   );
 }

@@ -25,8 +25,8 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Active session required." });
   }
 
-  // Provisioning is an admin-level operation
-  if (!sessionUser.isAdmin && sessionUser.role !== "Admin") {
+  // Provisioning is an admin-level operation (never allowed in read-only mode)
+  if (sessionUser.isReadOnly || (!sessionUser.isAdmin && sessionUser.role !== "Admin")) {
     return res.status(403).json({ success: false, error: "Only administrators can provision new client systems." });
   }
 

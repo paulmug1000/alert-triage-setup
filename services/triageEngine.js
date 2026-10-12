@@ -1956,60 +1956,59 @@ export async function handleRunFlagSweep(req, res, sheets) {
                 let situationChanged = false;
                 const isLegacyMatch = exRow.fingerprintHash !== alert._fingerprint && exRow.fingerprintHash === alert._legacyFingerprint;
 
-                if (exRow.status === "accepted") {
-                  // 1. autolog_error: newer timestamp or higher occurrence count (or unverified legacy snapshot)
-                  if (item.alertType === "autolog_error") {
-                    if (isLegacyMatch && !oldSnap.timestamp && !oldSnap.occurrenceCount) {
-                      situationChanged = true;
-                    } else {
-                      const hasNewTimestamp = alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp;
-                      const hasMoreOccurrences = alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount);
-                      if (hasNewTimestamp || hasMoreOccurrences) situationChanged = true;
-                    }
+                // 1. autolog_error: newer timestamp or higher occurrence count (or unverified legacy snapshot)
+                if (item.alertType === "autolog_error") {
+                  if (isLegacyMatch && !oldSnap.timestamp && !oldSnap.occurrenceCount) {
+                    situationChanged = true;
+                  } else {
+                    const hasNewTimestamp = alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp;
+                    const hasMoreOccurrences = alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount);
+                    if (hasNewTimestamp || hasMoreOccurrences) situationChanged = true;
                   }
-                  // 2. infinite_loop: newer oscillation timestamp or higher count (or unverified legacy snapshot)
-                  else if (item.alertType === "infinite_loop") {
-                    if (isLegacyMatch && !oldSnap.timestamp && !oldSnap.occurrenceCount) {
-                      situationChanged = true;
-                    } else {
-                      if (alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp) situationChanged = true;
-                      if (alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount)) situationChanged = true;
-                    }
+                }
+                // 2. infinite_loop: newer oscillation timestamp or higher count (or unverified legacy snapshot)
+                else if (item.alertType === "infinite_loop") {
+                  if (isLegacyMatch && !oldSnap.timestamp && !oldSnap.occurrenceCount) {
+                    situationChanged = true;
+                  } else {
+                    if (alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp) situationChanged = true;
+                    if (alert.occurrenceCount && oldSnap.occurrenceCount && Number(alert.occurrenceCount) > Number(oldSnap.occurrenceCount)) situationChanged = true;
                   }
-                  // 3. Informational alerts: new AutoLog entry timestamp (or unverified legacy snapshot)
-                  else if (item.category === "info") {
-                    if (isLegacyMatch && !oldSnap.timestamp) {
-                      situationChanged = true;
-                    } else {
-                      if (alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp) situationChanged = true;
-                    }
+                }
+                // 3. Informational alerts: new AutoLog entry timestamp (or unverified legacy snapshot)
+                else if (item.category === "info") {
+                  if (isLegacyMatch && !oldSnap.timestamp) {
+                    situationChanged = true;
+                  } else {
+                    if (alert.timestamp && oldSnap.timestamp && alert.timestamp !== oldSnap.timestamp) situationChanged = true;
                   }
-                  // 4. Proactive state alerts: key figures changed compared to acknowledged snapshot
-                  else if (item.category === "proactive") {
-                    const hasFiguresInSnapshot = oldSnap.revenue !== undefined ||
-                      oldSnap.totalInvoiced !== undefined ||
-                      oldSnap.directCosts !== undefined ||
-                      oldSnap.totalExpenses !== undefined ||
-                      oldSnap.uninvoicedAmount !== undefined ||
-                      oldSnap.unreceivedAmount !== undefined ||
-                      oldSnap.childExp !== undefined ||
-                      oldSnap.expectedForRow !== undefined;
+                }
+                // 4. Proactive state alerts: key figures changed compared to acknowledged snapshot (evaluated for accepted state)
+                else if (item.category === "proactive" && exRow.status === "accepted") {
+                  const hasFiguresInSnapshot = oldSnap.revenue !== undefined ||
+                    oldSnap.totalInvoiced !== undefined ||
+                    oldSnap.directCosts !== undefined ||
+                    oldSnap.totalExpenses !== undefined ||
+                    oldSnap.uninvoicedAmount !== undefined ||
+                    oldSnap.unreceivedAmount !== undefined ||
+                    oldSnap.childExp !== undefined ||
+                    oldSnap.expectedForRow !== undefined;
 
-                    if (isLegacyMatch && !hasFiguresInSnapshot) {
-                      // Safety-First: Legacy row has no snapshot figures to verify against.
-                      // Revive so the user can verify rather than silently suppressing a potentially changed issue.
-                      situationChanged = true;
-                    } else {
-                      if (alert.revenue !== undefined && oldSnap.revenue !== undefined && String(alert.revenue) !== String(oldSnap.revenue)) situationChanged = true;
-                      if (alert.totalInvoiced !== undefined && oldSnap.totalInvoiced !== undefined && String(alert.totalInvoiced) !== String(oldSnap.totalInvoiced)) situationChanged = true;
-                      if (alert.directCosts !== undefined && oldSnap.directCosts !== undefined && String(alert.directCosts) !== String(oldSnap.directCosts)) situationChanged = true;
-                      if (alert.totalExpenses !== undefined && oldSnap.totalExpenses !== undefined && String(alert.totalExpenses) !== String(oldSnap.totalExpenses)) situationChanged = true;
-                      if (alert.uninvoicedAmount !== undefined && oldSnap.uninvoicedAmount !== undefined && String(alert.uninvoicedAmount) !== String(oldSnap.uninvoicedAmount)) situationChanged = true;
-                      if (alert.unreceivedAmount !== undefined && oldSnap.unreceivedAmount !== undefined && String(alert.unreceivedAmount) !== String(oldSnap.unreceivedAmount)) situationChanged = true;
-                      if (alert.childExp !== undefined && oldSnap.childExp !== undefined && String(alert.childExp) !== String(oldSnap.childExp)) situationChanged = true;
-                      if (alert.expectedForRow !== undefined && oldSnap.expectedForRow !== undefined && String(alert.expectedForRow) !== String(oldSnap.expectedForRow)) situationChanged = true;
-                    }
+                  if (isLegacyMatch && !hasFiguresInSnapshot) {
+                    // Safety-First: Legacy row has no snapshot figures to verify against.
+                    // Revive so the user can verify rather than silently suppressing a potentially changed issue.
+                    situationChanged = true;
+                  } else {
+                    if (alert.revenue !== undefined && oldSnap.revenue !== undefined && String(alert.revenue) !== String(oldSnap.revenue)) situationChanged = true;
+                    if (alert.totalInvoiced !== undefined && oldSnap.totalInvoiced !== undefined && String(alert.totalInvoiced) !== String(oldSnap.totalInvoiced)) situationChanged = true;
+                    if (alert.directCosts !== undefined && oldSnap.directCosts !== undefined && String(alert.directCosts) !== String(oldSnap.directCosts)) situationChanged = true;
+                    if (alert.totalExpenses !== undefined && oldSnap.totalExpenses !== undefined && String(alert.totalExpenses) !== String(oldSnap.totalExpenses)) situationChanged = true;
+                    if (alert.uninvoicedAmount !== undefined && oldSnap.uninvoicedAmount !== undefined && String(alert.uninvoicedAmount) !== String(oldSnap.uninvoicedAmount)) situationChanged = true;
+                    if (alert.unreceivedAmount !== undefined && oldSnap.unreceivedAmount !== undefined && String(alert.unreceivedAmount) !== String(oldSnap.unreceivedAmount)) situationChanged = true;
+                    if (alert.childExp !== undefined && oldSnap.childExp !== undefined && String(alert.childExp) !== String(oldSnap.childExp)) situationChanged = true;
+                    if (alert.expectedForRow !== undefined && oldSnap.expectedForRow !== undefined && String(alert.expectedForRow) !== String(oldSnap.expectedForRow)) situationChanged = true;
                   }
+                }
 
                   if (situationChanged) {
                     const clientMeta = clientMetaMap.get(item.clientName);
@@ -2029,7 +2028,6 @@ export async function handleRunFlagSweep(req, res, sheets) {
                     console.log(`  🔄 REVIVED accepted alert for ${item.clientName} (${item.alertType}) due to changed or unverified situation: ${alert._fingerprint} -> ${newStatus}`);
                     continue;
                   }
-                }
 
                 if (exRow.fingerprintHash !== alert._fingerprint) {
                   await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {

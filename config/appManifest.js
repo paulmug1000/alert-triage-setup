@@ -7,7 +7,7 @@
 export const APP_MANIFEST = {
   name: "Pulse Management Ecosystem",
   shortName: "Pulse",
-  version: "4.82",
+  version: "4.83",
   areas: {
     pma: {
       id: "pma",

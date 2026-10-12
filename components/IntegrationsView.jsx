@@ -902,7 +902,7 @@ export default function IntegrationsView({
 
                   <div style={{ marginTop: "16px" }}>
                     <Link
-                      href="/PMA?nav=setup"
+                      href="/pma?nav=setup"
                       title="Adjust configured tools in PMA Setup"
                       style={{
                         fontSize: "12px",
@@ -980,7 +980,13 @@ export default function IntegrationsView({
                     <div style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.5px", color: "#64748b", fontWeight: "700", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
                       <span>👥</span>
                       <span>CRM Tool</span>
-                      <span style={{ color: "#94a3b8" }}>({client.crmTool || "None"})</span>
+                      <span style={{ color: "#94a3b8" }}>
+                        ({String(client.crmTool || "").toLowerCase().includes("sheet")
+                          ? "Google Sheet"
+                          : String(client.crmTool || "").toLowerCase().includes("excel")
+                          ? "Excel"
+                          : client.crmTool || "None"})
+                      </span>
                     </div>
 
                     {CRM_TOOLS_CONFIG[crmToolType] ? (
@@ -1692,6 +1698,106 @@ function CrmCard({
 // ============================================================================
 function EmptyToolCard({ category, configuredName }) {
   const displayVal = configuredName || "None";
+  const norm = String(configuredName || "").trim().toLowerCase();
+  const isOAuthTool = ["clickup", "close", "capsule", "hubspot", "monday", "pipedrive", "xero", "quickbooks"].some((t) => norm.includes(t));
+  const isSpreadsheetSource = norm && norm !== "none" && !isOAuthTool;
+
+  if (isSpreadsheetSource) {
+    const isGoogle = norm.includes("sheet");
+    const isExcel = norm.includes("excel");
+    const toolTitle = isGoogle ? "Google Sheet" : isExcel ? "Excel" : (configuredName || "Spreadsheet");
+    const iconText = isGoogle ? "GS" : isExcel ? "XL" : "📊";
+
+    return (
+      <div
+        style={{
+          background: "#f8fafc",
+          borderRadius: "14px",
+          border: "1px dashed #cbd5e1",
+          padding: "18px",
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "space-between",
+          height: "calc(100% - 24px)",
+          boxSizing: "border-box"
+        }}
+      >
+        <div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <div
+                style={{
+                  width: "36px",
+                  height: "36px",
+                  borderRadius: "8px",
+                  background: "#e2e8f0",
+                  color: "#475569",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "14px",
+                  fontWeight: "700"
+                }}
+              >
+                {iconText}
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#1e293b" }}>
+                  {toolTitle}
+                </h3>
+                <span style={{ fontSize: "11.5px", color: "#64748b" }}>
+                  Spreadsheet source (no 3rd-party API required)
+                </span>
+              </div>
+            </div>
+            <span
+              style={{
+                fontSize: "11px",
+                fontWeight: "600",
+                padding: "2px 8px",
+                borderRadius: "20px",
+                background: "#e2e8f0",
+                color: "#475569"
+              }}
+            >
+              Spreadsheet
+            </span>
+          </div>
+
+          <p style={{ fontSize: "12.5px", color: "#64748b", lineHeight: "1.45", margin: "0 0 14px 0" }}>
+            This client uses {toolTitle} as their {category.toLowerCase()} data source. No third-party OAuth connection is required.
+          </p>
+        </div>
+
+        <div>
+          <Link
+            href="/pma?nav=setup"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "6px",
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "8px 12px",
+              borderRadius: "7px",
+              background: "#ffffff",
+              color: "#334155",
+              border: "1px solid #cbd5e1",
+              fontSize: "12px",
+              fontWeight: "600",
+              textDecoration: "none",
+              cursor: "pointer"
+            }}
+          >
+            <span>⚙️</span>
+            <span>Configure {category} Tool in PMA Setup</span>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -1742,7 +1848,7 @@ function EmptyToolCard({ category, configuredName }) {
 
       <div>
         <Link
-          href="/PMA?nav=setup"
+          href="/pma?nav=setup"
           style={{
             display: "inline-flex",
             alignItems: "center",

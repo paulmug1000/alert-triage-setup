@@ -436,7 +436,16 @@ export default function HomeView({
                     </div>
                     <div style={{ fontSize: "12px", color: "#92400E", lineHeight: "1.5" }}>
                       <div>Accounting: {accTool} {statusObj.accountingStatus?.connected ? "● Connected" : accTool !== "None" ? "○ Needs Connection" : ""}</div>
-                      <div>CRM: {crmTool} {statusObj.crmStatus?.connected ? "● Connected" : crmTool !== "None" ? "○ Needs Connection" : ""}</div>
+                      <div>
+                        CRM: {String(crmTool || "").toLowerCase().includes("sheet") ? "Google Sheet" : String(crmTool || "").toLowerCase().includes("excel") ? "Excel" : crmTool}{" "}
+                        {statusObj.crmStatus?.connected
+                          ? "● Connected"
+                          : ["clickup", "close", "capsule", "hubspot", "monday", "pipedrive"].some((t) => String(crmTool || "").toLowerCase().includes(t))
+                          ? "○ Needs Connection"
+                          : crmTool !== "None"
+                          ? "(Spreadsheet source)"
+                          : ""}
+                      </div>
                     </div>
                   </div>
 
@@ -531,6 +540,9 @@ export default function HomeView({
                   const crmTool = statusObj.crmTool || "None";
                   const accConnected = statusObj.accountingStatus?.connected;
                   const crmConnected = statusObj.crmStatus?.connected;
+                  const normCrm = String(crmTool || "").trim().toLowerCase();
+                  const isThirdPartyCrm = ["clickup", "close", "capsule", "hubspot", "monday", "pipedrive"].some((t) => normCrm.includes(t));
+                  const displayCrm = normCrm.includes("sheet") ? "Google Sheet" : normCrm.includes("excel") ? "Excel" : crmTool;
 
                   return (
                     <tr
@@ -641,24 +653,44 @@ export default function HomeView({
 
                           {/* CRM badge */}
                           {crmTool !== "None" ? (
-                            <span
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "4px",
-                                padding: "2px 7px",
-                                borderRadius: "4px",
-                                fontSize: "11px",
-                                fontWeight: "600",
-                                background: crmConnected ? "#ECFDF5" : "#FEF2F2",
-                                color: crmConnected ? "#047857" : "#B91C1C",
-                                border: `1px solid ${crmConnected ? "#A7F3D0" : "#FECACA"}`,
-                              }}
-                              title={`CRM: ${crmTool} (${crmConnected ? "Connected" : "Disconnected"})`}
-                            >
-                              <span>{crmConnected ? "●" : "○"}</span>
-                              <span>{crmTool}</span>
-                            </span>
+                            isThirdPartyCrm ? (
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  padding: "2px 7px",
+                                  borderRadius: "4px",
+                                  fontSize: "11px",
+                                  fontWeight: "600",
+                                  background: crmConnected ? "#ECFDF5" : "#FEF2F2",
+                                  color: crmConnected ? "#047857" : "#B91C1C",
+                                  border: `1px solid ${crmConnected ? "#A7F3D0" : "#FECACA"}`,
+                                }}
+                                title={`CRM: ${displayCrm} (${crmConnected ? "Connected" : "Disconnected"})`}
+                              >
+                                <span>{crmConnected ? "●" : "○"}</span>
+                                <span>{displayCrm}</span>
+                              </span>
+                            ) : (
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  padding: "2px 7px",
+                                  borderRadius: "4px",
+                                  fontSize: "11px",
+                                  fontWeight: "600",
+                                  background: "#F1F5F9",
+                                  color: "#475569",
+                                  border: "1px solid #CBD5E1",
+                                }}
+                                title={`CRM: ${displayCrm} (Spreadsheet source)`}
+                              >
+                                <span>{displayCrm}</span>
+                              </span>
+                            )
                           ) : null}
                         </div>
                       </td>

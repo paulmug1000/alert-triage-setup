@@ -680,7 +680,7 @@ export default function ToolsView({
   };
 
   return (
-    <div style={{ padding: "20px", maxWidth: "900px" }}>
+    <div style={{ padding: "20px 24px", width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>
       {eomEditingNotelet && (() => {
         const [y, m] = eomMonthKey.split("-").map(Number);
         const monthLabel = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
@@ -728,7 +728,7 @@ export default function ToolsView({
 
       {!managedClient && (
         <div className="eom-subview-tabs">
-          {[["overview", "Overview"], ["payroll", "Payroll Import"], ["time", "Time Import"], ["cash", "Cash Balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push Outgoings"]].map(([key, label]) => (
+          {[["overview", "Overview"], ["payroll", "Payroll import"], ["time", "Time import"], ["cash", "Cash balances"], ["cashflow_recon", "Cashflow recon"], ["push_outgoings", "Push outgoings"]].map(([key, label]) => (
             <button key={key} onClick={() => setEomSubView(key)}
               style={{
                 padding: "8px 16px", background: "none", border: "none",
@@ -1477,7 +1477,7 @@ export default function ToolsView({
                             marginLeft: "8px", padding: "2px 8px", background: "#eef4ff", border: "1px solid #cfe0ff", borderRadius: "10px",
                             color: "#0066cc", cursor: eomBackupRunning === t.taskId ? "default" : "pointer", fontSize: "10px", fontWeight: "600"
                           }}>
-                            {eomBackupRunning === t.taskId ? "Creating..." : `Create Backup`}
+                          {eomBackupRunning === t.taskId ? "Creating..." : `Create Backup`}
                         </button>
                       )}
                       {t.linkedFunction === "cash_balance" && (

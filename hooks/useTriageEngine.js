@@ -41,7 +41,15 @@ export function useTriageEngine({
     return (alerts || []).filter(a => isUserAuthorizedForClient(user, a.clientName));
   }, [user]);
 
-  const [clientsWithFlags, setClientsWithFlags] = useState([]);
+  const [clientsWithFlags, setClientsWithFlags] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_clients_with_flags");
+        return stored ? JSON.parse(stored) : [];
+      } catch { return []; }
+    }
+    return [];
+  });
 
   useEffect(() => {
     setSessionId("");
@@ -190,7 +198,11 @@ export function useTriageEngine({
           scopedProactiveAlerts.forEach(a => { pCounts[a.clientName] = (pCounts[a.clientName] || 0) + 1; });
           setProactiveCountsByClient(pCounts);
           setProactiveLoadedAt(Date.now());
-          setClientsWithFlags(scopeClients(preData.clientsWithFlags || []));
+          const scopedFlags = scopeClients(preData.clientsWithFlags || []);
+          setClientsWithFlags(scopedFlags);
+          try {
+            localStorage.setItem("pulse_cached_clients_with_flags", JSON.stringify(scopedFlags));
+          } catch {}
           setAcknowledgedNoAction(new Set());
           setProcessedAlerts(new Set());
 

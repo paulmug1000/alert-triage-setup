@@ -59,7 +59,7 @@ export default async function handler(req, res) {
             _allIntegrationsStatusCachedAt = 0;
           }
         } catch (e) {}
-      } else if (_allIntegrationsStatusCache && (now - _allIntegrationsStatusCachedAt < 60000)) {
+      } else if (_allIntegrationsStatusCache && (now - _allIntegrationsStatusCachedAt < 300000)) {
         cachedData = _allIntegrationsStatusCache;
       }
 
@@ -182,8 +182,7 @@ export default async function handler(req, res) {
 
       if (redisClient?.isOpen) {
         try {
-          const hasIssues = !sharedXeroIsHealthy || clientConfigs.some(c => c.integrations?.xero?.reconnectRequired || c.integrations?.quickbooks?.reconnectRequired);
-          await redisClient.set(cacheKey, JSON.stringify({ allClients: clientConfigs, sharedXero }), { EX: hasIssues ? 15 : 300 });
+          await redisClient.set(cacheKey, JSON.stringify({ allClients: clientConfigs, sharedXero }), { EX: 3600 });
         } catch (e) {}
       }
       _allIntegrationsStatusCache = { allClients: clientConfigs, sharedXero };

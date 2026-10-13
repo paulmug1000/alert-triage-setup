@@ -217,7 +217,7 @@ export default function PushOutgoingsTab({
   };
 
   return (
-    <div style={{ maxWidth: "1050px" }}>
+    <div style={{ width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>
       {/* Top Header Card */}
       <div style={{
         background: "#ffffff",

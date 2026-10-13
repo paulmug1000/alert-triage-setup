@@ -258,3 +258,182 @@ export async function fetchXeroBankAccounts(accessToken, tenantId) {
     type: acc.Type || "BANK"
   }));
 }
+
+export function parseXeroDate(val, dateString) {
+  // If dateString is already ISO-like "YYYY-MM-DD...", slice first 10 characters directly to avoid UTC shift
+  if (dateString && typeof dateString === "string") {
+    const m = dateString.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (m) return m[1];
+  }
+  if (!val) return "";
+  if (typeof val === "string") {
+    const isoMatch = val.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (isoMatch) return isoMatch[1];
+
+    if (val.includes("/Date(")) {
+      const match = val.match(/\/Date\((\d+)([+-]\d{4})?\)\//);
+      if (match) {
+        const ms = parseInt(match[1], 10);
+        let offsetMs = 0;
+        if (match[2]) {
+          const sign = match[2][0] === "+" ? 1 : -1;
+          const hours = parseInt(match[2].slice(1, 3), 10);
+          const mins = parseInt(match[2].slice(3, 5), 10);
+          offsetMs = sign * (hours * 60 + mins) * 60 * 1000;
+        }
+        const localD = new Date(ms + offsetMs);
+        return localD.toISOString().split("T")[0];
+      }
+    }
+  }
+  const d = new Date(val);
+  if (!isNaN(d.getTime())) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+  return String(val);
+}
+
+
+/**
+ * Fetches reconciled bank transactions, invoice/bill payments, and transfers for a specific bank account.
+ * 
+ * @param {Object} params
+ * @param {string} params.accessToken
+ * @param {string} params.tenantId
+ * @param {string} params.accountId Xero Bank Account ID (GUID)
+ * @param {string} params.startDate YYYY-MM-DD
+ * @param {string} params.endDate YYYY-MM-DD
+ * @returns {Promise<Array<Object>>} Normalized bank transaction objects
+ */
+export async function fetchXeroAccountTransactions({ accessToken, tenantId, accountId, startDate, endDate }) {
+  if (!accessToken || !tenantId || !accountId) {
+    throw new Error("Missing accessToken, tenantId, or accountId for fetchXeroAccountTransactions");
+  }
+
+  const [startY, startM, startD] = startDate.split("-").map(Number);
+  const [endY, endM, endD] = endDate.split("-").map(Number);
+  const dateClause = `Date>=DateTime(${startY},${startM},${startD}) AND Date<=DateTime(${endY},${endM},${endD})`;
+
+  const headers = {
+    "Authorization": `Bearer ${accessToken}`,
+    "Xero-tenant-id": tenantId,
+    "Accept": "application/json"
+  };
+
+  const results = [];
+
+  // 1. Fetch direct Spend/Receive Bank Transactions
+  try {
+    const btUrl = `https://api.xero.com/api.xro/2.0/BankTransactions?where=BankAccount.AccountID%3D%3Dguid(%22${accountId}%22)%20AND%20${encodeURIComponent(dateClause)}`;
+    const btRes = await fetch(btUrl, { method: "GET", headers });
+    if (btRes.ok) {
+      const btData = await btRes.json();
+      (btData?.BankTransactions || []).forEach(tx => {
+        if (tx.Status === "DELETED") return;
+        // Skip transfer transactions: they are retrieved with full from/to account context by BankTransfers below
+        if (String(tx.Type || "").toUpperCase().includes("TRANSFER")) return;
+
+        const rawDate = parseXeroDate(tx.Date, tx.DateString);
+        const isSpend = String(tx.Type || "").toUpperCase().startsWith("SPEND");
+        const total = Math.abs(parseFloat(tx.Total) || 0);
+        const contactName = tx.Contact?.Name || "";
+        const lineDesc = (tx.LineItems || []).map(li => li.Description).filter(Boolean).join("; ") || tx.Reference || "";
+        const accountCode = tx.LineItems?.[0]?.AccountCode || "";
+
+        results.push({
+          sourceId: tx.BankTransactionID,
+          sourceType: "xero_bank_transaction",
+          date: rawDate,
+          payee: contactName,
+          particulars: lineDesc || contactName,
+          reference: tx.Reference || "",
+          outAmount: isSpend ? total : 0,
+          inAmount: !isSpend ? total : 0,
+          rawType: tx.Type,
+          accountCode,
+          isReconciled: true
+        });
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Error fetching Xero BankTransactions:", err.message);
+  }
+
+  // 2. Fetch Invoice & Bill Payments tied to this Bank Account
+  try {
+    const payUrl = `https://api.xero.com/api.xro/2.0/Payments?where=Account.AccountID%3D%3Dguid(%22${accountId}%22)%20AND%20${encodeURIComponent(dateClause)}`;
+    const payRes = await fetch(payUrl, { method: "GET", headers });
+    if (payRes.ok) {
+      const payData = await payRes.json();
+      (payData?.Payments || []).forEach(p => {
+        if (p.Status === "DELETED") return;
+        const rawDate = parseXeroDate(p.Date, p.DateString);
+        const total = Math.abs(parseFloat(p.Amount) || 0);
+        const isReceive = p.PaymentType === "ACCRECPAYMENT"; // Customer paid invoice
+        const contactName = p.Invoice?.Contact?.Name || "";
+        const invoiceNum = p.Invoice?.InvoiceNumber || p.Reference || "";
+        const particulars = p.Invoice ? `${p.Invoice.Type === "ACCREC" ? "Invoice" : "Bill"} ${invoiceNum} payment` : (p.Reference || "Payment");
+
+        results.push({
+          sourceId: p.PaymentID,
+          sourceType: isReceive ? "xero_customer_payment" : "xero_supplier_payment",
+          date: rawDate,
+          payee: contactName,
+          particulars,
+          reference: invoiceNum,
+          outAmount: isReceive ? 0 : total,
+          inAmount: isReceive ? total : 0,
+          rawType: p.PaymentType,
+          invoiceNumber: invoiceNum,
+          isReconciled: true,
+          // If customer paid sales invoice, category is definitively Revenue
+          suggestedCategory: isReceive ? "Revenue" : null
+        });
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Error fetching Xero Payments:", err.message);
+  }
+
+  // 3. Fetch Bank Transfers
+  try {
+    const xferUrl = `https://api.xero.com/api.xro/2.0/BankTransfers?where=${encodeURIComponent(dateClause)}`;
+    const xferRes = await fetch(xferUrl, { method: "GET", headers });
+    if (xferRes.ok) {
+      const xferData = await xferRes.json();
+      (xferData?.BankTransfers || []).forEach(xf => {
+        const fromId = xf.FromBankAccount?.AccountID;
+        const toId = xf.ToBankAccount?.AccountID;
+        const isFrom = fromId === accountId;
+        const isTo = toId === accountId;
+        if (!isFrom && !isTo) return;
+
+        const rawDate = parseXeroDate(xf.Date, xf.DateString);
+        const total = Math.abs(parseFloat(xf.Amount) || 0);
+        const otherAccountName = isFrom ? (xf.ToBankAccount?.Name || "Other Account") : (xf.FromBankAccount?.Name || "Other Account");
+
+        results.push({
+          sourceId: xf.BankTransferID,
+          sourceType: "xero_bank_transfer",
+          date: rawDate,
+          payee: `Transfer ${isFrom ? "to" : "from"} ${otherAccountName}`,
+          particulars: `Bank Transfer: ${xf.FromBankAccount?.Name || ""} -> ${xf.ToBankAccount?.Name || ""}`,
+          reference: xf.Reference || "Transfer",
+          outAmount: isFrom ? total : 0,
+          inAmount: isTo ? total : 0,
+          rawType: "TRANSFER",
+          isReconciled: true,
+          suggestedCategory: "Transfer"
+        });
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Error fetching Xero BankTransfers:", err.message);
+  }
+
+  return results;
+}
+

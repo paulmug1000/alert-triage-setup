@@ -445,7 +445,13 @@ export default function IntegrationsView({
         q.set("spreadsheetId", client.masterSheetId);
       }
       const res = await fetch(`/api/integrations/token?${q.toString()}`);
-      const data = await res.json();
+      const rawText = await res.text();
+      let data;
+      try {
+        data = JSON.parse(rawText);
+      } catch (parseErr) {
+        throw new Error(`Server returned HTTP ${res.status} (${res.statusText || "Error"}): ${rawText.slice(0, 120)}`);
+      }
       setBrokerResultsMap((m) => ({ ...m, [testKey]: data }));
       // Automatically refresh statuses so the card badge (and attention count) update in real time
       await fetchAllStatus(true, true);
@@ -1249,7 +1255,7 @@ function XeroCard({
         )}
 
         {/* Connected Details */}
-        {isConnected && (
+        {(isConnected || xero.reconnectRequired) && (
           <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "10px 12px", border: "1px solid #e2e8f0", marginBottom: "14px", fontSize: "11.5px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
               <span style={{ color: "#64748b" }}>Connection Mode:</span>
@@ -1371,6 +1377,63 @@ function XeroCard({
                 {brokerTesting ? "Testing..." : "⚡ Test Broker"}
               </button>
             </>
+          ) : xero.reconnectRequired ? (
+            <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "6px" }}>
+              <button
+                onClick={() => onConnect("dedicated")}
+                style={{
+                  width: "100%",
+                  padding: "9px 14px",
+                  borderRadius: "7px",
+                  border: "none",
+                  background: "#dc2626",
+                  color: "#ffffff",
+                  fontSize: "12.5px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
+                }}
+              >
+                Re-connect Xero for {client.clientName}
+              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <button
+                  onClick={onDisconnect}
+                  disabled={actionLoading}
+                  style={{
+                    flex: 1,
+                    padding: "7px 12px",
+                    borderRadius: "7px",
+                    border: "1px solid #fecaca",
+                    background: "#fff",
+                    color: "#dc2626",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  {actionLoading ? "Processing..." : "Disconnect"}
+                </button>
+                <button
+                  onClick={onTestToken}
+                  disabled={brokerTesting}
+                  title="Retry token refresh with current credentials"
+                  style={{
+                    flex: 1,
+                    padding: "7px 12px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    background: "#f1f5f9",
+                    color: "#475569",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  {brokerTesting ? "Testing..." : "⚡ Test Broker / Retry"}
+                </button>
+              </div>
+            </div>
           ) : (
             <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "6px" }}>
               <button
@@ -1486,7 +1549,7 @@ function QuickBooksCard({
         </p>
 
         {/* Connected Details */}
-        {isConnected && (
+        {(isConnected || qb.reconnectRequired) && (
           <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "10px 12px", border: "1px solid #e2e8f0", marginBottom: "14px", fontSize: "11.5px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
               <span style={{ color: "#64748b" }}>Company Name:</span>
@@ -1554,6 +1617,63 @@ function QuickBooksCard({
                 {brokerTesting ? "Testing..." : "⚡ Test Broker"}
               </button>
             </>
+          ) : qb.reconnectRequired ? (
+            <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "6px" }}>
+              <button
+                onClick={onConnect}
+                style={{
+                  width: "100%",
+                  padding: "9px 14px",
+                  borderRadius: "7px",
+                  border: "none",
+                  background: "#dc2626",
+                  color: "#ffffff",
+                  fontSize: "12.5px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
+                }}
+              >
+                Re-connect QuickBooks for {client.clientName}
+              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <button
+                  onClick={onDisconnect}
+                  disabled={actionLoading}
+                  style={{
+                    flex: 1,
+                    padding: "7px 12px",
+                    borderRadius: "7px",
+                    border: "1px solid #fecaca",
+                    background: "#fff",
+                    color: "#dc2626",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  {actionLoading ? "Disconnecting..." : "Disconnect"}
+                </button>
+                <button
+                  onClick={onTestToken}
+                  disabled={brokerTesting}
+                  title="Retry token refresh with current credentials"
+                  style={{
+                    flex: 1,
+                    padding: "7px 12px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    background: "#f1f5f9",
+                    color: "#475569",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  {brokerTesting ? "Testing..." : "⚡ Test Broker / Retry"}
+                </button>
+              </div>
+            </div>
           ) : (
             <button
               onClick={onConnect}
@@ -1673,7 +1793,7 @@ function CrmCard({
         </p>
 
         {/* Connected Details */}
-        {isConnected && (
+        {(isConnected || toolData.reconnectRequired) && (
           <div style={{ background: "#f8fafc", borderRadius: "10px", padding: "10px 12px", border: "1px solid #e2e8f0", marginBottom: "14px", fontSize: "11.5px" }}>
             {accountValue && (
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
@@ -1751,6 +1871,63 @@ function CrmCard({
                 {brokerTesting ? "Testing..." : "⚡ Test Broker"}
               </button>
             </>
+          ) : toolData.reconnectRequired ? (
+            <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "6px" }}>
+              <button
+                onClick={onConnect}
+                style={{
+                  width: "100%",
+                  padding: "9px 14px",
+                  borderRadius: "7px",
+                  border: "none",
+                  background: "#dc2626",
+                  color: "#ffffff",
+                  fontSize: "12.5px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)"
+                }}
+              >
+                Re-connect {config.name} for {client.clientName}
+              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <button
+                  onClick={onDisconnect}
+                  disabled={actionLoading}
+                  style={{
+                    flex: 1,
+                    padding: "7px 12px",
+                    borderRadius: "7px",
+                    border: "1px solid #fecaca",
+                    background: "#fff",
+                    color: "#dc2626",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  {actionLoading ? "Disconnecting..." : "Disconnect"}
+                </button>
+                <button
+                  onClick={onTestToken}
+                  disabled={brokerTesting}
+                  title="Retry token refresh with current credentials"
+                  style={{
+                    flex: 1,
+                    padding: "7px 12px",
+                    borderRadius: "7px",
+                    border: "1px solid #cbd5e1",
+                    background: "#f1f5f9",
+                    color: "#475569",
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  {brokerTesting ? "Testing..." : "⚡ Test Broker / Retry"}
+                </button>
+              </div>
+            </div>
           ) : (
             <button
               onClick={onConnect}

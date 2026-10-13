@@ -12,12 +12,41 @@ import { ADMIN_ONLY_ALERT_TYPES } from "../utils/helpers";
 let _tasksMemoryCache = null;
 let _tasksCachedAt = 0;
 
+export async function updateTaskInCache(updatedTaskRow, remove = false) {
+  if (!updatedTaskRow || !updatedTaskRow.fingerprintHash) return;
+  const now = Date.now();
+  let tasks = _tasksMemoryCache;
+  if (!tasks && redisClient?.isOpen) {
+    try {
+      const cached = await redisClient.get("triage_tasks_cache");
+      if (cached) tasks = JSON.parse(cached);
+    } catch (e) {}
+  }
+  if (!tasks) tasks = [];
+  
+  const idx = tasks.findIndex(t => t.fingerprintHash === updatedTaskRow.fingerprintHash);
+  if (remove) {
+    if (idx !== -1) tasks.splice(idx, 1);
+  } else {
+    if (idx !== -1) {
+      tasks[idx] = { ...tasks[idx], ...updatedTaskRow };
+    } else {
+      tasks.push(updatedTaskRow);
+    }
+  }
+  _tasksMemoryCache = tasks;
+  _tasksCachedAt = now;
+  if (redisClient?.isOpen) {
+    try {
+      await redisClient.set("triage_tasks_cache", JSON.stringify(tasks), { EX: 86400 * 7 });
+    } catch (e) {}
+  }
+}
+
 export function invalidateTasksCache() {
   _tasksMemoryCache = null;
   _tasksCachedAt = 0;
-  if (redisClient?.isOpen) {
-    redisClient.del("triage_tasks_cache").catch(() => {});
-  }
+  // NOTE: We keep Redis triage_tasks_cache warm for fast page loads rather than deleting it.
 }
 
 export async function handleBulkCreateTasks(req, res, sheets) {
@@ -224,14 +253,14 @@ export async function handleGetTasks(req, res, sheets) {
   }
 
   const TASK_CACHE_KEY = "triage_tasks_cache";
-  const TASK_CACHE_TTL_S = 300; 
+  const TASK_CACHE_TTL_S = 86400 * 7; // 7-day TTL in Redis
 
   try {
     let allTasks = null;
     const nowMs = Date.now();
-    if (!bypassCache && _tasksMemoryCache && (nowMs - _tasksCachedAt < 60000)) {
+    if (!bypassCache && _tasksMemoryCache && (nowMs - _tasksCachedAt < 300000)) {
       allTasks = _tasksMemoryCache;
-    } else if (!bypassCache && redisClient?.isOpen) {
+    } else if (redisClient?.isOpen) {
       try {
         const cached = await redisClient.get(TASK_CACHE_KEY);
         if (cached) allTasks = JSON.parse(cached);
@@ -626,13 +655,29 @@ export async function handleCheckExistingTask(req, res, sheets) {
   const { alert, automationCommanderSheetId: acId } = req.body;
   if (!alert || !acId) return res.status(400).json({ success: false, error: "Missing alert or automationCommanderSheetId" });
   try {
-    await ensureAlertMemoryTab(sheets, acId);
-    const memoryRows = await readAlertMemory(sheets, acId);
-
     const taskRef = alert.summary?.invoiceNo || alert.summary?.reference || alert.summary?.jobName || alert.alertKey || "";
     const taskKey = `${alert.clientName}||${alert.type || alert.flagType || "alert"}||${taskRef}`;
 
-    const match = memoryRows.find(r => (r.status === "task") && (() => { try { return JSON.parse(r.dataSnapshot || "{}").taskKey === taskKey; } catch(e) { return false; } })());
+    // Fast path: Check tasks cache (~50 active tasks, <1ms) rather than 9MB AlertMemory!
+    let tasksList = _tasksMemoryCache;
+    if (!tasksList && redisClient?.isOpen) {
+      try {
+        const cached = await redisClient.get("triage_tasks_cache");
+        if (cached) tasksList = JSON.parse(cached);
+      } catch (e) {}
+    }
+
+    let match = null;
+    if (tasksList && tasksList.length > 0) {
+      match = tasksList.find(r => (r.status === "task") && (() => { try { return JSON.parse(r.dataSnapshot || "{}").taskKey === taskKey; } catch(e) { return false; } })());
+    }
+
+    if (!match && !tasksList) {
+      await ensureAlertMemoryTab(sheets, acId);
+      const memoryRows = await readAlertMemory(sheets, acId);
+      match = memoryRows.find(r => (r.status === "task") && (() => { try { return JSON.parse(r.dataSnapshot || "{}").taskKey === taskKey; } catch(e) { return false; } })());
+    }
+
     if (!match) return res.status(200).json({ success: true, found: false });
 
     let taskMeta = {};

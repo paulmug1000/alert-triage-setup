@@ -72,14 +72,50 @@ export function buildAlertFingerprintLegacy(alert) {
 
 let _handledHashesMemoryCache = null;
 let _handledHashesCachedAt = 0;
+let _alertMemoryMemoryCache = null;
+let _alertMemoryCachedAt = 0;
+
+export async function updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, status) {
+  if (!fingerprintHash) return;
+  const now = Date.now();
+  if (_handledHashesMemoryCache) {
+    if (status === "cached" || status === "pending_automation") {
+      delete _handledHashesMemoryCache[fingerprintHash];
+    } else {
+      _handledHashesMemoryCache[fingerprintHash] = status;
+    }
+    _handledHashesCachedAt = now;
+  }
+  const cacheKey = `pulse:alert_memory_handled:${automationCommanderSheetId}`;
+  try {
+    if (redisClient?.isOpen && automationCommanderSheetId) {
+      const cached = await redisClient.get(cacheKey);
+      let map = {};
+      if (cached) {
+        try { map = JSON.parse(cached); } catch (e) {}
+      }
+      if (status === "cached" || status === "pending_automation") {
+        delete map[fingerprintHash];
+      } else {
+        map[fingerprintHash] = status;
+      }
+      await redisClient.set(cacheKey, JSON.stringify(map), { EX: 86400 * 7 });
+      _handledHashesMemoryCache = map;
+      _handledHashesCachedAt = now;
+    }
+  } catch (err) {
+    console.warn("⚠️ Redis updateHandledAlertHash error:", err.message);
+  }
+}
 
 export async function invalidateAlertMemoryCache(automationCommanderSheetId) {
-  _handledHashesMemoryCache = null;
-  _handledHashesCachedAt = 0;
+  _alertMemoryMemoryCache = null;
+  _alertMemoryCachedAt = 0;
   try {
     if (redisClient?.isOpen && automationCommanderSheetId) {
       await redisClient.del(`pulse:alert_memory:${automationCommanderSheetId}`);
-      await redisClient.del(`pulse:alert_memory_handled:${automationCommanderSheetId}`);
+      // NOTE: We deliberately do NOT delete pulse:alert_memory_handled, as that key
+      // is updated directly by updateHandledAlertHash and prevents 9MB Google Sheet pulls!
     }
   } catch (err) {
     console.warn("⚠️ Redis cache invalidate error:", err.message);
@@ -89,8 +125,9 @@ export async function invalidateAlertMemoryCache(automationCommanderSheetId) {
 /**
  * Returns a compact map { [fingerprintHash]: status } for handled (non-cached) alerts.
  * Uses 60s in-memory cache and 7d Redis cache to avoid transferring the massive 8.5MB AlertMemory table.
+ * If allowFallback is false (e.g. interactive app loads), never blocks on 9MB sheet downloads.
  */
-export async function readHandledAlertHashes(sheets, automationCommanderSheetId) {
+export async function readHandledAlertHashes(sheets, automationCommanderSheetId, allowFallback = true) {
   const now = Date.now();
   if (_handledHashesMemoryCache && (now - _handledHashesCachedAt < 60000)) {
     return _handledHashesMemoryCache;
@@ -109,6 +146,12 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId)
     }
   } catch (err) {
     console.warn("⚠️ Redis read error in readHandledAlertHashes:", err.message);
+  }
+
+  // During interactive loads, if Redis has not yet populated, return empty map rather than blocking 45s for 9MB
+  if (!allowFallback) {
+    console.log(`[readHandledAlertHashes] Cache miss on ${cacheKey}, returning empty map to avoid blocking interactive load.`);
+    return _handledHashesMemoryCache || {};
   }
 
   const fullRows = await readAlertMemory(sheets, automationCommanderSheetId);
@@ -133,13 +176,21 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId)
 }
 
 export async function readAlertMemory(sheets, automationCommanderSheetId) {
+  const now = Date.now();
+  if (_alertMemoryMemoryCache && (now - _alertMemoryCachedAt < 60000)) {
+    return _alertMemoryMemoryCache;
+  }
+
   const cacheKey = `pulse:alert_memory:${automationCommanderSheetId}`;
   try {
     if (redisClient?.isOpen && automationCommanderSheetId) {
       const cached = await redisClient.get(cacheKey);
       if (cached) {
         console.log(`[AlertMemory Cache HIT] read ${cached.length} chars from Redis key ${cacheKey}`);
-        return JSON.parse(cached);
+        const parsed = JSON.parse(cached);
+        _alertMemoryMemoryCache = parsed;
+        _alertMemoryCachedAt = now;
+        return parsed;
       } else {
         console.log(`[AlertMemory Cache MISS] Redis key ${cacheKey} is null/empty`);
       }
@@ -185,6 +236,8 @@ export async function readAlertMemory(sheets, automationCommanderSheetId) {
     console.warn("⚠️ Redis write error in readAlertMemory:", err.message);
   }
 
+  _alertMemoryMemoryCache = parsed;
+  _alertMemoryCachedAt = now;
   return parsed;
 }
 
@@ -442,6 +495,7 @@ export async function appendAlertMemoryRow(sheets, automationCommanderSheetId, p
     },
   }));
   console.log(`  📝 DEBUG: Appended alert ${fingerprintHash} to ${response.data.updates.updatedRange} with status "${status}"`);
+  await updateHandledAlertHash(automationCommanderSheetId, fingerprintHash, status);
   await invalidateAlertMemoryCache(automationCommanderSheetId);
 }
 
@@ -467,6 +521,9 @@ export async function updateAlertMemoryRow(sheets, automationCommanderSheetId, r
     valueInputOption: "RAW",
     requestBody: { values: [values] },
   }));
+  if (updates.fingerprintHash) {
+    await updateHandledAlertHash(automationCommanderSheetId, updates.fingerprintHash, updates.status);
+  }
   await invalidateAlertMemoryCache(automationCommanderSheetId);
 }
 
@@ -484,7 +541,7 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
       updates.status,
       updates.ignoreReason || "",
       updates.firstSeen,
-      now,
+      now, 
       updates.lastRechecked || now,
       updates.dataSnapshot || "",
     ];
@@ -501,6 +558,11 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
       data,
     },
   }));
+  for (const item of updateItems) {
+    if (item.updates?.fingerprintHash) {
+      await updateHandledAlertHash(automationCommanderSheetId, item.updates.fingerprintHash, item.updates.status);
+    }
+  }
   await invalidateAlertMemoryCache(automationCommanderSheetId);
 }
 

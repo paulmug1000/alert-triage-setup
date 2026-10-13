@@ -77,6 +77,20 @@ export default async function handler(req, res) {
       const storeData = await storeResp.json();
       if (!storeResp.ok || !storeData.success) throw new Error(storeData.error || "Store failed");
 
+      // Step 4: Auto-provision monthly Recon tabs if today is on or after 20th of the month
+      const currentDay = new Date().getDate();
+      if (currentDay >= 20) {
+        console.log(`CRON: Today is ${currentDay}th (>= 20th) - Checking monthly Recon tabs auto-provisioning...`);
+        try {
+          await fetch(`${baseUrl}/api/triage`, {
+            method: "POST", headers: cronHeaders,
+            body: JSON.stringify({ action: "auto_provision_recon_tabs", secret: cronSecret, automationCommanderSheetId: acId }),
+          });
+        } catch (tabErr) {
+          console.warn("⚠️ CRON: Non-fatal error in auto_provision_recon_tabs:", tabErr.message);
+        }
+      }
+
       console.log(`✅ CRON: Pipeline complete`);
     } catch (err) {
       console.error(`❌ CRON failed: ${err.message}`, err);

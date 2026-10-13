@@ -641,6 +641,7 @@ export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenant
   record.updatedAt = new Date(now).toISOString();
   record.status = "connected";
   record.reconnectRequired = false;
+  record.lastError = null;
 
   if (newTenantId) {
     record.tenantId = newTenantId;

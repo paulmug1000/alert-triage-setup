@@ -79,8 +79,20 @@ import {
   getCashflowReconData,
   updateCashAdjustment,
   toggleCashCellResolved,
-  updateCashCellNote
+  updateCashCellNote,
+  updateReconTransactionCategory,
+  syncReconBankTransactions,
+  syncReconUnreconciledItems
 } from "../../services/cashflowReconService";
+import {
+  ensureReconTabExists,
+  autoProvisionAllReconTabs
+} from "../../services/reconTabService";
+import {
+  fetchClientReconciledBankTransactions,
+  parseUnreconciledItems,
+  recategoriseTransactions
+} from "../../services/bankTransactionsService";
 import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
 import { getAllUsers, isUserAuthorizedForClient, updateUserDailyAlertsEmail, getUserByEmail } from "../../services/userPermissions";
 import { matchesClientName } from "../../utils/helpers";
@@ -231,7 +243,8 @@ export default async function handler(req, res) {
         action === "analyze_noaction_flag" ||
         action === "store_precomputed" ||
         action === "send_daily_alerts_summary" ||
-        action === "get_activity"
+        action === "get_activity" ||
+        action === "auto_provision_recon_tabs"
       )) ||
       (isAgentAuthorized && action === "agent_progress");
 
@@ -412,11 +425,11 @@ export default async function handler(req, res) {
       return await handleUpdateViewCell(req, res, sheets);
     } else if (action === "get_cashflow_recon_data") {
       try {
-        const { clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey, clientName } = req.body;
+        const { clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey, targetMonthKey, clientName } = req.body;
         if (!sessionUser.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
-        const data = await getCashflowReconData({ clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey });
+        const data = await getCashflowReconData({ clientSheetId, reconSheetUrl, reconSheetId, eomMonthKey, targetMonthKey });
         return res.status(200).json(data);
       } catch (err) {
         console.error("❌ get_cashflow_recon_data error:", err);
@@ -482,14 +495,149 @@ export default async function handler(req, res) {
         return res.status(500).json({ success: false, error: err.message });
       }
 
+    } else if (action === "ensure_recon_tab") {
+      try {
+        const { reconSheetId, reconSheetUrl, targetDateInput, tabName, targetTabName, clientName } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await ensureReconTabExists({
+          reconSheetId,
+          reconSheetUrl,
+          targetDateInput,
+          tabName: tabName || targetTabName,
+          clientName
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ ensure_recon_tab error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "auto_provision_recon_tabs") {
+      try {
+        const { targetDateInput, automationCommanderSheetId } = req.body;
+        if (!req.isSystemAuthorized && !sessionUser?.isAdmin) {
+          return res.status(403).json({ success: false, error: "Admin or Cron authorization required" });
+        }
+        const result = await autoProvisionAllReconTabs({
+          targetDateInput,
+          automationCommanderSheetId
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ auto_provision_recon_tabs error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "fetch_api_bank_transactions") {
+      try {
+        const { clientName, masterSheetId, reconSheetId, monthKey } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await fetchClientReconciledBankTransactions({
+          clientName,
+          masterSheetId,
+          reconSheetId,
+          monthKey
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ fetch_api_bank_transactions error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "recategorise_all_transactions") {
+      try {
+        const { clientName, reconSheetId, transactions } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await recategoriseTransactions({
+          reconSheetId,
+          transactions
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ recategorise_all_transactions error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "parse_unreconciled_items") {
+      try {
+        const { rawText, rows, monthKey } = req.body;
+        const result = parseUnreconciledItems({ rawText, rows, monthKey });
+        return res.status(200).json({ success: true, ...result });
+      } catch (err) {
+        console.error("❌ parse_unreconciled_items error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "update_recon_transaction_category") {
+      try {
+        const { reconSheetId, tabName, rowNum, category, clientName, automationCommanderSheetId } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await updateReconTransactionCategory({
+          reconSheetId,
+          tabName,
+          rowNum,
+          category,
+          clientName,
+          automationCommanderSheetId
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ update_recon_transaction_category error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "sync_recon_bank_transactions") {
+      try {
+        const { reconSheetId, tabName, transactions, clientName } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await syncReconBankTransactions({
+          reconSheetId,
+          tabName,
+          transactions
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ sync_recon_bank_transactions error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "sync_recon_unreconciled_items") {
+      try {
+        const { reconSheetId, tabName, unreconciledItems, clientName } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await syncReconUnreconciledItems({
+          reconSheetId,
+          tabName,
+          unreconciledItems
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ sync_recon_unreconciled_items error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
     } else if (action === "start_triage") {
       // Proxy orchestrator for frontend chunking. Protects CRON_SECRET.
       try {
         const { step } = req.body || {};
+        const host = req.headers["x-forwarded-host"] || req.headers.host || `127.0.0.1:${process.env.PORT || 3000}`;
+        const protocol = req.headers["x-forwarded-proto"] || (host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https");
         const prodUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
           ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
           : (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
-        const baseUrl = prodUrl || `http://127.0.0.1:${process.env.PORT || 3000}`;
+        const baseUrl = prodUrl || `${protocol}://${host}`;
         const cronSecret = process.env.CRON_SECRET;
 
         // Step 1: Sweep

@@ -31,6 +31,9 @@ const ALERT_MEMORY_TAB = "AlertMemory";
 export const PRECOMPUTED_KEY = "triage_precomputed";
 export const PRECOMPUTED_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours 
 
+let _precomputedMemoryCache = null;
+let _precomputedCachedAt = 0; 
+
 export const FLAG_NAMES = {
   invoiceDashboardDiscr: "Invoice dashboard discr",
   crmPipeDashDiscr: "CRM pipe dash discr",
@@ -911,9 +914,19 @@ export async function handleGetPrecomputed(req, res, sheets) {
   const tStart = Date.now();
   const { automationCommanderSheetId } = req.body;
   try {
-    const t0 = Date.now();
-    const raw = await redisClient.get(PRECOMPUTED_KEY);
-    const tRedis = Date.now() - t0;
+    let raw = null;
+    let tRedis = 0;
+    if (_precomputedMemoryCache && (Date.now() - _precomputedCachedAt < 60000)) {
+      raw = _precomputedMemoryCache;
+    } else if (redisClient?.isOpen) {
+      const t0 = Date.now();
+      raw = await redisClient.get(PRECOMPUTED_KEY);
+      tRedis = Date.now() - t0;
+      if (raw) {
+        _precomputedMemoryCache = raw;
+        _precomputedCachedAt = Date.now();
+      }
+    }
     if (!raw) {
       console.log(`  No precomputed data found (${tRedis}ms)`);
       return res.status(200).json({ success: true, available: false });
@@ -921,14 +934,14 @@ export async function handleGetPrecomputed(req, res, sheets) {
 
     const data = JSON.parse(raw);
     const ageMs = Date.now() - (data.computedAt || 0);
-
-    if (ageMs > PRECOMPUTED_MAX_AGE_MS) {
-      console.log(`  Precomputed data is stale (${Math.round(ageMs / 60000)} mins old)`);
-      return res.status(200).json({ success: true, available: false, staleMinutes: Math.round(ageMs / 60000) });
+    const isStale = ageMs > PRECOMPUTED_MAX_AGE_MS;
+    if (isStale) {
+      console.log(`  Precomputed data is ${Math.round(ageMs / 60000)} mins old (serving optimistically, background refresh needed)`);
     }
 
     const tMem0 = Date.now();
-    const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId);
+    // Pass allowFallback = false so we NEVER download the 8.5MB AlertMemory sheet during user page load
+    const handledMap = await readHandledAlertHashes(sheets, automationCommanderSheetId, false);
     const tMem = Date.now() - tMem0;
 
     const tFilt0 = Date.now();
@@ -1080,22 +1093,22 @@ export async function handleGetPrecomputed(req, res, sheets) {
       }
     }
 
-    const tSession0 = Date.now();
     const sessionId = Math.random().toString(36).substring(2, 15);
-    await redisClient.set(
-      `triage_alerts:${sessionId}`,
-      JSON.stringify({
-        alerts: scopedAlerts,
-        noActionAlerts: scopedNoAction,
-        proactiveAlerts: scopedProactive,
-        clientsWithFlags: clientsWithUpdatedCounts,
-      }),
-      { EX: 3600 } 
-    );
-    const tSession = Date.now() - tSession0;
+    if (redisClient?.isOpen) {
+      redisClient.set(
+        `triage_alerts:${sessionId}`,
+        JSON.stringify({
+          alerts: scopedAlerts,
+          noActionAlerts: scopedNoAction,
+          proactiveAlerts: scopedProactive,
+          clientsWithFlags: clientsWithUpdatedCounts,
+        }),
+        { EX: 3600 } 
+      ).catch(e => console.error("Error saving triage session to Redis:", e));
+    }
     const totalMs = Date.now() - tStart;
 
-    console.log(`⏱️ [handleGetPrecomputed]: total=${totalMs}ms (redisGet=${tRedis}ms, mem=${tMem}ms, filt=${tFilt}ms, cm=${tCm}ms, sessSet=${tSession}ms)`);
+    console.log(`⏱️ [handleGetPrecomputed]: total=${totalMs}ms (redisGet=${tRedis}ms, mem=${tMem}ms, filt=${tFilt}ms, cm=${tCm}ms)`);
 
     return res.status(200).json({
       success: true,
@@ -1114,8 +1127,9 @@ export async function handleGetPrecomputed(req, res, sheets) {
       })),
       computedAt: data.computedAt,
       computedMinutesAgo: Math.round(ageMs / 60000),
+      isStale,
       noActionAnalysisResults: aggregatedNoActionResults,
-      _timing: { totalMs, tRedis, tMem, tFilt, tCm, tSession },
+      _timing: { totalMs, tRedis, tMem, tFilt, tCm },
     });
   } catch (err) {
     console.error("❌ Error retrieving precomputed data:", err);
@@ -1356,11 +1370,34 @@ export async function handleStorePrecomputed(req, res, sheets) {
       noActionAnalysisResults: aggregatedNoActionResults,
     };
 
+    const serializedPrecomputed = JSON.stringify(precomputedData);
     await redisClient.set(
       PRECOMPUTED_KEY,
-      JSON.stringify(precomputedData),
+      serializedPrecomputed,
       { EX: 86400 * 7 } // 7-day TTL in Redis
     );
+    _precomputedMemoryCache = serializedPrecomputed;
+    _precomputedCachedAt = Date.now();
+
+    // Warm up handled hashes map and tasks cache in Redis using rows already in memory!
+    if (redisClient?.isOpen && acIdForMerge && memoryRowsForMerge) {
+      try {
+        const handledMap = {};
+        for (const r of memoryRowsForMerge) {
+          if (r.status && r.status !== "cached" && r.status !== "pending_automation") {
+            handledMap[r.fingerprintHash] = r.status;
+          }
+        }
+        await redisClient.set(`pulse:alert_memory_handled:${acIdForMerge}`, JSON.stringify(handledMap), { EX: 86400 * 7 });
+        console.log(`  ✅ store_precomputed: warmed handledMap (${Object.keys(handledMap).length} hashes) in Redis`);
+
+        const tasksList = memoryRowsForMerge.filter(r => r.status === "task" || r.status === "task_resolved");
+        await redisClient.set("triage_tasks_cache", JSON.stringify(tasksList), { EX: 86400 * 7 });
+        console.log(`  ✅ store_precomputed: warmed triage_tasks_cache (${tasksList.length} tasks) in Redis`);
+      } catch (warmErr) {
+        console.warn("⚠️ Error warming Redis caches in store_precomputed:", warmErr.message);
+      }
+    }
 
     const analysisCount = Object.keys(precomputedData.noActionAnalysisResults).length;
     console.log(`✅ store_precomputed: ${precomputedData.totalAlerts} alerts, ${analysisCount} pre-analysed flags saved to Redis`);

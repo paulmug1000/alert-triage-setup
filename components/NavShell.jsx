@@ -117,7 +117,16 @@ export default function NavShell({
   const [manageDropdownOpen, setManageDropdownOpen] = useState(false);
   const [pulseDropdownOpen, setPulseDropdownOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
-  const [portalClients, setPortalClients] = useState(clients || []);
+  const [portalClients, setPortalClients] = useState(() => {
+    if (clients && clients.length > 0) return clients;
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_all_clients");
+        if (stored) return JSON.parse(stored);
+      } catch {}
+    }
+    return [];
+  });
   const [clientsLoading, setClientsLoading] = useState(false);
   const [clientSearch, setClientSearch] = useState("");
   const [manageClientSearch, setManageClientSearch] = useState("");
@@ -808,7 +817,7 @@ export default function NavShell({
           <span>{" "}to cancel</span>
         </div>
       )}
-      <div>{children}</div>
+      <div style={{ width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>{children}</div>
     </div>
   );
 }

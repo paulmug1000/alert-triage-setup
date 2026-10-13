@@ -52,10 +52,8 @@ export async function resolveClientNameBySheetId(sheets, sheetId, acId = DEFAULT
 }
 
 export async function handleGetAllClients(req, res, sheets) {
-  const { automationCommanderSheetId, bypassCache } = req.body;
-  if (!automationCommanderSheetId) {
-    return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
-  }
+  const automationCommanderSheetId = req.body?.automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+  const { bypassCache } = req.body || {};
 
   const sessionUser = getSessionUser(req);
   if (!sessionUser) {
@@ -69,7 +67,7 @@ export async function handleGetAllClients(req, res, sheets) {
     let clientsArray = null;
     let clientsObj = null;
 
-    if (!bypassCache && _allClientsMemoryCache && (now - _allClientsCachedAt < 60000)) {
+    if (!bypassCache && _allClientsMemoryCache && (now - _allClientsCachedAt < 600000)) {
       clientsArray = _allClientsMemoryCache.clientsArray;
       clientsObj = _allClientsMemoryCache.clientsObj;
     } else if (!bypassCache && redisClient?.isOpen) {
@@ -116,7 +114,8 @@ export async function handleGetAllClients(req, res, sheets) {
 
       if (redisClient?.isOpen) {
         try {
-          await redisClient.set(cacheKey, JSON.stringify({ clientsArray, clientsObj }), { EX: 300 });
+          // 7-day TTL in Redis — clients in AutoUpdates change very rarely
+          await redisClient.set(cacheKey, JSON.stringify({ clientsArray, clientsObj }), { EX: 86400 * 7 });
         } catch (e) {
           console.warn("⚠️ Redis set all clients cache error:", e.message);
         }
@@ -128,7 +127,8 @@ export async function handleGetAllClients(req, res, sheets) {
     let finalClientsArray = clientsArray;
     let finalClientsObj = clientsObj;
 
-    if (!sessionUser.isAdmin && sessionUser.assignedClients !== "*") {
+    const isAdminUser = sessionUser.isAdmin || sessionUser.role === "Admin" || sessionUser.assignedClients === "*";
+    if (!isAdminUser) {
       const assignedList = Array.isArray(sessionUser.assignedClients) ? sessionUser.assignedClients : [];
       finalClientsArray = clientsArray.filter(c =>
         assignedList.some(assigned => matchesClientName(assigned, c.clientName))
@@ -149,8 +149,8 @@ export async function handleGetAllClients(req, res, sheets) {
 }
 
 export async function handleGetAssignedExpenses(req, res, sheets) {
-  const { automationCommanderSheetId: aeAcId, bypassCache } = req.body;
-  if (!aeAcId) return res.status(400).json({ success: false, error: "Missing automationCommanderSheetId" });
+  const aeAcId = req.body?.automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+  const { bypassCache } = req.body || {};
   const cacheKey = `pulse:assigned_expenses:${aeAcId}`;
   const now = Date.now();
 

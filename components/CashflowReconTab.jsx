@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Spinner from "./Spinner";
 import { useAuth } from "../hooks/useAuth";
+import CashflowWorkbenchView from "./CashflowWorkbenchView";
 
 const DARK_GREEN = "#14532d";
 const RESOLVED_GREEN = "#d9ead3";
@@ -24,6 +25,9 @@ export default function CashflowReconTab({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+
+  // View Mode: 'workbench' (Split screen two-pane) or 'matrix' (Full Cash spreadsheet grid)
+  const [viewMode, setViewMode] = useState("workbench");
 
   // Month navigation (allows shifting target month delta from default)
   const [monthDelta, setMonthDelta] = useState(0);
@@ -253,11 +257,7 @@ export default function CashflowReconTab({
   // Use Recon Figures: Calculate formula and check for overwrite
   const handleUseReconFigures = (row, targetMonthCell) => {
     if (!reconData?.reconActuals) {
-      if (reconData?.reconError) {
-        alert(`Cannot apply recon figures:\n${reconData.reconError}`);
-      } else {
-        alert("No recon actuals available for this month.");
-      }
+      setError(reconData?.reconError ? `Cannot apply recon figures: ${reconData.reconError}` : "No recon actuals available for this month.");
       return;
     }
 
@@ -435,14 +435,26 @@ export default function CashflowReconTab({
     );
   }, [eomAllTasks, selectedClient]);
 
-  // Check if linked task is already marked done
+  // Check if linked task is already marked done (only applies to current EoM work month)
   const isLinkedTaskDone = useMemo(() => {
-    if (!linkedTask) return false;
+    if (!linkedTask || monthDelta !== 0) return false;
     return (eomStatusOverrides || []).find(s => s.clientName === selectedClient && s.taskId === linkedTask.taskId)?.status === "done";
-  }, [eomStatusOverrides, selectedClient, linkedTask]);
+  }, [eomStatusOverrides, selectedClient, linkedTask, monthDelta]);
+
+  const handleShiftMonth = (delta) => {
+    setReconData(null);
+    setLoading(true);
+    setMonthDelta(d => d + delta);
+  };
+
+  const handleResetMonth = () => {
+    setReconData(null);
+    setLoading(true);
+    setMonthDelta(0);
+  };
 
   return (
-    <div style={{ maxWidth: "1150px" }}>
+    <div style={{ width: "100%", maxWidth: "100%" }}>
       {/* Top Header Card */}
       <div style={{
         background: "#ffffff",
@@ -456,7 +468,7 @@ export default function CashflowReconTab({
           <div style={{ flex: "1 1 340px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <h3 style={{ margin: "0 0 4px", fontSize: "18px", fontWeight: "700", color: "#0f172a" }}>
-                Cashflow Recon
+                Cashflow recon
               </h3>
               {reconData?.targetMonthLabel && (
                 <span style={{
@@ -480,11 +492,14 @@ export default function CashflowReconTab({
           {/* Client Selector Dropdown */}
           <div style={{ minWidth: "260px", flex: "0 1 320px" }}>
             <label style={{ display: "block", fontSize: "11px", fontWeight: "700", textTransform: "uppercase", color: "#64748b", marginBottom: "6px", letterSpacing: "0.5px" }}>
-              Select Client
+              Select client
             </label>
             <select
               value={selectedClient}
-              onChange={e => setSelectedClient(e.target.value)}
+              onChange={e => {
+                setSelectedClient(e.target.value);
+                setReconData(null);
+              }}
               style={{
                 width: "100%",
                 padding: "9px 12px",
@@ -540,7 +555,7 @@ export default function CashflowReconTab({
                   rel="noreferrer"
                   style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px" }}
                 >
-                  📊 Client Sheet ↗
+                  📊 Client sheet ↗
                 </a>
               )}
 
@@ -551,11 +566,11 @@ export default function CashflowReconTab({
                   rel="noreferrer"
                   style={{ fontSize: "12px", color: "#0284c7", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px" }}
                 >
-                  📑 Recon Sheet ↗
+                  📑 Recon sheet ↗
                 </a>
               )}
 
-              {linkedTask && onTaskMarkedDone && (
+              {linkedTask && onTaskMarkedDone && monthDelta === 0 && (
                 <button
                   onClick={() => onTaskMarkedDone(selectedClient, linkedTask.taskId)}
                   style={{
@@ -578,17 +593,17 @@ export default function CashflowReconTab({
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <div style={{ display: "flex", alignItems: "center", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "2px" }}>
                 <button
-                  onClick={() => setMonthDelta(d => d - 1)}
+                  onClick={() => handleShiftMonth(-1)}
                   title="Previous month"
                   style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "12px", color: "#64748b" }}
                 >
                   ◀
                 </button>
                 <span style={{ fontSize: "12px", fontWeight: "600", padding: "0 6px", color: "#334155" }}>
-                  {reconData?.targetMonthLabel || "Target Month"}
+                  {loading ? "Loading..." : (reconData?.targetMonthLabel || "Target month")}
                 </span>
                 <button
-                  onClick={() => setMonthDelta(d => d + 1)}
+                  onClick={() => handleShiftMonth(1)}
                   title="Next month"
                   style={{ padding: "4px 8px", background: "none", border: "none", cursor: "pointer", fontSize: "12px", color: "#64748b" }}
                 >
@@ -598,7 +613,7 @@ export default function CashflowReconTab({
 
               {monthDelta !== 0 && (
                 <button
-                  onClick={() => setMonthDelta(0)}
+                  onClick={handleResetMonth}
                   style={{ fontSize: "11px", color: "#0284c7", background: "none", border: "none", cursor: "pointer" }}
                 >
                   Reset
@@ -606,7 +621,10 @@ export default function CashflowReconTab({
               )}
 
               <button
-                onClick={() => loadData(selectedClient)}
+                onClick={() => {
+                  setReconData(null);
+                  loadData(selectedClient);
+                }}
                 disabled={loading}
                 style={{
                   padding: "5px 12px",
@@ -619,8 +637,46 @@ export default function CashflowReconTab({
                   cursor: loading ? "default" : "pointer"
                 }}
               >
-                {loading ? "Refreshing..." : "↻ Refresh Live Data"}
+                {loading ? "Refreshing..." : "↻ Refresh live data"}
               </button>
+
+              {/* View Mode Switcher */}
+              <div style={{ display: "flex", gap: "3px", background: "#f1f5f9", padding: "2px", borderRadius: "6px", border: "1px solid #e2e8f0", marginLeft: "4px" }}>
+                <button
+                  onClick={() => setViewMode("workbench")}
+                  title="Interactive two-pane workbench: Bank transactions alongside breakdowns and P&L adds"
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "11px",
+                    fontWeight: viewMode === "workbench" ? "700" : "500",
+                    background: viewMode === "workbench" ? "#ffffff" : "transparent",
+                    color: viewMode === "workbench" ? "#0284c7" : "#64748b",
+                    border: "none",
+                    borderRadius: "4px",
+                    cursor: "pointer",
+                    boxShadow: viewMode === "workbench" ? "0 1px 2px rgba(0,0,0,0.06)" : "none"
+                  }}
+                >
+                  ⚡ Split workbench
+                </button>
+                <button
+                  onClick={() => setViewMode("matrix")}
+                  title="Full client sheet Cash! forecast grid"
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "11px",
+                    fontWeight: viewMode === "matrix" ? "700" : "500",
+                    background: viewMode === "matrix" ? "#ffffff" : "transparent",
+                    color: viewMode === "matrix" ? "#0284c7" : "#64748b",
+                    border: "none",
+                    borderRadius: "4px",
+                    cursor: "pointer",
+                    boxShadow: viewMode === "matrix" ? "0 1px 2px rgba(0,0,0,0.06)" : "none"
+                  }}
+                >
+                  📋 Cash matrix
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -638,40 +694,61 @@ export default function CashflowReconTab({
         </div>
       )}
 
-      {/* Recon Sheet Status Notice (Non-blocking warning) */}
-      {reconData?.reconError && (
+      {/* Recon Sheet Status Notice (Non-blocking warning, only shown when tab is truly missing) */}
+      {reconData?.reconError && !reconData?.hasTargetTab && (
         <div style={{ padding: "10px 14px", background: "#fffbeb", border: "1px solid #fef3c7", borderRadius: "8px", color: "#92400e", fontSize: "12px", marginBottom: "14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span>ℹ️ <strong>Recon Actuals Notice:</strong> {reconData.reconError}</span>
+          <span>ℹ️ <strong>Recon actuals notice:</strong> {reconData.reconError}</span>
           <span style={{ fontSize: "11px", color: "#b45309" }}>Manual adjustments and cell marking still enabled</span>
         </div>
       )}
 
-      {/* Main Table Content */}
+      {/* Main Content Area */}
       {!selectedClient ? (
         <div style={{ textAlign: "center", padding: "60px 20px", background: "#f8fafc", borderRadius: "12px", border: "1px dashed #cbd5e1" }}>
-          <p style={{ fontSize: "15px", color: "#64748b", margin: "0 0 6px", fontWeight: "600" }}>No Client Selected</p>
-          <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0 }}>Please select a client from the dropdown above to load their Cashflow Reconciliation table.</p>
+          <p style={{ fontSize: "15px", color: "#64748b", margin: "0 0 6px", fontWeight: "600" }}>No client selected</p>
+          <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0 }}>Please select a client from the dropdown above to load their cashflow reconciliation table.</p>
         </div>
-      ) : loading && !reconData ? (
-        <div style={{ textAlign: "center", padding: "60px 20px" }}>
-          <Spinner />
-          <p style={{ fontSize: "13px", color: "#64748b", marginTop: "12px" }}>Loading Cashflow sheet data and recon actuals...</p>
+      ) : (loading || !reconData) ? (
+        <div style={{ textAlign: "center", padding: "80px 20px", background: "#ffffff", borderRadius: "12px", border: "1px solid #e2e8f0" }}>
+          <Spinner size={32} />
+          <p style={{ fontSize: "14px", fontWeight: "600", color: "#1e293b", marginTop: "14px", marginBottom: "4px" }}>
+            Loading cashflow recon data...
+          </p>
+          <p style={{ fontSize: "12px", color: "#64748b", margin: 0 }}>
+            Retrieving spreadsheet figures and live actuals for the selected month.
+          </p>
         </div>
-      ) : !reconData ? null : (
+      ) : viewMode === "workbench" ? (
+        <CashflowWorkbenchView
+          reconData={reconData}
+          selectedClient={selectedClient}
+          clientInfo={currentClientInfo}
+          eomMonthKey={eomMonthKey}
+          effectiveMonthKey={effectiveMonthKey}
+          automationCommanderSheetId={automationCommanderSheetId}
+          onRefresh={() => loadData(selectedClient)}
+          onTabCreated={(tab) => {
+            setReconData(prev => prev ? ({ ...prev, hasTargetTab: true, reconError: null }) : prev);
+            loadData(selectedClient);
+          }}
+          isAdmin={isAdmin}
+        />
+      ) : (
         <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: "10px", overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
           {/* Subheader info bar (Clean legend without verbose text) */}
           <div style={{ padding: "8px 14px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
             <div style={{ display: "flex", gap: "12px", fontSize: "11px", color: "#64748b" }}>
               <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
                 <span style={{ width: "12px", height: "12px", background: RESOLVED_GREEN, border: "1px solid #86efac", borderRadius: "2px", display: "inline-block" }}></span>
-                Resolved Actual
+                Resolved actual
               </span>
               <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
                 <span style={{ width: "12px", height: "12px", background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "2px", display: "inline-block" }}></span>
-                Editable Adjustment
+                Editable adjustment
               </span>
             </div>
           </div>
+
 
           {/* Spreadsheet Table */}
           <div style={{ overflowX: "auto" }}>
@@ -993,7 +1070,7 @@ export default function CashflowReconTab({
                   cursor: savingEdit ? "default" : "pointer"
                 }}
               >
-                {savingEdit ? "Saving..." : "Save Adjustment"}
+                {savingEdit ? "Saving..." : "Save adjustment"}
               </button>
             </div>
           </div>
@@ -1026,7 +1103,7 @@ export default function CashflowReconTab({
             <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
               <span style={{ fontSize: "22px" }}>⚠️</span>
               <h4 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#991b1b" }}>
-                Confirm Overwrite Existing Adjustment
+                Confirm overwrite of existing adjustment
               </h4>
             </div>
 
@@ -1088,7 +1165,7 @@ export default function CashflowReconTab({
                   cursor: applyingRecon ? "default" : "pointer"
                 }}
               >
-                {applyingRecon ? "Applying..." : "Overwrite & Apply Formula"}
+                {applyingRecon ? "Applying..." : "Overwrite & apply formula"}
               </button>
             </div>
           </div>
@@ -1119,7 +1196,7 @@ export default function CashflowReconTab({
             boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1)"
           }}>
             <h4 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: "700", color: "#0f172a" }}>
-              Edit Cell Note: {noteModal.label}
+              Edit cell note: {noteModal.label}
             </h4>
             <p style={{ margin: "0 0 14px", fontSize: "12px", color: "#64748b" }}>
               Cell: <strong>Cash!{noteModal.colLetter}{noteModal.sheetRow}</strong>
@@ -1173,7 +1250,7 @@ export default function CashflowReconTab({
                   cursor: savingNote ? "default" : "pointer"
                 }}
               >
-                {savingNote ? "Saving..." : "Save Note"}
+                {savingNote ? "Saving..." : "Save note"}
               </button>
             </div>
           </div>

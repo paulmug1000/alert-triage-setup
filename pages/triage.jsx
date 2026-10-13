@@ -241,7 +241,15 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
 
   const { overviewData, setOverviewData, overviewLoading, setOverviewLoading, loadOverview } = useOverview(automationCommanderSheetId);
 
-  const [allOutgoingsClients, setAllOutgoingsClients] = useState([]); // all clients from AutoUpdates
+  const [allOutgoingsClients, setAllOutgoingsClients] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("pulse_cached_all_clients");
+        return stored ? JSON.parse(stored) : [];
+      } catch { return []; }
+    }
+    return [];
+  });
   const [allClientsLoaded, setAllClientsLoaded] = useState(false);
 
   const { ignoredAlerts, isLoadingIgnored, isUnignoring, loadIgnoredAlerts, unignoreAlert } = useIgnoredAlerts(automationCommanderSheetId, setAcceptError);
@@ -278,15 +286,19 @@ function TriageSystemContent({ onBack, appGlobals, initialNav }) {
 
   const loadClients = useCallback((force = false) => {
     if (!force && allClientsLoaded && allOutgoingsClients.length > 0) return;
+    const acId = automationCommanderSheetId || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
     fetch("/api/triage", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId }),
+      body: JSON.stringify({ action: "get_all_clients", automationCommanderSheetId: acId }),
     })
       .then(r => r.json())
       .then(data => {
         if (data.success && Array.isArray(data.clients)) {
           setAllOutgoingsClients(data.clients);
+          try {
+            localStorage.setItem("pulse_cached_all_clients", JSON.stringify(data.clients));
+          } catch {}
           if (data.clientsMap && setAllClientsMap) {
             setAllClientsMap(data.clientsMap);
           }

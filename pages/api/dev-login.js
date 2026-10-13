@@ -13,7 +13,9 @@ export default async function handler(req, res) {
   const role = String(req.query.role || "Admin");
   const email = String(req.query.email || "admin@pulsedashboard.co.uk");
   const name = String(req.query.name || "Pulse Admin");
-  const assigned = req.query.assigned ? String(req.query.assigned).split(",") : ["ALL"];
+  const assigned = req.query.assigned
+    ? String(req.query.assigned).split(",")
+    : (role === "Admin" ? "*" : ["ALL"]);
 
   const payload = {
     tokenType: "session",

@@ -231,3 +231,120 @@ export async function fetchQuickBooksBankAccounts(accessToken, realmId) {
     type: "BANK"
   }));
 }
+
+/**
+ * Fetches reconciled bank transactions for a specific bank account from QuickBooks Online API.
+ * 
+ * @param {Object} params
+ * @param {string} params.accessToken
+ * @param {string} params.realmId
+ * @param {string} params.accountId
+ * @param {string} params.startDate YYYY-MM-DD
+ * @param {string} params.endDate YYYY-MM-DD
+ * @returns {Promise<Array<Object>>}
+ */
+export async function fetchQuickBooksAccountTransactions({ accessToken, realmId, accountId, startDate, endDate }) {
+  if (!accessToken || !realmId || !accountId) {
+    throw new Error("Missing accessToken, realmId, or accountId for fetchQuickBooksAccountTransactions");
+  }
+
+  const headers = {
+    "Authorization": `Bearer ${accessToken}`,
+    "Accept": "application/json"
+  };
+
+  const results = [];
+
+  // 1. Deposits (Money In)
+  try {
+    const depQuery = `select * from Deposit where DepositToAccountRef = '${accountId}' and TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
+    const depUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(depQuery)}&minorversion=73`;
+    const depRes = await fetch(depUrl, { method: "GET", headers });
+    if (depRes.ok) {
+      const depData = await depRes.json();
+      (depData?.QueryResponse?.Deposit || []).forEach(dep => {
+        const total = Math.abs(parseFloat(dep.TotalAmt) || 0);
+        const payee = dep.Line?.[0]?.DepositLineDetail?.Entity?.DisplayName || "";
+        const memo = dep.PrivateNote || dep.Line?.[0]?.Description || payee;
+
+        results.push({
+          sourceId: dep.Id,
+          sourceType: "qb_deposit",
+          date: dep.TxnDate,
+          payee,
+          particulars: memo,
+          reference: dep.DocNumber || "",
+          outAmount: 0,
+          inAmount: total,
+          rawType: "Deposit",
+          isReconciled: true,
+          suggestedCategory: "Revenue"
+        });
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Error fetching QB Deposits:", err.message);
+  }
+
+  // 2. Purchases (Money Out)
+  try {
+    const purQuery = `select * from Purchase where AccountRef = '${accountId}' and TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
+    const purUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(purQuery)}&minorversion=73`;
+    const purRes = await fetch(purUrl, { method: "GET", headers });
+    if (purRes.ok) {
+      const purData = await purRes.json();
+      (purData?.QueryResponse?.Purchase || []).forEach(pur => {
+        const total = Math.abs(parseFloat(pur.TotalAmt) || 0);
+        const payee = pur.EntityRef?.name || "";
+        const memo = pur.PrivateNote || pur.Line?.[0]?.Description || payee;
+
+        results.push({
+          sourceId: pur.Id,
+          sourceType: "qb_purchase",
+          date: pur.TxnDate,
+          payee,
+          particulars: memo,
+          reference: pur.DocNumber || "",
+          outAmount: total,
+          inAmount: 0,
+          rawType: pur.PaymentType || "Expense",
+          isReconciled: true
+        });
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Error fetching QB Purchases:", err.message);
+  }
+
+  // 3. Bill Payments (Money Out)
+  try {
+    const bpQuery = `select * from BillPayment where CheckPayment.BankAccountRef = '${accountId}' and TxnDate >= '${startDate}' and TxnDate <= '${endDate}' maxresults 1000`;
+    const bpUrl = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(bpQuery)}&minorversion=73`;
+    const bpRes = await fetch(bpUrl, { method: "GET", headers });
+    if (bpRes.ok) {
+      const bpData = await bpRes.json();
+      (bpData?.QueryResponse?.BillPayment || []).forEach(bp => {
+        const total = Math.abs(parseFloat(bp.TotalAmt) || 0);
+        const payee = bp.VendorRef?.name || "";
+
+        results.push({
+          sourceId: bp.Id,
+          sourceType: "qb_bill_payment",
+          date: bp.TxnDate,
+          payee,
+          particulars: `Bill payment to ${payee}`,
+          reference: bp.DocNumber || "",
+          outAmount: total,
+          inAmount: 0,
+          rawType: "BillPayment",
+          isReconciled: true
+        });
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Error fetching QB BillPayments:", err.message);
+  }
+
+  return results;
+}
+

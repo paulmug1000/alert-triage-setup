@@ -77,7 +77,8 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     "DataChgAlert!A58:F80",// [15] CRM discrepancy rules (Pipeline & Confirmed)
     "DataChgAlert!A100:J120", // [16] Expense settings & tolerances
     "DataChgAlert!B82",    // [17] Pipeline mode - add jobs to Conf?
-    "KeyInfo!H12:I21"      // [18] Bank accounts (H: Names, I: Tool IDs, max 10, rows 12-21)
+    "KeyInfo!H12:I21",     // [18] Bank accounts (H: Names, I: Tool IDs, max 10, rows 12-21)
+    "KeyInfo!H23:I28"      // [19] Non-cash bank accounts (H: Names, I: Tool IDs, max 6, rows 23-28)
   ];
 
   const clientRanges = [
@@ -128,6 +129,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const dcaExp = mVals[16]?.values || [];
   const dcaB82 = mVals[17]?.values?.[0]?.[0] || "";
   const keyH12I21 = mVals[18]?.values || [];
+  const keyH23I28 = mVals[19]?.values || [];
 
   // Check if A120 is an IMPORTRANGE formula
   const formulaA120 = String(masterFormulaResp.data?.values?.[0]?.[0] || "");
@@ -291,14 +293,26 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     // 3. ACCOUNTING
     accounting: {
       toolInUse: String(keyQ1Q10[3]?.[0] || "None").trim(), // Q4
-      bankAccounts: (keyH12I21 || []).map(r => String(r[0] || "").trim()).filter(Boolean),
+      bankAccounts: (keyH12I21 || [])
+        .map(r => String(r[0] || "").trim())
+        .filter(n => n && !n.toLowerCase().includes("non-cash") && !n.endsWith(":")),
       bankAccountIds: (keyH12I21 || []).map(r => String(r[1] || "").trim()),
       bankAccountDetails: (keyH12I21 || [])
         .map(r => ({
           name: String(r[0] || "").trim(),
           id: String(r[1] || "").trim()
         }))
-        .filter(d => d.name),
+        .filter(d => d.name && !d.name.toLowerCase().includes("non-cash") && !d.name.endsWith(":")),
+      nonCashBankAccounts: (keyH23I28 || [])
+        .map(r => String(r[0] || "").trim())
+        .filter(n => n && !n.toLowerCase().includes("non-cash bank accounts") && !n.endsWith(":")),
+      nonCashBankAccountIds: (keyH23I28 || []).map(r => String(r[1] || "").trim()),
+      nonCashBankAccountDetails: (keyH23I28 || [])
+        .map(r => ({
+          name: String(r[0] || "").trim(),
+          id: String(r[1] || "").trim()
+        }))
+        .filter(d => d.name && !d.name.toLowerCase().includes("non-cash bank accounts") && !d.name.endsWith(":")),
       contractorsManual: (keyATContr || []).map(r => String(r[0] || "").trim()).filter(Boolean),
       passThroughManual: (keyATPass || []).map(r => String(r[0] || "").trim()).filter(Boolean),
       mappings: accountingMappings
@@ -554,6 +568,25 @@ export async function saveClientSettings({
       }
       masterUpdates.push({
         range: "KeyInfo!H12:I21",
+        values: rows
+      });
+    }
+    if (Array.isArray(settings.accounting.nonCashBankAccounts)) {
+      const rows = [];
+      const details = Array.isArray(settings.accounting.nonCashBankAccountDetails)
+        ? settings.accounting.nonCashBankAccountDetails
+        : [];
+      for (let i = 0; i < 6; i++) {
+        const name = settings.accounting.nonCashBankAccounts[i] !== undefined ? String(settings.accounting.nonCashBankAccounts[i]).trim() : "";
+        let id = "";
+        if (name) {
+          const match = details.find(d => d.name === name);
+          id = match?.id || (Array.isArray(settings.accounting.nonCashBankAccountIds) ? settings.accounting.nonCashBankAccountIds[i] || "" : "");
+        }
+        rows.push([name, id]);
+      }
+      masterUpdates.push({
+        range: "KeyInfo!H23:I28",
         values: rows
       });
     }

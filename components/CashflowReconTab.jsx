@@ -431,7 +431,7 @@ export default function CashflowReconTab({
     return (eomAllTasks || []).find(t =>
       t.clientName === selectedClient &&
       (t.linkedFunction === "cashflow_recon" ||
-       (t.name && t.name.toLowerCase().includes("reconcile cashflow forecast against actual")))
+        (t.name && t.name.toLowerCase().includes("reconcile cashflow forecast against actual")))
     );
   }, [eomAllTasks, selectedClient]);
 
@@ -709,7 +709,7 @@ export default function CashflowReconTab({
             Loading cashflow recon data...
           </p>
           <p style={{ fontSize: "12px", color: "#64748b", margin: 0 }}>
-            Retrieving spreadsheet figures and live actuals for the selected month.
+            Retrieving figures for the selected month.
           </p>
         </div>
       ) : viewMode === "workbench" ? (

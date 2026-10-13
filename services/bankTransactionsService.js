@@ -5,7 +5,7 @@
  * 
  * Orchestrates:
  * 1. Fetching reconciled bank transactions from accounting tool APIs (Xero, QBO)
- *    for the accounts tracked for cash in KeyInfo!H12:H22.
+ *    for the accounts tracked for cash in KeyInfo!H12:H21 and non-cash in KeyInfo!H23:I28.
  * 2. Parsing and month-boundary validation of user-pasted / uploaded unreconciled
  *    statement lines.
  * 3. Intelligent auto-categorization model (TF-IDF word probabilities + rule fallbacks).
@@ -78,7 +78,7 @@ export function tokenizeText(text = "") {
 
 /**
  * Fetches reconciled bank transactions from connected accounting tool (Xero or QuickBooks)
- * for the tracked bank accounts configured in Master Sheet KeyInfo!H12:H22.
+ * for the tracked bank accounts configured in Master Sheet KeyInfo!H12:H21 (Cash) and KeyInfo!H23:I28 (Non-Cash).
  */
 export async function fetchClientReconciledBankTransactions({
   clientName,
@@ -94,23 +94,35 @@ export async function fetchClientReconciledBankTransactions({
   const cleanMasterId = extractSheetIdFromUrl(masterSheetId) || masterSheetId;
   const { startDate, endDate } = getMonthDateRange(monthKey);
 
-  // 1. Read tracked bank accounts from KeyInfo!H12:H22
-  const keyInfoResp = await withRetry(() => sheets.spreadsheets.values.get({
-    spreadsheetId: cleanMasterId,
-    range: "KeyInfo!H12:H22"
-  }));
+  // 1. Read tracked bank accounts from KeyInfo!H12:H21 (Cash) and KeyInfo!H23:I28 (Non-Cash)
+  const [cashKeyResp, nonCashKeyResp] = await Promise.all([
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: cleanMasterId,
+      range: "KeyInfo!H12:H21"
+    })),
+    withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: cleanMasterId,
+      range: "KeyInfo!H23:I28"
+    })).catch(() => ({ data: { values: [] } }))
+  ]);
 
-  const trackedAccountNames = (keyInfoResp.data.values || [])
+  const trackedAccountNames = (cashKeyResp.data.values || [])
     .map(r => String(r[0] || "").trim())
-    .filter(Boolean);
+    .filter(name => name && !name.toLowerCase().includes("non-cash") && !name.endsWith(":"));
 
-  if (trackedAccountNames.length === 0) {
+  const trackedNonCashAccountNames = (nonCashKeyResp.data.values || [])
+    .map(r => String(r[0] || "").trim())
+    .filter(name => name && !name.toLowerCase().includes("non-cash bank accounts") && !name.endsWith(":"));
+
+  if (trackedAccountNames.length === 0 && trackedNonCashAccountNames.length === 0) {
     return {
       success: true,
       hasTrackedAccounts: false,
-      message: "No bank accounts currently configured in Client Settings > Bank Accounts (KeyInfo!H12:H22).",
+      message: "No bank accounts currently configured in Client Settings > Bank Accounts (KeyInfo!H12:H28).",
       trackedAccountNames: [],
-      transactions: []
+      trackedNonCashAccountNames: [],
+      transactions: [],
+      nonCashTransactions: []
     };
   }
 
@@ -139,6 +151,7 @@ export async function fetchClientReconciledBankTransactions({
   }
 
   let transactions = [];
+  let nonCashTransactions = [];
 
   // 3. Ingestion: Xero
   if (activeTool === "xero") {
@@ -195,7 +208,7 @@ export async function fetchClientReconciledBankTransactions({
     // Fetch tenant accounts
     const allXeroAccounts = await withXeroRetry((tok) => fetchXeroBankAccounts(tok, tenantId));
 
-    // Match tracked account names
+    // Match tracked cash account names
     const matchedAccounts = allXeroAccounts.filter(acc => {
       return trackedAccountNames.some(tracked => {
         const tLower = tracked.toLowerCase();
@@ -204,7 +217,16 @@ export async function fetchClientReconciledBankTransactions({
       });
     });
 
-    // Query transactions for each matched account
+    // Match tracked non-cash account names
+    const matchedNonCashAccounts = allXeroAccounts.filter(acc => {
+      return trackedNonCashAccountNames.some(tracked => {
+        const tLower = tracked.toLowerCase();
+        const aLower = (acc.name || "").toLowerCase();
+        return aLower.includes(tLower) || tLower.includes(aLower);
+      });
+    });
+
+    // Query transactions for each matched cash account
     for (const acc of matchedAccounts) {
       const accTxns = await withXeroRetry((tok) => fetchXeroAccountTransactions({
         accessToken: tok,
@@ -220,6 +242,29 @@ export async function fetchClientReconciledBankTransactions({
           accountName: acc.name,
           accountCode: acc.code,
           isReconciled: true,
+          isNonCash: false,
+          source: "xero"
+        });
+      });
+    }
+
+    // Query transactions for each matched non-cash account
+    for (const acc of matchedNonCashAccounts) {
+      const accTxns = await withXeroRetry((tok) => fetchXeroAccountTransactions({
+        accessToken: tok,
+        tenantId,
+        accountId: acc.id,
+        startDate,
+        endDate
+      }));
+
+      accTxns.forEach(tx => {
+        nonCashTransactions.push({
+          ...tx,
+          accountName: acc.name,
+          accountCode: acc.code,
+          isReconciled: true,
+          isNonCash: true,
           source: "xero"
         });
       });
@@ -280,6 +325,14 @@ export async function fetchClientReconciledBankTransactions({
       });
     });
 
+    const matchedNonCashAccounts = allQBAccounts.filter(acc => {
+      return trackedNonCashAccountNames.some(tracked => {
+        const tLower = tracked.toLowerCase();
+        const aLower = (acc.name || "").toLowerCase();
+        return aLower.includes(tLower) || tLower.includes(aLower);
+      });
+    });
+
     for (const acc of matchedAccounts) {
       const accTxns = await withQBRetry((tok) => fetchQuickBooksAccountTransactions({
         accessToken: tok,
@@ -295,6 +348,28 @@ export async function fetchClientReconciledBankTransactions({
           accountName: acc.name,
           accountCode: acc.code,
           isReconciled: true,
+          isNonCash: false,
+          source: "quickbooks"
+        });
+      });
+    }
+
+    for (const acc of matchedNonCashAccounts) {
+      const accTxns = await withQBRetry((tok) => fetchQuickBooksAccountTransactions({
+        accessToken: tok,
+        realmId,
+        accountId: acc.id,
+        startDate,
+        endDate
+      }));
+
+      accTxns.forEach(tx => {
+        nonCashTransactions.push({
+          ...tx,
+          accountName: acc.name,
+          accountCode: acc.code,
+          isReconciled: true,
+          isNonCash: true,
           source: "quickbooks"
         });
       });
@@ -303,9 +378,15 @@ export async function fetchClientReconciledBankTransactions({
 
   // Sort by date ascending
   transactions.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  nonCashTransactions.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
   // Strictly filter transactions to target month date range
   const filteredTxns = transactions.filter(tx => {
+    if (!tx.date) return false;
+    return tx.date >= startDate && tx.date <= endDate;
+  });
+
+  const filteredNonCashTxns = nonCashTransactions.filter(tx => {
     if (!tx.date) return false;
     return tx.date >= startDate && tx.date <= endDate;
   });
@@ -334,16 +415,31 @@ export async function fetchClientReconciledBankTransactions({
     };
   });
 
+  const categorizedNonCashTxns = filteredNonCashTxns.map((tx, idx) => {
+    const prediction = autoCategorizeTransaction(tx, learningMap);
+    return {
+      ...tx,
+      id: tx.id || `api_nc_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+      category: prediction.category,
+      suggestedCategory: prediction.category,
+      confidence: prediction.confidence,
+      reason: prediction.reason
+    };
+  });
+
   return {
     success: true,
     hasTrackedAccounts: true,
     hasIntegration: true,
     tool: activeTool,
     trackedAccountNames,
+    trackedNonCashAccountNames,
     totalTransactions: categorizedTxns.length,
+    totalNonCashTransactions: categorizedNonCashTxns.length,
     startDate,
     endDate,
-    transactions: categorizedTxns
+    transactions: categorizedTxns,
+    nonCashTransactions: categorizedNonCashTxns
   };
 }
 

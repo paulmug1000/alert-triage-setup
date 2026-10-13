@@ -355,6 +355,7 @@ export async function getCashflowReconData({
   let plAdds = [];
   let plAccountOptions = [];
   let trackedBankAccounts = [];
+  let trackedNonCashBankAccounts = [];
   let hasTargetTab = false;
   let canAutoCreateTab = false;
 
@@ -382,7 +383,8 @@ export async function getCashflowReconData({
           `'${reconTabName}'!AT48:BK75`, // [5] Direct costs breakdown
           `'${reconTabName}'!CD4:CN60`,  // [6] Unreconciled items
           `'${reconTabName}'!CZ3:DA60`,  // [7] P&L Adds by account & categories
-          `'KeyInfo'!H12:H22`            // [8] Tracked bank accounts
+          `'KeyInfo'!H12:H21`,           // [8] Tracked bank accounts (cash, max 10 rows 12-21)
+          `'KeyInfo'!H23:I28`            // [9] Tracked non-cash bank accounts (P&L additions, max 6 rows 23-28)
         ];
 
         const reconBatchRes = await withRetry(() => sheets.spreadsheets.values.batchGet({
@@ -393,11 +395,20 @@ export async function getCashflowReconData({
 
         const vRanges = reconBatchRes.data.valueRanges || [];
 
-        // Parse [8] Tracked Bank Accounts from KeyInfo!H12:H22 early
+        // Parse [8] Tracked Bank Accounts from KeyInfo!H12:H21 early
         const rawAccounts = vRanges[8]?.values || [];
         trackedBankAccounts = rawAccounts
           .map(r => String(r[0] || "").trim())
-          .filter(Boolean);
+          .filter(acc => acc && !acc.toLowerCase().includes("non-cash") && !acc.endsWith(":"));
+
+        // Parse [9] Tracked Non-Cash Bank Accounts from KeyInfo!H23:I28
+        const rawNonCashAccounts = vRanges[9]?.values || [];
+        trackedNonCashBankAccounts = rawNonCashAccounts
+          .map(r => ({
+            name: String(r[0] || "").trim(),
+            id: String(r[1] || "").trim()
+          }))
+          .filter(a => a.name && !a.name.toLowerCase().includes("non-cash bank accounts") && !a.name.endsWith(":"));
 
         // Parse [0] U3:X16 Totals
         const rawReconRows = vRanges[0]?.values || [];
@@ -470,6 +481,8 @@ export async function getCashflowReconData({
 
         const mapCategoryToForecast = (catName, compRows) => {
           const norm = catName.toLowerCase().trim();
+          const hasPayrollRow = (compRows || []).some(cr => String(cr[0] || "").toLowerCase().includes("payroll") || String(cr[1] || "").toLowerCase().includes("payroll"));
+
           for (let i = 0; i < compRows.length; i++) {
             const row = compRows[i];
             const rLabel = String(row[0] || "").trim().toLowerCase();
@@ -479,21 +492,24 @@ export async function getCashflowReconData({
             else if (norm === "contractors" && rLabel.includes("contractor")) matches = true;
             else if (norm === "direct costs" && rLabel.includes("direct cost")) matches = true;
             else if (norm === "dividends" && rLabel.includes("dividend")) matches = true;
-            else if (norm === "salaries" && (rSub.includes("payroll") || (rLabel.includes("salar") && !rSub))) matches = true;
+            else if (norm === "salaries") {
+              if (rSub.includes("payroll") || rLabel.includes("payroll")) matches = true;
+              else if (!hasPayrollRow && rLabel.includes("salar") && !rSub) matches = true;
+            }
             else if (norm === "paye" && (rSub.includes("paye") || rLabel.includes("paye"))) matches = true;
             else if (norm === "pension" && (rSub.includes("pension") || rLabel.includes("pension"))) matches = true;
-            else if (norm === "outgoings" && (rLabel.includes("other exp") || rLabel.includes("outgoing"))) matches = true;
+            else if (norm === "outgoings" && (rLabel.includes("other exp") || rLabel.includes("outgoing") || rLabel.includes("overhead"))) matches = true;
             else if (norm === "corp tax" && (rLabel.includes("corp") || rLabel.includes("tax"))) matches = true;
             else if (norm === "vat" && rLabel.includes("vat")) matches = true;
-            else if (norm === "other" && rLabel.includes("other")) matches = true;
+            else if (norm === "other" && (rLabel === "other" || rSub === "other" || (rLabel.includes("other") && !rLabel.includes("other exp")))) matches = true;
 
             if (matches && row[2]) {
               const forecastVal = String(row[2]).trim();
-              const diffVal = (i + 1 < compRows.length && !compRows[i + 1][0]) ? String(compRows[i + 1][3] || "").trim() : "";
+              const diffVal = (i + 1 < compRows.length && !compRows[i + 1][0] && !compRows[i + 1][1]) ? String(compRows[i + 1][3] || "").trim() : "";
               return { cashflow: forecastVal, diff: diffVal };
             }
           }
-          return { cashflow: "—", diff: "" };
+          return { cashflow: "£0.00", diff: "£0.00" };
         };
 
         const canonicalCategories = [
@@ -673,7 +689,7 @@ export async function getCashflowReconData({
         if (!trackedBankAccounts || trackedBankAccounts.length === 0) {
           trackedBankAccounts = (vRanges[8]?.values || [])
             .map(r => String(r[0] || "").trim())
-            .filter(Boolean);
+            .filter(acc => acc && !acc.toLowerCase().includes("non-cash") && !acc.endsWith(":"));
         }
       }
     } catch (err) {
@@ -711,7 +727,8 @@ export async function getCashflowReconData({
     unreconciledItems,
     plAdds,
     plAccountOptions: plAccountOptions || [],
-    trackedBankAccounts: trackedBankAccounts || []
+    trackedBankAccounts: trackedBankAccounts || [],
+    trackedNonCashBankAccounts: trackedNonCashBankAccounts || []
   };
 }
 

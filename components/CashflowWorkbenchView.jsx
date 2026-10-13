@@ -57,6 +57,14 @@ export function parseAmount(val) {
   return isNaN(num) ? 0 : num;
 }
 
+export function formatAmount2DP(val) {
+  if (val == null || val === "") return "";
+  const num = parseAmount(val);
+  if (num === 0 && (val === 0 || val === "0" || val === "0.00" || val === "£0.00")) return "£0.00";
+  if (num === 0) return "";
+  return `£${num.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 /**
  * Pairs bank transactions with Pulse items based on spreadsheet row cross-references
  * or heuristic amount matches, separating cleanly into matched pairs and unmatched lists.
@@ -429,6 +437,259 @@ function AlignedBreakdownView({
   );
 }
 
+/**
+ * Intelligently merges incoming API transactions with current workbench transactions:
+ * 1. Matches existing transactions and updates changed fields while STRICTLY maintaining assigned categories.
+ * 2. Compares new transactions against unreconciled items (unreconItems). If matched, replaces pasted item with actual API item, carries over assigned category, and removes it from unreconItems. If not matched, adds as new.
+ * 3. Identifies deleted API transactions (reconciled transactions previously from API no longer in the feed) and removes them.
+ */
+export function performTransactionsUpdate({
+  currentBankTxns = [],
+  currentUnreconItems = [],
+  incomingApiTxns = [],
+  incomingNonCashTxns = [],
+  defaultAccount = ""
+}) {
+  let updatedCount = 0;
+  let deletedCount = 0;
+  let newAddedCount = 0;
+  let matchedFromUnreconCount = 0;
+  let matchedNonCashCount = 0;
+
+  // Clone unreconciled pool so matched items can be cleanly removed
+  let unreconPool = [...currentUnreconItems];
+
+  const matchedIncomingIndices = new Set();
+  const matchedExistingIndices = new Set();
+  const nextBankTxns = [];
+
+  const getAmt = (t) => {
+    const o = parseAmount(t.outAmount || t.outAmt);
+    const i = parseAmount(t.inAmount || t.inAmt);
+    return { outVal: o, inVal: i, total: o > 0 ? o : i, isCredit: i > 0 };
+  };
+
+  const cleanStr = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  // Pass 1: Match by sourceId
+  incomingApiTxns.forEach((apiTx, apiIdx) => {
+    if (!apiTx.sourceId) return;
+    const existIdx = currentBankTxns.findIndex((ex, idx) => !matchedExistingIndices.has(idx) && ex.sourceId === apiTx.sourceId);
+    if (existIdx !== -1) {
+      matchedIncomingIndices.add(apiIdx);
+      matchedExistingIndices.add(existIdx);
+    }
+  });
+
+  // Pass 2: Match by signature (exact amount + matching direction + close date + similar payee/ref)
+  incomingApiTxns.forEach((apiTx, apiIdx) => {
+    if (matchedIncomingIndices.has(apiIdx)) return;
+    const apiA = getAmt(apiTx);
+
+    let bestIdx = -1;
+    let bestScore = 0;
+
+    currentBankTxns.forEach((ex, exIdx) => {
+      if (matchedExistingIndices.has(exIdx)) return;
+      const exA = getAmt(ex);
+
+      if (apiA.isCredit !== exA.isCredit) return;
+      if (Math.abs(apiA.total - exA.total) > 0.01) return;
+
+      let score = 10;
+      const apiDate = String(apiTx.date || "").slice(0, 10);
+      const exDate = String(ex.date || "").slice(0, 10);
+      if (apiDate && exDate && apiDate === exDate) score += 20;
+
+      const apiTxt = cleanStr(`${apiTx.payee || ""} ${apiTx.particulars || ""} ${apiTx.reference || ""}`);
+      const exTxt = cleanStr(`${ex.payee || ""} ${ex.particulars || ""} ${ex.reference || ""}`);
+      if (apiTxt && exTxt && (apiTxt.includes(exTxt) || exTxt.includes(apiTxt))) score += 30;
+
+      if (score > bestScore && score >= 20) {
+        bestScore = score;
+        bestIdx = exIdx;
+      }
+    });
+
+    if (bestIdx !== -1) {
+      matchedIncomingIndices.add(apiIdx);
+      matchedExistingIndices.add(bestIdx);
+    }
+  });
+
+  // Step 1: Process matched pairs (Update fields, maintain assigned category)
+  matchedIncomingIndices.forEach(apiIdx => {
+    const apiTx = incomingApiTxns[apiIdx];
+    let matchedExIdx = currentBankTxns.findIndex((ex, idx) => matchedExistingIndices.has(idx) && ex.sourceId === apiTx.sourceId);
+    if (matchedExIdx === -1) {
+      matchedExIdx = currentBankTxns.findIndex((ex, idx) => {
+        if (!matchedExistingIndices.has(idx)) return false;
+        const apiA = getAmt(apiTx);
+        const exA = getAmt(ex);
+        return apiA.isCredit === exA.isCredit && Math.abs(apiA.total - exA.total) < 0.01;
+      });
+    }
+
+    const exTx = matchedExIdx !== -1 ? currentBankTxns[matchedExIdx] : null;
+    const assignedCategory = exTx?.category || exTx?.suggestedCategory || apiTx.category || apiTx.suggestedCategory;
+
+    // Check if this matched transaction was originally an unreconciled item in bankTxns
+    if (exTx && exTx.isReconciled === false) {
+      matchedFromUnreconCount++;
+      const poolIdx = unreconPool.findIndex(u => (exTx.id && u.id === exTx.id) || (Math.abs(parseAmount(u.outAmount || u.outAmt) - parseAmount(exTx.outAmount || exTx.outAmt)) < 0.01 && u.date === exTx.date));
+      if (poolIdx !== -1) {
+        unreconPool.splice(poolIdx, 1);
+      }
+    }
+
+    if (exTx) {
+      if (parseAmount(exTx.outAmount) !== parseAmount(apiTx.outAmount) ||
+        parseAmount(exTx.inAmount) !== parseAmount(apiTx.inAmount) ||
+        (exTx.payee || "") !== (apiTx.payee || "") ||
+        (exTx.date || "") !== (apiTx.date || "")) {
+        updatedCount++;
+      }
+    }
+
+    nextBankTxns.push({
+      ...(exTx || {}),
+      ...apiTx,
+      id: exTx?.id || apiTx.id,
+      rowNum: exTx?.rowNum || apiTx.rowNum,
+      category: assignedCategory,
+      suggestedCategory: assignedCategory,
+      accountName: apiTx.accountName || exTx?.accountName || defaultAccount,
+      isReconciled: true,
+      source: apiTx.source || "xero"
+    });
+  });
+
+  // Step 2: Unmatched incoming (New transactions from API)
+  incomingApiTxns.forEach((apiTx, apiIdx) => {
+    if (matchedIncomingIndices.has(apiIdx)) return;
+    newAddedCount++;
+    const apiA = getAmt(apiTx);
+
+    let bestUnreconIdx = -1;
+    let bestScore = 0;
+
+    unreconPool.forEach((un, unIdx) => {
+      const unA = getAmt(un);
+      if (apiA.isCredit !== unA.isCredit) return;
+      if (Math.abs(apiA.total - unA.total) > 0.01) return;
+
+      let score = 10;
+      const apiDate = String(apiTx.date || "").slice(0, 10);
+      const unDate = String(un.date || "").slice(0, 10);
+      if (apiDate && unDate && apiDate === unDate) score += 20;
+
+      const apiTxt = cleanStr(`${apiTx.payee || ""} ${apiTx.particulars || ""} ${apiTx.reference || ""}`);
+      const unTxt = cleanStr(`${un.payee || ""} ${un.particulars || ""} ${un.reference || ""}`);
+      if (apiTxt && unTxt && (apiTxt.includes(unTxt) || unTxt.includes(apiTxt))) score += 30;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestUnreconIdx = unIdx;
+      }
+    });
+
+    if (bestUnreconIdx !== -1) {
+      matchedFromUnreconCount++;
+      const matchedUn = unreconPool[bestUnreconIdx];
+      const inheritedCategory = matchedUn.category || matchedUn.suggestedCategory || apiTx.category || "Outgoings";
+      unreconPool.splice(bestUnreconIdx, 1);
+
+      nextBankTxns.push({
+        ...apiTx,
+        id: matchedUn.id || apiTx.id,
+        category: inheritedCategory,
+        suggestedCategory: inheritedCategory,
+        accountName: apiTx.accountName || matchedUn.accountName || defaultAccount,
+        isReconciled: true,
+        source: apiTx.source || "xero"
+      });
+    } else {
+      const defaultCat = (parseAmount(apiTx.inAmount || apiTx.inAmt) > 0 ? "Revenue" : "Outgoings");
+      nextBankTxns.push({
+        ...apiTx,
+        category: apiTx.category || apiTx.suggestedCategory || defaultCat,
+        suggestedCategory: apiTx.suggestedCategory || apiTx.category || defaultCat,
+        accountName: apiTx.accountName || defaultAccount,
+        isReconciled: true,
+        source: apiTx.source || "xero"
+      });
+    }
+  });
+
+  // Step 2b: Match Non-Cash API Transactions against Unreconciled Pool (P&L additions)
+  // When matched, the expense has officially entered the accounting tool so it is safely cleared from unreconPool.
+  // CRITICAL: These non-cash transactions are NEVER added to nextBankTxns to keep the cash recon clean.
+  incomingNonCashTxns.forEach(ncTx => {
+    const ncA = getAmt(ncTx);
+    const ncDate = String(ncTx.date || "").slice(0, 10);
+    const ncTxt = cleanStr(`${ncTx.payee || ""} ${ncTx.particulars || ""} ${ncTx.reference || ""}`);
+
+    let bestUnIdx = -1;
+    let bestScore = 0;
+
+    unreconPool.forEach((un, unIdx) => {
+      const unA = getAmt(un);
+      if (ncA.isCredit !== unA.isCredit) return;
+      if (Math.abs(ncA.total - unA.total) > 0.01) return;
+
+      let score = 15;
+      const unDate = String(un.date || "").slice(0, 10);
+      if (unDate && ncDate && unDate === ncDate) score += 25;
+      else if (unDate && ncDate && unDate.slice(0, 7) === ncDate.slice(0, 7)) score += 10;
+
+      const unTxt = cleanStr(`${un.payee || ""} ${un.particulars || ""} ${un.reference || ""}`);
+      if (ncTxt && unTxt && (ncTxt.includes(unTxt) || unTxt.includes(ncTxt))) score += 30;
+
+      if (un.accountName === "Non-cash account" || (ncTx.accountName && un.accountName === ncTx.accountName)) {
+        score += 20;
+      }
+
+      if (score > bestScore && score >= 25) {
+        bestScore = score;
+        bestUnIdx = unIdx;
+      }
+    });
+
+    if (bestUnIdx !== -1) {
+      unreconPool.splice(bestUnIdx, 1);
+      matchedNonCashCount++;
+    }
+  });
+
+  // Step 3: Existing bank transactions NOT matched by incoming API feed
+  currentBankTxns.forEach((ex, exIdx) => {
+    if (matchedExistingIndices.has(exIdx)) return;
+
+    const isPastedOrUnrecon = ex.isReconciled === false || ex.source === "unreconciled_paste";
+    if (isPastedOrUnrecon) {
+      const wasReplaced = nextBankTxns.some(t => t.id === ex.id);
+      if (!wasReplaced) {
+        nextBankTxns.push(ex);
+      }
+    } else {
+      // Reconciled API transaction was deleted / reversed in accounting platform
+      deletedCount++;
+    }
+  });
+
+  nextBankTxns.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+
+  return {
+    nextBankTxns,
+    nextUnreconItems: unreconPool,
+    newAddedCount,
+    matchedFromUnreconCount,
+    matchedNonCashCount,
+    updatedCount,
+    deletedCount
+  };
+}
+
 export default function CashflowWorkbenchView({
   reconData,
   selectedClient,
@@ -451,6 +712,7 @@ export default function CashflowWorkbenchView({
 
   // Ingestion & Sync states
   const [fetchingApi, setFetchingApi] = useState(false);
+  const [updatingTxns, setUpdatingTxns] = useState(false);
   const [apiMsg, setApiMsg] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
@@ -747,6 +1009,29 @@ export default function CashflowWorkbenchView({
     return (reconData?.directCostsBreakdown?.pulseDirectCosts || []).filter(p => !String(p.client || "").startsWith("#") && !String(p.amount || "").startsWith("#"));
   }, [reconData]);
 
+  // 1b. Clear / Remove individual unreconciled P&L item
+  const handleRemoveUnreconItem = (itemToRemove, itemIdx) => {
+    const updated = unreconItems.filter((item, i) => {
+      if (itemToRemove.id && item.id) return item.id !== itemToRemove.id;
+      return i !== itemIdx;
+    });
+    setUnreconItems(updated);
+    triggerAutoSync(bankTxns, updated);
+    setApiMsg(`✓ Cleared unreconciled item: ${itemToRemove.payee || itemToRemove.particulars || "Item"}`);
+  };
+
+  // 1c. Confirmation Pop-up for Overwrite All
+  const handleConfirmOverwriteAll = () => {
+    setCustomModal({
+      title: "Confirm overwrite",
+      message: "This will overwrite all existing transactions and categorisations — are you sure you want to do this?",
+      type: "warning",
+      isConfirm: true,
+      confirmText: "Overwrite all",
+      onConfirm: () => handleFetchApiTxns()
+    });
+  };
+
   // 2. Fetch API Transactions (Xero / QuickBooks)
   const handleFetchApiTxns = async () => {
     if (!clientInfo?.masterSheetId) {
@@ -802,13 +1087,92 @@ export default function CashflowWorkbenchView({
     }
   };
 
+  // 2b. Intelligent Delta Update for Bank Transactions
+  const handleUpdateBankTransactions = async () => {
+    if (!clientInfo?.masterSheetId) {
+      setCustomModal({
+        title: "Configuration missing",
+        message: "Missing Master Sheet ID for client.",
+        type: "error"
+      });
+      return;
+    }
+    setUpdatingTxns(true);
+    setApiMsg("");
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "fetch_api_bank_transactions",
+          clientName: selectedClient,
+          masterSheetId: clientInfo.masterSheetId,
+          reconSheetId: clientInfo.reconSheetId,
+          monthKey: reconData?.targetMonthKey || effectiveMonthKey
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to fetch live API transactions");
+
+      const incomingTxns = data.transactions || [];
+
+      // If no bank transactions currently loaded, perform initial population
+      if (bankTxns.length === 0) {
+        const mapped = incomingTxns.map((tx, idx) => ({
+          ...tx,
+          id: tx.id || `api_${Date.now()}_${idx}`,
+          accountName: tx.accountName || defaultAccount,
+          category: tx.category || tx.suggestedCategory || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
+          suggestedCategory: tx.suggestedCategory || tx.category || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings")
+        }));
+        setBankTxns(mapped);
+        setApiMsg(`✓ Loaded ${mapped.length} reconciled transactions via ${data.tool?.toUpperCase()} API.`);
+        triggerAutoSync(mapped, unreconItems);
+        return;
+      }
+
+      // Perform intelligent delta reconciliation update
+      const result = performTransactionsUpdate({
+        currentBankTxns: bankTxns,
+        currentUnreconItems: unreconItems,
+        incomingApiTxns: incomingTxns,
+        incomingNonCashTxns: data.nonCashTransactions || [],
+        defaultAccount
+      });
+
+      setBankTxns(result.nextBankTxns);
+      setUnreconItems(result.nextUnreconItems);
+
+      // Auto-save updated state to Recon Sheet in background
+      triggerAutoSync(result.nextBankTxns, result.nextUnreconItems);
+
+      const nonCashClearedText = result.matchedNonCashCount > 0 ? `, ${result.matchedNonCashCount} non-cash P&L addition${result.matchedNonCashCount === 1 ? "" : "s"} cleared` : "";
+      const msg = `✓ Update complete: ${result.newAddedCount} new transaction${result.newAddedCount === 1 ? "" : "s"} added${result.matchedFromUnreconCount > 0 ? ` (${result.matchedFromUnreconCount} cash unreconciled matched)` : ""}${nonCashClearedText}, ${result.updatedCount} updated${result.deletedCount > 0 ? `, ${result.deletedCount} removed` : ""}.`;
+      setApiMsg(msg);
+      setCustomModal({
+        title: "Bank transactions updated",
+        message: msg,
+        type: "success"
+      });
+    } catch (err) {
+      console.error("Update transactions error:", err);
+      setCustomModal({
+        title: "Update failed",
+        message: err.message,
+        type: "error"
+      });
+    } finally {
+      setUpdatingTxns(false);
+    }
+  };
+
   // 3. Category Change Handler (Guaranteed single-row isolation)
-  const handleCategoryChange = async (tx, newCategory, txIndex) => {
-    const updated = bankTxns.map((t, idx) => {
-      const isMatch = (txIndex != null && idx === txIndex) ||
-        (tx.id && t.id && t.id === tx.id) ||
+  const handleCategoryChange = async (tx, newCategory) => {
+    const updated = bankTxns.map((t) => {
+      const isMatch = (tx.id && t.id && t.id === tx.id) ||
+        (tx.sourceId && t.sourceId && t.sourceId === tx.sourceId) ||
         (tx.rowNum != null && t.rowNum != null && t.rowNum === tx.rowNum) ||
-        (tx.sourceId && t.sourceId && t.sourceId === tx.sourceId);
+        (tx === t);
       if (isMatch) {
         return { ...t, category: newCategory, suggestedCategory: newCategory };
       }
@@ -990,14 +1354,17 @@ export default function CashflowWorkbenchView({
       });
       return;
     }
+    const isNonCash = selectedUploadAccount === "Non-cash account";
     const taggedItems = selectedItems.map(it => ({
       ...it,
       accountName: selectedUploadAccount || it.accountName || ""
     }));
     const nextUnrecon = [...unreconItems, ...taggedItems];
-    const nextBankTxns = [...bankTxns, ...taggedItems];
+    const nextBankTxns = isNonCash ? bankTxns : [...bankTxns, ...taggedItems];
     setUnreconItems(nextUnrecon);
-    setBankTxns(nextBankTxns);
+    if (!isNonCash) {
+      setBankTxns(nextBankTxns);
+    }
 
     // Automatically background-sync to Google Sheet
     triggerAutoSync(nextBankTxns, nextUnrecon);
@@ -1008,7 +1375,9 @@ export default function CashflowWorkbenchView({
     setParsedItems([]);
     setCustomModal({
       title: "Unreconciled items added",
-      message: `✓ Added ${selectedItems.length} unreconciled statement line${selectedItems.length > 1 ? "s" : ""} to the workbench register and auto-saved to sheet.`,
+      message: isNonCash
+        ? `✓ Added ${selectedItems.length} unreconciled statement line${selectedItems.length > 1 ? "s" : ""} to Unreconciled P&L additions (Non-cash account).`
+        : `✓ Added ${selectedItems.length} unreconciled statement line${selectedItems.length > 1 ? "s" : ""} to the workbench register and auto-saved to sheet.`,
       type: "success"
     });
   };
@@ -1044,6 +1413,14 @@ export default function CashflowWorkbenchView({
     }
   };
 
+  // Standardized category resolution with canonical casing
+  const getResolvedCategory = useCallback((tx) => {
+    const raw = tx.category || tx.suggestedCategory || (parseAmount(tx.inAmount || tx.inAmt) > 0 ? "Revenue" : "Outgoings");
+    const str = String(raw || "").trim();
+    const match = VALID_RECON_CATEGORIES.find(c => c.toLowerCase() === str.toLowerCase());
+    return match || str || "Outgoings";
+  }, []);
+
   // Distinct accounts discovered across tracked accounts & loaded transactions
   const distinctAccounts = useMemo(() => {
     const set = new Set();
@@ -1063,16 +1440,40 @@ export default function CashflowWorkbenchView({
       if (filterAccount !== "ALL") {
         if (acc !== filterAccount) return false;
       }
-      // Category filter
+      // Category filter (normalized case-insensitive match)
       if (filterCategory !== "ALL") {
-        if (filterCategory === "Unreconciled" && tx.isReconciled !== false) return false;
-        if (filterCategory !== "Unreconciled" && (tx.category || tx.suggestedCategory) !== filterCategory) return false;
+        if (filterCategory === "Unreconciled") {
+          if (tx.isReconciled !== false) return false;
+        } else {
+          const txCat = getResolvedCategory(tx);
+          if (txCat.toLowerCase() !== filterCategory.trim().toLowerCase()) return false;
+        }
       }
       // Search filter
       if (searchTerm) {
-        const q = searchTerm.toLowerCase();
+        const q = searchTerm.toLowerCase().trim();
+        const cleanQ = q.replace(/[£,\s]/g, "");
         const text = `${tx.payee || ""} ${tx.particulars || ""} ${tx.reference || ""} ${tx.date || ""} ${acc}`.toLowerCase();
-        if (!text.includes(q)) return false;
+
+        let match = text.includes(q);
+
+        // Also search by amount
+        if (!match && cleanQ) {
+          const outClean = String(tx.outAmount || tx.outAmt || "").replace(/[£,\s]/g, "");
+          const inClean = String(tx.inAmount || tx.inAmt || "").replace(/[£,\s]/g, "");
+          const outNum = parseAmount(tx.outAmount || tx.outAmt);
+          const inNum = parseAmount(tx.inAmount || tx.inAmt);
+
+          if (outClean.includes(cleanQ) || inClean.includes(cleanQ)) {
+            match = true;
+          } else if (!isNaN(parseFloat(cleanQ))) {
+            const searchNum = parseFloat(cleanQ);
+            if (outNum > 0 && Math.abs(outNum - searchNum) < 0.009) match = true;
+            if (inNum > 0 && Math.abs(inNum - searchNum) < 0.009) match = true;
+          }
+        }
+
+        if (!match) return false;
       }
       return true;
     });
@@ -1088,18 +1489,25 @@ export default function CashflowWorkbenchView({
     }
 
     return list;
-  }, [bankTxns, filterAccount, filterCategory, searchTerm, groupByAccount, defaultAccount]);
+  }, [bankTxns, filterAccount, filterCategory, searchTerm, groupByAccount, defaultAccount, getResolvedCategory]);
 
   // Dynamic Category Counts
   const catCounts = useMemo(() => {
     const counts = { ALL: bankTxns.length, Unreconciled: 0 };
     bankTxns.forEach(t => {
-      const c = t.category || t.suggestedCategory || "Other";
+      const c = getResolvedCategory(t);
       counts[c] = (counts[c] || 0) + 1;
       if (t.isReconciled === false) counts.Unreconciled = (counts.Unreconciled || 0) + 1;
     });
     return counts;
-  }, [bankTxns]);
+  }, [bankTxns, getResolvedCategory]);
+
+  // Categories shown as quick filter chips: standard plus any active category with transactions
+  const availableFilterCategories = useMemo(() => {
+    const standard = ["ALL", "Revenue", "Outgoings", "Contractors", "Direct costs", "Salaries", "Transfer", "Pension", "Unreconciled"];
+    const extras = Object.keys(catCounts).filter(k => k !== "ALL" && k !== "Unreconciled" && !standard.includes(k) && catCounts[k] > 0);
+    return [...standard, ...extras];
+  }, [catCounts]);
 
   if (!hasTargetTab || creatingTab) {
     return (
@@ -1159,9 +1567,9 @@ export default function CashflowWorkbenchView({
         {/* Right: Actions */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <button
-            onClick={handleFetchApiTxns}
-            disabled={fetchingApi}
-            title="Fetch reconciled bank transactions from connected accounting tool"
+            onClick={handleUpdateBankTransactions}
+            disabled={updatingTxns || fetchingApi}
+            title="Update bank transactions: applies additions, updates modified items while preserving categories, and removes deletions"
             style={{
               padding: "6px 14px",
               background: "#0284c7",
@@ -1170,13 +1578,34 @@ export default function CashflowWorkbenchView({
               borderRadius: "6px",
               fontSize: "12px",
               fontWeight: "600",
-              cursor: fetchingApi ? "default" : "pointer",
+              cursor: (updatingTxns || fetchingApi) ? "default" : "pointer",
               display: "flex",
               alignItems: "center",
               gap: "6px"
             }}
           >
-            {fetchingApi ? <Spinner /> : "📥"} Fetch API bank transactions
+            {updatingTxns ? <Spinner /> : "🔄"} Update bank transactions
+          </button>
+
+          <button
+            onClick={handleConfirmOverwriteAll}
+            disabled={fetchingApi || updatingTxns}
+            title="Download full feed and overwrite all bank transactions and categorisations from accounting tool"
+            style={{
+              padding: "6px 12px",
+              background: "#f8fafc",
+              color: "#0369a1",
+              border: "1px solid #cbd5e1",
+              borderRadius: "6px",
+              fontSize: "12px",
+              fontWeight: "600",
+              cursor: (fetchingApi || updatingTxns) ? "default" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px"
+            }}
+          >
+            {fetchingApi ? <Spinner /> : "📥"} Overwrite all
           </button>
 
           <button
@@ -1360,7 +1789,7 @@ export default function CashflowWorkbenchView({
                 )}
                 <input
                   type="text"
-                  placeholder="Search payees, descriptions..."
+                  placeholder="Search payees, amounts, descriptions..."
                   value={searchTerm}
                   onChange={e => setSearchTerm(e.target.value)}
                   style={{
@@ -1376,12 +1805,13 @@ export default function CashflowWorkbenchView({
 
             {/* Quick Filter Chips */}
             <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
-              {["ALL", "Revenue", "Contractors", "Direct costs", "Outgoings", "Salaries", "Unreconciled"].map(cat => {
-                const isSelected = filterCategory === cat;
+              {availableFilterCategories.map(cat => {
+                const isSelected = filterCategory.toLowerCase() === cat.toLowerCase();
                 const count = catCounts[cat] || 0;
                 return (
                   <button
                     key={cat}
+                    type="button"
                     onClick={() => setFilterCategory(cat)}
                     style={{
                       padding: "2px 7px",
@@ -1420,7 +1850,7 @@ export default function CashflowWorkbenchView({
                 </thead>
                 <tbody>
                   {filteredTxns.map((tx, idx) => {
-                    const currentCat = tx.category || tx.suggestedCategory || "Outgoings";
+                    const currentCat = getResolvedCategory(tx);
                     const catStyle = CATEGORY_COLORS[currentCat] || CATEGORY_COLORS.Outgoings;
                     const isUnrecon = tx.isReconciled === false;
                     const rowAccount = tx.accountName || defaultAccount;
@@ -1474,16 +1904,16 @@ export default function CashflowWorkbenchView({
                               )}
                             </div>
                           </td>
-                          <td style={{ padding: "6px 8px", textAlign: "right", color: "#b91c1c", fontWeight: tx.outAmount ? "600" : "400" }}>
-                            {tx.outAmount ? `£${tx.outAmount}` : ""}
+                          <td style={{ padding: "6px 8px", textAlign: "right", color: "#b91c1c", fontWeight: parseAmount(tx.outAmount) > 0 ? "600" : "400" }}>
+                            {formatAmount2DP(tx.outAmount)}
                           </td>
-                          <td style={{ padding: "6px 8px", textAlign: "right", color: "#15803d", fontWeight: tx.inAmount ? "600" : "400" }}>
-                            {tx.inAmount ? `£${tx.inAmount}` : ""}
+                          <td style={{ padding: "6px 8px", textAlign: "right", color: "#15803d", fontWeight: parseAmount(tx.inAmount) > 0 ? "600" : "400" }}>
+                            {formatAmount2DP(tx.inAmount)}
                           </td>
                           <td style={{ padding: "6px 8px" }}>
                             <select
                               value={currentCat}
-                              onChange={e => handleCategoryChange(tx, e.target.value, idx)}
+                              onChange={e => handleCategoryChange(tx, e.target.value)}
                               style={{
                                 padding: "2px 4px",
                                 fontSize: "10px",
@@ -1707,7 +2137,8 @@ export default function CashflowWorkbenchView({
                         <th style={{ padding: "6px 8px", textAlign: "left" }}>Payee & particulars</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", width: "70px" }}>Amount</th>
                         <th style={{ padding: "6px 8px", textAlign: "left" }}>P&L Category (CM)</th>
-                        <th style={{ padding: "6px 8px", textAlign: "center", width: "60px" }}>VAT?</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", width: "55px" }}>VAT?</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", width: "60px" }}>Action</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1776,6 +2207,7 @@ export default function CashflowWorkbenchView({
                           </td>
                           <td style={{ padding: "6px 8px", textAlign: "center" }}>
                             <button
+                              type="button"
                               onClick={() => {
                                 setUnreconItems(prev => prev.map((item, i) => i === idx ? { ...item, vatApplies: item.vatApplies === "Yes" ? "No" : "Yes" } : item));
                               }}
@@ -1791,6 +2223,25 @@ export default function CashflowWorkbenchView({
                               }}
                             >
                               {u.vatApplies || "No"}
+                            </button>
+                          </td>
+                          <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveUnreconItem(u, idx)}
+                              title="Dismiss or clear this unreconciled item"
+                              style={{
+                                padding: "2px 6px",
+                                fontSize: "10px",
+                                fontWeight: "600",
+                                borderRadius: "3px",
+                                border: "1px solid #fecaca",
+                                background: "#fff1f2",
+                                color: "#be123c",
+                                cursor: "pointer"
+                              }}
+                            >
+                              ✕ Clear
                             </button>
                           </td>
                         </tr>
@@ -1842,7 +2293,7 @@ export default function CashflowWorkbenchView({
                   <span>📋</span> Ingest unreconciled statement lines
                 </h3>
                 <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
-                  Upload a Xero <strong>Bank Reconciliation Summary (.xlsx / .csv)</strong> report or paste statement rows for <strong>{reconData?.targetMonthLabel || eomMonthKey}</strong>.
+                  Upload a <strong>bank reconciliation summary (.xlsx / .csv)</strong> report or paste statement rows for <strong>{reconData?.targetMonthLabel || eomMonthKey}</strong>.
                 </p>
               </div>
               <button
@@ -1921,6 +2372,11 @@ export default function CashflowWorkbenchView({
                         }}
                       >
                         <option value="">(All / unspecified account)</option>
+                        {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
+                          <option key={acc.name || acc} value={acc.name || acc}>
+                            💳 {acc.name || acc} (Non-cash)
+                          </option>
+                        ))}
                         {(reconData?.trackedBankAccounts || []).map(acc => (
                           <option key={acc} value={acc}>
                             🏦 {acc}
@@ -2054,6 +2510,11 @@ export default function CashflowWorkbenchView({
                         }}
                       >
                         <option value="">(All / unspecified account)</option>
+                        {(reconData?.trackedNonCashBankAccounts || []).map(acc => (
+                          <option key={acc.name || acc} value={acc.name || acc}>
+                            💳 {acc.name || acc} (Non-cash)
+                          </option>
+                        ))}
                         {(reconData?.trackedBankAccounts || []).map(acc => (
                           <option key={acc} value={acc}>
                             🏦 {acc}
@@ -2415,13 +2876,37 @@ export default function CashflowWorkbenchView({
               background: "#f8fafc",
               borderTop: "1px solid #e2e8f0",
               display: "flex",
-              justifyContent: "flex-end"
+              justifyContent: "flex-end",
+              gap: "8px"
             }}>
+              {customModal.isConfirm && (
+                <button
+                  type="button"
+                  onClick={() => setCustomModal(null)}
+                  style={{
+                    padding: "7px 16px",
+                    background: "#ffffff",
+                    color: "#475569",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    cursor: "pointer"
+                  }}
+                >
+                  Cancel
+                </button>
+              )}
               <button
-                onClick={() => setCustomModal(null)}
+                type="button"
+                onClick={() => {
+                  const onOk = customModal.onConfirm;
+                  setCustomModal(null);
+                  if (onOk) onOk();
+                }}
                 style={{
                   padding: "7px 18px",
-                  background: customModal.type === "error" ? "#ef4444" : "#0284c7",
+                  background: customModal.isConfirm ? "#dc2626" : (customModal.type === "error" ? "#ef4444" : "#0284c7"),
                   color: "#ffffff",
                   border: "none",
                   borderRadius: "6px",
@@ -2430,7 +2915,7 @@ export default function CashflowWorkbenchView({
                   cursor: "pointer"
                 }}
               >
-                OK
+                {customModal.confirmText || "OK"}
               </button>
             </div>
           </div>

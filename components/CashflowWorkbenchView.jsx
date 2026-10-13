@@ -14,6 +14,8 @@ export const VALID_RECON_CATEGORIES = [
   "Transfer",
   "Corp tax",
   "VAT",
+  "Non-operating income",
+  "Non-operating expenses",
   "Other"
 ];
 
@@ -29,6 +31,8 @@ const CATEGORY_COLORS = {
   Transfer: { bg: "#e2e8f0", color: "#475569", border: "#94a3b8" },
   "Corp tax": { bg: "#fee2e2", color: "#991b1b", border: "#fca5a5" },
   VAT: { bg: "#ffedd5", color: "#9a3412", border: "#fdba74" },
+  "Non-operating income": { bg: "#ecfdf5", color: "#065f46", border: "#a7f3d0" },
+  "Non-operating expenses": { bg: "#fef2f2", color: "#991b1b", border: "#fecaca" },
 };
 
 export function formatGBP(val) {
@@ -91,52 +95,135 @@ export function buildAlignedComparison(bankItems = [], pulseItems = []) {
   const usedBankIndices = new Set();
   const usedPulseIndices = new Set();
 
-  const extractRowNumber = (val) => {
-    if (!val || isErr(val)) return null;
-    const m = String(val).match(/\d+/);
-    return m ? parseInt(m[0], 10) : null;
+  const parseAmt = (v) => parseFloat(String(v || "0").replace(/[£,\s]/g, "")) || 0;
+
+  const extractRefNumber = (str) => {
+    if (!str) return null;
+    const m = String(str).match(/INV-(\d+)/i) || String(str).match(/\b(\d{4,5})\b/);
+    return m ? m[1] : null;
   };
 
-  // 1. Match by explicit row number reference (from Google Sheet formulas)
-  cleanBank.forEach((b, bIdx) => {
-    const targetPulseRow = extractRowNumber(b.matched);
-    if (targetPulseRow != null) {
-      const pIdx = cleanPulse.findIndex((p, idx) => !usedPulseIndices.has(idx) && p.rowNum === targetPulseRow);
-      if (pIdx !== -1) {
-        matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx] });
+  // 1. Group partial bank payments matching Pulse invoice reference (e.g. INV-1539, INV-1540)
+  cleanPulse.forEach((p, pIdx) => {
+    if (usedPulseIndices.has(pIdx) || !p.ref) return;
+    const pAmt = parseAmt(p.amount);
+    const pRef = String(p.ref).trim();
+
+    const candidateBankIndices = [];
+    let sumBank = 0;
+    cleanBank.forEach((b, bIdx) => {
+      if (usedBankIndices.has(bIdx)) return;
+      const bRef = extractRefNumber(b.particulars) || extractRefNumber(b.ref) || extractRefNumber(b.payee);
+      if (bRef && bRef === pRef) {
+        candidateBankIndices.push(bIdx);
+        sumBank += parseAmt(b.inAmt || b.outAmt || b.amount);
+      }
+    });
+
+    if (candidateBankIndices.length > 0) {
+      if (candidateBankIndices.length === 1 && Math.abs(sumBank - pAmt) < 0.05) {
+        const bIdx = candidateBankIndices[0];
+        matchedPairs.push({ bank: cleanBank[bIdx], pulse: p, matchType: "ref_exact" });
         usedBankIndices.add(bIdx);
+        usedPulseIndices.add(pIdx);
+      } else if (candidateBankIndices.length > 1 && Math.abs(sumBank - pAmt) < 0.05) {
+        // Multi partial payments matching single invoice
+        const matchedBankItems = candidateBankIndices.map(i => cleanBank[i]);
+        matchedPairs.push({
+          bank: matchedBankItems,
+          pulse: p,
+          isMultiBank: true,
+          matchType: "ref_partial_sum"
+        });
+        candidateBankIndices.forEach(i => usedBankIndices.add(i));
         usedPulseIndices.add(pIdx);
       }
     }
   });
 
-  // 2. Pulse items referencing bank rows
+  // 1b. Group partial bank payments with matching payee that sum to pulse invoice
   cleanPulse.forEach((p, pIdx) => {
     if (usedPulseIndices.has(pIdx)) return;
-    const targetBankRow = extractRowNumber(p.matchedRow || (p.matched !== "Matched" && p.matched !== "No Match" ? p.matched : null));
-    if (targetBankRow != null) {
-      const bIdx = cleanBank.findIndex((b, idx) => !usedBankIndices.has(idx) && b.rowNum === targetBankRow);
-      if (bIdx !== -1) {
-        matchedPairs.push({ bank: cleanBank[bIdx], pulse: p });
-        usedBankIndices.add(bIdx);
-        usedPulseIndices.add(pIdx);
+    const pAmt = parseAmt(p.amount);
+    const pClient = String(p.client || "").toLowerCase().trim();
+    if (!pClient || pAmt <= 0) return;
+
+    const candidateBankIndices = [];
+    let sumBank = 0;
+    cleanBank.forEach((b, bIdx) => {
+      if (usedBankIndices.has(bIdx)) return;
+      const bPayee = String(b.payee || "").toLowerCase().trim();
+      if (bPayee && (bPayee.includes(pClient) || pClient.includes(bPayee))) {
+        candidateBankIndices.push(bIdx);
+        sumBank += parseAmt(b.inAmt || b.outAmt || b.amount);
       }
+    });
+
+    if (candidateBankIndices.length > 1 && Math.abs(sumBank - pAmt) < 0.05) {
+      const matchedBankItems = candidateBankIndices.map(i => cleanBank[i]);
+      matchedPairs.push({
+        bank: matchedBankItems,
+        pulse: p,
+        isMultiBank: true,
+        matchType: "payee_partial_sum"
+      });
+      candidateBankIndices.forEach(i => usedBankIndices.add(i));
+      usedPulseIndices.add(pIdx);
     }
   });
 
-  // 3. Fallback heuristic match for items where amounts align exactly
+  // 2. Match by sheet matched ID (b.matched points to p.pulseId)
   cleanBank.forEach((b, bIdx) => {
     if (usedBankIndices.has(bIdx)) return;
-    const bAmt = parseFloat(String(b.inAmt || b.outAmt || b.amount || "0").replace(/[£,\s]/g, "")) || 0;
+    if (!b.matched || b.matched === "No Match" || b.matched === "Matched") return;
+
+    const ids = String(b.matched).replace(/\*/g, "").split(",").map(s => s.trim()).filter(Boolean);
+    ids.forEach(id => {
+      const pIdx = cleanPulse.findIndex((p, idx) => !usedPulseIndices.has(idx) && (p.pulseId === id || p.matchedRow === id));
+      if (pIdx !== -1) {
+        matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx], matchType: "sheet_id" });
+        usedBankIndices.add(bIdx);
+        usedPulseIndices.add(pIdx);
+      }
+    });
+  });
+
+  // 3. Match by exact amount + payee/client similarity
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
     if (bAmt <= 0) return;
+
+    const bPayee = String(b.payee || "").toLowerCase().trim();
     const pIdx = cleanPulse.findIndex((p, idx) => {
       if (usedPulseIndices.has(idx)) return false;
-      const pAmt = parseFloat(String(p.amount || "0").replace(/[£,\s]/g, "")) || 0;
-      if (pAmt <= 0) return false;
+      const pAmt = parseAmt(p.amount);
+      if (Math.abs(bAmt - pAmt) > 0.01) return false;
+      const pClient = String(p.client || "").toLowerCase().trim();
+      return bPayee && pClient && (bPayee.includes(pClient) || pClient.includes(bPayee));
+    });
+
+    if (pIdx !== -1) {
+      matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx], matchType: "amt_name" });
+      usedBankIndices.add(bIdx);
+      usedPulseIndices.add(pIdx);
+    }
+  });
+
+  // 4. Match by exact amount fallback
+  cleanBank.forEach((b, bIdx) => {
+    if (usedBankIndices.has(bIdx)) return;
+    const bAmt = parseAmt(b.inAmt || b.outAmt || b.amount);
+    if (bAmt <= 0) return;
+
+    const pIdx = cleanPulse.findIndex((p, idx) => {
+      if (usedPulseIndices.has(idx)) return false;
+      const pAmt = parseAmt(p.amount);
       return Math.abs(bAmt - pAmt) < 0.01;
     });
-    if (pIdx !== -1 && (b.matched === "Matched" || cleanPulse[pIdx].matched === "Matched" || b.matched !== "No Match")) {
-      matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx] });
+
+    if (pIdx !== -1) {
+      matchedPairs.push({ bank: b, pulse: cleanPulse[pIdx], matchType: "amt_only" });
       usedBankIndices.add(bIdx);
       usedPulseIndices.add(pIdx);
     }
@@ -188,7 +275,7 @@ function AlignedBreakdownView({
     text: "#1e40af"
   };
 
-  const getBankAmt = (b) => (isCredit ? b.inAmt || b.amount || 0 : b.outAmt || b.amount || 0);
+  const getBankAmt = (b) => (isCredit ? b?.inAmt || b?.amount || 0 : b?.outAmt || b?.amount || 0);
   const getPulseDesc = (p) => {
     if (type === "contractors") return `${p.client || "Client"} — ${p.description || p.job || "Contractor payment"}`;
     return `${p.client || "Client"} — ${p.job || "Job"}`;
@@ -253,93 +340,154 @@ function AlignedBreakdownView({
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {matchedPairs.map((pair, idx) => (
-              <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", alignItems: "stretch" }}>
-                {/* Left: Bank Item */}
-                <div
-                  style={{
-                    padding: "8px 10px",
-                    background: bankTheme.bg,
-                    border: `1px solid ${bankTheme.border}`,
-                    borderRadius: "6px",
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent: "space-between",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
-                    <span style={{ fontWeight: "600", fontSize: "12px", color: "#1e293b", wordBreak: "break-word" }}>
-                      {pair.bank.particulars || pair.bank.payee || "Deposit"}
-                    </span>
-                    <span style={{ fontWeight: "700", fontSize: "12px", color: bankTheme.text, whiteSpace: "nowrap" }}>
-                      £{getBankAmt(pair.bank)}
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
-                    <span>{pair.bank.date || "No date"} • {pair.bank.ref || "No ref"}</span>
-                    <span
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "3px",
-                        padding: "2px 6px",
-                        background: "#dcfce7",
-                        color: "#166534",
-                        borderRadius: "4px",
-                        fontSize: "10px",
-                        fontWeight: "700",
-                        border: "1px solid #86efac"
-                      }}
-                    >
-                      ✓ Matched
-                    </span>
-                  </div>
-                </div>
+            {matchedPairs.map((pair, idx) => {
+              const isMulti = pair.isMultiBank && Array.isArray(pair.bank);
+              const totalBank = isMulti
+                ? pair.bank.reduce((acc, b) => acc + parseAmount(getBankAmt(b)), 0)
+                : parseAmount(getBankAmt(pair.bank));
 
-                {/* Right: Pulse Item */}
-                <div
-                  style={{
-                    padding: "8px 10px",
-                    background: pulseTheme.bg,
-                    border: `1px solid ${pulseTheme.border}`,
-                    borderRadius: "6px",
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent: "space-between",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
-                    <span style={{ fontWeight: "600", fontSize: "12px", color: "#1e293b", wordBreak: "break-word" }}>
-                      {getPulseDesc(pair.pulse)}
-                    </span>
-                    <span style={{ fontWeight: "700", fontSize: "12px", color: pulseTheme.text, whiteSpace: "nowrap" }}>
-                      £{pair.pulse.amount}
-                    </span>
+              return (
+                <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", alignItems: "stretch" }}>
+                  {/* Left: Bank Item(s) */}
+                  <div
+                    style={{
+                      padding: "8px 10px",
+                      background: bankTheme.bg,
+                      border: `1px solid ${bankTheme.border}`,
+                      borderRadius: "6px",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                    }}
+                  >
+                    {isMulti ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                          <div>
+                            <span style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b" }}>
+                              {pair.bank[0]?.payee || "Multiple deposits"}
+                            </span>
+                            <span style={{ display: "inline-block", marginLeft: "6px", fontSize: "10px", background: "#e0e7ff", color: "#3730a3", padding: "1px 5px", borderRadius: "4px", fontWeight: "700" }}>
+                              {pair.bank.length} deposits
+                            </span>
+                          </div>
+                          <span style={{ fontWeight: "700", fontSize: "12px", color: bankTheme.text, whiteSpace: "nowrap" }}>
+                            £{totalBank.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "3px", background: "rgba(255,255,255,0.7)", padding: "4px 6px", borderRadius: "4px", border: "1px solid rgba(0,0,0,0.06)" }}>
+                          {pair.bank.map((b, bIdx) => (
+                            <div key={bIdx} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#475569" }}>
+                              <span>{b.date || "Date"}: {b.particulars || b.ref || "Payment"}</span>
+                              <strong style={{ color: "#1e293b" }}>£{getBankAmt(b)}</strong>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
+                          <span>Combined match to {pair.pulse.ref ? `Inv ${pair.pulse.ref}` : "Pulse item"}</span>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "3px",
+                              padding: "2px 6px",
+                              background: "#dcfce7",
+                              color: "#166534",
+                              borderRadius: "4px",
+                              fontSize: "10px",
+                              fontWeight: "700",
+                              border: "1px solid #86efac"
+                            }}
+                          >
+                            ✓ Matched sum
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                          <div style={{ display: "flex", flexDirection: "column" }}>
+                            <span style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b", wordBreak: "break-word" }}>
+                              {pair.bank.payee || pair.bank.particulars || "Deposit"}
+                            </span>
+                            {pair.bank.payee && pair.bank.particulars && pair.bank.particulars !== pair.bank.payee && (
+                              <span style={{ fontSize: "11px", color: "#64748b", marginTop: "1px" }}>
+                                {pair.bank.particulars}
+                              </span>
+                            )}
+                          </div>
+                          <span style={{ fontWeight: "700", fontSize: "12px", color: bankTheme.text, whiteSpace: "nowrap" }}>
+                            £{getBankAmt(pair.bank)}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                          <span>{pair.bank.date || "No date"}{pair.bank.ref ? ` • ${pair.bank.ref}` : ""}</span>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "3px",
+                              padding: "2px 6px",
+                              background: "#dcfce7",
+                              color: "#166534",
+                              borderRadius: "4px",
+                              fontSize: "10px",
+                              fontWeight: "700",
+                              border: "1px solid #86efac"
+                            }}
+                          >
+                            ✓ Matched
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
-                    <span>{pair.pulse.ref || "Invoice"} • {pair.pulse.status || "Paid"}</span>
-                    <span
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "3px",
-                        padding: "2px 6px",
-                        background: "#dcfce7",
-                        color: "#166534",
-                        borderRadius: "4px",
-                        fontSize: "10px",
-                        fontWeight: "700",
-                        border: "1px solid #86efac"
-                      }}
-                    >
-                      ✓ Matched
-                    </span>
+
+                  {/* Right: Pulse Item */}
+                  <div
+                    style={{
+                      padding: "8px 10px",
+                      background: pulseTheme.bg,
+                      border: `1px solid ${pulseTheme.border}`,
+                      borderRadius: "6px",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                      <span style={{ fontWeight: "600", fontSize: "12px", color: "#1e293b", wordBreak: "break-word" }}>
+                        {getPulseDesc(pair.pulse)}
+                      </span>
+                      <span style={{ fontWeight: "700", fontSize: "12px", color: pulseTheme.text, whiteSpace: "nowrap" }}>
+                        £{pair.pulse.amount}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
+                      <span>{pair.pulse.ref ? `Inv ${pair.pulse.ref}` : "Pulse item"} • {pair.pulse.status || "Paid"}</span>
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "3px",
+                          padding: "2px 6px",
+                          background: "#dcfce7",
+                          color: "#166534",
+                          borderRadius: "4px",
+                          fontSize: "10px",
+                          fontWeight: "700",
+                          border: "1px solid #86efac"
+                        }}
+                      >
+                        ✓ Matched
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -378,15 +526,22 @@ function AlignedBreakdownView({
                 unmatchedBank.map((b, i) => (
                   <div key={i} style={{ padding: "8px 10px", background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: "6px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <span style={{ fontWeight: "600", fontSize: "12px", color: "#1e293b" }}>
-                        {b.particulars || b.payee || "Deposit"}
-                      </span>
+                      <div style={{ display: "flex", flexDirection: "column" }}>
+                        <span style={{ fontWeight: "700", fontSize: "12px", color: "#1e293b" }}>
+                          {b.payee || b.particulars || "Deposit"}
+                        </span>
+                        {b.payee && b.particulars && b.particulars !== b.payee && (
+                          <span style={{ fontSize: "11px", color: "#64748b", marginTop: "1px" }}>
+                            {b.particulars}
+                          </span>
+                        )}
+                      </div>
                       <span style={{ fontWeight: "700", fontSize: "12px", color: "#e11d48" }}>
                         £{getBankAmt(b)}
                       </span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
-                      <span>{b.date || "No date"} • {b.ref || "No ref"}</span>
+                      <span>{b.date || "No date"}{b.ref ? ` • ${b.ref}` : ""}</span>
                       <span style={{ padding: "2px 6px", background: "#fee2e2", color: "#991b1b", borderRadius: "4px", fontSize: "10px", fontWeight: "700", border: "1px solid #fca5a5" }}>
                         Unmatched
                       </span>
@@ -417,7 +572,7 @@ function AlignedBreakdownView({
                       </span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
-                      <span>{p.ref || "Invoice"} • {p.status || "Pending"}</span>
+                      <span>{p.ref ? `Inv ${p.ref}` : "Invoice"} • {p.status || "Paid"}</span>
                       <span style={{ padding: "2px 6px", background: "#fee2e2", color: "#991b1b", borderRadius: "4px", fontSize: "10px", fontWeight: "700", border: "1px solid #fca5a5" }}>
                         Unmatched
                       </span>
@@ -723,6 +878,35 @@ export default function CashflowWorkbenchView({
   const [tabError, setTabError] = useState("");
   const [localHasTargetTab, setLocalHasTargetTab] = useState(null);
   const [customModal, setCustomModal] = useState(null); // { title: string, message: string, type: 'success' | 'error' | 'info' }
+  const [updatingDa1, setUpdatingDa1] = useState(false);
+  const da1Platform = reconData?.accountingPlatform || reconData?.da1Platform || "Xero";
+
+  const handleUpdateDa1Platform = async (newPlatform) => {
+    if (!clientInfo?.reconSheetId || !reconData?.reconTabName) return;
+    setUpdatingDa1(true);
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_recon_da1_platform",
+          reconSheetId: clientInfo.reconSheetId,
+          tabName: reconData.reconTabName,
+          platform: newPlatform,
+          clientName: selectedClient
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to update platform in DA1");
+      setApiMsg(`✓ Statement platform set to ${data.platform} in DA1`);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error("Error setting DA1 platform:", err);
+      setApiMsg(`⚠️ ${err.message}`);
+    } finally {
+      setUpdatingDa1(false);
+    }
+  };
 
   // Paste / Upload Modal states
   const [showPasteModal, setShowPasteModal] = useState(false);
@@ -772,8 +956,14 @@ export default function CashflowWorkbenchView({
       if (onTabCreated) onTabCreated(data.tabName);
       else if (onRefresh) onRefresh();
     } catch (err) {
-      console.error("Month preparation error:", err);
-      setTabError(err.message);
+      console.warn("Month preparation transient error, checking if workspace completed in background:", err.message);
+      // Wait 4s and trigger refresh to allow Google Sheets background completion without false error
+      await new Promise(r => setTimeout(r, 4000));
+      if (onRefresh) {
+        onRefresh();
+      } else {
+        setTabError(err.message);
+      }
     } finally {
       setCreatingTab(false);
     }
@@ -893,33 +1083,41 @@ export default function CashflowWorkbenchView({
     if (!c?.label) return null;
     const l = c.label.toLowerCase().trim();
 
-    // 1. Direct match on standard categories (matching U3:X16)
+    // 1. Direct check on non-operating items FIRST to prevent false match with generic "income" or "expense"
+    if (l.includes("non-operating income")) {
+      return liveCategoryTotals["Non-operating income"] ?? 0;
+    }
+    if (l.includes("non-operating expense")) {
+      return liveCategoryTotals["Non-operating expenses"] ?? 0;
+    }
+
+    // 2. Direct match on standard categories (matching U3:X18)
     const exact = VALID_RECON_CATEGORIES.find(k => k.toLowerCase() === l);
     if (exact) {
       return liveCategoryTotals[exact] ?? 0;
     }
 
-    // 2. Summary/total rows
+    // 3. Summary/total rows
     if (l.includes("total outgoing") || l.includes("total cost") || l.includes("total expense") || l.includes("total payment")) {
       let sum = 0;
       Object.keys(liveCategoryTotals).forEach(k => {
-        if (k !== "Revenue") sum += (liveCategoryTotals[k] || 0);
+        if (k !== "Revenue" && k !== "Non-operating income") sum += (liveCategoryTotals[k] || 0);
       });
       return sum;
     }
     if (l.includes("net cash") || l.includes("net movement") || l.includes("net cashflow")) {
       let outSum = 0;
       Object.keys(liveCategoryTotals).forEach(k => {
-        if (k !== "Revenue") outSum += (liveCategoryTotals[k] || 0);
+        if (k !== "Revenue" && k !== "Non-operating income") outSum += (liveCategoryTotals[k] || 0);
       });
-      return (liveCategoryTotals.Revenue || 0) - outSum;
+      return ((liveCategoryTotals.Revenue || 0) + (liveCategoryTotals["Non-operating income"] || 0)) - outSum;
     }
-    if (l.includes("total revenue") || l.includes("total income") || l.includes("total receipts")) {
+    if (l.includes("total revenue") || l.includes("total receipts")) {
       return liveCategoryTotals.Revenue || 0;
     }
 
     let catKey = null;
-    if (l.includes("revenue") || l.includes("income") || l.includes("sales")) catKey = "Revenue";
+    if (l.includes("revenue") || (l.includes("income") && !l.includes("non-operating")) || l.includes("sales")) catKey = "Revenue";
     else if (l.includes("contractor")) catKey = "Contractors";
     else if (l.includes("direct cost")) catKey = "Direct costs";
     else if (l.includes("salar") || l.includes("wages") || l.includes("payroll")) catKey = "Salaries";
@@ -1539,7 +1737,7 @@ export default function CashflowWorkbenchView({
     <div style={{ width: "100%", maxWidth: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: "14px" }}>
       {/* Top Action Bar */}
       <div style={{
-        padding: "12px 16px",
+        padding: "10px 16px",
         background: "#ffffff",
         borderRadius: "10px",
         border: "1px solid #cbd5e1",
@@ -1550,21 +1748,7 @@ export default function CashflowWorkbenchView({
         gap: "10px",
         boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
       }}>
-        {/* Left: Active month label */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <span style={{
-            fontSize: "13px",
-            fontWeight: "700",
-            color: "#0f172a",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "6px"
-          }}>
-            📅 Reconciliation for <strong>{reconData?.targetMonthLabel || eomMonthKey}</strong>
-          </span>
-        </div>
-
-        {/* Right: Actions */}
+        {/* Far Left: Update bank transactions and Paste / upload unreconciled */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <button
             onClick={handleUpdateBankTransactions}
@@ -1588,6 +1772,28 @@ export default function CashflowWorkbenchView({
           </button>
 
           <button
+            onClick={() => setShowPasteModal(true)}
+            style={{
+              padding: "6px 14px",
+              background: "#f8fafc",
+              color: "#334155",
+              border: "1px solid #cbd5e1",
+              borderRadius: "6px",
+              fontSize: "12px",
+              fontWeight: "600",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px"
+            }}
+          >
+            📋 Paste / upload unreconciled
+          </button>
+        </div>
+
+        {/* Far Right: Overwrite all and Recategorise all */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <button
             onClick={handleConfirmOverwriteAll}
             disabled={fetchingApi || updatingTxns}
             title="Download full feed and overwrite all bank transactions and categorisations from accounting tool"
@@ -1606,25 +1812,6 @@ export default function CashflowWorkbenchView({
             }}
           >
             {fetchingApi ? <Spinner /> : "📥"} Overwrite all
-          </button>
-
-          <button
-            onClick={() => setShowPasteModal(true)}
-            style={{
-              padding: "6px 14px",
-              background: "#f8fafc",
-              color: "#334155",
-              border: "1px solid #cbd5e1",
-              borderRadius: "6px",
-              fontSize: "12px",
-              fontWeight: "600",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px"
-            }}
-          >
-            📋 Paste / upload unreconciled
           </button>
 
           <button
@@ -1648,49 +1835,6 @@ export default function CashflowWorkbenchView({
           >
             {recategorising ? <Spinner size={12} /> : "⚡"} Recategorise all
           </button>
-
-          {/* Auto-save status indicator */}
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            padding: "5px 12px",
-            borderRadius: "6px",
-            background: autoSaveStatus === "saving" ? "#eff6ff" : autoSaveStatus === "error" ? "#fef2f2" : "#f0fdf4",
-            border: `1px solid ${autoSaveStatus === "saving" ? "#bfdbfe" : autoSaveStatus === "error" ? "#fecaca" : "#bbf7d0"}`,
-            fontSize: "12px",
-            fontWeight: "600",
-            color: autoSaveStatus === "saving" ? "#1d4ed8" : autoSaveStatus === "error" ? "#b91c1c" : "#15803d"
-          }}>
-            {autoSaveStatus === "saving" ? (
-              <>
-                <Spinner size={12} />
-                <span>Auto-saving to sheet...</span>
-              </>
-            ) : autoSaveStatus === "error" ? (
-              <>
-                <span>⚠️ Auto-save failed</span>
-                <button
-                  onClick={() => triggerAutoSync(bankTxns, unreconItems)}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "#b91c1c",
-                    textDecoration: "underline",
-                    cursor: "pointer",
-                    fontSize: "11px",
-                    padding: 0
-                  }}
-                >
-                  Retry
-                </button>
-              </>
-            ) : (
-              <>
-                <span>✓ Auto-saved</span>
-              </>
-            )}
-          </div>
         </div>
       </div>
 
@@ -1989,7 +2133,7 @@ export default function CashflowWorkbenchView({
             {activeRightTab === "variance" && (
               <div>
                 <div style={{ marginBottom: "12px", fontSize: "12px", color: "#475569" }}>
-                  Compares totals from the bank recon sheet against figures on the client&apos;s <strong>Cash!</strong> tab:
+                  Compares totals from the bank transactions with expected figures based on data in Pulse.
                 </div>
                 {(!reconData?.cashflowComparisons || reconData.cashflowComparisons.length === 0) ? (
                   <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8" }}>
@@ -2006,7 +2150,7 @@ export default function CashflowWorkbenchView({
                       </tr>
                     </thead>
                     <tbody>
-                      {reconData.cashflowComparisons.map((c, i) => {
+                      {reconData.cashflowComparisons.filter(c => c.label.toLowerCase() !== "total").map((c, i) => {
                         const liveVal = getLiveBankActual(c);
                         const hasLiveTxns = bankTxns && bankTxns.length > 0;
 
@@ -2103,8 +2247,31 @@ export default function CashflowWorkbenchView({
             {/* 5. Unreconciled Items & P&L Adds */}
             {activeRightTab === "unreconciled" && (
               <div>
-                <div style={{ marginBottom: "12px", fontSize: "12px", color: "#475569" }}>
-                  <strong>Unreconciled items & P&L additions:</strong> Assign P&L accounts to statement lines that have not yet been reconciled in Xero/QB:
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+                  <div style={{ fontSize: "12px", color: "#475569" }}>
+                    <strong>Unreconciled items & P&L additions:</strong> Assign P&L accounts to statement lines that have not yet been reconciled in Xero/QB
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#f8fafc", padding: "3px 8px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "11px" }}>
+                    <span style={{ color: "#475569", fontWeight: "600" }}>Statement platform (DA1):</span>
+                    <select
+                      value={da1Platform}
+                      onChange={e => handleUpdateDa1Platform(e.target.value)}
+                      disabled={updatingDa1}
+                      style={{
+                        padding: "2px 6px",
+                        borderRadius: "4px",
+                        border: "1px solid #94a3b8",
+                        background: "#ffffff",
+                        fontSize: "11px",
+                        fontWeight: "700",
+                        color: da1Platform.toLowerCase().includes("quick") ? "#047857" : "#0284c7",
+                        cursor: "pointer"
+                      }}
+                    >
+                      <option value="Xero">Xero (statement debits negative)</option>
+                      <option value="Quickbooks">QuickBooks (statement debits positive)</option>
+                    </select>
+                  </div>
                 </div>
 
                 {/* Summary of Totals to Add to P&L */}

@@ -236,7 +236,34 @@ export async function getCashflowReconData({
     differenceRowIndex = Math.min(36, rowData.length - 1);
   }
 
-  // Build top section matrix (Row 1 "Excluding pipeline" down to differenceRowIndex)
+  // Pre-scan row labels to locate adjustment rows dynamically across different client layouts
+  let otherAdjustmentsRow = 30;
+  let salariesAdjRow = 9;
+  let dividendsAdjRow = 11;
+  let contractorsAdjRow = 13;
+  let directCostsAdjRow = 15;
+  let otherExpensesAdjRow = 17;
+  let corpTaxAdjRow = 20;
+  let vatAdjRow = 22;
+  let nonOpIncomeAdjRow = 25;
+  let nonOpExpensesAdjRow = 27;
+
+  for (let r = 0; r < rowData.length; r++) {
+    const lbl = String(rowData[r]?.values?.[0]?.formattedValue || "").toLowerCase().trim();
+    const sheetNum = r + 1;
+    if (lbl.includes("other adjustment")) otherAdjustmentsRow = sheetNum;
+    else if (lbl.includes("salaries adjustment")) salariesAdjRow = sheetNum;
+    else if (lbl.includes("dividends as salary adjustment")) dividendsAdjRow = sheetNum;
+    else if (lbl.includes("contractors adjustment")) contractorsAdjRow = sheetNum;
+    else if (lbl.includes("direct costs adjustment")) directCostsAdjRow = sheetNum;
+    else if (lbl.includes("other expenses adjustment")) otherExpensesAdjRow = sheetNum;
+    else if (lbl.includes("corporation tax adjustment")) corpTaxAdjRow = sheetNum;
+    else if (lbl.includes("vat adjustment")) vatAdjRow = sheetNum;
+    else if (lbl.includes("non-operating income adjustment")) nonOpIncomeAdjRow = sheetNum;
+    else if (lbl.includes("non-operating expense") && lbl.includes("adjustment")) nonOpExpensesAdjRow = sheetNum;
+  }
+
+  // Build top section matrix (down to differenceRowIndex, excluding pipeline row)
   const rows = [];
   for (let rIdx = 1; rIdx <= differenceRowIndex; rIdx++) {
     const rowValues = rowData[rIdx]?.values || [];
@@ -245,6 +272,12 @@ export async function getCashflowReconData({
 
     // Check if adjustment row
     const lowerLabel = labelText.toLowerCase();
+
+    // Exclude "Excluding pipeline" row entirely
+    if (lowerLabel.includes("excluding pipeline")) {
+      continue;
+    }
+
     const isAdjustmentRow = lowerLabel.includes("adjustment") || lowerLabel === "other cash movements";
     
     // Check if non-adjustment mapped row
@@ -256,33 +289,41 @@ export async function getCashflowReconData({
     const isOtherExpenses = lowerLabel.includes("other expenses outgoing");
     const isCorpTax = lowerLabel.includes("corporation tax") && !lowerLabel.includes("adjustment");
     const isVat = (lowerLabel === "vat" || lowerLabel.startsWith("vat ") || lowerLabel.includes(" vat")) && !lowerLabel.includes("adjustment");
+    const isNonOpIncome = lowerLabel.includes("non-operating income") && !lowerLabel.includes("adjustment");
+    const isNonOpExpenses = lowerLabel.includes("non-operating expense") && !lowerLabel.includes("adjustment");
 
     let mappedItemType = null;
     let targetAdjustmentRow = null;
     if (isConfirmedCash) {
       mappedItemType = "confirmed_cash";
-      targetAdjustmentRow = 29; // Other cash movements
+      targetAdjustmentRow = otherAdjustmentsRow; // Other adjustments row (row 30)
     } else if (isSalaries) {
       mappedItemType = "salaries";
-      targetAdjustmentRow = 9; // Salaries adjustment
+      targetAdjustmentRow = salariesAdjRow; // Salaries adjustment
     } else if (isDividends) {
       mappedItemType = "dividends";
-      targetAdjustmentRow = 11; // Dividends as salary adjustment
+      targetAdjustmentRow = dividendsAdjRow; // Dividends as salary adjustment
     } else if (isContractors) {
       mappedItemType = "contractors";
-      targetAdjustmentRow = 13; // Contractors adjustment
+      targetAdjustmentRow = contractorsAdjRow; // Contractors adjustment
     } else if (isDirectCosts) {
       mappedItemType = "direct_costs";
-      targetAdjustmentRow = 15; // Direct costs adjustment
+      targetAdjustmentRow = directCostsAdjRow; // Direct costs adjustment
     } else if (isOtherExpenses) {
       mappedItemType = "other_expenses";
-      targetAdjustmentRow = 17; // Other expenses adjustment
+      targetAdjustmentRow = otherExpensesAdjRow; // Other expenses adjustment
     } else if (isCorpTax) {
       mappedItemType = "corporation_tax";
-      targetAdjustmentRow = 20; // Corporation tax adjustment
+      targetAdjustmentRow = corpTaxAdjRow; // Corporation tax adjustment
     } else if (isVat) {
       mappedItemType = "vat";
-      targetAdjustmentRow = 22; // VAT adjustment
+      targetAdjustmentRow = vatAdjRow; // VAT adjustment
+    } else if (isNonOpIncome) {
+      mappedItemType = "non_operating_income";
+      targetAdjustmentRow = nonOpIncomeAdjRow; // Non-operating income adjustment
+    } else if (isNonOpExpenses) {
+      mappedItemType = "non_operating_expenses";
+      targetAdjustmentRow = nonOpExpensesAdjRow; // Non-operating expenses adjustment
     }
 
     const parsedCells = selectedCols.map(col => {
@@ -358,6 +399,7 @@ export async function getCashflowReconData({
   let trackedNonCashBankAccounts = [];
   let hasTargetTab = false;
   let canAutoCreateTab = false;
+  let da1Platform = "Xero";
 
   if (cleanReconSheetId) {
     try {
@@ -375,16 +417,17 @@ export async function getCashflowReconData({
       } else {
         // Fetch all sections in a single batchGet
         const rangesToFetch = [
-          `'${reconTabName}'!U3:X16`,    // [0] Totals
+          `'${reconTabName}'!U3:X16`,    // [0] Totals (categories U3:X16, excludes U17 Total)
           `'${reconTabName}'!A3:Q200`,   // [1] Bank transactions
-          `'${reconTabName}'!U20:X50`,   // [2] Comparisons
+          `'${reconTabName}'!U20:X65`,   // [2] Comparisons (includes U59 Non-operating income, U62 Non-operating expenses)
           `'${reconTabName}'!Z4:AR60`,   // [3] Revenue breakdown
           `'${reconTabName}'!AT4:BL40`,  // [4] Contractors breakdown
           `'${reconTabName}'!AT48:BK75`, // [5] Direct costs breakdown
           `'${reconTabName}'!CD4:CN60`,  // [6] Unreconciled items
           `'${reconTabName}'!CZ3:DA60`,  // [7] P&L Adds by account & categories
           `'KeyInfo'!H12:H21`,           // [8] Tracked bank accounts (cash, max 10 rows 12-21)
-          `'KeyInfo'!H23:I28`            // [9] Tracked non-cash bank accounts (P&L additions, max 6 rows 23-28)
+          `'KeyInfo'!H23:I28`,           // [9] Tracked non-cash bank accounts (P&L additions, max 6 rows 23-28)
+          `'${reconTabName}'!DA1`        // [10] Accounting platform toggle (Xero / Quickbooks)
         ];
 
         const reconBatchRes = await withRetry(() => sheets.spreadsheets.values.batchGet({
@@ -394,6 +437,10 @@ export async function getCashflowReconData({
         }));
 
         const vRanges = reconBatchRes.data.valueRanges || [];
+
+        // Parse [10] DA1 Accounting platform toggle (Xero / Quickbooks)
+        const da1PlatformRaw = String(vRanges[10]?.values?.[0]?.[0] || "").trim();
+        da1Platform = da1PlatformRaw.toLowerCase().includes("quick") ? "Quickbooks" : "Xero";
 
         // Parse [8] Tracked Bank Accounts from KeyInfo!H12:H21 early
         const rawAccounts = vRanges[8]?.values || [];
@@ -412,12 +459,15 @@ export async function getCashflowReconData({
 
         // Parse [0] U3:X16 Totals
         const rawReconRows = vRanges[0]?.values || [];
-        let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0;
+        let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0, nonOperatingIncome = 0, nonOperatingExpenses = 0;
 
         rawReconRows.forEach(r => {
           const label = String(r[0] || "").trim().toLowerCase();
+          if (!label || label === "total") return;
           const val = parseNumeric(r[3]); // Column X (Total)
-          if (label.includes("revenue")) revenue += val;
+          if (label.includes("non-operating income")) nonOperatingIncome += val;
+          else if (label.includes("non-operating expense")) nonOperatingExpenses += val;
+          else if (label.includes("revenue")) revenue += val;
           else if (label.includes("salaries") || label.includes("salary") || label.includes("paye") || label.includes("pension")) salaries += val;
           else if (label.includes("dividend")) dividends += val;
           else if (label.includes("contractor")) contractors += val;
@@ -427,7 +477,19 @@ export async function getCashflowReconData({
           else if (label.includes("corp") || label.includes("corporation tax") || (label.includes("tax") && !label.includes("vat"))) corpTax += val;
         });
 
-        reconActuals = { revenue, salaries, dividends, contractors, directCosts, outgoings, vat, corpTax, tabName: reconTabName };
+        reconActuals = {
+          revenue,
+          salaries,
+          dividends,
+          contractors,
+          directCosts,
+          outgoings,
+          vat,
+          corpTax,
+          nonOperatingIncome,
+          nonOperatingExpenses,
+          tabName: reconTabName
+        };
 
         // Parse [1] Bank Transactions A3:Q200
         const rawTxRows = vRanges[1]?.values || [];
@@ -501,6 +563,8 @@ export async function getCashflowReconData({
             else if (norm === "outgoings" && (rLabel.includes("other exp") || rLabel.includes("outgoing") || rLabel.includes("overhead"))) matches = true;
             else if (norm === "corp tax" && (rLabel.includes("corp") || rLabel.includes("tax"))) matches = true;
             else if (norm === "vat" && rLabel.includes("vat")) matches = true;
+            else if (norm.includes("non-operating income") && rLabel.includes("non-operating income")) matches = true;
+            else if (norm.includes("non-operating expense") && rLabel.includes("non-operating expense")) matches = true;
             else if (norm === "other" && (rLabel === "other" || rSub === "other" || (rLabel.includes("other") && !rLabel.includes("other exp")))) matches = true;
 
             if (matches && row[2]) {
@@ -514,7 +578,8 @@ export async function getCashflowReconData({
 
         const canonicalCategories = [
           "Revenue", "Outgoings", "Contractors", "Direct costs", "Dividends",
-          "Salaries", "PAYE", "Pension", "Transfer", "Corp tax", "VAT", "Other"
+          "Salaries", "PAYE", "Pension", "Transfer", "Corp tax", "VAT",
+          "Non-operating income", "Non-operating expenses", "Other"
         ];
 
         // Map categories from rawReconRows (U3:X16), falling back to canonical list if sheet range empty
@@ -524,7 +589,7 @@ export async function getCashflowReconData({
 
         cashflowComparisons = sourceRows.map(r => {
           const catLabel = String(r[0] || "").trim();
-          if (!catLabel || isFormulaError(catLabel)) return null;
+          if (!catLabel || isFormulaError(catLabel) || catLabel.toLowerCase() === "total") return null;
           const outVal = String(r[1] || "").trim();
           const inVal = String(r[2] || "").trim();
           const netVal = String(r[3] || "").trim();
@@ -572,6 +637,7 @@ export async function getCashflowReconData({
               expDate: r[14] || "",
               status: r[15] || "",
               matchedRow: r[16] || "",
+              pulseId: String(r[16] || "").trim(),
               matched: r[17] || "",
               manual: r[18] || ""
             });
@@ -610,6 +676,7 @@ export async function getCashflowReconData({
               payDate: r[14] || "",
               status: r[15] || "",
               matchedRow: r[16] || "",
+              pulseId: String(r[16] || "").trim(),
               matched: r[17] || "",
               manual: r[18] || ""
             });
@@ -648,6 +715,7 @@ export async function getCashflowReconData({
               expDate: r[14] || "",
               status: r[15] || "",
               matchedRow: r[16] || "",
+              pulseId: String(r[16] || "").trim(),
               matched: r[17] || "",
               manual: r[18] || ""
             });
@@ -728,7 +796,9 @@ export async function getCashflowReconData({
     plAdds,
     plAccountOptions: plAccountOptions || [],
     trackedBankAccounts: trackedBankAccounts || [],
-    trackedNonCashBankAccounts: trackedNonCashBankAccounts || []
+    trackedNonCashBankAccounts: trackedNonCashBankAccounts || [],
+    da1Platform,
+    accountingPlatform: da1Platform
   };
 }
 
@@ -1096,3 +1166,116 @@ export async function updateCashCellNote({
 
   return { success: true, cellRef: `${colLetter}${rowNum}`, note };
 }
+
+/**
+ * Batch match actuals: applies recon adjustment formulas and marks cells resolved in a single batch
+ */
+export async function batchMatchCashflowActuals({
+  clientSheetId,
+  cashTabSheetId,
+  colIdx,
+  colLetter,
+  adjustments = [], // array of { sheetRow, formula }
+  resolvedRows = [], // array of sheetRow numbers to mark resolved
+  clientName,
+  automationCommanderSheetId
+}) {
+  if (!clientSheetId || !colLetter || colIdx === undefined) {
+    throw new Error("Missing clientSheetId, colLetter, or colIdx");
+  }
+
+  const sheets = await getSheetsClient();
+  const cleanClientSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+  const colIndex = parseInt(colIdx, 10);
+
+  // 1. Batch update adjustment formulas
+  if (adjustments.length > 0) {
+    const dataUpdates = adjustments.map(adj => ({
+      range: `Cash!${colLetter}${adj.sheetRow}`,
+      values: [[sanitizeCashAdjustmentInput(adj.formula)]]
+    }));
+
+    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: cleanClientSheetId,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data: dataUpdates
+      }
+    }));
+  }
+
+  // 2. Batch update resolved background colors
+  if (resolvedRows.length > 0 && cashTabSheetId) {
+    const formatRequests = resolvedRows.map(rowNum => ({
+      repeatCell: {
+        range: {
+          sheetId: cashTabSheetId,
+          startRowIndex: rowNum - 1,
+          endRowIndex: rowNum,
+          startColumnIndex: colIndex,
+          endColumnIndex: colIndex + 1
+        },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: RESOLVED_GREEN_RGB
+          }
+        },
+        fields: "userEnteredFormat.backgroundColor"
+      }
+    }));
+
+    await withRetry(() => sheets.spreadsheets.batchUpdate({
+      spreadsheetId: cleanClientSheetId,
+      requestBody: {
+        requests: formatRequests
+      }
+    }));
+  }
+
+  let resolvedClient = clientName || "";
+  if (!resolvedClient) {
+    resolvedClient = await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId);
+  }
+
+  logPmaActivity(sheets, {
+    automationCommanderSheetId,
+    clientName: resolvedClient,
+    category: "CASH_RECON",
+    action: "Matched Actuals Applied",
+    summary: `Applied actuals matching and resolved ${resolvedRows.length} items in target month ${colLetter}`,
+    details: {
+      tab: "Cash",
+      colLetter,
+      adjustmentsCount: adjustments.length,
+      resolvedCount: resolvedRows.length,
+      clientName: resolvedClient
+    }
+  }).catch(e => console.error("PMA log failed:", e));
+
+  return { success: true, count: adjustments.length };
+}
+
+/**
+ * Updates cell DA1 (Accounting platform: Xero or Quickbooks) on the Recon Sheet
+ */
+export async function setReconDa1Platform({
+  reconSheetId,
+  tabName,
+  platform
+}) {
+  if (!reconSheetId || !tabName || !platform) {
+    throw new Error("Missing parameters for setReconDa1Platform");
+  }
+  const cleanPlatform = platform.toLowerCase().includes("quick") ? "Quickbooks" : "Xero";
+  const sheets = await getSheetsClient();
+  await withRetry(() => sheets.spreadsheets.values.update({
+    spreadsheetId: reconSheetId,
+    range: `'${tabName}'!DA1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[cleanPlatform]]
+    }
+  }));
+  return { success: true, platform: cleanPlatform };
+}
+

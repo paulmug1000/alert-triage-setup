@@ -77,7 +77,8 @@ export async function ensureReconTabExists({
   targetDateInput = new Date(),
   tabName = null,
   targetTabName = null,
-  clientName = "Client"
+  clientName = "Client",
+  accountingPlatform = null
 }) {
   const cleanId = reconSheetId || extractSheetIdFromUrl(reconSheetUrl);
   if (!cleanId) {
@@ -116,34 +117,78 @@ export async function ensureReconTabExists({
   }
 
   // 3. Duplicate 'Template' tab
-  const copyRes = await withRetry(() => sheets.spreadsheets.sheets.copyTo({
-    spreadsheetId: cleanId,
-    sheetId: templateTab.properties.sheetId,
-    requestBody: {
-      destinationSpreadsheetId: cleanId
+  let newSheetId = null;
+  try {
+    const copyRes = await withRetry(() => sheets.spreadsheets.sheets.copyTo({
+      spreadsheetId: cleanId,
+      sheetId: templateTab.properties.sheetId,
+      requestBody: {
+        destinationSpreadsheetId: cleanId
+      }
+    }));
+    newSheetId = copyRes.data.sheetId;
+  } catch (copyErr) {
+    console.warn(`[reconTabService] copyTo encountered transient error for ${targetCode}, checking if tab was created asynchronously:`, copyErr.message);
+    // Poll up to 3 times with 4s delay to see if tab was created in background
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await new Promise(r => setTimeout(r, 4000));
+      const verifyMeta = await withRetry(() => sheets.spreadsheets.get({
+        spreadsheetId: cleanId,
+        fields: "sheets(properties(sheetId,title))"
+      })).catch(() => null);
+      const vSheets = verifyMeta?.data?.sheets || [];
+      const foundTarget = vSheets.find(s => s.properties.title === targetCode);
+      if (foundTarget) {
+        return {
+          success: true,
+          created: true,
+          tabName: targetCode,
+          sheetId: foundTarget.properties.sheetId,
+          clientName
+        };
+      }
+      const foundCopy = vSheets.find(s => s.properties.title.toLowerCase().includes("copy of template"));
+      if (foundCopy) {
+        newSheetId = foundCopy.properties.sheetId;
+        break;
+      }
     }
-  }));
-
-  const newSheetId = copyRes.data.sheetId;
+    if (!newSheetId) {
+      throw copyErr;
+    }
+  }
 
   // 4. Rename to targetCode, move to index 0 (far left)
-  await withRetry(() => sheets.spreadsheets.batchUpdate({
-    spreadsheetId: cleanId,
-    requestBody: {
-      requests: [
-        {
-          updateSheetProperties: {
-            properties: {
-              sheetId: newSheetId,
-              title: targetCode,
-              index: 0
-            },
-            fields: "title,index"
+  try {
+    await withRetry(() => sheets.spreadsheets.batchUpdate({
+      spreadsheetId: cleanId,
+      requestBody: {
+        requests: [
+          {
+            updateSheetProperties: {
+              properties: {
+                sheetId: newSheetId,
+                title: targetCode,
+                index: 0
+              },
+              fields: "title,index"
+            }
           }
-        }
-      ]
+        ]
+      }
+    }));
+  } catch (renameErr) {
+    console.warn(`[reconTabService] Rename batchUpdate error, verifying if title updated:`, renameErr.message);
+    await new Promise(r => setTimeout(r, 3000));
+    const verifyMeta = await withRetry(() => sheets.spreadsheets.get({
+      spreadsheetId: cleanId,
+      fields: "sheets(properties(sheetId,title))"
+    })).catch(() => null);
+    const foundTarget = (verifyMeta?.data?.sheets || []).find(s => s.properties.title === targetCode);
+    if (!foundTarget) {
+      throw renameErr;
     }
-  }));
+  }
 
   // 5. Set cell A1 to the target month date formatted as "mmm yy"
   const serialDateDays = Math.floor((rawDate.getTime() - new Date(Date.UTC(1899, 11, 30)).getTime()) / 86400000);
@@ -184,6 +229,16 @@ export async function ensureReconTabExists({
       ]
     }
   }));
+
+  if (accountingPlatform) {
+    const cleanPlatform = accountingPlatform.toLowerCase().includes("quick") ? "Quickbooks" : "Xero";
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: cleanId,
+      range: `'${targetCode}'!DA1`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [[cleanPlatform]] }
+    })).catch(e => console.warn("Failed to set DA1 on new tab:", e.message));
+  }
 
   console.log(`✓ Provisioned new Recon tab '${targetCode}' for ${clientName} (Sheet: ${cleanId})`);
 

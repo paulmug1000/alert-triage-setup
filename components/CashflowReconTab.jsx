@@ -18,7 +18,7 @@ export default function CashflowReconTab({
   styles = {}
 }) {
   const { user } = useAuth();
-  const isAdmin = !!user?.isAdmin;
+  const isAdmin = !user?.isReadOnly && !!(user?.isAdmin || user?.role === "Admin");
 
   const [selectedClient, setSelectedClient] = useState(initialClient || "");
   const [reconData, setReconData] = useState(null);
@@ -694,13 +694,7 @@ export default function CashflowReconTab({
         </div>
       )}
 
-      {/* Recon Sheet Status Notice (Non-blocking warning, only shown when tab is truly missing) */}
-      {reconData?.reconError && !reconData?.hasTargetTab && (
-        <div style={{ padding: "10px 14px", background: "#fffbeb", border: "1px solid #fef3c7", borderRadius: "8px", color: "#92400e", fontSize: "12px", marginBottom: "14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span>ℹ️ <strong>Recon actuals notice:</strong> {reconData.reconError}</span>
-          <span style={{ fontSize: "11px", color: "#b45309" }}>Manual adjustments and cell marking still enabled</span>
-        </div>
-      )}
+
 
       {/* Main Content Area */}
       {!selectedClient ? (

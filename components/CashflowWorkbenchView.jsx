@@ -49,6 +49,14 @@ export function formatAmountGBP(val, isNegative = false) {
   return isNeg ? `-£${abs}` : `£${abs}`;
 }
 
+export function parseAmount(val) {
+  if (val == null || val === "") return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const clean = String(val).replace(/[£,\s]/g, "");
+  const num = parseFloat(clean);
+  return isNaN(num) ? 0 : num;
+}
+
 /**
  * Pairs bank transactions with Pulse items based on spreadsheet row cross-references
  * or heuristic amount matches, separating cleanly into matched pairs and unmatched lists.
@@ -464,27 +472,79 @@ export default function CashflowWorkbenchView({
   const [showSkippedAccordion, setShowSkippedAccordion] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
 
+  // Default primary account derived from trackedBankAccounts
+  const defaultAccount = useMemo(() => {
+    return (reconData?.trackedBankAccounts || []).find(a => a.toLowerCase().includes("primary")) || reconData?.trackedBankAccounts?.[0] || "";
+  }, [reconData]);
+
+  // Tab check
+  const hasTargetTab = localHasTargetTab !== null ? localHasTargetTab : Boolean(reconData?.hasTargetTab);
+  const tabName = reconData?.reconTabName || "";
+
+  // Silently ensure month workspace is created in background
+  const handleCreateTab = useCallback(async () => {
+    if (!clientInfo?.reconSheetId && !clientInfo?.reconSheetUrl) {
+      setTabError("No reconciliation configuration found for this client.");
+      return;
+    }
+    setCreatingTab(true);
+    setTabError("");
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "ensure_recon_tab",
+          reconSheetId: clientInfo.reconSheetId,
+          reconSheetUrl: clientInfo.reconSheetUrl,
+          tabName,
+          targetMonthKey: reconData?.targetMonthKey || effectiveMonthKey,
+          targetDateInput: reconData?.targetMonthKey ? `${reconData.targetMonthKey}-01` : (effectiveMonthKey ? `${effectiveMonthKey}-01` : new Date().toISOString()),
+          clientName: selectedClient
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to initialize month workspace");
+
+      setLocalHasTargetTab(true);
+      if (onTabCreated) onTabCreated(data.tabName);
+      else if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error("Month preparation error:", err);
+      setTabError(err.message);
+    } finally {
+      setCreatingTab(false);
+    }
+  }, [clientInfo, tabName, reconData, effectiveMonthKey, selectedClient, onTabCreated, onRefresh]);
+
+  // Auto-provision month if missing in recon sheet
+  useEffect(() => {
+    if (reconData && reconData.hasTargetTab === false && !creatingTab && !tabError) {
+      handleCreateTab();
+    }
+  }, [reconData, creatingTab, tabError, handleCreateTab]);
+
   // Sync state with incoming reconData
   useEffect(() => {
     if (reconData?.bankTransactions) {
       setBankTxns(reconData.bankTransactions.map((tx, idx) => ({
         ...tx,
         id: tx.id || (tx.rowNum ? `row_${tx.rowNum}` : `bt_${idx}_${Date.now()}`),
-        category: tx.category || tx.suggestedCategory || (parseFloat(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
-        suggestedCategory: tx.suggestedCategory || tx.category || (parseFloat(tx.inAmount) > 0 ? "Revenue" : "Outgoings")
+        accountName: tx.accountName || defaultAccount,
+        category: tx.category || tx.suggestedCategory || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
+        suggestedCategory: tx.suggestedCategory || tx.category || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings")
       })));
     }
     if (reconData?.unreconciledItems) {
-      setUnreconItems(reconData.unreconciledItems);
+      setUnreconItems(reconData.unreconciledItems.map(item => ({
+        ...item,
+        accountName: item.accountName || defaultAccount
+      })));
     }
     if (reconData?.hasTargetTab !== undefined) {
       setLocalHasTargetTab(Boolean(reconData.hasTargetTab));
     }
-  }, [reconData]);
-
-  // Tab check
-  const hasTargetTab = localHasTargetTab !== null ? localHasTargetTab : Boolean(reconData?.hasTargetTab);
-  const tabName = reconData?.reconTabName || "";
+  }, [reconData, defaultAccount]);
 
   // Background Auto-Save to Recon Sheet
   const triggerAutoSync = useCallback(async (txnsToSave, unreconToSave) => {
@@ -554,8 +614,8 @@ export default function CashflowWorkbenchView({
 
     (bankTxns || []).forEach(tx => {
       const cat = tx.category || tx.suggestedCategory || "Other";
-      const inVal = parseFloat(tx.inAmount || tx.inAmt || 0) || 0;
-      const outVal = parseFloat(tx.outAmount || tx.outAmt || 0) || 0;
+      const inVal = parseAmount(tx.inAmount || tx.inAmt);
+      const outVal = parseAmount(tx.outAmount || tx.outAmt);
       if (cat === "Revenue") {
         totals.Revenue += inVal;
       } else {
@@ -621,7 +681,7 @@ export default function CashflowWorkbenchView({
     return bankTxns
       .filter(t => {
         const cat = t.category || t.suggestedCategory;
-        const inAmt = parseFloat(t.inAmount || t.inAmt || 0) || 0;
+        const inAmt = parseAmount(t.inAmount || t.inAmt || t.amount);
         return cat === "Revenue" || (inAmt > 0 && !cat);
       })
       .map(t => ({
@@ -687,57 +747,6 @@ export default function CashflowWorkbenchView({
     return (reconData?.directCostsBreakdown?.pulseDirectCosts || []).filter(p => !String(p.client || "").startsWith("#") && !String(p.amount || "").startsWith("#"));
   }, [reconData]);
 
-  // 1. Create Tab Action
-  const handleCreateTab = async () => {
-    if (!clientInfo?.reconSheetId && !clientInfo?.reconSheetUrl) {
-      setCustomModal({
-        title: "Configuration missing",
-        message: "No Recon Sheet configured for this client in KeyInfo.",
-        type: "error"
-      });
-      return;
-    }
-    setCreatingTab(true);
-    setTabError("");
-    try {
-      const resp = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "ensure_recon_tab",
-          reconSheetId: clientInfo.reconSheetId,
-          reconSheetUrl: clientInfo.reconSheetUrl,
-          tabName: tabName,
-          targetMonthKey: reconData?.targetMonthKey || effectiveMonthKey,
-          targetDateInput: reconData?.targetMonthKey ? `${reconData.targetMonthKey}-01` : (effectiveMonthKey ? `${effectiveMonthKey}-01` : new Date().toISOString()),
-          clientName: selectedClient
-        })
-      });
-      const data = await resp.json();
-      if (!data.success) throw new Error(data.error || "Failed to create tab");
-
-      // Update local state immediately so warning banner and button disappear
-      setLocalHasTargetTab(true);
-      setCustomModal({
-        title: "Recon tab created",
-        message: `✓ Recon tab '${data.tabName}' has been successfully created from template.`,
-        type: "success"
-      });
-      if (onTabCreated) onTabCreated(data.tabName);
-      else if (onRefresh) onRefresh();
-    } catch (err) {
-      console.error("Tab creation error:", err);
-      setTabError(err.message);
-      setCustomModal({
-        title: "Tab creation failed",
-        message: err.message,
-        type: "error"
-      });
-    } finally {
-      setCreatingTab(false);
-    }
-  };
-
   // 2. Fetch API Transactions (Xero / QuickBooks)
   const handleFetchApiTxns = async () => {
     if (!clientInfo?.masterSheetId) {
@@ -766,10 +775,17 @@ export default function CashflowWorkbenchView({
       if (!data.success) throw new Error(data.error || "Failed to fetch transactions");
 
       if (data.transactions && data.transactions.length > 0) {
-        setBankTxns(data.transactions);
-        setApiMsg(`✓ Fetched ${data.transactions.length} reconciled transactions via ${data.tool?.toUpperCase()} API for tracked accounts.`);
+        const mapped = data.transactions.map((tx, idx) => ({
+          ...tx,
+          id: tx.id || `api_${Date.now()}_${idx}`,
+          accountName: tx.accountName || defaultAccount,
+          category: tx.category || tx.suggestedCategory || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
+          suggestedCategory: tx.suggestedCategory || tx.category || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings")
+        }));
+        setBankTxns(mapped);
+        setApiMsg(`✓ Fetched ${mapped.length} reconciled transactions via ${data.tool?.toUpperCase()} API for tracked accounts.`);
         // Automatically save to the Recon Sheet in the background
-        triggerAutoSync(data.transactions, unreconItems);
+        triggerAutoSync(mapped, unreconItems);
       } else {
         setApiMsg(`ℹ️ Connected ${data.tool?.toUpperCase()} returned 0 transactions for the tracked accounts in this month.`);
       }
@@ -853,7 +869,8 @@ export default function CashflowWorkbenchView({
 
       const updated = (data.transactions || []).map((t, idx) => ({
         ...t,
-        id: t.id || `recat_${Date.now()}_${idx}`
+        id: t.id || `recat_${Date.now()}_${idx}`,
+        accountName: t.accountName || defaultAccount
       }));
       setBankTxns(updated);
       setApiMsg(`✓ Recategorised ${updated.length} bank transactions using historical learning from past Recon Sheet tabs.`);
@@ -1032,17 +1049,19 @@ export default function CashflowWorkbenchView({
     const set = new Set();
     (reconData?.trackedBankAccounts || []).forEach(a => set.add(a));
     (bankTxns || []).forEach(t => {
-      if (t.accountName) set.add(t.accountName);
+      const acc = t.accountName || defaultAccount;
+      if (acc) set.add(acc);
     });
     return Array.from(set).filter(Boolean);
-  }, [reconData, bankTxns]);
+  }, [reconData, bankTxns, defaultAccount]);
 
   // Filtered transactions for left pane
   const filteredTxns = useMemo(() => {
     const list = bankTxns.filter(tx => {
+      const acc = tx.accountName || defaultAccount;
       // Account filter
       if (filterAccount !== "ALL") {
-        if ((tx.accountName || "") !== filterAccount) return false;
+        if (acc !== filterAccount) return false;
       }
       // Category filter
       if (filterCategory !== "ALL") {
@@ -1052,7 +1071,7 @@ export default function CashflowWorkbenchView({
       // Search filter
       if (searchTerm) {
         const q = searchTerm.toLowerCase();
-        const text = `${tx.payee || ""} ${tx.particulars || ""} ${tx.reference || ""} ${tx.date || ""} ${tx.accountName || ""}`.toLowerCase();
+        const text = `${tx.payee || ""} ${tx.particulars || ""} ${tx.reference || ""} ${tx.date || ""} ${acc}`.toLowerCase();
         if (!text.includes(q)) return false;
       }
       return true;
@@ -1060,8 +1079,8 @@ export default function CashflowWorkbenchView({
 
     if (groupByAccount) {
       return [...list].sort((a, b) => {
-        const accA = a.accountName || "Unassigned Account";
-        const accB = b.accountName || "Unassigned Account";
+        const accA = a.accountName || defaultAccount || "Unassigned account";
+        const accB = b.accountName || defaultAccount || "Unassigned account";
         const accCmp = accA.localeCompare(accB);
         if (accCmp !== 0) return accCmp;
         return (a.date || "").localeCompare(b.date || "");
@@ -1069,7 +1088,7 @@ export default function CashflowWorkbenchView({
     }
 
     return list;
-  }, [bankTxns, filterAccount, filterCategory, searchTerm, groupByAccount]);
+  }, [bankTxns, filterAccount, filterCategory, searchTerm, groupByAccount, defaultAccount]);
 
   // Dynamic Category Counts
   const catCounts = useMemo(() => {
@@ -1081,6 +1100,32 @@ export default function CashflowWorkbenchView({
     });
     return counts;
   }, [bankTxns]);
+
+  if (!hasTargetTab || creatingTab) {
+    return (
+      <div style={{
+        textAlign: "center",
+        padding: "90px 20px",
+        background: "#ffffff",
+        borderRadius: "12px",
+        border: "1px solid #e2e8f0",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.03)"
+      }}>
+        <Spinner size={36} />
+        <h3 style={{ fontSize: "16px", fontWeight: "700", color: "#0f172a", marginTop: "16px", marginBottom: "6px" }}>
+          Preparing month...
+        </h3>
+        <p style={{ fontSize: "13px", color: "#64748b", margin: 0 }}>
+          Setting up reconciliation workspace for {reconData?.targetMonthLabel || "the selected month"}.
+        </p>
+        {tabError && (
+          <div style={{ marginTop: "16px", color: "#dc2626", fontSize: "13px" }}>
+            ⚠️ {tabError}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{ width: "100%", maxWidth: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -1097,56 +1142,17 @@ export default function CashflowWorkbenchView({
         gap: "10px",
         boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
       }}>
-        {/* Left: Tab status */}
+        {/* Left: Active month label */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          {hasTargetTab ? (
-            <span style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "4px 10px",
-              background: "#dcfce7",
-              color: "#166534",
-              borderRadius: "6px",
-              fontSize: "12px",
-              fontWeight: "600",
-              border: "1px solid #86efac"
-            }}>
-              ✓ Tab &apos;{tabName}&apos; active
-            </span>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{
-                padding: "4px 10px",
-                background: "#fef3c7",
-                color: "#92400e",
-                borderRadius: "6px",
-                fontSize: "12px",
-                fontWeight: "600",
-                border: "1px solid #fde68a"
-              }}>
-                ⚠️ Tab &apos;{tabName}&apos; missing
-              </span>
-              <button
-                onClick={handleCreateTab}
-                disabled={creatingTab}
-                style={{
-                  padding: "4px 12px",
-                  background: "#0284c7",
-                  color: "#ffffff",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  fontWeight: "600",
-                  border: "none",
-                  cursor: creatingTab ? "default" : "pointer"
-                }}
-              >
-                {creatingTab ? <><Spinner /> Creating...</> : <>✨ Create tab &apos;{tabName}&apos; from template</>}
-              </button>
-            </div>
-          )}
-          <span style={{ fontSize: "12px", color: "#64748b" }}>
-            Month: <strong>{reconData?.targetMonthLabel || eomMonthKey}</strong>
+          <span style={{
+            fontSize: "13px",
+            fontWeight: "700",
+            color: "#0f172a",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "6px"
+          }}>
+            📅 Reconciliation for <strong>{reconData?.targetMonthLabel || eomMonthKey}</strong>
           </span>
         </div>
 
@@ -1324,7 +1330,7 @@ export default function CashflowWorkbenchView({
                   >
                     <option value="ALL">All accounts ({bankTxns.length})</option>
                     {distinctAccounts.map(acc => {
-                      const count = bankTxns.filter(t => t.accountName === acc).length;
+                      const count = bankTxns.filter(t => (t.accountName || defaultAccount) === acc).length;
                       return (
                         <option key={acc} value={acc}>
                           🏦 {acc} ({count})
@@ -1417,9 +1423,11 @@ export default function CashflowWorkbenchView({
                     const currentCat = tx.category || tx.suggestedCategory || "Outgoings";
                     const catStyle = CATEGORY_COLORS[currentCat] || CATEGORY_COLORS.Outgoings;
                     const isUnrecon = tx.isReconciled === false;
+                    const rowAccount = tx.accountName || defaultAccount;
                     const prevTx = idx > 0 ? filteredTxns[idx - 1] : null;
-                    const showAccountHeader = groupByAccount && (idx === 0 || (tx.accountName || "Unassigned Account") !== (prevTx?.accountName || "Unassigned Account"));
-                    const groupCount = groupByAccount ? filteredTxns.filter(t => (t.accountName || "Unassigned Account") === (tx.accountName || "Unassigned Account")).length : 0;
+                    const prevAccount = prevTx ? (prevTx.accountName || defaultAccount) : null;
+                    const showAccountHeader = groupByAccount && (idx === 0 || (rowAccount || "Unassigned account") !== (prevAccount || "Unassigned account"));
+                    const groupCount = groupByAccount ? filteredTxns.filter(t => (t.accountName || defaultAccount || "Unassigned account") === (rowAccount || "Unassigned account")).length : 0;
 
                     return (
                       <React.Fragment key={tx.rowNum || tx.id || tx.sourceId || idx}>
@@ -1427,7 +1435,7 @@ export default function CashflowWorkbenchView({
                           <tr style={{ background: "#f8fafc", borderTop: idx > 0 ? "2px solid #cbd5e1" : "none", borderBottom: "1px solid #e2e8f0" }}>
                             <td colSpan={5} style={{ padding: "6px 10px", fontWeight: "700", fontSize: "11px", color: "#334155" }}>
                               <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                                <span>🏦 {tx.accountName || "Unassigned Account"}</span>
+                                <span>🏦 {rowAccount || "Unassigned account"}</span>
                                 <span style={{ fontSize: "10px", fontWeight: "600", color: "#64748b", background: "#e2e8f0", padding: "1px 6px", borderRadius: "10px" }}>
                                   {groupCount} transaction{groupCount !== 1 ? "s" : ""}
                                 </span>
@@ -1454,9 +1462,9 @@ export default function CashflowWorkbenchView({
                               </div>
                             )}
                             <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap", marginTop: "2px" }}>
-                              {tx.accountName && (
+                              {rowAccount && (
                                 <span style={{ fontSize: "9px", padding: "1px 5px", background: "#f1f5f9", color: "#475569", borderRadius: "3px", border: "1px solid #cbd5e1", fontWeight: "600" }}>
-                                  🏦 {tx.accountName}
+                                  🏦 {rowAccount}
                                 </span>
                               )}
                               {isUnrecon && (

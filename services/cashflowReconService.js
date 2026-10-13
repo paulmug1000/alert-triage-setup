@@ -1,8 +1,8 @@
-import { getSheetsClient, withRetry, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient";
-import { resolveClientNameBySheetId } from "./workspaces";
-import { logPmaActivity } from "./pmaLogger";
-import { parseMonthHeader, FULL_MONTH_NAMES } from "./viewsService";
-import { sanitizeFormulaInput } from "./userPermissions";
+import { getSheetsClient, withRetry, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { resolveClientNameBySheetId } from "./workspaces.js";
+import { logPmaActivity } from "./pmaLogger.js";
+import { parseMonthHeader, FULL_MONTH_NAMES } from "./viewsService.js";
+import { sanitizeFormulaInput } from "./userPermissions.js";
 
 
 // Google Sheets light green 3 (used on Incredibble Cash tab)
@@ -393,6 +393,12 @@ export async function getCashflowReconData({
 
         const vRanges = reconBatchRes.data.valueRanges || [];
 
+        // Parse [8] Tracked Bank Accounts from KeyInfo!H12:H22 early
+        const rawAccounts = vRanges[8]?.values || [];
+        trackedBankAccounts = rawAccounts
+          .map(r => String(r[0] || "").trim())
+          .filter(Boolean);
+
         // Parse [0] U3:X16 Totals
         const rawReconRows = vRanges[0]?.values || [];
         let revenue = 0, salaries = 0, dividends = 0, contractors = 0, directCosts = 0, outgoings = 0, vat = 0, corpTax = 0;
@@ -416,15 +422,32 @@ export async function getCashflowReconData({
         const rawTxRows = vRanges[1]?.values || [];
         bankTransactions = rawTxRows.map((r, i) => {
           const date = r[1] || r[0] || "";
+          let accountName = String(r[2] || "").trim(); // Column C
           const payee = r[3] || r[4] || "";
           const particulars = r[4] || "";
           const ref = r[6] || r[5] || "";
           const outAmt = r[8] || "";
           const inAmt = r[9] || "";
           const category = r[16] || "";
+
+          // Fallback heuristic: If accountName is empty in Column C, infer from trackedBankAccounts
+          if (!accountName && trackedBankAccounts.length > 0) {
+            const combined = `${payee} ${particulars} ${ref}`.toLowerCase();
+            const matched = trackedBankAccounts.find(acc => combined.includes(acc.toLowerCase()));
+            if (matched) {
+              accountName = matched;
+            } else if (trackedBankAccounts.length === 1) {
+              accountName = trackedBankAccounts[0];
+            } else {
+              const primary = trackedBankAccounts.find(acc => acc.toLowerCase().includes("primary"));
+              accountName = primary || trackedBankAccounts[0];
+            }
+          }
+
           return {
             rowNum: i + 3,
             date,
+            accountName,
             payee,
             particulars,
             reference: ref,
@@ -647,11 +670,11 @@ export async function getCashflowReconData({
           .map(r => String(r[0] || "").trim())
           .filter(Boolean);
 
-        // Parse [8] Tracked Bank Accounts from KeyInfo!H12:H22
-        const rawAccounts = vRanges[8]?.values || [];
-        trackedBankAccounts = rawAccounts
-          .map(r => String(r[0] || "").trim())
-          .filter(Boolean);
+        if (!trackedBankAccounts || trackedBankAccounts.length === 0) {
+          trackedBankAccounts = (vRanges[8]?.values || [])
+            .map(r => String(r[0] || "").trim())
+            .filter(Boolean);
+        }
       }
     } catch (err) {
       console.warn(`⚠️ Recon sheet fetch failed for ${cleanReconSheetId}:`, err.message);
@@ -758,11 +781,12 @@ export async function syncReconBankTransactions({
     const ref = tx.reference || "";
     const outAmt = tx.outAmount ? String(tx.outAmount) : "";
     const inAmt = tx.inAmount ? String(tx.inAmount) : "";
-    const inNum = parseFloat(inAmt) || 0;
+    const inNum = parseFloat(String(inAmt).replace(/[£,\s]/g, "")) || 0;
     const cat = tx.category || tx.suggestedCategory || (inNum > 0 ? "Revenue" : "Outgoings");
+    const accountName = tx.accountName || "";
 
-    // Columns: [A: Date, B: Date, C: '', D: Payee, E: Particulars, F: Ref, G: '', H: '', I: Out, J: In]
-    rowsAJ.push([date, date, "", payee, particulars, ref, "", "", outAmt, inAmt]);
+    // Columns: [A: Date, B: Date, C: Account Name, D: Payee, E: Particulars, F: Ref, G: '', H: '', I: Out, J: In]
+    rowsAJ.push([date, date, accountName, payee, particulars, ref, "", "", outAmt, inAmt]);
     rowsQ.push([cat]);
   });
 

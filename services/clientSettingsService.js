@@ -76,7 +76,8 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     "DataChgAlert!A31:J53",// [14] Invoice settings & tolerances
     "DataChgAlert!A58:F80",// [15] CRM discrepancy rules (Pipeline & Confirmed)
     "DataChgAlert!A100:J120", // [16] Expense settings & tolerances
-    "DataChgAlert!B82"     // [17] Pipeline mode - add jobs to Conf?
+    "DataChgAlert!B82",    // [17] Pipeline mode - add jobs to Conf?
+    "KeyInfo!H12:H22"      // [18] Bank accounts (max 11)
   ];
 
   const clientRanges = [
@@ -126,6 +127,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const dcaCrmRules = mVals[15]?.values || [];
   const dcaExp = mVals[16]?.values || [];
   const dcaB82 = mVals[17]?.values?.[0]?.[0] || "";
+  const keyH12H22 = mVals[18]?.values || [];
 
   // Check if A120 is an IMPORTRANGE formula
   const formulaA120 = String(masterFormulaResp.data?.values?.[0]?.[0] || "");
@@ -289,6 +291,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     // 3. ACCOUNTING
     accounting: {
       toolInUse: String(keyQ1Q10[3]?.[0] || "None").trim(), // Q4
+      bankAccounts: (keyH12H22 || []).map(r => String(r[0] || "").trim()).filter(Boolean),
       contractorsManual: (keyATContr || []).map(r => String(r[0] || "").trim()).filter(Boolean),
       passThroughManual: (keyATPass || []).map(r => String(r[0] || "").trim()).filter(Boolean),
       mappings: accountingMappings
@@ -527,6 +530,9 @@ export async function saveClientSettings({
   if (settings.accounting) {
     if (settings.accounting.toolInUse) {
       addMasterCell("KeyInfo!Q4", settings.accounting.toolInUse);
+    }
+    if (Array.isArray(settings.accounting.bankAccounts)) {
+      addMasterColumnSlice("H", 12, 22, settings.accounting.bankAccounts);
     }
     if (Array.isArray(settings.accounting.contractorsManual)) {
       addMasterColumnSlice("AT", 4, 22, settings.accounting.contractorsManual);

@@ -190,3 +190,44 @@ export async function revokeQBToken(token, customClientId, customClientSecret) {
     return false;
   }
 }
+
+/**
+ * Fetches bank accounts from QuickBooks Online API for a specific company (realmId).
+ * 
+ * @param {string} accessToken Active access token
+ * @param {string} realmId Intuit company ID
+ * @returns {Promise<Array<{ id: string, name: string, code: string, subType: string, currency: string, status: string, type: string }>>}
+ */
+export async function fetchQuickBooksBankAccounts(accessToken, realmId) {
+  if (!accessToken || !realmId) {
+    throw new Error("Missing accessToken or realmId for fetchQuickBooksBankAccounts");
+  }
+
+  const query = "select * from Account where AccountType = 'Bank'";
+  const url = `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${encodeURIComponent(query)}&minorversion=73`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Accept": "application/json"
+    }
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`QuickBooks API error (${res.status}): ${errorText}`);
+  }
+
+  const data = await res.json();
+  const rawAccounts = data?.QueryResponse?.Account || [];
+
+  return rawAccounts.map(acc => ({
+    id: acc.Id || "",
+    name: acc.Name || "",
+    code: acc.AcctNum || "",
+    subType: acc.AccountSubType || "",
+    currency: acc.CurrencyRef?.value || "",
+    status: acc.Active ? "ACTIVE" : "INACTIVE",
+    type: "BANK"
+  }));
+}

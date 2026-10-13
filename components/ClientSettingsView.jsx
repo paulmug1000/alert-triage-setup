@@ -182,6 +182,17 @@ export default function ClientSettingsView({
   // Show/hide Excel Client Secret
   const [showClientSecret, setShowClientSecret] = useState(false);
 
+  // Bank accounts fetch & modal state
+  const [fetchingBankAccounts, setFetchingBankAccounts] = useState(false);
+  const [bankAccountsError, setBankAccountsError] = useState("");
+  const [bankAccountsSuccess, setBankAccountsSuccess] = useState("");
+  const [showBankModal, setShowBankModal] = useState(false);
+  const [potentialBankAccounts, setPotentialBankAccounts] = useState([]);
+  const [resolvedAccountingTool, setResolvedAccountingTool] = useState("");
+  const [bankSearchQuery, setBankSearchQuery] = useState("");
+  const [tempSelectedBankAccounts, setTempSelectedBankAccounts] = useState([]);
+  const [newManualAccountName, setNewManualAccountName] = useState("");
+
   // Resolve active client object
   const activeClientObj = useMemo(() => {
     if (managedClient?.clientName === selectedClientName) return managedClient;
@@ -348,6 +359,164 @@ export default function ClientSettingsView({
       </button>
     </div>
   );
+
+  // Bank accounts helpers & handlers
+  const combinedModalAccounts = useMemo(() => {
+    const list = [...potentialBankAccounts];
+    const seenNames = new Set(list.map(a => String(a.name || "").toLowerCase().trim()));
+    (settings?.accounting?.bankAccounts || []).forEach(existingName => {
+      const clean = String(existingName || "").toLowerCase().trim();
+      if (clean && !seenNames.has(clean)) {
+        list.push({
+          id: `custom-${clean}`,
+          name: existingName,
+          code: "",
+          currency: "",
+          status: "MANUAL",
+          subType: "Manual entry"
+        });
+        seenNames.add(clean);
+      }
+    });
+    return list;
+  }, [potentialBankAccounts, settings?.accounting?.bankAccounts]);
+
+  const filteredModalAccounts = useMemo(() => {
+    if (!bankSearchQuery.trim()) return combinedModalAccounts;
+    const q = bankSearchQuery.toLowerCase().trim();
+    return combinedModalAccounts.filter(acc =>
+      (acc.name && acc.name.toLowerCase().includes(q)) ||
+      (acc.code && acc.code.toLowerCase().includes(q)) ||
+      (acc.currency && acc.currency.toLowerCase().includes(q)) ||
+      (acc.subType && acc.subType.toLowerCase().includes(q))
+    );
+  }, [combinedModalAccounts, bankSearchQuery]);
+
+  const handleFetchBankAccounts = async () => {
+    if (!activeClientObj?.clientName) return;
+    setFetchingBankAccounts(true);
+    setBankAccountsError("");
+    setBankAccountsSuccess("");
+
+    try {
+      const q = new URLSearchParams({
+        clientName: activeClientObj.clientName,
+        masterSheetId: activeClientObj.masterSheetId || "",
+        tool: settings?.accounting?.toolInUse || ""
+      });
+
+      const res = await fetch(`/api/client-settings/bank-accounts?${q.toString()}`);
+      const data = await res.json();
+
+      if (data.success && Array.isArray(data.accounts)) {
+        setResolvedAccountingTool(data.tool || "accounting tool");
+        setPotentialBankAccounts(data.accounts);
+        setTempSelectedBankAccounts([...(settings?.accounting?.bankAccounts || [])]);
+        setBankSearchQuery("");
+        setShowBankModal(true);
+      } else {
+        setBankAccountsError(data.error || "Failed to fetch bank accounts from accounting tool.");
+      }
+    } catch (err) {
+      setBankAccountsError("Error: " + err.message);
+    } finally {
+      setFetchingBankAccounts(false);
+    }
+  };
+
+  const handleToggleBankAccount = (name) => {
+    if (!name) return;
+    setTempSelectedBankAccounts(prev => {
+      const exists = prev.includes(name);
+      if (exists) {
+        return prev.filter(n => n !== name);
+      } else {
+        if (prev.length >= 11) {
+          alert("Maximum 11 bank accounts allowed (KeyInfo!H12:H22). Please uncheck an account before selecting another.");
+          return prev;
+        }
+        return [...prev, name];
+      }
+    });
+  };
+
+  const handleApplyBankSelection = () => {
+    const details = tempSelectedBankAccounts.map(name => {
+      const match = potentialBankAccounts.find(p => p.name === name);
+      return match || { name };
+    });
+
+    updateSettingsField(prev => ({
+      ...prev,
+      accounting: {
+        ...prev.accounting,
+        bankAccounts: tempSelectedBankAccounts,
+        bankAccountDetails: details
+      }
+    }));
+    setShowBankModal(false);
+    setBankAccountsSuccess(`Updated bank accounts list (${tempSelectedBankAccounts.length} selected). Remember to click "Save changes" to persist to sheets.`);
+  };
+
+  const handleAddManualBankAccount = () => {
+    const trimmed = (newManualAccountName || "").trim();
+    if (!trimmed) return;
+    const currentList = settings?.accounting?.bankAccounts || [];
+    if (currentList.length >= 11) {
+      alert("Maximum 11 bank accounts allowed (KeyInfo!H12:H22).");
+      return;
+    }
+    if (currentList.includes(trimmed)) {
+      alert("This bank account is already in the list.");
+      return;
+    }
+    updateSettingsField(prev => ({
+      ...prev,
+      accounting: {
+        ...prev.accounting,
+        bankAccounts: [...currentList, trimmed]
+      }
+    }));
+    setNewManualAccountName("");
+  };
+
+  const handleRemoveBankAccount = (index) => {
+    const currentList = [...(settings?.accounting?.bankAccounts || [])];
+    currentList.splice(index, 1);
+    updateSettingsField(prev => ({
+      ...prev,
+      accounting: {
+        ...prev.accounting,
+        bankAccounts: currentList
+      }
+    }));
+  };
+
+  const handleUpdateBankAccountName = (index, newName) => {
+    const currentList = [...(settings?.accounting?.bankAccounts || [])];
+    currentList[index] = newName;
+    updateSettingsField(prev => ({
+      ...prev,
+      accounting: {
+        ...prev.accounting,
+        bankAccounts: currentList
+      }
+    }));
+  };
+
+  const handleMoveBankAccount = (fromIdx, toIdx) => {
+    const currentList = [...(settings?.accounting?.bankAccounts || [])];
+    if (toIdx < 0 || toIdx >= currentList.length) return;
+    const item = currentList.splice(fromIdx, 1)[0];
+    currentList.splice(toIdx, 0, item);
+    updateSettingsField(prev => ({
+      ...prev,
+      accounting: {
+        ...prev.accounting,
+        bankAccounts: currentList
+      }
+    }));
+  };
 
   return (
     <div style={{ marginTop: "10px" }}>
@@ -1349,8 +1518,230 @@ export default function ClientSettingsView({
                 <div style={{ marginBottom: "20px", borderBottom: "1px solid #F1F5F9", paddingBottom: "12px" }}>
                   <h3 style={{ margin: "0 0 4px", fontSize: "18px", fontWeight: "700", color: "#0F172A" }}>Accounting categories & mappings</h3>
                   <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-                    Configure category classifications for P&L, pass-through, and staff costs.
+                    Configure bank accounts, category classifications for P&L, pass-through, and staff costs.
                   </p>
+                </div>
+
+                {/* Bank Accounts Card (KeyInfo!H12:H22) */}
+                <div style={{ marginBottom: "28px", background: "#FFFFFF", borderRadius: "10px", padding: "18px", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <h4 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#0F172A" }}>
+                          Bank accounts
+                        </h4>
+                        <span style={{ fontSize: "11px", fontWeight: "700", color: (settings.accounting?.bankAccounts || []).length > 11 ? "#DC2626" : "#0066CC", background: "#EFF6FF", padding: "2px 8px", borderRadius: "10px" }}>
+                          {(settings.accounting?.bankAccounts || []).length} / 11 configured
+                        </span>
+                      </div>
+                      <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#64748B" }}>
+                        Select and prioritize the company bank accounts included in cash flow, management reporting, and end-of-month tools. Stored in 11 rows.
+                      </p>
+                      {renderCellRef("KeyInfo!H12:H22")}
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <button
+                        type="button"
+                        onClick={handleFetchBankAccounts}
+                        disabled={fetchingBankAccounts}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          padding: "7px 13px",
+                          borderRadius: "6px",
+                          border: "1px solid #0066CC",
+                          background: "#EFF6FF",
+                          color: "#0066CC",
+                          fontSize: "12px",
+                          fontWeight: "600",
+                          cursor: fetchingBankAccounts ? "not-allowed" : "pointer",
+                          opacity: fetchingBankAccounts ? 0.7 : 1,
+                          transition: "all 0.15s ease"
+                        }}
+                      >
+                        {fetchingBankAccounts ? (
+                          <>
+                            <span style={{ display: "inline-block", width: "12px", height: "12px", border: "2px solid #0066CC", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                            <span>Fetching accounts...</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>🏦</span>
+                            <span>Pull from {settings.accounting?.toolInUse && settings.accounting?.toolInUse !== "None" ? settings.accounting?.toolInUse : "accounting tool"}</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Feedback alerts */}
+                  {bankAccountsError && (
+                    <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: "6px", padding: "10px 12px", fontSize: "12px", color: "#B91C1C", marginBottom: "14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span>⚠️ {bankAccountsError}</span>
+                      <button type="button" onClick={() => setBankAccountsError("")} style={{ background: "none", border: "none", color: "#B91C1C", cursor: "pointer", fontWeight: "bold" }}>✕</button>
+                    </div>
+                  )}
+
+                  {bankAccountsSuccess && (
+                    <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: "6px", padding: "10px 12px", fontSize: "12px", color: "#166534", marginBottom: "14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span>✓ {bankAccountsSuccess}</span>
+                      <button type="button" onClick={() => setBankAccountsSuccess("")} style={{ background: "none", border: "none", color: "#166534", cursor: "pointer", fontWeight: "bold" }}>✕</button>
+                    </div>
+                  )}
+
+                  {/* Active Accounts List */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "14px" }}>
+                    {(settings.accounting?.bankAccounts || []).length === 0 ? (
+                      <div style={{ padding: "20px", background: "#F8FAFC", borderRadius: "8px", border: "1px dashed #CBD5E1", textAlign: "center", color: "#64748B", fontSize: "13px" }}>
+                        <p style={{ margin: "0 0 6px", fontWeight: "600", color: "#334155" }}>No bank accounts configured</p>
+                        <p style={{ margin: 0, fontSize: "12px" }}>
+                          Click &quot;Pull from {settings.accounting?.toolInUse && settings.accounting?.toolInUse !== "None" ? settings.accounting?.toolInUse : "accounting tool"}&quot; to fetch accounts or type an account name below.
+                        </p>
+                      </div>
+                    ) : (
+                      (settings.accounting?.bankAccounts || []).map((accountName, idx) => {
+                        const cellRow = 12 + idx;
+                        return (
+                          <div
+                            key={idx}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "10px",
+                              background: "#F8FAFC",
+                              padding: "7px 12px",
+                              borderRadius: "6px",
+                              border: "1px solid #E2E8F0"
+                            }}
+                          >
+                            <span style={{ fontSize: "11px", fontWeight: "700", color: "#64748B", width: "52px", flexShrink: 0, fontFamily: "monospace" }}>
+                              #{idx + 1} <span style={{ fontSize: "10px", color: "#94A3B8" }}>(H{cellRow})</span>
+                            </span>
+
+                            <input
+                              type="text"
+                              value={accountName}
+                              onChange={(e) => handleUpdateBankAccountName(idx, e.target.value)}
+                              placeholder="Bank account name"
+                              style={{
+                                flex: 1,
+                                padding: "6px 10px",
+                                borderRadius: "5px",
+                                border: "1px solid #CBD5E1",
+                                fontSize: "13px",
+                                background: "#FFFFFF",
+                                boxSizing: "border-box"
+                              }}
+                            />
+
+                            {/* Reorder Buttons */}
+                            <div style={{ display: "flex", gap: "2px", flexShrink: 0 }}>
+                              <button
+                                type="button"
+                                onClick={() => handleMoveBankAccount(idx, idx - 1)}
+                                disabled={idx === 0}
+                                title="Move up"
+                                style={{
+                                  padding: "4px 7px",
+                                  borderRadius: "4px",
+                                  border: "1px solid #CBD5E1",
+                                  background: idx === 0 ? "#F1F5F9" : "#FFFFFF",
+                                  color: idx === 0 ? "#CBD5E1" : "#475569",
+                                  cursor: idx === 0 ? "not-allowed" : "pointer",
+                                  fontSize: "10px"
+                                }}
+                              >
+                                ▲
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleMoveBankAccount(idx, idx + 1)}
+                                disabled={idx === (settings.accounting?.bankAccounts || []).length - 1}
+                                title="Move down"
+                                style={{
+                                  padding: "4px 7px",
+                                  borderRadius: "4px",
+                                  border: "1px solid #CBD5E1",
+                                  background: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#F1F5F9" : "#FFFFFF",
+                                  color: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "#CBD5E1" : "#475569",
+                                  cursor: idx === (settings.accounting?.bankAccounts || []).length - 1 ? "not-allowed" : "pointer",
+                                  fontSize: "10px"
+                                }}
+                              >
+                                ▼
+                              </button>
+                            </div>
+
+                            {/* Delete Button */}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveBankAccount(idx)}
+                              title="Remove account"
+                              style={{
+                                padding: "4px 8px",
+                                borderRadius: "4px",
+                                border: "1px solid #FCA5A5",
+                                background: "#FEF2F2",
+                                color: "#DC2626",
+                                cursor: "pointer",
+                                fontSize: "12px",
+                                fontWeight: "600",
+                                flexShrink: 0
+                              }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Manual add input row (if under 11) */}
+                  {(settings.accounting?.bankAccounts || []).length < 11 && (
+                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      <input
+                        type="text"
+                        value={newManualAccountName}
+                        onChange={(e) => setNewManualAccountName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleAddManualBankAccount();
+                          }
+                        }}
+                        placeholder="Enter bank account name to add manually..."
+                        style={{
+                          flex: 1,
+                          padding: "7px 10px",
+                          borderRadius: "6px",
+                          border: "1px solid #CBD5E1",
+                          fontSize: "12px",
+                          boxSizing: "border-box"
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddManualBankAccount}
+                        disabled={!newManualAccountName.trim()}
+                        style={{
+                          padding: "7px 12px",
+                          borderRadius: "6px",
+                          border: "1px solid #CBD5E1",
+                          background: newManualAccountName.trim() ? "#F8FAFC" : "#F1F5F9",
+                          color: newManualAccountName.trim() ? "#0F172A" : "#94A3B8",
+                          fontSize: "12px",
+                          fontWeight: "600",
+                          cursor: newManualAccountName.trim() ? "pointer" : "not-allowed",
+                          flexShrink: 0
+                        }}
+                      >
+                        + Add account
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Manual Tracking Categories (KeyInfo!AT4:AT40) */}
@@ -2400,6 +2791,229 @@ export default function ClientSettingsView({
               </div>
             )}
 
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL: PULL & SELECT BANK ACCOUNTS FROM ACCOUNTING TOOL ─────────── */}
+      {showBankModal && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(15, 23, 42, 0.6)",
+          zIndex: 9999,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "20px"
+        }}>
+          <div style={{
+            background: "#FFFFFF",
+            borderRadius: "12px",
+            width: "100%",
+            maxWidth: "580px",
+            maxHeight: "85vh",
+            display: "flex",
+            flexDirection: "column",
+            boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+            overflow: "hidden"
+          }}>
+            {/* Modal Header */}
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
+                  Select bank accounts from {resolvedAccountingTool}
+                </h3>
+                <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
+                  Check the accounts to include in Pulse (stored in KeyInfo!H12:H22). Maximum 11 accounts.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBankModal(false)}
+                style={{ background: "none", border: "none", fontSize: "18px", color: "#64748B", cursor: "pointer", padding: "0 4px" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Filter & Selection Toolbar */}
+            <div style={{ padding: "12px 20px", background: "#F8FAFC", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+              <input
+                type="text"
+                value={bankSearchQuery}
+                onChange={(e) => setBankSearchQuery(e.target.value)}
+                placeholder="Filter accounts by name, code, currency..."
+                style={{
+                  flex: 1,
+                  padding: "7px 10px",
+                  borderRadius: "6px",
+                  border: "1px solid #CBD5E1",
+                  fontSize: "12px",
+                  background: "#FFFFFF",
+                  boxSizing: "border-box"
+                }}
+              />
+
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                <span style={{
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  color: tempSelectedBankAccounts.length > 11 ? "#DC2626" : (tempSelectedBankAccounts.length === 11 ? "#D97706" : "#0066CC"),
+                  background: tempSelectedBankAccounts.length > 11 ? "#FEF2F2" : "#EFF6FF",
+                  padding: "3px 8px",
+                  borderRadius: "6px"
+                }}>
+                  {tempSelectedBankAccounts.length} / 11 selected
+                </span>
+                {tempSelectedBankAccounts.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setTempSelectedBankAccounts([])}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#64748B",
+                      fontSize: "11px",
+                      cursor: "pointer",
+                      textDecoration: "underline"
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Accounts Checklist Content */}
+            <div style={{ padding: "12px 20px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}>
+              {filteredModalAccounts.length === 0 ? (
+                <div style={{ padding: "30px", textAlign: "center", color: "#64748B", fontSize: "13px" }}>
+                  No accounts found matching &quot;{bankSearchQuery}&quot;.
+                </div>
+              ) : (
+                filteredModalAccounts.map((acc) => {
+                  const isChecked = tempSelectedBankAccounts.includes(acc.name);
+                  const isMaxReached = !isChecked && tempSelectedBankAccounts.length >= 11;
+
+                  return (
+                    <div
+                      key={acc.id || acc.name}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        if (!isMaxReached || isChecked) {
+                          handleToggleBankAccount(acc.name);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          if (!isMaxReached || isChecked) {
+                            handleToggleBankAccount(acc.name);
+                          }
+                        }
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "10px 12px",
+                        borderRadius: "8px",
+                        border: isChecked ? "1.5px solid #0066CC" : "1px solid #E2E8F0",
+                        background: isChecked ? "#EFF6FF" : "#FFFFFF",
+                        cursor: isMaxReached && !isChecked ? "not-allowed" : "pointer",
+                        opacity: isMaxReached && !isChecked ? 0.6 : 1,
+                        transition: "all 0.12s ease",
+                        userSelect: "none"
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px", flex: 1 }}>
+                        <div
+                          style={{
+                            width: "20px",
+                            height: "20px",
+                            borderRadius: "5px",
+                            border: isChecked ? "2px solid #0066CC" : "2px solid #CBD5E1",
+                            background: isChecked ? "#0066CC" : "#FFFFFF",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            flexShrink: 0,
+                            transition: "all 0.15s ease",
+                            boxShadow: isChecked ? "0 1px 2px rgba(0, 102, 204, 0.25)" : "none"
+                          }}
+                        >
+                          {isChecked && (
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="2.5 6 5 8.5 9.5 3.5" />
+                            </svg>
+                          )}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: "13px", fontWeight: isChecked ? "700" : "500", color: "#0F172A" }}>
+                            {acc.name}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#64748B", marginTop: "2px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                            {acc.code && <span style={{ background: "#F1F5F9", padding: "1px 6px", borderRadius: "4px", color: "#334155" }}>Code: {acc.code}</span>}
+                            {acc.accountNumber && <span>Acct: ••••{acc.accountNumber.slice(-4)}</span>}
+                            {acc.currency && <span style={{ background: "#E0E7FF", color: "#3730A3", padding: "1px 5px", borderRadius: "4px", fontWeight: "600" }}>{acc.currency}</span>}
+                            {acc.subType && <span>{acc.subType}</span>}
+                          </div>
+                        </div>
+                      </div>
+
+                      {isChecked && (
+                        <span style={{ fontSize: "11px", fontWeight: "700", color: "#0066CC", background: "#DBEAFE", padding: "2px 8px", borderRadius: "10px" }}>
+                          ✓ Included
+                        </span>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{ padding: "14px 20px", borderTop: "1px solid #E2E8F0", background: "#F8FAFC", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={() => setShowBankModal(false)}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: "6px",
+                  border: "1px solid #CBD5E1",
+                  background: "#FFFFFF",
+                  color: "#475569",
+                  fontSize: "12px",
+                  fontWeight: "600",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={handleApplyBankSelection}
+                disabled={tempSelectedBankAccounts.length > 11}
+                style={{
+                  padding: "7px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: tempSelectedBankAccounts.length > 11 ? "#94A3B8" : "#0066CC",
+                  color: "#FFFFFF",
+                  fontSize: "12px",
+                  fontWeight: "600",
+                  cursor: tempSelectedBankAccounts.length > 11 ? "not-allowed" : "pointer"
+                }}
+              >
+                Apply selection ({tempSelectedBankAccounts.length} accounts)
+              </button>
+            </div>
           </div>
         </div>
       )}

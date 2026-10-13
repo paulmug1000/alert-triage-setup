@@ -217,3 +217,44 @@ export async function revokeXeroToken(token) {
     return false;
   }
 }
+
+/**
+ * Fetches bank accounts from Xero Accounting API for a specific tenant.
+ * 
+ * @param {string} accessToken Active access token
+ * @param {string} tenantId Authorized Xero tenant/organisation ID
+ * @returns {Promise<Array<{ id: string, name: string, code: string, accountNumber: string, currency: string, status: string, type: string }>>}
+ */
+export async function fetchXeroBankAccounts(accessToken, tenantId) {
+  if (!accessToken || !tenantId) {
+    throw new Error("Missing accessToken or tenantId for fetchXeroBankAccounts");
+  }
+
+  const url = "https://api.xero.com/api.xro/2.0/Accounts?where=Type%3D%3D%22BANK%22";
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Xero-tenant-id": tenantId,
+      "Accept": "application/json"
+    }
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Xero API error (${res.status}): ${errorText}`);
+  }
+
+  const data = await res.json();
+  const rawAccounts = data?.Accounts || [];
+
+  return rawAccounts.map(acc => ({
+    id: acc.AccountID || "",
+    name: acc.Name || "",
+    code: acc.Code || "",
+    accountNumber: acc.BankAccountNumber || "",
+    currency: acc.CurrencyCode || "",
+    status: acc.Status || "ACTIVE",
+    type: acc.Type || "BANK"
+  }));
+}

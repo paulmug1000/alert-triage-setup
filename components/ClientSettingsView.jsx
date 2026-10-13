@@ -199,12 +199,33 @@ export default function ClientSettingsView({
     return allClients.find(c => c.clientName === selectedClientName) || null;
   }, [allClients, managedClient, selectedClientName]);
 
+  // Handle client selection switch with clean unmount of old settings
+  const handleClientChange = useCallback((nextClient) => {
+    if (nextClient === selectedClientName) return;
+    if (isDirty) {
+      const confirmLeave = window.confirm(`You have unsaved changes for ${selectedClientName}. Discard them and switch client?`);
+      if (!confirmLeave) return;
+    }
+    // Clear old client settings immediately so they disappear while new client loads
+    setSettings(null);
+    setIsDirty(false);
+    setSaveSuccessMsg("");
+    setErrorMsg("");
+    setLastSyncedAt(null);
+    setSelectedClientName(nextClient);
+  }, [isDirty, selectedClientName]);
+
   // Keep selectedClientName synced with managedClient if present
   useEffect(() => {
-    if (managedClient?.clientName) {
+    if (managedClient?.clientName && managedClient.clientName !== selectedClientName) {
+      setSettings(null);
+      setIsDirty(false);
+      setSaveSuccessMsg("");
+      setErrorMsg("");
+      setLastSyncedAt(null);
       setSelectedClientName(managedClient.clientName);
     }
-  }, [managedClient]);
+  }, [managedClient, selectedClientName]);
 
   // Fetch settings from API
   const fetchSettings = useCallback(async (bypassCache = false) => {
@@ -212,6 +233,14 @@ export default function ClientSettingsView({
       setSettings(null);
       return;
     }
+
+    setSettings(prev => {
+      // Clear settings immediately if switching to a different client
+      if (prev && prev.clientName !== activeClientObj.clientName) {
+        return null;
+      }
+      return prev;
+    });
 
     setLoading(true);
     setErrorMsg("");
@@ -431,8 +460,8 @@ export default function ClientSettingsView({
       if (exists) {
         return prev.filter(n => n !== name);
       } else {
-        if (prev.length >= 11) {
-          alert("Maximum 11 bank accounts allowed (KeyInfo!H12:H22). Please uncheck an account before selecting another.");
+        if (prev.length >= 10) {
+          alert("Maximum 10 bank accounts allowed (KeyInfo!H12:I21). Please uncheck an account before selecting another.");
           return prev;
         }
         return [...prev, name];
@@ -443,7 +472,7 @@ export default function ClientSettingsView({
   const handleApplyBankSelection = () => {
     const details = tempSelectedBankAccounts.map(name => {
       const match = potentialBankAccounts.find(p => p.name === name);
-      return match || { name };
+      return match || { name, id: "" };
     });
 
     updateSettingsField(prev => ({
@@ -462,19 +491,21 @@ export default function ClientSettingsView({
     const trimmed = (newManualAccountName || "").trim();
     if (!trimmed) return;
     const currentList = settings?.accounting?.bankAccounts || [];
-    if (currentList.length >= 11) {
-      alert("Maximum 11 bank accounts allowed (KeyInfo!H12:H22).");
+    if (currentList.length >= 10) {
+      alert("Maximum 10 bank accounts allowed (KeyInfo!H12:I21).");
       return;
     }
     if (currentList.includes(trimmed)) {
       alert("This bank account is already in the list.");
       return;
     }
+    const currentDetails = settings?.accounting?.bankAccountDetails || [];
     updateSettingsField(prev => ({
       ...prev,
       accounting: {
         ...prev.accounting,
-        bankAccounts: [...currentList, trimmed]
+        bankAccounts: [...currentList, trimmed],
+        bankAccountDetails: [...currentDetails, { name: trimmed, id: "" }]
       }
     }));
     setNewManualAccountName("");
@@ -482,24 +513,32 @@ export default function ClientSettingsView({
 
   const handleRemoveBankAccount = (index) => {
     const currentList = [...(settings?.accounting?.bankAccounts || [])];
-    currentList.splice(index, 1);
+    const removedName = currentList.splice(index, 1)[0];
+    const currentDetails = [...(settings?.accounting?.bankAccountDetails || [])].filter(d => d.name !== removedName);
     updateSettingsField(prev => ({
       ...prev,
       accounting: {
         ...prev.accounting,
-        bankAccounts: currentList
+        bankAccounts: currentList,
+        bankAccountDetails: currentDetails
       }
     }));
   };
 
   const handleUpdateBankAccountName = (index, newName) => {
     const currentList = [...(settings?.accounting?.bankAccounts || [])];
+    const oldName = currentList[index];
     currentList[index] = newName;
+    const currentDetails = [...(settings?.accounting?.bankAccountDetails || [])].map(d => {
+      if (d.name === oldName) return { ...d, name: newName };
+      return d;
+    });
     updateSettingsField(prev => ({
       ...prev,
       accounting: {
         ...prev.accounting,
-        bankAccounts: currentList
+        bankAccounts: currentList,
+        bankAccountDetails: currentDetails
       }
     }));
   };
@@ -509,11 +548,16 @@ export default function ClientSettingsView({
     if (toIdx < 0 || toIdx >= currentList.length) return;
     const item = currentList.splice(fromIdx, 1)[0];
     currentList.splice(toIdx, 0, item);
+
+    const detailsMap = new Map((settings?.accounting?.bankAccountDetails || []).map(d => [d.name, d]));
+    const newDetails = currentList.map(name => detailsMap.get(name) || { name, id: "" });
+
     updateSettingsField(prev => ({
       ...prev,
       accounting: {
         ...prev.accounting,
-        bankAccounts: currentList
+        bankAccounts: currentList,
+        bankAccountDetails: newDetails
       }
     }));
   };
@@ -551,7 +595,7 @@ export default function ClientSettingsView({
           ) : (
             <select
               value={selectedClientName}
-              onChange={(e) => setSelectedClientName(e.target.value)}
+              onChange={(e) => handleClientChange(e.target.value)}
               disabled={loading || saving}
               style={{
                 padding: "6px 12px",
@@ -561,7 +605,7 @@ export default function ClientSettingsView({
                 background: "#FFFFFF",
                 fontWeight: "600",
                 color: "#0F172A",
-                cursor: "pointer",
+                cursor: (loading || saving) ? "wait" : "pointer",
                 minWidth: "220px"
               }}
             >
@@ -573,11 +617,16 @@ export default function ClientSettingsView({
             </select>
           )}
 
-          {lastSyncedAt && (
+          {settings && lastSyncedAt && !loading && (
             <span style={{ fontSize: "11px", color: "#64748B", marginLeft: "6px" }}>
               {fromCache ? "⚡ Loaded from cache" : "☁️ Loaded from sheets"}
               {" · "}
               {new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            </span>
+          )}
+          {loading && (
+            <span style={{ fontSize: "11px", color: "#0066CC", marginLeft: "6px", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+              <Spinner size={10} color="#0066CC" /> Loading...
             </span>
           )}
         </div>
@@ -660,19 +709,94 @@ export default function ClientSettingsView({
         </div>
       )}
 
-      {/* Loading state */}
+      {/* Loading state when switching client or on initial load */}
       {loading && !settings && (
-        <div style={{ textAlign: "center", padding: "60px 20px", color: "#64748B" }}>
-          <Spinner size={24} color="#0066CC" />
-          <div style={{ marginTop: "12px", fontSize: "14px", fontWeight: "500" }}>
+        <div style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "80px 24px",
+          background: "#FFFFFF",
+          borderRadius: "10px",
+          border: "1px solid #E2E8F0",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.02)",
+          minHeight: "360px",
+          textAlign: "center"
+        }}>
+          <Spinner size={32} color="#0066CC" />
+          <div style={{ marginTop: "16px", fontSize: "15px", fontWeight: "600", color: "#0F172A" }}>
             Loading settings for {selectedClientName}...
+          </div>
+          <div style={{ marginTop: "6px", fontSize: "13px", color: "#64748B" }}>
+            Retrieving configuration parameters and sheet mappings
+          </div>
+        </div>
+      )}
+
+      {!loading && !settings && !errorMsg && (
+        <div style={{
+          padding: "60px 24px",
+          background: "#FFFFFF",
+          borderRadius: "10px",
+          border: "1px solid #E2E8F0",
+          textAlign: "center",
+          color: "#64748B"
+        }}>
+          <div style={{ fontSize: "15px", fontWeight: "600", color: "#0F172A", marginBottom: "6px" }}>
+            No settings loaded
+          </div>
+          <div style={{ fontSize: "13px" }}>
+            Please select a client from the menu above to view and manage settings.
           </div>
         </div>
       )}
 
       {/* ── TWO-COLUMN SETTINGS LAYOUT ──────────────────────────────────────── */}
       {settings && (
-        <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: "20px", alignItems: "start" }}>
+        <div style={{
+          position: "relative",
+          opacity: loading ? 0.45 : 1,
+          pointerEvents: loading ? "none" : "auto",
+          transition: "opacity 0.2s ease"
+        }}>
+          {loading && (
+            <div style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 30,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "flex-start",
+              paddingTop: "140px",
+              background: "rgba(255, 255, 255, 0.5)",
+              backdropFilter: "blur(2px)",
+              borderRadius: "10px"
+            }}>
+              <div style={{
+                background: "#FFFFFF",
+                padding: "14px 22px",
+                borderRadius: "8px",
+                boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
+                border: "1px solid #E2E8F0",
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+                color: "#0F172A",
+                fontSize: "14px",
+                fontWeight: "600"
+              }}>
+                <Spinner size={18} color="#0066CC" />
+                Updating settings from Google Sheets...
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: "20px", alignItems: "start" }}>
           {/* Left Navigation Sidebar */}
           <div style={{
             background: "#FFFFFF",
@@ -1522,7 +1646,7 @@ export default function ClientSettingsView({
                   </p>
                 </div>
 
-                {/* Bank Accounts Card (KeyInfo!H12:H22) */}
+                {/* Bank Accounts Card (KeyInfo!H12:I21) */}
                 <div style={{ marginBottom: "28px", background: "#FFFFFF", borderRadius: "10px", padding: "18px", border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
                     <div>
@@ -1530,14 +1654,14 @@ export default function ClientSettingsView({
                         <h4 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#0F172A" }}>
                           Bank accounts
                         </h4>
-                        <span style={{ fontSize: "11px", fontWeight: "700", color: (settings.accounting?.bankAccounts || []).length > 11 ? "#DC2626" : "#0066CC", background: "#EFF6FF", padding: "2px 8px", borderRadius: "10px" }}>
-                          {(settings.accounting?.bankAccounts || []).length} / 11 configured
+                        <span style={{ fontSize: "11px", fontWeight: "700", color: (settings.accounting?.bankAccounts || []).length > 10 ? "#DC2626" : "#0066CC", background: "#EFF6FF", padding: "2px 8px", borderRadius: "10px" }}>
+                          {(settings.accounting?.bankAccounts || []).length} / 10 configured
                         </span>
                       </div>
                       <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#64748B" }}>
-                        Select and prioritize the company bank accounts included in cash flow, management reporting, and end-of-month tools. Stored in 11 rows.
+                        Select and prioritize the company bank accounts included in cash flow, management reporting, and end-of-month tools. Names in KeyInfo!H12:H21, Accounting Tool IDs in KeyInfo!I12:I21.
                       </p>
-                      {renderCellRef("KeyInfo!H12:H22")}
+                      {renderCellRef("KeyInfo!H12:I21")}
                     </div>
 
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -1603,6 +1727,7 @@ export default function ClientSettingsView({
                     ) : (
                       (settings.accounting?.bankAccounts || []).map((accountName, idx) => {
                         const cellRow = 12 + idx;
+                        const matchDetail = (settings.accounting?.bankAccountDetails || []).find(d => d.name === accountName);
                         return (
                           <div
                             key={idx}
@@ -1620,21 +1745,40 @@ export default function ClientSettingsView({
                               #{idx + 1} <span style={{ fontSize: "10px", color: "#94A3B8" }}>(H{cellRow})</span>
                             </span>
 
-                            <input
-                              type="text"
-                              value={accountName}
-                              onChange={(e) => handleUpdateBankAccountName(idx, e.target.value)}
-                              placeholder="Bank account name"
-                              style={{
-                                flex: 1,
-                                padding: "6px 10px",
-                                borderRadius: "5px",
-                                border: "1px solid #CBD5E1",
-                                fontSize: "13px",
-                                background: "#FFFFFF",
-                                boxSizing: "border-box"
-                              }}
-                            />
+                            <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "8px" }}>
+                              <input
+                                type="text"
+                                value={accountName}
+                                onChange={(e) => handleUpdateBankAccountName(idx, e.target.value)}
+                                placeholder="Bank account name"
+                                style={{
+                                  flex: 1,
+                                  padding: "6px 10px",
+                                  borderRadius: "5px",
+                                  border: "1px solid #CBD5E1",
+                                  fontSize: "13px",
+                                  background: "#FFFFFF",
+                                  boxSizing: "border-box"
+                                }}
+                              />
+                              {matchDetail?.id && (
+                                <span
+                                  style={{
+                                    fontSize: "10px",
+                                    fontFamily: "monospace",
+                                    color: "#475569",
+                                    background: "#F1F5F9",
+                                    border: "1px solid #E2E8F0",
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    whiteSpace: "nowrap"
+                                  }}
+                                  title={`Accounting Tool ID stored in KeyInfo!I${cellRow}`}
+                                >
+                                  ID: {matchDetail.id}
+                                </span>
+                              )}
+                            </div>
 
                             {/* Reorder Buttons */}
                             <div style={{ display: "flex", gap: "2px", flexShrink: 0 }}>
@@ -1699,8 +1843,8 @@ export default function ClientSettingsView({
                     )}
                   </div>
 
-                  {/* Manual add input row (if under 11) */}
-                  {(settings.accounting?.bankAccounts || []).length < 11 && (
+                  {/* Manual add input row (if under 10) */}
+                  {(settings.accounting?.bankAccounts || []).length < 10 && (
                     <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                       <input
                         type="text"
@@ -2793,6 +2937,7 @@ export default function ClientSettingsView({
 
           </div>
         </div>
+        </div>
       )}
 
       {/* ── MODAL: PULL & SELECT BANK ACCOUNTS FROM ACCOUNTING TOOL ─────────── */}
@@ -2828,7 +2973,7 @@ export default function ClientSettingsView({
                   Select bank accounts from {resolvedAccountingTool}
                 </h3>
                 <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
-                  Check the accounts to include in Pulse (stored in KeyInfo!H12:H22). Maximum 11 accounts.
+                  Check the accounts to include in Pulse. Names stored in KeyInfo!H12:H21, Accounting Tool IDs in KeyInfo!I12:I21. Maximum 10 accounts.
                 </p>
               </div>
               <button
@@ -2862,12 +3007,12 @@ export default function ClientSettingsView({
                 <span style={{
                   fontSize: "12px",
                   fontWeight: "700",
-                  color: tempSelectedBankAccounts.length > 11 ? "#DC2626" : (tempSelectedBankAccounts.length === 11 ? "#D97706" : "#0066CC"),
-                  background: tempSelectedBankAccounts.length > 11 ? "#FEF2F2" : "#EFF6FF",
+                  color: tempSelectedBankAccounts.length > 10 ? "#DC2626" : (tempSelectedBankAccounts.length === 10 ? "#D97706" : "#0066CC"),
+                  background: tempSelectedBankAccounts.length > 10 ? "#FEF2F2" : "#EFF6FF",
                   padding: "3px 8px",
                   borderRadius: "6px"
                 }}>
-                  {tempSelectedBankAccounts.length} / 11 selected
+                  {tempSelectedBankAccounts.length} / 10 selected
                 </span>
                 {tempSelectedBankAccounts.length > 0 && (
                   <button
@@ -2897,7 +3042,7 @@ export default function ClientSettingsView({
               ) : (
                 filteredModalAccounts.map((acc) => {
                   const isChecked = tempSelectedBankAccounts.includes(acc.name);
-                  const isMaxReached = !isChecked && tempSelectedBankAccounts.length >= 11;
+                  const isMaxReached = !isChecked && tempSelectedBankAccounts.length >= 10;
 
                   return (
                     <div
@@ -2999,16 +3144,16 @@ export default function ClientSettingsView({
               <button
                 type="button"
                 onClick={handleApplyBankSelection}
-                disabled={tempSelectedBankAccounts.length > 11}
+                disabled={tempSelectedBankAccounts.length > 10}
                 style={{
                   padding: "7px 16px",
                   borderRadius: "6px",
                   border: "none",
-                  background: tempSelectedBankAccounts.length > 11 ? "#94A3B8" : "#0066CC",
+                  background: tempSelectedBankAccounts.length > 10 ? "#94A3B8" : "#0066CC",
                   color: "#FFFFFF",
                   fontSize: "12px",
                   fontWeight: "600",
-                  cursor: tempSelectedBankAccounts.length > 11 ? "not-allowed" : "pointer"
+                  cursor: tempSelectedBankAccounts.length > 10 ? "not-allowed" : "pointer"
                 }}
               >
                 Apply selection ({tempSelectedBankAccounts.length} accounts)

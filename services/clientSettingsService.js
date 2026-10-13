@@ -77,7 +77,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     "DataChgAlert!A58:F80",// [15] CRM discrepancy rules (Pipeline & Confirmed)
     "DataChgAlert!A100:J120", // [16] Expense settings & tolerances
     "DataChgAlert!B82",    // [17] Pipeline mode - add jobs to Conf?
-    "KeyInfo!H12:H22"      // [18] Bank accounts (max 11)
+    "KeyInfo!H12:I21"      // [18] Bank accounts (H: Names, I: Tool IDs, max 10, rows 12-21)
   ];
 
   const clientRanges = [
@@ -127,7 +127,7 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
   const dcaCrmRules = mVals[15]?.values || [];
   const dcaExp = mVals[16]?.values || [];
   const dcaB82 = mVals[17]?.values?.[0]?.[0] || "";
-  const keyH12H22 = mVals[18]?.values || [];
+  const keyH12I21 = mVals[18]?.values || [];
 
   // Check if A120 is an IMPORTRANGE formula
   const formulaA120 = String(masterFormulaResp.data?.values?.[0]?.[0] || "");
@@ -291,7 +291,14 @@ export async function getClientSettings({ clientName, masterSheetId, clientSheet
     // 3. ACCOUNTING
     accounting: {
       toolInUse: String(keyQ1Q10[3]?.[0] || "None").trim(), // Q4
-      bankAccounts: (keyH12H22 || []).map(r => String(r[0] || "").trim()).filter(Boolean),
+      bankAccounts: (keyH12I21 || []).map(r => String(r[0] || "").trim()).filter(Boolean),
+      bankAccountIds: (keyH12I21 || []).map(r => String(r[1] || "").trim()),
+      bankAccountDetails: (keyH12I21 || [])
+        .map(r => ({
+          name: String(r[0] || "").trim(),
+          id: String(r[1] || "").trim()
+        }))
+        .filter(d => d.name),
       contractorsManual: (keyATContr || []).map(r => String(r[0] || "").trim()).filter(Boolean),
       passThroughManual: (keyATPass || []).map(r => String(r[0] || "").trim()).filter(Boolean),
       mappings: accountingMappings
@@ -532,7 +539,23 @@ export async function saveClientSettings({
       addMasterCell("KeyInfo!Q4", settings.accounting.toolInUse);
     }
     if (Array.isArray(settings.accounting.bankAccounts)) {
-      addMasterColumnSlice("H", 12, 22, settings.accounting.bankAccounts);
+      const rows = [];
+      const details = Array.isArray(settings.accounting.bankAccountDetails)
+        ? settings.accounting.bankAccountDetails
+        : [];
+      for (let i = 0; i < 10; i++) {
+        const name = settings.accounting.bankAccounts[i] !== undefined ? String(settings.accounting.bankAccounts[i]).trim() : "";
+        let id = "";
+        if (name) {
+          const match = details.find(d => d.name === name);
+          id = match?.id || (Array.isArray(settings.accounting.bankAccountIds) ? settings.accounting.bankAccountIds[i] || "" : "");
+        }
+        rows.push([name, id]);
+      }
+      masterUpdates.push({
+        range: "KeyInfo!H12:I21",
+        values: rows
+      });
     }
     if (Array.isArray(settings.accounting.contractorsManual)) {
       addMasterColumnSlice("AT", 4, 22, settings.accounting.contractorsManual);

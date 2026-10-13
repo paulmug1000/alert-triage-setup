@@ -561,7 +561,7 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
     for (const c of clients) {
       try {
         const clientSheetId = extractSheetIdFromUrl(c.clientSheetUrl) || String(c.clientSheetUrl).trim();
-        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "KeyInfo!H12:H22" });
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: clientSheetId, range: "KeyInfo!H12:H21" });
         const accountNames = (resp.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
         accountNames.forEach(name => newRows.push([c.clientName, name, loadedAt]));
       } catch (clientErr) {

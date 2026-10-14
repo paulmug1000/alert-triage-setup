@@ -755,8 +755,8 @@ export default function CashflowReconTab({
           </div>
         </div>
 
-        {/* Selected Client Toolbar & Month Controls */}
-        {selectedClient && (
+        {/* Selected Client Toolbar & Month Controls (only rendered when data is loaded & ready) */}
+        {selectedClient && !loading && reconData && (
           <div style={{
             marginTop: "14px",
             paddingTop: "14px",
@@ -783,17 +783,19 @@ export default function CashflowReconTab({
                 </span>
 
                 {/* Target Month pill: 15% smaller (15px), sits next to Client pill */}
-                <span style={{
-                  fontSize: "15px",
-                  fontWeight: "700",
-                  background: "#dcfce7",
-                  color: "#166534",
-                  border: "1px solid #bbf7d0",
-                  padding: "4px 12px",
-                  borderRadius: "8px"
-                }}>
-                  {reconData?.targetMonthLabel || effectiveMonthKey}
-                </span>
+                {reconData?.targetMonthLabel && (
+                  <span style={{
+                    fontSize: "15px",
+                    fontWeight: "700",
+                    background: "#dcfce7",
+                    color: "#166534",
+                    border: "1px solid #bbf7d0",
+                    padding: "4px 12px",
+                    borderRadius: "8px"
+                  }}>
+                    {reconData.targetMonthLabel}
+                  </span>
+                )}
 
                 {/* Month selector: sits next to October 2026 pill */}
                 <div style={{ display: "flex", alignItems: "center", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "2px 4px", gap: "2px" }}>

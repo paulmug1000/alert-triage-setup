@@ -94,16 +94,33 @@ export function colIndexToLetter(colNum) {
   return letter;
 }
 
+const _sheetGidCache = new Map();
+const SHEET_GID_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+
 export async function getSheetGid(sheets, spreadsheetId, sheetName) {
-  const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties" });
+  const cacheKey = `${spreadsheetId}::${sheetName}`;
+  const cached = _sheetGidCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp < SHEET_GID_CACHE_TTL)) {
+    return cached.gid;
+  }
+
+  const meta = await withRetry(() => sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties" }));
   const sheet = meta.data.sheets?.find(s => s.properties.title === sheetName);
   if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
+
+  // Cache all sheet tabs returned in this call for future lookups
+  for (const s of meta.data.sheets || []) {
+    if (s.properties?.title && s.properties?.sheetId !== undefined) {
+      _sheetGidCache.set(`${spreadsheetId}::${s.properties.title}`, {
+        gid: s.properties.sheetId,
+        timestamp: Date.now()
+      });
+    }
+  }
+
   return sheet.properties.sheetId;
 }
 
 export async function getSheetId(sheets, spreadsheetId, tabName) {
-  const resp = await sheets.spreadsheets.get({ spreadsheetId });
-  const sheet = resp.data.sheets?.find(s => s.properties.title === tabName);
-  if (!sheet) throw new Error(`Tab "${tabName}" not found in spreadsheet`);
-  return sheet.properties.sheetId;
+  return getSheetGid(sheets, spreadsheetId, tabName);
 }

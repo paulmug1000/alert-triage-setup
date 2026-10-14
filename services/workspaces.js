@@ -51,6 +51,40 @@ export async function resolveClientNameBySheetId(sheets, sheetId, acId = DEFAULT
   return "";
 }
 
+export async function getClientWebAppUrl(sheets, clientName, acId = DEFAULT_AC_SHEET_ID) {
+  if (!clientName) return "";
+  const now = Date.now();
+  if (_allClientsMemoryCache && (now - _allClientsCachedAt < 600000)) {
+    const obj = _allClientsMemoryCache.clientsObj?.[clientName];
+    if (obj?.webAppUrl) return obj.webAppUrl;
+  }
+  if (redisClient?.isOpen) {
+    try {
+      const cacheKey = `pulse:all_clients:${acId || DEFAULT_AC_SHEET_ID}`;
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        const obj = parsed.clientsObj?.[clientName];
+        if (obj?.webAppUrl) return obj.webAppUrl;
+      }
+    } catch (e) {}
+  }
+  try {
+    const resp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: acId || DEFAULT_AC_SHEET_ID,
+        range: "AutoUpdates!A2:N500"
+      })
+    );
+    const rows = resp.data.values || [];
+    const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
+    return String(clientRow?.[13] || "").trim();
+  } catch (err) {
+    console.warn("⚠️ Error getting client webAppUrl:", err.message);
+    return "";
+  }
+}
+
 export async function handleGetAllClients(req, res, sheets) {
   const automationCommanderSheetId = req.body?.automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
   const { bypassCache } = req.body || {};
@@ -101,15 +135,16 @@ export async function handleGetAllClients(req, res, sheets) {
         const scriptId   = String(row[10] || "").trim();
         const clientSheetUrl = row[11];
         const masterSheetUrl = row[12];
-        const hasWebAppUrl = !!String(row[13] || "").trim();
+        const webAppUrl = String(row[13] || "").trim();
+        const hasWebAppUrl = !!webAppUrl;
         const splitEnabled = String(row[104] || "").trim().toLowerCase() === "yes";
         if (!clientName || !clientSheetUrl) continue;
         if (clientName.toLowerCase() === "client" || clientName.toLowerCase() === "client name") continue;
         const clientSheetId = extractSheetIdFromUrl(clientSheetUrl) || String(clientSheetUrl).trim();
         const masterSheetId = extractSheetIdFromUrl(masterSheetUrl) || String(masterSheetUrl || "").trim();
         const hasClientManager = cmMap.hasManager(clientName);
-        clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, hasWebAppUrl, splitEnabled, reconSheetUrl, reconSheetId, hasClientManager });
-        if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, hasWebAppUrl, reconSheetUrl, reconSheetId, hasClientManager };
+        clientsArray.push({ clientName, clientSheetId, masterSheetId, scriptId, webAppUrl, hasWebAppUrl, splitEnabled, reconSheetUrl, reconSheetId, hasClientManager });
+        if (clientSheetId || masterSheetId) clientsObj[clientName] = { clientSheetId, masterSheetId, scriptId, webAppUrl, hasWebAppUrl, reconSheetUrl, reconSheetId, hasClientManager };
       }
 
       if (redisClient?.isOpen) {

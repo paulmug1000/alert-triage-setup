@@ -172,7 +172,16 @@ export default function PerformanceBreakdownView({
 
   const hasSections = Array.isArray(ddData?.sections) && ddData.sections.length > 0;
   const sections = ddData?.sections || [];
-  const items = ddData?.items || [];
+  const items = useMemo(() => {
+    const list = ddData?.items || [];
+    return [...list].sort((a, b) => {
+      const isAdjA = String(a.name || "").toLowerCase().includes("adjustment");
+      const isAdjB = String(b.name || "").toLowerCase().includes("adjustment");
+      if (isAdjA && !isAdjB) return 1;
+      if (!isAdjA && isAdjB) return -1;
+      return String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" });
+    });
+  }, [ddData]);
 
   const totalAmount = useMemo(() => {
     if (Array.isArray(ddData?.sections) && ddData.sections.length > 0) {
@@ -286,7 +295,7 @@ export default function PerformanceBreakdownView({
             rows.push([
               `  [Txn] ${t.date}`,
               t.supplier,
-              t.gross || t.amount || 0,
+              t.net !== undefined ? t.net : (t.amount || t.gross || 0),
               t.ref || "",
               t.net || 0,
               t.vat || 0,
@@ -690,26 +699,6 @@ export default function PerformanceBreakdownView({
                         >
                           {item.transactions.length} txn{item.transactions.length === 1 ? "" : "s"}
                         </span>
-                        {unrecCount > 0 && (
-                          <span
-                            style={{
-                              fontSize: "10.5px",
-                              padding: "2px 7px",
-                              borderRadius: "4px",
-                              background: "#fef3c7",
-                              color: "#b45309",
-                              border: "1px solid #fde68a",
-                              fontWeight: 600,
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "4px",
-                            }}
-                            title={`${unrecCount} unreconciled bank transaction(s) from Cashflow Reconciliation`}
-                          >
-                            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#d97706" }} />
-                            {unrecCount} pending recon
-                          </span>
-                        )}
                       </div>
                       <span style={{ fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap" }}>
                         {formatMoney(item.amount)}
@@ -767,13 +756,13 @@ export default function PerformanceBreakdownView({
                                 <td style={{ padding: "8px 16px", color: "#64748b", fontSize: "11.5px", whiteSpace: "nowrap" }}>
                                   {txn.ref || "—"}
                                 </td>
-                                <td style={{ padding: "8px 16px", textAlign: "right", color: "#334155", fontVariantNumeric: "tabular-nums" }}>
-                                  {formatMoney(txn.net)}
+                                <td style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: "#0047AB", fontVariantNumeric: "tabular-nums" }}>
+                                  {formatMoney(txn.net !== undefined ? txn.net : (txn.amount || 0))}
                                 </td>
                                 <td style={{ padding: "8px 16px", textAlign: "right", color: "#64748b", fontSize: "11.5px", fontVariantNumeric: "tabular-nums" }}>
                                   {txn.vat ? formatMoney(txn.vat) : "—"}
                                 </td>
-                                <td style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: "#0047AB", fontVariantNumeric: "tabular-nums" }}>
+                                <td style={{ padding: "8px 16px", textAlign: "right", color: "#475569", fontVariantNumeric: "tabular-nums" }}>
                                   {formatMoney(txn.gross || txn.amount)}
                                 </td>
                               </tr>

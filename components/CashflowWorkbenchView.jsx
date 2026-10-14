@@ -1076,8 +1076,10 @@ export default function CashflowWorkbenchView({
       if (!data.success) throw new Error(data.error || "Failed to update status");
 
       if (nextVal) {
-        // Automatically dismiss any new transaction highlights when month is finalized
-        handleDismissAllNew(true);
+        // Automatically dismiss any new transaction highlights when month is finalized (only if new transactions exist)
+        if (newTxnsCount > 0) {
+          handleDismissAllNew(true);
+        }
         setApiMsg("✓ Month marked as reconciled & complete for P&L");
       } else {
         setApiMsg("✓ Month marked as in-progress");
@@ -1093,8 +1095,6 @@ export default function CashflowWorkbenchView({
           automationCommanderSheetId
         })
       }).catch(e => console.warn("Failed to trigger P&L breakdown sync:", e));
-
-      if (onRefresh) onRefresh();
     } catch (err) {
       setIsReconciledComplete(!nextVal); // Revert on error
       setCustomModal({
@@ -1110,6 +1110,10 @@ export default function CashflowWorkbenchView({
   // Dismiss "new" transaction highlights on Recon Sheet (resets background to white)
   const handleDismissAllNew = async (silent = false) => {
     if (!clientInfo?.reconSheetId || !tabName || dismissingNew) return;
+    if (newTxnsCount === 0) {
+      if (!silent) setApiMsg("No new transactions to dismiss");
+      return;
+    }
     setDismissingNew(true);
     try {
       await fetch("/api/triage", {
@@ -1895,37 +1899,8 @@ export default function CashflowWorkbenchView({
         gap: "10px",
         boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
       }}>
-        {/* Far Left: Reconciled & complete for P&L toggle, Update bank feeds & P&L, Paste / upload */}
+        {/* Far Left: Update bank feeds & P&L, Paste / upload */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-          {/* Reconciled & complete for P&L toggle */}
-          <label style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "8px",
-            cursor: updatingReconStatus ? "wait" : "pointer",
-            userSelect: "none",
-            padding: "5px 10px",
-            borderRadius: "6px",
-            background: isReconciledComplete ? "#f0fdf4" : "#f8fafc",
-            border: `1px solid ${isReconciledComplete ? "#86efac" : "#cbd5e1"}`
-          }}>
-            <input
-              type="checkbox"
-              checked={Boolean(isReconciledComplete)}
-              disabled={updatingReconStatus}
-              onChange={handleToggleReconciledComplete}
-              style={{ width: "15px", height: "15px", cursor: "pointer", accentColor: "#15803d" }}
-            />
-            <span style={{
-              fontSize: "12px",
-              fontWeight: "600",
-              color: isReconciledComplete ? "#15803d" : "#475569"
-            }}>
-              Reconciled & complete for P&L
-            </span>
-            {updatingReconStatus && <Spinner size={11} />}
-          </label>
-
           <button
             onClick={handleUpdateBankTransactions}
             disabled={updatingTxns || fetchingApi}
@@ -1967,8 +1942,37 @@ export default function CashflowWorkbenchView({
           </button>
         </div>
 
-        {/* Far Right: Overwrite all and Recategorise all */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        {/* Far Right: Reconciled & complete for P&L toggle, Overwrite all and Recategorise all */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          {/* Reconciled & complete for P&L toggle */}
+          <label style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            cursor: updatingReconStatus ? "wait" : "pointer",
+            userSelect: "none",
+            padding: "5px 10px",
+            borderRadius: "6px",
+            background: isReconciledComplete ? "#f0fdf4" : "#f8fafc",
+            border: `1px solid ${isReconciledComplete ? "#86efac" : "#cbd5e1"}`
+          }}>
+            <input
+              type="checkbox"
+              checked={Boolean(isReconciledComplete)}
+              disabled={updatingReconStatus}
+              onChange={handleToggleReconciledComplete}
+              style={{ width: "15px", height: "15px", cursor: "pointer", accentColor: "#15803d" }}
+            />
+            <span style={{
+              fontSize: "12px",
+              fontWeight: "600",
+              color: isReconciledComplete ? "#15803d" : "#475569"
+            }}>
+              Reconciled & complete for P&L
+            </span>
+            {updatingReconStatus && <Spinner size={11} />}
+          </label>
+
           <button
             onClick={handleConfirmOverwriteAll}
             disabled={fetchingApi || updatingTxns}

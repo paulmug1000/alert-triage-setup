@@ -1721,7 +1721,8 @@ export function buildDeepDiveData({
   // 6. Overhead & Delivery Expenses (NO VAT or Timing per user instructions)
   if (ddType === "expNonDel" || ddType === "expDel") {
     const isDel = ddType === "expDel";
-    const expenses = (keyData.outgoings?.expenses || []).filter((e) =>
+    const allOutgoingsExpenses = keyData.outgoings?.expenses || [];
+    const expenses = allOutgoingsExpenses.filter((e) =>
       isDel ? e.isDelivery : !e.isDelivery
     );
     const targetYear = effectiveDate.getFullYear();
@@ -1730,6 +1731,12 @@ export function buildDeepDiveData({
 
     const txnsByMonth = keyData.outgoings?.transactionsByMonth || {};
     const normCategory = (s) => String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+
+    // Map all outgoings categories by normCategory to quickly look up isDelivery status
+    const allExpMap = new Map();
+    allOutgoingsExpenses.forEach((e) => {
+      allExpMap.set(normCategory(e.name), e);
+    });
 
     const items = expenses.map((e) => {
       let amt = 0;
@@ -1767,7 +1774,7 @@ export function buildDeepDiveData({
               net: t.n || 0,
               vat: t.v || 0,
               gross: t.g || 0,
-              amount: t.n || t.g || 0,
+              amount: t.n !== undefined ? t.n : (t.g || 0),
               datePaid: t.p || "",
               isUnreconciled: Boolean(t.u),
             });
@@ -1782,6 +1789,84 @@ export function buildDeepDiveData({
         transactions: categoryTxns,
       };
     }).filter((item) => item.amount > 0 || (item.transactions && item.transactions.length > 0));
+
+    // For any category in transactionsByMonth that is NOT on Outgoings at all,
+    // only include it if its category delivery classification matches isDel!
+    const unmappedCatMap = new Map(); // normCat -> { name, txns }
+
+    for (let i = 0; i < monthCount; i++) {
+      const currDate = new Date(targetYear, targetMonth + i, 1);
+      let foundY = yearIndex;
+      let foundC = (mIdx + i) % 12;
+      if (keyData.outgoings?.headers) {
+        for (const y of [1, 2, 3]) {
+          const hdrs = keyData.outgoings.headers[y] || [];
+          for (let c = 0; c < hdrs.length; c++) {
+            const hd = DeepDiveEngine.parseHeaderDate(hdrs[c]);
+            if (hd && hd.getFullYear() === currDate.getFullYear() && hd.getMonth() === currDate.getMonth()) {
+              foundY = y;
+              foundC = c;
+              break;
+            }
+          }
+        }
+      }
+
+      const mList = txnsByMonth[foundY]?.[foundC] || [];
+      mList.forEach((t) => {
+        const norm = normCategory(t.c);
+        if (norm && !allExpMap.has(norm)) {
+          // Ignore categories that belong to salaries, pensions, payroll, tax, dividends, or balance sheet
+          const isNonExpense =
+            norm.includes("pension") ||
+            norm.includes("salary") ||
+            norm.includes("salaries") ||
+            norm.includes("wages") ||
+            norm.includes("paye") ||
+            norm.includes("nic") ||
+            norm.includes("national insurance") ||
+            norm.includes("director") ||
+            norm.includes("dividend") ||
+            norm.includes("corporation tax") ||
+            norm.includes("tax") ||
+            norm.includes("vat") ||
+            norm.includes("loan") ||
+            norm.includes("bank") ||
+            norm.includes("capital");
+
+          if (isNonExpense) return;
+
+          // Check if unknown category is delivery vs non-delivery
+          const isCategoryDelivery = norm.includes("cost of sale") || norm.includes("direct expense") || norm.includes("direct cost");
+          if (isCategoryDelivery === isDel) {
+            if (!unmappedCatMap.has(norm)) {
+              unmappedCatMap.set(norm, { name: t.c, txns: [] });
+            }
+            unmappedCatMap.get(norm).txns.push({
+              date: t.d || "",
+              supplier: t.s || "",
+              ref: t.r || "",
+              net: t.n || 0,
+              vat: t.v || 0,
+              gross: t.g || 0,
+              amount: t.n !== undefined ? t.n : (t.g || 0),
+              datePaid: t.p || "",
+              isUnreconciled: Boolean(t.u),
+            });
+          }
+        }
+      });
+    }
+
+    unmappedCatMap.forEach(({ name, txns }) => {
+      const sumAmt = txns.reduce((s, t) => s + (t.net !== undefined ? t.net : (t.amount || 0)), 0);
+      items.push({
+        name,
+        detail: "",
+        amount: Math.round(sumAmt),
+        transactions: txns,
+      });
+    });
 
     const totalExp = items.reduce((s, i) => s + i.amount, 0);
     let drift = Math.round(parseMoney(cellValue) - totalExp);
@@ -1798,6 +1883,15 @@ export function buildDeepDiveData({
     } else if (!isScenarioView && Math.abs(drift) > 2) {
       items.push({ name: "Rounding adjustment", amount: drift });
     }
+
+    // Sort categories alphabetically by name, keeping any adjustment line at the bottom
+    items.sort((a, b) => {
+      const isAdjA = a.name.toLowerCase().includes("adjustment");
+      const isAdjB = b.name.toLowerCase().includes("adjustment");
+      if (isAdjA && !isAdjB) return 1;
+      if (!isAdjA && isAdjB) return -1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
 
     return {
       title: isDel ? "Delivery expenses" : "Non-delivery expenses",

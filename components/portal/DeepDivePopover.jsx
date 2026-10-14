@@ -536,7 +536,7 @@ export default function DeepDivePopover({
                           <span style={{ fontWeight: 600, color: "#111827" }}>{item.name}</span>
                           <span
                             style={{
-                              fontSize: "10px",
+                              fontSize: "10.5px",
                               padding: "1px 5px",
                               borderRadius: "8px",
                               background: "#f1f5f9",
@@ -545,22 +545,6 @@ export default function DeepDivePopover({
                           >
                             {item.transactions.length}
                           </span>
-                          {unrecCount > 0 && (
-                            <span
-                              style={{
-                                fontSize: "9.5px",
-                                padding: "1px 4px",
-                                borderRadius: "3px",
-                                background: "#fef3c7",
-                                color: "#92400e",
-                                border: "1px solid #fde68a",
-                                fontWeight: 600,
-                              }}
-                              title={`${unrecCount} unreconciled bank transaction(s)`}
-                            >
-                              Pending Recon
-                            </span>
-                          )}
                         </div>
                         <div style={{ fontWeight: 700, color: "#0047AB", fontSize: "13px", whiteSpace: "nowrap" }}>
                           {formatGBP(item.amount)}
@@ -586,15 +570,36 @@ export default function DeepDivePopover({
                                   <span style={{ color: "#64748b", fontSize: "10px" }}>{t.date}</span>
                                   <span>{t.supplier}</span>
                                   {t.isUnreconciled && (
-                                    <span style={{ fontSize: "9px", padding: "0 3px", background: "#fef3c7", color: "#92400e", borderRadius: "2px" }}>
-                                      Pending
+                                    <span
+                                      style={{
+                                        fontSize: "9px",
+                                        padding: "1px 4px",
+                                        background: "#fef3c7",
+                                        color: "#92400e",
+                                        border: "1px solid #fde68a",
+                                        borderRadius: "3px",
+                                        fontWeight: 600,
+                                      }}
+                                      title="Unreconciled bank statement line from Cashflow Reconciliation"
+                                    >
+                                      Pending Recon
                                     </span>
                                   )}
                                 </div>
-                                {t.ref && <div style={{ color: "#94a3b8", fontSize: "10px" }}>Ref: {t.ref}</div>}
+                                {t.ref ? (
+                                  <div style={{ color: "#94a3b8", fontSize: "10px" }}>
+                                    Ref: {t.ref}{t.vat > 0 ? ` • Gross: ${formatGBP(t.gross)}` : ""}
+                                  </div>
+                                ) : (
+                                  t.vat > 0 && (
+                                    <div style={{ color: "#94a3b8", fontSize: "10px" }}>
+                                      Gross: {formatGBP(t.gross)}
+                                    </div>
+                                  )
+                                )}
                               </div>
                               <div style={{ fontWeight: 600, color: "#334155", whiteSpace: "nowrap" }}>
-                                {formatGBP(t.gross || t.amount)}
+                                {formatGBP(t.net !== undefined ? t.net : (t.amount || t.gross || 0))}
                               </div>
                             </div>
                           ))}

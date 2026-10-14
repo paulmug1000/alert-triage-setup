@@ -11,7 +11,7 @@
  */
 
 import { redisClient } from "../../services/redisClient";
-import { getSheetsClient } from "../../services/sheetsClient";
+import { getSheetsClient, withRetry } from "../../services/sheetsClient";
 import { 
   readFlagSweepLog, 
   readPrecomputeLog, 
@@ -37,7 +37,7 @@ import {
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
   handleUpdateInvoiceSlot, handleCreateJobFromInvoice, handleAddNewJob, handleUpdateOutgoingNote,
-  handleFireOutgoingsPull, handleMarkPipelineCopied
+  handleFireOutgoingsPull, handleMarkPipelineCopied, getClientWebAppUrl
 } from "../../services/workspaces";
 import {
   handleGetRetainerJobs, handleRenameRetainerJob, handleChangeRetainerStartDate, handleChangeRetainerEndDate,
@@ -714,13 +714,7 @@ export default async function handler(req, res) {
         if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
           return res.status(403).json({ success: false, error: "Access denied to this client" });
         }
-        const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID,
-          range: "AutoUpdates!A2:N500"
-        }));
-        const rows = clientResp.data.values || [];
-        const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
-        const webAppUrl = String(clientRow?.[13] || "").trim();
+        const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
 
         if (webAppUrl) {
           const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";

@@ -41,9 +41,22 @@ export function retParseMoney(val) {
 }
 
 export async function retFindTrueLastRow(sheets, spreadsheetId, allRows) {
+  let rows = allRows;
+  if (!rows || rows.length === 0) {
+    if (sheets && spreadsheetId) {
+      const resp = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: "Confirmed!A1:CR5000",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      rows = resp.data.values || [];
+    } else {
+      return 0;
+    }
+  }
   let trueLastRow = 0;
-  for (let r = allRows.length - 1; r >= 0; r--) {
-    const row = allRows[r] || [];
+  for (let r = rows.length - 1; r >= 0; r--) {
+    const row = rows[r] || [];
     const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
     const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
     const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
@@ -171,11 +184,11 @@ export async function handleGetRetainerJobs(req, res, sheets) {
   if (!clientSheetId) return res.status(400).json({ success: false, error: "Missing clientSheetId" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-    const resp = await sheets.spreadsheets.values.get({
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: sheetIdClean,
       range: "Confirmed!A1:CR5000",
       valueRenderOption: "FORMATTED_VALUE",
-    });
+    }));
     const rows = resp.data.values || [];
     const retainerJobs = retFindRetainerJobs(rows, { onlyActiveOrRecentlyEnded: true });
 
@@ -282,16 +295,34 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetIdClean,
-      range: "Confirmed!A1:CR5000",
-      valueRenderOption: "FORMATTED_VALUE",
-    });
+
+    // Fetch Confirmed rows, tab metadata (including rowGroups), and tolerance settings in PARALLEL
+    const [resp, metaResp, tolerance] = await Promise.all([
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:CR5000",
+        valueRenderOption: "FORMATTED_VALUE",
+      }),
+      sheets.spreadsheets.get({
+        spreadsheetId: sheetIdClean,
+        fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
+      }),
+      getToleranceValues(sheets, masterSheetId || sheetIdClean),
+    ]);
+
     const rows = resp.data.values || [];
     const parentRow = rows[parentRowNum - 1] || [];
-    if (String(parentRow[0]||"").trim() !== client || String(parentRow[1]||"").trim() !== jobName) {
+    if (String(parentRow[0] || "").trim() !== client || String(parentRow[1] || "").trim() !== jobName) {
       return res.status(400).json({ success: false, error: "Row mismatch - job may have moved." });
     }
+
+    const confirmedSheet = (metaResp.data.sheets || []).find(s => s.properties.title === "Confirmed");
+    if (!confirmedSheet) {
+      return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+    }
+    const gridSheetId = confirmedSheet.properties.sheetId;
+    let currentMaxRows = confirmedSheet.properties.gridProperties?.rowCount || 5000;
+    const rowGroups = confirmedSheet.rowGroups || [];
 
     const oldEndDate = retParseSheetDate(parentRow[38]);
     const newEnd = retParseSheetDate(newEndDate);
@@ -305,17 +336,17 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
     let cj = parentRowNum;
     while (cj < rows.length) {
       const next = rows[cj] || [];
-      if (String(next[0]||"").trim() === client && String(next[1]||"").trim() === jobName &&
-          !String(next[32]||"").trim() && !String(next[37]||"").trim()) {
+      if (String(next[0] || "").trim() === client && String(next[1] || "").trim() === jobName &&
+          !String(next[32] || "").trim() && !String(next[37] || "").trim()) {
         childRows.push({ rowNum: cj + 1, row: next });
         cj++;
       } else break;
     }
-    const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean); 
+    const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
 
     const intervalMonthsForOffset = retDetectIntervalMonths(childDates);
     const invoiceTimingOffset = retDetectInvoiceTimingOffset_(childDates, startDate, intervalMonthsForOffset);
-    const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : 0; 
+    const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : 0;
 
     const isGrowing = !oldEndDate || newEnd > oldEndDate;
 
@@ -349,15 +380,7 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
       }
 
-      const metaResp = await sheets.spreadsheets.get({
-        spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
-      });
-      const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
-      const gridSheetId = confirmedSheet.properties.sheetId;
-      const rowGroups = confirmedSheet.rowGroups || [];
-      const currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
-
-      const groupTrimCounts = new Map(); 
+      const groupTrimCounts = new Map();
       for (const cr of toTrim) {
         const rowIdx0 = cr.rowNum - 1;
         const coveringGroup = rowGroups.find(g => g.range?.startIndex <= rowIdx0 && g.range?.endIndex > rowIdx0);
@@ -394,13 +417,21 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         spreadsheetId: sheetIdClean, requestBody: { ranges: clearRanges },
       });
 
-      const freshResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
-      });
-      const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+      // Compute trueLastRow in memory skipping trimmed rows (eliminates redundant 5k-row download)
+      const trimSet = new Set(trimRowNums);
+      let trueLastRow = 0;
+      for (let r = rows.length - 1; r >= 0; r--) {
+        if (trimSet.has(r + 1)) continue;
+        const row = rows[r] || [];
+        const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+        const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
+        const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+        const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
+        if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+      }
 
       const blockStartIdx0 = trimRowNums[0] - 1;
-      const blockEndIdx0 = trimRowNums[trimRowNums.length - 1]; 
+      const blockEndIdx0 = trimRowNums[trimRowNums.length - 1];
       if (blockStartIdx0 <= trueLastRow) {
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId: sheetIdClean,
@@ -456,8 +487,8 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
       const durationMonths = Math.max(1, Math.round(diffDays / 30.4375));
       const totalContractValue = durationMonths * revenue;
 
-      const { defaultDaysToPay: rawDefaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
-      const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay).replace(/[^\d.-]/g, ""), 10) || 30;
+      const rawDefaultDaysToPay = tolerance?.defaultDaysToPay;
+      const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay || "").replace(/[^\d.-]/g, ""), 10) || 30;
 
       let lastDate = childDates.length > 0 ? childDates[childDates.length - 1] : new Date(startDate || newEnd);
       if (childDates.length === 0) lastDate.setMonth(lastDate.getMonth() - 1);
@@ -485,72 +516,41 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
         return res.status(200).json({ success: true, trimmed: 0, grown: 0 });
       }
 
-      const metaResp = await sheets.spreadsheets.get({
-        spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties)",
-      });
-      const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
-      const gridSheetId = confirmedSheet.properties.sheetId;
-      let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
-
-      const freshResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
-      });
-      let trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
-
+      // Compute trueLastRow in memory from already-fetched rows (no redundant 5000-row read!)
+      let trueLastRow = await retFindTrueLastRow(null, null, rows);
       const insertAfterRowNum = childRows.length > 0 ? childRows[childRows.length-1].rowNum : parentRowNum;
 
+      const structuralRequests = [];
       if ((currentMaxRows - (trueLastRow + 1)) < newRowDates.length) {
         const toAdd = newRowDates.length - (currentMaxRows - (trueLastRow + 1)) + 5;
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId: sheetIdClean,
-          requestBody: { requests: [{
-            insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd }, inheritFromBefore: true },
-          }] },
+        structuralRequests.push({
+          insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd }, inheritFromBefore: true },
         });
         currentMaxRows += toAdd;
       }
 
       if (newRowDates.length > 0) {
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId: sheetIdClean,
-          requestBody: { requests: [{
-            moveDimension: {
-              source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + newRowDates.length },
-              destinationIndex: insertAfterRowNum,
-            },
-          }] },
+        structuralRequests.push({
+          moveDimension: {
+            source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + newRowDates.length },
+            destinationIndex: insertAfterRowNum,
+          },
         });
         trueLastRow += newRowDates.length;
       }
 
-      const writeData = [];
-      const dateWriteData = [];
-      for (let m = 0; m < newRowDates.length; m++) {
-        const rn = insertAfterRowNum + 1 + m;
-        writeData.push(
-          { range: `Confirmed!A${rn}`, values: [[client]] },
-          { range: `Confirmed!B${rn}`, values: [[jobName]] },
-          { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
-          { range: `Confirmed!AP${rn}`, values: [[revenue]] },
-          { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
-        );
-        dateWriteData.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[m])]] });
-      }
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: writeData },
-      });
-      if (dateWriteData.length > 0) {
-        await sheets.spreadsheets.values.batchUpdate({
-          spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateWriteData },
+      if (structuralRequests.length > 0) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: structuralRequests },
         });
       }
 
+      // Update row grouping using rowGroups from the initial parallel fetch BEFORE writing cell data
+      // (prevents blocking on Google Sheets formula recalculation)
       try {
-        const metaResp2 = await sheets.spreadsheets.get({ spreadsheetId: sheetIdClean, fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)" });
-        const cs2 = metaResp2.data.sheets.find(s => s.properties.title === "Confirmed");
-        const groups2 = cs2.rowGroups || [];
         const anchorIdx0 = insertAfterRowNum - 1;
-        const coveringGroup = groups2.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
+        const coveringGroup = rowGroups.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
         const newRangeEnd = insertAfterRowNum + newRowDates.length;
         if (coveringGroup) {
           await sheets.spreadsheets.batchUpdate({
@@ -575,12 +575,30 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
           });
         }
       } catch (groupErr) {
-        console.log(`  ⚠ Row grouping for grown retainer rows failed`);
+        console.log(`  ⚠ Row grouping for grown retainer rows failed:`, groupErr.message);
       }
 
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: sheetIdClean, range: `Confirmed!AM${parentRowNum}`,
-        valueInputOption: "USER_ENTERED", requestBody: { values: [[newEndDate]] },
+      // Consolidate all writes (new child rows + parent end date) into a SINGLE batchUpdate
+      const allWrites = [];
+      for (let m = 0; m < newRowDates.length; m++) {
+        const rn = insertAfterRowNum + 1 + m;
+        allWrites.push(
+          { range: `Confirmed!A${rn}`, values: [[client]] },
+          { range: `Confirmed!B${rn}`, values: [[jobName]] },
+          { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
+          { range: `Confirmed!AP${rn}`, values: [[revenue]] },
+          { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
+          { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[m])]] }
+        );
+      }
+      allWrites.push({
+        range: `Confirmed!AM${parentRowNum}`,
+        values: [[newEndDate]],
+      });
+
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: { valueInputOption: "USER_ENTERED", data: allWrites },
       });
 
       let tenantClient = req.body.clientName || "";
@@ -617,16 +635,34 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
   }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetIdClean,
-      range: "Confirmed!A1:CR5000",
-      valueRenderOption: "FORMATTED_VALUE",
-    });
+
+    // Fetch Confirmed rows, tab metadata (including rowGroups), and tolerance settings in PARALLEL
+    const [resp, metaResp, tolerance] = await Promise.all([
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetIdClean,
+        range: "Confirmed!A1:CR5000",
+        valueRenderOption: "FORMATTED_VALUE",
+      }),
+      sheets.spreadsheets.get({
+        spreadsheetId: sheetIdClean,
+        fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
+      }),
+      getToleranceValues(sheets, masterSheetId || sheetIdClean),
+    ]);
+
     const rows = resp.data.values || [];
     const parentRow = rows[parentRowNum - 1] || [];
     if (String(parentRow[0] || "").trim() !== client || String(parentRow[1] || "").trim() !== jobName) {
       return res.status(400).json({ success: false, error: "Row mismatch - job may have moved." });
     }
+
+    const confirmedSheet = (metaResp.data.sheets || []).find(s => s.properties.title === "Confirmed");
+    if (!confirmedSheet) {
+      return res.status(400).json({ success: false, error: "Confirmed tab not found" });
+    }
+    const gridSheetId = confirmedSheet.properties.sheetId;
+    let currentMaxRows = confirmedSheet.properties.gridProperties?.rowCount || 5000;
+    const rowGroups = confirmedSheet.rowGroups || [];
 
     const newStart = retParseSheetDate(newStartDate);
     if (!newStart) return res.status(400).json({ success: false, error: "Invalid new start date" });
@@ -673,8 +709,8 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
     const perInvoiceAmount = revenue * intervalMonths;
     const vat = parentRow[34];
 
-    const { defaultDaysToPay: rawDefaultDaysToPay } = await getToleranceValues(sheets, masterSheetId || sheetIdClean);
-    const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay).replace(/[^\d.-]/g, ""), 10) || 30;
+    const rawDefaultDaysToPay = tolerance?.defaultDaysToPay;
+    const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay || "").replace(/[^\d.-]/g, ""), 10) || 30;
 
     // Calculate target periods
     const periodStarts = [];
@@ -698,15 +734,6 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
 
     const targetCount = newRowDates.length;
     const currentCount = childRows.length;
-
-    const metaResp = await sheets.spreadsheets.get({
-      spreadsheetId: sheetIdClean,
-      fields: "sheets(properties.sheetId,properties.title,properties.gridProperties,rowGroups)",
-    });
-    const confirmedSheet = metaResp.data.sheets.find(s => s.properties.title === "Confirmed");
-    const gridSheetId = confirmedSheet.properties.sheetId;
-    let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
-    const rowGroups = confirmedSheet.rowGroups || [];
 
     if (targetCount < currentCount) {
       // Need to trim excess rows from the end of childRows
@@ -748,10 +775,18 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
         spreadsheetId: sheetIdClean, requestBody: { ranges: clearRanges },
       });
 
-      const freshResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
-      });
-      const trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+      // Compute trueLastRow in memory skipping trimmed rows
+      const trimSet = new Set(trimRowNums);
+      let trueLastRow = 0;
+      for (let r = rows.length - 1; r >= 0; r--) {
+        if (trimSet.has(r + 1)) continue;
+        const row = rows[r] || [];
+        const z1 = row.slice(0, 5).some(c => c !== "" && c != null);
+        const z2 = row.slice(32, 39).some(c => c !== "" && c != null);
+        const z3 = row.slice(41, 60).some(c => c !== "" && c != null);
+        const z4 = row.slice(75, 96).some(c => c !== "" && c != null);
+        if (z1 || z2 || z3 || z4) { trueLastRow = r + 1; break; }
+      }
 
       const blockStartIdx0 = trimRowNums[0] - 1;
       const blockEndIdx0 = trimRowNums[trimRowNums.length - 1];
@@ -767,79 +802,56 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
         });
       }
 
-      // Update remaining child rows with new dates & amounts
-      const dateUpdates = [];
-      const rawUpdates = [];
+      // Consolidate child updates AND parent updates into ONE batchUpdate
+      const allUpdates = [];
       for (let i = 0; i < targetCount; i++) {
         const rn = childRows[i].rowNum;
-        dateUpdates.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[i])]] });
-        rawUpdates.push({ range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] });
+        allUpdates.push(
+          { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[i])]] },
+          { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] }
+        );
       }
-      if (rawUpdates.length > 0) {
-        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: rawUpdates } });
+      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[newStartDate]] });
+      if (newEndDate) {
+        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[newEndDate]] });
       }
-      if (dateUpdates.length > 0) {
-        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateUpdates } });
+      if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
+        allUpdates.push({ range: `Confirmed!AG${parentRowNum}`, values: [[revenue]] });
       }
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: { valueInputOption: "USER_ENTERED", data: allUpdates },
+      });
 
     } else if (targetCount > currentCount) {
       // Need to add extra child rows
       const rowsNeeded = targetCount - currentCount;
       const insertAfterRowNum = childRows.length > 0 ? childRows[childRows.length - 1].rowNum : parentRowNum;
 
-      const freshResp = await sheets.spreadsheets.values.get({
-        spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
-      });
-      let trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshResp.data.values || []);
+      let trueLastRow = await retFindTrueLastRow(null, null, rows);
 
+      const structuralRequests = [];
       if ((currentMaxRows - (trueLastRow + 1)) < rowsNeeded) {
         const toAdd = rowsNeeded - (currentMaxRows - (trueLastRow + 1)) + 5;
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId: sheetIdClean,
-          requestBody: { requests: [{
-            insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd }, inheritFromBefore: true },
-          }] },
+        structuralRequests.push({
+          insertDimension: { range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd }, inheritFromBefore: true },
         });
         currentMaxRows += toAdd;
       }
 
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: sheetIdClean,
-        requestBody: { requests: [{
-          moveDimension: {
-            source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + rowsNeeded },
-            destinationIndex: insertAfterRowNum,
-          },
-        }] },
+      structuralRequests.push({
+        moveDimension: {
+          source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + rowsNeeded },
+          destinationIndex: insertAfterRowNum,
+        },
       });
 
-      // Update existing child rows
-      const dateUpdates = [];
-      const rawUpdates = [];
-      for (let i = 0; i < currentCount; i++) {
-        const rn = childRows[i].rowNum;
-        dateUpdates.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[i])]] });
-        rawUpdates.push({ range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] });
-      }
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: { requests: structuralRequests },
+      });
 
-      // Populate new child rows
-      for (let m = 0; m < rowsNeeded; m++) {
-        const rn = insertAfterRowNum + 1 + m;
-        const dateIdx = currentCount + m;
-        rawUpdates.push(
-          { range: `Confirmed!A${rn}`, values: [[client]] },
-          { range: `Confirmed!B${rn}`, values: [[jobName]] },
-          { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
-          { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] },
-          { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
-        );
-        dateUpdates.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[dateIdx])]] });
-      }
-
-      await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: rawUpdates } });
-      await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateUpdates } });
-
-      // Update row grouping
+      // Update row grouping using rowGroups from the initial parallel fetch BEFORE writing cell data
       try {
         const anchorIdx0 = insertAfterRowNum - 1;
         const coveringGroup = rowGroups.find(g => g.range?.startIndex <= anchorIdx0 && g.range?.endIndex > anchorIdx0);
@@ -864,39 +876,60 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
         console.log(`  ⚠ Row grouping for grown retainer rows failed:`, groupErr.message);
       }
 
+      // Consolidate child updates AND parent updates into ONE batchUpdate
+      const allUpdates = [];
+      for (let i = 0; i < currentCount; i++) {
+        const rn = childRows[i].rowNum;
+        allUpdates.push(
+          { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[i])]] },
+          { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] }
+        );
+      }
+      for (let m = 0; m < rowsNeeded; m++) {
+        const rn = insertAfterRowNum + 1 + m;
+        const dateIdx = currentCount + m;
+        allUpdates.push(
+          { range: `Confirmed!A${rn}`, values: [[client]] },
+          { range: `Confirmed!B${rn}`, values: [[jobName]] },
+          { range: `Confirmed!AI${rn}`, values: [[vat || ""]] },
+          { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] },
+          { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
+          { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[dateIdx])]] }
+        );
+      }
+      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[newStartDate]] });
+      if (newEndDate) {
+        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[newEndDate]] });
+      }
+      if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
+        allUpdates.push({ range: `Confirmed!AG${parentRowNum}`, values: [[revenue]] });
+      }
+
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        requestBody: { valueInputOption: "USER_ENTERED", data: allUpdates },
+      });
+
     } else {
       // Exactly same number of rows: update dates & amounts in place
-      const dateUpdates = [];
-      const rawUpdates = [];
+      const allUpdates = [];
       for (let i = 0; i < targetCount; i++) {
         const rn = childRows[i].rowNum;
-        dateUpdates.push({ range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[i])]] });
-        rawUpdates.push({ range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] });
+        allUpdates.push(
+          { range: `Confirmed!AR${rn}`, values: [[retFmtDate(newRowDates[i])]] },
+          { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] }
+        );
       }
-      if (rawUpdates.length > 0) {
-        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "RAW", data: rawUpdates } });
+      allUpdates.push({ range: `Confirmed!AL${parentRowNum}`, values: [[newStartDate]] });
+      if (newEndDate) {
+        allUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[newEndDate]] });
       }
-      if (dateUpdates.length > 0) {
-        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: dateUpdates } });
+      if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
+        allUpdates.push({ range: `Confirmed!AG${parentRowNum}`, values: [[revenue]] });
       }
-    }
-
-    // Update parent row: AL (start date), AM (end date if changed), AG (monthly revenue)
-    const parentDateUpdates = [{ range: `Confirmed!AL${parentRowNum}`, values: [[newStartDate]] }];
-    if (newEndDate) {
-      parentDateUpdates.push({ range: `Confirmed!AM${parentRowNum}`, values: [[newEndDate]] });
-    }
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetIdClean,
-      requestBody: { valueInputOption: "USER_ENTERED", data: parentDateUpdates },
-    });
-
-    if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
-      await sheets.spreadsheets.values.update({
+      await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
-        range: `Confirmed!AG${parentRowNum}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[revenue]] },
+        requestBody: { valueInputOption: "USER_ENTERED", data: allUpdates },
       });
     }
 
@@ -1037,10 +1070,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
     const gridSheetId = confirmedSheet.properties.sheetId;
     let currentMaxRows = confirmedSheet.properties.gridProperties.rowCount;
 
-    const freshValsResp = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetIdClean, range: "Confirmed!A1:CR" + currentMaxRows, valueRenderOption: "UNFORMATTED_VALUE",
-    });
-    let trueLastRow = await retFindTrueLastRow(sheets, sheetIdClean, freshValsResp.data.values || []);
+    let trueLastRow = await retFindTrueLastRow(null, null, rows);
 
     if ((currentMaxRows - (trueLastRow + 1)) < 1) {
       await sheets.spreadsheets.batchUpdate({

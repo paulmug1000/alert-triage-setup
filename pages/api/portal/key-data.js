@@ -142,7 +142,7 @@ export default async function handler(req, res) {
       batchRanges.push("Salaries!A1:JC1");
       batchRanges.push("Salaries!A304:JC368");
     }
-    if (hasOutgoings) batchRanges.push("Outgoings!A1:AV250");
+    if (hasOutgoings) batchRanges.push("Outgoings!A1:AV306");
     if (hasNBtoFind) batchRanges.push("NBtoFind!A1:AV50");
     batchRanges.push("KeyInfo!G32:G75"); // Lead sources
     batchRanges.push("KeyInfo!C23:C26"); // Product lines
@@ -703,6 +703,44 @@ export default async function handler(req, res) {
     // Expenses: rows 126 to 225 (indices 125 to 224)
     const expensesList = parseOutgoingsSection(125, 224);
 
+    // Extract Transaction Breakdown (Row 300) and Actual VAT (Rows 304 & 305) from Outgoings
+    // 0-indexed row indices: Row 300 -> 299, Row 304 -> 303, Row 305 -> 304
+    const row300 = outgoingsRows[299] || [];
+    const row304 = outgoingsRows[303] || [];
+    const row305 = outgoingsRows[304] || [];
+
+    const parseJsonCell = (cellVal) => {
+      if (!cellVal) return [];
+      try {
+        const parsed = typeof cellVal === "string" ? JSON.parse(cellVal) : cellVal;
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const parseYearRow = (row, sliceStart, sliceEnd, parser = (v) => v) => {
+      return (row.slice(sliceStart, sliceEnd) || []).map(parser);
+    };
+
+    const transactionsByMonth = {
+      1: parseYearRow(row300, 6, 18, parseJsonCell),
+      2: parseYearRow(row300, 21, 33, parseJsonCell),
+      3: parseYearRow(row300, 36, 48, parseJsonCell),
+    };
+
+    const vatCashByMonth = {
+      1: parseYearRow(row304, 6, 18, (v) => String(v || "£0").trim()),
+      2: parseYearRow(row304, 21, 33, (v) => String(v || "£0").trim()),
+      3: parseYearRow(row304, 36, 48, (v) => String(v || "£0").trim()),
+    };
+
+    const vatAccrualByMonth = {
+      1: parseYearRow(row305, 6, 18, (v) => String(v || "£0").trim()),
+      2: parseYearRow(row305, 21, 33, (v) => String(v || "£0").trim()),
+      3: parseYearRow(row305, 36, 48, (v) => String(v || "£0").trim()),
+    };
+
     // In Notes metadata mode, fetch and parse transactions from Master Sheet's OutgNotes tab
     let contractorTransactions = [];
     if (isNotesMode && masterSheetId) {
@@ -934,6 +972,9 @@ export default async function handler(req, res) {
         contractorSource: contractorSource || "Cell Values",
         isNotesMode,
         contractorTransactions,
+        transactionsByMonth,
+        vatCashByMonth,
+        vatAccrualByMonth,
       },
       nbtofind: {
         headers: {

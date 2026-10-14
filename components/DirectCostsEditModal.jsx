@@ -13,7 +13,7 @@ export default function DirectCostsEditModal({
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
-  const { rowNum, slotNum, slot, jobName, jobClient } = editSlot;
+  const { rowNum, slotNum, slot, jobName, jobClient, tabName } = editSlot;
   const [description, setDescription] = useState(slot.description || "");
   const [amount, setAmount] = useState(stripCurrency(slot.amount));
   const [vat, setVat] = useState(/^[£$€]?\d/.test(String(slot.vat||"")) ? "" : (slot.vat || "No"));
@@ -43,6 +43,7 @@ export default function DirectCostsEditModal({
           action: "update_expense_slot",
           clientSheetId: client?.clientSheetId,
           clientName: client?.clientName || client?.name || "",
+          tabName: tabName || editSlot.tabName || "Confirmed",
           rowNum, slotNum,
           expense: { description, amount: parseFloat(amount) || 0, vat, date, daysToPay: parseInt(daysToPay) || 30, status, transactionId },
         }),
@@ -67,6 +68,7 @@ export default function DirectCostsEditModal({
           action: "update_expense_slot",
           clientSheetId: client?.clientSheetId,
           clientName: client?.clientName || client?.name || "",
+          tabName: tabName || editSlot.tabName || "Confirmed",
           rowNum, slotNum, deleteSlot: true,
         }),
       });

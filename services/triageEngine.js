@@ -12,7 +12,7 @@ import {
   checkPipelineConfirmedOverlap_, checkRetainerShrinkBlocked_, checkUninvoicedNewJobs_,
   checkUninvoicedRevenue_, checkDeletedInvoices_, checkJobStructureErrors_,
   checkDeletedExpenses_, checkUnreceivedExpenses_, checkAutoLogErrors_, checkAutoLogInfiniteLoops_,
-  checkStaleUnreconGapExpenses_
+  checkStaleUnreconGapExpenses_, checkRetroactiveOutgoingsChanges_
 } from "./proactiveChecks";
 import { 
   checkAllGASLocks, setCRMMode, getToleranceValues, 
@@ -1154,14 +1154,16 @@ export async function handleStorePrecomputed(req, res, sheets) {
     let finalNoActionAlerts = mergedNoActionAlerts;
     let finalProactiveAlerts = [];
     
+    const acIdForMerge = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
+    let memoryRowsForMerge = null;
+
     try {
-      const acIdForMerge = extractSheetIdFromUrl(automationCommanderSheetId) || automationCommanderSheetId;
       await ensureAlertMemoryTab(sheets, acIdForMerge);
 
       const rowsBeforePurge = await readAlertMemory(sheets, acIdForMerge);
       await purgeOldAlertMemoryRows(sheets, acIdForMerge, rowsBeforePurge);
 
-      const memoryRowsForMerge = await readAlertMemory(sheets, acIdForMerge);
+      memoryRowsForMerge = await readAlertMemory(sheets, acIdForMerge);
 
       const oldPathFingerprints = new Set(mergedAlerts.map(a => buildAlertFingerprint(a)));
       const oldPathNoActionKeys = new Set(mergedNoActionAlerts.map(na => `${na.clientId}|||${na.flagType}`));
@@ -1757,7 +1759,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               checkUnreceivedExpenses_(client.clientName, client.clientSheetId, sharedData),
               checkAutoLogErrors_(client.clientName, client.masterSheetId, sharedData),
               checkAutoLogInfiniteLoops_(client.clientName, client.masterSheetId, sharedData),
-              checkStaleUnreconGapExpenses_(client.clientName, client.clientSheetId, sharedData, sheets)
+              checkStaleUnreconGapExpenses_(client.clientName, client.clientSheetId, sharedData, sheets),
+              checkRetroactiveOutgoingsChanges_(client.clientName, client.masterSheetId, sharedData)
             ];
 
             const proResults = await Promise.all(proChecks);
@@ -1767,7 +1770,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
               "retainer_invoice", "crm_wipe", "revenue_mismatch", "direct_costs_mismatch",
               "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_new_job", "uninvoiced_revenue",
               "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses",
-              "autolog_error", "infinite_loop", "stale_unrecon_gap"
+              "autolog_error", "infinite_loop", "stale_unrecon_gap", "retroactive_outgoings_update"
             ];
             
             const groupedProactive = {};
@@ -1846,6 +1849,18 @@ export async function handleRunFlagSweep(req, res, sheets) {
           (item.alerts || []).forEach(a => {
             if (a._fingerprint) freshHashes.add(a._fingerprint);
             if (a._legacyFingerprint) freshHashes.add(a._legacyFingerprint);
+            if (item.alertType === "autolog_error" || item.alertType === "infinite_loop") {
+              memoryRows.forEach(r => {
+                if (r.clientName === item.clientName && r.alertType === item.alertType) {
+                  try {
+                    const snap = JSON.parse(r.dataSnapshot || "{}");
+                    if (snap.legacyAlertKey === a.alertKey || (snap.alertKey && snap.alertKey.startsWith(a.alertKey + "|"))) {
+                      freshHashes.add(r.fingerprintHash);
+                    }
+                  } catch(e) {}
+                }
+              });
+            }
           });
           const staleRows = memoryRows.filter(r => 
             r.clientName === item.clientName && 
@@ -1942,10 +1957,19 @@ export async function handleRunFlagSweep(req, res, sheets) {
             }
             summary = summary || `${item.alertType} - ${item.clientName} (row ${alert.rowNumber})`;
 
-            // Dual-hash match: check modern hash first, then legacy hash
+            // Dual-hash match: check modern hash first, then legacy hash, then snapshot key fallback
             let exRow = memoryRows.find(r => r.clientName === item.clientName && r.fingerprintHash === alert._fingerprint);
             if (!exRow && alert._legacyFingerprint) {
               exRow = memoryRows.find(r => r.clientName === item.clientName && r.fingerprintHash === alert._legacyFingerprint);
+            }
+            if (!exRow && (item.alertType === "autolog_error" || item.alertType === "infinite_loop")) {
+              exRow = memoryRows.find(r => {
+                if (r.clientName !== item.clientName || r.alertType !== item.alertType) return false;
+                try {
+                  const snap = JSON.parse(r.dataSnapshot || "{}");
+                  return snap.legacyAlertKey === alert.alertKey || (snap.alertKey && snap.alertKey.startsWith(alert.alertKey + "|"));
+                } catch(e) { return false; }
+              });
             }
 
             const detectedAtIso = new Date().toISOString();

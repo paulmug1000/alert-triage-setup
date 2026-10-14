@@ -1271,7 +1271,7 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
       const countNote = info.count > 1 ? ` (occurred ${info.count} times in last 100 logs)` : "";
       alerts.push({
         alertType: "autolog_error",
-        alertKey: `autolog_error|${clientName}|${signature}|${info.latestTs || ""}|count:${info.count}`,
+        alertKey: `autolog_error|${clientName}|${signature}`,
         legacyAlertKey: `autolog_error|${clientName}|${signature}`,
         heading: `Automation error${info.category ? ` in ${info.category}` : ""}`,
         detail: `Error in AutoLog: "${info.errorText}"${countNote}. Latest: ${info.latestTs || "recently"}.`,
@@ -1286,6 +1286,50 @@ export async function checkAutoLogErrors_(clientName, masterSheetId, sharedData)
     }
   } catch (e) {
     console.error(`Error in checkAutoLogErrors_ for ${clientName}:`, e.message);
+  }
+  return alerts;
+}
+
+export async function checkRetroactiveOutgoingsChanges_(clientName, masterSheetId, sharedData) {
+  const alerts = [];
+  try {
+    const rawData = sharedData?.autoLogData || [];
+    const data = rawData.slice(0, 100);
+    if (!data.length) return alerts;
+
+    for (let r = 0; r < data.length; r++) {
+      const row = data[r];
+      const timestamp = row[0];
+      const category = String(row[1] || "").trim();
+      const summary = String(row[2] || "").trim();
+      const details = String(row[3] || "").trim();
+
+      // Detect P&L Outgoings updates from automated sequence
+      if (summary.toLowerCase().startsWith("p&l outgoings updated:")) {
+        const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
+        const alertKey = `retroactive_outgoings_update|${clientName}|${summary}|${tsStr}`;
+
+        alerts.push({
+          alertType: "retroactive_outgoings_update",
+          alertKey,
+          legacyAlertKey: `retroactive_outgoings_update|${clientName}|${summary}`,
+          severity: "info",
+          category: "Expenses",
+          heading: summary,
+          title: summary,
+          detail: details,
+          clientName,
+          timestamp: tsStr,
+          metadata: {
+            summary,
+            details,
+            timestamp: tsStr
+          }
+        });
+      }
+    }
+  } catch (e) {
+    console.error(`Error in checkRetroactiveOutgoingsChanges_ for ${clientName}:`, e.message);
   }
   return alerts;
 }
@@ -1429,7 +1473,7 @@ export async function checkAutoLogInfiniteLoops_(clientName, masterSheetId, shar
 
       alerts.push({
         alertType: "infinite_loop",
-        alertKey: `infinite_loop|${clientName}|${key}|${t2.tsStr || ""}|count:${completedOscillations.length}`,
+        alertKey: `infinite_loop|${clientName}|${key}`,
         legacyAlertKey: `infinite_loop|${clientName}|${key}`,
         heading: `Automation conflict: ${t2.displayEntity}`,
         detail: `The automation is fighting itself on ${t2.displayEntity} (${t2.rawField}). ${transition1} was reversed by ${transition2} (${countNote}).${hint}`,

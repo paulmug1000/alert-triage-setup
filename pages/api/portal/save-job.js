@@ -315,7 +315,9 @@ export default async function handler(req, res) {
     const verifiedClientName = auth.clientName;
 
     // 1. Determine target sheet name and sheet metadata
-    const isTargetConfirmed = String(job.type || "").toLowerCase() === "confirmed";
+    const parsedLikelihoodNum = parseFloat(String(job.likelihood || "").replace(/[%,\s]/g, ""));
+    const isLikelihood100 = !isNaN(parsedLikelihoodNum) && (parsedLikelihoodNum >= 100 || (parsedLikelihoodNum === 1 && String(job.likelihood).includes("1")));
+    const isTargetConfirmed = String(job.type || "").toLowerCase() === "confirmed" || isLikelihood100;
     const metaResp = await withRetry(() =>
       sheets.spreadsheets.get({
         spreadsheetId: clientSheetId,
@@ -352,60 +354,102 @@ export default async function handler(req, res) {
     );
 
     const colMap = {};
+    const cleanStr = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const cleanColMap = {};
     headers.forEach((h, idx) => {
-      if (h) colMap[h] = idx;
+      if (h) {
+        colMap[h] = idx;
+        const c = cleanStr(h);
+        if (c && cleanColMap[c] === undefined) cleanColMap[c] = idx;
+      }
     });
 
-    const getColIdx = (aliases) => {
+    const getColIdx = (aliases, fallbackIdx = -1) => {
       const list = Array.isArray(aliases) ? aliases : [aliases];
       for (const alias of list) {
         const norm = alias.toLowerCase().trim().replace(/\s+/g, " ");
         if (colMap[norm] !== undefined) return colMap[norm];
+        const cl = cleanStr(alias);
+        if (cleanColMap[cl] !== undefined) return cleanColMap[cl];
       }
-      return -1;
+      return fallbackIdx;
     };
 
-    // Exact dictionary column mapping (prevents substring bugs e.g. "vat" matching "Revenue ... excl VAT")
+    // Exact dictionary column mapping with standard schema fallback offsets
     const cols = {
-      client: getColIdx(["client"]),
-      jobName: getColIdx(["job name"]),
-      projectCode: getColIdx(["project code"]),
-      lead: getColIdx(["lead"]),
-      dateConfirmed: getColIdx(["date conf", "date originally added to pipeline", "date confirmed", "date added"]),
-      leadSource: getColIdx(["lead src", "lead source"]),
-      splitStr: getColIdx(["revunevensplit", "rev uneven split", "rev_uneven_split", "uneven split"]) !== -1
-        ? getColIdx(["revunevensplit", "rev uneven split", "rev_uneven_split", "uneven split"])
-        : 30,
-      revenue: getColIdx(["revenue (proj total / ongoing pm) - excl vat", "revenue"]),
-      directCosts: getColIdx(["direct costs (proj total / ongoing pm) - excl vat", "direct costs"]),
-      vat: getColIdx(["vat?"]),
-      projectRetainer: getColIdx(["project / retainer", "project/retainer"]),
-      productLine: getColIdx(["prod. line", "product line"]),
-      startDate: getColIdx(["start date"]),
-      endDate: getColIdx(["end date"]),
-      likelihood: getColIdx(["% likel.", "% likelihood", "% likely", "likelihood"]),
-      prodTime: getColIdx(["prod. time", "production time"]),
+      client: getColIdx(["client"], 0),
+      jobName: getColIdx(["job name"], 1),
+      projectCode: getColIdx(["project code"], 2),
+      lead: getColIdx(["lead"], -1),
+      dateConfirmed: getColIdx(["date conf", "date originally added to pipeline", "date confirmed", "date added"], 3),
+      leadSource: getColIdx(["lead src", "lead source"], 4),
+      splitStr: getColIdx(["revunevensplit", "rev uneven split", "rev_uneven_split", "uneven split"], 30),
+      revenue: getColIdx(["revenue (proj total / ongoing pm) - excl vat", "revenue"], 32),
+      directCosts: getColIdx(["direct costs (proj total / ongoing pm) - excl vat", "direct costs"], 33),
+      vat: getColIdx(["vat?"], 34),
+      projectRetainer: getColIdx(["project / retainer", "project/retainer"], 35),
+      productLine: getColIdx(["prod. line", "product line"], 36),
+      startDate: getColIdx(["start date"], 37),
+      endDate: getColIdx(["end date"], 38),
+      likelihood: getColIdx(["% likel.", "% likelihood", "% likely", "likelihood"], 39),
+      prodTime: getColIdx(["prod. time", "production time"], 40),
 
-      inv: [1, 2, 3].map((slot) => ({
-        amount: slot === 1
-          ? getColIdx(["project invoice 1 / monthly retainer (excl vat)", "inv 1 amount"])
-          : getColIdx([`project invoice ${slot} (excl vat)`, `inv ${slot} amount`]),
-        ref: getColIdx([`inv ${slot} ref`]),
-        sendDate: getColIdx([`inv ${slot} send date`, `inv ${slot} date`]),
-        days: getColIdx([`inv ${slot} days to pay`, `inv ${slot} days`]),
-        status: getColIdx([`inv ${slot} status`]),
-        desc: getColIdx([`inv ${slot} descr.`, `inv ${slot} desc`]),
-      })),
+      inv: [
+        {
+          amount: getColIdx(["project invoice 1 / monthly retainer (excl vat)", "project invoice 1 / monthly retainer (excl. vat)", "project invoice 1", "inv 1 amount"], 41),
+          ref: getColIdx(["inv 1 ref"], 42),
+          sendDate: getColIdx(["inv 1 send date", "inv 1 date"], 43),
+          days: getColIdx(["inv 1 days to pay", "inv 1 days"], 44),
+          status: getColIdx(["inv 1 status"], 45),
+          desc: getColIdx(["inv 1 descr.", "inv 1 desc"], 46),
+        },
+        {
+          amount: getColIdx(["project invoice 2 (excl vat)", "project invoice 2 (excl. vat)", "project invoice 2", "inv 2 amount"], 48),
+          ref: getColIdx(["inv 2 ref"], 49),
+          sendDate: getColIdx(["inv 2 send date", "inv 2 date"], 50),
+          days: getColIdx(["inv 2 days to pay", "inv 2 days"], 51),
+          status: getColIdx(["inv 2 status"], 52),
+          desc: getColIdx(["inv 2 descr.", "inv 2 desc"], 53),
+        },
+        {
+          amount: getColIdx(["project invoice 3 (excl vat)", "project invoice 3 (excl. vat)", "project invoice 3", "inv 3 amount"], 55),
+          ref: getColIdx(["inv 3 ref"], 56),
+          sendDate: getColIdx(["inv 3 send date", "inv 3 date"], 57),
+          days: getColIdx(["inv 3 days to pay", "inv 3 days"], 58),
+          status: getColIdx(["inv 3 status"], 59),
+          desc: getColIdx(["inv 3 descr.", "inv 3 desc"], 60),
+        },
+      ],
 
-      dir: [1, 2, 3].map((slot) => ({
-        desc: getColIdx([`direct inv ${slot} descr.`, `direct inv ${slot} desc`]),
-        amount: getColIdx([`direct inv ${slot} amt`, `direct inv ${slot} amount`]),
-        vat: getColIdx([`dir inv. ${slot} vat?`, `dir inv ${slot} vat?`, `direct inv ${slot} vat?`]),
-        recDate: getColIdx([`direct inv ${slot} rec date`, `dir inv. ${slot} rec date`, `dir inv ${slot} rec date`]),
-        days: getColIdx([`dir inv ${slot} days to pay`, `dir inv. ${slot} days to pay`, `dir inv ${slot} days`]),
-        status: getColIdx([`dir inv ${slot} status`]),
-        appId: getColIdx([`dir inv ${slot} app id`, `dir inv. ${slot} app id`]),
-      })),
+      dir: [
+        {
+          desc: getColIdx(["direct inv 1 descr.", "direct inv 1 desc"], 75),
+          amount: getColIdx(["direct inv 1 amt", "direct inv 1 amount"], 76),
+          vat: getColIdx(["dir inv. 1 vat?", "dir inv 1 vat?", "direct inv 1 vat?"], 77),
+          recDate: getColIdx(["direct inv 1 rec date", "dir inv. 1 rec date", "dir inv 1 rec date"], 78),
+          days: getColIdx(["dir inv 1 days to pay", "dir inv. 1 days to pay", "dir inv 1 days"], 79),
+          status: getColIdx(["dir inv 1 status"], 80),
+          appId: getColIdx(["dir inv 1 app id", "dir inv. 1 app id"], 81),
+        },
+        {
+          desc: getColIdx(["direct inv 2 descr.", "direct inv 2 desc"], 83),
+          amount: getColIdx(["direct inv 2 amt", "direct inv 2 amount"], 84),
+          vat: getColIdx(["dir inv. 2 vat?", "dir inv 2 vat?", "direct inv 2 vat?"], 85),
+          recDate: getColIdx(["direct inv 2 rec date", "dir inv. 2 rec date", "dir inv 2 rec date"], 86),
+          days: getColIdx(["dir inv 2 days to pay", "dir inv. 2 days to pay", "dir inv 2 days"], 87),
+          status: getColIdx(["dir inv 2 status"], 88),
+          appId: getColIdx(["dir inv 2 app id", "dir inv. 2 app id"], 89),
+        },
+        {
+          desc: getColIdx(["direct inv 3 descr.", "direct inv 3 desc"], 91),
+          amount: getColIdx(["direct inv 3 amt", "direct inv 3 amount"], 92),
+          vat: getColIdx(["dir inv. 3 vat?", "dir inv 3 vat?", "direct inv 3 vat?"], 93),
+          recDate: getColIdx(["direct inv 3 rec date", "dir inv. 3 rec date", "dir inv 3 rec date"], 94),
+          days: getColIdx(["dir inv 3 days to pay", "dir inv. 3 days to pay", "dir inv 3 days"], 95),
+          status: getColIdx(["dir inv 3 status"], 96),
+          appId: getColIdx(["dir inv 3 app id", "dir inv. 3 app id"], 97),
+        },
+      ],
     };
 
     // 3. Determine if moving between sheets or if new job

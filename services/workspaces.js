@@ -1428,11 +1428,12 @@ export async function handleAssignExpenseToJob(req, res, sheets) {
 }
 
 export async function handleUpdateExpenseSlot(req, res, sheets) {
-  const { clientSheetId, rowNum, slotNum, expense, deleteSlot } = req.body;
+  const { clientSheetId, rowNum, slotNum, expense, deleteSlot, tabName } = req.body;
   if (!clientSheetId || !rowNum || !slotNum) return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
   if (!deleteSlot && !expense) return res.status(400).json({ success: false, error: "Missing expense (or set deleteSlot: true)" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const targetTab = tabName ? String(tabName).trim() : "Confirmed";
     const slotCols = {
       1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
       2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
@@ -1457,12 +1458,12 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
       requestBody: {
         valueInputOption: "RAW",
         data: [
-          { range: `Confirmed!${slotCols.d}${rowNum}`,  values: [[values[0]]] },
-          { range: `Confirmed!${slotCols.a}${rowNum}`,  values: [[values[1]]] },
-          { range: `Confirmed!${slotCols.v}${rowNum}`,  values: [[values[2]]] },
-          { range: `Confirmed!${slotCols.dp}${rowNum}`, values: [[values[4]]] },
-          { range: `Confirmed!${slotCols.st}${rowNum}`, values: [[values[5]]] },
-          { range: `Confirmed!${slotCols.id}${rowNum}`, values: [[values[6]]] },
+          { range: `${targetTab}!${slotCols.d}${rowNum}`,  values: [[values[0]]] },
+          { range: `${targetTab}!${slotCols.a}${rowNum}`,  values: [[values[1]]] },
+          { range: `${targetTab}!${slotCols.v}${rowNum}`,  values: [[values[2]]] },
+          { range: `${targetTab}!${slotCols.dp}${rowNum}`, values: [[values[4]]] },
+          { range: `${targetTab}!${slotCols.st}${rowNum}`, values: [[values[5]]] },
+          { range: `${targetTab}!${slotCols.id}${rowNum}`, values: [[values[6]]] },
         ],
       },
     });
@@ -1470,7 +1471,7 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
     if (deleteSlot) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
-        range: `Confirmed!${slotCols.dt}${rowNum}`,
+        range: `${targetTab}!${slotCols.dt}${rowNum}`,
         valueInputOption: "RAW",
         requestBody: { values: [[""]] },
       });
@@ -1489,7 +1490,7 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
         const fmt = (d) => { const ms = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return d.getDate() + "-" + ms[d.getMonth()] + "-" + d.getFullYear(); };
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean,
-          range: `Confirmed!${slotCols.dt}${rowNum}`,
+          range: `${targetTab}!${slotCols.dt}${rowNum}`,
           valueInputOption: "USER_ENTERED",
           requestBody: { values: [[fmt(parsedExpenseDate)]] },
         });
@@ -1507,7 +1508,7 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
         const nameResp = await withRetry(() =>
           sheets.spreadsheets.values.get({
             spreadsheetId: sheetIdClean,
-            range: `Confirmed!A${rowNum}:B${rowNum}`,
+            range: `${targetTab}!A${rowNum}:B${rowNum}`,
             valueRenderOption: "FORMATTED_VALUE"
           })
         );
@@ -1524,8 +1525,8 @@ export async function handleUpdateExpenseSlot(req, res, sheets) {
       category: "EXPENSES",
       action: deleteSlot ? "Expense Slot Cleared" : "Expense Slot Updated",
       summary: deleteSlot
-        ? `Cleared expense slot #${slotNum} on Row ${rowNum} for ${jobIdentifier}`
-        : `Updated expense slot #${slotNum} on Row ${rowNum} for ${jobIdentifier} (${expense?.description || "Expense"}, £${expense?.amount || 0})`,
+        ? `Cleared expense slot #${slotNum} on ${targetTab} Row ${rowNum} for ${jobIdentifier}`
+        : `Updated expense slot #${slotNum} on ${targetTab} Row ${rowNum} for ${jobIdentifier} (${expense?.description || "Expense"}, £${expense?.amount || 0})`,
       details: {
         slotNum,
         rowNum,
@@ -1854,11 +1855,12 @@ export async function handleAssignInvoiceToJob(req, res, sheets) {
 }
 
 export async function handleUpdateInvoiceSlot(req, res, sheets) {
-  const { clientSheetId, rowNum, slotNum, invoice, deleteSlot, jobClient, jobName } = req.body;
+  const { clientSheetId, rowNum, slotNum, invoice, deleteSlot, jobClient, jobName, tabName } = req.body;
   if (!clientSheetId || !rowNum || !slotNum) return res.status(400).json({ success: false, error: "Missing clientSheetId, rowNum, or slotNum" });
   if (!deleteSlot && !invoice) return res.status(400).json({ success: false, error: "Missing invoice (or set deleteSlot: true)" });
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const targetTab = tabName ? String(tabName).trim() : "Confirmed";
     const slotCols = {
       1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
       2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
@@ -1871,7 +1873,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       try {
         const checkResp = await sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
-          range: `Confirmed!A${rowNum}:B${rowNum}`,
+          range: `${targetTab}!A${rowNum}:B${rowNum}`,
           valueRenderOption: "UNFORMATTED_VALUE"
         });
         const currentVals = checkResp.data.values?.[0] || [];
@@ -1884,7 +1886,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         if ((targetClient && curClient !== targetClient) || (targetJobName && curJob !== targetJobName)) {
           const searchResp = await sheets.spreadsheets.values.get({
             spreadsheetId: sheetIdClean,
-            range: "Confirmed!A1:B5000",
+            range: `${targetTab}!A1:B5000`,
             valueRenderOption: "UNFORMATTED_VALUE"
           });
           const searchRows = searchResp.data.values || [];
@@ -1897,11 +1899,11 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
           }
           if (matches.length > 0) {
             actualRowNum = matches[0];
-            console.log(`ℹ Reconciled update_invoice_slot row from ${rowNum} to ${actualRowNum} for job "${jobName}"`);
+            console.log(`ℹ Reconciled update_invoice_slot row from ${rowNum} to ${actualRowNum} on ${targetTab} for job "${jobName}"`);
           }
         }
       } catch (checkErr) {
-        console.warn("Row verification check failed in update_invoice_slot:", checkErr.message);
+        console.warn(`Row verification check failed in update_invoice_slot on ${targetTab}:`, checkErr.message);
       }
     }
 
@@ -1920,10 +1922,10 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       requestBody: {
         valueInputOption: "RAW",
         data: [
-          { range: `Confirmed!${slotCols.a}${actualRowNum}`,    values: [[values[0]]] },
-          { range: `Confirmed!${slotCols.ref}${actualRowNum}`,  values: [[values[1]]] },
-          { range: `Confirmed!${slotCols.days}${actualRowNum}`, values: [[values[3]]] },
-          { range: `Confirmed!${slotCols.st}${actualRowNum}`,   values: [[values[4]]] },
+          { range: `${targetTab}!${slotCols.a}${actualRowNum}`,    values: [[values[0]]] },
+          { range: `${targetTab}!${slotCols.ref}${actualRowNum}`,  values: [[values[1]]] },
+          { range: `${targetTab}!${slotCols.days}${actualRowNum}`, values: [[values[3]]] },
+          { range: `${targetTab}!${slotCols.st}${actualRowNum}`,   values: [[values[4]]] },
         ],
       },
     });
@@ -1931,7 +1933,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
     if (deleteSlot) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetIdClean,
-        range: `Confirmed!${slotCols.sent}${actualRowNum}`,
+        range: `${targetTab}!${slotCols.sent}${actualRowNum}`,
         valueInputOption: "RAW",
         requestBody: { values: [[""]] },
       });
@@ -1950,7 +1952,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         const fmt = (d) => { const ms = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; return d.getDate() + "-" + ms[d.getMonth()] + "-" + d.getFullYear(); };
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean,
-          range: `Confirmed!${slotCols.sent}${actualRowNum}`,
+          range: `${targetTab}!${slotCols.sent}${actualRowNum}`,
           valueInputOption: "USER_ENTERED",
           requestBody: { values: [[fmt(parsedSentDate)]] },
         });
@@ -1968,7 +1970,7 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
         const nameResp = await withRetry(() =>
           sheets.spreadsheets.values.get({
             spreadsheetId: sheetIdClean,
-            range: `Confirmed!A${rowNum}:B${rowNum}`,
+            range: `${targetTab}!A${rowNum}:B${rowNum}`,
             valueRenderOption: "FORMATTED_VALUE"
           })
         );
@@ -1985,8 +1987,8 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
       category: "INVOICES",
       action: deleteSlot ? "Invoice Slot Cleared" : "Invoice Slot Updated",
       summary: deleteSlot
-        ? `Cleared invoice slot #${slotNum} on Row ${rowNum} for ${jobIdentifier}`
-        : `Updated invoice slot #${slotNum} on Row ${rowNum} for ${jobIdentifier} (Inv #${invoice?.invoiceNo || ""}, £${invoice?.amount || 0})`,
+        ? `Cleared invoice slot #${slotNum} on ${targetTab} Row ${rowNum} for ${jobIdentifier}`
+        : `Updated invoice slot #${slotNum} on ${targetTab} Row ${rowNum} for ${jobIdentifier} (Inv #${invoice?.invoiceNo || ""}, £${invoice?.amount || 0})`,
       details: {
         slotNum,
         rowNum,
@@ -2133,11 +2135,11 @@ export async function handleAddNewJob(req, res, sheets) {
     const targetTab = (jobData.status || tabName || "Confirmed") === "Pipeline" ? "Pipeline" : "Confirmed";
     const startRow = targetTab === "Pipeline" ? 6 : 2;
 
-    const resp = await sheets.spreadsheets.values.get({
+    const resp = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: sheetIdClean,
-      range: `${targetTab}!A1:BH5000`,
+      range: `${targetTab}!A1:CR5000`,
       valueRenderOption: "UNFORMATTED_VALUE",
-    });
+    }));
     const allRows = resp.data.values || [];
 
     // Step 1: Find the last row with active job data
@@ -2207,6 +2209,13 @@ export async function handleAddNewJob(req, res, sheets) {
       { range: `${targetTab}!AM${targetRow}`, values: [[formatSheetDate(jobData.endDate)]] },
     ];
 
+    if (jobData.unevenSplit || jobData.splitStr) {
+      const splitVal = sanitizeFormulaInput(jobData.unevenSplit || jobData.splitStr || "");
+      if (splitVal) {
+        updateData.push({ range: `${targetTab}!AE${targetRow}`, values: [[splitVal]] });
+      }
+    }
+
     if (targetTab === "Pipeline" && jobData.likelihood !== undefined && jobData.likelihood !== null && jobData.likelihood !== "") {
       let lNum = parseFloat(jobData.likelihood);
       if (!isNaN(lNum)) {
@@ -2215,13 +2224,75 @@ export async function handleAddNewJob(req, res, sheets) {
       }
     }
 
-    await sheets.spreadsheets.values.batchUpdate({
+    // Invoice Slots (up to 3)
+    const invoiceSlotCols = {
+      1: { a: "AP", ref: "AQ", sent: "AR", days: "AS", st: "AT" },
+      2: { a: "AW", ref: "AX", sent: "AY", days: "AZ", st: "BA" },
+      3: { a: "BD", ref: "BE", sent: "BF", days: "BG", st: "BH" },
+    };
+    let writtenInvoicesCount = 0;
+    if (jobData.invoices && Array.isArray(jobData.invoices)) {
+      for (const inv of jobData.invoices) {
+        const sCols = invoiceSlotCols[inv.slotNum || 1];
+        if (!sCols) continue;
+        const amt = parseFloat(inv.amount) || 0;
+        const ref = sanitizeFormulaInput(inv.invoiceNo || "");
+        const sent = formatSheetDate(inv.sentDate);
+        const days = parseInt(inv.daysToPay, 10) || 30;
+        const st = sanitizeFormulaInput(inv.status || "");
+        if (amt > 0 || ref || sent || st) {
+          writtenInvoicesCount++;
+          updateData.push(
+            { range: `${targetTab}!${sCols.a}${targetRow}`,    values: [[amt]] },
+            { range: `${targetTab}!${sCols.ref}${targetRow}`,  values: [[ref]] },
+            { range: `${targetTab}!${sCols.sent}${targetRow}`, values: [[sent]] },
+            { range: `${targetTab}!${sCols.days}${targetRow}`, values: [[days]] },
+            { range: `${targetTab}!${sCols.st}${targetRow}`,   values: [[st]] }
+          );
+        }
+      }
+    }
+
+    // Expense / Direct Cost Slots (up to 3)
+    const expenseSlotCols = {
+      1: { d: "BX", a: "BY", v: "BZ", dt: "CA", dp: "CB", st: "CC", id: "CD" },
+      2: { d: "CE", a: "CF", v: "CG", dt: "CH", dp: "CI", st: "CJ", id: "CK" },
+      3: { d: "CL", a: "CM", v: "CN", dt: "CO", dp: "CP", st: "CQ", id: "CR" },
+    };
+    let writtenExpensesCount = 0;
+    if (jobData.expenses && Array.isArray(jobData.expenses)) {
+      for (const exp of jobData.expenses) {
+        const eCols = expenseSlotCols[exp.slotNum || 1];
+        if (!eCols) continue;
+        const desc = sanitizeFormulaInput(exp.description || "");
+        const amt = parseFloat(exp.amount) || 0;
+        const vatVal = sanitizeFormulaInput(exp.vat || "No");
+        const dt = formatSheetDate(exp.date);
+        const dp = parseInt(exp.daysToPay, 10) || 30;
+        const st = sanitizeFormulaInput(exp.status || "");
+        const txId = sanitizeFormulaInput(exp.transactionId || "");
+        if (amt > 0 || desc || dt || txId) {
+          writtenExpensesCount++;
+          updateData.push(
+            { range: `${targetTab}!${eCols.d}${targetRow}`,  values: [[desc]] },
+            { range: `${targetTab}!${eCols.a}${targetRow}`,  values: [[amt]] },
+            { range: `${targetTab}!${eCols.v}${targetRow}`,  values: [[vatVal]] },
+            { range: `${targetTab}!${eCols.dt}${targetRow}`, values: [[dt]] },
+            { range: `${targetTab}!${eCols.dp}${targetRow}`, values: [[dp]] },
+            { range: `${targetTab}!${eCols.st}${targetRow}`, values: [[st]] },
+            { range: `${targetTab}!${eCols.id}${targetRow}`, values: [[txId]] }
+          );
+        }
+      }
+    }
+
+    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: sheetIdClean,
       requestBody: {
         valueInputOption: "USER_ENTERED",
         data: updateData
       }
-    });
+    }));
 
     let tenantClient = req.body.clientName || "";
     if (!tenantClient) {
@@ -2231,12 +2302,18 @@ export async function handleAddNewJob(req, res, sheets) {
     const createdJob = jobData.jobName || "Job";
     const jobIdentifier = endClient ? `"${endClient} - ${createdJob}"` : `"${createdJob}"`;
 
+    const summaryAdditions = [];
+    if (jobData.unevenSplit || jobData.splitStr) summaryAdditions.push("custom revenue split");
+    if (writtenInvoicesCount > 0) summaryAdditions.push(`${writtenInvoicesCount} invoice(s)`);
+    if (writtenExpensesCount > 0) summaryAdditions.push(`${writtenExpensesCount} expense(s)`);
+    const detailsExtra = summaryAdditions.length > 0 ? ` with ${summaryAdditions.join(" and ")}` : "";
+
     logPmaActivity(sheets, {
       automationCommanderSheetId: req.body.automationCommanderSheetId,
       clientName: tenantClient,
       category: "JOB",
       action: "Job Created",
-      summary: `Created new ${targetTab} job ${jobIdentifier} (£${parseFloat(jobData.revenue) || 0}) (Row ${targetRow})`,
+      summary: `Created new ${targetTab} job ${jobIdentifier} (£${parseFloat(jobData.revenue) || 0})${detailsExtra} (Row ${targetRow})`,
       details: {
         tabName: targetTab,
         row: targetRow,
@@ -2252,6 +2329,8 @@ export async function handleAddNewJob(req, res, sheets) {
         startDate: jobData.startDate,
         endDate: jobData.endDate,
         likelihood: jobData.likelihood,
+        invoicesCount: writtenInvoicesCount,
+        expensesCount: writtenExpensesCount,
         clientName: tenantClient
       }
     }).catch(e => console.error("PMA log failed:", e));

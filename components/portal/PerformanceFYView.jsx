@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, parseMoney, formatMoney as universalFormatMoney, formatCurrencyString } from "../../services/deepDiveHelper";
@@ -19,6 +19,32 @@ export default function PerformanceFYView({
   const years = data?.years || [];
   const [selectedYearIdx, setSelectedYearIdx] = useState(null);
   const [activePopover, setActivePopover] = useState(null);
+
+  useEffect(() => {
+    if (activePopover?.isOpen && activePopover._clickParams && keyData) {
+      const p = activePopover._clickParams;
+      const ddData = buildDeepDiveData({
+        ddType: p.ddType,
+        periodLabel: p.periodLabel,
+        monthIndex: p.mIdx,
+        cellValue: p.val,
+        yearIndex: p.activeYearIdx,
+        targetDate: p.targetDate,
+        keyData,
+        isIncomeMode: p.isIncomeMode,
+        isRestricted: isSenior,
+      });
+      setActivePopover((prev) => prev ? {
+        ...prev,
+        title: ddData.title,
+        period: ddData.period,
+        total: ddData.total,
+        items: ddData.items || [],
+        sections: ddData.sections || null,
+        isLoading: false,
+      } : null);
+    }
+  }, [keyData]);
 
   // Default to currentYearIdx from data or fallback to 1 (Year 1)
   const defaultYearIdx = data?.currentYearIdx !== undefined ? data.currentYearIdx : (years.length > 1 ? 1 : 0);
@@ -321,6 +347,8 @@ export default function PerformanceFYView({
       String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
       Boolean(activeYear?.rows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
 
+    const isDataLoading = !keyData || isLoading;
+
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel,
@@ -341,8 +369,11 @@ export default function PerformanceFYView({
       total: ddData.total,
       items: ddData.items || [],
       sections: ddData.sections || null,
+      isLoading: isDataLoading,
+      _clickParams: { ddType, periodLabel, mIdx, val, activeYearIdx, targetDate, isIncomeMode, rect },
     });
   };
+
 
   const handleDownloadCSV = () => {
     const dateStr = new Date().toISOString().split("T")[0];
@@ -385,6 +416,7 @@ export default function PerformanceFYView({
         currencySymbol={currencySymbol}
         thousandsSeparator={thousandsSeparator}
         onClose={() => setActivePopover(null)}
+        isLoading={Boolean(!keyData || isLoading || activePopover?.isLoading)}
       />
 
       {/* Action Bar (Top header with Year Navigator & Refresh) */}

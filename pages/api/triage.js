@@ -84,7 +84,9 @@ import {
   syncReconBankTransactions,
   syncReconUnreconciledItems,
   batchMatchCashflowActuals,
-  setReconDa1Platform
+  setReconDa1Platform,
+  setReconMonthReadyStatus,
+  dismissNewBankTransactions
 } from "../../services/cashflowReconService";
 import {
   ensureReconTabExists,
@@ -666,6 +668,75 @@ export default async function handler(req, res) {
         return res.status(200).json(result);
       } catch (err) {
         console.error("❌ sync_recon_unreconciled_items error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "set_recon_month_ready") {
+      try {
+        const { reconSheetId, tabName, isComplete, clientName, automationCommanderSheetId } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await setReconMonthReadyStatus({
+          reconSheetId,
+          tabName,
+          isComplete,
+          clientName,
+          automationCommanderSheetId
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ set_recon_month_ready error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "dismiss_new_bank_transactions") {
+      try {
+        const { reconSheetId, tabName, clientName, automationCommanderSheetId } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await dismissNewBankTransactions({
+          reconSheetId,
+          tabName,
+          clientName,
+          automationCommanderSheetId
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ dismiss_new_bank_transactions error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "sync_client_expense_breakdown") {
+      try {
+        const { clientName, automationCommanderSheetId } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const clientResp = await withRetry(() => sheets.spreadsheets.values.get({
+          spreadsheetId: automationCommanderSheetId || process.env.AUTOMATION_COMMANDER_SHEET_ID,
+          range: "AutoUpdates!A2:N500"
+        }));
+        const rows = clientResp.data.values || [];
+        const clientRow = rows.find(r => String(r[0] || "").trim() === clientName);
+        const webAppUrl = String(clientRow?.[13] || "").trim();
+
+        if (webAppUrl) {
+          const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+          const gasResp = await fetch(webAppUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
+          });
+          const gasText = await gasResp.text();
+          let gasData = null;
+          try { gasData = JSON.parse(gasText); } catch (e) {}
+          return res.status(200).json({ success: true, gasResult: gasData || gasText });
+        }
+        return res.status(200).json({ success: true, message: "No Master Web App URL configured" });
+      } catch (err) {
+        console.error("❌ sync_client_expense_breakdown error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

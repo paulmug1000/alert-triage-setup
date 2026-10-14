@@ -57,9 +57,8 @@ export default function CreateRetainerModal({ clientName: agencyClientName, clie
       });
       const data = await res.json();
       if (!data.success) { setError(data.error || "Failed to create retainer"); setSaving(false); setSavingMessage(""); return; }
-      setSavingMessage("Refreshing job list...");
-      await onCreated();
       onClose();
+      if (onCreated) onCreated();
     } catch (e) { setError(e.message); setSaving(false); setSavingMessage(""); }
   };
 

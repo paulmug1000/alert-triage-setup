@@ -13,7 +13,7 @@ export default function InvoicesEditModal({
 }) {
   const auth = useAuth();
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
-  const { rowNum, slotNum, slot, jobClient, jobName } = editSlot;
+  const { rowNum, slotNum, slot, jobClient, jobName, tabName } = editSlot;
   
   const [invoiceNo, setInvoiceNo] = useState(slot.ref || "");
   const [amount, setAmount] = useState(stripCurrency(slot.amount));
@@ -41,6 +41,7 @@ export default function InvoicesEditModal({
           action: "update_invoice_slot",
           clientSheetId: invoicesClient?.clientSheetId,
           clientName: invoicesClient?.clientName || invoicesClient?.name || "",
+          tabName: tabName || editSlot.tabName || "Confirmed",
           rowNum, slotNum,
           jobClient, jobName,
           invoice: { invoiceNo, amount: parseFloat(amount) || 0, sentDate, daysToPay: parseInt(daysToPay) || 30, status },
@@ -70,6 +71,7 @@ export default function InvoicesEditModal({
           action: "update_invoice_slot",
           clientSheetId: invoicesClient?.clientSheetId,
           clientName: invoicesClient?.clientName || invoicesClient?.name || "",
+          tabName: tabName || editSlot.tabName || "Confirmed",
           rowNum, slotNum, deleteSlot: true,
           jobClient, jobName,
         }),

@@ -381,10 +381,28 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
     const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
-    const row = findMemoryRow(memoryRows, fingerprintHash);
+    let row = findMemoryRow(memoryRows, fingerprintHash);
+    if (!row && (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|"))) {
+      row = memoryRows.find(r => {
+        if (clientName && r.clientName !== clientName) return false;
+        try {
+          const s = JSON.parse(r.dataSnapshot || "{}");
+          return s.legacyAlertKey === alertKey || (s.alertKey && s.alertKey.startsWith(alertKey + "|"));
+        } catch(e) { return false; }
+      });
+    }
     
     if (row) {
-      await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted", clientName: clientName || row.clientName || "" });
+      let snap = {};
+      try { snap = JSON.parse(row.dataSnapshot || "{}"); } catch(e) {}
+      if (alertData) snap = { ...snap, ...alertData };
+      await updateAlertMemoryRow(sheets, acId, row.rowIndex, { 
+        ...row, 
+        fingerprintHash,
+        status: "accepted", 
+        clientName: clientName || row.clientName || "",
+        dataSnapshot: JSON.stringify(snap)
+      });
     } else {
       const snapStr = alertData ? JSON.stringify(alertData) : "";
       await appendAlertMemoryRow(sheets, acId, {
@@ -514,9 +532,23 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
     for (const alertKey of alertKeys) {
       const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
       hashesToRemove.push(alertKey, fingerprintHash);
-      const row = findMemoryRow(memoryRows, fingerprintHash);
+      let row = findMemoryRow(memoryRows, fingerprintHash);
+      if (!row && (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|"))) {
+        row = memoryRows.find(r => {
+          if (clientName && r.clientName !== clientName) return false;
+          try {
+            const s = JSON.parse(r.dataSnapshot || "{}");
+            return s.legacyAlertKey === alertKey || (s.alertKey && s.alertKey.startsWith(alertKey + "|"));
+          } catch(e) { return false; }
+        });
+      }
       if (row) {
-        await updateAlertMemoryRow(sheets, acId, row.rowIndex, { ...row, status: "accepted", clientName: clientName || row.clientName || "" });
+        await updateAlertMemoryRow(sheets, acId, row.rowIndex, { 
+          ...row, 
+          fingerprintHash,
+          status: "accepted", 
+          clientName: clientName || row.clientName || "" 
+        });
       } else {
         await appendAlertMemoryRow(sheets, acId, {
           fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",

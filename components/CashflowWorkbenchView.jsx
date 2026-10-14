@@ -761,6 +761,7 @@ export function performTransactionsUpdate({
         suggestedCategory: inheritedCategory,
         accountName: apiTx.accountName || matchedUn.accountName || defaultAccount,
         isReconciled: true,
+        isNew: true,
         source: apiTx.source || "xero"
       });
     } else {
@@ -771,6 +772,7 @@ export function performTransactionsUpdate({
         suggestedCategory: apiTx.suggestedCategory || apiTx.category || defaultCat,
         accountName: apiTx.accountName || defaultAccount,
         isReconciled: true,
+        isNew: true,
         source: apiTx.source || "xero"
       });
     }
@@ -879,6 +881,9 @@ export default function CashflowWorkbenchView({
   const [localHasTargetTab, setLocalHasTargetTab] = useState(null);
   const [customModal, setCustomModal] = useState(null); // { title: string, message: string, type: 'success' | 'error' | 'info' }
   const [updatingDa1, setUpdatingDa1] = useState(false);
+  const [isReconciledComplete, setIsReconciledComplete] = useState(Boolean(reconData?.isReconciledComplete));
+  const [updatingReconStatus, setUpdatingReconStatus] = useState(false);
+  const [dismissingNew, setDismissingNew] = useState(false);
   const da1Platform = reconData?.accountingPlatform || reconData?.da1Platform || "Xero";
 
   const handleUpdateDa1Platform = async (newPlatform) => {
@@ -984,7 +989,8 @@ export default function CashflowWorkbenchView({
         id: tx.id || (tx.rowNum ? `row_${tx.rowNum}` : `bt_${idx}_${Date.now()}`),
         accountName: tx.accountName || defaultAccount,
         category: tx.category || tx.suggestedCategory || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
-        suggestedCategory: tx.suggestedCategory || tx.category || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings")
+        suggestedCategory: tx.suggestedCategory || tx.category || (parseAmount(tx.inAmount) > 0 ? "Revenue" : "Outgoings"),
+        isNew: Boolean(tx.isNew)
       })));
     }
     if (reconData?.unreconciledItems) {
@@ -995,6 +1001,9 @@ export default function CashflowWorkbenchView({
     }
     if (reconData?.hasTargetTab !== undefined) {
       setLocalHasTargetTab(Boolean(reconData.hasTargetTab));
+    }
+    if (reconData?.isReconciledComplete !== undefined) {
+      setIsReconciledComplete(Boolean(reconData.isReconciledComplete));
     }
   }, [reconData, defaultAccount]);
 
@@ -1038,6 +1047,92 @@ export default function CashflowWorkbenchView({
       setAutoSaveStatus("error");
     }
   }, [clientInfo, tabName, selectedClient]);
+
+  // Count of newly imported bank transactions
+  const newTxnsCount = useMemo(() => {
+    return (bankTxns || []).filter(t => t.isNew).length;
+  }, [bankTxns]);
+
+  // Toggle "Reconciled & complete for P&L" status (cell CR2 in Recon Sheet)
+  const handleToggleReconciledComplete = async () => {
+    if (!clientInfo?.reconSheetId || !tabName || updatingReconStatus) return;
+    const nextVal = !isReconciledComplete;
+    setIsReconciledComplete(nextVal);
+    setUpdatingReconStatus(true);
+    try {
+      const resp = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_recon_month_ready",
+          reconSheetId: clientInfo.reconSheetId,
+          tabName,
+          isComplete: nextVal,
+          clientName: selectedClient,
+          automationCommanderSheetId
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || "Failed to update status");
+
+      if (nextVal) {
+        // Automatically dismiss any new transaction highlights when month is finalized
+        handleDismissAllNew(true);
+        setApiMsg("✓ Month marked as reconciled & complete for P&L");
+      } else {
+        setApiMsg("✓ Month marked as in-progress");
+      }
+
+      // Automatically trigger P&L Outgoings sync to align Master Sheet & Outgoings with completion status
+      fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "sync_client_expense_breakdown",
+          clientName: selectedClient,
+          automationCommanderSheetId
+        })
+      }).catch(e => console.warn("Failed to trigger P&L breakdown sync:", e));
+
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      setIsReconciledComplete(!nextVal); // Revert on error
+      setCustomModal({
+        title: "Status update failed",
+        message: err.message,
+        type: "error"
+      });
+    } finally {
+      setUpdatingReconStatus(false);
+    }
+  };
+
+  // Dismiss "new" transaction highlights on Recon Sheet (resets background to white)
+  const handleDismissAllNew = async (silent = false) => {
+    if (!clientInfo?.reconSheetId || !tabName || dismissingNew) return;
+    setDismissingNew(true);
+    try {
+      await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "dismiss_new_bank_transactions",
+          reconSheetId: clientInfo.reconSheetId,
+          tabName,
+          clientName: selectedClient,
+          automationCommanderSheetId
+        })
+      });
+      setBankTxns(prev => prev.map(t => ({ ...t, isNew: false })));
+      if (!silent) setApiMsg("✓ New transaction highlights marked as reviewed");
+    } catch (err) {
+      if (!silent) {
+        console.warn("Failed to dismiss new transaction highlights:", err);
+      }
+    } finally {
+      setDismissingNew(false);
+    }
+  };
 
   const triggerDebouncedAutoSync = useCallback((txnsToSave, unreconToSave) => {
     setAutoSaveStatus("saving");
@@ -1343,6 +1438,19 @@ export default function CashflowWorkbenchView({
 
       // Auto-save updated state to Recon Sheet in background
       triggerAutoSync(result.nextBankTxns, result.nextUnreconItems);
+
+      // If month is finalized for P&L, trigger automated P&L Outgoings sync
+      if (isReconciledComplete) {
+        fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "sync_client_expense_breakdown",
+            clientName: selectedClient,
+            automationCommanderSheetId
+          })
+        }).catch(e => console.warn("Failed to trigger P&L breakdown sync:", e));
+      }
 
       const nonCashClearedText = result.matchedNonCashCount > 0 ? `, ${result.matchedNonCashCount} non-cash P&L addition${result.matchedNonCashCount === 1 ? "" : "s"} cleared` : "";
       const msg = `✓ Update complete: ${result.newAddedCount} new transaction${result.newAddedCount === 1 ? "" : "s"} added${result.matchedFromUnreconCount > 0 ? ` (${result.matchedFromUnreconCount} cash unreconciled matched)` : ""}${nonCashClearedText}, ${result.updatedCount} updated${result.deletedCount > 0 ? `, ${result.deletedCount} removed` : ""}.`;
@@ -1735,6 +1843,45 @@ export default function CashflowWorkbenchView({
 
   return (
     <div style={{ width: "100%", maxWidth: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: "14px" }}>
+      {/* Banner for new bank transactions */}
+      {newTxnsCount > 0 && (
+        <div style={{
+          padding: "8px 14px",
+          background: "#f0fdf4",
+          border: "1px solid #86efac",
+          borderRadius: "8px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "12px"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "#166534", fontWeight: "600" }}>
+            <span>✦</span>
+            <span>{newTxnsCount} new bank transaction{newTxnsCount !== 1 ? "s" : ""} imported</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleDismissAllNew(false)}
+            disabled={dismissingNew}
+            style={{
+              padding: "4px 10px",
+              background: "#ffffff",
+              color: "#166534",
+              border: "1px solid #86efac",
+              borderRadius: "5px",
+              fontSize: "11px",
+              fontWeight: "700",
+              cursor: dismissingNew ? "wait" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "4px"
+            }}
+          >
+            {dismissingNew ? <Spinner size={11} /> : "✓"} Mark all as reviewed
+          </button>
+        </div>
+      )}
+
       {/* Top Action Bar */}
       <div style={{
         padding: "10px 16px",
@@ -1748,12 +1895,41 @@ export default function CashflowWorkbenchView({
         gap: "10px",
         boxShadow: "0 1px 2px rgba(0,0,0,0.03)"
       }}>
-        {/* Far Left: Update bank transactions and Paste / upload unreconciled */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        {/* Far Left: Reconciled & complete for P&L toggle, Update bank feeds & P&L, Paste / upload */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          {/* Reconciled & complete for P&L toggle */}
+          <label style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            cursor: updatingReconStatus ? "wait" : "pointer",
+            userSelect: "none",
+            padding: "5px 10px",
+            borderRadius: "6px",
+            background: isReconciledComplete ? "#f0fdf4" : "#f8fafc",
+            border: `1px solid ${isReconciledComplete ? "#86efac" : "#cbd5e1"}`
+          }}>
+            <input
+              type="checkbox"
+              checked={Boolean(isReconciledComplete)}
+              disabled={updatingReconStatus}
+              onChange={handleToggleReconciledComplete}
+              style={{ width: "15px", height: "15px", cursor: "pointer", accentColor: "#15803d" }}
+            />
+            <span style={{
+              fontSize: "12px",
+              fontWeight: "600",
+              color: isReconciledComplete ? "#15803d" : "#475569"
+            }}>
+              Reconciled & complete for P&L
+            </span>
+            {updatingReconStatus && <Spinner size={11} />}
+          </label>
+
           <button
             onClick={handleUpdateBankTransactions}
             disabled={updatingTxns || fetchingApi}
-            title="Update bank transactions: applies additions, updates modified items while preserving categories, and removes deletions"
+            title="Update bank transactions and synchronize P&L actuals"
             style={{
               padding: "6px 14px",
               background: "#0284c7",
@@ -1768,7 +1944,7 @@ export default function CashflowWorkbenchView({
               gap: "6px"
             }}
           >
-            {updatingTxns ? <Spinner /> : "🔄"} Update bank transactions
+            {updatingTxns ? <Spinner /> : "⚡"} Update bank feeds & P&L now
           </button>
 
           <button
@@ -2020,7 +2196,7 @@ export default function CashflowWorkbenchView({
                         <tr
                           style={{
                             borderBottom: "1px solid #f1f5f9",
-                            background: isUnrecon ? "#fffbeb" : (idx % 2 === 0 ? "#ffffff" : "#fafbfc")
+                            background: tx.isNew ? "#f0fdf4" : (isUnrecon ? "#fffbeb" : (idx % 2 === 0 ? "#ffffff" : "#fafbfc"))
                           }}
                         >
                           <td style={{ padding: "6px 8px", color: "#64748b", whiteSpace: "nowrap" }}>
@@ -2036,6 +2212,11 @@ export default function CashflowWorkbenchView({
                               </div>
                             )}
                             <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap", marginTop: "2px" }}>
+                              {tx.isNew && (
+                                <span style={{ fontSize: "9px", padding: "1px 5px", background: "#dcfce7", color: "#166534", borderRadius: "3px", fontWeight: "700", border: "1px solid #86efac" }}>
+                                  new
+                                </span>
+                              )}
                               {rowAccount && (
                                 <span style={{ fontSize: "9px", padding: "1px 5px", background: "#f1f5f9", color: "#475569", borderRadius: "3px", border: "1px solid #cbd5e1", fontWeight: "600" }}>
                                   🏦 {rowAccount}

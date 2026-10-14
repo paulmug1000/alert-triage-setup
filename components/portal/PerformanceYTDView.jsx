@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString } from "../../services/deepDiveHelper";
@@ -19,6 +19,33 @@ export default function PerformanceYTDView({
   const years = data?.years || [];
   const [selectedYearIdx, setSelectedYearIdx] = useState(null);
   const [activePopover, setActivePopover] = useState(null);
+
+  useEffect(() => {
+    if (activePopover?.isOpen && activePopover._clickParams && keyData) {
+      const p = activePopover._clickParams;
+      const ddData = buildDeepDiveData({
+        ddType: p.ddType,
+        periodLabel: p.periodLabel,
+        monthIndex: p.mIdx,
+        cellValue: p.val,
+        yearIndex: p.activeYearIdx,
+        targetDate: p.targetDate,
+        aggregateCount: p.isYTDTotal ? p.displayedMonthsCount : 1,
+        keyData,
+        isIncomeMode: p.isIncomeMode,
+        isRestricted: isSenior,
+      });
+      setActivePopover((prev) => prev ? {
+        ...prev,
+        title: ddData.title,
+        period: ddData.period,
+        total: ddData.total,
+        items: ddData.items || [],
+        sections: ddData.sections || null,
+        isLoading: false,
+      } : null);
+    }
+  }, [keyData]);
   const activeYearIdx = selectedYearIdx !== null ? selectedYearIdx : (data?.currentYearIdx !== undefined ? data.currentYearIdx : (years.length > 1 ? 1 : 0));
   const activeYear = years[activeYearIdx];
 
@@ -356,6 +383,8 @@ export default function PerformanceYTDView({
       String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
       Boolean(activeYear?.rows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
 
+    const isDataLoading = !keyData || isLoading;
+
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel,
@@ -377,8 +406,11 @@ export default function PerformanceYTDView({
       total: ddData.total,
       items: ddData.items || [],
       sections: ddData.sections || null,
+      isLoading: isDataLoading,
+      _clickParams: { ddType, periodLabel, mIdx, val, activeYearIdx, targetDate, isYTDTotal, displayedMonthsCount: displayedMonths?.length || 12, isIncomeMode, rect },
     });
   };
+
 
   const handleDownloadCSV = () => {
     if (!activeYear) return;
@@ -413,6 +445,7 @@ export default function PerformanceYTDView({
         currencySymbol={currencySymbol}
         thousandsSeparator={thousandsSeparator}
         onClose={() => setActivePopover(null)}
+        isLoading={Boolean(!keyData || isLoading || activePopover?.isLoading)}
       />
 
       {/* Action Bar (Top header with Year Navigator, Cutoff Month Dropdown & Refresh) */}

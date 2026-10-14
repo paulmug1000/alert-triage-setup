@@ -1728,8 +1728,14 @@ export function buildDeepDiveData({
     const targetMonth = effectiveDate.getMonth();
     const monthCount = count > 1 ? count : 1;
 
+    const txnsByMonth = keyData.outgoings?.transactionsByMonth || {};
+    const normCategory = (s) => String(s || "").replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+
     const items = expenses.map((e) => {
       let amt = 0;
+      const categoryTxns = [];
+      const eNorm = normCategory(e.name);
+
       for (let i = 0; i < monthCount; i++) {
         const currDate = new Date(targetYear, targetMonth + i, 1);
         let foundY = yearIndex;
@@ -1749,14 +1755,33 @@ export function buildDeepDiveData({
         }
         const allocs = e.allocations?.[foundY] || e.monthlyAllocations || [];
         amt += parseMoney(allocs[foundC] || 0);
+
+        // Extract transactions for this month matching category name
+        const mList = txnsByMonth[foundY]?.[foundC] || [];
+        mList.forEach((t) => {
+          if (normCategory(t.c) === eNorm) {
+            categoryTxns.push({
+              date: t.d || "",
+              supplier: t.s || "",
+              ref: t.r || "",
+              net: t.n || 0,
+              vat: t.v || 0,
+              gross: t.g || 0,
+              amount: t.n || t.g || 0,
+              datePaid: t.p || "",
+              isUnreconciled: Boolean(t.u),
+            });
+          }
+        });
       }
 
       return {
         name: e.name,
         detail: "", // No VAT or timing info per instruction
         amount: Math.round(amt),
+        transactions: categoryTxns,
       };
-    }).filter((item) => item.amount > 0);
+    }).filter((item) => item.amount > 0 || (item.transactions && item.transactions.length > 0));
 
     const totalExp = items.reduce((s, i) => s + i.amount, 0);
     let drift = Math.round(parseMoney(cellValue) - totalExp);

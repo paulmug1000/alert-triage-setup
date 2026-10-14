@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney as universalFormatMoney, parseMoney as universalParseMoney } from "../../services/deepDiveHelper";
@@ -19,6 +19,31 @@ export default function CashflowView({
   const [inclOpen, setInclOpen] = useState(false);
   const [activePopover, setActivePopover] = useState(null);
   const [hoveredPoint, setHoveredPoint] = useState(null);
+
+  useEffect(() => {
+    if (activePopover?.isOpen && activePopover._clickParams && keyData) {
+      const p = activePopover._clickParams;
+      const ddData = buildDeepDiveData({
+        ddType: p.ddType,
+        periodLabel: p.monthLabel,
+        monthIndex: p.mIdx,
+        cellValue: p.val,
+        yearIndex: 1,
+        targetDate: p.parsedTargetDate,
+        keyData,
+        isRestricted: isSenior,
+      });
+      setActivePopover((prev) => prev ? {
+        ...prev,
+        title: ddData.title,
+        period: ddData.period,
+        total: ddData.total,
+        items: ddData.items || [],
+        sections: ddData.sections || null,
+        isLoading: false,
+      } : null);
+    }
+  }, [keyData]);
 
   if (isLoading && !data) {
     return (
@@ -142,6 +167,8 @@ export default function CashflowView({
     const rect = e.currentTarget.getBoundingClientRect();
     const parsedTargetDate = DeepDiveEngine.parseHeaderDate(rollingMonths[mIdx]) || new Date();
 
+    const isDataLoading = !keyData || isLoading;
+
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel: monthLabel,
@@ -161,8 +188,11 @@ export default function CashflowView({
       total: ddData.total,
       items: ddData.items,
       sections: ddData.sections,
+      isLoading: isDataLoading,
+      _clickParams: { ddType, monthLabel, mIdx, val, parsedTargetDate, rect },
     });
   };
+
 
   // CSV export function
   const handleDownloadCsv = () => {
@@ -371,6 +401,7 @@ export default function CashflowView({
         currencySymbol={currencySymbol}
         thousandsSeparator={thousandsSeparator}
         onClose={() => setActivePopover(null)}
+        isLoading={Boolean(!keyData || isLoading || activePopover?.isLoading)}
       />
 
       {/* Action Bar */}

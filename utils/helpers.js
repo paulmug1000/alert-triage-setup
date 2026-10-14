@@ -95,6 +95,7 @@ export const PROACTIVE_TYPE_LABELS = {
   autolog_error:              "Automation error",
   infinite_loop:              "Infinite loop / automation conflict",
   stale_unrecon_gap:          "Stale UNRECON-GAP expense",
+  retroactive_outgoings_update: "Retroactive P&L outgoings update",
 };
 
 export const ADMIN_ONLY_FLAG_KEYS = new Set([

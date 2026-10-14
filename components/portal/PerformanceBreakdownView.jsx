@@ -273,17 +273,31 @@ export default function PerformanceBreakdownView({
       rows.push([]);
       rows.push(["Total", "", "", totalAmount]);
     } else {
-      rows.push(["Client", "Name", "Details", "Amount"]);
+      rows.push(["Category / Item", "Details", "Amount", "Reference", "Net", "VAT", "Gross", "Status"]);
       items.forEach((item) => {
         rows.push([
-          item.client || item.name || "",
-          item.jobName || item.name || "",
+          item.client ? `${item.client} - ${item.name || item.jobName || ""}` : (item.name || item.jobName || ""),
           item.detail || "",
           item.amount || 0,
+          "", "", "", "", ""
         ]);
+        if (item.transactions && item.transactions.length > 0) {
+          item.transactions.forEach((t) => {
+            rows.push([
+              `  [Txn] ${t.date}`,
+              t.supplier,
+              t.gross || t.amount || 0,
+              t.ref || "",
+              t.net || 0,
+              t.vat || 0,
+              t.gross || 0,
+              t.isUnreconciled ? "Pending Recon" : "Reconciled"
+            ]);
+          });
+        }
       });
       rows.push([]);
-      rows.push(["", "", "Total", totalAmount]);
+      rows.push(["Total", "", totalAmount]);
     }
 
     downloadCsv(
@@ -425,9 +439,18 @@ export default function PerformanceBreakdownView({
         {/* Sections or Item Rows */}
         {hasSections ? (
           sections.length === 0 ? (
-            <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
-              No items in this period.
-            </div>
+            isLoading || !keyData ? (
+              <div style={{ padding: "4rem 0", textAlign: "center", color: "#64748b" }}>
+                <Spinner size={28} color="#0047AB" />
+                <p style={{ marginTop: "1rem", color: "#0047AB", fontWeight: 500, fontSize: "14px" }}>
+                  Loading breakdown...
+                </p>
+              </div>
+            ) : (
+              <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
+                No items in this period.
+              </div>
+            )
           ) : (
             <div>
               {sections.map((sec, sIdx) => {
@@ -567,9 +590,18 @@ export default function PerformanceBreakdownView({
         ) : (
           /* Render Regular List (Revenue, Expenses, Direct Costs) */
           items.length === 0 ? (
-            <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
-              No items in this period.
-            </div>
+            isLoading || !keyData ? (
+              <div style={{ padding: "4rem 0", textAlign: "center", color: "#64748b" }}>
+                <Spinner size={28} color="#0047AB" />
+                <p style={{ marginTop: "1rem", color: "#0047AB", fontWeight: 500, fontSize: "14px" }}>
+                  Loading breakdown...
+                </p>
+              </div>
+            ) : (
+              <div style={{ padding: "2.5rem 0", textAlign: "center", color: "#94a3b8", fontSize: "14px" }}>
+                No items in this period.
+              </div>
+            )
           ) : (
             items.map((item, idx) => {
               const isAdjustment =
@@ -596,6 +628,160 @@ export default function PerformanceBreakdownView({
                   >
                     <span style={{ color: "#64748b", fontStyle: "italic", fontSize: "12.3px" }}>{item.name}</span>
                     <span style={{ fontWeight: 700, color: "#0047AB" }}>{formatMoney(item.amount)}</span>
+                  </div>
+                );
+              }
+
+              const hasTxns = Array.isArray(item.transactions) && item.transactions.length > 0;
+              const itemKey = `item_cat_${idx}_${item.name}`;
+              const isExpanded = Boolean(openAccordions[itemKey]);
+
+              if (hasTxns) {
+                const unrecCount = item.transactions.filter((t) => t.isUnreconciled).length;
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "8px",
+                      background: "#ffffff",
+                      marginBottom: "10px",
+                      overflow: "hidden",
+                      boxShadow: "0 1px 2px rgba(0, 0, 0, 0.03)",
+                    }}
+                  >
+                    <div
+                      onClick={() => toggleAccordion(itemKey)}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        padding: "12px 16px",
+                        background: isExpanded ? "#f1f5f9" : "#f8fafc",
+                        cursor: "pointer",
+                        fontWeight: 600,
+                        color: "#0047AB",
+                        fontSize: "14px",
+                        userSelect: "none",
+                        transition: "background 0.15s ease",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            transition: "transform 0.15s ease",
+                            transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)",
+                            display: "inline-block",
+                          }}
+                        >
+                          ▼
+                        </span>
+                        <span style={{ color: "#0f172a", fontWeight: 700 }}>{item.name}</span>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            padding: "2px 8px",
+                            borderRadius: "10px",
+                            background: "#e2e8f0",
+                            color: "#475569",
+                            fontWeight: 500,
+                          }}
+                        >
+                          {item.transactions.length} txn{item.transactions.length === 1 ? "" : "s"}
+                        </span>
+                        {unrecCount > 0 && (
+                          <span
+                            style={{
+                              fontSize: "10.5px",
+                              padding: "2px 7px",
+                              borderRadius: "4px",
+                              background: "#fef3c7",
+                              color: "#b45309",
+                              border: "1px solid #fde68a",
+                              fontWeight: 600,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                            }}
+                            title={`${unrecCount} unreconciled bank transaction(s) from Cashflow Reconciliation`}
+                          >
+                            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#d97706" }} />
+                            {unrecCount} pending recon
+                          </span>
+                        )}
+                      </div>
+                      <span style={{ fontWeight: 700, color: "#0047AB", whiteSpace: "nowrap" }}>
+                        {formatMoney(item.amount)}
+                      </span>
+                    </div>
+
+                    {isExpanded && (
+                      <div style={{ borderTop: "1px solid #e2e8f0", background: "#ffffff", overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12.5px" }}>
+                          <thead>
+                            <tr style={{ background: "#f8fafc", color: "#64748b", borderBottom: "1px solid #e2e8f0", textAlign: "left" }}>
+                              <th style={{ padding: "9px 16px", fontWeight: 600, width: "105px" }}>Date</th>
+                              <th style={{ padding: "9px 16px", fontWeight: 600 }}>Supplier / Description</th>
+                              <th style={{ padding: "9px 16px", fontWeight: 600, width: "120px" }}>Reference</th>
+                              <th style={{ padding: "9px 16px", fontWeight: 600, textAlign: "right", width: "95px" }}>Net</th>
+                              <th style={{ padding: "9px 16px", fontWeight: 600, textAlign: "right", width: "80px" }}>VAT</th>
+                              <th style={{ padding: "9px 16px", fontWeight: 600, textAlign: "right", width: "95px" }}>Gross</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {item.transactions.map((txn, tIdx) => (
+                              <tr
+                                key={tIdx}
+                                style={{
+                                  borderBottom: tIdx === item.transactions.length - 1 ? "none" : "1px solid #f1f5f9",
+                                  background: txn.isUnreconciled ? "#fffdf5" : "transparent",
+                                  transition: "background 0.1s ease",
+                                }}
+                              >
+                                <td style={{ padding: "8px 16px", color: "#475569", whiteSpace: "nowrap", fontSize: "12px" }}>
+                                  {txn.date || "—"}
+                                </td>
+                                <td style={{ padding: "8px 16px", color: "#0f172a" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap" }}>
+                                    <span style={{ fontWeight: 500 }}>{txn.supplier || "—"}</span>
+                                    {txn.isUnreconciled && (
+                                      <span
+                                        style={{
+                                          fontSize: "10px",
+                                          padding: "1px 5px",
+                                          borderRadius: "3px",
+                                          background: "#fef3c7",
+                                          color: "#92400e",
+                                          border: "1px solid #fde68a",
+                                          fontWeight: 600,
+                                          lineHeight: "1.2",
+                                        }}
+                                        title="Unreconciled bank statement line from Cashflow Reconciliation"
+                                      >
+                                        Pending Recon
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td style={{ padding: "8px 16px", color: "#64748b", fontSize: "11.5px", whiteSpace: "nowrap" }}>
+                                  {txn.ref || "—"}
+                                </td>
+                                <td style={{ padding: "8px 16px", textAlign: "right", color: "#334155", fontVariantNumeric: "tabular-nums" }}>
+                                  {formatMoney(txn.net)}
+                                </td>
+                                <td style={{ padding: "8px 16px", textAlign: "right", color: "#64748b", fontSize: "11.5px", fontVariantNumeric: "tabular-nums" }}>
+                                  {txn.vat ? formatMoney(txn.vat) : "—"}
+                                </td>
+                                <td style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: "#0047AB", fontVariantNumeric: "tabular-nums" }}>
+                                  {formatMoney(txn.gross || txn.amount)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 );
               }

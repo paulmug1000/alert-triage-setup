@@ -192,9 +192,8 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
         });
         const data = await res.json();
         if (!data.success) { setError(data.error || "Failed to change start date"); setSaving(false); setSavingMessage(""); return; }
-        setSavingMessage("Refreshing job list...");
-        await onNeedsReload();
         onClose();
+        if (onNeedsReload) onNeedsReload();
         return;
       }
 
@@ -231,9 +230,8 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
       }
 
       if (endChanged || amountChanged) {
-        setSavingMessage("Refreshing job list...");
-        await onNeedsReload();
         onClose();
+        if (onNeedsReload) onNeedsReload();
         return;
       }
 
@@ -272,9 +270,8 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
       });
       const data = await res.json();
       if (!data.success) { setError(data.error || "Failed to change monthly amount"); setSaving(false); setSavingMessage(""); return; }
-      setSavingMessage("Refreshing job list...");
-      await onNeedsReload();
       onClose();
+      if (onNeedsReload) onNeedsReload();
     } catch(e) { setError(e.message); setSaving(false); setSavingMessage(""); }
   };
 

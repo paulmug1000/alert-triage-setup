@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import Spinner from "../Spinner";
+import SplitMonthCard from "../SplitMonthCard";
 import { formatMoney, parseMoney } from "../../services/deepDiveHelper";
 import { downloadCsv } from "../../utils/helpers";
+import { parseSplitString, formatSplitString } from "../../services/splitHelper";
 
 export default function PortalJobsView({
   clientName,
@@ -25,6 +27,8 @@ export default function PortalJobsView({
   const [optimisticJobs, setOptimisticJobs] = useState({}); // { [key]: job }
   const [enableSplit, setEnableSplit] = useState(false);
   const [lockedMonths, setLockedMonths] = useState({});
+  const lockedMonthsRef = useRef(lockedMonths);
+  lockedMonthsRef.current = lockedMonths;
   const pageSize = 25;
 
   // Clear optimistic jobs when fresh server data arrives
@@ -245,6 +249,7 @@ export default function PortalJobsView({
     setSaveError(null);
     setEnableSplit(false);
     setLockedMonths({});
+    lockedMonthsRef.current = {};
     setEditingJob({
       id: "new",
       rowNumber: null,
@@ -275,20 +280,14 @@ export default function PortalJobsView({
     const splitStr = String(job?.splitStr || "").trim();
     if (splitStr.toLowerCase().startsWith("[split]")) {
       setEnableSplit(true);
-      const initialLocked = {};
-      const parts = splitStr.split(",");
-      parts.forEach((p) => {
-        const match = p.match(/([a-zA-Z]{3}-\d{2})\s*:\s*([^,]+)/);
-        if (match) {
-          const mKey = match[1].toLowerCase().trim();
-          const mVal = parseFloat(String(match[2]).replace(/[^0-9.-]/g, "")) || 0;
-          initialLocked[mKey] = mVal;
-        }
-      });
+      const rev = parseFloat(String(job?.revenue || "0").replace(/[^0-9.-]/g, "")) || 0;
+      const initialLocked = parseSplitString(splitStr, [], rev);
       setLockedMonths(initialLocked);
+      lockedMonthsRef.current = initialLocked;
     } else {
       setEnableSplit(false);
       setLockedMonths({});
+      lockedMonthsRef.current = {};
     }
 
     setEditingJob({
@@ -511,15 +510,22 @@ export default function PortalJobsView({
 
     let splitStrResult = "";
     if (enableSplit && splitMonths.length > 0 && String(editingJob?.projectRetainer || "").toLowerCase() === "project") {
-      let str = "[Split]";
+      const curLocked = lockedMonthsRef.current || {};
+      const vLocked = {};
+      let lSum = 0;
+      let lCount = 0;
       splitMonths.forEach((m) => {
-        const mKey = m.toLowerCase();
-        const isLocked = validLocked[mKey] !== undefined;
-        const val = isLocked ? validLocked[mKey] : evenSplit;
-        const cleanVal = Number.isInteger(val) ? val : Math.round(val * 100) / 100;
-        str += `,${m}:${cleanVal}`;
+        const k = m.toLowerCase();
+        if (curLocked[k] !== undefined) {
+          vLocked[k] = curLocked[k];
+          lSum += curLocked[k];
+          lCount++;
+        }
       });
-      splitStrResult = str;
+      const rem = totRev - lSum;
+      const uCount = splitMonths.length - lCount;
+      const eSplit = uCount > 0 ? rem / uCount : 0;
+      splitStrResult = formatSplitString(splitMonths, vLocked, eSplit);
     }
 
     const jobToSave = {
@@ -1224,7 +1230,18 @@ export default function PortalJobsView({
                   <label style={formLabelStyle}>Status *</label>
                   <select
                     value={editingJob.type || "Confirmed"}
-                    onChange={(e) => setEditingJob({ ...editingJob, type: e.target.value })}
+                    onChange={(e) => {
+                      const newType = e.target.value;
+                      if (newType === "Confirmed") {
+                        setEditingJob({ ...editingJob, type: "Confirmed", likelihood: "100%" });
+                      } else {
+                        setEditingJob({
+                          ...editingJob,
+                          type: "Pipeline",
+                          likelihood: (editingJob.likelihood === "100%" || !editingJob.likelihood) ? "50%" : editingJob.likelihood,
+                        });
+                      }
+                    }}
                     style={formInputStyle}
                   >
                     <option value="Confirmed">Confirmed</option>
@@ -1237,7 +1254,15 @@ export default function PortalJobsView({
                     type="text"
                     value={editingJob.likelihood || (editingJob.type === "Confirmed" ? "100%" : "50%")}
                     disabled={editingJob.type === "Confirmed"}
-                    onChange={(e) => setEditingJob({ ...editingJob, likelihood: e.target.value })}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      const num = parseFloat(String(val).replace(/[%,\s]/g, ""));
+                      if (!isNaN(num) && num >= 100) {
+                        setEditingJob({ ...editingJob, likelihood: "100%", type: "Confirmed" });
+                      } else {
+                        setEditingJob({ ...editingJob, likelihood: val });
+                      }
+                    }}
                     style={{
                       ...formInputStyle,
                       opacity: editingJob.type === "Confirmed" ? 0.6 : 1,
@@ -1378,7 +1403,10 @@ export default function PortalJobsView({
                       onChange={(e) => {
                         const checked = e.target.checked;
                         setEnableSplit(checked);
-                        if (!checked) setLockedMonths({});
+                        if (!checked) {
+                          setLockedMonths({});
+                          lockedMonthsRef.current = {};
+                        }
                       }}
                       style={{ width: "18px", height: "18px", cursor: "pointer" }}
                     />
@@ -1433,7 +1461,7 @@ export default function PortalJobsView({
                               const valStr = Number.isInteger(val) ? val.toString() : val.toFixed(2);
 
                               return (
-                                <SplitMonthInputCard
+                                <SplitMonthCard
                                   key={m}
                                   month={m}
                                   mKey={mKey}
@@ -1448,12 +1476,17 @@ export default function PortalJobsView({
                                       } else {
                                         next[k] = newVal;
                                       }
+                                      lockedMonthsRef.current = next;
                                       return next;
                                     });
                                   }}
                                 />
                               );
                             })}
+                          </div>
+
+                          <div style={{ marginTop: "-0.5rem", marginBottom: "0.75rem", fontSize: "11px", color: "#64748b", textAlign: "right", fontStyle: "italic" }}>
+                            Click 🔒 Locked to unlock, or delete an amount to return that month to automatic allocation.
                           </div>
 
                           <div
@@ -1986,102 +2019,3 @@ const pageBtnStyle = {
   color: "#0047AB",
   cursor: "pointer",
 };
-
-function SplitMonthInputCard({ month, mKey, isLocked, displayVal, currencySymbol, onCommit }) {
-  const [localVal, setLocalVal] = useState(displayVal);
-  const [isFocused, setIsFocused] = useState(false);
-
-  useEffect(() => {
-    if (!isFocused) {
-      setLocalVal(displayVal);
-    }
-  }, [displayVal, isFocused]);
-
-  const handleBlur = () => {
-    setIsFocused(false);
-    const trimmed = String(localVal).trim();
-    if (trimmed === "") {
-      onCommit(mKey, null);
-    } else {
-      const parsed = parseFloat(trimmed);
-      if (isNaN(parsed)) {
-        onCommit(mKey, null);
-      } else {
-        onCommit(mKey, parsed);
-      }
-    }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter") {
-      e.currentTarget.blur();
-    }
-  };
-
-  return (
-    <div
-      style={{
-        background: "#fff",
-        padding: "0.5rem",
-        borderRadius: "6px",
-        border: `1px solid ${isLocked ? "#0047AB" : "#cbd5e1"}`,
-        boxShadow: isLocked ? "0 1px 3px rgba(0,71,171,0.12)" : "none",
-        transition: "border-color 0.15s ease",
-      }}
-    >
-      <label
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          fontSize: "0.8rem",
-          fontWeight: isLocked ? "700" : "500",
-          color: isLocked ? "#0047AB" : "#64748b",
-          marginBottom: "0.35rem",
-        }}
-      >
-        <span>{month}</span>
-        <span style={{ fontSize: "0.7rem", opacity: 0.75 }}>
-          {isLocked ? "🔒" : "Auto"}
-        </span>
-      </label>
-      <div style={{ position: "relative" }}>
-        <span
-          style={{
-            position: "absolute",
-            left: "8px",
-            top: "50%",
-            transform: "translateY(-50%)",
-            color: "#64748b",
-            fontSize: "0.85rem",
-            pointerEvents: "none",
-          }}
-        >
-          {currencySymbol}
-        </span>
-        <input
-          type="number"
-          step="0.01"
-          placeholder="Auto"
-          value={localVal}
-          onFocus={() => setIsFocused(true)}
-          onChange={(e) => setLocalVal(e.target.value)}
-          onBlur={handleBlur}
-          onKeyDown={handleKeyDown}
-          style={{
-            paddingLeft: "22px",
-            width: "100%",
-            minHeight: "32px",
-            fontSize: "0.95rem",
-            border: "1px solid transparent",
-            background: "#f8fafc",
-            borderRadius: "4px",
-            color: isLocked ? "#0047AB" : "#1e293b",
-            fontWeight: isLocked ? 700 : 400,
-            outline: "none",
-            boxSizing: "border-box",
-          }}
-        />
-      </div>
-    </div>
-  );
-}

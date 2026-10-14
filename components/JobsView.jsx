@@ -13,6 +13,17 @@ export const parseSheetDate = (dStr) => {
   if (dStr instanceof Date) return isNaN(dStr.getTime()) ? null : dStr;
   const s = String(dStr).trim();
   const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+
+  // 1. ISO format: YYYY-MM-DD
+  const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    const yr = parseInt(isoMatch[1], 10);
+    const mIdx = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    return new Date(yr, mIdx, day);
+  }
+
+  // 2. DD-Mon-YY or DD-Mon-YYYY
   const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
   if (m) {
     const mIdx = months[m[2].toLowerCase()];
@@ -22,6 +33,8 @@ export const parseSheetDate = (dStr) => {
       return new Date(yr, mIdx, parseInt(m[1], 10));
     }
   }
+
+  // 3. Mon-YY or Mon-YYYY
   const myMatch = s.match(/^([A-Za-z]{3})[-/\s](\d{2,4})$/);
   if (myMatch) {
     const mIdx = months[myMatch[1].toLowerCase()];
@@ -31,12 +44,15 @@ export const parseSheetDate = (dStr) => {
       return new Date(yr, mIdx, 1);
     }
   }
+
+  // 4. DD/MM/YYYY
   const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (slashMatch) {
     let yr = parseInt(slashMatch[3], 10);
     if (yr < 100) yr += (yr <= 69 ? 2000 : 1900);
     return new Date(yr, parseInt(slashMatch[2], 10) - 1, parseInt(slashMatch[1], 10));
   }
+
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;
 };
@@ -92,6 +108,101 @@ export const parseLikelihoodValue = (val) => {
     return num * 100;
   }
   return num;
+};
+
+// Resilient inline date input for spreadsheet grid:
+// Does NOT wipe existing segments to "dd/yy" when a user is editing/typing in Chromium
+export const JobDateInput = ({
+  value,
+  onChange,
+  onKeyDown,
+  isDirty = false,
+  style = {},
+  defaultBorder = "1px solid transparent",
+  dirtyBorder = "1px solid #f59e0b",
+  focusBorder = "1px solid #3b82f6",
+  defaultBg = "transparent",
+  focusBg = "#ffffff"
+}) => {
+  const inputRef = React.useRef(null);
+  const isFocusedRef = React.useRef(false);
+  const isCancelledRef = React.useRef(false);
+  const isoValue = React.useMemo(() => toInputDateFormat(value), [value]);
+
+  React.useEffect(() => {
+    if (inputRef.current && !isFocusedRef.current) {
+      inputRef.current.value = isoValue;
+    }
+  }, [isoValue]);
+
+  const handleChange = (e) => {
+    const newVal = e.target.value;
+    if (newVal) {
+      onChange(newVal);
+    }
+    // If newVal is "", the user is in an intermediate state while typing in Chrome.
+    // We intentionally avoid updating the DOM node with empty string, preserving other segments.
+  };
+
+  const handleFocus = () => {
+    isFocusedRef.current = true;
+    if (inputRef.current) {
+      inputRef.current.style.background = focusBg;
+      inputRef.current.style.borderColor = focusBorder.replace(/^1px solid\s*/, "");
+    }
+  };
+
+  const handleBlur = (e) => {
+    isFocusedRef.current = false;
+    if (inputRef.current) {
+      inputRef.current.style.background = defaultBg;
+      inputRef.current.style.borderColor = isDirty ? "#f59e0b" : (defaultBorder.includes("transparent") ? "transparent" : "#cbd5e1");
+    }
+
+    if (isCancelledRef.current) {
+      isCancelledRef.current = false;
+      if (inputRef.current) {
+        inputRef.current.value = isoValue;
+      }
+      return;
+    }
+
+    const finalVal = e.target.value;
+    if (finalVal !== isoValue) {
+      onChange(finalVal);
+    }
+  };
+
+  const handleKeyDownInternal = (e) => {
+    if (e.key === "Escape") {
+      isCancelledRef.current = true;
+    }
+    if (onKeyDown) onKeyDown(e);
+  };
+
+  const currentBorder = isDirty ? dirtyBorder : defaultBorder;
+
+  return (
+    <input
+      ref={inputRef}
+      type="date"
+      defaultValue={isoValue}
+      onChange={handleChange}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+      onKeyDown={handleKeyDownInternal}
+      style={{
+        padding: "3px 4px",
+        borderRadius: "5px",
+        border: currentBorder,
+        background: defaultBg,
+        fontSize: "12px",
+        color: "#334155",
+        outline: "none",
+        ...style
+      }}
+    />
+  );
 };
 
 export default function JobsView({
@@ -648,11 +759,13 @@ export default function JobsView({
         });
       }
     } else {
-      // In legacy view, filter strictly by jobsTab ("Confirmed" or "Pipeline")
-      list = list.filter((j) => {
-        const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "Confirmed").toLowerCase();
-        return tab === jobsTab.toLowerCase();
-      });
+      // In legacy view, filter by jobsTab ("Confirmed" or "Pipeline" or "All")
+      if (jobsTab && jobsTab.toLowerCase() !== "all") {
+        list = list.filter((j) => {
+          const tab = String(j.tabName || j.status || j.rows?.[0]?.tabName || "Confirmed").toLowerCase();
+          return tab === jobsTab.toLowerCase();
+        });
+      }
     }
 
     // 2. Sort jobs
@@ -1185,13 +1298,39 @@ export default function JobsView({
           client={jobsClient}
           tabName={jobsEditSplit.tabName || jobsTab}
           onClose={() => setJobsEditSplit(null)}
-          onUpdateJobsData={(rNum, splitStr) => {
+          onUpdateJobsData={(rNum, splitStr, updatedFields) => {
             setJobsData((prev) =>
               prev.map((j) => ({
                 ...j,
-                rows: j.rows.map((r) => (r.rowNum === rNum ? { ...r, unevenSplit: splitStr } : r))
+                rows: j.rows.map((r) => {
+                  if (r.rowNum === rNum) {
+                    const updatedRow = { ...r, unevenSplit: splitStr };
+                    if (updatedFields?.startDate) updatedRow.startDate = toSheetDateFormat(updatedFields.startDate);
+                    if (updatedFields?.endDate) updatedRow.endDate = toSheetDateFormat(updatedFields.endDate);
+                    if (updatedFields?.revenue !== undefined) updatedRow.revenue = updatedFields.revenue;
+                    return updatedRow;
+                  }
+                  return r;
+                })
               }))
             );
+            // Clear the draft edits for this job since they were saved atomically with the split
+            if (jobsEditSplit?.jobRow?.jobKey && updatedFields) {
+              setDraftEdits((prev) => {
+                const jKey = jobsEditSplit.jobRow.jobKey;
+                if (!prev[jKey]) return prev;
+                const nextDraft = { ...prev[jKey] };
+                if (updatedFields.startDate) delete nextDraft.startDate;
+                if (updatedFields.endDate) delete nextDraft.endDate;
+                if (updatedFields.revenue !== undefined) delete nextDraft.revenue;
+                if (Object.keys(nextDraft).length === 0) {
+                  const nextAll = { ...prev };
+                  delete nextAll[jKey];
+                  return nextAll;
+                }
+                return { ...prev, [jKey]: nextDraft };
+              });
+            }
           }}
         />
       )}
@@ -1258,9 +1397,18 @@ export default function JobsView({
           leadSources={leadSources}
           existingClients={existingClients}
           onClose={() => setShowAddJobModal(false)}
-          onSuccess={(targetTab) => {
+          onSuccess={(targetTab, targetRow) => {
             setShowAddJobModal(false);
+            if (targetTab) {
+              setFilterType(targetTab.toLowerCase() === "pipeline" ? "pipeline" : "confirmed");
+            }
+            setSearchQuery("");
             loadJobsData(jobsClient, "All");
+            if (targetRow && targetTab) {
+              const newKey = `${targetTab.toLowerCase()}_${targetRow}`;
+              setRecentlySavedKeys((prev) => new Set(prev).add(newKey));
+              setExpandedJobIds((prev) => new Set(prev).add(newKey));
+            }
           }}
         />
       )}
@@ -1729,7 +1877,7 @@ export default function JobsView({
                           const prodLineVal = getJobFieldValue(job, "prodLine");
                           const vatVal = getJobFieldValue(job, "vat") || "Yes";
                           const projectCodeVal = getJobFieldValue(job, "projectCode");
-                          const unevenSplitVal = parentRow.unevenSplit || "";
+                          const unevenSplitVal = getJobFieldValue(job, "unevenSplit") || parentRow.unevenSplit || "";
                           const leftToInvoiceVal = parentRow.leftToInvoice || "";
                           const costsOutstandingVal = parentRow.costsOutstanding || "";
 
@@ -2044,55 +2192,21 @@ export default function JobsView({
 
                                 {/* Start Date */}
                                 <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
-                                  <input
-                                    type="date"
-                                    value={toInputDateFormat(startDateVal)}
-                                    onChange={(e) => handleDraftFieldChange(job, "startDate", e.target.value)}
+                                  <JobDateInput
+                                    value={startDateVal}
+                                    onChange={(val) => handleDraftFieldChange(job, "startDate", val)}
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "startDate")}
-                                    style={{
-                                      padding: "3px 4px",
-                                      borderRadius: "5px",
-                                      border: isDirty && draftEdits[jobKey]?.startDate !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
-                                      background: "transparent",
-                                      fontSize: "12px",
-                                      color: "#334155",
-                                      outline: "none"
-                                    }}
-                                    onFocus={(e) => {
-                                      e.target.style.background = "#ffffff";
-                                      e.target.style.borderColor = "#3b82f6";
-                                    }}
-                                    onBlur={(e) => {
-                                      e.target.style.background = "transparent";
-                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.startDate !== undefined ? "#f59e0b" : "transparent";
-                                    }}
+                                    isDirty={isDirty && draftEdits[jobKey]?.startDate !== undefined}
                                   />
                                 </td>
 
                                 {/* End Date */}
                                 <td style={{ padding: "9px 10px", verticalAlign: "middle" }}>
-                                  <input
-                                    type="date"
-                                    value={toInputDateFormat(endDateVal)}
-                                    onChange={(e) => handleDraftFieldChange(job, "endDate", e.target.value)}
+                                  <JobDateInput
+                                    value={endDateVal}
+                                    onChange={(val) => handleDraftFieldChange(job, "endDate", val)}
                                     onKeyDown={(e) => handleFieldKeyDown(e, job, "endDate")}
-                                    style={{
-                                      padding: "3px 4px",
-                                      borderRadius: "5px",
-                                      border: isDirty && draftEdits[jobKey]?.endDate !== undefined ? "1px solid #f59e0b" : "1px solid transparent",
-                                      background: "transparent",
-                                      fontSize: "12px",
-                                      color: "#334155",
-                                      outline: "none"
-                                    }}
-                                    onFocus={(e) => {
-                                      e.target.style.background = "#ffffff";
-                                      e.target.style.borderColor = "#3b82f6";
-                                    }}
-                                    onBlur={(e) => {
-                                      e.target.style.background = "transparent";
-                                      e.target.style.borderColor = isDirty && draftEdits[jobKey]?.endDate !== undefined ? "#f59e0b" : "transparent";
-                                    }}
+                                    isDirty={isDirty && draftEdits[jobKey]?.endDate !== undefined}
                                   />
                                 </td>
 
@@ -2240,20 +2354,14 @@ export default function JobsView({
                                               <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "#64748b", marginBottom: "3px" }}>
                                                 {isConfirmed ? "Date Confirmed" : "Date Added"}
                                               </label>
-                                              <input
-                                                type="date"
-                                                value={toInputDateFormat(dateConfVal)}
-                                                onChange={(e) => handleDraftFieldChange(job, "dateConf", e.target.value)}
+                                              <JobDateInput
+                                                value={dateConfVal}
+                                                onChange={(val) => handleDraftFieldChange(job, "dateConf", val)}
                                                 onKeyDown={(e) => handleFieldKeyDown(e, job, "dateConf")}
-                                                style={{
-                                                  width: "100%",
-                                                  padding: "5px 7px",
-                                                  borderRadius: "5px",
-                                                  border: isDirty && draftEdits[jobKey]?.dateConf !== undefined ? "1px solid #f59e0b" : "1px solid #cbd5e1",
-                                                  fontSize: "12px",
-                                                  outline: "none",
-                                                  boxSizing: "border-box"
-                                                }}
+                                                isDirty={isDirty && draftEdits[jobKey]?.dateConf !== undefined}
+                                                defaultBorder="1px solid #cbd5e1"
+                                                defaultBg="#ffffff"
+                                                style={{ width: "100%", padding: "5px 7px", boxSizing: "border-box" }}
                                               />
                                             </div>
 
@@ -2404,7 +2512,22 @@ export default function JobsView({
                                                 {!isRetainer && (
                                                   <button
                                                     type="button"
-                                                    onClick={() => setJobsEditSplit({ jobRow: parentRow, tabName })}
+                                                    onClick={() => {
+                                                      const currentDraft = draftEdits[jobKey] || {};
+                                                      const mergedJobRow = {
+                                                        ...parentRow,
+                                                        ...currentDraft,
+                                                        startDate: currentDraft.startDate !== undefined ? currentDraft.startDate : parentRow.startDate,
+                                                        endDate: currentDraft.endDate !== undefined ? currentDraft.endDate : parentRow.endDate,
+                                                        revenue: currentDraft.revenue !== undefined ? currentDraft.revenue : parentRow.revenue,
+                                                        client: currentDraft.client !== undefined ? currentDraft.client : parentRow.client,
+                                                        jobName: currentDraft.jobName !== undefined ? currentDraft.jobName : parentRow.jobName,
+                                                        hasDraftDates: Boolean(currentDraft.startDate !== undefined || currentDraft.endDate !== undefined),
+                                                        hasDraftRevenue: Boolean(currentDraft.revenue !== undefined),
+                                                        jobKey
+                                                      };
+                                                      setJobsEditSplit({ jobRow: mergedJobRow, tabName });
+                                                    }}
                                                     style={{
                                                       padding: "4px 9px",
                                                       borderRadius: "5px",
@@ -2511,7 +2634,8 @@ export default function JobsView({
                                                             slot,
                                                             jobClient: item.row.client || parentRow.client || job.client,
                                                             jobName: item.row.jobName || parentRow.jobName || job.jobName,
-                                                            slotLabel: item.label
+                                                            slotLabel: item.label,
+                                                            tabName: item.row.tabName || parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
                                                           });
                                                         }}
                                                         style={{
@@ -2662,7 +2786,8 @@ export default function JobsView({
                                                             slot,
                                                             jobName: item.row.jobName || parentRow.jobName || job.jobName,
                                                             jobClient: item.row.client || parentRow.client || job.client,
-                                                            slotLabel: item.label
+                                                            slotLabel: item.label,
+                                                            tabName: item.row.tabName || parentRow.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed"),
                                                           });
                                                         }}
                                                         style={{
@@ -3046,7 +3171,7 @@ export default function JobsView({
                                 {r.invoiceSlots.map((s) => (
                                   <td
                                     key={`legacy_inv${s.slotNum}`}
-                                    onClick={() => setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobClient: r.client || job.client, jobName: r.jobName || job.jobName })}
+                                    onClick={() => setInvoicesEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobClient: r.client || job.client, jobName: r.jobName || job.jobName, tabName: r.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed") })}
                                     style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer" }}
                                   >
                                     {!s.ref && !s.amount ? (
@@ -3069,7 +3194,7 @@ export default function JobsView({
                                 {r.expenseSlots.map((s) => (
                                   <td
                                     key={`legacy_exp${s.slotNum}`}
-                                    onClick={() => setDirectCostsEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobName: r.jobName || job.jobName, jobClient: r.client || job.client })}
+                                    onClick={() => setDirectCostsEditSlot({ rowNum: r.rowNum, slotNum: s.slotNum, slot: s, jobName: r.jobName || job.jobName, jobClient: r.client || job.client, tabName: r.tabName || job.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed") })}
                                     style={{ padding: "7px 10px", borderBottom: "1px solid #eee", cursor: "pointer" }}
                                   >
                                     {!s.description && !s.amount ? (

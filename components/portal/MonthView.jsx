@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { getDeepDiveType, buildDeepDiveData, DeepDiveEngine, formatMoney, formatCurrencyString } from "../../services/deepDiveHelper";
@@ -33,6 +33,32 @@ export default function MonthView({
   const thousandsSeparator = propThousandsSeparator || payload?.clientInfo?.thousandsSeparator || payload?.thousandsSeparator || ",";
   const [activePopover, setActivePopover] = useState(null);
   const [activePeriod, setActivePeriod] = useState("curr"); // 'curr' | 'prev' | 'next'
+
+  useEffect(() => {
+    if (activePopover?.isOpen && activePopover._clickParams && keyData) {
+      const p = activePopover._clickParams;
+      const ddData = buildDeepDiveData({
+        ddType: p.ddType,
+        periodLabel: p.monthPeriod,
+        monthIndex: p.mIdx,
+        cellValue: p.val,
+        yearIndex: 1,
+        targetDate: p.parsedTargetDate,
+        keyData,
+        isIncomeMode: p.isIncomeMode,
+        isRestricted: isSenior,
+      });
+      setActivePopover((prev) => prev ? {
+        ...prev,
+        title: ddData.title,
+        period: ddData.period,
+        total: ddData.total,
+        items: ddData.items || [],
+        sections: ddData.sections || null,
+        isLoading: false,
+      } : null);
+    }
+  }, [keyData]);
 
   // Coordinate loading: wait until both payload and performanceData are ready so the At A Glance charts
   // and Previous Year comparison rows render completely on the first paint without jumping.
@@ -130,6 +156,8 @@ export default function MonthView({
       String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
       Boolean(currMonth?.tableRows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
 
+    const isDataLoading = !keyData || isLoading;
+
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel: monthPeriod,
@@ -150,8 +178,11 @@ export default function MonthView({
       total: ddData.total,
       items: ddData.items || [],
       sections: ddData.sections || null,
+      isLoading: isDataLoading,
+      _clickParams: { ddType, monthPeriod, mIdx, val, parsedTargetDate, isIncomeMode, rect },
     });
   };
+
 
   // Helper for CSV export matching original
   const handleExportCsv = () => {
@@ -276,6 +307,7 @@ export default function MonthView({
         currencySymbol={currencySymbol}
         thousandsSeparator={thousandsSeparator}
         onClose={() => setActivePopover(null)}
+        isLoading={Boolean(!keyData || isLoading || activePopover?.isLoading)}
       />
 
       {/* Action Bar (Standardized Top Right Controls as per original app) */}

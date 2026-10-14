@@ -1,4 +1,4 @@
-import { getSheetsClient, withRetry, colLetterToNum, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { getSheetsClient, withRetry, colLetterToNum, extractSheetIdFromUrl, getSheetGid } from "./sheetsClient.js";
 import { resolveClientNameBySheetId } from "./workspaces.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { parseMonthHeader, FULL_MONTH_NAMES } from "./viewsService.js";
@@ -400,6 +400,7 @@ export async function getCashflowReconData({
   let hasTargetTab = false;
   let canAutoCreateTab = false;
   let da1Platform = "Xero";
+  let isReconciledComplete = false;
 
   if (cleanReconSheetId) {
     try {
@@ -427,7 +428,8 @@ export async function getCashflowReconData({
           `'${reconTabName}'!CZ3:DA60`,  // [7] P&L Adds by account & categories
           `'KeyInfo'!H12:H21`,           // [8] Tracked bank accounts (cash, max 10 rows 12-21)
           `'KeyInfo'!H23:I28`,           // [9] Tracked non-cash bank accounts (P&L additions, max 6 rows 23-28)
-          `'${reconTabName}'!DA1`        // [10] Accounting platform toggle (Xero / Quickbooks)
+          `'${reconTabName}'!DA1`,       // [10] Accounting platform toggle (Xero / Quickbooks)
+          `'${reconTabName}'!CR1:CR2`    // [11] Month ready & checkbox gate
         ];
 
         const reconBatchRes = await withRetry(() => sheets.spreadsheets.values.batchGet({
@@ -437,6 +439,10 @@ export async function getCashflowReconData({
         }));
 
         const vRanges = reconBatchRes.data.valueRanges || [];
+
+        // Parse [11] CR1:CR2 Month ready & complete gate
+        const cr2Raw = vRanges[11]?.values?.[1]?.[0];
+        isReconciledComplete = Boolean(cr2Raw === true || String(cr2Raw || "").trim().toUpperCase() === "TRUE");
 
         // Parse [10] DA1 Accounting platform toggle (Xero / Quickbooks)
         const da1PlatformRaw = String(vRanges[10]?.values?.[0]?.[0] || "").trim();
@@ -491,6 +497,19 @@ export async function getCashflowReconData({
           tabName: reconTabName
         };
 
+        // Fetch row background colors for B3:B200 to detect newly imported transactions
+        let txColorData = [];
+        try {
+          const colorResp = await withRetry(() => sheets.spreadsheets.get({
+            spreadsheetId: cleanReconSheetId,
+            ranges: [`'${reconTabName}'!B3:B200`],
+            fields: "sheets.data.rowData.values.effectiveFormat.backgroundColor"
+          }));
+          txColorData = colorResp.data.sheets?.[0]?.data?.[0]?.rowData || [];
+        } catch (colorErr) {
+          console.warn("Could not fetch bank transaction row colors:", colorErr.message);
+        }
+
         // Parse [1] Bank Transactions A3:Q200
         const rawTxRows = vRanges[1]?.values || [];
         bankTransactions = rawTxRows.map((r, i) => {
@@ -502,6 +521,10 @@ export async function getCashflowReconData({
           const outAmt = r[8] || "";
           const inAmt = r[9] || "";
           const category = r[16] || "";
+
+          // Check if row has light green fill indicating a newly imported item
+          const bgRgb = txColorData[i]?.values?.[0]?.effectiveFormat?.backgroundColor;
+          const isNew = isGreenShaded(bgRgb);
 
           // Fallback heuristic: If accountName is empty in Column C, infer from trackedBankAccounts
           if (!accountName && trackedBankAccounts.length > 0) {
@@ -528,6 +551,7 @@ export async function getCashflowReconData({
             inAmount: inAmt,
             category: category.trim(),
             isReconciled: true,
+            isNew,
             source: "recon_sheet"
           };
         }).filter(t => t.date || t.payee || t.outAmount || t.inAmount);
@@ -782,6 +806,7 @@ export async function getCashflowReconData({
     reconTabName,
     hasTargetTab,
     canAutoCreateTab,
+    isReconciledComplete: Boolean(isReconciledComplete),
     selectedCols,
     rows,
     reconActuals,
@@ -893,6 +918,43 @@ export async function syncReconBankTransactions({
       ]
     }
   }));
+
+  // Apply light green background shading (#dcfce7) to newly imported transactions (Cols B:P)
+  const newRowIndices = [];
+  transactions.forEach((tx, idx) => {
+    if (tx.isNew) newRowIndices.push(idx + 2); // 0-indexed row (row 3 is index 2)
+  });
+
+  if (newRowIndices.length > 0) {
+    try {
+      const tabGid = await getSheetGid(sheets, cleanId, tabName);
+      const NEW_GREEN_RGB = { red: 0.862745, green: 0.988235, blue: 0.905882 }; // #dcfce7
+      const colorRequests = newRowIndices.map(rIdx => ({
+        repeatCell: {
+          range: {
+            sheetId: tabGid,
+            startRowIndex: rIdx,
+            endRowIndex: rIdx + 1,
+            startColumnIndex: 1, // Col B
+            endColumnIndex: 16   // Col P
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: NEW_GREEN_RGB
+            }
+          },
+          fields: "userEnteredFormat.backgroundColor"
+        }
+      }));
+
+      await withRetry(() => sheets.spreadsheets.batchUpdate({
+        spreadsheetId: cleanId,
+        requestBody: { requests: colorRequests }
+      }));
+    } catch (colorErr) {
+      console.warn("Could not set green fill on new bank transaction rows:", colorErr.message);
+    }
+  }
 
   return { success: true, count: transactions.length };
 }
@@ -1277,5 +1339,122 @@ export async function setReconDa1Platform({
     }
   }));
   return { success: true, platform: cleanPlatform };
+}
+
+/**
+ * Sets the "Reconciled & complete for P&L" status in cell CR2 (and CR1 header) of the Recon Sheet
+ */
+export async function setReconMonthReadyStatus({
+  reconSheetId,
+  tabName,
+  isComplete,
+  clientName,
+  automationCommanderSheetId
+}) {
+  if (!reconSheetId || !tabName) {
+    throw new Error("Missing reconSheetId or tabName");
+  }
+  const boolVal = Boolean(isComplete);
+  const sheets = await getSheetsClient();
+  const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
+
+  await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: cleanId,
+    requestBody: {
+      valueInputOption: "USER_ENTERED",
+      data: [
+        {
+          range: `'${tabName}'!CR1`,
+          values: [["Month ready:"]]
+        },
+        {
+          range: `'${tabName}'!CR2`,
+          values: [[boolVal]]
+        }
+      ]
+    }
+  }));
+
+  let resolvedClient = clientName || "";
+  if (!resolvedClient && automationCommanderSheetId) {
+    resolvedClient = await resolveClientNameBySheetId(sheets, cleanId, automationCommanderSheetId);
+  }
+
+  logPmaActivity(sheets, {
+    automationCommanderSheetId,
+    clientName: resolvedClient,
+    category: "CASH_RECON",
+    action: boolVal ? "Month marked complete for P&L" : "Month marked in-progress",
+    summary: `${boolVal ? "Marked complete for P&L" : "Marked in-progress"} on ${tabName}!CR2`,
+    details: {
+      tab: tabName,
+      cellRef: "CR2",
+      isComplete: boolVal,
+      clientName: resolvedClient
+    }
+  }).catch(e => console.error("PMA log failed:", e));
+
+  return { success: true, isComplete: boolVal };
+}
+
+/**
+ * Dismisses "new" badges on bank transactions by resetting background color of columns B:P to white
+ */
+export async function dismissNewBankTransactions({
+  reconSheetId,
+  tabName,
+  clientName,
+  automationCommanderSheetId
+}) {
+  if (!reconSheetId || !tabName) {
+    throw new Error("Missing reconSheetId or tabName");
+  }
+
+  const sheets = await getSheetsClient();
+  const cleanId = extractSheetIdFromUrl(reconSheetId) || reconSheetId;
+  const tabGid = await getSheetGid(sheets, cleanId, tabName);
+
+  // Reset background color of B3:P200 to white
+  await withRetry(() => sheets.spreadsheets.batchUpdate({
+    spreadsheetId: cleanId,
+    requestBody: {
+      requests: [{
+        repeatCell: {
+          range: {
+            sheetId: tabGid,
+            startRowIndex: 2, // Row 3
+            endRowIndex: 200,
+            startColumnIndex: 1, // Col B
+            endColumnIndex: 16   // Col P
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: WHITE_RGB
+            }
+          },
+          fields: "userEnteredFormat.backgroundColor"
+        }
+      }]
+    }
+  }));
+
+  let resolvedClient = clientName || "";
+  if (!resolvedClient && automationCommanderSheetId) {
+    resolvedClient = await resolveClientNameBySheetId(sheets, cleanId, automationCommanderSheetId);
+  }
+
+  logPmaActivity(sheets, {
+    automationCommanderSheetId,
+    clientName: resolvedClient,
+    category: "CASH_RECON",
+    action: "New transactions dismissed",
+    summary: `Dismissed new bank transaction highlights on ${tabName}`,
+    details: {
+      tab: tabName,
+      clientName: resolvedClient
+    }
+  }).catch(e => console.error("PMA log failed:", e));
+
+  return { success: true };
 }
 

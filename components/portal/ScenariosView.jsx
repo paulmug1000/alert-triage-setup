@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import Spinner from "../Spinner";
 import DeepDivePopover from "./DeepDivePopover";
 import { PulseMath, mutateFYDataForScenarios, getDeepDiveType, buildDeepDiveData, formatMoney as universalFormatMoney, parseMoney, formatCurrencyString } from "../../services/deepDiveHelper";
@@ -157,6 +157,8 @@ export default function ScenariosView({
       String(keyData?.outgoingsMeta?.mode || "").toLowerCase() === "income" ||
       Boolean(activeYear?.rows?.some((r) => r.label && String(r.label).toLowerCase().includes("confirmed income")));
 
+    const isDataLoading = !keyData || isLoading;
+
     const ddData = buildDeepDiveData({
       ddType,
       periodLabel,
@@ -187,8 +189,46 @@ export default function ScenariosView({
       total: ddData.total,
       items: ddData.items || [],
       sections: ddData.sections || null,
+      isLoading: isDataLoading,
+      _clickParams: { ddType, periodLabel, mIdx, val, activeYearIdx, targetDate, isIncomeMode, rect },
     });
   };
+
+  useEffect(() => {
+    if (activePopover?.isOpen && activePopover._clickParams && keyData) {
+      const p = activePopover._clickParams;
+      const ddData = buildDeepDiveData({
+        ddType: p.ddType,
+        periodLabel: p.periodLabel,
+        monthIndex: p.mIdx,
+        cellValue: p.val,
+        yearIndex: p.activeYearIdx,
+        targetDate: p.targetDate,
+        keyData,
+        isIncomeMode: p.isIncomeMode,
+        isScenarioView: true,
+        scenariosConfig: {
+          confirmedJobs: confirmedJobIds,
+          disabledJobs: disabledJobIds,
+          adjs,
+          jobs: pipelineJobs,
+          outgoingsMeta: keyData?.outgoingsMeta,
+          profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
+          profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
+          scenarioMeta: mutatedYearData?.scenarioMeta,
+        },
+      });
+      setActivePopover((prev) => prev ? {
+        ...prev,
+        title: ddData.title,
+        period: ddData.period,
+        total: ddData.total,
+        items: ddData.items || [],
+        sections: ddData.sections || null,
+        isLoading: false,
+      } : null);
+    }
+  }, [keyData]);
 
   const currencySymbol = propCurrencySymbol || keyData?.currencySymbol || "£";
   const thousandsSeparator = propThousandsSeparator || keyData?.thousandsSeparator || ",";
@@ -452,6 +492,7 @@ export default function ScenariosView({
         currencySymbol={currencySymbol}
         thousandsSeparator={thousandsSeparator}
         onClose={() => setActivePopover(null)}
+        isLoading={Boolean(!keyData || isLoading || activePopover?.isLoading)}
       />
 
       {/* Action Bar */}

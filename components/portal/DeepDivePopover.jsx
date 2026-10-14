@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { formatMoney } from "../../services/deepDiveHelper";
+import Spinner from "../Spinner";
 
 export default function DeepDivePopover({
   isOpen,
@@ -13,6 +14,7 @@ export default function DeepDivePopover({
   currencySymbol,
   thousandsSeparator,
   onClose,
+  isLoading = false,
 }) {
   const popoverRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -23,10 +25,11 @@ export default function DeepDivePopover({
     setMounted(true);
   }, []);
 
-  // Initialize all accordion sections to collapsed by default matching original app (WebApp.html line 16304)
+  // Reset all accordion sections to collapsed whenever a popover opens or period changes
   useEffect(() => {
     setOpenAccordions({});
-  }, [sections]);
+    setSearchTerm("");
+  }, [isOpen, title, period, targetRect]);
 
   const toggleAccordion = (key) => {
     setOpenAccordions((prev) => ({
@@ -356,9 +359,16 @@ export default function DeepDivePopover({
                     {isExpanded && (
                       <div style={{ borderTop: "1px solid #e5e7eb" }}>
                         {(!sec.items || sec.items.length === 0) ? (
-                          <div style={{ padding: "10px 14px", color: "#94a3b8", fontSize: "12px" }}>
-                            None in this period
-                          </div>
+                          isLoading ? (
+                            <div style={{ padding: "16px", textAlign: "center", color: "#64748b" }}>
+                              <Spinner size={16} color="#0047AB" />
+                              <span style={{ marginLeft: "8px", fontSize: "12px" }}>Loading...</span>
+                            </div>
+                          ) : (
+                            <div style={{ padding: "10px 14px", color: "#94a3b8", fontSize: "12px" }}>
+                              None in this period
+                            </div>
+                          )
                         ) : (
                           sec.items.map((item, iIdx) => (
                             <div
@@ -439,9 +449,18 @@ export default function DeepDivePopover({
           /* Render Regular List (Revenue, Expenses, Cash receipts, Net Payroll/HMRC/Pension) */
           <div>
             {filteredItems.length === 0 ? (
-              <div style={{ padding: "2rem 1rem", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
-                No individual items recorded for this period
-              </div>
+              isLoading ? (
+                <div style={{ padding: "3rem 1rem", textAlign: "center", color: "#64748b" }}>
+                  <Spinner size={24} color="#0047AB" />
+                  <div style={{ marginTop: "12px", fontSize: "13px", fontWeight: 500, color: "#0047AB" }}>
+                    Loading breakdown...
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: "2rem 1rem", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
+                  No individual items recorded for this period
+                </div>
+              )
             ) : (
               filteredItems.map((item, idx) => {
                 const isAdjustment =
@@ -470,6 +489,117 @@ export default function DeepDivePopover({
                       <div style={{ fontWeight: 700, color: "#0047AB", fontSize: "13px" }}>
                         {formatGBP(item.amount)}
                       </div>
+                    </div>
+                  );
+                }
+
+                const hasTxns = Array.isArray(item.transactions) && item.transactions.length > 0;
+                const itemKey = `pop_cat_${idx}_${item.name}`;
+                const isExpanded = Boolean(openAccordions[itemKey]);
+
+                if (hasTxns) {
+                  const unrecCount = item.transactions.filter((t) => t.isUnreconciled).length;
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        borderBottom: idx === filteredItems.length - 1 ? "none" : "1px solid #f1f5f9",
+                      }}
+                    >
+                      <div
+                        onClick={() => toggleAccordion(itemKey)}
+                        style={{
+                          padding: "9px 16px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: "8px",
+                          fontSize: "12px",
+                          cursor: "pointer",
+                          background: isExpanded ? "#f8fafc" : "transparent",
+                          transition: "background 0.15s ease",
+                          userSelect: "none",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: 0, flexWrap: "wrap" }}>
+                          <span
+                            style={{
+                              fontSize: "9px",
+                              color: "#64748b",
+                              transition: "transform 0.15s ease",
+                              transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)",
+                              display: "inline-block",
+                            }}
+                          >
+                            ▼
+                          </span>
+                          <span style={{ fontWeight: 600, color: "#111827" }}>{item.name}</span>
+                          <span
+                            style={{
+                              fontSize: "10px",
+                              padding: "1px 5px",
+                              borderRadius: "8px",
+                              background: "#f1f5f9",
+                              color: "#64748b",
+                            }}
+                          >
+                            {item.transactions.length}
+                          </span>
+                          {unrecCount > 0 && (
+                            <span
+                              style={{
+                                fontSize: "9.5px",
+                                padding: "1px 4px",
+                                borderRadius: "3px",
+                                background: "#fef3c7",
+                                color: "#92400e",
+                                border: "1px solid #fde68a",
+                                fontWeight: 600,
+                              }}
+                              title={`${unrecCount} unreconciled bank transaction(s)`}
+                            >
+                              Pending Recon
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontWeight: 700, color: "#0047AB", fontSize: "13px", whiteSpace: "nowrap" }}>
+                          {formatGBP(item.amount)}
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div style={{ background: "#f8fafc", padding: "4px 16px 8px 24px", borderTop: "1px solid #f1f5f9" }}>
+                          {item.transactions.map((t, tIdx) => (
+                            <div
+                              key={tIdx}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                padding: "5px 0",
+                                borderBottom: tIdx === item.transactions.length - 1 ? "none" : "1px dashed #e2e8f0",
+                                fontSize: "11px",
+                              }}
+                            >
+                              <div style={{ minWidth: 0, paddingRight: "8px" }}>
+                                <div style={{ color: "#0f172a", fontWeight: 500, display: "flex", alignItems: "center", gap: "4px" }}>
+                                  <span style={{ color: "#64748b", fontSize: "10px" }}>{t.date}</span>
+                                  <span>{t.supplier}</span>
+                                  {t.isUnreconciled && (
+                                    <span style={{ fontSize: "9px", padding: "0 3px", background: "#fef3c7", color: "#92400e", borderRadius: "2px" }}>
+                                      Pending
+                                    </span>
+                                  )}
+                                </div>
+                                {t.ref && <div style={{ color: "#94a3b8", fontSize: "10px" }}>Ref: {t.ref}</div>}
+                              </div>
+                              <div style={{ fontWeight: 600, color: "#334155", whiteSpace: "nowrap" }}>
+                                {formatGBP(t.gross || t.amount)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 }

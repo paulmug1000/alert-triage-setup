@@ -102,9 +102,15 @@ export default function AlertSelectionView({
       const res = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "acknowledge_proactive_alert", alertKey, clientName: selectedClient?.clientName, sessionId, automationCommanderSheetId }),
+        body: JSON.stringify({ 
+          action: "acknowledge_proactive_alert", 
+          alertKey, 
+          clientName: selectedClient?.clientName, 
+          sessionId, 
+          automationCommanderSheetId,
+          alertData: proactiveAlerts.find(a => a.alertKey === alertKey || (rowIndex != null && a.rowIndex === rowIndex)) || null
+        }),
       });
-      const data = await res.json();
       if (!data.success) {
         console.error(`❌ acknowledge_proactive_alert failed: ${data.error}`);
         return;
@@ -1632,7 +1638,7 @@ export default function AlertSelectionView({
                               {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(alert.alertType) && <AdminBadge show={clientHasManager} />}
                             </div>
                             <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                              {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" || alert.alertType === "unreceived_expenses" || alert.alertType === "stale_unrecon_gap" ? null : alert.detail}
+                              {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" || alert.alertType === "unreceived_expenses" || alert.alertType === "stale_unrecon_gap" || alert.alertType === "retroactive_outgoings_update" ? null : alert.detail}
                             </div>
 
                             {alert.alertType === "retainer_invoice" && (
@@ -1763,6 +1769,12 @@ export default function AlertSelectionView({
                                 </div>
                               );
                             })()}
+
+                            {alert.alertType === "retroactive_outgoings_update" && (
+                              <div style={{ fontSize: "12px", color: "#334155", backgroundColor: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "6px", padding: "10px 12px", marginBottom: "8px" }}>
+                                <div style={{ whiteSpace: "pre-line", lineHeight: "1.5" }}>{alert.detail || alert.detailsSnippet || m.details}</div>
+                              </div>
+                            )}
 
                             {alert.alertType === "crm_wipe" && (
                               <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>

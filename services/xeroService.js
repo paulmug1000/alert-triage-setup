@@ -23,6 +23,7 @@ export const XERO_SCOPES = [
   "accounting.transactions",
   "accounting.settings",
   "accounting.reports.read",
+  "accounting.journals.read",
   "offline_access"
 ].join(" ");
 

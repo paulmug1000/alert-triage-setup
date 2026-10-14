@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter } from "./sheetsClient";
+import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter } from "./sheetsClient.js";
 import { 
   buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory, 
   readHandledAlertHashes, findMemoryRow, appendAlertMemoryRow, updateAlertMemoryRow, 
@@ -1957,19 +1957,54 @@ export async function handleRunFlagSweep(req, res, sheets) {
             }
             summary = summary || `${item.alertType} - ${item.clientName} (row ${alert.rowNumber})`;
 
-            // Dual-hash match: check modern hash first, then legacy hash, then snapshot key fallback
-            let exRow = memoryRows.find(r => r.clientName === item.clientName && r.fingerprintHash === alert._fingerprint);
-            if (!exRow && alert._legacyFingerprint) {
-              exRow = memoryRows.find(r => r.clientName === item.clientName && r.fingerprintHash === alert._legacyFingerprint);
-            }
-            if (!exRow && (item.alertType === "autolog_error" || item.alertType === "infinite_loop")) {
-              exRow = memoryRows.find(r => {
-                if (r.clientName !== item.clientName || r.alertType !== item.alertType) return false;
-                try {
-                  const snap = JSON.parse(r.dataSnapshot || "{}");
-                  return snap.legacyAlertKey === alert.alertKey || (snap.alertKey && snap.alertKey.startsWith(alert.alertKey + "|"));
-                } catch(e) { return false; }
-              });
+            // Priority candidate match: find all matching rows across modern hash, legacy hash, and snapshot alertKey
+            const candidateMatches = memoryRows.filter(r => {
+              if (r.clientName !== item.clientName) return false;
+              if (r.fingerprintHash === alert._fingerprint) return true;
+              if (alert._legacyFingerprint && r.fingerprintHash === alert._legacyFingerprint) return true;
+              if (item.alertType === "autolog_error" || item.alertType === "infinite_loop") {
+                if (r.alertType === item.alertType) {
+                  try {
+                    const snap = JSON.parse(r.dataSnapshot || "{}");
+                    const k = snap.alertKey || snap.legacyAlertKey || "";
+                    if (k === alert.alertKey || k === alert.legacyAlertKey) return true;
+                    if (alert.alertKey && k.startsWith(alert.alertKey + "|")) return true;
+                  } catch(e) {}
+                }
+              }
+              return false;
+            });
+
+            // Priority: Handled (accepted/ignored/task/pending_automation) > Active (cached) > Inactive (auto_resolved/superseded/task_resolved)
+            // Tie-break: highest rowIndex (most recent entry in sheet)
+            const statusPriority = (s) => {
+              if (s === "accepted" || s === "ignored" || s === "task" || s === "pending_automation") return 3;
+              if (s === "cached") return 2;
+              return 1;
+            };
+            candidateMatches.sort((a, b) => {
+              const pd = statusPriority(b.status) - statusPriority(a.status);
+              if (pd !== 0) return pd;
+              return (b.rowIndex || 0) - (a.rowIndex || 0);
+            });
+
+            let exRow = candidateMatches[0] || null;
+
+            // If there are duplicate rows and the winning row is handled, suppress any duplicate cached/pending rows so they don't appear in PMA or revive
+            if (candidateMatches.length > 1 && exRow && (exRow.status === "accepted" || exRow.status === "ignored" || exRow.status === "task")) {
+              for (const dup of candidateMatches.slice(1)) {
+                if (dup.status === "cached" || dup.status === "pending_automation") {
+                  try {
+                    await updateAlertMemoryRow(sheets, acIdSweep, dup.rowIndex, {
+                      ...dup,
+                      status: "superseded",
+                      lastRechecked: detectedAtIso
+                    });
+                    dup.status = "superseded";
+                    console.log(`  🧹 SUPPRESSED duplicate cached row ${dup.rowIndex} for ${item.clientName} (authoritative row is ${exRow.rowIndex} ${exRow.status})`);
+                  } catch (e) {}
+                }
+              }
             }
 
             const detectedAtIso = new Date().toISOString();
@@ -2120,13 +2155,19 @@ export async function handleRunFlagSweep(req, res, sheets) {
                   }
 
                 if (exRow.fingerprintHash !== alert._fingerprint) {
+                  let mergedSnap = alertForSnapshot;
+                  try {
+                    const existingSnap = JSON.parse(exRow.dataSnapshot || "{}");
+                    mergedSnap = { ...existingSnap, ...alertForSnapshot };
+                  } catch(e) {}
                   await updateAlertMemoryRow(sheets, acIdSweep, exRow.rowIndex, {
                     ...exRow,
                     fingerprintHash: alert._fingerprint,
                     lastRechecked: detectedAtIso,
-                    dataSnapshot: JSON.stringify(alertForSnapshot)
+                    dataSnapshot: JSON.stringify(mergedSnap)
                   });
                   exRow.fingerprintHash = alert._fingerprint;
+                  exRow.dataSnapshot = JSON.stringify(mergedSnap);
                   console.log(`  🏷️ Migrated ${exRow.status} alert hash for ${item.clientName}: ${alert._fingerprint}`);
                 }
                 continue;

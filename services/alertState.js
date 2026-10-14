@@ -381,28 +381,38 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
     const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
     await ensureAlertMemoryTab(sheets, acId);
     const memoryRows = await readAlertMemory(sheets, acId);
-    let row = findMemoryRow(memoryRows, fingerprintHash);
-    if (!row && (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|"))) {
-      row = memoryRows.find(r => {
-        if (clientName && r.clientName !== clientName) return false;
+    const candidateMatches = memoryRows.filter(r => {
+      if (clientName && r.clientName !== clientName) return false;
+      if (r.fingerprintHash === fingerprintHash) return true;
+      if (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|")) {
         try {
           const s = JSON.parse(r.dataSnapshot || "{}");
-          return s.legacyAlertKey === alertKey || (s.alertKey && s.alertKey.startsWith(alertKey + "|"));
+          const k = s.alertKey || s.legacyAlertKey || "";
+          if (k === alertKey || k === alertData?.legacyAlertKey) return true;
+          if (k.startsWith(alertKey + "|")) return true;
         } catch(e) { return false; }
-      });
-    }
-    
-    if (row) {
+      }
+      return false;
+    });
+
+    if (candidateMatches.length > 0) {
+      const primaryRow = candidateMatches[0];
       let snap = {};
-      try { snap = JSON.parse(row.dataSnapshot || "{}"); } catch(e) {}
+      try { snap = JSON.parse(primaryRow.dataSnapshot || "{}"); } catch(e) {}
       if (alertData) snap = { ...snap, ...alertData };
-      await updateAlertMemoryRow(sheets, acId, row.rowIndex, { 
-        ...row, 
+      await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, { 
+        ...primaryRow, 
         fingerprintHash,
         status: "accepted", 
-        clientName: clientName || row.clientName || "",
+        clientName: clientName || primaryRow.clientName || "",
         dataSnapshot: JSON.stringify(snap)
       });
+      for (const dup of candidateMatches.slice(1)) {
+        await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
+          ...dup,
+          status: "superseded"
+        });
+      }
     } else {
       const snapStr = alertData ? JSON.stringify(alertData) : "";
       await appendAlertMemoryRow(sheets, acId, {
@@ -532,23 +542,34 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
     for (const alertKey of alertKeys) {
       const fingerprintHash = createHash("sha256").update(alertKey).digest("hex").substring(0, 16);
       hashesToRemove.push(alertKey, fingerprintHash);
-      let row = findMemoryRow(memoryRows, fingerprintHash);
-      if (!row && (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|"))) {
-        row = memoryRows.find(r => {
-          if (clientName && r.clientName !== clientName) return false;
+      const candidateMatches = memoryRows.filter(r => {
+        if (clientName && r.clientName !== clientName) return false;
+        if (r.fingerprintHash === fingerprintHash) return true;
+        if (alertKey.startsWith("autolog_error|") || alertKey.startsWith("infinite_loop|")) {
           try {
             const s = JSON.parse(r.dataSnapshot || "{}");
-            return s.legacyAlertKey === alertKey || (s.alertKey && s.alertKey.startsWith(alertKey + "|"));
+            const k = s.alertKey || s.legacyAlertKey || "";
+            if (k === alertKey) return true;
+            if (k.startsWith(alertKey + "|")) return true;
           } catch(e) { return false; }
-        });
-      }
-      if (row) {
-        await updateAlertMemoryRow(sheets, acId, row.rowIndex, { 
-          ...row, 
+        }
+        return false;
+      });
+
+      if (candidateMatches.length > 0) {
+        const primaryRow = candidateMatches[0];
+        await updateAlertMemoryRow(sheets, acId, primaryRow.rowIndex, { 
+          ...primaryRow, 
           fingerprintHash,
           status: "accepted", 
-          clientName: clientName || row.clientName || "" 
+          clientName: clientName || primaryRow.clientName || "" 
         });
+        for (const dup of candidateMatches.slice(1)) {
+          await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
+            ...dup,
+            status: "superseded"
+          });
+        }
       } else {
         await appendAlertMemoryRow(sheets, acId, {
           fingerprintHash, alertType: "proactive", clientName: clientName || "", alertSummary: "Acknowledged proactive alert",

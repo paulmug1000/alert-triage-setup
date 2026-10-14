@@ -259,14 +259,16 @@ export function findMemoryRow(memoryRows, fingerprintHash) {
   if (matches.length === 0) return null;
   if (matches.length === 1) return matches[0];
   const priority = (status) => {
-    if (status === "ignored" || status === "accepted" || status === "task") return 3;
+    if (status === "ignored" || status === "accepted" || status === "task" || status === "pending_automation") return 3;
     if (status === "cached") return 2;
     return 1;
   };
   return matches.sort((a, b) => {
     const pd = priority(b.status) - priority(a.status);
     if (pd !== 0) return pd;
-    return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+    const dateDiff = new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+    if (dateDiff !== 0) return dateDiff;
+    return (b.rowIndex || 0) - (a.rowIndex || 0);
   })[0];
 }
 

@@ -26,6 +26,7 @@ export default function NonAdminAlertListView({
   setRetainerAlertResolution,
   setRetainerSplitInvoice,
   acknowledgeProactiveAlert,
+  acknowledgingKey,
   freqLabel,
   totalVisibleAlertsCount
 }) {
@@ -662,7 +663,23 @@ export default function NonAdminAlertListView({
                           );
                         })()}
                         <button className="triage-btn" onClick={() => openCreateTaskModal(alert, true)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#7c3aed", borderColor: "#c4b5fd" }}>📋 Create Task</button>
-                        <button className="triage-btn" onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)} style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px" }}>✓ Acknowledge</button>
+                        <button
+                          className="triage-btn"
+                          onClick={() => acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex)}
+                          disabled={acknowledgingKey === (alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null))}
+                          style={{
+                            ...styles.buttonSecondary,
+                            fontSize: "12px",
+                            padding: "4px 12px",
+                            opacity: acknowledgingKey === (alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null)) ? 0.7 : 1
+                          }}
+                        >
+                          {acknowledgingKey === (alert.alertKey || (alert.rowIndex != null ? `row-${alert.rowIndex}` : null)) ? (
+                            <><Spinner size={11} /> Acknowledging...</>
+                          ) : (
+                            "✓ Acknowledge"
+                          )}
+                        </button>
                       </div>
                     </div>
                   </div>

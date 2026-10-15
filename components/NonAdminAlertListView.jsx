@@ -30,6 +30,44 @@ export default function NonAdminAlertListView({
   freqLabel,
   totalVisibleAlertsCount
 }) {
+  const [selectedClassifications, setSelectedClassifications] = React.useState({});
+  const [applyingClassification, setApplyingClassification] = React.useState({});
+  const [classificationMsg, setClassificationMsg] = React.useState({});
+
+  const handleApplyPLClassification = async (alert) => {
+    const alertKey = alert.alertKey;
+    const classification = selectedClassifications[alertKey] || "delivery_expense";
+    const categoryName = alert.metadata?.categoryName || alert.metadata?.cleanName || alert.heading;
+    setApplyingClassification(prev => ({ ...prev, [alertKey]: true }));
+    setClassificationMsg(prev => ({ ...prev, [alertKey]: "" }));
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "classify_pl_category",
+          clientName: alert.clientName || selectedClient?.clientName,
+          categoryName,
+          classification
+        })
+      });
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || "Failed to classify category");
+      }
+      setClassificationMsg(prev => ({ ...prev, [alertKey]: "✓ Applied and synced!" }));
+      setTimeout(() => {
+        if (typeof acknowledgeProactiveAlert === "function") {
+          acknowledgeProactiveAlert(alert.alertKey, alert.rowIndex);
+        }
+      }, 1000);
+    } catch (err) {
+      setClassificationMsg(prev => ({ ...prev, [alertKey]: `Error: ${err.message}` }));
+    } finally {
+      setApplyingClassification(prev => ({ ...prev, [alertKey]: false }));
+    }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
       {/* 1. Actionable Groups */}
@@ -462,7 +500,7 @@ export default function NonAdminAlertListView({
                       {alert.heading}
                     </div>
                     <div style={{ fontSize: "13px", color: "#444", lineHeight: "1.6", marginBottom: "8px" }}>
-                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" || alert.alertType === "unreceived_expenses" || alert.alertType === "stale_unrecon_gap" || alert.alertType === "retroactive_outgoings_update" ? null : stripRowInfo(alert.detail)}
+                      {alert.alertType === "revenue_mismatch" || alert.alertType === "direct_costs_mismatch" || alert.alertType === "pipeline_confirmed_overlap" || alert.alertType === "retainer_shrink_blocked" || alert.alertType === "uninvoiced_new_job" || alert.alertType === "uninvoiced_revenue" || alert.alertType === "unreceived_expenses" || alert.alertType === "stale_unrecon_gap" || alert.alertType === "retroactive_outgoings_update" || alert.alertType === "unmapped_pl_category" ? null : stripRowInfo(alert.detail)}
                     </div>
 
                     {alert.alertType === "retainer_invoice" && (
@@ -594,6 +632,94 @@ export default function NonAdminAlertListView({
                         <div style={{ whiteSpace: "pre-line", lineHeight: "1.5" }}>{alert.detail || alert.detailsSnippet || m.details}</div>
                       </div>
                     )}
+
+                    {alert.alertType === "unmapped_pl_category" && (() => {
+                      const catName = alert.metadata?.categoryName || alert.metadata?.cleanName || alert.heading;
+                      const currentChoice = selectedClassifications[alert.alertKey] || "delivery_expense";
+                      const isApplying = !!applyingClassification[alert.alertKey];
+                      const msg = classificationMsg[alert.alertKey];
+
+                      const OPTIONS = [
+                        { value: "delivery_expense", label: "Delivery expense (Other costs of sale)" },
+                        { value: "non_delivery_expense", label: "Non-delivery expense (Overheads)" },
+                        { value: "revenue", label: "Revenue" },
+                        { value: "cos_staff", label: "CoS staff cost" },
+                        { value: "non_cos_staff", label: "Non-CoS staff cost" },
+                        { value: "contractor", label: "Track as a Contractor" },
+                        { value: "corporation_tax", label: "Corporation tax" },
+                        { value: "depreciation", label: "Depreciation" },
+                        { value: "non_operating_income", label: "Non-operating income" },
+                        { value: "non_operating_expense", label: "Non-operating expense" },
+                        { value: "ignore", label: "Ignore entirely" }
+                      ];
+
+                      return (
+                        <div style={{ backgroundColor: "#fbfaff", border: "1px solid #ddd6fe", borderRadius: "8px", padding: "12px", marginBottom: "10px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+                            <span style={{ fontSize: "16px" }}>🏷️</span>
+                            <div>
+                              <div style={{ fontSize: "13px", fontWeight: "700", color: "#4c1d95" }}>
+                                Unmapped P&L Account: <span style={{ color: "#7c3aed" }}>&ldquo;{catName}&rdquo;</span>
+                              </div>
+                              <div style={{ fontSize: "11px", color: "#6b7280" }}>
+                                This account is currently quarantined in PLComp!B to protect Outgoings from unverified expenses. Select how it should be mapped:
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px", marginTop: "10px" }}>
+                            <select
+                              value={currentChoice}
+                              onChange={(e) => setSelectedClassifications(prev => ({ ...prev, [alert.alertKey]: e.target.value }))}
+                              disabled={isApplying}
+                              style={{
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                fontWeight: "500",
+                                borderRadius: "6px",
+                                border: "1px solid #c4b5fd",
+                                backgroundColor: "#fff",
+                                color: "#1f2937",
+                                minWidth: "260px",
+                                cursor: "pointer"
+                              }}
+                            >
+                              {OPTIONS.map(opt => (
+                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                              ))}
+                            </select>
+
+                            <button
+                              className="triage-btn"
+                              onClick={() => handleApplyPLClassification(alert)}
+                              disabled={isApplying}
+                              style={{
+                                background: "#7c3aed",
+                                color: "#fff",
+                                border: "none",
+                                borderRadius: "6px",
+                                padding: "6px 14px",
+                                fontSize: "12px",
+                                fontWeight: "600",
+                                cursor: isApplying ? "default" : "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                opacity: isApplying ? 0.7 : 1
+                              }}
+                            >
+                              {isApplying ? <><Spinner size={12} /> Confirming &amp; Syncing...</> : "Confirm & Apply"}
+                            </button>
+
+                            {msg && (
+                              <span style={{ fontSize: "12px", fontWeight: "600", color: msg.startsWith("✓") ? "#16a34a" : "#dc2626" }}>
+                                {msg}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {alert.alertType === "revenue_mismatch" && (
                       <div style={{ fontSize: "12px", color: "#555", backgroundColor: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "4px", padding: "8px 10px", marginBottom: "8px" }}>

@@ -434,7 +434,7 @@ export default function SettingsView({
                     {[
                       { key: "actionable", label: "Actionable", hint: "Discrepancies needing review - invoice, CRM, expense" },
                       { key: "info", label: "Informational", hint: "Acknowledge-only events from AutoLog" },
-                      { key: "proactive", label: "Proactive", hint: "The 15 proactive checks" },
+                      { key: "proactive", label: "Proactive", hint: "The 17 proactive checks" },
                     ].map(cat => {
                       const entry = sweepSchedule?.[cat.key];
                       return (
@@ -695,6 +695,8 @@ export default function SettingsView({
                     { name: "Deleted expense detection", detail: "Flags expenses with a real reference that no longer appear in the accounting system - the expense equivalent of deleted invoice detection." },
                     { name: "Automation error detection", detail: "Watches the last 100 AutoLog entries for any occurrences of 'Error:', highlighting the error and the text that follows." },
                     { name: "Infinite loop & automation conflict detection", detail: "Detects situations where automation routines fight each other, such as within-run inverted changes (e.g. days to pay extended then shortened) or recurring multi-run flip-flops (e.g. client name differing between Xero and CRM)." },
+                    { name: "Outgoings actuals updated from P&L", detail: "Flags instances where the automated P&L expenses sequence updated Outgoings actual amounts for a finalized month with a net delta." },
+                    { name: "Unmapped P&L category quarantined", detail: "Flags newly detected nominal accounts in the P&L that are temporarily quarantined from Outgoings, allowing you to classify and map them with one click." },
                   ].map((c, i) => (
                     <div key={c.name} style={{ display: "flex", gap: "10px", padding: "8px 0", borderTop: i > 0 ? "1px solid #f0f0f0" : "none" }}>
                       <span style={{ color: "#16a34a", fontSize: "14px", lineHeight: "20px" }}>✓</span>

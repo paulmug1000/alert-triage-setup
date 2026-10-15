@@ -12,7 +12,7 @@ import {
   checkPipelineConfirmedOverlap_, checkRetainerShrinkBlocked_, checkUninvoicedNewJobs_,
   checkUninvoicedRevenue_, checkDeletedInvoices_, checkJobStructureErrors_,
   checkDeletedExpenses_, checkUnreceivedExpenses_, checkAutoLogErrors_, checkAutoLogInfiniteLoops_,
-  checkStaleUnreconGapExpenses_, checkRetroactiveOutgoingsChanges_
+  checkStaleUnreconGapExpenses_, checkRetroactiveOutgoingsChanges_, checkQuarantinedPLCategories_
 } from "./proactiveChecks";
 import { 
   checkAllGASLocks, setCRMMode, getToleranceValues, 
@@ -1760,7 +1760,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               checkAutoLogErrors_(client.clientName, client.masterSheetId, sharedData),
               checkAutoLogInfiniteLoops_(client.clientName, client.masterSheetId, sharedData),
               checkStaleUnreconGapExpenses_(client.clientName, client.clientSheetId, sharedData, sheets),
-              checkRetroactiveOutgoingsChanges_(client.clientName, client.masterSheetId, sharedData)
+              checkRetroactiveOutgoingsChanges_(client.clientName, client.masterSheetId, sharedData),
+              checkQuarantinedPLCategories_(client.clientName, client.masterSheetId, sharedData, sheets)
             ];
 
             const proResults = await Promise.all(proChecks);
@@ -1770,7 +1771,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
               "retainer_invoice", "crm_wipe", "revenue_mismatch", "direct_costs_mismatch",
               "pipeline_confirmed_overlap", "retainer_shrink_blocked", "uninvoiced_new_job", "uninvoiced_revenue",
               "deleted_invoice", "job_structure_error", "deleted_expense", "unreceived_expenses",
-              "autolog_error", "infinite_loop", "stale_unrecon_gap", "retroactive_outgoings_update"
+              "autolog_error", "infinite_loop", "stale_unrecon_gap", "retroactive_outgoings_update",
+              "unmapped_pl_category"
             ];
             
             const groupedProactive = {};

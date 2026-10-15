@@ -97,6 +97,7 @@ import {
   parseUnreconciledItems,
   recategoriseTransactions
 } from "../../services/bankTransactionsService";
+import { handleClassifyPLCategory } from "../../services/proactiveChecks";
 import { getSessionUser, sendOtp, verifyOtp, clearSessionCookie } from "../../services/authService";
 import { getAllUsers, isUserAuthorizedForClient, updateUserDailyAlertsEmail, getUserByEmail } from "../../services/userPermissions";
 import { matchesClientName } from "../../utils/helpers";
@@ -731,6 +732,25 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, message: "No Master Web App URL configured" });
       } catch (err) {
         console.error("❌ sync_client_expense_breakdown error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+    } else if (action === "classify_pl_category") {
+      try {
+        const { clientName, categoryName, classification, automationCommanderSheetId } = req.body;
+        if (!sessionUser?.isAdmin && clientName && !isUserAuthorizedForClient(sessionUser, clientName)) {
+          return res.status(403).json({ success: false, error: "Access denied to this client" });
+        }
+        const result = await handleClassifyPLCategory(sheets, {
+          clientName,
+          categoryName,
+          classification,
+          automationCommanderSheetId,
+          userEmail: sessionUser?.email
+        });
+        return res.status(200).json(result);
+      } catch (err) {
+        console.error("❌ classify_pl_category error:", err);
         return res.status(500).json({ success: false, error: err.message });
       }
 

@@ -1,5 +1,7 @@
 import { isPlaceholderInvoice, isPlaceholderExpense } from "../utils/helpers.js";
 import { withRetry, colIndexToLetter } from "./sheetsClient.js";
+import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
+import { redisClient } from "./redisClient.js";
 
 export function parseConfirmedDate_(val) {
   if (!val) return null;
@@ -1609,4 +1611,314 @@ export async function checkStaleUnreconGapExpenses_(clientName, clientSheetId, s
     console.error(`Error in checkStaleUnreconGapExpenses_ for ${clientName}:`, e.message);
   }
   return alerts;
+}
+
+export async function checkQuarantinedPLCategories_(clientName, masterSheetId, sharedData, sheets) {
+  const alerts = [];
+  try {
+    if (!masterSheetId || !sheets) return alerts;
+
+    const compResp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: masterSheetId,
+        range: "PLComp!B180:B229"
+      })
+    );
+
+    const rows = compResp.data.values || [];
+    const quarantinedCats = [];
+    rows.forEach((r, idx) => {
+      const val = String(r[0] || "").trim();
+      if (val && val.toLowerCase() !== "extra ignore") {
+        quarantinedCats.push({ name: val, rowNum: 180 + idx });
+      }
+    });
+
+    if (quarantinedCats.length === 0) return alerts;
+
+    // Check AutoLog for recent quarantine timestamp/details if available
+    const autoLogData = sharedData?.autoLogData || [];
+    const logDetailsMap = new Map();
+    for (let i = 0; i < Math.min(autoLogData.length, 100); i++) {
+      const logSummary = String(autoLogData[i]?.[2] || "").trim();
+      const match = logSummary.match(/New P&L Category Quarantined:\s*"([^"]+)"/i);
+      if (match) {
+        const catName = match[1].trim();
+        const ts = autoLogData[i]?.[0];
+        const tsStr = ts instanceof Date ? ts.toISOString() : String(ts || "");
+        if (!logDetailsMap.has(catName.toLowerCase())) {
+          logDetailsMap.set(catName.toLowerCase(), {
+            timestamp: tsStr,
+            details: String(autoLogData[i]?.[3] || "").trim()
+          });
+        }
+      }
+    }
+
+    for (const q of quarantinedCats) {
+      const catName = q.name;
+      const logInfo = logDetailsMap.get(catName.toLowerCase());
+      const tsStr = logInfo?.timestamp || new Date().toISOString();
+      const alertKey = `unmapped_pl_category|${clientName}|${catName}`;
+
+      alerts.push({
+        alertType: "unmapped_pl_category",
+        alertKey,
+        legacyAlertKey: `unmapped_pl_category|${clientName}|${catName}`,
+        severity: "actionable",
+        category: "Expenses",
+        heading: `Unmapped P&L category: "${catName}"`,
+        title: `Unmapped P&L category: "${catName}"`,
+        detail: `The nominal account "${catName}" was detected in the P&L report but has not yet been classified. It has been temporarily quarantined in PLComp!B${q.rowNum} to protect Outgoings from unverified expenses. Please choose how this account should be classified.`,
+        clientName,
+        timestamp: tsStr,
+        metadata: {
+          clientName,
+          categoryName: catName,
+          cleanName: catName,
+          quarantineRow: q.rowNum,
+          masterSheetId,
+          timestamp: tsStr,
+          logDetails: logInfo?.details || ""
+        }
+      });
+    }
+  } catch (e) {
+    console.error(`Error in checkQuarantinedPLCategories_ for ${clientName}:`, e.message);
+  }
+  return alerts;
+}
+
+export async function handleClassifyPLCategory(sheets, {
+  clientName,
+  categoryName,
+  classification,
+  automationCommanderSheetId,
+  userEmail
+}) {
+  if (!clientName || !categoryName || !classification) {
+    throw new Error("Missing clientName, categoryName, or classification");
+  }
+
+  // 1. Resolve masterSheetId
+  const clientsData = await getAllClients(sheets, { isAdmin: true }, false, automationCommanderSheetId);
+  const clientObj = clientsData?.clientsObj?.[clientName];
+  const masterSheetId = clientObj?.masterSheetId;
+  if (!masterSheetId) {
+    throw new Error(`Could not find Master Sheet ID for client "${clientName}"`);
+  }
+
+  const cleanName = categoryName.replace(/^\d+\s*[-–]\s*/, "").trim();
+
+  const CLASSIFICATION_LABELS = {
+    delivery_expense: "Delivery expense",
+    non_delivery_expense: "Non-delivery expense",
+    revenue: "Revenue",
+    cos_staff: "CoS staff cost",
+    non_cos_staff: "Non-CoS staff cost",
+    contractor: "Track as a Contractor",
+    corporation_tax: "Corporation tax",
+    depreciation: "Depreciation",
+    non_operating_income: "Non-operating income",
+    non_operating_expense: "Non-operating expense",
+    ignore: "Ignore entirely"
+  };
+
+  const classificationLabel = CLASSIFICATION_LABELS[classification] || classification;
+
+  // 2. Apply mapping based on classification
+  if (classification === "contractor") {
+    // Read KeyInfo!AW2:AW161 to find full nominal code prefix (e.g. "318 - Contractor")
+    const awRes = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "KeyInfo!AW2:AW161"
+    }));
+    const awRows = (awRes.data.values || []).map(r => String(r[0] || "").trim()).filter(Boolean);
+    let contractorEntry = awRows.find(item => {
+      const itemClean = item.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+      return itemClean === cleanName.toLowerCase() || item.toLowerCase() === categoryName.toLowerCase();
+    });
+    if (!contractorEntry) {
+      contractorEntry = awRows.find(item => item.toLowerCase().includes(cleanName.toLowerCase())) || categoryName;
+    }
+
+    // Append to first empty cell in KeyInfo!AT4:AT22
+    const atRes = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "KeyInfo!AT4:AT22"
+    }));
+    const atRows = atRes.data.values || [];
+    let targetAtRow = -1;
+    for (let i = 0; i < 19; i++) {
+      const val = String(atRows[i]?.[0] || "").trim();
+      if (!val) {
+        targetAtRow = 4 + i;
+        break;
+      }
+    }
+    if (targetAtRow === -1) {
+      throw new Error("No empty slots available in KeyInfo!AT4:AT22 for Contractors.");
+    }
+
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: masterSheetId,
+      range: `KeyInfo!AT${targetAtRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [[contractorEntry]] }
+    }));
+
+  } else if (classification === "non_delivery_expense") {
+    // Non-delivery expense: Simply cleared from PLComp quarantine, naturally flows to PLComp!E89 Overheads.
+  } else {
+    // Target sections in KeyInfo!AZ -> KeyInfo!BA
+    const SECTION_MAPPING = {
+      revenue: { label: "Revenue", fallbackStart: 2, fallbackEnd: 17 },
+      cos_staff: { label: "CoS staff costs", fallbackStart: 19, fallbackEnd: 28 },
+      non_cos_staff: { label: "Non-CoS staff costs", fallbackStart: 35, fallbackEnd: 43 },
+      corporation_tax: { label: "Corporation tax", fallbackStart: 50, fallbackEnd: 52 },
+      depreciation: { label: "Depreciation", fallbackStart: 54, fallbackEnd: 56 },
+      delivery_expense: { label: "Other costs of sale", fallbackStart: 59, fallbackEnd: 78 },
+      non_operating_income: { label: "Non-operating income", fallbackStart: 81, fallbackEnd: 93 },
+      non_operating_expense: { label: "Non-operating expenses", fallbackStart: 101, fallbackEnd: 110 },
+      ignore: { label: "Ignore", fallbackStart: 128, fallbackEnd: 180 }
+    };
+
+    const targetConfig = SECTION_MAPPING[classification];
+    if (!targetConfig) {
+      throw new Error(`Unknown classification: "${classification}"`);
+    }
+
+    // Read KeyInfo!AZ1:BA185
+    const azBaRes = await withRetry(() => sheets.spreadsheets.values.get({
+      spreadsheetId: masterSheetId,
+      range: "KeyInfo!AZ1:BA185"
+    }));
+    const rows = azBaRes.data.values || [];
+
+    let sectionStartRow = -1;
+    let sectionEndRow = 185;
+
+    for (let i = 0; i < rows.length; i++) {
+      const azVal = String(rows[i]?.[0] || "").trim().toLowerCase();
+      if (azVal === targetConfig.label.toLowerCase()) {
+        sectionStartRow = i + 1; // 1-indexed
+        for (let j = i + 1; j < rows.length; j++) {
+          const nextAz = String(rows[j]?.[0] || "").trim();
+          if (nextAz) {
+            sectionEndRow = j; // 1-indexed
+            break;
+          }
+        }
+        break;
+      }
+    }
+
+    if (sectionStartRow === -1) {
+      sectionStartRow = targetConfig.fallbackStart;
+      sectionEndRow = targetConfig.fallbackEnd;
+    }
+
+    let targetBaRow = -1;
+    for (let r = sectionStartRow; r <= sectionEndRow; r++) {
+      const baVal = String(rows[r - 1]?.[1] || "").trim();
+      if (!baVal) {
+        targetBaRow = r;
+        break;
+      }
+    }
+
+    if (targetBaRow === -1) {
+      throw new Error(`No available slots in KeyInfo section "${targetConfig.label}".`);
+    }
+
+    // Write cleanName (without code prefix) to KeyInfo!BA
+    await withRetry(() => sheets.spreadsheets.values.update({
+      spreadsheetId: masterSheetId,
+      range: `KeyInfo!BA${targetBaRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [[cleanName]] }
+    }));
+  }
+
+  // 3. Clear from quarantine in PLComp!B180:B229
+  const plCompRes = await withRetry(() => sheets.spreadsheets.values.get({
+    spreadsheetId: masterSheetId,
+    range: "PLComp!B180:B229"
+  }));
+  const plCompRows = plCompRes.data.values || [];
+  for (let i = 0; i < plCompRows.length; i++) {
+    const val = String(plCompRows[i]?.[0] || "").trim();
+    const valClean = val.replace(/^\d+\s*[-–]\s*/, "").trim().toLowerCase();
+    if (valClean === cleanName.toLowerCase() || val.toLowerCase() === categoryName.toLowerCase()) {
+      const clearRow = 180 + i;
+      await withRetry(() => sheets.spreadsheets.values.update({
+        spreadsheetId: masterSheetId,
+        range: `PLComp!B${clearRow}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[""]] }
+      }));
+    }
+  }
+
+  // 4. Log to AutoLog on Master Sheet
+  try {
+    const nowStr = new Date().toLocaleString("en-GB", { timeZone: "Europe/London" });
+    await withRetry(() => sheets.spreadsheets.values.append({
+      spreadsheetId: masterSheetId,
+      range: "AutoLog!A:D",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[
+          nowStr,
+          "EXPENSES",
+          `P&L Category Classified: "${cleanName}" -> ${classificationLabel}`,
+          `User ${userEmail || "admin"} classified quarantined category "${categoryName}" as ${classificationLabel}. Added to KeyInfo and cleared from PLComp quarantine. Full expense & Outgoings sync triggered.`
+        ]]
+      }
+    }));
+  } catch (logErr) {
+    console.warn("⚠️ Could not write classification to AutoLog:", logErr.message);
+  }
+
+  // 5. Trigger Master Sheet Full Sync via webAppUrl
+  let syncResult = null;
+  const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
+  if (webAppUrl) {
+    try {
+      const secret = process.env.AGENT_TRIGGER_SECRET || process.env.CRON_SECRET || "triage-cron-2026-AY4K2LDMXBV8DS7";
+      const gasResp = await fetch(webAppUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret, action: "sync_expense_breakdown", clientName })
+      });
+      const gasText = await gasResp.text();
+      try { syncResult = JSON.parse(gasText); } catch (e) { syncResult = gasText; }
+    } catch (syncErr) {
+      console.warn("⚠️ Master WebApp sync error:", syncErr.message);
+    }
+  }
+
+  // 6. Auto-resolve the alert in redis cache
+  const alertKey = `unmapped_pl_category|${clientName}|${categoryName}`;
+  if (redisClient?.isOpen) {
+    try {
+      const cacheKey = `pulse:triage_state:${clientName}`;
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        const state = JSON.parse(cached);
+        if (state.alerts) {
+          state.alerts = state.alerts.filter(a => a.alertKey !== alertKey && a.metadata?.cleanName !== cleanName);
+          await redisClient.set(cacheKey, JSON.stringify(state));
+        }
+      }
+    } catch (re) {
+      console.warn("Could not prune resolved alert from redis:", re.message);
+    }
+  }
+
+  return {
+    success: true,
+    message: `Successfully classified "${cleanName}" as ${classificationLabel} and synchronized Outgoings.`,
+    syncResult
+  };
 }
